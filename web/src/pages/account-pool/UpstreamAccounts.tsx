@@ -20,6 +20,7 @@ import { FormFieldFeedback } from '../../components/ui/form-field-feedback'
 import { Input } from '../../components/ui/input'
 import { Popover, PopoverArrow, PopoverContent, PopoverTrigger } from '../../components/ui/popover'
 import { OverlayHostProvider } from '../../components/ui/overlay-host'
+import { SelectField } from '../../components/ui/select-field'
 import { MotherAccountBadge, MotherAccountToggle } from '../../components/MotherAccountToggle'
 import { Spinner } from '../../components/ui/spinner'
 import { Switch } from '../../components/ui/switch'
@@ -523,6 +524,29 @@ export default function UpstreamAccountsPage() {
       tagIds: selectedTagIds.length > 0 ? selectedTagIds : undefined,
     }
   }, [groupFilterQuery, page, pageSize, selectedTagIds, statusFilter, t])
+  const statusFilterOptions = useMemo(
+    () => [
+      { value: 'all', label: t('accountPool.upstreamAccounts.statusFilter.all') },
+      { value: 'active', label: t('accountPool.upstreamAccounts.status.active') },
+      { value: 'syncing', label: t('accountPool.upstreamAccounts.status.syncing') },
+      { value: 'needs_reauth', label: t('accountPool.upstreamAccounts.status.needs_reauth') },
+      {
+        value: 'upstream_unavailable',
+        label: t('accountPool.upstreamAccounts.status.upstream_unavailable'),
+      },
+      {
+        value: 'upstream_rejected',
+        label: t('accountPool.upstreamAccounts.status.upstream_rejected'),
+      },
+      { value: 'error_other', label: t('accountPool.upstreamAccounts.status.error_other') },
+      { value: 'disabled', label: t('accountPool.upstreamAccounts.status.disabled') },
+    ],
+    [t],
+  )
+  const pageSizeOptions = useMemo(
+    () => [20, 50, 100].map((value) => ({ value: String(value), label: String(value) })),
+    [],
+  )
   const {
     items,
     groups = [],
@@ -1465,24 +1489,15 @@ export default function UpstreamAccountsPage() {
                 <p className="section-description">{t('accountPool.upstreamAccounts.listDescription')}</p>
               </div>
               <div className="flex flex-wrap items-end gap-3">
-                <label className="field min-w-[12rem]">
-                  <span className="field-label">{t('accountPool.upstreamAccounts.statusFilterLabel')}</span>
-                  <select
-                    value={statusFilter}
-                    onChange={(event) => handleStatusFilterChange(event.target.value)}
-                    className="h-12 rounded-xl border border-base-300/90 bg-base-100 px-4 text-[15px] text-base-content outline-none transition focus:border-primary/70"
-                    aria-label={t('accountPool.upstreamAccounts.statusFilterLabel')}
-                  >
-                    <option value="all">{t('accountPool.upstreamAccounts.statusFilter.all')}</option>
-                    <option value="active">{t('accountPool.upstreamAccounts.status.active')}</option>
-                    <option value="syncing">{t('accountPool.upstreamAccounts.status.syncing')}</option>
-                    <option value="needs_reauth">{t('accountPool.upstreamAccounts.status.needs_reauth')}</option>
-                    <option value="upstream_unavailable">{t('accountPool.upstreamAccounts.status.upstream_unavailable')}</option>
-                    <option value="upstream_rejected">{t('accountPool.upstreamAccounts.status.upstream_rejected')}</option>
-                    <option value="error_other">{t('accountPool.upstreamAccounts.status.error_other')}</option>
-                    <option value="disabled">{t('accountPool.upstreamAccounts.status.disabled')}</option>
-                  </select>
-                </label>
+                <SelectField
+                  label={t('accountPool.upstreamAccounts.statusFilterLabel')}
+                  className="min-w-[12rem]"
+                  value={statusFilter}
+                  options={statusFilterOptions}
+                  triggerClassName="h-12 rounded-xl border-base-300/90 bg-base-100 px-4 text-[15px]"
+                  aria-label={t('accountPool.upstreamAccounts.statusFilterLabel')}
+                  onValueChange={handleStatusFilterChange}
+                />
                 <label className="field min-w-[15rem]">
                   <span className="field-label">{t('accountPool.upstreamAccounts.groupFilterLabel')}</span>
                   <UpstreamAccountGroupCombobox
@@ -1711,18 +1726,16 @@ export default function UpstreamAccountsPage() {
                 })}
               </div>
               <div className="flex flex-wrap items-center gap-3">
-                <label className="flex items-center gap-2 text-sm text-base-content/70">
-                  <span>{t('accountPool.upstreamAccounts.pagination.pageSize')}</span>
-                  <select
-                    value={pageSize}
-                    onChange={(event) => handlePageSizeChange(Number(event.target.value))}
-                    className="h-10 rounded-xl border border-base-300/90 bg-base-100 px-3 text-sm text-base-content outline-none transition focus:border-primary/70"
-                  >
-                    <option value={20}>20</option>
-                    <option value={50}>50</option>
-                    <option value={100}>100</option>
-                  </select>
-                </label>
+                <SelectField
+                  label={t('accountPool.upstreamAccounts.pagination.pageSize')}
+                  className="min-w-[8rem]"
+                  value={String(pageSize)}
+                  options={pageSizeOptions}
+                  size="sm"
+                  triggerClassName="h-10 rounded-xl border-base-300/90 bg-base-100 px-3 text-sm"
+                  aria-label={t('accountPool.upstreamAccounts.pagination.pageSize')}
+                  onValueChange={(value) => handlePageSizeChange(Number(value))}
+                />
                 <div className="flex items-center gap-2">
                   <Button
                     type="button"
@@ -2306,21 +2319,18 @@ export default function UpstreamAccountsPage() {
                       <CardTitle>{t('accountPool.upstreamAccounts.stickyConversations.title')}</CardTitle>
                       <CardDescription>{t('accountPool.upstreamAccounts.stickyConversations.description')}</CardDescription>
                     </div>
-                    <label className="field w-36">
-                      <span className="field-label">{t('accountPool.upstreamAccounts.stickyConversations.limitLabel')}</span>
-                      <select
-                        name="stickyConversationLimit"
-                        className="field-select field-select-sm"
-                        value={stickyConversationLimit}
-                        onChange={(event) => setStickyConversationLimit(Number(event.target.value))}
-                      >
-                        {STICKY_CONVERSATION_LIMIT_OPTIONS.map((value) => (
-                          <option key={value} value={value}>
-                            {t('accountPool.upstreamAccounts.stickyConversations.limitOption', { count: value })}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
+                    <SelectField
+                      label={t('accountPool.upstreamAccounts.stickyConversations.limitLabel')}
+                      className="w-36"
+                      name="stickyConversationLimit"
+                      size="sm"
+                      value={String(stickyConversationLimit)}
+                      options={STICKY_CONVERSATION_LIMIT_OPTIONS.map((value) => ({
+                        value: String(value),
+                        label: t('accountPool.upstreamAccounts.stickyConversations.limitOption', { count: value }),
+                      }))}
+                      onValueChange={(value) => setStickyConversationLimit(Number(value))}
+                    />
                   </CardHeader>
                   <CardContent>
                     <StickyKeyConversationTable

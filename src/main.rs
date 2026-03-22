@@ -168,6 +168,14 @@ const LEGACY_ENV_INVOCATION_MAX_DAYS: &str = "XY_INVOCATION_MAX_DAYS";
 const ENV_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS: &str = "FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS";
 const LEGACY_ENV_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS: &str =
     "XY_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS";
+const ENV_POOL_UPSTREAM_REQUEST_ATTEMPTS_RETENTION_DAYS: &str =
+    "POOL_UPSTREAM_REQUEST_ATTEMPTS_RETENTION_DAYS";
+const LEGACY_ENV_POOL_UPSTREAM_REQUEST_ATTEMPTS_RETENTION_DAYS: &str =
+    "XY_POOL_UPSTREAM_REQUEST_ATTEMPTS_RETENTION_DAYS";
+const ENV_POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_TTL_DAYS: &str =
+    "POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_TTL_DAYS";
+const LEGACY_ENV_POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_TTL_DAYS: &str =
+    "XY_POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_TTL_DAYS";
 const ENV_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS: &str = "STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS";
 const LEGACY_ENV_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS: &str =
     "XY_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS";
@@ -188,6 +196,8 @@ const DEFAULT_ORPHAN_SWEEP_MIN_AGE_SECS: u64 = 24 * 60 * 60;
 const DEFAULT_INVOCATION_SUCCESS_FULL_DAYS: u64 = 30;
 const DEFAULT_INVOCATION_MAX_DAYS: u64 = 90;
 const DEFAULT_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS: u64 = 30;
+const DEFAULT_POOL_UPSTREAM_REQUEST_ATTEMPTS_RETENTION_DAYS: u64 = 7;
+const DEFAULT_POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_TTL_DAYS: u64 = 30;
 const DEFAULT_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS: u64 = 30;
 const DEFAULT_QUOTA_SNAPSHOT_FULL_DAYS: u64 = 30;
 const ARCHIVE_STATUS_COMPLETED: &str = "completed";
@@ -207,6 +217,7 @@ const PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT: &str = "upstream_handshake_timeo
 const PROXY_FAILURE_UPSTREAM_STREAM_ERROR: &str = "upstream_stream_error";
 const PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED: &str = "upstream_response_failed";
 const PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT: &str = "pool_no_available_account";
+const PROXY_FAILURE_POOL_MAX_DISTINCT_ACCOUNTS_EXHAUSTED: &str = "max_distinct_accounts_exhausted";
 const PROXY_STREAM_TERMINAL_COMPLETED: &str = "stream_completed";
 const PROXY_STREAM_TERMINAL_ERROR: &str = "stream_error";
 const PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED: &str = "downstream_closed";
@@ -260,6 +271,7 @@ const FORWARD_PROXY_FAILURE_HANDSHAKE_TIMEOUT: &str = "handshake_timeout";
 const FORWARD_PROXY_FAILURE_STREAM_ERROR: &str = "stream_error";
 const FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429: &str = "upstream_http_429";
 const FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX: &str = "upstream_http_5xx";
+const PROXY_FAILURE_UPSTREAM_HTTP_AUTH: &str = "upstream_http_auth";
 const DEFAULT_XRAY_BINARY: &str = "xray";
 const DEFAULT_XRAY_RUNTIME_DIR: &str = ".codex/xray-forward";
 const XRAY_PROXY_READY_TIMEOUT_MS: u64 = 3_000;
@@ -328,6 +340,14 @@ const LEGACY_ENV_RENAMES: &[(&str, &str)] = &[
     (
         LEGACY_ENV_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS,
         ENV_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS,
+    ),
+    (
+        LEGACY_ENV_POOL_UPSTREAM_REQUEST_ATTEMPTS_RETENTION_DAYS,
+        ENV_POOL_UPSTREAM_REQUEST_ATTEMPTS_RETENTION_DAYS,
+    ),
+    (
+        LEGACY_ENV_POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_TTL_DAYS,
+        ENV_POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_TTL_DAYS,
     ),
     (
         LEGACY_ENV_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS,
@@ -2002,9 +2022,11 @@ struct RetentionRunSummary {
     invocation_details_pruned: usize,
     invocation_rows_archived: usize,
     forward_proxy_attempt_rows_archived: usize,
+    pool_upstream_request_attempt_rows_archived: usize,
     stats_source_snapshot_rows_archived: usize,
     quota_snapshot_rows_archived: usize,
     archive_batches_touched: usize,
+    archive_batches_deleted: usize,
     raw_files_removed: usize,
     orphan_raw_files_removed: usize,
 }
@@ -2016,8 +2038,10 @@ impl RetentionRunSummary {
             || self.invocation_details_pruned > 0
             || self.invocation_rows_archived > 0
             || self.forward_proxy_attempt_rows_archived > 0
+            || self.pool_upstream_request_attempt_rows_archived > 0
             || self.stats_source_snapshot_rows_archived > 0
             || self.quota_snapshot_rows_archived > 0
+            || self.archive_batches_deleted > 0
             || self.raw_files_removed > 0
             || self.orphan_raw_files_removed > 0
     }
@@ -2038,6 +2062,9 @@ struct ArchiveBatchOutcome {
     sha256: String,
     row_count: i64,
     upstream_last_activity: Vec<(i64, String)>,
+    coverage_start_at: Option<String>,
+    coverage_end_at: Option<String>,
+    archive_expires_at: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -2234,6 +2261,7 @@ struct DryRunBatchCount {
 const CODEX_INVOCATIONS_ARCHIVE_COLUMNS: &str = "id, invoke_id, occurred_at, source, model, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens, cost, status, error_message, failure_kind, failure_class, is_actionable, payload, raw_response, cost_estimated, price_version, request_raw_path, request_raw_size, request_raw_truncated, request_raw_truncated_reason, response_raw_path, response_raw_size, response_raw_truncated, response_raw_truncated_reason, detail_level, detail_pruned_at, detail_prune_reason, t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, created_at";
 const FORWARD_PROXY_ATTEMPTS_ARCHIVE_COLUMNS: &str =
     "id, proxy_key, occurred_at, is_success, latency_ms, failure_kind, is_probe";
+const POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_COLUMNS: &str = "id, invoke_id, occurred_at, endpoint, route_mode, sticky_key, upstream_account_id, attempt_index, distinct_account_index, same_account_retry_index, requester_ip, started_at, finished_at, status, http_status, failure_kind, error_message, connect_latency_ms, first_byte_latency_ms, stream_latency_ms, upstream_request_id, created_at";
 const STATS_SOURCE_SNAPSHOTS_ARCHIVE_COLUMNS: &str = "id, source, period, stats_date, model, requests, input_tokens, output_tokens, cache_create_tokens, cache_read_tokens, all_tokens, cost_input, cost_output, cost_cache_write, cost_cache_read, cost_total, raw_response, captured_at, captured_at_epoch, created_at";
 const CODEX_QUOTA_SNAPSHOTS_ARCHIVE_COLUMNS: &str = "id, captured_at, amount_limit, used_amount, remaining_amount, period, period_reset_time, expire_time, is_active, total_cost, total_requests, total_tokens, last_request_time, billing_type, remaining_count, used_count, sub_type_name";
 
@@ -2292,6 +2320,33 @@ CREATE TABLE IF NOT EXISTS archive_db.forward_proxy_attempts (
     latency_ms REAL,
     failure_kind TEXT,
     is_probe INTEGER NOT NULL DEFAULT 0
+)
+"#;
+
+const POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_CREATE_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS archive_db.pool_upstream_request_attempts (
+    id INTEGER PRIMARY KEY,
+    invoke_id TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    endpoint TEXT NOT NULL,
+    route_mode TEXT NOT NULL,
+    sticky_key TEXT,
+    upstream_account_id INTEGER,
+    attempt_index INTEGER NOT NULL,
+    distinct_account_index INTEGER NOT NULL,
+    same_account_retry_index INTEGER NOT NULL,
+    requester_ip TEXT,
+    started_at TEXT,
+    finished_at TEXT,
+    status TEXT NOT NULL,
+    http_status INTEGER,
+    failure_kind TEXT,
+    error_message TEXT,
+    connect_latency_ms REAL,
+    first_byte_latency_ms REAL,
+    stream_latency_ms REAL,
+    upstream_request_id TEXT,
+    created_at TEXT NOT NULL
 )
 "#;
 
@@ -2354,6 +2409,11 @@ fn archive_table_spec(dataset: &'static str) -> ArchiveTableSpec {
             dataset,
             columns: FORWARD_PROXY_ATTEMPTS_ARCHIVE_COLUMNS,
             create_sql: FORWARD_PROXY_ATTEMPTS_ARCHIVE_CREATE_SQL,
+        },
+        "pool_upstream_request_attempts" => ArchiveTableSpec {
+            dataset,
+            columns: POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_COLUMNS,
+            create_sql: POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_CREATE_SQL,
         },
         "stats_source_snapshots" => ArchiveTableSpec {
             dataset,
@@ -2493,6 +2553,22 @@ async fn run_data_retention_maintenance(
         return Ok(summary);
     }
 
+    let pool_attempt_archive = archive_timestamped_dataset(
+        pool,
+        config,
+        archive_table_spec("pool_upstream_request_attempts"),
+        "SELECT id, occurred_at AS timestamp_value FROM pool_upstream_request_attempts WHERE occurred_at < ?1 ORDER BY occurred_at ASC, id ASC LIMIT ?2",
+        shanghai_local_cutoff_string(config.pool_upstream_request_attempts_retention_days),
+        dry_run,
+    )
+    .await?;
+    summary.pool_upstream_request_attempt_rows_archived += pool_attempt_archive.0;
+    summary.archive_batches_touched += pool_attempt_archive.1;
+
+    if should_stop_data_retention_maintenance(shutdown) {
+        return Ok(summary);
+    }
+
     let snapshot_archive = archive_timestamped_dataset(
         pool,
         config,
@@ -2519,6 +2595,13 @@ async fn run_data_retention_maintenance(
 
     summary.orphan_raw_files_removed +=
         sweep_orphan_proxy_raw_files(pool, config, raw_path_fallback_root, dry_run).await?;
+
+    if should_stop_data_retention_maintenance(shutdown) {
+        return Ok(summary);
+    }
+
+    let archive_ttl_cleanup = cleanup_expired_archive_batches(pool, config, dry_run).await?;
+    summary.archive_batches_deleted += archive_ttl_cleanup;
 
     if should_stop_data_retention_maintenance(shutdown) {
         return Ok(summary);
@@ -3038,8 +3121,13 @@ async fn prune_old_invocation_details(
                 .iter()
                 .map(|candidate| candidate.id)
                 .collect::<Vec<_>>();
-            let archive_outcome =
+            let mut archive_outcome =
                 archive_rows_into_month_batch(pool, config, spec, &month_key, &ids).await?;
+            set_archive_batch_coverage_from_local_rows(
+                &mut archive_outcome,
+                group.iter().map(|candidate| candidate.occurred_at.as_str()),
+                None,
+            )?;
             let pruned_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
             let mut tx = pool.begin().await?;
             upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
@@ -3184,8 +3272,13 @@ async fn archive_old_invocations(
                 .iter()
                 .map(|candidate| candidate.id)
                 .collect::<Vec<_>>();
-            let archive_outcome =
+            let mut archive_outcome =
                 archive_rows_into_month_batch(pool, config, spec, &month_key, &ids).await?;
+            set_archive_batch_coverage_from_local_rows(
+                &mut archive_outcome,
+                group.iter().map(|candidate| candidate.occurred_at.as_str()),
+                None,
+            )?;
             let mut tx = pool.begin().await?;
             upsert_invocation_rollups(tx.as_mut(), &group).await?;
             upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
@@ -3219,6 +3312,16 @@ async fn archive_timestamped_dataset(
                 SELECT strftime('%Y-%m', datetime(occurred_at, '+8 hours')) AS month_key,
                        COUNT(*) AS row_count
                 FROM forward_proxy_attempts
+                WHERE occurred_at < ?1
+                GROUP BY 1
+                ORDER BY 1
+                "#
+            }
+            "pool_upstream_request_attempts" => {
+                r#"
+                SELECT strftime('%Y-%m', occurred_at) AS month_key,
+                       COUNT(*) AS row_count
+                FROM pool_upstream_request_attempts
                 WHERE occurred_at < ?1
                 GROUP BY 1
                 ORDER BY 1
@@ -3273,7 +3376,8 @@ async fn archive_timestamped_dataset(
 
         let mut by_month: BTreeMap<String, Vec<TimestampedArchiveCandidate>> = BTreeMap::new();
         for candidate in candidates {
-            let month_key = shanghai_month_key_from_utc_naive(&candidate.timestamp_value)?;
+            let month_key =
+                archive_timestamped_dataset_month_key(spec.dataset, &candidate.timestamp_value)?;
             by_month.entry(month_key).or_default().push(candidate);
         }
 
@@ -3284,8 +3388,24 @@ async fn archive_timestamped_dataset(
                 .iter()
                 .map(|candidate| candidate.id)
                 .collect::<Vec<_>>();
-            let archive_outcome =
+            let mut archive_outcome =
                 archive_rows_into_month_batch(pool, config, spec, &month_key, &ids).await?;
+            if spec.dataset == "pool_upstream_request_attempts" {
+                set_archive_batch_coverage_from_local_rows(
+                    &mut archive_outcome,
+                    group
+                        .iter()
+                        .map(|candidate| candidate.timestamp_value.as_str()),
+                    Some(config.pool_upstream_request_attempts_archive_ttl_days),
+                )?;
+            } else {
+                set_archive_batch_coverage_from_utc_rows(
+                    &mut archive_outcome,
+                    group
+                        .iter()
+                        .map(|candidate| candidate.timestamp_value.as_str()),
+                )?;
+            }
             let mut tx = pool.begin().await?;
             upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
             mark_retention_archived_hourly_rollup_targets_tx(
@@ -3300,6 +3420,135 @@ async fn archive_timestamped_dataset(
     }
 
     Ok((rows_archived, archive_batches))
+}
+
+fn archive_timestamped_dataset_month_key(dataset: &str, timestamp_value: &str) -> Result<String> {
+    match dataset {
+        "pool_upstream_request_attempts" => shanghai_month_key_from_local_naive(timestamp_value),
+        _ => shanghai_month_key_from_utc_naive(timestamp_value),
+    }
+}
+
+fn set_archive_batch_coverage_from_local_rows<'a>(
+    batch: &mut ArchiveBatchOutcome,
+    rows: impl Iterator<Item = &'a str>,
+    archive_ttl_days: Option<u64>,
+) -> Result<()> {
+    let values = rows.collect::<Vec<_>>();
+    if values.is_empty() {
+        return Ok(());
+    }
+    let mut sorted = values.into_iter().map(str::to_string).collect::<Vec<_>>();
+    sorted.sort();
+    batch.coverage_start_at = sorted.first().cloned();
+    batch.coverage_end_at = sorted.last().cloned();
+    batch.archive_expires_at = match (batch.coverage_end_at.as_deref(), archive_ttl_days) {
+        (Some(coverage_end_at), Some(ttl_days)) => Some(
+            shanghai_archive_expiry_from_local_timestamp(coverage_end_at, ttl_days)?,
+        ),
+        _ => None,
+    };
+    Ok(())
+}
+
+fn set_archive_batch_coverage_from_utc_rows<'a>(
+    batch: &mut ArchiveBatchOutcome,
+    rows: impl Iterator<Item = &'a str>,
+) -> Result<()> {
+    let values = rows.collect::<Vec<_>>();
+    if values.is_empty() {
+        return Ok(());
+    }
+    let mut sorted = values.into_iter().map(str::to_string).collect::<Vec<_>>();
+    sorted.sort();
+    batch.coverage_start_at = sorted.first().cloned();
+    batch.coverage_end_at = sorted.last().cloned();
+    batch.archive_expires_at = None;
+    Ok(())
+}
+
+fn shanghai_archive_expiry_from_local_timestamp(
+    value: &str,
+    archive_ttl_days: u64,
+) -> Result<String> {
+    let local = parse_shanghai_local_naive(value)?;
+    let expiry = start_of_local_day(local_naive_to_utc(local, Shanghai), Shanghai)
+        + ChronoDuration::days(archive_ttl_days as i64 + 1);
+    Ok(format_naive(expiry.with_timezone(&Shanghai).naive_local()))
+}
+
+#[derive(Debug, FromRow)]
+struct ArchiveBatchCleanupCandidate {
+    id: i64,
+    dataset: String,
+    file_path: String,
+}
+
+async fn cleanup_expired_archive_batches(
+    pool: &Pool<Sqlite>,
+    _config: &AppConfig,
+    dry_run: bool,
+) -> Result<usize> {
+    let cutoff = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    let candidates = sqlx::query_as::<_, ArchiveBatchCleanupCandidate>(
+        r#"
+        SELECT id, dataset, file_path
+        FROM archive_batches
+        WHERE status = ?1
+          AND archive_expires_at IS NOT NULL
+          AND archive_expires_at < ?2
+        ORDER BY archive_expires_at ASC, id ASC
+        "#,
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&cutoff)
+    .fetch_all(pool)
+    .await?;
+
+    if dry_run {
+        for candidate in &candidates {
+            info!(
+                dataset = candidate.dataset,
+                file_path = candidate.file_path,
+                "retention dry-run planned archive batch cleanup"
+            );
+        }
+        return Ok(candidates.len());
+    }
+
+    let mut deleted = 0usize;
+    for candidate in candidates {
+        match fs::remove_file(&candidate.file_path) {
+            Ok(_) => {}
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => {
+                warn!(
+                    dataset = candidate.dataset,
+                    file_path = candidate.file_path,
+                    error = %err,
+                    "failed to remove expired archive batch file; keeping manifest"
+                );
+                continue;
+            }
+        }
+
+        let mut tx = pool.begin().await?;
+        sqlx::query("DELETE FROM archive_batches WHERE id = ?1")
+            .bind(candidate.id)
+            .execute(tx.as_mut())
+            .await?;
+        sqlx::query(
+            "DELETE FROM hourly_rollup_archive_replay WHERE dataset = ?1 AND file_path = ?2",
+        )
+        .bind(&candidate.dataset)
+        .bind(&candidate.file_path)
+        .execute(tx.as_mut())
+        .await?;
+        tx.commit().await?;
+        deleted += 1;
+    }
+
+    Ok(deleted)
 }
 
 async fn compact_old_quota_snapshots(
@@ -3397,8 +3646,14 @@ async fn compact_old_quota_snapshots(
                 .iter()
                 .map(|candidate| candidate.id)
                 .collect::<Vec<_>>();
-            let archive_outcome =
+            let mut archive_outcome =
                 archive_rows_into_month_batch(pool, config, spec, &month_key, &ids).await?;
+            set_archive_batch_coverage_from_utc_rows(
+                &mut archive_outcome,
+                group
+                    .iter()
+                    .map(|candidate| candidate.timestamp_value.as_str()),
+            )?;
             let mut tx = pool.begin().await?;
             upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
             delete_rows_by_ids(tx.as_mut(), spec.dataset, &ids).await?;
@@ -3809,6 +4064,9 @@ async fn archive_rows_into_month_batch(
         sha256,
         row_count: result,
         upstream_last_activity,
+        coverage_start_at: None,
+        coverage_end_at: None,
+        archive_expires_at: None,
     })
 }
 
@@ -3848,13 +4106,19 @@ async fn upsert_archive_batch_manifest(
             sha256,
             row_count,
             status,
+            coverage_start_at,
+            coverage_end_at,
+            archive_expires_at,
             created_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'))
         ON CONFLICT(dataset, month_key, file_path) DO UPDATE SET
             sha256 = excluded.sha256,
             row_count = excluded.row_count,
             status = excluded.status,
+            coverage_start_at = excluded.coverage_start_at,
+            coverage_end_at = excluded.coverage_end_at,
+            archive_expires_at = excluded.archive_expires_at,
             created_at = datetime('now')
         "#,
     )
@@ -3864,6 +4128,9 @@ async fn upsert_archive_batch_manifest(
     .bind(&batch.sha256)
     .bind(batch.row_count)
     .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(batch.coverage_start_at.as_deref())
+    .bind(batch.coverage_end_at.as_deref())
+    .bind(batch.archive_expires_at.as_deref())
     .execute(&mut *tx)
     .await?;
     if batch.dataset == "codex_invocations" && !batch.upstream_last_activity.is_empty() {
@@ -5434,6 +5701,10 @@ async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHand
         )
         .route("/api/settings/pricing", put(put_pricing_settings))
         .route("/api/invocations", get(list_invocations))
+        .route(
+            "/api/invocations/:invoke_id/pool-attempts",
+            get(fetch_invocation_pool_attempts),
+        )
         .route("/api/invocations/summary", get(fetch_invocation_summary))
         .route(
             "/api/invocations/suggestions",
@@ -6622,6 +6893,9 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             sha256 TEXT NOT NULL,
             row_count INTEGER NOT NULL,
             status TEXT NOT NULL,
+            coverage_start_at TEXT,
+            coverage_end_at TEXT,
+            archive_expires_at TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now')),
             UNIQUE(dataset, month_key, file_path)
         )
@@ -6630,6 +6904,21 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure archive_batches table existence")?;
+
+    let archive_batch_columns = load_sqlite_table_columns(pool, "archive_batches").await?;
+    for (column, ty) in [
+        ("coverage_start_at", "TEXT"),
+        ("coverage_end_at", "TEXT"),
+        ("archive_expires_at", "TEXT"),
+    ] {
+        if !archive_batch_columns.contains(column) {
+            let statement = format!("ALTER TABLE archive_batches ADD COLUMN {column} {ty}");
+            sqlx::query(&statement)
+                .execute(pool)
+                .await
+                .with_context(|| format!("failed to add archive_batches column {column}"))?;
+        }
+    }
 
     sqlx::query(
         r#"
@@ -7116,6 +7405,38 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     sqlx::query(
         r#"
+        CREATE TABLE IF NOT EXISTS pool_upstream_request_attempts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            invoke_id TEXT NOT NULL,
+            occurred_at TEXT NOT NULL,
+            endpoint TEXT NOT NULL,
+            route_mode TEXT NOT NULL,
+            sticky_key TEXT,
+            upstream_account_id INTEGER,
+            attempt_index INTEGER NOT NULL,
+            distinct_account_index INTEGER NOT NULL,
+            same_account_retry_index INTEGER NOT NULL,
+            requester_ip TEXT,
+            started_at TEXT,
+            finished_at TEXT,
+            status TEXT NOT NULL,
+            http_status INTEGER,
+            failure_kind TEXT,
+            error_message TEXT,
+            connect_latency_ms REAL,
+            first_byte_latency_ms REAL,
+            stream_latency_ms REAL,
+            upstream_request_id TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure pool_upstream_request_attempts table existence")?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS forward_proxy_weight_hourly (
             proxy_key TEXT NOT NULL,
             bucket_start_epoch INTEGER NOT NULL,
@@ -7173,6 +7494,46 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_forward_proxy_attempts_time_proxy")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_upstream_request_attempts_invoke_attempt
+        ON pool_upstream_request_attempts (invoke_id, attempt_index)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_pool_upstream_request_attempts_invoke_attempt")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_upstream_request_attempts_account_occurred_at
+        ON pool_upstream_request_attempts (upstream_account_id, occurred_at)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_pool_upstream_request_attempts_account_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_upstream_request_attempts_sticky_occurred_at
+        ON pool_upstream_request_attempts (sticky_key, occurred_at)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_pool_upstream_request_attempts_sticky_occurred_at")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_upstream_request_attempts_occurred_at
+        ON pool_upstream_request_attempts (occurred_at)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_pool_upstream_request_attempts_occurred_at")?;
 
     sqlx::query(
         r#"
@@ -8174,6 +8535,8 @@ pub(crate) struct PoolUpstreamResponse {
     pub(crate) connect_latency_ms: f64,
     pub(crate) first_byte_latency_ms: f64,
     pub(crate) first_chunk: Option<Bytes>,
+    pub(crate) pending_attempt_record: Option<PendingPoolAttemptRecord>,
+    pub(crate) attempt_summary: PoolAttemptSummary,
 }
 
 #[derive(Debug)]
@@ -8187,7 +8550,58 @@ pub(crate) struct PoolUpstreamError {
     pub(crate) upstream_error_message: Option<String>,
     pub(crate) upstream_request_id: Option<String>,
     pub(crate) oauth_responses_debug: Option<oauth_bridge::OauthResponsesDebugInfo>,
+    pub(crate) attempt_summary: PoolAttemptSummary,
 }
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct PoolAttemptSummary {
+    pub(crate) pool_attempt_count: usize,
+    pub(crate) pool_distinct_account_count: usize,
+    pub(crate) pool_attempt_terminal_reason: Option<String>,
+}
+
+fn pool_attempt_summary(
+    pool_attempt_count: usize,
+    pool_distinct_account_count: usize,
+    pool_attempt_terminal_reason: Option<String>,
+) -> PoolAttemptSummary {
+    PoolAttemptSummary {
+        pool_attempt_count,
+        pool_distinct_account_count,
+        pool_attempt_terminal_reason,
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PendingPoolAttemptRecord {
+    pub(crate) invoke_id: String,
+    pub(crate) occurred_at: String,
+    pub(crate) endpoint: String,
+    pub(crate) sticky_key: Option<String>,
+    pub(crate) requester_ip: Option<String>,
+    pub(crate) upstream_account_id: i64,
+    pub(crate) attempt_index: i64,
+    pub(crate) distinct_account_index: i64,
+    pub(crate) same_account_retry_index: i64,
+    pub(crate) started_at: String,
+    pub(crate) connect_latency_ms: f64,
+    pub(crate) first_byte_latency_ms: f64,
+}
+
+#[derive(Debug, Clone)]
+struct PoolUpstreamAttemptTraceContext {
+    invoke_id: String,
+    occurred_at: String,
+    endpoint: String,
+    sticky_key: Option<String>,
+    requester_ip: Option<String>,
+}
+
+const POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS: &str = "success";
+const POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE: &str = "http_failure";
+const POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE: &str = "transport_failure";
+const POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL: &str = "budget_exhausted_final";
+const POOL_UPSTREAM_MAX_DISTINCT_ACCOUNTS: usize = 3;
 
 #[derive(Debug)]
 struct PoolReplayTempFile {
@@ -8268,6 +8682,18 @@ fn proxy_capture_response_failure_kind(
         Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
     } else {
         proxy_forward_response_failure_kind(status, stream_error)
+    }
+}
+
+fn pool_route_http_failure_kind(status: StatusCode) -> &'static str {
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429
+    } else if status.is_server_error() {
+        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX
+    } else if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
+        PROXY_FAILURE_UPSTREAM_HTTP_AUTH
+    } else {
+        PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT
     }
 }
 
@@ -8531,6 +8957,7 @@ async fn send_pool_request_with_failover(
     headers: &HeaderMap,
     body: Option<PoolReplayBodySnapshot>,
     handshake_timeout: Duration,
+    trace_context: Option<PoolUpstreamAttemptTraceContext>,
     sticky_key: Option<&str>,
     preferred_account: Option<PoolResolvedAccount>,
     same_account_attempts: u8,
@@ -8542,8 +8969,64 @@ async fn send_pool_request_with_failover(
     let mut last_error: Option<PoolUpstreamError> = None;
     let mut preferred_account = preferred_account;
     let mut same_account_attempts = same_account_attempts.max(1);
+    let mut attempt_count = 0usize;
+    let mut distinct_account_count = 0usize;
 
     'account_loop: loop {
+        if preferred_account.is_none() && excluded_ids.len() >= POOL_UPSTREAM_MAX_DISTINCT_ACCOUNTS
+        {
+            let mut final_error = last_error.unwrap_or(PoolUpstreamError {
+                account: None,
+                status: StatusCode::BAD_GATEWAY,
+                message: "pool distinct-account retry budget exhausted".to_string(),
+                failure_kind: PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT,
+                connect_latency_ms: 0.0,
+                upstream_error_code: None,
+                upstream_error_message: None,
+                upstream_request_id: None,
+                oauth_responses_debug: None,
+                attempt_summary: PoolAttemptSummary::default(),
+            });
+            final_error.attempt_summary = pool_attempt_summary(
+                attempt_count,
+                distinct_account_count,
+                Some(PROXY_FAILURE_POOL_MAX_DISTINCT_ACCOUNTS_EXHAUSTED.to_string()),
+            );
+            if let Some(trace) = trace_context.as_ref() {
+                let finished_at = shanghai_now_string();
+                if let Err(err) = insert_pool_upstream_request_attempt(
+                    &state.pool,
+                    trace,
+                    final_error
+                        .account
+                        .as_ref()
+                        .map(|account| account.account_id),
+                    (attempt_count + 1) as i64,
+                    distinct_account_count as i64,
+                    0,
+                    Some(finished_at.as_str()),
+                    Some(finished_at.as_str()),
+                    POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL,
+                    Some(final_error.status),
+                    Some(PROXY_FAILURE_POOL_MAX_DISTINCT_ACCOUNTS_EXHAUSTED),
+                    Some(final_error.message.as_str()),
+                    None,
+                    None,
+                    None,
+                    final_error.upstream_request_id.as_deref(),
+                )
+                .await
+                {
+                    warn!(
+                        invoke_id = trace.invoke_id,
+                        error = %err,
+                        "failed to persist pool budget exhaustion attempt"
+                    );
+                }
+            }
+            return Err(final_error);
+        }
+
         let account = if let Some(account) = preferred_account.take() {
             account
         } else {
@@ -8551,7 +9034,7 @@ async fn send_pool_request_with_failover(
             {
                 Ok(PoolAccountResolution::Resolved(account)) => account,
                 Ok(PoolAccountResolution::NoCandidate) => {
-                    return Err(last_error.unwrap_or(PoolUpstreamError {
+                    let mut err = last_error.unwrap_or(PoolUpstreamError {
                         account: None,
                         status: StatusCode::BAD_GATEWAY,
                         message: "no healthy pool account is available".to_string(),
@@ -8561,7 +9044,14 @@ async fn send_pool_request_with_failover(
                         upstream_error_message: None,
                         upstream_request_id: None,
                         oauth_responses_debug: None,
-                    }));
+                        attempt_summary: PoolAttemptSummary::default(),
+                    });
+                    err.attempt_summary = pool_attempt_summary(
+                        attempt_count,
+                        distinct_account_count,
+                        Some(err.failure_kind.to_string()),
+                    );
+                    return Err(err);
                 }
                 Ok(PoolAccountResolution::BlockedByPolicy(message)) => {
                     return Err(PoolUpstreamError {
@@ -8574,6 +9064,11 @@ async fn send_pool_request_with_failover(
                         upstream_error_message: None,
                         upstream_request_id: None,
                         oauth_responses_debug: None,
+                        attempt_summary: pool_attempt_summary(
+                            attempt_count,
+                            distinct_account_count,
+                            Some(PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT.to_string()),
+                        ),
                     });
                 }
                 Err(err) => {
@@ -8587,12 +9082,19 @@ async fn send_pool_request_with_failover(
                         upstream_error_message: None,
                         upstream_request_id: None,
                         oauth_responses_debug: None,
+                        attempt_summary: pool_attempt_summary(
+                            attempt_count,
+                            distinct_account_count,
+                            Some(PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT.to_string()),
+                        ),
                     });
                 }
             }
         };
 
         excluded_ids.push(account.account_id);
+        distinct_account_count = excluded_ids.len();
+        let distinct_account_index = distinct_account_count as i64;
         let api_key_target_url = match &account.auth {
             PoolResolvedAuth::ApiKey { .. } => {
                 match build_proxy_upstream_url(&account.upstream_base_url, original_uri) {
@@ -8608,6 +9110,11 @@ async fn send_pool_request_with_failover(
                             upstream_error_message: None,
                             upstream_request_id: None,
                             oauth_responses_debug: None,
+                            attempt_summary: pool_attempt_summary(
+                                attempt_count,
+                                distinct_account_count,
+                                Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM.to_string()),
+                            ),
                         });
                     }
                 }
@@ -8617,9 +9124,15 @@ async fn send_pool_request_with_failover(
         let client = state.http_clients.client_for_pool_upstream();
 
         for same_account_attempt in 0..same_account_attempts {
+            let same_account_retry_index = i64::from(same_account_attempt) + 1;
             let connect_started = Instant::now();
+            let mut attempt_started_at: Option<String> = None;
+            let mut attempt_index = 0_i64;
             let (response, oauth_responses_debug) = match &account.auth {
                 PoolResolvedAuth::ApiKey { authorization } => {
+                    attempt_count += 1;
+                    attempt_index = attempt_count as i64;
+                    attempt_started_at = Some(shanghai_now_string());
                     let mut request = client.request(
                         method.clone(),
                         api_key_target_url
@@ -8652,6 +9165,34 @@ async fn send_pool_request_with_failover(
                         Ok(Ok(response)) => (ProxyUpstreamResponseBody::Reqwest(response), None),
                         Ok(Err(err)) => {
                             let message = format!("failed to contact upstream: {err}");
+                            let finished_at = shanghai_now_string();
+                            if let Some(trace) = trace_context.as_ref()
+                                && let Err(record_err) = insert_pool_upstream_request_attempt(
+                                    &state.pool,
+                                    trace,
+                                    Some(account.account_id),
+                                    attempt_index,
+                                    distinct_account_index,
+                                    same_account_retry_index,
+                                    attempt_started_at.as_deref(),
+                                    Some(finished_at.as_str()),
+                                    POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+                                    None,
+                                    Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM),
+                                    Some(message.as_str()),
+                                    Some(elapsed_ms(connect_started)),
+                                    None,
+                                    None,
+                                    None,
+                                )
+                                .await
+                            {
+                                warn!(
+                                    invoke_id = trace.invoke_id,
+                                    error = %record_err,
+                                    "failed to persist pool transport attempt"
+                                );
+                            }
                             let has_retry_budget = same_account_attempt + 1 < same_account_attempts;
                             if has_retry_budget {
                                 let retry_delay = fallback_proxy_429_retry_delay(
@@ -8687,12 +9228,8 @@ async fn send_pool_request_with_failover(
                                 upstream_error_message: None,
                                 upstream_request_id: None,
                                 oauth_responses_debug: None,
+                                attempt_summary: PoolAttemptSummary::default(),
                             });
-                            if excluded_ids.len() >= 64 {
-                                return Err(
-                                    last_error.expect("pool transport failure should be recorded")
-                                );
-                            }
                             continue 'account_loop;
                         }
                         Err(_) => {
@@ -8700,6 +9237,34 @@ async fn send_pool_request_with_failover(
                                 "{PROXY_UPSTREAM_HANDSHAKE_TIMEOUT} after {}ms",
                                 handshake_timeout.as_millis()
                             );
+                            let finished_at = shanghai_now_string();
+                            if let Some(trace) = trace_context.as_ref()
+                                && let Err(record_err) = insert_pool_upstream_request_attempt(
+                                    &state.pool,
+                                    trace,
+                                    Some(account.account_id),
+                                    attempt_index,
+                                    distinct_account_index,
+                                    same_account_retry_index,
+                                    attempt_started_at.as_deref(),
+                                    Some(finished_at.as_str()),
+                                    POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+                                    None,
+                                    Some(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT),
+                                    Some(message.as_str()),
+                                    Some(elapsed_ms(connect_started)),
+                                    None,
+                                    None,
+                                    None,
+                                )
+                                .await
+                            {
+                                warn!(
+                                    invoke_id = trace.invoke_id,
+                                    error = %record_err,
+                                    "failed to persist pool handshake timeout attempt"
+                                );
+                            }
                             let has_retry_budget = same_account_attempt + 1 < same_account_attempts;
                             if has_retry_budget {
                                 let retry_delay = fallback_proxy_429_retry_delay(
@@ -8735,12 +9300,8 @@ async fn send_pool_request_with_failover(
                                 upstream_error_message: None,
                                 upstream_request_id: None,
                                 oauth_responses_debug: None,
+                                attempt_summary: PoolAttemptSummary::default(),
                             });
-                            if excluded_ids.len() >= 64 {
-                                return Err(
-                                    last_error.expect("pool handshake failure should be recorded")
-                                );
-                            }
                             continue 'account_loop;
                         }
                     }
@@ -8767,11 +9328,12 @@ async fn send_pool_request_with_failover(
                                 upstream_error_message: None,
                                 upstream_request_id: None,
                                 oauth_responses_debug: None,
+                                attempt_summary: pool_attempt_summary(
+                                    attempt_count,
+                                    distinct_account_count,
+                                    Some(PROXY_FAILURE_BODY_TOO_LARGE.to_string()),
+                                ),
                             });
-                            if excluded_ids.len() >= 64 {
-                                return Err(last_error
-                                    .expect("pool oversized oauth body failure should exist"));
-                            }
                             continue 'account_loop;
                         }
                         Some(snapshot) if original_uri.path() == "/v1/responses" => {
@@ -8786,6 +9348,11 @@ async fn send_pool_request_with_failover(
                                     upstream_error_message: None,
                                     upstream_request_id: None,
                                     oauth_responses_debug: None,
+                                    attempt_summary: pool_attempt_summary(
+                                        attempt_count,
+                                        distinct_account_count,
+                                        Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM.to_string()),
+                                    ),
                                 })?,
                             )
                         }
@@ -8808,12 +9375,20 @@ async fn send_pool_request_with_failover(
                                         upstream_error_message: None,
                                         upstream_request_id: None,
                                         oauth_responses_debug: None,
+                                        attempt_summary: pool_attempt_summary(
+                                            attempt_count,
+                                            distinct_account_count,
+                                            Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM.to_string()),
+                                        ),
                                     })?,
                             ),
                             body: snapshot.to_reqwest_body(),
                         },
                         None => oauth_bridge::OauthUpstreamRequestBody::Empty,
                     };
+                    attempt_count += 1;
+                    attempt_index = attempt_count as i64;
+                    attempt_started_at = Some(shanghai_now_string());
                     if let Err(route_err) =
                         record_account_selected(&state.pool, account.account_id).await
                     {
@@ -8855,25 +9430,15 @@ async fn send_pool_request_with_failover(
                 let has_retry_budget = same_account_attempt + 1 < same_account_attempts;
                 let should_retry_same_account = has_retry_budget
                     && (status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error());
-                if should_retry_same_account {
-                    let retry_delay = response
+                let retry_delay = should_retry_same_account.then(|| {
+                    response
                         .headers()
                         .get(header::RETRY_AFTER)
                         .and_then(parse_retry_after_delay)
                         .unwrap_or_else(|| {
                             fallback_proxy_429_retry_delay(u32::from(same_account_attempt) + 1)
-                        });
-                    info!(
-                        account_id = account.account_id,
-                        status = status.as_u16(),
-                        retry_index = same_account_attempt + 1,
-                        max_same_account_attempts = same_account_attempts,
-                        retry_after_ms = retry_delay.as_millis(),
-                        "pool upstream responded with retryable status; retrying same account"
-                    );
-                    sleep(retry_delay).await;
-                    continue;
-                }
+                        })
+                });
                 let upstream_request_id_header = response
                     .headers()
                     .get("x-request-id")
@@ -8908,6 +9473,46 @@ async fn send_pool_request_with_failover(
                 let route_error_message = upstream_error_code
                     .as_deref()
                     .map_or_else(|| message.clone(), |code| format!("{code}: {message}"));
+                let finished_at = shanghai_now_string();
+                if let Some(trace) = trace_context.as_ref()
+                    && let Err(record_err) = insert_pool_upstream_request_attempt(
+                        &state.pool,
+                        trace,
+                        Some(account.account_id),
+                        attempt_index,
+                        distinct_account_index,
+                        same_account_retry_index,
+                        attempt_started_at.as_deref(),
+                        Some(finished_at.as_str()),
+                        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
+                        Some(status),
+                        Some(pool_route_http_failure_kind(status)),
+                        Some(message.as_str()),
+                        Some(connect_latency_ms),
+                        None,
+                        None,
+                        upstream_request_id.as_deref(),
+                    )
+                    .await
+                {
+                    warn!(
+                        invoke_id = trace.invoke_id,
+                        error = %record_err,
+                        "failed to persist pool http failure attempt"
+                    );
+                }
+                if let Some(retry_delay) = retry_delay {
+                    info!(
+                        account_id = account.account_id,
+                        status = status.as_u16(),
+                        retry_index = same_account_attempt + 1,
+                        max_same_account_attempts = same_account_attempts,
+                        retry_after_ms = retry_delay.as_millis(),
+                        "pool upstream responded with retryable status; retrying same account"
+                    );
+                    sleep(retry_delay).await;
+                    continue;
+                }
                 if let Err(route_err) = record_pool_route_http_failure(
                     &state.pool,
                     account.account_id,
@@ -8920,13 +9525,7 @@ async fn send_pool_request_with_failover(
                 {
                     warn!(account_id = account.account_id, error = %route_err, "failed to record pool upstream http failure");
                 }
-                let failure_kind = if status == StatusCode::TOO_MANY_REQUESTS {
-                    FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429
-                } else if status.is_server_error() {
-                    FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX
-                } else {
-                    PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT
-                };
+                let failure_kind = pool_route_http_failure_kind(status);
                 last_error = Some(PoolUpstreamError {
                     account: Some(account.clone()),
                     status,
@@ -8937,10 +9536,8 @@ async fn send_pool_request_with_failover(
                     upstream_error_message,
                     upstream_request_id,
                     oauth_responses_debug: oauth_responses_debug.clone(),
+                    attempt_summary: PoolAttemptSummary::default(),
                 });
-                if excluded_ids.len() >= 64 {
-                    return Err(last_error.expect("pool http failure should be recorded"));
-                }
                 continue 'account_loop;
             }
 
@@ -8955,6 +9552,34 @@ async fn send_pool_request_with_failover(
                 Ok(value) => value,
                 Err(err) => {
                     let message = format!("upstream stream error before first chunk: {err}");
+                    let finished_at = shanghai_now_string();
+                    if let Some(trace) = trace_context.as_ref()
+                        && let Err(record_err) = insert_pool_upstream_request_attempt(
+                            &state.pool,
+                            trace,
+                            Some(account.account_id),
+                            attempt_index,
+                            distinct_account_index,
+                            same_account_retry_index,
+                            attempt_started_at.as_deref(),
+                            Some(finished_at.as_str()),
+                            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+                            None,
+                            Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
+                            Some(message.as_str()),
+                            Some(connect_latency_ms),
+                            None,
+                            None,
+                            None,
+                        )
+                        .await
+                    {
+                        warn!(
+                            invoke_id = trace.invoke_id,
+                            error = %record_err,
+                            "failed to persist pool first-chunk transport attempt"
+                        );
+                    }
                     let has_retry_budget = same_account_attempt + 1 < same_account_attempts;
                     if has_retry_budget {
                         let retry_delay =
@@ -8989,12 +9614,8 @@ async fn send_pool_request_with_failover(
                         upstream_error_message: None,
                         upstream_request_id: None,
                         oauth_responses_debug: oauth_responses_debug.clone(),
+                        attempt_summary: PoolAttemptSummary::default(),
                     });
-                    if excluded_ids.len() >= 64 {
-                        return Err(
-                            last_error.expect("pool first chunk failure should be recorded")
-                        );
-                    }
                     continue 'account_loop;
                 }
             };
@@ -9006,6 +9627,25 @@ async fn send_pool_request_with_failover(
                 connect_latency_ms,
                 first_byte_latency_ms: elapsed_ms(first_byte_started),
                 first_chunk,
+                pending_attempt_record: trace_context.as_ref().map(|trace| {
+                    PendingPoolAttemptRecord {
+                        invoke_id: trace.invoke_id.clone(),
+                        occurred_at: trace.occurred_at.clone(),
+                        endpoint: trace.endpoint.clone(),
+                        sticky_key: trace.sticky_key.clone(),
+                        requester_ip: trace.requester_ip.clone(),
+                        upstream_account_id: account.account_id,
+                        attempt_index,
+                        distinct_account_index,
+                        same_account_retry_index,
+                        started_at: attempt_started_at
+                            .clone()
+                            .unwrap_or_else(shanghai_now_string),
+                        connect_latency_ms,
+                        first_byte_latency_ms: elapsed_ms(first_byte_started),
+                    }
+                }),
+                attempt_summary: pool_attempt_summary(attempt_count, distinct_account_count, None),
             });
         }
 
@@ -9075,6 +9715,7 @@ async fn continue_or_retry_pool_live_request(
                 headers,
                 Some(snapshot),
                 handshake_timeout,
+                None,
                 replay_sticky_key.as_deref(),
                 Some(initial_account),
                 POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS.saturating_sub(1),
@@ -9091,6 +9732,7 @@ async fn continue_or_retry_pool_live_request(
             upstream_error_message: None,
             upstream_request_id: None,
             oauth_responses_debug: None,
+            attempt_summary: first_error.attempt_summary.clone(),
         }),
         PoolReplayBodyStatus::InternalError(message) => Err(PoolUpstreamError {
             account: Some(initial_account),
@@ -9102,6 +9744,7 @@ async fn continue_or_retry_pool_live_request(
             upstream_error_message: None,
             upstream_request_id: None,
             oauth_responses_debug: None,
+            attempt_summary: first_error.attempt_summary.clone(),
         }),
         PoolReplayBodyStatus::Reading | PoolReplayBodyStatus::Incomplete => {
             replay_cancel.cancel();
@@ -9195,6 +9838,7 @@ async fn proxy_openai_v1_via_pool(
                     &headers,
                     Some(PoolReplayBodySnapshot::Memory(request_body_bytes)),
                     handshake_timeout,
+                    None,
                     body_sticky_key.as_deref(),
                     None,
                     POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
@@ -9258,6 +9902,7 @@ async fn proxy_openai_v1_via_pool(
                             &headers,
                             Some(request_body_snapshot),
                             handshake_timeout,
+                            None,
                             body_sticky_key.as_deref(),
                             preferred_account,
                             POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
@@ -9352,13 +9997,7 @@ async fn proxy_openai_v1_via_pool(
                                 ),
                             ),
                         };
-                        let failure_kind = if status == StatusCode::TOO_MANY_REQUESTS {
-                            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429
-                        } else if status.is_server_error() {
-                            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX
-                        } else {
-                            PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT
-                        };
+                        let failure_kind = pool_route_http_failure_kind(status);
                         maybe_backfill_oauth_request_debug_from_replay_status(
                             &mut oauth_responses_debug,
                             original_uri,
@@ -9376,6 +10015,7 @@ async fn proxy_openai_v1_via_pool(
                             upstream_error_message,
                             upstream_request_id,
                             oauth_responses_debug: oauth_responses_debug.clone(),
+                            attempt_summary: PoolAttemptSummary::default(),
                         };
                         continue_or_retry_pool_live_request(
                             state.clone(),
@@ -9415,6 +10055,8 @@ async fn proxy_openai_v1_via_pool(
                                     connect_latency_ms,
                                     first_byte_latency_ms: elapsed_ms(first_byte_started),
                                     first_chunk,
+                                    pending_attempt_record: None,
+                                    attempt_summary: PoolAttemptSummary::default(),
                                 }
                             }
                             Err(err) => {
@@ -9437,6 +10079,7 @@ async fn proxy_openai_v1_via_pool(
                                     upstream_error_message: None,
                                     upstream_request_id: None,
                                     oauth_responses_debug: oauth_responses_debug.clone(),
+                                    attempt_summary: PoolAttemptSummary::default(),
                                 };
                                 continue_or_retry_pool_live_request(
                                     state.clone(),
@@ -9548,13 +10191,7 @@ async fn proxy_openai_v1_via_pool(
                                     ),
                                 ),
                             };
-                            let failure_kind = if status == StatusCode::TOO_MANY_REQUESTS {
-                                FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429
-                            } else if status.is_server_error() {
-                                FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX
-                            } else {
-                                PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT
-                            };
+                            let failure_kind = pool_route_http_failure_kind(status);
                             let first_error = PoolUpstreamError {
                                 account: Some(initial_account.clone()),
                                 status,
@@ -9565,6 +10202,7 @@ async fn proxy_openai_v1_via_pool(
                                 upstream_error_message,
                                 upstream_request_id,
                                 oauth_responses_debug: None,
+                                attempt_summary: PoolAttemptSummary::default(),
                             };
                             continue_or_retry_pool_live_request(
                                 state.clone(),
@@ -9596,6 +10234,8 @@ async fn proxy_openai_v1_via_pool(
                                     connect_latency_ms,
                                     first_byte_latency_ms: elapsed_ms(first_byte_started),
                                     first_chunk,
+                                    pending_attempt_record: None,
+                                    attempt_summary: PoolAttemptSummary::default(),
                                 },
                                 Err(err) => {
                                     let first_error = PoolUpstreamError {
@@ -9610,6 +10250,7 @@ async fn proxy_openai_v1_via_pool(
                                         upstream_error_message: None,
                                         upstream_request_id: None,
                                         oauth_responses_debug: None,
+                                        attempt_summary: PoolAttemptSummary::default(),
                                     };
                                     continue_or_retry_pool_live_request(
                                         state.clone(),
@@ -9640,6 +10281,7 @@ async fn proxy_openai_v1_via_pool(
                             upstream_error_message: None,
                             upstream_request_id: None,
                             oauth_responses_debug: None,
+                            attempt_summary: PoolAttemptSummary::default(),
                         };
                         continue_or_retry_pool_live_request(
                             state.clone(),
@@ -9670,6 +10312,7 @@ async fn proxy_openai_v1_via_pool(
                             upstream_error_message: None,
                             upstream_request_id: None,
                             oauth_responses_debug: None,
+                            attempt_summary: PoolAttemptSummary::default(),
                         };
                         continue_or_retry_pool_live_request(
                             state.clone(),
@@ -9699,6 +10342,7 @@ async fn proxy_openai_v1_via_pool(
                 &headers,
                 None,
                 handshake_timeout,
+                None,
                 header_sticky_key.as_deref(),
                 None,
                 POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
@@ -10613,6 +11257,9 @@ async fn proxy_openai_v1_capture_target(
                     response_content_encoding: None,
                     proxy_display_name: None,
                     proxy_weight_delta: None,
+                    pool_attempt_count: None,
+                    pool_distinct_account_count: None,
+                    pool_attempt_terminal_reason: None,
                 })),
                 raw_response: "{}".to_string(),
                 req_raw,
@@ -10654,6 +11301,13 @@ async fn proxy_openai_v1_capture_target(
         .sticky_key
         .clone()
         .or_else(|| header_sticky_key.clone());
+    let pool_attempt_trace_context = pool_route_active.then(|| PoolUpstreamAttemptTraceContext {
+        invoke_id: invoke_id.clone(),
+        occurred_at: occurred_at.clone(),
+        endpoint: capture_target.endpoint().to_string(),
+        sticky_key: sticky_key.clone(),
+        requester_ip: requester_ip.clone(),
+    });
     let t_req_parse_ms = elapsed_ms(req_parse_started);
     let req_raw = store_raw_payload_file(&state.config, &invoke_id, "request", &upstream_body);
     let upstream_body_bytes = Bytes::from(upstream_body);
@@ -10702,6 +11356,8 @@ async fn proxy_openai_v1_capture_target(
         oauth_responses_debug,
         attempt_already_recorded,
         final_attempt_update,
+        pending_pool_attempt_record,
+        pending_pool_attempt_summary,
         upstream_response,
     ) = if pool_route_active {
         match send_pool_request_with_failover(
@@ -10711,6 +11367,7 @@ async fn proxy_openai_v1_capture_target(
             &upstream_headers,
             Some(PoolReplayBodySnapshot::Memory(upstream_body_bytes)),
             handshake_timeout,
+            pool_attempt_trace_context.clone(),
             sticky_key.as_deref(),
             None,
             POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
@@ -10726,6 +11383,8 @@ async fn proxy_openai_v1_capture_target(
                 response.oauth_responses_debug,
                 true,
                 None,
+                response.pending_attempt_record,
+                response.attempt_summary,
                 response.response,
             ),
             Err(err) => {
@@ -10821,6 +11480,14 @@ async fn proxy_openai_v1_capture_target(
                         response_content_encoding: None,
                         proxy_display_name: pool_proxy_display_name.as_deref(),
                         proxy_weight_delta: None,
+                        pool_attempt_count: Some(err.attempt_summary.pool_attempt_count),
+                        pool_distinct_account_count: Some(
+                            err.attempt_summary.pool_distinct_account_count,
+                        ),
+                        pool_attempt_terminal_reason: err
+                            .attempt_summary
+                            .pool_attempt_terminal_reason
+                            .as_deref(),
                     })),
                     raw_response: "{}".to_string(),
                     req_raw,
@@ -10866,6 +11533,8 @@ async fn proxy_openai_v1_capture_target(
                 None,
                 response.attempt_recorded,
                 response.attempt_update,
+                None,
+                PoolAttemptSummary::default(),
                 response.response,
             ),
             Err(err) => {
@@ -10938,6 +11607,9 @@ async fn proxy_openai_v1_capture_target(
                         response_content_encoding: None,
                         proxy_display_name: Some(err.selected_proxy.display_name.as_str()),
                         proxy_weight_delta: proxy_attempt_update.delta(),
+                        pool_attempt_count: None,
+                        pool_distinct_account_count: None,
+                        pool_attempt_terminal_reason: None,
                     })),
                     raw_response: "{}".to_string(),
                     req_raw,
@@ -11071,6 +11743,9 @@ async fn proxy_openai_v1_capture_target(
                     } else {
                         None
                     },
+                    pool_attempt_count: None,
+                    pool_distinct_account_count: None,
+                    pool_attempt_terminal_reason: None,
                 })),
                 raw_response: "{}".to_string(),
                 req_raw,
@@ -11162,6 +11837,8 @@ async fn proxy_openai_v1_capture_target(
     let oauth_responses_debug_for_task = oauth_responses_debug.clone();
     let attempt_already_recorded_for_task = attempt_already_recorded;
     let final_attempt_update_for_task = final_attempt_update;
+    let pending_pool_attempt_record_for_task = pending_pool_attempt_record.clone();
+    let pending_pool_attempt_summary_for_task = pending_pool_attempt_summary.clone();
     let prefetched_first_chunk_for_task = prefetched_first_chunk;
     let prefetched_ttfb_ms_for_task = prefetched_ttfb_ms;
     let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(16);
@@ -11326,6 +12003,26 @@ async fn proxy_openai_v1_capture_target(
         } else {
             format!("http_{}", upstream_status.as_u16())
         };
+        let pending_pool_attempt_terminal_reason = if pool_account_for_task.is_none() {
+            None
+        } else if had_stream_error {
+            Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR.to_string())
+        } else if downstream_closed {
+            Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED.to_string())
+        } else if response_info.stream_terminal_event.is_some() {
+            Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED.to_string())
+        } else if !upstream_status.is_success() {
+            Some(
+                failure_kind
+                    .unwrap_or(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
+                    .to_string(),
+            )
+        } else {
+            None
+        };
+        let mut pending_pool_attempt_summary = pending_pool_attempt_summary_for_task.clone();
+        pending_pool_attempt_summary.pool_attempt_terminal_reason =
+            pending_pool_attempt_terminal_reason.clone();
         let selected_proxy_display_name =
             resolve_invocation_proxy_display_name(selected_proxy_for_task.as_ref());
         let proxy_attempt_update = if let Some(selected_proxy) = selected_proxy_for_task.as_ref() {
@@ -11398,6 +12095,35 @@ async fn proxy_openai_v1_capture_target(
             }
             ForwardProxyAttemptUpdate::default()
         };
+        if let Some(pending_attempt_record) = pending_pool_attempt_record_for_task.as_ref() {
+            let finished_at = shanghai_now_string();
+            let attempt_status = if had_stream_error || downstream_closed {
+                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
+            } else if !upstream_status.is_success() || had_logical_stream_failure {
+                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
+            } else {
+                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
+            };
+            if let Err(err) = finalize_pool_upstream_request_attempt(
+                &state_for_task.pool,
+                pending_attempt_record,
+                finished_at.as_str(),
+                attempt_status,
+                Some(upstream_status),
+                failure_kind,
+                error_message.as_deref(),
+                Some(t_upstream_stream_ms),
+                response_info.upstream_request_id.as_deref(),
+            )
+            .await
+            {
+                warn!(
+                    invoke_id = %pending_attempt_record.invoke_id,
+                    error = %err,
+                    "failed to persist final pool attempt"
+                );
+            }
+        }
         let (cost, cost_estimated, price_version) = estimate_proxy_cost_from_shared_catalog(
             &state_for_task.pricing_catalog,
             response_info.model.as_deref(),
@@ -11482,6 +12208,15 @@ async fn proxy_openai_v1_capture_target(
             } else {
                 None
             },
+            pool_attempt_count: pool_account_for_task
+                .as_ref()
+                .map(|_| pending_pool_attempt_summary.pool_attempt_count),
+            pool_distinct_account_count: pool_account_for_task
+                .as_ref()
+                .map(|_| pending_pool_attempt_summary.pool_distinct_account_count),
+            pool_attempt_terminal_reason: pool_account_for_task
+                .as_ref()
+                .and_then(|_| pending_pool_attempt_terminal_reason.as_deref()),
         });
 
         let record = ProxyCaptureRecord {
@@ -12484,6 +13219,121 @@ fn sticky_key_from_payload(payload: Option<&str>) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+fn shanghai_now_string() -> String {
+    format_naive(Utc::now().with_timezone(&Shanghai).naive_local())
+}
+
+async fn insert_pool_upstream_request_attempt(
+    pool: &Pool<Sqlite>,
+    trace: &PoolUpstreamAttemptTraceContext,
+    upstream_account_id: Option<i64>,
+    attempt_index: i64,
+    distinct_account_index: i64,
+    same_account_retry_index: i64,
+    started_at: Option<&str>,
+    finished_at: Option<&str>,
+    status: &str,
+    http_status: Option<StatusCode>,
+    failure_kind: Option<&str>,
+    error_message: Option<&str>,
+    connect_latency_ms: Option<f64>,
+    first_byte_latency_ms: Option<f64>,
+    stream_latency_ms: Option<f64>,
+    upstream_request_id: Option<&str>,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_request_attempts (
+            invoke_id,
+            occurred_at,
+            endpoint,
+            route_mode,
+            sticky_key,
+            upstream_account_id,
+            attempt_index,
+            distinct_account_index,
+            same_account_retry_index,
+            requester_ip,
+            started_at,
+            finished_at,
+            status,
+            http_status,
+            failure_kind,
+            error_message,
+            connect_latency_ms,
+            first_byte_latency_ms,
+            stream_latency_ms,
+            upstream_request_id
+        )
+        VALUES (
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20
+        )
+        "#,
+    )
+    .bind(&trace.invoke_id)
+    .bind(&trace.occurred_at)
+    .bind(&trace.endpoint)
+    .bind(INVOCATION_ROUTE_MODE_POOL)
+    .bind(trace.sticky_key.as_deref())
+    .bind(upstream_account_id)
+    .bind(attempt_index)
+    .bind(distinct_account_index)
+    .bind(same_account_retry_index)
+    .bind(trace.requester_ip.as_deref())
+    .bind(started_at)
+    .bind(finished_at)
+    .bind(status)
+    .bind(http_status.map(|value| i64::from(value.as_u16())))
+    .bind(failure_kind)
+    .bind(error_message)
+    .bind(connect_latency_ms)
+    .bind(first_byte_latency_ms)
+    .bind(stream_latency_ms)
+    .bind(upstream_request_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn finalize_pool_upstream_request_attempt(
+    pool: &Pool<Sqlite>,
+    pending: &PendingPoolAttemptRecord,
+    finished_at: &str,
+    status: &str,
+    http_status: Option<StatusCode>,
+    failure_kind: Option<&str>,
+    error_message: Option<&str>,
+    stream_latency_ms: Option<f64>,
+    upstream_request_id: Option<&str>,
+) -> Result<()> {
+    let trace = PoolUpstreamAttemptTraceContext {
+        invoke_id: pending.invoke_id.clone(),
+        occurred_at: pending.occurred_at.clone(),
+        endpoint: pending.endpoint.clone(),
+        sticky_key: pending.sticky_key.clone(),
+        requester_ip: pending.requester_ip.clone(),
+    };
+    insert_pool_upstream_request_attempt(
+        pool,
+        &trace,
+        Some(pending.upstream_account_id),
+        pending.attempt_index,
+        pending.distinct_account_index,
+        pending.same_account_retry_index,
+        Some(pending.started_at.as_str()),
+        Some(finished_at),
+        status,
+        http_status,
+        failure_kind,
+        error_message,
+        Some(pending.connect_latency_ms),
+        Some(pending.first_byte_latency_ms),
+        stream_latency_ms,
+        upstream_request_id,
+    )
+    .await
+}
+
 fn prompt_cache_upstream_account_rollup_key(
     upstream_account_id: Option<i64>,
     upstream_account_name: Option<&str>,
@@ -12702,6 +13552,9 @@ struct ProxyPayloadSummary<'a> {
     response_content_encoding: Option<&'a str>,
     proxy_display_name: Option<&'a str>,
     proxy_weight_delta: Option<f64>,
+    pool_attempt_count: Option<usize>,
+    pool_distinct_account_count: Option<usize>,
+    pool_attempt_terminal_reason: Option<&'a str>,
 }
 
 fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> String {
@@ -12741,6 +13594,9 @@ fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> String {
         response_content_encoding,
         proxy_display_name,
         proxy_weight_delta,
+        pool_attempt_count,
+        pool_distinct_account_count,
+        pool_attempt_terminal_reason,
     } = summary;
     let payload = json!({
         "endpoint": target.endpoint(),
@@ -12778,6 +13634,9 @@ fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> String {
         "responseContentEncoding": response_content_encoding,
         "proxyDisplayName": proxy_display_name,
         "proxyWeightDelta": proxy_weight_delta,
+        "poolAttemptCount": pool_attempt_count,
+        "poolDistinctAccountCount": pool_distinct_account_count,
+        "poolAttemptTerminalReason": pool_attempt_terminal_reason,
     });
     serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string())
 }
@@ -12876,6 +13735,15 @@ fn runtime_api_invocation_from_proxy_capture_record(record: &ProxyCaptureRecord)
         response_content_encoding: runtime_payload_text(
             payload.as_ref(),
             "responseContentEncoding",
+        ),
+        pool_attempt_count: runtime_payload_i64(payload.as_ref(), "poolAttemptCount"),
+        pool_distinct_account_count: runtime_payload_i64(
+            payload.as_ref(),
+            "poolDistinctAccountCount",
+        ),
+        pool_attempt_terminal_reason: runtime_payload_text(
+            payload.as_ref(),
+            "poolAttemptTerminalReason",
         ),
         requested_service_tier: runtime_payload_text(payload.as_ref(), "requestedServiceTier"),
         service_tier: runtime_payload_text(payload.as_ref(), "serviceTier"),
@@ -13009,6 +13877,9 @@ fn build_running_proxy_capture_record(
             response_content_encoding,
             proxy_display_name,
             proxy_weight_delta: None,
+            pool_attempt_count: None,
+            pool_distinct_account_count: None,
+            pool_attempt_terminal_reason: None,
         })),
         raw_response: "{}".to_string(),
         req_raw: RawPayloadMeta::default(),
@@ -17268,6 +18139,8 @@ struct AppConfig {
     invocation_success_full_days: u64,
     invocation_max_days: u64,
     forward_proxy_attempts_retention_days: u64,
+    pool_upstream_request_attempts_retention_days: u64,
+    pool_upstream_request_attempts_archive_ttl_days: u64,
     stats_source_snapshots_retention_days: u64,
     quota_snapshot_full_days: u64,
     crs_stats: Option<CrsStatsConfig>,
@@ -17479,6 +18352,14 @@ impl AppConfig {
             ENV_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS,
             DEFAULT_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS,
         )?;
+        let pool_upstream_request_attempts_retention_days = parse_u64_env_var(
+            ENV_POOL_UPSTREAM_REQUEST_ATTEMPTS_RETENTION_DAYS,
+            DEFAULT_POOL_UPSTREAM_REQUEST_ATTEMPTS_RETENTION_DAYS,
+        )?;
+        let pool_upstream_request_attempts_archive_ttl_days = parse_u64_env_var(
+            ENV_POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_TTL_DAYS,
+            DEFAULT_POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_TTL_DAYS,
+        )?;
         let stats_source_snapshots_retention_days = parse_u64_env_var(
             ENV_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS,
             DEFAULT_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS,
@@ -17621,6 +18502,8 @@ impl AppConfig {
             invocation_success_full_days,
             invocation_max_days,
             forward_proxy_attempts_retention_days,
+            pool_upstream_request_attempts_retention_days,
+            pool_upstream_request_attempts_archive_ttl_days,
             stats_source_snapshots_retention_days,
             quota_snapshot_full_days,
             crs_stats,

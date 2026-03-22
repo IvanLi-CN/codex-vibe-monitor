@@ -293,6 +293,9 @@ export interface ApiInvocation {
   upstreamAccountId?: number | null;
   upstreamAccountName?: string;
   responseContentEncoding?: string;
+  poolAttemptCount?: number | null;
+  poolDistinctAccountCount?: number | null;
+  poolAttemptTerminalReason?: string | null;
   upstreamScope?: string;
   requestedServiceTier?: string;
   serviceTier?: string;
@@ -341,6 +344,31 @@ export interface ListResponse {
   page?: number;
   pageSize?: number;
   records: ApiInvocation[];
+}
+
+export interface ApiPoolUpstreamRequestAttempt {
+  id: number;
+  invokeId: string;
+  occurredAt: string;
+  endpoint: string;
+  stickyKey?: string | null;
+  upstreamAccountId?: number | null;
+  upstreamAccountName?: string | null;
+  attemptIndex: number;
+  distinctAccountIndex: number;
+  sameAccountRetryIndex: number;
+  requesterIp?: string | null;
+  startedAt?: string | null;
+  finishedAt?: string | null;
+  status: string;
+  httpStatus?: number | null;
+  failureKind?: string | null;
+  errorMessage?: string | null;
+  connectLatencyMs?: number | null;
+  firstByteLatencyMs?: number | null;
+  streamLatencyMs?: number | null;
+  upstreamRequestId?: string | null;
+  createdAt: string;
 }
 
 export type InvocationFocus = "token" | "network" | "exception";
@@ -654,6 +682,12 @@ export async function fetchInvocationSuggestions(
   appendInvocationRecordsQuery(search, query);
   return fetchJson<InvocationSuggestionsResponse>(
     `/api/invocations/suggestions?${search.toString()}`,
+  );
+}
+
+export async function fetchInvocationPoolAttempts(invokeId: string) {
+  return fetchJson<ApiPoolUpstreamRequestAttempt[]>(
+    `/api/invocations/${encodeURIComponent(invokeId)}/pool-attempts`,
   );
 }
 
