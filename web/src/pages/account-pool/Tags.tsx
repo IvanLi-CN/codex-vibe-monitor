@@ -4,6 +4,7 @@ import { Alert } from '../../components/ui/alert'
 import { Badge } from '../../components/ui/badge'
 import { Button } from '../../components/ui/button'
 import { Input } from '../../components/ui/input'
+import { SelectField } from '../../components/ui/select-field'
 import { Spinner } from '../../components/ui/spinner'
 import { TagRuleDialog } from '../../components/TagRuleDialog'
 import { usePoolTags } from '../../hooks/usePoolTags'
@@ -129,74 +130,70 @@ export default function TagsPage() {
                 }}
               />
             </label>
-            <label className="field">
-              <span className="field-label">{t('accountPool.tags.filters.hasAccounts')}</span>
-              <select
-                name="tagHasAccountsFilter"
-                className="field-select"
-                value={hasAccountsFilter}
-                onChange={(event) => {
-                  const value = event.target.value as TernaryFilter
-                  setHasAccountsFilter(value)
-                  updateQuery({ ...query, hasAccounts: toBooleanQuery(value) })
-                }}
-              >
-                <option value="all">{t('accountPool.tags.filters.option.all')}</option>
-                <option value="true">{t('accountPool.tags.filters.option.linked')}</option>
-                <option value="false">{t('accountPool.tags.filters.option.unlinked')}</option>
-              </select>
-            </label>
-            <label className="field">
-              <span className="field-label">{t('accountPool.tags.filters.guardEnabled')}</span>
-              <select
-                name="tagGuardFilter"
-                className="field-select"
-                value={guardEnabledFilter}
-                onChange={(event) => {
-                  const value = event.target.value as TernaryFilter
-                  setGuardEnabledFilter(value)
-                  updateQuery({ ...query, guardEnabled: toBooleanQuery(value) })
-                }}
-              >
-                <option value="all">{t('accountPool.tags.filters.option.all')}</option>
-                <option value="true">{t('accountPool.tags.filters.option.guardOn')}</option>
-                <option value="false">{t('accountPool.tags.filters.option.guardOff')}</option>
-              </select>
-            </label>
-            <label className="field">
-              <span className="field-label">{t('accountPool.tags.filters.cutOutBlocked')}</span>
-              <select
-                name="tagCutOutFilter"
-                className="field-select"
-                value={cutOutFilter}
-                onChange={(event) => {
-                  const value = event.target.value as TernaryFilter
-                  setCutOutFilter(value)
-                  updateQuery({ ...query, allowCutOut: value === 'all' ? undefined : value === 'true' })
-                }}
-              >
-                <option value="all">{t('accountPool.tags.filters.option.all')}</option>
-                <option value="true">{t('accountPool.tags.filters.option.allowed')}</option>
-                <option value="false">{t('accountPool.tags.filters.option.blocked')}</option>
-              </select>
-            </label>
-            <label className="field">
-              <span className="field-label">{t('accountPool.tags.filters.cutInBlocked')}</span>
-              <select
-                name="tagCutInFilter"
-                className="field-select"
-                value={cutInFilter}
-                onChange={(event) => {
-                  const value = event.target.value as TernaryFilter
-                  setCutInFilter(value)
-                  updateQuery({ ...query, allowCutIn: value === 'all' ? undefined : value === 'true' })
-                }}
-              >
-                <option value="all">{t('accountPool.tags.filters.option.all')}</option>
-                <option value="true">{t('accountPool.tags.filters.option.allowed')}</option>
-                <option value="false">{t('accountPool.tags.filters.option.blocked')}</option>
-              </select>
-            </label>
+            <SelectField
+              className="field"
+              label={t('accountPool.tags.filters.hasAccounts')}
+              name="tagHasAccountsFilter"
+              value={hasAccountsFilter}
+              options={[
+                { value: 'all', label: t('accountPool.tags.filters.option.all') },
+                { value: 'true', label: t('accountPool.tags.filters.option.linked') },
+                { value: 'false', label: t('accountPool.tags.filters.option.unlinked') },
+              ]}
+              onValueChange={(value) => {
+                const nextValue = value as TernaryFilter
+                setHasAccountsFilter(nextValue)
+                updateQuery({ ...query, hasAccounts: toBooleanQuery(nextValue) })
+              }}
+            />
+            <SelectField
+              className="field"
+              label={t('accountPool.tags.filters.guardEnabled')}
+              name="tagGuardFilter"
+              value={guardEnabledFilter}
+              options={[
+                { value: 'all', label: t('accountPool.tags.filters.option.all') },
+                { value: 'true', label: t('accountPool.tags.filters.option.guardOn') },
+                { value: 'false', label: t('accountPool.tags.filters.option.guardOff') },
+              ]}
+              onValueChange={(value) => {
+                const nextValue = value as TernaryFilter
+                setGuardEnabledFilter(nextValue)
+                updateQuery({ ...query, guardEnabled: toBooleanQuery(nextValue) })
+              }}
+            />
+            <SelectField
+              className="field"
+              label={t('accountPool.tags.filters.cutOutBlocked')}
+              name="tagCutOutFilter"
+              value={cutOutFilter}
+              options={[
+                { value: 'all', label: t('accountPool.tags.filters.option.all') },
+                { value: 'true', label: t('accountPool.tags.filters.option.allowed') },
+                { value: 'false', label: t('accountPool.tags.filters.option.blocked') },
+              ]}
+              onValueChange={(value) => {
+                const nextValue = value as TernaryFilter
+                setCutOutFilter(nextValue)
+                updateQuery({ ...query, allowCutOut: nextValue === 'all' ? undefined : nextValue === 'true' })
+              }}
+            />
+            <SelectField
+              className="field"
+              label={t('accountPool.tags.filters.cutInBlocked')}
+              name="tagCutInFilter"
+              value={cutInFilter}
+              options={[
+                { value: 'all', label: t('accountPool.tags.filters.option.all') },
+                { value: 'true', label: t('accountPool.tags.filters.option.allowed') },
+                { value: 'false', label: t('accountPool.tags.filters.option.blocked') },
+              ]}
+              onValueChange={(value) => {
+                const nextValue = value as TernaryFilter
+                setCutInFilter(nextValue)
+                updateQuery({ ...query, allowCutIn: nextValue === 'all' ? undefined : nextValue === 'true' })
+              }}
+            />
           </div>
         </div>
       </section>

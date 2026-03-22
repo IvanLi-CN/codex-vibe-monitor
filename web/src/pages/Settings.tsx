@@ -6,6 +6,7 @@ import { Alert } from '../components/ui/alert'
 import { Button } from '../components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../components/ui/card'
 import { Input } from '../components/ui/input'
+import { SelectField } from '../components/ui/select-field'
 import { Switch } from '../components/ui/switch'
 import { useSettings } from '../hooks/useSettings'
 import {
@@ -1373,20 +1374,17 @@ export default function SettingsPage() {
                 </label>
                 <p className="text-sm leading-snug text-base-content/70">{proxyFastModeRewriteCopy.hint}</p>
               </div>
-              <select
+              <SelectField
                 id="proxy-fast-mode-rewrite"
+                name="proxyFastModeRewriteMode"
                 aria-label={proxyFastModeRewriteCopy.label}
-                className="mt-3 h-10 w-full rounded-xl border border-base-300/80 bg-base-100/70 px-3 text-sm outline-none transition focus:border-primary/50 disabled:cursor-not-allowed disabled:opacity-70"
+                className="mt-3"
+                triggerClassName="h-10 w-full border-base-300/80 bg-base-100/70 disabled:opacity-70"
                 value={currentProxy.fastModeRewriteMode}
                 disabled={isProxySaving}
-                onChange={(event) => handleProxyFastModeRewriteModeChange(event.target.value as ProxyFastModeRewriteMode)}
-              >
-                {proxyFastModeRewriteOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
+                options={proxyFastModeRewriteOptions}
+                onValueChange={(value) => handleProxyFastModeRewriteModeChange(value as ProxyFastModeRewriteMode)}
+              />
               <div className="mt-3 rounded-lg border border-base-300/70 bg-base-100/78 px-3 py-2 text-xs leading-5 text-base-content/72">
                 {currentProxyFastModeRewriteOption.description}
               </div>
@@ -1399,20 +1397,20 @@ export default function SettingsPage() {
                 </label>
                 <p className="text-sm leading-snug text-base-content/70">{t('settings.proxy.upstream429RetriesHint')}</p>
               </div>
-              <select
+              <SelectField
                 id="proxy-upstream-429-max-retries"
+                name="proxyUpstream429MaxRetries"
                 aria-label={t('settings.proxy.upstream429RetriesLabel')}
-                className="mt-3 h-10 w-full rounded-xl border border-base-300/80 bg-base-100/70 px-3 text-sm outline-none transition focus:border-primary/50 disabled:cursor-not-allowed disabled:opacity-70"
+                className="mt-3"
+                triggerClassName="h-10 w-full border-base-300/80 bg-base-100/70 disabled:opacity-70"
                 value={String(currentProxy.upstream429MaxRetries)}
                 disabled={isProxySaving}
-                onChange={(event) => handleProxyUpstream429MaxRetriesChange(Number.parseInt(event.target.value, 10))}
-              >
-                {proxyUpstream429RetryOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
+                options={proxyUpstream429RetryOptions.map((option) => ({
+                  value: String(option.value),
+                  label: option.label,
+                }))}
+                onValueChange={(value) => handleProxyUpstream429MaxRetriesChange(Number.parseInt(value, 10))}
+              />
             </div>
 
             <div className="rounded-xl border border-base-300/75 bg-base-200/28 p-4">
@@ -1732,21 +1730,18 @@ export default function SettingsPage() {
               <label htmlFor="forward-proxy-interval" className="block text-sm font-medium text-base-content/75">
                 {t('settings.forwardProxy.subscriptionInterval')}
               </label>
-              <select
+              <SelectField
                 id="forward-proxy-interval"
-                className="h-10 min-w-48 rounded-xl border border-base-300/80 bg-base-100/70 px-3 text-sm outline-none transition focus:border-primary/50"
+                name="forwardProxyInterval"
+                className="mt-2"
+                triggerClassName="h-10 min-w-48 border-base-300/80 bg-base-100/70"
                 value={forwardProxyIntervalSecs}
-                onChange={(event) => {
-                  setForwardProxyIntervalSecs(event.target.value)
+                options={forwardProxyIntervalOptions}
+                onValueChange={(value) => {
+                  setForwardProxyIntervalSecs(value)
                   setForwardProxyDirty(true)
                 }}
-              >
-                {forwardProxyIntervalOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
+              />
             </div>
             <Button
               type="button"

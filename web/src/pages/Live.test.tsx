@@ -102,6 +102,39 @@ beforeAll(() => {
     writable: true,
     value: true,
   });
+  if (typeof globalThis.PointerEvent === "undefined") {
+    Object.defineProperty(window, "PointerEvent", {
+      configurable: true,
+      writable: true,
+      value: MouseEvent,
+    });
+    Object.defineProperty(globalThis, "PointerEvent", {
+      configurable: true,
+      writable: true,
+      value: MouseEvent,
+    });
+  }
+  if (typeof HTMLElement.prototype.hasPointerCapture !== "function") {
+    Object.defineProperty(HTMLElement.prototype, "hasPointerCapture", {
+      configurable: true,
+      writable: true,
+      value: () => false,
+    });
+  }
+  if (typeof HTMLElement.prototype.setPointerCapture !== "function") {
+    Object.defineProperty(HTMLElement.prototype, "setPointerCapture", {
+      configurable: true,
+      writable: true,
+      value: () => undefined,
+    });
+  }
+  if (typeof HTMLElement.prototype.releasePointerCapture !== "function") {
+    Object.defineProperty(HTMLElement.prototype, "releasePointerCapture", {
+      configurable: true,
+      writable: true,
+      value: () => undefined,
+    });
+  }
 });
 
 afterEach(() => {
@@ -120,6 +153,18 @@ function render(ui: React.ReactNode) {
   root = createRoot(host);
   act(() => {
     root?.render(ui);
+  });
+}
+
+function pressElement(element: HTMLElement) {
+  act(() => {
+    if (typeof PointerEvent === "function") {
+      element.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+      element.dispatchEvent(new PointerEvent("pointerup", { bubbles: true }));
+    }
+    element.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    element.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+    element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
 }
 
@@ -151,31 +196,29 @@ describe("LivePage", () => {
     const select = host?.querySelector(
       '[data-testid="live-prompt-cache-selection"]',
     );
-    if (!(select instanceof HTMLSelectElement)) {
+    if (!(select instanceof HTMLButtonElement)) {
       throw new Error("missing prompt cache selection");
     }
 
-    expect(
-      Array.from(select.options).map((option) => option.textContent),
-    ).toEqual([
-      "20 个对话",
-      "50 个对话",
-      "100 个对话",
-      "近 1 小时活动",
-      "近 3 小时活动",
-      "近 6 小时活动",
-      "近 12 小时活动",
-      "近 24 小时活动",
-    ]);
+    expect(host?.querySelector('select')).toBeNull();
+    expect(select.textContent).toContain("50 个对话");
     expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith({
       mode: "count",
       limit: 50,
     });
 
-    act(() => {
-      select.value = "activityWindow:6";
-      select.dispatchEvent(new Event("change", { bubbles: true }));
-    });
+    pressElement(select);
+    const option = Array.from(
+      document.body.querySelectorAll("[role='option']"),
+    ).find(
+      (candidate) =>
+        candidate instanceof HTMLElement &&
+        candidate.textContent?.includes("近 6 小时活动"),
+    );
+    if (!(option instanceof HTMLElement)) {
+      throw new Error("missing activity window option");
+    }
+    pressElement(option);
 
     expect(hookMocks.usePromptCacheConversations).toHaveBeenLastCalledWith({
       mode: "activityWindow",

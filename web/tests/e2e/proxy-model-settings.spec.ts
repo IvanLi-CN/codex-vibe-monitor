@@ -68,6 +68,13 @@ async function openSettingsPage(page: Page): Promise<Page> {
   return page
 }
 
+async function chooseSelectOption(page: Page, triggerSelector: string, optionName: RegExp) {
+  const trigger = page.locator(triggerSelector)
+  await expect(trigger).toBeVisible()
+  await trigger.click()
+  await page.getByRole('option', { name: optionName }).click()
+}
+
 test.describe.serial('settings e2e', () => {
   let initialSettings: SettingsPayload
 
@@ -120,23 +127,29 @@ test.describe.serial('settings e2e', () => {
     })
 
     let settingsPage = await openSettingsPage(page)
-    let rewriteModeSelect = settingsPage.locator('#proxy-fast-mode-rewrite')
-    await expect(rewriteModeSelect).toHaveValue('disabled')
+    let rewriteModeValue = settingsPage.locator('input[type="hidden"][name="proxyFastModeRewriteMode"]')
+    await expect(rewriteModeValue).toHaveValue('disabled')
+
+    const modeOptionNames: Record<ProxyFastModeRewriteMode, RegExp> = {
+      disabled: /^(Disabled|关闭改写|关闭)$/,
+      fill_missing: /^(Fill missing tier|Fill missing as priority|仅补齐缺失 tier|仅补缺失为 priority)$/,
+      force_priority: /^(Force priority|强制 priority|强制覆盖为 priority)$/,
+    }
 
     for (const mode of ['fill_missing', 'force_priority', 'disabled'] as const) {
-      await rewriteModeSelect.selectOption(mode)
+      await chooseSelectOption(page, '#proxy-fast-mode-rewrite', modeOptionNames[mode])
 
       await expect
         .poll(async () => {
           const settings = await getSettings(request)
           return settings.proxy.fastModeRewriteMode
-        })
+      })
         .toBe(mode)
 
       await page.reload()
       settingsPage = await openSettingsPage(page)
-      rewriteModeSelect = settingsPage.locator('#proxy-fast-mode-rewrite')
-      await expect(rewriteModeSelect).toHaveValue(mode)
+      rewriteModeValue = settingsPage.locator('input[type="hidden"][name="proxyFastModeRewriteMode"]')
+      await expect(rewriteModeValue).toHaveValue(mode)
     }
   })
 

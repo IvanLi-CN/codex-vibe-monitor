@@ -21,7 +21,7 @@
 - Invocation list：`web/src/components/InvocationTable.stories.tsx`
 - Dashboard KPI：`web/src/components/TodayStatsOverview.stories.tsx`
 - Tags / account-pool 页面：`web/src/components/TagsPage.stories.tsx`
-- 基础输入组件：`web/src/components/ui/filterable-combobox.stories.tsx`、`web/src/components/ui/form-field-feedback.stories.tsx`、`web/src/components/ui/info-tooltip.stories.tsx`
+- 基础输入组件：`web/src/components/ui/select-field.stories.tsx`、`web/src/components/ui/filterable-combobox.stories.tsx`、`web/src/components/ui/form-field-feedback.stories.tsx`、`web/src/components/ui/info-tooltip.stories.tsx`
 
 这些 story 不只是演示，它们也是当前页面结构、状态语义与视觉证据的重要事实来源。
 
@@ -35,6 +35,7 @@
 ## 后续新增规则
 
 - 新增通用组件或页面模式时，优先补 story，再在 `docs/ui/` 回链该 story 作为可复核入口。
+- simple dropdown 统一以 `web/src/components/ui/select-field.stories.tsx` 作为真相源；页面与业务 stories 不再直接展示 low-level `ui/select.tsx` primitives。
 - 任何 story 如果承担“视觉真相源”角色，就要保证数据、文案和状态足够稳定，不依赖真实网络。
 - 页面 story 应优先 mock API、SSE、session storage 与 router，而不是要求人工准备后端环境。
 - 新视觉证据要尽量沿用现有 viewport 命名，避免每个 feature 发明一套自己的截图尺寸口径。
