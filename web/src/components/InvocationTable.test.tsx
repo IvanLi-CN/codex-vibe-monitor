@@ -18,6 +18,7 @@ import { getReasoningEffortTone } from './invocation-table-reasoning'
 
 const apiMocks = vi.hoisted(() => ({
   fetchUpstreamAccountDetail: vi.fn<(accountId: number) => Promise<UpstreamAccountDetail>>(),
+  fetchInvocationPoolAttempts: vi.fn(),
 }))
 
 vi.mock('../lib/api', async () => {
@@ -25,6 +26,7 @@ vi.mock('../lib/api', async () => {
   return {
     ...actual,
     fetchUpstreamAccountDetail: apiMocks.fetchUpstreamAccountDetail,
+    fetchInvocationPoolAttempts: apiMocks.fetchInvocationPoolAttempts,
   }
 })
 
@@ -56,6 +58,8 @@ beforeAll(() => {
 
 beforeEach(() => {
   apiMocks.fetchUpstreamAccountDetail.mockReset()
+  apiMocks.fetchInvocationPoolAttempts.mockReset()
+  apiMocks.fetchInvocationPoolAttempts.mockResolvedValue([])
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
@@ -406,11 +410,111 @@ describe('InvocationTable', () => {
     await act(async () => {
       toggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
       await Promise.resolve()
+      await Promise.resolve()
     })
 
     expect(document.body.textContent).toContain('请求详情')
     const afterExpandMatches = document.body.textContent?.match(/codex-relay-01/g) ?? []
     expect(afterExpandMatches.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('lazy-loads pool attempts inside expanded details', async () => {
+    apiMocks.fetchInvocationPoolAttempts.mockResolvedValue([
+      {
+        id: 1,
+        invokeId: 'invocation-pool-attempts-visible',
+        occurredAt: '2026-03-07T03:13:51Z',
+        endpoint: '/v1/responses',
+        upstreamAccountId: 7,
+        upstreamAccountName: 'pool-account-a',
+        attemptIndex: 1,
+        distinctAccountIndex: 1,
+        sameAccountRetryIndex: 1,
+        startedAt: '2026-03-07T03:13:51Z',
+        finishedAt: '2026-03-07T03:13:52Z',
+        status: 'success',
+        httpStatus: 200,
+        connectLatencyMs: 42.3,
+        firstByteLatencyMs: 15.2,
+        streamLatencyMs: 188.4,
+        upstreamRequestId: 'req_pool_123',
+        createdAt: '2026-03-07T03:13:52Z',
+      },
+    ])
+
+    await renderInteractiveTable([
+      {
+        id: 40,
+        invokeId: 'invocation-pool-attempts-visible',
+        occurredAt: '2026-03-07T03:13:51Z',
+        createdAt: '2026-03-07T03:13:51Z',
+        source: 'proxy',
+        routeMode: 'pool',
+        upstreamAccountId: 7,
+        upstreamAccountName: 'pool-account-a',
+        proxyDisplayName: 'codex-relay-01',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'success',
+        poolAttemptCount: 1,
+        poolDistinctAccountCount: 1,
+        totalTokens: 2048,
+        cost: 0.0042,
+      },
+    ])
+
+    const toggle = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.getAttribute('aria-expanded') === 'false',
+    )
+    expect(toggle).toBeTruthy()
+
+    await act(async () => {
+      toggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenCalledWith(
+      'invocation-pool-attempts-visible',
+    )
+
+    await act(async () => {
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(document.body.textContent).toContain('号池尝试明细')
+    expect(document.body.textContent).toContain('pool-account-a')
+    expect(document.body.textContent).toContain('req_pool_123')
+  })
+
+  it('shows a clear non-pool empty state without fetching attempts', async () => {
+    await renderInteractiveTable([
+      {
+        id: 41,
+        invokeId: 'invocation-forward-proxy-detail',
+        occurredAt: '2026-03-07T03:13:51Z',
+        createdAt: '2026-03-07T03:13:51Z',
+        source: 'proxy',
+        routeMode: 'forward_proxy',
+        proxyDisplayName: 'codex-relay-02',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'success',
+      },
+    ])
+
+    const toggle = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.getAttribute('aria-expanded') === 'false',
+    )
+    expect(toggle).toBeTruthy()
+
+    await act(async () => {
+      toggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    expect(apiMocks.fetchInvocationPoolAttempts).not.toHaveBeenCalled()
+    expect(document.body.textContent).toContain('这条请求没有使用号池路由')
   })
 
   it('colors compact endpoint paths without adding extra summary badges', () => {

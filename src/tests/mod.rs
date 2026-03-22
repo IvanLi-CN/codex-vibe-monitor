@@ -1654,6 +1654,11 @@ fn app_config_from_sources_reads_renamed_public_envs() {
         (ENV_INVOCATION_SUCCESS_FULL_DAYS, Some("31")),
         (ENV_INVOCATION_MAX_DAYS, Some("91")),
         (ENV_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS, Some("32")),
+        (ENV_POOL_UPSTREAM_REQUEST_ATTEMPTS_RETENTION_DAYS, Some("7")),
+        (
+            ENV_POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_TTL_DAYS,
+            Some("30"),
+        ),
         (ENV_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS, Some("33")),
         (ENV_QUOTA_SNAPSHOT_FULL_DAYS, Some("34")),
         (ENV_PROXY_RAW_COMPRESSION, Some("none")),
@@ -1694,6 +1699,8 @@ fn app_config_from_sources_reads_renamed_public_envs() {
     assert_eq!(config.invocation_success_full_days, 31);
     assert_eq!(config.invocation_max_days, 91);
     assert_eq!(config.forward_proxy_attempts_retention_days, 32);
+    assert_eq!(config.pool_upstream_request_attempts_retention_days, 7);
+    assert_eq!(config.pool_upstream_request_attempts_archive_ttl_days, 30);
     assert_eq!(config.stats_source_snapshots_retention_days, 33);
     assert_eq!(config.quota_snapshot_full_days, 34);
     assert_eq!(config.proxy_raw_compression, RawCompressionCodec::None);
@@ -1849,6 +1856,10 @@ fn test_config() -> AppConfig {
         invocation_success_full_days: DEFAULT_INVOCATION_SUCCESS_FULL_DAYS,
         invocation_max_days: DEFAULT_INVOCATION_MAX_DAYS,
         forward_proxy_attempts_retention_days: DEFAULT_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS,
+        pool_upstream_request_attempts_retention_days:
+            DEFAULT_POOL_UPSTREAM_REQUEST_ATTEMPTS_RETENTION_DAYS,
+        pool_upstream_request_attempts_archive_ttl_days:
+            DEFAULT_POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_TTL_DAYS,
         stats_source_snapshots_retention_days: DEFAULT_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS,
         quota_snapshot_full_days: DEFAULT_QUOTA_SNAPSHOT_FULL_DAYS,
         crs_stats: None,
@@ -2360,6 +2371,75 @@ async fn insert_retention_invocation(
     .execute(pool)
     .await
     .expect("insert retention invocation");
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn insert_retention_pool_upstream_request_attempt(
+    pool: &SqlitePool,
+    invoke_id: &str,
+    occurred_at: &str,
+    upstream_account_id: Option<i64>,
+    attempt_index: i64,
+    distinct_account_index: i64,
+    same_account_retry_index: i64,
+    status: &str,
+    http_status: Option<i64>,
+    failure_kind: Option<&str>,
+    started_at: Option<&str>,
+    finished_at: Option<&str>,
+) {
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_request_attempts (
+            invoke_id,
+            occurred_at,
+            endpoint,
+            route_mode,
+            sticky_key,
+            upstream_account_id,
+            attempt_index,
+            distinct_account_index,
+            same_account_retry_index,
+            requester_ip,
+            started_at,
+            finished_at,
+            status,
+            http_status,
+            failure_kind,
+            error_message,
+            connect_latency_ms,
+            first_byte_latency_ms,
+            stream_latency_ms,
+            upstream_request_id
+        )
+        VALUES (
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20
+        )
+        "#,
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .bind("/v1/responses")
+    .bind(INVOCATION_ROUTE_MODE_POOL)
+    .bind(Some("sticky-retention"))
+    .bind(upstream_account_id)
+    .bind(attempt_index)
+    .bind(distinct_account_index)
+    .bind(same_account_retry_index)
+    .bind(Some("203.0.113.1"))
+    .bind(started_at)
+    .bind(finished_at)
+    .bind(status)
+    .bind(http_status)
+    .bind(failure_kind)
+    .bind(Some("retention test"))
+    .bind(Some(12.5_f64))
+    .bind(Some(6.2_f64))
+    .bind(Some(30.0_f64))
+    .bind(Some("req_retention"))
+    .execute(pool)
+    .await
+    .expect("insert retention pool attempt");
 }
 
 async fn insert_stats_source_snapshot_row(pool: &SqlitePool, captured_at: &str, stats_date: &str) {
@@ -10878,6 +10958,357 @@ async fn pool_route_surfaces_last_upstream_error_when_failover_is_exhausted() {
 }
 
 #[tokio::test]
+async fn capture_target_pool_route_persists_attempt_rows_and_summary_fields() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptRow {
+        upstream_account_id: Option<i64>,
+        attempt_index: i64,
+        distinct_account_index: i64,
+        same_account_retry_index: i64,
+        status: String,
+        http_status: Option<i64>,
+        failure_kind: Option<String>,
+        stream_latency_ms: Option<f64>,
+    }
+
+    #[derive(Debug, sqlx::FromRow)]
+    struct PersistedPayloadRow {
+        payload: Option<String>,
+    }
+
+    let (upstream_base, _attempts, upstream_handle) =
+        spawn_pool_retry_upstream(&[("Bearer upstream-primary", 2)]).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-attempts-001"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read capture response body");
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    for _ in 0..20 {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pool_upstream_request_attempts WHERE invoke_id LIKE 'proxy-%'",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .expect("count attempt rows");
+        if count >= 3 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let attempt_rows = sqlx::query_as::<_, AttemptRow>(
+        r#"
+        SELECT
+            upstream_account_id,
+            attempt_index,
+            distinct_account_index,
+            same_account_retry_index,
+            status,
+            http_status,
+            failure_kind,
+            stream_latency_ms
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load persisted attempt rows");
+    assert_eq!(attempt_rows.len(), 3);
+    assert_eq!(attempt_rows[0].upstream_account_id, Some(primary_id));
+    assert_eq!(attempt_rows[0].attempt_index, 1);
+    assert_eq!(attempt_rows[0].distinct_account_index, 1);
+    assert_eq!(attempt_rows[0].same_account_retry_index, 1);
+    assert_eq!(
+        attempt_rows[0].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
+    );
+    assert_eq!(
+        attempt_rows[0].failure_kind.as_deref(),
+        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX),
+    );
+    assert_eq!(attempt_rows[1].same_account_retry_index, 2);
+    assert_eq!(
+        attempt_rows[1].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
+    );
+    assert_eq!(attempt_rows[2].same_account_retry_index, 3);
+    assert_eq!(
+        attempt_rows[2].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
+    );
+    assert_eq!(attempt_rows[2].http_status, Some(200));
+    assert!(attempt_rows[2].stream_latency_ms.unwrap_or_default() >= 0.0);
+
+    let row = sqlx::query_as::<_, PersistedPayloadRow>(
+        r#"
+        SELECT payload
+        FROM codex_invocations
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load persisted invocation payload");
+    let payload: Value = serde_json::from_str(
+        row.payload
+            .as_deref()
+            .expect("capture payload should be present"),
+    )
+    .expect("decode payload");
+    assert_eq!(payload["poolAttemptCount"].as_i64(), Some(3));
+    assert_eq!(payload["poolDistinctAccountCount"].as_i64(), Some(1));
+    assert!(payload["poolAttemptTerminalReason"].is_null());
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn capture_target_pool_route_stops_after_three_distinct_accounts() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptStatusRow {
+        attempt_index: i64,
+        distinct_account_index: i64,
+        status: String,
+        failure_kind: Option<String>,
+    }
+
+    #[derive(Debug, sqlx::FromRow)]
+    struct PersistedPayloadRow {
+        payload: Option<String>,
+    }
+
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[
+        ("Bearer upstream-primary", 99),
+        ("Bearer upstream-secondary", 99),
+        ("Bearer upstream-tertiary", 99),
+        ("Bearer upstream-quaternary", 0),
+    ])
+    .await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+    insert_test_pool_api_key_account(&state, "Tertiary", "upstream-tertiary").await;
+    insert_test_pool_api_key_account(&state, "Quaternary", "upstream-quaternary").await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-attempts-002"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let _ = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read failure response body");
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    for _ in 0..20 {
+        let count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pool_upstream_request_attempts WHERE invoke_id LIKE 'proxy-%'",
+        )
+        .fetch_one(&state.pool)
+        .await
+        .expect("count budget attempt rows");
+        if count >= 10 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+
+    let attempt_status_rows = sqlx::query_as::<_, AttemptStatusRow>(
+        r#"
+        SELECT attempt_index, distinct_account_index, status, failure_kind
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load attempt status rows");
+    assert_eq!(attempt_status_rows.len(), 10);
+    assert_eq!(attempt_status_rows[8].attempt_index, 9);
+    assert_eq!(attempt_status_rows[8].distinct_account_index, 3);
+    assert_eq!(
+        attempt_status_rows[9].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL,
+    );
+    assert_eq!(attempt_status_rows[9].attempt_index, 10);
+    assert_eq!(attempt_status_rows[9].distinct_account_index, 3);
+    assert_eq!(
+        attempt_status_rows[9].failure_kind.as_deref(),
+        Some(PROXY_FAILURE_POOL_MAX_DISTINCT_ACCOUNTS_EXHAUSTED),
+    );
+
+    let attempts = attempts.lock().expect("lock attempt counters");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(3));
+    assert_eq!(attempts.get("Bearer upstream-tertiary").copied(), Some(3));
+    assert_eq!(attempts.get("Bearer upstream-quaternary").copied(), None);
+    drop(attempts);
+
+    let row = sqlx::query_as::<_, PersistedPayloadRow>(
+        r#"
+        SELECT payload
+        FROM codex_invocations
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load exhausted invocation payload");
+    let payload: Value = serde_json::from_str(
+        row.payload
+            .as_deref()
+            .expect("exhausted payload should be present"),
+    )
+    .expect("decode exhausted payload");
+    assert_eq!(payload["poolAttemptCount"].as_i64(), Some(9));
+    assert_eq!(payload["poolDistinctAccountCount"].as_i64(), Some(3));
+    assert_eq!(
+        payload["poolAttemptTerminalReason"].as_str(),
+        Some(PROXY_FAILURE_POOL_MAX_DISTINCT_ACCOUNTS_EXHAUSTED),
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn capture_target_pool_route_preserves_auth_failure_terminal_reason() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptFailureRow {
+        status: String,
+        http_status: Option<i64>,
+        failure_kind: Option<String>,
+    }
+
+    #[derive(Debug, sqlx::FromRow)]
+    struct PersistedPayloadRow {
+        payload: Option<String>,
+    }
+
+    let (upstream_base, upstream_handle) = spawn_pool_http_failure_upstream(
+        StatusCode::UNAUTHORIZED,
+        Some("invalid_token"),
+        "token expired",
+    )
+    .await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-attempts-auth-001"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let _ = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read auth failure body");
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+
+    let attempt_row = sqlx::query_as::<_, AttemptFailureRow>(
+        r#"
+        SELECT status, http_status, failure_kind
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load auth failure attempt row");
+    assert_eq!(
+        attempt_row.status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
+    );
+    assert_eq!(
+        attempt_row.http_status,
+        Some(i64::from(StatusCode::UNAUTHORIZED.as_u16())),
+    );
+    assert_eq!(
+        attempt_row.failure_kind.as_deref(),
+        Some(PROXY_FAILURE_UPSTREAM_HTTP_AUTH),
+    );
+
+    let row = sqlx::query_as::<_, PersistedPayloadRow>(
+        r#"
+        SELECT payload
+        FROM codex_invocations
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load auth failure invocation payload");
+    let payload: Value = serde_json::from_str(
+        row.payload
+            .as_deref()
+            .expect("auth failure payload should be present"),
+    )
+    .expect("decode auth failure payload");
+    assert_eq!(payload["poolAttemptCount"].as_i64(), Some(1));
+    assert_eq!(payload["poolDistinctAccountCount"].as_i64(), Some(1));
+    assert_eq!(
+        payload["poolAttemptTerminalReason"].as_str(),
+        Some(PROXY_FAILURE_UPSTREAM_HTTP_AUTH),
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn pool_route_marks_oauth_missing_scopes_as_error_and_persists_upstream_details() {
     let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
         .lock()
@@ -11154,6 +11585,7 @@ async fn pool_route_oauth_passthrough_replays_large_file_backed_body() {
             size: body.len(),
         }),
         Duration::from_secs(5),
+        None,
         None,
         Some(account),
         1,
@@ -12072,6 +12504,7 @@ async fn pool_route_large_oauth_responses_falls_back_to_api_key_account() {
         Duration::from_secs(5),
         None,
         None,
+        None,
         1,
     )
     .await
@@ -12149,6 +12582,7 @@ async fn pool_route_oauth_responses_rejects_large_file_backed_rewrite_body() {
             size: body.len(),
         }),
         Duration::from_secs(5),
+        None,
         None,
         Some(account),
         1,
@@ -21906,6 +22340,9 @@ async fn upstream_last_activity_archive_backfill_refreshes_existing_activity_whe
             sha256: sha256_hex_file(&archive_path).expect("archive sha256"),
             row_count: 1,
             upstream_last_activity: vec![(account_id, occurred_at.to_string())],
+            coverage_start_at: None,
+            coverage_end_at: None,
+            archive_expires_at: None,
         };
         let mut tx = pool.begin().await.expect("begin archive batch tx");
         upsert_archive_batch_manifest(tx.as_mut(), &batch)
@@ -21995,6 +22432,9 @@ async fn upstream_last_activity_archive_backfill_refreshes_existing_activity_whe
             sha256: sha256_hex_file(&archive_path).expect("archive sha256"),
             row_count: 1,
             upstream_last_activity: vec![(account_id, occurred_at.to_string())],
+            coverage_start_at: None,
+            coverage_end_at: None,
+            archive_expires_at: None,
         };
         let mut tx = pool.begin().await.expect("begin archive batch tx");
         upsert_archive_batch_manifest(tx.as_mut(), &batch)
@@ -22076,6 +22516,120 @@ async fn retention_archives_forward_proxy_attempts_and_stats_snapshots() {
     .collect();
     assert!(datasets.contains("forward_proxy_attempts"));
     assert!(datasets.contains("stats_source_snapshots"));
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_archives_and_cleans_up_pool_upstream_request_attempts() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("retention-pool-attempts").await;
+    config.pool_upstream_request_attempts_retention_days = 7;
+    config.pool_upstream_request_attempts_archive_ttl_days = 30;
+    config.retention_batch_rows = 10;
+
+    let old_occurred_at = shanghai_local_days_ago(10, 9, 30, 0);
+    let recent_occurred_at = shanghai_local_days_ago(1, 9, 30, 0);
+    insert_retention_pool_upstream_request_attempt(
+        &pool,
+        "retention-pool-attempts-old",
+        &old_occurred_at,
+        Some(7),
+        1,
+        1,
+        1,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+        Some(200),
+        None,
+        Some(&old_occurred_at),
+        Some(&old_occurred_at),
+    )
+    .await;
+    insert_retention_pool_upstream_request_attempt(
+        &pool,
+        "retention-pool-attempts-recent",
+        &recent_occurred_at,
+        Some(8),
+        1,
+        1,
+        1,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+        Some(200),
+        None,
+        Some(&recent_occurred_at),
+        Some(&recent_occurred_at),
+    )
+    .await;
+
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run pool attempt retention");
+    assert_eq!(summary.pool_upstream_request_attempt_rows_archived, 1);
+    assert_eq!(summary.archive_batches_deleted, 0);
+
+    let remaining_old_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pool_upstream_request_attempts WHERE occurred_at < ?1",
+    )
+    .bind(shanghai_local_cutoff_string(
+        config.pool_upstream_request_attempts_retention_days,
+    ))
+    .fetch_one(&pool)
+    .await
+    .expect("count old pool attempt rows");
+    assert_eq!(remaining_old_rows, 0);
+
+    let recent_rows: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM pool_upstream_request_attempts WHERE invoke_id = ?1",
+    )
+    .bind("retention-pool-attempts-recent")
+    .fetch_one(&pool)
+    .await
+    .expect("count recent pool attempt rows");
+    assert_eq!(recent_rows, 1);
+
+    let archive_batch = sqlx::query_as::<_, (String, Option<String>)>(
+        r#"
+        SELECT file_path, archive_expires_at
+        FROM archive_batches
+        WHERE dataset = 'pool_upstream_request_attempts'
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load pool attempt archive batch");
+    let archive_path = PathBuf::from(&archive_batch.0);
+    assert!(archive_path.exists(), "archive file should exist");
+    assert!(
+        archive_batch.1.is_some(),
+        "archive batch should carry expiry"
+    );
+
+    sqlx::query(
+        "UPDATE archive_batches SET archive_expires_at = ?1 WHERE dataset = 'pool_upstream_request_attempts'",
+    )
+    .bind("2000-01-01 00:00:00")
+    .execute(&pool)
+    .await
+    .expect("expire archive batch");
+
+    let cleanup_summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run pool attempt archive ttl cleanup");
+    assert_eq!(cleanup_summary.archive_batches_deleted, 1);
+    assert!(
+        !archive_path.exists(),
+        "expired pool attempt archive file should be removed"
+    );
+
+    let remaining_archive_batches: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM archive_batches WHERE dataset = 'pool_upstream_request_attempts'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count remaining pool attempt archive batches");
+    assert_eq!(remaining_archive_batches, 0);
 
     cleanup_temp_test_dir(&temp_dir);
 }

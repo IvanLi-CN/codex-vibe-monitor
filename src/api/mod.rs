@@ -17,6 +17,9 @@ const INVOCATION_ROUTE_MODE_SQL: &str =
 const INVOCATION_UPSTREAM_ACCOUNT_ID_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
 const INVOCATION_UPSTREAM_ACCOUNT_NAME_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountName') AS TEXT) END";
 const INVOCATION_RESPONSE_CONTENT_ENCODING_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.responseContentEncoding') AS TEXT) END";
+const INVOCATION_POOL_ATTEMPT_COUNT_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.poolAttemptCount') AS INTEGER) END";
+const INVOCATION_POOL_DISTINCT_ACCOUNT_COUNT_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.poolDistinctAccountCount') AS INTEGER) END";
+const INVOCATION_POOL_ATTEMPT_TERMINAL_REASON_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.poolAttemptTerminalReason') AS TEXT) END";
 const PROMPT_CACHE_CONVERSATION_UPSTREAM_ACCOUNT_LIMIT: usize = 3;
 const INVOCATION_STATUS_NORMALIZED_SQL: &str = "LOWER(TRIM(COALESCE(status, '')))";
 
@@ -76,6 +79,21 @@ fn build_invocation_select_query() -> QueryBuilder<'static, Sqlite> {
         .push(INVOCATION_RESPONSE_CONTENT_ENCODING_SQL)
         .push(
             " AS response_content_encoding, \
+         ",
+        )
+        .push(INVOCATION_POOL_ATTEMPT_COUNT_SQL)
+        .push(
+            " AS pool_attempt_count, \
+         ",
+        )
+        .push(INVOCATION_POOL_DISTINCT_ACCOUNT_COUNT_SQL)
+        .push(
+            " AS pool_distinct_account_count, \
+         ",
+        )
+        .push(INVOCATION_POOL_ATTEMPT_TERMINAL_REASON_SQL)
+        .push(
+            " AS pool_attempt_terminal_reason, \
          CASE \
            WHEN json_valid(payload) AND json_type(payload, '$.requestedServiceTier') = 'text' \
              THEN json_extract(payload, '$.requestedServiceTier') \
@@ -308,6 +326,12 @@ fn normalize_query_text(raw: Option<&str>) -> Option<String> {
     raw.map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+}
+
+fn is_pool_route_mode_value(value: &str) -> bool {
+    value
+        .trim()
+        .eq_ignore_ascii_case(INVOCATION_ROUTE_MODE_POOL)
 }
 
 fn escape_sql_like(raw: &str) -> String {
@@ -1117,6 +1141,44 @@ pub(crate) async fn list_invocations(
     }))
 }
 
+pub(crate) async fn fetch_invocation_pool_attempts(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(invoke_id): axum::extract::Path<String>,
+) -> Result<Json<Vec<ApiPoolUpstreamRequestAttempt>>, ApiError> {
+    let Some(invocation) = query_invocation_attempt_lookup(&state.pool, &invoke_id).await? else {
+        return Ok(Json(Vec::new()));
+    };
+    if !invocation
+        .route_mode
+        .as_deref()
+        .is_some_and(is_pool_route_mode_value)
+    {
+        return Ok(Json(Vec::new()));
+    }
+
+    let mut records = query_pool_attempt_records_from_live(&state.pool, &invoke_id).await?;
+    if records.is_empty() {
+        let occurred_at = parse_shanghai_local_naive(&invocation.occurred_at)
+            .with_context(|| {
+                format!(
+                    "failed to parse invocation occurred_at for pool attempts: {}",
+                    invocation.occurred_at
+                )
+            })
+            .map_err(ApiError::bad_request)?;
+        let occurred_at_utc = local_naive_to_utc(occurred_at, Shanghai);
+        let archive_range = ExactUtcRange {
+            start: occurred_at_utc,
+            end: occurred_at_utc + ChronoDuration::seconds(1),
+        };
+        records =
+            query_pool_attempt_records_from_archive_range(&state.pool, &invoke_id, archive_range)
+                .await?;
+    }
+
+    Ok(Json(records))
+}
+
 pub(crate) async fn fetch_invocation_summary(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ListQuery>,
@@ -1576,6 +1638,208 @@ async fn query_archive_batch_paths_for_range(
         .fetch_all(pool)
         .await
         .map_err(Into::into)
+}
+
+async fn load_pool_attempt_account_names(
+    pool: &Pool<Sqlite>,
+    records: &mut [ApiPoolUpstreamRequestAttempt],
+) -> Result<(), ApiError> {
+    let account_ids = records
+        .iter()
+        .filter_map(|record| record.upstream_account_id)
+        .collect::<HashSet<_>>();
+    if account_ids.is_empty() {
+        return Ok(());
+    }
+
+    #[derive(Debug, FromRow)]
+    struct AccountNameRow {
+        id: i64,
+        display_name: String,
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT id, display_name FROM pool_upstream_accounts WHERE id IN (",
+    );
+    {
+        let mut separated = query.separated(", ");
+        for account_id in account_ids {
+            separated.push_bind(account_id);
+        }
+    }
+    query.push(")");
+    let rows = query
+        .build_query_as::<AccountNameRow>()
+        .fetch_all(pool)
+        .await?;
+    let name_map = rows
+        .into_iter()
+        .map(|row| (row.id, row.display_name))
+        .collect::<HashMap<_, _>>();
+    for record in records {
+        if record.upstream_account_name.is_none()
+            && let Some(account_id) = record.upstream_account_id
+        {
+            record.upstream_account_name = name_map.get(&account_id).cloned();
+        }
+    }
+    Ok(())
+}
+
+async fn query_pool_attempt_records_from_archive_range(
+    pool: &Pool<Sqlite>,
+    invoke_id: &str,
+    range: ExactUtcRange,
+) -> Result<Vec<ApiPoolUpstreamRequestAttempt>, ApiError> {
+    let archive_files =
+        query_archive_batch_paths_for_range(pool, "pool_upstream_request_attempts", range).await?;
+    if archive_files.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut records = Vec::new();
+    let mut seen_ids = HashSet::new();
+    for archive_file in archive_files {
+        let archive_path = PathBuf::from(&archive_file.file_path);
+        if !archive_path.exists() {
+            return Err(anyhow!(
+                "required pool_upstream_request_attempts archive batch is missing: {}",
+                archive_path.display()
+            )
+            .into());
+        }
+        let temp_path = PathBuf::from(format!(
+            "{}.{}.sqlite",
+            archive_path.display(),
+            retention_temp_suffix()
+        ));
+        if temp_path.exists() {
+            let _ = fs::remove_file(&temp_path);
+        }
+        let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+        inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
+        let connect_opts = build_sqlite_connect_options(
+            &sqlite_url_for_path(&temp_path),
+            Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
+        )?;
+        let archive_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(connect_opts)
+            .await
+            .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
+        let archived_records = sqlx::query_as::<_, ApiPoolUpstreamRequestAttempt>(
+            r#"
+            SELECT
+                id,
+                invoke_id,
+                occurred_at,
+                endpoint,
+                sticky_key,
+                upstream_account_id,
+                NULL AS upstream_account_name,
+                attempt_index,
+                distinct_account_index,
+                same_account_retry_index,
+                requester_ip,
+                started_at,
+                finished_at,
+                status,
+                http_status,
+                failure_kind,
+                error_message,
+                connect_latency_ms,
+                first_byte_latency_ms,
+                stream_latency_ms,
+                upstream_request_id,
+                created_at
+            FROM pool_upstream_request_attempts
+            WHERE invoke_id = ?1
+            ORDER BY attempt_index ASC, id ASC
+            "#,
+        )
+        .bind(invoke_id)
+        .fetch_all(&archive_pool)
+        .await?;
+        archive_pool.close().await;
+        drop(temp_cleanup);
+
+        for record in archived_records {
+            if seen_ids.insert(record.id) {
+                records.push(record);
+            }
+        }
+    }
+    records.sort_by(|left, right| {
+        left.attempt_index
+            .cmp(&right.attempt_index)
+            .then_with(|| left.id.cmp(&right.id))
+    });
+    load_pool_attempt_account_names(pool, &mut records).await?;
+    Ok(records)
+}
+
+async fn query_pool_attempt_records_from_live(
+    pool: &Pool<Sqlite>,
+    invoke_id: &str,
+) -> Result<Vec<ApiPoolUpstreamRequestAttempt>, ApiError> {
+    let mut records = sqlx::query_as::<_, ApiPoolUpstreamRequestAttempt>(
+        r#"
+        SELECT
+            attempts.id,
+            attempts.invoke_id,
+            attempts.occurred_at,
+            attempts.endpoint,
+            attempts.sticky_key,
+            attempts.upstream_account_id,
+            accounts.display_name AS upstream_account_name,
+            attempts.attempt_index,
+            attempts.distinct_account_index,
+            attempts.same_account_retry_index,
+            attempts.requester_ip,
+            attempts.started_at,
+            attempts.finished_at,
+            attempts.status,
+            attempts.http_status,
+            attempts.failure_kind,
+            attempts.error_message,
+            attempts.connect_latency_ms,
+            attempts.first_byte_latency_ms,
+            attempts.stream_latency_ms,
+            attempts.upstream_request_id,
+            attempts.created_at
+        FROM pool_upstream_request_attempts AS attempts
+        LEFT JOIN pool_upstream_accounts AS accounts
+            ON accounts.id = attempts.upstream_account_id
+        WHERE attempts.invoke_id = ?1
+        ORDER BY attempts.attempt_index ASC, attempts.id ASC
+        "#,
+    )
+    .bind(invoke_id)
+    .fetch_all(pool)
+    .await?;
+    load_pool_attempt_account_names(pool, &mut records).await?;
+    Ok(records)
+}
+
+async fn query_invocation_attempt_lookup(
+    pool: &Pool<Sqlite>,
+    invoke_id: &str,
+) -> Result<Option<InvocationAttemptLookupRow>, ApiError> {
+    sqlx::query_as::<_, InvocationAttemptLookupRow>(
+        r#"
+        SELECT
+            occurred_at,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.routeMode') END AS route_mode
+        FROM codex_invocations
+        WHERE invoke_id = ?1
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(invoke_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(Into::into)
 }
 
 async fn query_invocation_aggregate_records_from_archive_range(
@@ -4343,6 +4607,12 @@ pub(crate) struct ApiInvocation {
     #[sqlx(default)]
     pub(crate) response_content_encoding: Option<String>,
     #[sqlx(default)]
+    pub(crate) pool_attempt_count: Option<i64>,
+    #[sqlx(default)]
+    pub(crate) pool_distinct_account_count: Option<i64>,
+    #[sqlx(default)]
+    pub(crate) pool_attempt_terminal_reason: Option<String>,
+    #[sqlx(default)]
     pub(crate) requested_service_tier: Option<String>,
     #[sqlx(default)]
     pub(crate) service_tier: Option<String>,
@@ -4402,6 +4672,56 @@ pub(crate) struct ListResponse {
     pub(crate) page: i64,
     pub(crate) page_size: i64,
     pub(crate) records: Vec<ApiInvocation>,
+}
+
+#[derive(Debug, Clone, Serialize, FromRow)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ApiPoolUpstreamRequestAttempt {
+    pub(crate) id: i64,
+    pub(crate) invoke_id: String,
+    #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
+    pub(crate) occurred_at: String,
+    pub(crate) endpoint: String,
+    #[sqlx(default)]
+    pub(crate) sticky_key: Option<String>,
+    #[sqlx(default)]
+    pub(crate) upstream_account_id: Option<i64>,
+    #[sqlx(default)]
+    pub(crate) upstream_account_name: Option<String>,
+    pub(crate) attempt_index: i64,
+    pub(crate) distinct_account_index: i64,
+    pub(crate) same_account_retry_index: i64,
+    #[sqlx(default)]
+    pub(crate) requester_ip: Option<String>,
+    #[sqlx(default)]
+    #[serde(serialize_with = "serialize_opt_local_or_utc_to_utc_iso")]
+    pub(crate) started_at: Option<String>,
+    #[sqlx(default)]
+    #[serde(serialize_with = "serialize_opt_local_or_utc_to_utc_iso")]
+    pub(crate) finished_at: Option<String>,
+    pub(crate) status: String,
+    #[sqlx(default)]
+    pub(crate) http_status: Option<i64>,
+    #[sqlx(default)]
+    pub(crate) failure_kind: Option<String>,
+    #[sqlx(default)]
+    pub(crate) error_message: Option<String>,
+    #[sqlx(default)]
+    pub(crate) connect_latency_ms: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) first_byte_latency_ms: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) stream_latency_ms: Option<f64>,
+    #[sqlx(default)]
+    pub(crate) upstream_request_id: Option<String>,
+    #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
+    pub(crate) created_at: String,
+}
+
+#[derive(Debug, FromRow)]
+struct InvocationAttemptLookupRow {
+    occurred_at: String,
+    route_mode: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
