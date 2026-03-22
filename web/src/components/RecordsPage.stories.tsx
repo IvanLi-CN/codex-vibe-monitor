@@ -384,7 +384,7 @@ export const AutocompleteSuppressedFilters: Story = {
 
     const modelInput = doc.querySelector('#records-filter-model')
     const keywordInput = doc.querySelector('input[name="keyword"]')
-    const statusSelect = doc.querySelector('select[name="status"]')
+    const statusSelect = within(canvasElement).getByRole('button', { name: /状态|status/i })
 
     if (!(modelInput instanceof HTMLInputElement)) {
       throw new Error('missing records model combobox input')
@@ -392,8 +392,8 @@ export const AutocompleteSuppressedFilters: Story = {
     if (!(keywordInput instanceof HTMLInputElement)) {
       throw new Error('missing records keyword input')
     }
-    if (!(statusSelect instanceof HTMLSelectElement)) {
-      throw new Error('missing records status select')
+    if (!(statusSelect instanceof HTMLButtonElement)) {
+      throw new Error('missing records status trigger')
     }
 
     await expect(modelInput.getAttribute('autocomplete')).toBe('off')
@@ -406,7 +406,7 @@ export const AutocompleteSuppressedFilters: Story = {
     await expect(keywordInput.getAttribute('autocapitalize')).toBe('none')
     await expect(keywordInput.getAttribute('spellcheck')).toBe('false')
 
-    await expect(statusSelect.getAttribute('autocomplete')).toBe('off')
+    await expect(doc.querySelector('select[name="status"]')).toBeNull()
 
     await userEvent.click(modelInput)
 

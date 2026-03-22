@@ -20,6 +20,7 @@ import { FormFieldFeedback } from '../../components/ui/form-field-feedback'
 import { Input } from '../../components/ui/input'
 import { Popover, PopoverArrow, PopoverContent, PopoverTrigger } from '../../components/ui/popover'
 import { OverlayHostProvider } from '../../components/ui/overlay-host'
+import { SelectField } from '../../components/ui/select-field'
 import { MotherAccountBadge, MotherAccountToggle } from '../../components/MotherAccountToggle'
 import { Spinner } from '../../components/ui/spinner'
 import { Switch } from '../../components/ui/switch'
@@ -1684,21 +1685,18 @@ export default function UpstreamAccountsPage() {
                       <CardTitle>{t('accountPool.upstreamAccounts.stickyConversations.title')}</CardTitle>
                       <CardDescription>{t('accountPool.upstreamAccounts.stickyConversations.description')}</CardDescription>
                     </div>
-                    <label className="field w-36">
-                      <span className="field-label">{t('accountPool.upstreamAccounts.stickyConversations.limitLabel')}</span>
-                      <select
-                        name="stickyConversationLimit"
-                        className="field-select field-select-sm"
-                        value={stickyConversationLimit}
-                        onChange={(event) => setStickyConversationLimit(Number(event.target.value))}
-                      >
-                        {STICKY_CONVERSATION_LIMIT_OPTIONS.map((value) => (
-                          <option key={value} value={value}>
-                            {t('accountPool.upstreamAccounts.stickyConversations.limitOption', { count: value })}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
+                    <SelectField
+                      label={t('accountPool.upstreamAccounts.stickyConversations.limitLabel')}
+                      className="w-36"
+                      name="stickyConversationLimit"
+                      size="sm"
+                      value={String(stickyConversationLimit)}
+                      options={STICKY_CONVERSATION_LIMIT_OPTIONS.map((value) => ({
+                        value: String(value),
+                        label: t('accountPool.upstreamAccounts.stickyConversations.limitOption', { count: value }),
+                      }))}
+                      onValueChange={(value) => setStickyConversationLimit(Number(value))}
+                    />
                   </CardHeader>
                   <CardContent>
                     <StickyKeyConversationTable
