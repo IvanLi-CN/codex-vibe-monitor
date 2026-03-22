@@ -97,7 +97,7 @@
 - submission_gate: approved
 - story_id_or_title: Monitoring/PromptCacheConversationTable / Populated
 - state: populated desktop table
-- evidence_note: 验证 Prompt Cache 对话表在桌面端的上游账号紧凑统计、总计三行展示、时间合并列和调整后的列宽对齐效果。
+- evidence_note: 验证 Prompt Cache 对话表在桌面端的上游账号紧凑统计、总计三行展示，以及时间列在 Storybook mock 画面中可完整显示。
 - image:
   ![Prompt Cache 对话表 Populated Story](./assets/prompt-cache-conversation-table-populated.png)
 
