@@ -13,7 +13,7 @@ use base64::engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_P
 use futures_util::FutureExt;
 use rand::{Rng, RngCore, rngs::OsRng};
 use sqlx::Transaction;
-use std::{any::Any, panic::AssertUnwindSafe};
+use std::{any::Any, collections::BTreeSet, panic::AssertUnwindSafe};
 pub(crate) const ENV_UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET: &str =
     "UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET";
 pub(crate) const ENV_UPSTREAM_ACCOUNTS_OAUTH_CLIENT_ID: &str = "UPSTREAM_ACCOUNTS_OAUTH_CLIENT_ID";
@@ -54,6 +54,23 @@ const UPSTREAM_ACCOUNT_STATUS_SYNCING: &str = "syncing";
 const UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH: &str = "needs_reauth";
 const UPSTREAM_ACCOUNT_STATUS_ERROR: &str = "error";
 const UPSTREAM_ACCOUNT_STATUS_DISABLED: &str = "disabled";
+const UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE: &str = "upstream_unavailable";
+const UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED: &str = "upstream_rejected";
+const UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER: &str = "error_other";
+const BULK_UPSTREAM_ACCOUNT_ACTION_ENABLE: &str = "enable";
+const BULK_UPSTREAM_ACCOUNT_ACTION_DISABLE: &str = "disable";
+const BULK_UPSTREAM_ACCOUNT_ACTION_DELETE: &str = "delete";
+const BULK_UPSTREAM_ACCOUNT_ACTION_SET_GROUP: &str = "set_group";
+const BULK_UPSTREAM_ACCOUNT_ACTION_ADD_TAGS: &str = "add_tags";
+const BULK_UPSTREAM_ACCOUNT_ACTION_REMOVE_TAGS: &str = "remove_tags";
+const BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_PENDING: &str = "pending";
+const BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_SUCCEEDED: &str = "succeeded";
+const BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_FAILED: &str = "failed";
+const BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_SKIPPED: &str = "skipped";
+const BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_RUNNING: &str = "running";
+const BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_COMPLETED: &str = "completed";
+const BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_FAILED: &str = "failed";
+const BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_CANCELLED: &str = "cancelled";
 const LOGIN_SESSION_STATUS_PENDING: &str = "pending";
 const LOGIN_SESSION_STATUS_COMPLETED: &str = "completed";
 const LOGIN_SESSION_STATUS_FAILED: &str = "failed";
@@ -74,6 +91,8 @@ const DEFAULT_USAGE_LIMIT_ID: &str = "codex";
 const DEFAULT_API_KEY_LIMIT_UNIT: &str = "requests";
 const POOL_SETTINGS_SINGLETON_ID: i64 = 1;
 const DEFAULT_STICKY_KEY_LIMIT: i64 = 50;
+const DEFAULT_UPSTREAM_ACCOUNT_LIST_PAGE_SIZE: usize = 20;
+const UPSTREAM_ACCOUNT_LIST_PAGE_SIZE_OPTIONS: [usize; 3] = [20, 50, 100];
 const POOL_ROUTE_ACTIVE_STICKY_WINDOW_MINUTES: i64 = 30;
 const POOL_ROUTE_ACTIVE_STICKY_SOFT_LIMIT: i64 = 2;
 const USAGE_PATH_STYLE_CHATGPT: &str = "/wham/usage";
@@ -85,6 +104,8 @@ pub(crate) struct UpstreamAccountsRuntime {
     pub(crate) crypto_key: Option<[u8; 32]>,
     account_ops: AccountOpCoordinator,
     validation_jobs: Arc<Mutex<HashMap<String, Arc<ImportedOauthValidationJob>>>>,
+    bulk_sync_jobs: Arc<Mutex<HashMap<String, Arc<BulkUpstreamAccountSyncJob>>>>,
+    bulk_sync_creation: Arc<Mutex<()>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -226,6 +247,8 @@ impl UpstreamAccountsRuntime {
             crypto_key,
             account_ops: AccountOpCoordinator::default(),
             validation_jobs: Arc::new(Mutex::new(HashMap::new())),
+            bulk_sync_jobs: Arc::new(Mutex::new(HashMap::new())),
+            bulk_sync_creation: Arc::new(Mutex::new(())),
         })
     }
 
@@ -260,6 +283,8 @@ impl UpstreamAccountsRuntime {
             crypto_key: Some(derive_secret_key("test-upstream-account-secret")),
             account_ops: AccountOpCoordinator::new(maintenance_parallelism),
             validation_jobs: Arc::new(Mutex::new(HashMap::new())),
+            bulk_sync_jobs: Arc::new(Mutex::new(HashMap::new())),
+            bulk_sync_creation: Arc::new(Mutex::new(())),
         }
     }
 
@@ -273,6 +298,28 @@ impl UpstreamAccountsRuntime {
 
     async fn remove_validation_job(&self, job_id: &str) -> Option<Arc<ImportedOauthValidationJob>> {
         self.validation_jobs.lock().await.remove(job_id)
+    }
+
+    async fn insert_bulk_sync_job(&self, job_id: String, job: Arc<BulkUpstreamAccountSyncJob>) {
+        self.bulk_sync_jobs.lock().await.insert(job_id, job);
+    }
+
+    async fn get_bulk_sync_job(&self, job_id: &str) -> Option<Arc<BulkUpstreamAccountSyncJob>> {
+        self.bulk_sync_jobs.lock().await.get(job_id).cloned()
+    }
+
+    async fn get_running_bulk_sync_job(&self) -> Option<(String, Arc<BulkUpstreamAccountSyncJob>)> {
+        let jobs = self.bulk_sync_jobs.lock().await;
+        for (job_id, job) in jobs.iter() {
+            if job.terminal_event.lock().await.is_none() {
+                return Some((job_id.clone(), job.clone()));
+            }
+        }
+        None
+    }
+
+    async fn remove_bulk_sync_job(&self, job_id: &str) -> Option<Arc<BulkUpstreamAccountSyncJob>> {
+        self.bulk_sync_jobs.lock().await.remove(job_id)
     }
 
     pub(crate) async fn drain_background_tasks(&self) {
@@ -681,9 +728,22 @@ fn map_account_dispatch_anyhow(err: AccountCommandDispatchError<anyhow::Error>) 
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct UpstreamAccountListMetrics {
+    total: usize,
+    oauth: usize,
+    api_key: usize,
+    attention: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct UpstreamAccountListResponse {
     writes_enabled: bool,
     items: Vec<UpstreamAccountSummary>,
+    total: usize,
+    page: usize,
+    page_size: usize,
+    metrics: UpstreamAccountListMetrics,
     groups: Vec<UpstreamAccountGroupSummary>,
     has_ungrouped_accounts: bool,
     routing: PoolRoutingSettingsResponse,
@@ -694,6 +754,9 @@ pub(crate) struct UpstreamAccountListResponse {
 pub(crate) struct ListUpstreamAccountsQuery {
     pub(crate) group_search: Option<String>,
     pub(crate) group_ungrouped: Option<bool>,
+    pub(crate) status: Option<String>,
+    pub(crate) page: Option<usize>,
+    pub(crate) page_size: Option<usize>,
     #[serde(default)]
     pub(crate) tag_ids: Vec<i64>,
 }
@@ -794,6 +857,7 @@ pub(crate) struct UpstreamAccountSummary {
     group_name: Option<String>,
     is_mother: bool,
     status: String,
+    display_status: String,
     enabled: bool,
     email: Option<String>,
     chatgpt_account_id: Option<String>,
@@ -1159,6 +1223,134 @@ impl ImportedOauthValidationJob {
         Self {
             snapshot: Mutex::new(snapshot),
             validated_imports: Mutex::new(HashMap::new()),
+            broadcaster,
+            cancel: CancellationToken::new(),
+            terminal_event: Mutex::new(None),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BulkUpstreamAccountActionRequest {
+    account_ids: Vec<i64>,
+    action: String,
+    group_name: Option<String>,
+    #[serde(default)]
+    tag_ids: Vec<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BulkUpstreamAccountActionResponse {
+    action: String,
+    requested_count: usize,
+    completed_count: usize,
+    succeeded_count: usize,
+    failed_count: usize,
+    results: Vec<BulkUpstreamAccountActionResult>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BulkUpstreamAccountActionResult {
+    account_id: i64,
+    display_name: Option<String>,
+    status: String,
+    detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BulkUpstreamAccountSyncJobRequest {
+    account_ids: Vec<i64>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BulkUpstreamAccountSyncCounts {
+    total: usize,
+    completed: usize,
+    succeeded: usize,
+    failed: usize,
+    skipped: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BulkUpstreamAccountSyncRow {
+    account_id: i64,
+    display_name: String,
+    status: String,
+    detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BulkUpstreamAccountSyncSnapshot {
+    job_id: String,
+    status: String,
+    rows: Vec<BulkUpstreamAccountSyncRow>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BulkUpstreamAccountSyncJobResponse {
+    job_id: String,
+    snapshot: BulkUpstreamAccountSyncSnapshot,
+    counts: BulkUpstreamAccountSyncCounts,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BulkUpstreamAccountSyncRowEvent {
+    row: BulkUpstreamAccountSyncRow,
+    counts: BulkUpstreamAccountSyncCounts,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BulkUpstreamAccountSyncSnapshotEvent {
+    snapshot: BulkUpstreamAccountSyncSnapshot,
+    counts: BulkUpstreamAccountSyncCounts,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BulkUpstreamAccountSyncFailedEvent {
+    snapshot: BulkUpstreamAccountSyncSnapshot,
+    counts: BulkUpstreamAccountSyncCounts,
+    error: String,
+}
+
+#[derive(Debug, Clone)]
+enum BulkUpstreamAccountSyncTerminalEvent {
+    Completed(BulkUpstreamAccountSyncSnapshotEvent),
+    Failed(BulkUpstreamAccountSyncFailedEvent),
+    Cancelled(BulkUpstreamAccountSyncSnapshotEvent),
+}
+
+#[derive(Debug, Clone)]
+enum BulkUpstreamAccountSyncJobEvent {
+    Row(BulkUpstreamAccountSyncRowEvent),
+    Completed(BulkUpstreamAccountSyncSnapshotEvent),
+    Failed(BulkUpstreamAccountSyncFailedEvent),
+    Cancelled(BulkUpstreamAccountSyncSnapshotEvent),
+}
+
+#[derive(Debug)]
+struct BulkUpstreamAccountSyncJob {
+    snapshot: Mutex<BulkUpstreamAccountSyncSnapshot>,
+    broadcaster: broadcast::Sender<BulkUpstreamAccountSyncJobEvent>,
+    cancel: CancellationToken,
+    terminal_event: Mutex<Option<BulkUpstreamAccountSyncTerminalEvent>>,
+}
+
+impl BulkUpstreamAccountSyncJob {
+    fn new(snapshot: BulkUpstreamAccountSyncSnapshot) -> Self {
+        let (broadcaster, _rx) = broadcast::channel(256);
+        Self {
+            snapshot: Mutex::new(snapshot),
             broadcaster,
             cancel: CancellationToken::new(),
             terminal_event: Mutex::new(None),
@@ -2067,9 +2259,23 @@ pub(crate) async fn list_upstream_accounts(
     expire_pending_login_sessions(&state.pool)
         .await
         .map_err(internal_error_tuple)?;
-    let items = load_upstream_account_summaries_filtered(&state.pool, &params)
+    let page = normalize_upstream_account_list_page(params.page);
+    let page_size = normalize_upstream_account_list_page_size(params.page_size);
+    let all_items = load_upstream_account_summaries_filtered(&state.pool, &params)
         .await
         .map_err(internal_error_tuple)?;
+    let total = all_items.len();
+    let metrics = build_upstream_account_list_metrics(&all_items);
+    let offset = page.saturating_sub(1).saturating_mul(page_size);
+    let items = if offset >= total {
+        Vec::new()
+    } else {
+        all_items
+            .into_iter()
+            .skip(offset)
+            .take(page_size)
+            .collect::<Vec<_>>()
+    };
     let groups = load_upstream_account_groups(&state.pool)
         .await
         .map_err(internal_error_tuple)?;
@@ -2082,6 +2288,10 @@ pub(crate) async fn list_upstream_accounts(
     Ok(Json(UpstreamAccountListResponse {
         writes_enabled: state.upstream_accounts.writes_enabled(),
         items,
+        total,
+        page,
+        page_size,
+        metrics,
         groups,
         has_ungrouped_accounts,
         routing: PoolRoutingSettingsResponse {
@@ -2364,6 +2574,43 @@ fn build_imported_oauth_snapshot_event(
     ImportedOauthValidationSnapshotEvent { snapshot, counts }
 }
 
+fn compute_bulk_upstream_account_sync_counts(
+    rows: &[BulkUpstreamAccountSyncRow],
+) -> BulkUpstreamAccountSyncCounts {
+    let mut counts = BulkUpstreamAccountSyncCounts {
+        total: rows.len(),
+        completed: 0,
+        succeeded: 0,
+        failed: 0,
+        skipped: 0,
+    };
+    for row in rows {
+        match row.status.as_str() {
+            BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_SUCCEEDED => {
+                counts.succeeded += 1;
+                counts.completed += 1;
+            }
+            BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_FAILED => {
+                counts.failed += 1;
+                counts.completed += 1;
+            }
+            BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_SKIPPED => {
+                counts.skipped += 1;
+                counts.completed += 1;
+            }
+            _ => {}
+        }
+    }
+    counts
+}
+
+fn build_bulk_upstream_account_sync_snapshot_event(
+    snapshot: BulkUpstreamAccountSyncSnapshot,
+) -> BulkUpstreamAccountSyncSnapshotEvent {
+    let counts = compute_bulk_upstream_account_sync_counts(&snapshot.rows);
+    BulkUpstreamAccountSyncSnapshotEvent { snapshot, counts }
+}
+
 fn imported_oauth_sse_event<T: Serialize>(event_name: &str, payload: &T) -> Option<Event> {
     match Event::default().event(event_name).json_data(payload) {
         Ok(event) => Some(event),
@@ -2371,6 +2618,22 @@ fn imported_oauth_sse_event<T: Serialize>(event_name: &str, payload: &T) -> Opti
             warn!(
                 ?err,
                 event_name, "failed to serialize imported oauth validation event"
+            );
+            None
+        }
+    }
+}
+
+fn bulk_upstream_account_sync_sse_event<T: Serialize>(
+    event_name: &str,
+    payload: &T,
+) -> Option<Event> {
+    match Event::default().event(event_name).json_data(payload) {
+        Ok(event) => Some(event),
+        Err(err) => {
+            warn!(
+                ?err,
+                event_name, "failed to serialize bulk upstream account sync event"
             );
             None
         }
@@ -2389,6 +2652,22 @@ fn imported_oauth_terminal_event_to_sse(
         }
         ImportedOauthValidationTerminalEvent::Cancelled(payload) => {
             imported_oauth_sse_event("cancelled", payload)
+        }
+    }
+}
+
+fn bulk_upstream_account_sync_terminal_event_to_sse(
+    terminal: &BulkUpstreamAccountSyncTerminalEvent,
+) -> Option<Event> {
+    match terminal {
+        BulkUpstreamAccountSyncTerminalEvent::Completed(payload) => {
+            bulk_upstream_account_sync_sse_event("completed", payload)
+        }
+        BulkUpstreamAccountSyncTerminalEvent::Failed(payload) => {
+            bulk_upstream_account_sync_sse_event("failed", payload)
+        }
+        BulkUpstreamAccountSyncTerminalEvent::Cancelled(payload) => {
+            bulk_upstream_account_sync_sse_event("cancelled", payload)
         }
     }
 }
@@ -2574,6 +2853,105 @@ async fn finish_imported_oauth_validation_job_cancelled(job: &Arc<ImportedOauthV
     .await;
 }
 
+async fn update_bulk_upstream_account_sync_job_row(
+    job: &Arc<BulkUpstreamAccountSyncJob>,
+    row: BulkUpstreamAccountSyncRow,
+) {
+    let counts = {
+        let mut snapshot = job.snapshot.lock().await;
+        if let Some(target) = snapshot
+            .rows
+            .iter_mut()
+            .find(|candidate| candidate.account_id == row.account_id)
+        {
+            *target = row.clone();
+        } else {
+            return;
+        }
+        compute_bulk_upstream_account_sync_counts(&snapshot.rows)
+    };
+    let _ = job.broadcaster.send(BulkUpstreamAccountSyncJobEvent::Row(
+        BulkUpstreamAccountSyncRowEvent { row, counts },
+    ));
+}
+
+async fn set_bulk_upstream_account_sync_job_terminal(
+    job: &Arc<BulkUpstreamAccountSyncJob>,
+    terminal: BulkUpstreamAccountSyncTerminalEvent,
+) {
+    let next_status = match &terminal {
+        BulkUpstreamAccountSyncTerminalEvent::Completed(_) => {
+            BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_COMPLETED
+        }
+        BulkUpstreamAccountSyncTerminalEvent::Failed(_) => {
+            BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_FAILED
+        }
+        BulkUpstreamAccountSyncTerminalEvent::Cancelled(_) => {
+            BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_CANCELLED
+        }
+    };
+    {
+        let mut guard = job.terminal_event.lock().await;
+        if guard.is_some() {
+            return;
+        }
+        *guard = Some(terminal.clone());
+    }
+    {
+        let mut snapshot = job.snapshot.lock().await;
+        snapshot.status = next_status.to_string();
+    }
+    let _ = job.broadcaster.send(match terminal {
+        BulkUpstreamAccountSyncTerminalEvent::Completed(payload) => {
+            BulkUpstreamAccountSyncJobEvent::Completed(payload)
+        }
+        BulkUpstreamAccountSyncTerminalEvent::Failed(payload) => {
+            BulkUpstreamAccountSyncJobEvent::Failed(payload)
+        }
+        BulkUpstreamAccountSyncTerminalEvent::Cancelled(payload) => {
+            BulkUpstreamAccountSyncJobEvent::Cancelled(payload)
+        }
+    });
+}
+
+async fn finish_bulk_upstream_account_sync_job_completed(job: &Arc<BulkUpstreamAccountSyncJob>) {
+    let snapshot = { job.snapshot.lock().await.clone() };
+    set_bulk_upstream_account_sync_job_terminal(
+        job,
+        BulkUpstreamAccountSyncTerminalEvent::Completed(
+            build_bulk_upstream_account_sync_snapshot_event(snapshot),
+        ),
+    )
+    .await;
+}
+
+async fn finish_bulk_upstream_account_sync_job_failed(
+    job: &Arc<BulkUpstreamAccountSyncJob>,
+    error: String,
+) {
+    let snapshot = { job.snapshot.lock().await.clone() };
+    set_bulk_upstream_account_sync_job_terminal(
+        job,
+        BulkUpstreamAccountSyncTerminalEvent::Failed(BulkUpstreamAccountSyncFailedEvent {
+            counts: compute_bulk_upstream_account_sync_counts(&snapshot.rows),
+            snapshot,
+            error,
+        }),
+    )
+    .await;
+}
+
+async fn finish_bulk_upstream_account_sync_job_cancelled(job: &Arc<BulkUpstreamAccountSyncJob>) {
+    let snapshot = { job.snapshot.lock().await.clone() };
+    set_bulk_upstream_account_sync_job_terminal(
+        job,
+        BulkUpstreamAccountSyncTerminalEvent::Cancelled(
+            build_bulk_upstream_account_sync_snapshot_event(snapshot),
+        ),
+    )
+    .await;
+}
+
 fn schedule_imported_oauth_validation_job_cleanup(
     runtime: Arc<UpstreamAccountsRuntime>,
     job_id: String,
@@ -2586,6 +2964,22 @@ fn schedule_imported_oauth_validation_job_cleanup(
         };
         if should_remove {
             runtime.remove_validation_job(&job_id).await;
+        }
+    });
+}
+
+fn schedule_bulk_upstream_account_sync_job_cleanup(
+    runtime: Arc<UpstreamAccountsRuntime>,
+    job_id: String,
+) {
+    tokio::spawn(async move {
+        sleep(Duration::from_secs(15 * 60)).await;
+        let should_remove = match runtime.get_bulk_sync_job(&job_id).await {
+            Some(job) => job.terminal_event.lock().await.is_some(),
+            None => false,
+        };
+        if should_remove {
+            runtime.remove_bulk_sync_job(&job_id).await;
         }
     });
 }
@@ -2715,6 +3109,114 @@ fn spawn_imported_oauth_validation_job(
     });
 }
 
+fn spawn_bulk_upstream_account_sync_job(
+    state: Arc<AppState>,
+    runtime: Arc<UpstreamAccountsRuntime>,
+    job_id: String,
+    account_ids: Vec<i64>,
+    job: Arc<BulkUpstreamAccountSyncJob>,
+) {
+    tokio::spawn(async move {
+        let run_result: Result<(), String> = async {
+            for account_id in account_ids {
+                if job.cancel.is_cancelled() {
+                    finish_bulk_upstream_account_sync_job_cancelled(&job).await;
+                    return Ok(());
+                }
+
+                let maybe_row = load_upstream_account_row(&state.pool, account_id)
+                    .await
+                    .map_err(|err| err.to_string())?;
+                let Some(row) = maybe_row else {
+                    update_bulk_upstream_account_sync_job_row(
+                        &job,
+                        BulkUpstreamAccountSyncRow {
+                            account_id,
+                            display_name: format!("Account {account_id}"),
+                            status: BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_FAILED.to_string(),
+                            detail: Some("account not found".to_string()),
+                        },
+                    )
+                    .await;
+                    continue;
+                };
+
+                if row.enabled == 0 {
+                    update_bulk_upstream_account_sync_job_row(
+                        &job,
+                        BulkUpstreamAccountSyncRow {
+                            account_id,
+                            display_name: row.display_name.clone(),
+                            status: BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_SKIPPED.to_string(),
+                            detail: Some("disabled accounts cannot be synced".to_string()),
+                        },
+                    )
+                    .await;
+                    continue;
+                }
+
+                let sync_result = state
+                    .upstream_accounts
+                    .account_ops
+                    .run_manual_sync(state.clone(), account_id)
+                    .await;
+                let (status, detail) = match sync_result {
+                    Ok(detail)
+                        if detail.summary.display_status == UPSTREAM_ACCOUNT_STATUS_ACTIVE =>
+                    {
+                        (BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_SUCCEEDED, None)
+                    }
+                    Ok(detail) => (
+                        BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_FAILED,
+                        detail.summary.last_error.clone().or_else(|| {
+                            Some(format!(
+                                "sync finished with status {}",
+                                detail.summary.display_status
+                            ))
+                        }),
+                    ),
+                    Err(err) => (
+                        BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_FAILED,
+                        Some(err.to_string()),
+                    ),
+                };
+                update_bulk_upstream_account_sync_job_row(
+                    &job,
+                    BulkUpstreamAccountSyncRow {
+                        account_id,
+                        display_name: row.display_name,
+                        status: status.to_string(),
+                        detail,
+                    },
+                )
+                .await;
+            }
+
+            finish_bulk_upstream_account_sync_job_completed(&job).await;
+            Ok(())
+        }
+        .await;
+
+        if let Err(err) = run_result {
+            finish_bulk_upstream_account_sync_job_failed(&job, err).await;
+        }
+
+        schedule_bulk_upstream_account_sync_job_cleanup(runtime, job_id);
+    });
+}
+
+async fn build_bulk_upstream_account_sync_job_response(
+    job_id: String,
+    job: &Arc<BulkUpstreamAccountSyncJob>,
+) -> BulkUpstreamAccountSyncJobResponse {
+    let snapshot = { job.snapshot.lock().await.clone() };
+    BulkUpstreamAccountSyncJobResponse {
+        job_id,
+        counts: compute_bulk_upstream_account_sync_counts(&snapshot.rows),
+        snapshot,
+    }
+}
+
 pub(crate) async fn create_imported_oauth_validation_job(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -2744,6 +3246,53 @@ pub(crate) async fn create_imported_oauth_validation_job(
     Ok(Json(ImportedOauthValidationJobResponse {
         job_id,
         snapshot,
+    }))
+}
+
+pub(crate) async fn create_bulk_upstream_account_sync_job(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<BulkUpstreamAccountSyncJobRequest>,
+) -> Result<Json<BulkUpstreamAccountSyncJobResponse>, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin account writes are forbidden".to_string(),
+        ));
+    }
+    let account_ids = normalize_bulk_upstream_account_ids(&payload.account_ids)?;
+    let _creation_guard = state.upstream_accounts.bulk_sync_creation.lock().await;
+    if let Some((job_id, job)) = state.upstream_accounts.get_running_bulk_sync_job().await {
+        return Ok(Json(
+            build_bulk_upstream_account_sync_job_response(job_id, &job).await,
+        ));
+    }
+    let job_id = random_hex(16)?;
+    let snapshot = BulkUpstreamAccountSyncSnapshot {
+        job_id: job_id.clone(),
+        status: BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_RUNNING.to_string(),
+        rows: build_bulk_upstream_account_sync_pending_rows(&state.pool, &account_ids)
+            .await
+            .map_err(internal_error_tuple)?,
+    };
+    let counts = compute_bulk_upstream_account_sync_counts(&snapshot.rows);
+    let job = Arc::new(BulkUpstreamAccountSyncJob::new(snapshot.clone()));
+    state
+        .upstream_accounts
+        .insert_bulk_sync_job(job_id.clone(), job.clone())
+        .await;
+    drop(_creation_guard);
+    spawn_bulk_upstream_account_sync_job(
+        state.clone(),
+        state.upstream_accounts.clone(),
+        job_id.clone(),
+        account_ids,
+        job,
+    );
+    Ok(Json(BulkUpstreamAccountSyncJobResponse {
+        job_id,
+        snapshot,
+        counts,
     }))
 }
 
@@ -2812,6 +3361,81 @@ pub(crate) async fn stream_imported_oauth_validation_job_events(
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
 }
 
+pub(crate) async fn get_bulk_upstream_account_sync_job(
+    State(state): State<Arc<AppState>>,
+    AxumPath(job_id): AxumPath<String>,
+) -> Result<Json<BulkUpstreamAccountSyncJobResponse>, (StatusCode, String)> {
+    let job = state
+        .upstream_accounts
+        .get_bulk_sync_job(&job_id)
+        .await
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "bulk sync job not found".to_string()))?;
+    Ok(Json(
+        build_bulk_upstream_account_sync_job_response(job_id, &job).await,
+    ))
+}
+
+pub(crate) async fn stream_bulk_upstream_account_sync_job_events(
+    State(state): State<Arc<AppState>>,
+    AxumPath(job_id): AxumPath<String>,
+) -> Result<Sse<impl futures_util::Stream<Item = Result<Event, Infallible>>>, (StatusCode, String)>
+{
+    let job = state
+        .upstream_accounts
+        .get_bulk_sync_job(&job_id)
+        .await
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "bulk sync job not found".to_string()))?;
+    let snapshot = { job.snapshot.lock().await.clone() };
+    let terminal = { job.terminal_event.lock().await.clone() };
+    let initial_events = {
+        let mut events = Vec::new();
+        if let Some(event) = bulk_upstream_account_sync_sse_event(
+            "snapshot",
+            &build_bulk_upstream_account_sync_snapshot_event(snapshot),
+        ) {
+            events.push(Ok(event));
+        }
+        if let Some(terminal_event) = terminal
+            .as_ref()
+            .and_then(bulk_upstream_account_sync_terminal_event_to_sse)
+        {
+            events.push(Ok(terminal_event));
+        }
+        stream::iter(events)
+    };
+    let job_id_for_updates = job_id.clone();
+    let updates = BroadcastStream::new(job.broadcaster.subscribe()).filter_map(move |message| {
+        let lagged_job_id = job_id_for_updates.clone();
+        async move {
+            match message {
+                Ok(BulkUpstreamAccountSyncJobEvent::Row(payload)) => {
+                    bulk_upstream_account_sync_sse_event("row", &payload).map(Ok)
+                }
+                Ok(BulkUpstreamAccountSyncJobEvent::Completed(payload)) => {
+                    bulk_upstream_account_sync_sse_event("completed", &payload).map(Ok)
+                }
+                Ok(BulkUpstreamAccountSyncJobEvent::Failed(payload)) => {
+                    bulk_upstream_account_sync_sse_event("failed", &payload).map(Ok)
+                }
+                Ok(BulkUpstreamAccountSyncJobEvent::Cancelled(payload)) => {
+                    bulk_upstream_account_sync_sse_event("cancelled", &payload).map(Ok)
+                }
+                Err(err) => {
+                    warn!(
+                        ?err,
+                        job_id = lagged_job_id,
+                        "bulk upstream account sync sse lagging"
+                    );
+                    None
+                }
+            }
+        }
+    });
+
+    Ok(Sse::new(initial_events.chain(updates))
+        .keep_alive(KeepAlive::new().interval(Duration::from_secs(15))))
+}
+
 pub(crate) async fn cancel_imported_oauth_validation_job(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -2837,6 +3461,100 @@ pub(crate) async fn cancel_imported_oauth_validation_job(
 
     job.cancel.cancel();
     Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn cancel_bulk_upstream_account_sync_job(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(job_id): AxumPath<String>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin account writes are forbidden".to_string(),
+        ));
+    }
+    let Some(job) = state.upstream_accounts.get_bulk_sync_job(&job_id).await else {
+        return Err((StatusCode::NOT_FOUND, "bulk sync job not found".to_string()));
+    };
+
+    if job.terminal_event.lock().await.is_some() {
+        state.upstream_accounts.remove_bulk_sync_job(&job_id).await;
+        return Ok(StatusCode::NO_CONTENT);
+    }
+
+    job.cancel.cancel();
+    Ok(StatusCode::NO_CONTENT)
+}
+
+pub(crate) async fn bulk_update_upstream_accounts(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    Json(payload): Json<BulkUpstreamAccountActionRequest>,
+) -> Result<Json<BulkUpstreamAccountActionResponse>, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin account writes are forbidden".to_string(),
+        ));
+    }
+    state.upstream_accounts.require_crypto_key()?;
+    let action = normalize_bulk_upstream_account_action(&payload.action)?;
+    let account_ids = normalize_bulk_upstream_account_ids(&payload.account_ids)?;
+    let normalized_tag_ids = if matches!(
+        action.as_str(),
+        BULK_UPSTREAM_ACCOUNT_ACTION_ADD_TAGS | BULK_UPSTREAM_ACCOUNT_ACTION_REMOVE_TAGS
+    ) {
+        let tag_ids = validate_tag_ids(&state.pool, &payload.tag_ids).await?;
+        if tag_ids.is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "tagIds must contain at least one tag".to_string(),
+            ));
+        }
+        tag_ids
+    } else {
+        Vec::new()
+    };
+
+    let mut results = Vec::with_capacity(account_ids.len());
+    for account_id in &account_ids {
+        let display_name = load_upstream_account_row(&state.pool, *account_id)
+            .await
+            .map_err(internal_error_tuple)?
+            .map(|row| row.display_name);
+        let outcome = apply_bulk_upstream_account_action(
+            state.clone(),
+            *account_id,
+            action.as_str(),
+            payload.group_name.clone(),
+            normalized_tag_ids.clone(),
+        )
+        .await;
+        let (status, detail) = match outcome {
+            Ok(()) => ("succeeded".to_string(), None),
+            Err((_, message)) => ("failed".to_string(), Some(message)),
+        };
+        results.push(BulkUpstreamAccountActionResult {
+            account_id: *account_id,
+            display_name,
+            status,
+            detail,
+        });
+    }
+
+    let succeeded_count = results
+        .iter()
+        .filter(|result| result.status == "succeeded")
+        .count();
+    Ok(Json(BulkUpstreamAccountActionResponse {
+        action,
+        requested_count: account_ids.len(),
+        completed_count: results.len(),
+        succeeded_count,
+        failed_count: results.len().saturating_sub(succeeded_count),
+        results,
+    }))
 }
 
 pub(crate) async fn validate_imported_oauth_accounts(
@@ -5901,6 +6619,7 @@ async fn load_upstream_account_summaries_filtered(
     pool: &Pool<Sqlite>,
     params: &ListUpstreamAccountsQuery,
 ) -> Result<Vec<UpstreamAccountSummary>> {
+    let status_filter = normalize_upstream_account_display_status_filter(params.status.as_deref());
     let duplicate_info_map = load_duplicate_info_map(pool).await?;
     let mut normalized_tag_ids = params
         .tag_ids
@@ -5972,7 +6691,144 @@ async fn load_upstream_account_summaries_filtered(
             duplicate_info_map.get(&row.id).cloned(),
         ));
     }
-    Ok(items)
+    if let Some(status_filter) = status_filter {
+        Ok(items
+            .into_iter()
+            .filter(|item| item.display_status == status_filter)
+            .collect())
+    } else {
+        Ok(items)
+    }
+}
+
+async fn build_bulk_upstream_account_sync_pending_rows(
+    pool: &Pool<Sqlite>,
+    account_ids: &[i64],
+) -> Result<Vec<BulkUpstreamAccountSyncRow>> {
+    let mut rows = Vec::with_capacity(account_ids.len());
+    for account_id in account_ids {
+        let display_name = load_upstream_account_row(pool, *account_id)
+            .await?
+            .map(|row| row.display_name)
+            .unwrap_or_else(|| format!("Account {account_id}"));
+        rows.push(BulkUpstreamAccountSyncRow {
+            account_id: *account_id,
+            display_name,
+            status: BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_PENDING.to_string(),
+            detail: None,
+        });
+    }
+    Ok(rows)
+}
+
+async fn apply_bulk_upstream_account_action(
+    state: Arc<AppState>,
+    account_id: i64,
+    action: &str,
+    group_name: Option<String>,
+    tag_ids: Vec<i64>,
+) -> Result<(), (StatusCode, String)> {
+    let payload = match action {
+        BULK_UPSTREAM_ACCOUNT_ACTION_ENABLE => UpdateUpstreamAccountRequest {
+            display_name: None,
+            group_name: None,
+            note: None,
+            group_note: None,
+            upstream_base_url: OptionalField::Missing,
+            enabled: Some(true),
+            is_mother: None,
+            api_key: None,
+            local_primary_limit: None,
+            local_secondary_limit: None,
+            local_limit_unit: None,
+            tag_ids: None,
+        },
+        BULK_UPSTREAM_ACCOUNT_ACTION_DISABLE => UpdateUpstreamAccountRequest {
+            display_name: None,
+            group_name: None,
+            note: None,
+            group_note: None,
+            upstream_base_url: OptionalField::Missing,
+            enabled: Some(false),
+            is_mother: None,
+            api_key: None,
+            local_primary_limit: None,
+            local_secondary_limit: None,
+            local_limit_unit: None,
+            tag_ids: None,
+        },
+        BULK_UPSTREAM_ACCOUNT_ACTION_SET_GROUP => UpdateUpstreamAccountRequest {
+            display_name: None,
+            group_name,
+            note: None,
+            group_note: None,
+            upstream_base_url: OptionalField::Missing,
+            enabled: None,
+            is_mother: None,
+            api_key: None,
+            local_primary_limit: None,
+            local_secondary_limit: None,
+            local_limit_unit: None,
+            tag_ids: None,
+        },
+        BULK_UPSTREAM_ACCOUNT_ACTION_ADD_TAGS | BULK_UPSTREAM_ACCOUNT_ACTION_REMOVE_TAGS => {
+            let current_tag_ids = load_account_tag_map(&state.pool, &[account_id])
+                .await
+                .map_err(internal_error_tuple)?
+                .remove(&account_id)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|tag| tag.id)
+                .collect::<BTreeSet<_>>();
+            let tag_id_set = tag_ids.into_iter().collect::<BTreeSet<_>>();
+            let next_tag_ids = if action == BULK_UPSTREAM_ACCOUNT_ACTION_ADD_TAGS {
+                current_tag_ids
+                    .union(&tag_id_set)
+                    .copied()
+                    .collect::<Vec<_>>()
+            } else {
+                current_tag_ids
+                    .difference(&tag_id_set)
+                    .copied()
+                    .collect::<Vec<_>>()
+            };
+            UpdateUpstreamAccountRequest {
+                display_name: None,
+                group_name: None,
+                note: None,
+                group_note: None,
+                upstream_base_url: OptionalField::Missing,
+                enabled: None,
+                is_mother: None,
+                api_key: None,
+                local_primary_limit: None,
+                local_secondary_limit: None,
+                local_limit_unit: None,
+                tag_ids: Some(next_tag_ids),
+            }
+        }
+        BULK_UPSTREAM_ACCOUNT_ACTION_DELETE => {
+            state
+                .upstream_accounts
+                .account_ops
+                .run_delete_account(state.clone(), account_id)
+                .await?;
+            return Ok(());
+        }
+        _ => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "unsupported bulk action".to_string(),
+            ));
+        }
+    };
+
+    state
+        .upstream_accounts
+        .account_ops
+        .run_update_account(state.clone(), account_id, payload)
+        .await?;
+    Ok(())
 }
 
 async fn has_ungrouped_upstream_accounts(pool: &Pool<Sqlite>) -> Result<bool> {
@@ -6188,6 +7044,13 @@ fn build_summary_from_row(
             })
     });
     let effective_routing_rule = build_effective_routing_rule(&tags);
+    let status = effective_account_status(row);
+    let display_status = classify_upstream_account_display_status(
+        row.enabled != 0,
+        &status,
+        row.last_error.as_deref(),
+    )
+    .to_string();
 
     UpstreamAccountSummary {
         id: row.id,
@@ -6196,7 +7059,8 @@ fn build_summary_from_row(
         display_name: row.display_name.clone(),
         group_name: row.group_name.clone(),
         is_mother: row.is_mother != 0,
-        status: effective_account_status(row),
+        status,
+        display_status,
         enabled: row.enabled != 0,
         email: row.email.clone(),
         chatgpt_account_id: row.chatgpt_account_id.clone(),
@@ -7491,6 +8355,68 @@ fn normalize_positive_i64(
     }
 }
 
+fn normalize_bulk_upstream_account_ids(
+    account_ids: &[i64],
+) -> Result<Vec<i64>, (StatusCode, String)> {
+    let mut normalized = account_ids
+        .iter()
+        .copied()
+        .filter(|value| *value > 0)
+        .collect::<Vec<_>>();
+    normalized.sort_unstable();
+    normalized.dedup();
+    if normalized.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "accountIds must contain at least one positive integer".to_string(),
+        ));
+    }
+    Ok(normalized)
+}
+
+fn normalize_upstream_account_list_page(value: Option<usize>) -> usize {
+    value.filter(|page| *page > 0).unwrap_or(1)
+}
+
+fn normalize_upstream_account_list_page_size(value: Option<usize>) -> usize {
+    value
+        .filter(|page_size| UPSTREAM_ACCOUNT_LIST_PAGE_SIZE_OPTIONS.contains(page_size))
+        .unwrap_or(DEFAULT_UPSTREAM_ACCOUNT_LIST_PAGE_SIZE)
+}
+
+fn normalize_upstream_account_display_status_filter(value: Option<&str>) -> Option<String> {
+    let normalized = value?.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+    match normalized.as_str() {
+        UPSTREAM_ACCOUNT_STATUS_ACTIVE
+        | UPSTREAM_ACCOUNT_STATUS_SYNCING
+        | UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH
+        | UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE
+        | UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
+        | UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER
+        | UPSTREAM_ACCOUNT_STATUS_DISABLED => Some(normalized),
+        _ => None,
+    }
+}
+
+fn normalize_bulk_upstream_account_action(value: &str) -> Result<String, (StatusCode, String)> {
+    let normalized = value.trim().to_ascii_lowercase();
+    match normalized.as_str() {
+        BULK_UPSTREAM_ACCOUNT_ACTION_ENABLE
+        | BULK_UPSTREAM_ACCOUNT_ACTION_DISABLE
+        | BULK_UPSTREAM_ACCOUNT_ACTION_DELETE
+        | BULK_UPSTREAM_ACCOUNT_ACTION_SET_GROUP
+        | BULK_UPSTREAM_ACCOUNT_ACTION_ADD_TAGS
+        | BULK_UPSTREAM_ACCOUNT_ACTION_REMOVE_TAGS => Ok(normalized),
+        _ => Err((
+            StatusCode::BAD_REQUEST,
+            "unsupported bulk action".to_string(),
+        )),
+    }
+}
+
 fn normalize_tag_rule(
     guard_enabled: bool,
     lookback_hours: Option<i64>,
@@ -7620,6 +8546,68 @@ fn effective_account_status(row: &UpstreamAccountRow) -> String {
         UPSTREAM_ACCOUNT_STATUS_DISABLED.to_string()
     } else {
         row.status.clone()
+    }
+}
+
+fn classify_upstream_account_display_status(
+    enabled: bool,
+    raw_status: &str,
+    last_error: Option<&str>,
+) -> &'static str {
+    let status = raw_status.trim().to_ascii_lowercase();
+    let error_message = last_error.unwrap_or_default();
+    if !enabled || status == UPSTREAM_ACCOUNT_STATUS_DISABLED {
+        return UPSTREAM_ACCOUNT_STATUS_DISABLED;
+    }
+    if status == UPSTREAM_ACCOUNT_STATUS_SYNCING {
+        return UPSTREAM_ACCOUNT_STATUS_SYNCING;
+    }
+    if status == UPSTREAM_ACCOUNT_STATUS_ACTIVE {
+        return UPSTREAM_ACCOUNT_STATUS_ACTIVE;
+    }
+    if is_upstream_unavailable_error_message(error_message) {
+        return UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE;
+    }
+    if is_upstream_rejected_error_message(error_message) {
+        return UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED;
+    }
+    if status == UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH
+        || is_explicit_reauth_error_message(error_message)
+    {
+        return UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH;
+    }
+    if status == UPSTREAM_ACCOUNT_STATUS_ERROR
+        || is_bridge_error_message(error_message)
+        || !error_message.trim().is_empty()
+    {
+        return UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER;
+    }
+    UPSTREAM_ACCOUNT_STATUS_ACTIVE
+}
+
+fn build_upstream_account_list_metrics(
+    items: &[UpstreamAccountSummary],
+) -> UpstreamAccountListMetrics {
+    UpstreamAccountListMetrics {
+        total: items.len(),
+        oauth: items
+            .iter()
+            .filter(|item| item.kind == UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
+            .count(),
+        api_key: items
+            .iter()
+            .filter(|item| item.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX)
+            .count(),
+        attention: items
+            .iter()
+            .filter(|item| {
+                item.display_status == UPSTREAM_ACCOUNT_STATUS_SYNCING
+                    || item.display_status == UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH
+                    || item.display_status == UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE
+                    || item.display_status == UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
+                    || item.display_status == UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER
+            })
+            .count(),
     }
 }
 
@@ -8651,6 +9639,32 @@ fn is_scope_permission_error_message(message: &str) -> bool {
         || msg.contains("api.model.read")
 }
 
+fn is_upstream_unavailable_error_message(message: &str) -> bool {
+    let msg = message.to_ascii_lowercase();
+    msg.contains("failed to contact oauth codex upstream")
+        || msg.contains("oauth_upstream_unavailable")
+        || msg.contains("failed to contact upstream")
+        || msg.contains("connection refused")
+        || msg.contains("connection reset")
+        || msg.contains("timed out")
+        || msg.contains("timeout")
+        || msg.contains("temporarily unavailable")
+        || msg.contains("service unavailable")
+        || msg.contains("bad gateway")
+        || msg.contains("gateway timeout")
+        || msg.contains("upstream stream error")
+        || msg.contains("upstream handshake timed out")
+        || msg.contains("upstream response stream reported failure")
+        || msg.contains("http 500")
+        || msg.contains("http_500")
+        || msg.contains("http 502")
+        || msg.contains("http_502")
+        || msg.contains("http 503")
+        || msg.contains("http_503")
+        || msg.contains("http 504")
+        || msg.contains("http_504")
+}
+
 fn is_bridge_error_message(message: &str) -> bool {
     let msg = message.to_ascii_lowercase();
     msg.contains("oauth bridge")
@@ -8673,6 +9687,19 @@ fn is_explicit_reauth_error_message(message: &str) -> bool {
         || msg.contains("must sign in again")
         || msg.contains("re-authorize")
         || msg.contains("reauthorize")
+}
+
+fn is_upstream_rejected_error_message(message: &str) -> bool {
+    let msg = message.to_ascii_lowercase();
+    is_scope_permission_error_message(message)
+        || msg.contains("oauth_upstream_rejected_request")
+        || msg.contains("upstream rejected")
+        || msg.contains("forbidden")
+        || msg.contains("unauthorized")
+        || msg.contains("http 401")
+        || msg.contains("http_401")
+        || msg.contains("http 403")
+        || msg.contains("http_403")
 }
 
 fn is_reauth_error(err: &anyhow::Error) -> bool {
@@ -9875,6 +10902,48 @@ mod tests {
         assert_eq!(cached.normalized.email, "alpha@duckmail.sbs");
         assert_eq!(cached.normalized.chatgpt_account_id, "acct_alpha");
         assert_eq!(cached.probe.credentials.refresh_token, "refresh-token");
+    }
+
+    #[tokio::test]
+    async fn create_bulk_upstream_account_sync_job_reuses_existing_running_job() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let snapshot = BulkUpstreamAccountSyncSnapshot {
+            job_id: "running-job".to_string(),
+            status: BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_RUNNING.to_string(),
+            rows: vec![BulkUpstreamAccountSyncRow {
+                account_id: 5,
+                display_name: "Existing OAuth".to_string(),
+                status: BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_PENDING.to_string(),
+                detail: None,
+            }],
+        };
+        let counts = compute_bulk_upstream_account_sync_counts(&snapshot.rows);
+        state
+            .upstream_accounts
+            .insert_bulk_sync_job(
+                snapshot.job_id.clone(),
+                Arc::new(BulkUpstreamAccountSyncJob::new(snapshot.clone())),
+            )
+            .await;
+
+        let response = create_bulk_upstream_account_sync_job(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(BulkUpstreamAccountSyncJobRequest {
+                account_ids: vec![9, 11],
+            }),
+        )
+        .await
+        .expect("reuse running bulk sync job")
+        .0;
+
+        assert_eq!(response.job_id, "running-job");
+        assert_eq!(response.snapshot.job_id, "running-job");
+        assert_eq!(response.snapshot.rows.len(), 1);
+        assert_eq!(response.snapshot.rows[0].account_id, 5);
+        assert_eq!(response.counts.total, counts.total);
+        assert_eq!(response.counts.completed, counts.completed);
+        assert_eq!(state.upstream_accounts.bulk_sync_jobs.lock().await.len(), 1);
     }
 
     #[test]
