@@ -1503,6 +1503,7 @@ struct AccountRoutingCandidateRow {
     secondary_used_percent: Option<f64>,
     primary_used_percent: Option<f64>,
     last_selected_at: Option<String>,
+    has_local_limits: bool,
     active_sticky_conversations: i64,
 }
 
@@ -9318,6 +9319,12 @@ async fn load_account_routing_candidates(
                 LIMIT 1
             ) AS primary_used_percent,
             account.last_selected_at,
+            CASE
+                WHEN account.local_primary_limit IS NOT NULL
+                  OR account.local_secondary_limit IS NOT NULL
+                THEN 1
+                ELSE 0
+            END AS has_local_limits,
             (
                 SELECT COUNT(*)
                 FROM pool_sticky_routes route
@@ -9361,8 +9368,10 @@ fn compare_routing_candidates(
     lhs: &AccountRoutingCandidateRow,
     rhs: &AccountRoutingCandidateRow,
 ) -> std::cmp::Ordering {
-    let lhs_over_soft_limit = lhs.active_sticky_conversations > POOL_ROUTE_ACTIVE_STICKY_SOFT_LIMIT;
-    let rhs_over_soft_limit = rhs.active_sticky_conversations > POOL_ROUTE_ACTIVE_STICKY_SOFT_LIMIT;
+    let lhs_over_soft_limit = lhs.has_local_limits
+        && lhs.active_sticky_conversations > POOL_ROUTE_ACTIVE_STICKY_SOFT_LIMIT;
+    let rhs_over_soft_limit = rhs.has_local_limits
+        && rhs.active_sticky_conversations > POOL_ROUTE_ACTIVE_STICKY_SOFT_LIMIT;
     let lhs_secondary = lhs.secondary_used_percent.unwrap_or(0.0);
     let rhs_secondary = rhs.secondary_used_percent.unwrap_or(0.0);
     lhs_over_soft_limit

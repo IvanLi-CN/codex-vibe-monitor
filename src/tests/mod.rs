@@ -2919,6 +2919,31 @@ async fn insert_test_pool_limit_sample(
     .expect("insert test pool limit sample");
 }
 
+async fn set_test_account_local_limits(
+    pool: &SqlitePool,
+    account_id: i64,
+    local_primary_limit: Option<f64>,
+    local_secondary_limit: Option<f64>,
+) {
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET local_primary_limit = ?1,
+            local_secondary_limit = ?2,
+            updated_at = ?3
+        WHERE id = ?4
+        "#,
+    )
+    .bind(local_primary_limit)
+    .bind(local_secondary_limit)
+    .bind(&now_iso)
+    .bind(account_id)
+    .execute(pool)
+    .await
+    .expect("set test account local limits");
+}
+
 async fn set_test_account_status(pool: &SqlitePool, account_id: i64, status: &str) {
     sqlx::query("UPDATE pool_upstream_accounts SET status = ?1 WHERE id = ?2")
         .bind(status)
@@ -10660,6 +10685,8 @@ async fn resolve_pool_account_for_request_keeps_existing_sticky_binding_when_sou
         insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
     let recent_seen_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(5));
 
+    set_test_account_local_limits(&state.pool, primary_id, Some(100.0), Some(100.0)).await;
+    set_test_account_local_limits(&state.pool, secondary_id, Some(100.0), Some(100.0)).await;
     insert_test_pool_limit_sample(&state, primary_id, Some(90.0), Some(90.0)).await;
     insert_test_pool_limit_sample(&state, secondary_id, Some(5.0), Some(5.0)).await;
     for sticky_key in [
@@ -10695,6 +10722,8 @@ async fn resolve_pool_account_for_request_prefers_candidates_within_soft_sticky_
         insert_test_pool_api_key_account(&state, "Available", "upstream-available").await;
     let recent_seen_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(5));
 
+    set_test_account_local_limits(&state.pool, overloaded_id, Some(100.0), Some(100.0)).await;
+    set_test_account_local_limits(&state.pool, available_id, Some(100.0), Some(100.0)).await;
     insert_test_pool_limit_sample(&state, overloaded_id, Some(5.0), Some(5.0)).await;
     insert_test_pool_limit_sample(&state, available_id, Some(80.0), Some(80.0)).await;
     for sticky_key in [
@@ -10733,6 +10762,8 @@ async fn resolve_pool_account_for_request_falls_back_to_over_soft_limit_bucket_w
         insert_test_pool_api_key_account(&state, "Fallback", "upstream-fallback").await;
     let recent_seen_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(5));
 
+    set_test_account_local_limits(&state.pool, preferred_id, Some(100.0), Some(100.0)).await;
+    set_test_account_local_limits(&state.pool, fallback_id, Some(100.0), Some(100.0)).await;
     insert_test_pool_limit_sample(&state, preferred_id, Some(5.0), Some(5.0)).await;
     insert_test_pool_limit_sample(&state, fallback_id, Some(65.0), Some(65.0)).await;
     for sticky_key in [
@@ -10778,6 +10809,8 @@ async fn resolve_pool_account_for_request_falls_back_after_soft_bucket_candidate
 
     upsert_test_sticky_route_at(&state.pool, "sticky-transfer", source_id, &recent_seen_at).await;
     set_test_account_status(&state.pool, source_id, "error").await;
+    set_test_account_local_limits(&state.pool, guarded_id, Some(100.0), Some(100.0)).await;
+    set_test_account_local_limits(&state.pool, overloaded_id, Some(100.0), Some(100.0)).await;
     insert_test_pool_limit_sample(&state, guarded_id, Some(5.0), Some(5.0)).await;
     insert_test_pool_limit_sample(&state, overloaded_id, Some(80.0), Some(80.0)).await;
     for sticky_key in [
@@ -10827,6 +10860,80 @@ async fn resolve_pool_account_for_request_falls_back_after_soft_bucket_candidate
 
     assert_eq!(account.account_id, overloaded_id);
     assert_ne!(account.account_id, guarded_id);
+}
+
+#[tokio::test]
+async fn resolve_pool_account_for_request_exempts_accounts_without_local_limits_from_soft_sticky_deprioritization()
+ {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let exempt_id = insert_test_pool_api_key_account(&state, "Exempt", "upstream-exempt").await;
+    let limited_id = insert_test_pool_api_key_account(&state, "Limited", "upstream-limited").await;
+    let recent_seen_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(5));
+
+    set_test_account_local_limits(&state.pool, limited_id, Some(100.0), Some(100.0)).await;
+    insert_test_pool_limit_sample(&state, exempt_id, Some(5.0), Some(5.0)).await;
+    insert_test_pool_limit_sample(&state, limited_id, Some(80.0), Some(80.0)).await;
+    for sticky_key in [
+        "sticky-exempt-001",
+        "sticky-exempt-002",
+        "sticky-exempt-003",
+    ] {
+        upsert_test_sticky_route_at(&state.pool, sticky_key, exempt_id, &recent_seen_at).await;
+    }
+
+    let account =
+        match resolve_pool_account_for_request(state.as_ref(), Some("sticky-exempt-target"), &[])
+            .await
+            .expect("resolve pool account")
+        {
+            PoolAccountResolution::Resolved(account) => account,
+            other => panic!("pool account should resolve, got {other:?}"),
+        };
+
+    assert_eq!(account.account_id, exempt_id);
+    assert_ne!(account.account_id, limited_id);
+}
+
+#[tokio::test]
+async fn resolve_pool_account_for_request_keeps_existing_sort_order_when_exempt_accounts_mix_with_limited_candidates()
+ {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let exempt_id = insert_test_pool_api_key_account(&state, "Exempt", "upstream-exempt").await;
+    let limited_id = insert_test_pool_api_key_account(&state, "Limited", "upstream-limited").await;
+    let recent_seen_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(5));
+
+    set_test_account_local_limits(&state.pool, limited_id, Some(100.0), Some(100.0)).await;
+    insert_test_pool_limit_sample(&state, exempt_id, Some(15.0), Some(15.0)).await;
+    insert_test_pool_limit_sample(&state, limited_id, Some(15.0), Some(15.0)).await;
+    for sticky_key in [
+        "sticky-mixed-order-001",
+        "sticky-mixed-order-002",
+        "sticky-mixed-order-003",
+    ] {
+        upsert_test_sticky_route_at(&state.pool, sticky_key, exempt_id, &recent_seen_at).await;
+    }
+
+    let account = match resolve_pool_account_for_request(
+        state.as_ref(),
+        Some("sticky-mixed-order-target"),
+        &[],
+    )
+    .await
+    .expect("resolve pool account")
+    {
+        PoolAccountResolution::Resolved(account) => account,
+        other => panic!("pool account should resolve, got {other:?}"),
+    };
+
+    assert!(exempt_id < limited_id);
+    assert_eq!(account.account_id, exempt_id);
+    assert_ne!(account.account_id, limited_id);
 }
 
 #[tokio::test]
