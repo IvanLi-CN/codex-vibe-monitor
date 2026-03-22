@@ -472,16 +472,16 @@ export function PromptCacheConversationTable({
         <table className="hidden w-full table-fixed text-xs sm:table">
           <thead className="bg-base-200/70 uppercase tracking-[0.08em] text-base-content/65">
             <tr>
-              <th className="w-[19%] px-2 py-2 text-left font-semibold sm:px-3 sm:py-3">
+              <th className="w-[18%] px-2 py-2 text-left font-semibold sm:px-3 sm:py-3">
                 {t("live.conversations.table.promptCacheKey")}
               </th>
-              <th className="w-[36%] px-2 py-2 text-left font-semibold sm:px-3 sm:py-3">
+              <th className="w-[34%] px-2 py-2 text-left font-semibold sm:px-3 sm:py-3">
                 {t("live.conversations.table.upstreamAccounts")}
               </th>
-              <th className="w-[16%] px-2 py-2 text-left font-semibold sm:px-3 sm:py-3">
+              <th className="w-[15%] px-2 py-2 text-left font-semibold sm:px-3 sm:py-3">
                 {t("live.conversations.table.summary")}
               </th>
-              <th className="w-[11%] px-2 py-2 text-left font-semibold sm:px-3 sm:py-3">
+              <th className="w-[15%] px-2 py-2 text-left font-semibold sm:px-3 sm:py-3">
                 {totalLabels.time}
               </th>
               <th className="w-[18%] px-2 py-2 text-left font-semibold sm:px-3 sm:py-3">
@@ -523,19 +523,19 @@ export function PromptCacheConversationTable({
                 </td>
                 <td className="px-2 py-2 align-top sm:px-3 sm:py-3">
                   <div className="space-y-1.5 text-[11px]">
-                    <div className="grid grid-cols-[2.5rem_minmax(0,1fr)] items-center gap-x-2">
+                    <div className="grid grid-cols-[2rem_minmax(0,1fr)] items-center gap-x-2">
                       <span className="text-base-content/60">
                         {totalLabels.createdAtShort}
                       </span>
-                      <span className="min-w-0 truncate">
+                      <span className="whitespace-nowrap font-medium tabular-nums">
                         {formatDateLabel(conversation.createdAt, dateFormatter)}
                       </span>
                     </div>
-                    <div className="grid grid-cols-[2.5rem_minmax(0,1fr)] items-center gap-x-2">
+                    <div className="grid grid-cols-[2rem_minmax(0,1fr)] items-center gap-x-2">
                       <span className="text-base-content/60">
                         {totalLabels.lastActivityAtShort}
                       </span>
-                      <span className="min-w-0 truncate">
+                      <span className="whitespace-nowrap font-medium tabular-nums">
                         {formatDateLabel(conversation.lastActivityAt, dateFormatter)}
                       </span>
                     </div>
