@@ -198,7 +198,7 @@ function renderEndpointSummary(
     <Badge
       variant={endpointDisplay.badgeVariant}
       className={cn(
-        'max-w-full justify-center overflow-hidden px-2 py-0 text-[10px] font-semibold tracking-[0.01em]',
+        'invocation-endpoint-badge max-w-full justify-center overflow-hidden px-2 py-0 text-[10px] font-semibold tracking-[0.01em]',
         className,
       )}
       title={title}

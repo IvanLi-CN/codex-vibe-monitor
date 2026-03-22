@@ -269,6 +269,54 @@ body {
     color: oklch(var(--color-primary-content));
   }
 
+  .invocation-endpoint-badge {
+    box-shadow:
+      inset 0 1px 0 color-mix(in oklab, white 48%, transparent),
+      0 8px 18px color-mix(in oklab, oklch(var(--color-neutral)) 9%, transparent);
+  }
+
+  .invocation-endpoint-badge[data-endpoint-kind='responses'] {
+    background-color: oklch(var(--color-primary) / 0.16);
+    border-color: oklch(var(--color-primary) / 0.42);
+    color: color-mix(in oklab, oklch(var(--color-primary)) 82%, oklch(var(--color-neutral)) 18%);
+  }
+
+  .invocation-endpoint-badge[data-endpoint-kind='chat'] {
+    background-color: oklch(var(--color-secondary) / 0.18);
+    border-color: oklch(var(--color-secondary) / 0.4);
+    color: color-mix(in oklab, oklch(var(--color-secondary)) 80%, oklch(var(--color-neutral)) 20%);
+  }
+
+  .invocation-endpoint-badge[data-endpoint-kind='compact'] {
+    background-color: oklch(var(--color-info) / 0.2);
+    border-color: oklch(var(--color-info) / 0.44);
+    color: color-mix(in oklab, oklch(var(--color-info)) 80%, oklch(var(--color-neutral)) 20%);
+  }
+
+  [data-theme='vibe-dark'] .invocation-endpoint-badge {
+    box-shadow:
+      inset 0 1px 0 color-mix(in oklab, white 16%, transparent),
+      0 10px 22px color-mix(in oklab, oklch(var(--color-neutral)) 18%, transparent);
+  }
+
+  [data-theme='vibe-dark'] .invocation-endpoint-badge[data-endpoint-kind='responses'] {
+    background-color: oklch(var(--color-primary) / 0.24);
+    border-color: oklch(var(--color-primary) / 0.5);
+    color: color-mix(in oklab, oklch(var(--color-primary)) 88%, white 12%);
+  }
+
+  [data-theme='vibe-dark'] .invocation-endpoint-badge[data-endpoint-kind='chat'] {
+    background-color: oklch(var(--color-secondary) / 0.24);
+    border-color: oklch(var(--color-secondary) / 0.5);
+    color: color-mix(in oklab, oklch(var(--color-secondary)) 88%, white 12%);
+  }
+
+  [data-theme='vibe-dark'] .invocation-endpoint-badge[data-endpoint-kind='compact'] {
+    background-color: oklch(var(--color-info) / 0.26);
+    border-color: oklch(var(--color-info) / 0.54);
+    color: color-mix(in oklab, oklch(var(--color-info)) 88%, white 12%);
+  }
+
   .field {
     @apply flex flex-col gap-1.5;
   }
