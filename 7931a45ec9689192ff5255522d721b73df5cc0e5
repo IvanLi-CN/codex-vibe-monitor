@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.20.1",
+  "base_stable_version": "1.20.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-22T19:59:31Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.20.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "1f222a33adf25e10c87338154dad2588d69bd45f",
+  "pr_number": 203,
+  "pr_title": "feat(web): add invocation endpoint badges",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.20.1",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.20.1,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "7931a45ec9689192ff5255522d721b73df5cc0e5",
+  "type_label": "type:patch"
+}
