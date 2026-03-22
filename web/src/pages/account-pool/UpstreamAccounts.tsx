@@ -36,9 +36,18 @@ import { useMotherSwitchNotifications } from '../../hooks/useMotherSwitchNotific
 import { useUpstreamAccounts } from '../../hooks/useUpstreamAccounts'
 import { useUpstreamStickyConversations } from '../../hooks/useUpstreamStickyConversations'
 import type {
+  BulkUpstreamAccountActionPayload,
+  BulkUpstreamAccountSyncCounts,
+  BulkUpstreamAccountSyncSnapshot,
   UpstreamAccountDetail,
   UpstreamAccountDuplicateInfo,
   UpstreamAccountSummary,
+} from '../../lib/api'
+import {
+  createBulkUpstreamAccountSyncJobEventSource,
+  normalizeBulkUpstreamAccountSyncFailedEventPayload,
+  normalizeBulkUpstreamAccountSyncRowEventPayload,
+  normalizeBulkUpstreamAccountSyncSnapshotEventPayload,
 } from '../../lib/api'
 import {
   buildGroupNameSuggestions,
@@ -196,7 +205,15 @@ function buildRoutingDraft(maskedApiKey?: string | null) {
 function statusVariant(status: string): 'success' | 'warning' | 'error' | 'secondary' {
   if (status === 'active') return 'success'
   if (status === 'syncing') return 'warning'
-  if (status === 'error' || status === 'needs_reauth') return 'error'
+  if (
+    status === 'needs_reauth' ||
+    status === 'upstream_unavailable' ||
+    status === 'upstream_rejected' ||
+    status === 'error_other' ||
+    status === 'error'
+  ) {
+    return 'error'
+  }
   return 'secondary'
 }
 
@@ -204,43 +221,14 @@ function kindVariant(kind: string): 'secondary' | 'success' {
   return kind === 'oauth_codex' ? 'success' : 'secondary'
 }
 
-function isOauthLegacyBridgeError(lastError?: string | null) {
-  const normalized = lastError?.toLocaleLowerCase() ?? ''
-  return normalized.includes('oauth bridge')
-}
-
-function isOauthDataPlaneUnavailableError(lastError?: string | null) {
-  const normalized = lastError?.toLocaleLowerCase() ?? ''
-  return (
-    normalized.includes('failed to contact oauth codex upstream') ||
-    normalized.includes('oauth_upstream_unavailable') ||
-    normalized.includes('connection refused') ||
-    normalized.includes('connection reset') ||
-    (isOauthLegacyBridgeError(lastError) &&
-      (normalized.includes('token exchange failed') || normalized.includes('unavailable')))
-  )
-}
-
 function isLegacyOauthBridgeExchangeError(lastError?: string | null) {
   const normalized = lastError?.toLocaleLowerCase() ?? ''
   return normalized.includes('oauth bridge token exchange failed')
 }
 
-function isOauthDataPlaneRejectedError(lastError?: string | null) {
-  const normalized = lastError?.toLocaleLowerCase() ?? ''
-  return (
-    normalized.includes('missing scopes') ||
-    normalized.includes('insufficient permissions for this operation') ||
-    normalized.includes('api.responses.write') ||
-    normalized.includes('api.model.read') ||
-    (isOauthLegacyBridgeError(lastError) && normalized.includes('upstream')) ||
-    normalized.includes('oauth_upstream_rejected_request')
-  )
-}
-
 function resolveOauthRecoveryHint(
   kind: string,
-  status: string,
+  displayStatus: string,
   lastError?: string | null,
 ): OauthRecoveryHint | null {
   if (kind !== 'oauth_codex') return null
@@ -250,37 +238,25 @@ function resolveOauthRecoveryHint(
       bodyKey: 'accountPool.upstreamAccounts.hints.bridgeExchangeBody',
     }
   }
-  if (isOauthDataPlaneUnavailableError(lastError)) {
+  if (displayStatus === 'upstream_unavailable') {
     return {
       titleKey: 'accountPool.upstreamAccounts.hints.dataPlaneUnavailableTitle',
       bodyKey: 'accountPool.upstreamAccounts.hints.dataPlaneUnavailableBody',
     }
   }
-  if (isOauthDataPlaneRejectedError(lastError)) {
+  if (displayStatus === 'upstream_rejected') {
     return {
       titleKey: 'accountPool.upstreamAccounts.hints.dataPlaneRejectedTitle',
       bodyKey: 'accountPool.upstreamAccounts.hints.dataPlaneRejectedBody',
     }
   }
-  if (status === 'needs_reauth') {
+  if (displayStatus === 'needs_reauth') {
     return {
       titleKey: 'accountPool.upstreamAccounts.hints.reauthTitle',
       bodyKey: 'accountPool.upstreamAccounts.hints.reauthBody',
     }
   }
   return null
-}
-
-function resolveDisplayedStatus(status: string, lastError?: string | null) {
-  if (
-    status === 'needs_reauth' &&
-    (isLegacyOauthBridgeExchangeError(lastError) ||
-      isOauthDataPlaneUnavailableError(lastError) ||
-      isOauthDataPlaneRejectedError(lastError))
-  ) {
-    return 'error'
-  }
-  return status
 }
 
 
@@ -524,6 +500,10 @@ export default function UpstreamAccountsPage() {
   const navigate = useNavigate()
   const [groupFilterQuery, setGroupFilterQuery] = useState('')
   const [selectedTagIds, setSelectedTagIds] = useState<number[]>([])
+  const [statusFilter, setStatusFilter] = useState('all')
+  const [page, setPage] = useState(1)
+  const [pageSize, setPageSize] = useState(20)
+  const [selectedAccountIds, setSelectedAccountIds] = useState<number[]>([])
   const accountListQuery = useMemo(() => {
     const normalizedQuery = groupFilterQuery.trim()
     const allLabel = t('accountPool.upstreamAccounts.groupFilter.all').toLocaleLowerCase()
@@ -536,9 +516,12 @@ export default function UpstreamAccountsPage() {
           ? undefined
           : normalizedQuery,
       groupUngrouped: normalizedQuery ? normalizedLowerQuery === ungroupedLabel : undefined,
+      status: statusFilter === 'all' ? undefined : statusFilter,
+      page,
+      pageSize,
       tagIds: selectedTagIds.length > 0 ? selectedTagIds : undefined,
     }
-  }, [groupFilterQuery, selectedTagIds, t])
+  }, [groupFilterQuery, page, pageSize, selectedTagIds, statusFilter, t])
   const {
     items,
     groups = [],
@@ -559,6 +542,12 @@ export default function UpstreamAccountsPage() {
     routing,
     saveRouting,
     saveGroupNote,
+    runBulkAction,
+    startBulkSyncJob,
+    getBulkSyncJob,
+    stopBulkSyncJob,
+    total,
+    metrics: listMetrics,
   } = useUpstreamAccounts(accountListQuery)
   const { items: tagItems, createTag, updateTag, deleteTag } = usePoolTags()
   const notifyMotherSwitches = useMotherSwitchNotifications()
@@ -589,15 +578,76 @@ export default function UpstreamAccountsPage() {
   })
   const [groupNoteBusy, setGroupNoteBusy] = useState(false)
   const [groupNoteError, setGroupNoteError] = useState<string | null>(null)
+  const [bulkActionBusy, setBulkActionBusy] = useState<string | null>(null)
+  const [bulkActionMessage, setBulkActionMessage] = useState<string | null>(null)
+  const [bulkActionError, setBulkActionError] = useState<string | null>(null)
+  const [bulkGroupDialogOpen, setBulkGroupDialogOpen] = useState(false)
+  const [bulkGroupName, setBulkGroupName] = useState('')
+  const [bulkTagsDialogOpen, setBulkTagsDialogOpen] = useState(false)
+  const [bulkTagMode, setBulkTagMode] = useState<'add_tags' | 'remove_tags'>('add_tags')
+  const [bulkTagIds, setBulkTagIds] = useState<number[]>([])
+  const [bulkDeleteDialogOpen, setBulkDeleteDialogOpen] = useState(false)
+  const [bulkSyncSnapshot, setBulkSyncSnapshot] = useState<BulkUpstreamAccountSyncSnapshot | null>(null)
+  const [bulkSyncCounts, setBulkSyncCounts] = useState<BulkUpstreamAccountSyncCounts | null>(null)
+  const [bulkSyncError, setBulkSyncError] = useState<string | null>(null)
+  const bulkSyncEventSourceRef = useRef<EventSource | null>(null)
   const deleteConfirmCancelRef = useRef<HTMLButtonElement | null>(null)
   const [detailDrawerPortalContainer, setDetailDrawerPortalContainer] = useState<HTMLElement | null>(null)
   const skipNextDeleteConfirmResetRef = useRef(false)
   const deleteConfirmTitleId = useId()
   const selectedIdRef = useRef<number | null>(selectedId)
+  const selectedAccountIdSet = useMemo(() => new Set(selectedAccountIds), [selectedAccountIds])
+  const effectiveMetrics = listMetrics ?? {
+    total: items.length,
+    oauth: items.filter((item) => item.kind === 'oauth_codex').length,
+    apiKey: items.filter((item) => item.kind === 'api_key_codex').length,
+    attention: items.filter((item) => {
+      const status = item.displayStatus ?? item.status
+      return status === 'syncing' || status === 'needs_reauth' || status === 'upstream_unavailable' || status === 'upstream_rejected' || status === 'error_other'
+    }).length,
+  }
+  const effectiveTotal = total ?? effectiveMetrics.total
+  const pageCount = Math.max(1, Math.ceil(effectiveTotal / Math.max(pageSize, 1)))
 
   useEffect(() => {
     selectedIdRef.current = selectedId
   }, [selectedId])
+
+  const clearBulkSelection = useCallback(() => {
+    setSelectedAccountIds([])
+    setBulkGroupDialogOpen(false)
+    setBulkTagsDialogOpen(false)
+    setBulkDeleteDialogOpen(false)
+  }, [])
+
+  const handleGroupFilterChange = useCallback((value: string) => {
+    setGroupFilterQuery(value)
+    setPage(1)
+    clearBulkSelection()
+  }, [clearBulkSelection])
+
+  const handleTagFilterChange = useCallback((value: number[]) => {
+    setSelectedTagIds(value)
+    setPage(1)
+    clearBulkSelection()
+  }, [clearBulkSelection])
+
+  const handleStatusFilterChange = useCallback((value: string) => {
+    setStatusFilter(value)
+    setPage(1)
+    clearBulkSelection()
+  }, [clearBulkSelection])
+
+  const handlePageSizeChange = useCallback((value: number) => {
+    setPageSize(value)
+    setPage(1)
+    clearBulkSelection()
+  }, [clearBulkSelection])
+
+  const closeBulkSyncEventSource = useCallback(() => {
+    bulkSyncEventSourceRef.current?.close()
+    bulkSyncEventSourceRef.current = null
+  }, [])
 
   const draftUpstreamBaseUrlError = useMemo(() => {
     const code = validateUpstreamBaseUrl(draft.upstreamBaseUrl)
@@ -658,6 +708,18 @@ export default function UpstreamAccountsPage() {
   }, [tagItems])
 
   useEffect(() => {
+    return () => {
+      closeBulkSyncEventSource()
+    }
+  }, [closeBulkSyncEventSource])
+
+  useEffect(() => {
+    if (effectiveTotal > 0 && page > pageCount) {
+      setPage(pageCount)
+    }
+  }, [effectiveTotal, page, pageCount])
+
+  useEffect(() => {
     const state = location.state as UpstreamAccountsLocationState | null
     if (!state?.selectedAccountId) return
 
@@ -688,22 +750,18 @@ export default function UpstreamAccountsPage() {
   }
 
   const metrics = useMemo(() => {
-    const oauthCount = items.filter((item) => item.kind === 'oauth_codex').length
-    const apiKeyCount = items.filter((item) => item.kind === 'api_key_codex').length
-    const needsReauthCount = items.filter((item) => item.status === 'needs_reauth').length
-    const syncingCount = items.filter((item) => item.status === 'syncing').length
     return [
-      poolCardMetric(items.length, t('accountPool.upstreamAccounts.metrics.total'), 'database-outline', 'text-primary'),
-      poolCardMetric(oauthCount, t('accountPool.upstreamAccounts.metrics.oauth'), 'badge-account-horizontal-outline', 'text-success'),
-      poolCardMetric(apiKeyCount, t('accountPool.upstreamAccounts.metrics.apiKey'), 'key-outline', 'text-info'),
+      poolCardMetric(effectiveMetrics.total, t('accountPool.upstreamAccounts.metrics.total'), 'database-outline', 'text-primary'),
+      poolCardMetric(effectiveMetrics.oauth, t('accountPool.upstreamAccounts.metrics.oauth'), 'badge-account-horizontal-outline', 'text-success'),
+      poolCardMetric(effectiveMetrics.apiKey, t('accountPool.upstreamAccounts.metrics.apiKey'), 'key-outline', 'text-info'),
       poolCardMetric(
-        needsReauthCount + syncingCount,
+        effectiveMetrics.attention,
         t('accountPool.upstreamAccounts.metrics.attention'),
         'alert-decagram-outline',
         'text-warning',
       ),
     ]
-  }, [items, t])
+  }, [effectiveMetrics, t])
 
   const availableGroups = useMemo(() => {
     return {
@@ -797,9 +855,11 @@ export default function UpstreamAccountsPage() {
   const visibleAccountActionError =
     typeof selectedId === 'number' ? actionError.accountMessages[selectedId] ?? null : null
   const visibleRoutingError = actionError.routing
+  const accountDisplayStatus = (item?: Pick<UpstreamAccountSummary, 'displayStatus' | 'status'> | null) =>
+    item?.displayStatus ?? item?.status ?? 'error'
   const selectedRecoveryHint = resolveOauthRecoveryHint(
     selectedDetail?.kind ?? selected?.kind ?? '',
-    selectedDetail?.status ?? selected?.status ?? '',
+    accountDisplayStatus(selectedDetail ?? selected),
     selectedDetail?.lastError ?? selected?.lastError,
   )
   const formatDuplicateReasons = (
@@ -824,7 +884,7 @@ export default function UpstreamAccountsPage() {
   }
   const accountStatusLabel = (status: string) => t(`accountPool.upstreamAccounts.status.${status}`)
   const accountSummaryStatusLabel = (item: UpstreamAccountSummary) =>
-    accountStatusLabel(resolveDisplayedStatus(item.status, item.lastError))
+    accountStatusLabel(accountDisplayStatus(item))
   const accountKindLabel = (kind: string) =>
     kind === 'oauth_codex'
       ? t('accountPool.upstreamAccounts.kind.oauth')
@@ -1040,6 +1100,184 @@ export default function UpstreamAccountsPage() {
     }
   }
 
+  const isBulkSyncRunning = bulkSyncSnapshot?.status === 'running'
+
+  const handleToggleSelectedAccount = useCallback((accountId: number, checked: boolean) => {
+    setSelectedAccountIds((current) => {
+      if (checked) {
+        return current.includes(accountId) ? current : [...current, accountId]
+      }
+      return current.filter((value) => value !== accountId)
+    })
+  }, [])
+
+  const handleToggleSelectAllCurrentPage = useCallback((checked: boolean) => {
+    const currentPageIds = items.map((item) => item.id)
+    setSelectedAccountIds((current) => {
+      const next = new Set(current)
+      if (checked) {
+        currentPageIds.forEach((accountId) => next.add(accountId))
+      } else {
+        currentPageIds.forEach((accountId) => next.delete(accountId))
+      }
+      return Array.from(next)
+    })
+  }, [items])
+
+  const closeBulkOverlays = useCallback(() => {
+    setBulkGroupDialogOpen(false)
+    setBulkTagsDialogOpen(false)
+    setBulkDeleteDialogOpen(false)
+  }, [])
+
+  const summarizeBulkAction = useCallback((action: string, succeededCount: number, failedCount: number) => {
+    setBulkActionMessage(
+      t('accountPool.upstreamAccounts.bulk.resultSummary', {
+        action: t(`accountPool.upstreamAccounts.bulk.actionLabel.${action}`),
+        succeeded: succeededCount,
+        failed: failedCount,
+      }),
+    )
+  }, [t])
+
+  const handleBulkAction = useCallback(
+    async (
+      payload: BulkUpstreamAccountActionPayload,
+      options?: { clearSelection?: boolean; onSuccess?: () => void },
+    ) => {
+      if (selectedAccountIds.length === 0) return
+      setBulkActionBusy(payload.action)
+      setBulkActionError(null)
+      setBulkActionMessage(null)
+      try {
+        const response = await runBulkAction(payload)
+        summarizeBulkAction(response.action, response.succeededCount, response.failedCount)
+        options?.onSuccess?.()
+        if (options?.clearSelection !== false) {
+          clearBulkSelection()
+        }
+      } catch (err) {
+        setBulkActionError(err instanceof Error ? err.message : String(err))
+      } finally {
+        setBulkActionBusy(null)
+      }
+    },
+    [clearBulkSelection, runBulkAction, selectedAccountIds.length, summarizeBulkAction],
+  )
+
+  const handleOpenBulkTagsDialog = useCallback((mode: 'add_tags' | 'remove_tags') => {
+    setBulkTagMode(mode)
+    setBulkTagIds([])
+    setBulkTagsDialogOpen(true)
+    setBulkActionError(null)
+  }, [])
+
+  const handleStartBulkSync = useCallback(async () => {
+    if (selectedAccountIds.length === 0 || isBulkSyncRunning) return
+    setBulkActionError(null)
+    setBulkActionMessage(null)
+    setBulkSyncError(null)
+    closeBulkSyncEventSource()
+    try {
+      const created = await startBulkSyncJob({ accountIds: selectedAccountIds })
+      setBulkSyncSnapshot(created.snapshot)
+      setBulkSyncCounts(created.counts)
+      const eventSource = createBulkUpstreamAccountSyncJobEventSource(created.jobId)
+      bulkSyncEventSourceRef.current = eventSource
+
+      eventSource.addEventListener('snapshot', (event) => {
+        const payload = normalizeBulkUpstreamAccountSyncSnapshotEventPayload(
+          JSON.parse((event as MessageEvent<string>).data),
+        )
+        setBulkSyncSnapshot(payload.snapshot)
+        setBulkSyncCounts(payload.counts)
+      })
+
+      eventSource.addEventListener('row', (event) => {
+        const payload = normalizeBulkUpstreamAccountSyncRowEventPayload(
+          JSON.parse((event as MessageEvent<string>).data),
+        )
+        setBulkSyncCounts(payload.counts)
+        setBulkSyncSnapshot((current) => {
+          if (!current) return current
+          return {
+            ...current,
+            rows: current.rows.map((row) =>
+              row.accountId === payload.row.accountId ? payload.row : row,
+            ),
+          }
+        })
+      })
+
+      const handleTerminalEvent = (
+        nextSnapshot: BulkUpstreamAccountSyncSnapshot,
+        nextCounts: BulkUpstreamAccountSyncCounts,
+        error?: string,
+      ) => {
+        setBulkSyncSnapshot(nextSnapshot)
+        setBulkSyncCounts(nextCounts)
+        setBulkSyncError(error ?? null)
+        closeBulkSyncEventSource()
+        void refresh()
+      }
+
+      eventSource.addEventListener('completed', (event) => {
+        const payload = normalizeBulkUpstreamAccountSyncSnapshotEventPayload(
+          JSON.parse((event as MessageEvent<string>).data),
+        )
+        handleTerminalEvent(payload.snapshot, payload.counts)
+      })
+
+      eventSource.addEventListener('cancelled', (event) => {
+        const payload = normalizeBulkUpstreamAccountSyncSnapshotEventPayload(
+          JSON.parse((event as MessageEvent<string>).data),
+        )
+        handleTerminalEvent(payload.snapshot, payload.counts)
+      })
+
+      eventSource.addEventListener('failed', (event) => {
+        const payload = normalizeBulkUpstreamAccountSyncFailedEventPayload(
+          JSON.parse((event as MessageEvent<string>).data),
+        )
+        handleTerminalEvent(payload.snapshot, payload.counts, payload.error)
+      })
+
+      eventSource.onerror = () => {
+        void getBulkSyncJob(created.jobId)
+          .then((latest) => {
+            setBulkSyncSnapshot(latest.snapshot)
+            setBulkSyncCounts(latest.counts)
+            if (latest.snapshot.status !== 'running') {
+              closeBulkSyncEventSource()
+              void refresh()
+            }
+          })
+          .catch((err) => {
+            setBulkSyncError(err instanceof Error ? err.message : String(err))
+            closeBulkSyncEventSource()
+          })
+      }
+    } catch (err) {
+      setBulkSyncError(err instanceof Error ? err.message : String(err))
+    }
+  }, [
+    closeBulkSyncEventSource,
+    getBulkSyncJob,
+    isBulkSyncRunning,
+    refresh,
+    selectedAccountIds,
+    startBulkSyncJob,
+  ])
+
+  const handleCancelBulkSync = useCallback(async () => {
+    if (!bulkSyncSnapshot?.jobId || bulkSyncSnapshot.status !== 'running') return
+    try {
+      await stopBulkSyncJob(bulkSyncSnapshot.jobId)
+    } catch (err) {
+      setBulkSyncError(err instanceof Error ? err.message : String(err))
+    }
+  }, [bulkSyncSnapshot?.jobId, bulkSyncSnapshot?.status, stopBulkSyncJob])
+
   return (
     <div className="grid gap-6">
       <section className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
@@ -1182,6 +1420,24 @@ export default function UpstreamAccountsPage() {
                 <p className="section-description">{t('accountPool.upstreamAccounts.listDescription')}</p>
               </div>
               <div className="flex flex-wrap items-end gap-3">
+                <label className="field min-w-[12rem]">
+                  <span className="field-label">{t('accountPool.upstreamAccounts.statusFilterLabel')}</span>
+                  <select
+                    value={statusFilter}
+                    onChange={(event) => handleStatusFilterChange(event.target.value)}
+                    className="h-12 rounded-xl border border-base-300/90 bg-base-100 px-4 text-[15px] text-base-content outline-none transition focus:border-primary/70"
+                    aria-label={t('accountPool.upstreamAccounts.statusFilterLabel')}
+                  >
+                    <option value="all">{t('accountPool.upstreamAccounts.statusFilter.all')}</option>
+                    <option value="active">{t('accountPool.upstreamAccounts.status.active')}</option>
+                    <option value="syncing">{t('accountPool.upstreamAccounts.status.syncing')}</option>
+                    <option value="needs_reauth">{t('accountPool.upstreamAccounts.status.needs_reauth')}</option>
+                    <option value="upstream_unavailable">{t('accountPool.upstreamAccounts.status.upstream_unavailable')}</option>
+                    <option value="upstream_rejected">{t('accountPool.upstreamAccounts.status.upstream_rejected')}</option>
+                    <option value="error_other">{t('accountPool.upstreamAccounts.status.error_other')}</option>
+                    <option value="disabled">{t('accountPool.upstreamAccounts.status.disabled')}</option>
+                  </select>
+                </label>
                 <label className="field min-w-[15rem]">
                   <span className="field-label">{t('accountPool.upstreamAccounts.groupFilterLabel')}</span>
                   <UpstreamAccountGroupCombobox
@@ -1192,7 +1448,7 @@ export default function UpstreamAccountsPage() {
                     emptyLabel={t('accountPool.upstreamAccounts.groupFilterEmpty')}
                     createLabel={(value) => t('accountPool.upstreamAccounts.groupFilterUseValue', { value })}
                     ariaLabel={t('accountPool.upstreamAccounts.groupFilterLabel')}
-                    onValueChange={setGroupFilterQuery}
+                    onValueChange={handleGroupFilterChange}
                   />
                 </label>
                 <label className="field min-w-[15rem]">
@@ -1205,19 +1461,177 @@ export default function UpstreamAccountsPage() {
                     emptyLabel={t('accountPool.upstreamAccounts.tagFilterEmpty')}
                     clearLabel={t('accountPool.upstreamAccounts.tagFilterClear')}
                     ariaLabel={t('accountPool.upstreamAccounts.tagFilterAriaLabel')}
-                    onValueChange={setSelectedTagIds}
+                    onValueChange={handleTagFilterChange}
                   />
                 </label>
                 {isLoading ? <Spinner className="text-primary" /> : null}
               </div>
             </div>
+
+            {selectedAccountIds.length > 0 ? (
+              <div className="rounded-[1.25rem] border border-primary/25 bg-primary/8 px-4 py-3">
+                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                  <div className="text-sm text-base-content/80">
+                    {t('accountPool.upstreamAccounts.bulk.selectedCount', { count: selectedAccountIds.length })}
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => void handleBulkAction({ accountIds: selectedAccountIds, action: 'enable' })}
+                      disabled={Boolean(bulkActionBusy) || isBulkSyncRunning || !writesEnabled}
+                    >
+                      {t('accountPool.upstreamAccounts.bulk.enable')}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => void handleBulkAction({ accountIds: selectedAccountIds, action: 'disable' })}
+                      disabled={Boolean(bulkActionBusy) || isBulkSyncRunning || !writesEnabled}
+                    >
+                      {t('accountPool.upstreamAccounts.bulk.disable')}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => {
+                        setBulkGroupName('')
+                        setBulkGroupDialogOpen(true)
+                      }}
+                      disabled={Boolean(bulkActionBusy) || isBulkSyncRunning || !writesEnabled}
+                    >
+                      {t('accountPool.upstreamAccounts.bulk.setGroup')}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => handleOpenBulkTagsDialog('add_tags')}
+                      disabled={Boolean(bulkActionBusy) || isBulkSyncRunning || !writesEnabled}
+                    >
+                      {t('accountPool.upstreamAccounts.bulk.addTags')}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => handleOpenBulkTagsDialog('remove_tags')}
+                      disabled={Boolean(bulkActionBusy) || isBulkSyncRunning || !writesEnabled}
+                    >
+                      {t('accountPool.upstreamAccounts.bulk.removeTags')}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="secondary"
+                      onClick={() => void handleStartBulkSync()}
+                      disabled={Boolean(bulkActionBusy) || isBulkSyncRunning}
+                    >
+                      {t('accountPool.upstreamAccounts.bulk.sync')}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="destructive"
+                      onClick={() => setBulkDeleteDialogOpen(true)}
+                      disabled={Boolean(bulkActionBusy) || isBulkSyncRunning || !writesEnabled}
+                    >
+                      {t('accountPool.upstreamAccounts.bulk.delete')}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      onClick={clearBulkSelection}
+                      disabled={Boolean(bulkActionBusy)}
+                    >
+                      {t('accountPool.upstreamAccounts.bulk.clearSelection')}
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
+            {bulkActionMessage ? (
+              <Alert variant="success">
+                <AppIcon name="check-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                <div>{bulkActionMessage}</div>
+              </Alert>
+            ) : null}
+
+            {bulkActionError ? (
+              <Alert variant="error">
+                <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                <div>{bulkActionError}</div>
+              </Alert>
+            ) : null}
+
+            {bulkSyncSnapshot ? (
+              <Card className="border-base-300/80 bg-base-100/72">
+                <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <CardTitle>{t('accountPool.upstreamAccounts.bulk.syncProgressTitle')}</CardTitle>
+                    <CardDescription>
+                      {t('accountPool.upstreamAccounts.bulk.syncProgressSummary', {
+                        completed: bulkSyncCounts?.completed ?? 0,
+                        total: bulkSyncCounts?.total ?? bulkSyncSnapshot.rows.length,
+                        succeeded: bulkSyncCounts?.succeeded ?? 0,
+                        failed: bulkSyncCounts?.failed ?? 0,
+                        skipped: bulkSyncCounts?.skipped ?? 0,
+                      })}
+                    </CardDescription>
+                  </div>
+                  {bulkSyncSnapshot.status === 'running' ? (
+                    <Button type="button" variant="outline" size="sm" onClick={() => void handleCancelBulkSync()}>
+                      {t('accountPool.upstreamAccounts.bulk.cancelSync')}
+                    </Button>
+                  ) : (
+                    <Button type="button" variant="ghost" size="sm" onClick={() => {
+                      setBulkSyncSnapshot(null)
+                      setBulkSyncCounts(null)
+                      setBulkSyncError(null)
+                    }}>
+                      {t('accountPool.upstreamAccounts.bulk.dismissSync')}
+                    </Button>
+                  )}
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  {bulkSyncError ? (
+                    <Alert variant="error">
+                      <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                      <div>{bulkSyncError}</div>
+                    </Alert>
+                  ) : null}
+                  <div className="max-h-60 space-y-2 overflow-y-auto rounded-2xl border border-base-300/80 bg-base-100/70 p-3">
+                    {bulkSyncSnapshot.rows.map((row) => (
+                      <div key={row.accountId} className="flex flex-col gap-1 rounded-xl border border-base-300/60 px-3 py-2 text-sm">
+                        <div className="flex items-center justify-between gap-3">
+                          <span className="font-medium text-base-content">{row.displayName}</span>
+                          <Badge variant={statusVariant(row.status)}>{t(`accountPool.upstreamAccounts.bulk.rowStatus.${row.status}`)}</Badge>
+                        </div>
+                        {row.detail ? <p className="text-xs text-base-content/68">{row.detail}</p> : null}
+                      </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            ) : null}
+
             <UpstreamAccountsTable
               items={items}
               selectedId={selectedId}
+              selectedAccountIds={selectedAccountIdSet}
               onSelect={handleSelectAccount}
+              onToggleSelected={handleToggleSelectedAccount}
+              onToggleSelectAllCurrentPage={handleToggleSelectAllCurrentPage}
               emptyTitle={t('accountPool.upstreamAccounts.emptyTitle')}
               emptyDescription={t('accountPool.upstreamAccounts.emptyDescription')}
               labels={{
+                selectPage: t('accountPool.upstreamAccounts.bulk.selectPage'),
+                selectRow: (name) => t('accountPool.upstreamAccounts.bulk.selectRow', { name }),
                 account: t('accountPool.upstreamAccounts.table.account'),
                 sync: t('accountPool.upstreamAccounts.table.syncAndCall'),
                 lastSuccess: t('accountPool.upstreamAccounts.table.lastSuccessShort'),
@@ -1238,12 +1652,176 @@ export default function UpstreamAccountsPage() {
                 hiddenTagsA11y: (count, names) =>
                   t('accountPool.upstreamAccounts.table.hiddenTagsA11y', { count, names }),
                 status: accountSummaryStatusLabel,
-                statusValue: (item) => resolveDisplayedStatus(item.status, item.lastError),
+                statusValue: (item) => accountDisplayStatus(item),
               }}
             />
+
+            <div className="flex flex-col gap-3 border-t border-base-300/70 pt-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="text-sm text-base-content/70">
+                  {t('accountPool.upstreamAccounts.pagination.summary', {
+                  page,
+                  pageCount,
+                  total: effectiveTotal,
+                })}
+              </div>
+              <div className="flex flex-wrap items-center gap-3">
+                <label className="flex items-center gap-2 text-sm text-base-content/70">
+                  <span>{t('accountPool.upstreamAccounts.pagination.pageSize')}</span>
+                  <select
+                    value={pageSize}
+                    onChange={(event) => handlePageSizeChange(Number(event.target.value))}
+                    className="h-10 rounded-xl border border-base-300/90 bg-base-100 px-3 text-sm text-base-content outline-none transition focus:border-primary/70"
+                  >
+                    <option value={20}>20</option>
+                    <option value={50}>50</option>
+                    <option value={100}>100</option>
+                  </select>
+                </label>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setPage((current) => Math.max(1, current - 1))}
+                    disabled={page <= 1}
+                  >
+                    {t('accountPool.upstreamAccounts.pagination.previous')}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setPage((current) => Math.min(pageCount, current + 1))}
+                    disabled={page >= pageCount}
+                  >
+                    {t('accountPool.upstreamAccounts.pagination.next')}
+                  </Button>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </section>
+
+      <Dialog open={bulkGroupDialogOpen} onOpenChange={(open) => (!bulkActionBusy ? setBulkGroupDialogOpen(open) : undefined)}>
+        <DialogContent className="p-0">
+          <div className="flex items-start justify-between gap-4 border-b border-base-300/80 px-6 py-5">
+            <DialogHeader className="min-w-0 max-w-[28rem]">
+              <DialogTitle>{t('accountPool.upstreamAccounts.bulk.groupDialogTitle')}</DialogTitle>
+              <DialogDescription>{t('accountPool.upstreamAccounts.bulk.groupDialogDescription')}</DialogDescription>
+            </DialogHeader>
+            <DialogCloseIcon aria-label={t('accountPool.upstreamAccounts.actions.cancel')} disabled={Boolean(bulkActionBusy)} />
+          </div>
+          <div className="space-y-4 px-6 py-6">
+            <label className="field">
+              <span className="field-label">{t('accountPool.upstreamAccounts.bulk.groupField')}</span>
+              <UpstreamAccountGroupCombobox
+                value={bulkGroupName}
+                suggestions={groupFilterSuggestions}
+                placeholder={t('accountPool.upstreamAccounts.bulk.groupPlaceholder')}
+                searchPlaceholder={t('accountPool.upstreamAccounts.groupFilterSearchPlaceholder')}
+                emptyLabel={t('accountPool.upstreamAccounts.groupFilterEmpty')}
+                createLabel={(value) => t('accountPool.upstreamAccounts.groupFilterUseValue', { value })}
+                ariaLabel={t('accountPool.upstreamAccounts.bulk.groupField')}
+                onValueChange={setBulkGroupName}
+              />
+            </label>
+          </div>
+          <DialogFooter className="border-t border-base-300/80 px-6 py-5">
+            <Button type="button" variant="outline" onClick={closeBulkOverlays} disabled={Boolean(bulkActionBusy)}>
+              {t('accountPool.upstreamAccounts.actions.cancel')}
+            </Button>
+            <Button
+              type="button"
+              onClick={() => void handleBulkAction(
+                { accountIds: selectedAccountIds, action: 'set_group', groupName: bulkGroupName.trim() },
+                { onSuccess: closeBulkOverlays },
+              )}
+              disabled={Boolean(bulkActionBusy) || !writesEnabled}
+            >
+              {t('accountPool.upstreamAccounts.bulk.apply')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={bulkTagsDialogOpen} onOpenChange={(open) => (!bulkActionBusy ? setBulkTagsDialogOpen(open) : undefined)}>
+        <DialogContent className="p-0">
+          <div className="flex items-start justify-between gap-4 border-b border-base-300/80 px-6 py-5">
+            <DialogHeader className="min-w-0 max-w-[28rem]">
+              <DialogTitle>
+                {t(
+                  bulkTagMode === 'add_tags'
+                    ? 'accountPool.upstreamAccounts.bulk.addTagsDialogTitle'
+                    : 'accountPool.upstreamAccounts.bulk.removeTagsDialogTitle',
+                )}
+              </DialogTitle>
+              <DialogDescription>{t('accountPool.upstreamAccounts.bulk.tagsDialogDescription')}</DialogDescription>
+            </DialogHeader>
+            <DialogCloseIcon aria-label={t('accountPool.upstreamAccounts.actions.cancel')} disabled={Boolean(bulkActionBusy)} />
+          </div>
+          <div className="space-y-4 px-6 py-6">
+            <label className="field">
+              <span className="field-label">{t('accountPool.upstreamAccounts.bulk.tagsField')}</span>
+              <AccountTagFilterCombobox
+                tags={tagItems}
+                value={bulkTagIds}
+                placeholder={t('accountPool.upstreamAccounts.bulk.tagsPlaceholder')}
+                searchPlaceholder={t('accountPool.upstreamAccounts.tagFilterSearchPlaceholder')}
+                emptyLabel={t('accountPool.upstreamAccounts.tagFilterEmpty')}
+                clearLabel={t('accountPool.upstreamAccounts.tagFilterClear')}
+                ariaLabel={t('accountPool.upstreamAccounts.bulk.tagsField')}
+                onValueChange={setBulkTagIds}
+              />
+            </label>
+          </div>
+          <DialogFooter className="border-t border-base-300/80 px-6 py-5">
+            <Button type="button" variant="outline" onClick={closeBulkOverlays} disabled={Boolean(bulkActionBusy)}>
+              {t('accountPool.upstreamAccounts.actions.cancel')}
+            </Button>
+            <Button
+              type="button"
+              onClick={() => void handleBulkAction(
+                { accountIds: selectedAccountIds, action: bulkTagMode, tagIds: bulkTagIds },
+                { onSuccess: closeBulkOverlays },
+              )}
+              disabled={Boolean(bulkActionBusy) || bulkTagIds.length === 0 || !writesEnabled}
+            >
+              {t('accountPool.upstreamAccounts.bulk.apply')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={bulkDeleteDialogOpen} onOpenChange={(open) => (!bulkActionBusy ? setBulkDeleteDialogOpen(open) : undefined)}>
+        <DialogContent className="p-0">
+          <div className="flex items-start justify-between gap-4 border-b border-base-300/80 px-6 py-5">
+            <DialogHeader className="min-w-0 max-w-[28rem]">
+              <DialogTitle>{t('accountPool.upstreamAccounts.bulk.deleteDialogTitle')}</DialogTitle>
+              <DialogDescription>
+                {t('accountPool.upstreamAccounts.bulk.deleteDialogDescription', { count: selectedAccountIds.length })}
+              </DialogDescription>
+            </DialogHeader>
+            <DialogCloseIcon aria-label={t('accountPool.upstreamAccounts.actions.cancel')} disabled={Boolean(bulkActionBusy)} />
+          </div>
+          <DialogFooter className="px-6 py-5">
+            <Button type="button" variant="outline" onClick={closeBulkOverlays} disabled={Boolean(bulkActionBusy)}>
+              {t('accountPool.upstreamAccounts.actions.cancel')}
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              onClick={() => void handleBulkAction(
+                { accountIds: selectedAccountIds, action: 'delete' },
+                { onSuccess: closeBulkOverlays },
+              )}
+              disabled={Boolean(bulkActionBusy) || !writesEnabled}
+            >
+              {t('accountPool.upstreamAccounts.actions.confirmDelete')}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       <RoutingSettingsDialog
         open={isRoutingDialogOpen}
@@ -1295,13 +1873,9 @@ export default function UpstreamAccountsPage() {
               <div className="space-y-3">
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge
-                    variant={statusVariant(
-                      resolveDisplayedStatus(selected.status, selectedDetail?.lastError ?? selected.lastError),
-                    )}
+                    variant={statusVariant(accountDisplayStatus(selected))}
                   >
-                    {accountStatusLabel(
-                      resolveDisplayedStatus(selected.status, selectedDetail?.lastError ?? selected.lastError),
-                    )}
+                    {accountStatusLabel(accountDisplayStatus(selected))}
                   </Badge>
                   <Badge variant={kindVariant(selected.kind)}>{accountKindLabel(selected.kind)}</Badge>
                   {selected.planType ? <Badge variant="secondary">{selected.planType}</Badge> : null}

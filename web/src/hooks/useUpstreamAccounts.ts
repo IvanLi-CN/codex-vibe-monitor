@@ -1,11 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
+  bulkUpdateUpstreamAccounts,
+  cancelBulkUpstreamAccountSyncJob,
   cancelImportedOauthValidationJob,
+  createBulkUpstreamAccountSyncJob,
   createApiKeyUpstreamAccount,
   createImportedOauthValidationJob,
   createOauthMailboxSession,
   completeOauthLoginSession,
   createOauthLoginSession,
+  fetchBulkUpstreamAccountSyncJob,
   deleteOauthMailboxSession,
   deleteUpstreamAccount,
   fetchOauthMailboxStatuses,
@@ -19,6 +23,10 @@ import {
   updatePoolRoutingSettings,
   updateUpstreamAccount,
   validateImportedOauthAccounts,
+  type BulkUpstreamAccountActionPayload,
+  type BulkUpstreamAccountActionResponse,
+  type BulkUpstreamAccountSyncJobPayload,
+  type BulkUpstreamAccountSyncJobResponse,
   type CreateApiKeyAccountPayload,
   type CompleteOauthLoginSessionPayload,
   type CreateOauthLoginSessionPayload,
@@ -31,6 +39,7 @@ import {
   type OauthMailboxSession,
   type OauthMailboxStatus,
   type PoolRoutingSettings,
+  type UpstreamAccountListMetrics,
   type UpstreamAccountGroupSummary,
   type UpdatePoolRoutingSettingsPayload,
   type UpdateUpstreamAccountGroupPayload,
@@ -51,6 +60,15 @@ export function useUpstreamAccounts(query: FetchUpstreamAccountsQuery = DEFAULT_
   const [hasUngroupedAccounts, setHasUngroupedAccounts] = useState(false)
   const [writesEnabled, setWritesEnabled] = useState(true)
   const [routing, setRouting] = useState<PoolRoutingSettings | null>(null)
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(query.page ?? 1)
+  const [pageSize, setPageSize] = useState(query.pageSize ?? 20)
+  const [metrics, setMetrics] = useState<UpstreamAccountListMetrics>({
+    total: 0,
+    oauth: 0,
+    apiKey: 0,
+    attention: 0,
+  })
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [detail, setDetail] = useState<UpstreamAccountDetail | null>(null)
   const [isLoading, setIsLoading] = useState(true)
@@ -122,6 +140,15 @@ export function useUpstreamAccounts(query: FetchUpstreamAccountsQuery = DEFAULT_
         setHasUngroupedAccounts(response.hasUngroupedAccounts)
         setWritesEnabled(response.writesEnabled)
         setRouting(response.routing ?? null)
+        setTotal(response.total ?? 0)
+        setPage(response.page ?? 1)
+        setPageSize(response.pageSize ?? 20)
+        setMetrics(response.metrics ?? {
+          total: 0,
+          oauth: 0,
+          apiKey: 0,
+          attention: 0,
+        })
         setListError(null)
         setSelectedAccount(nextSelectedId)
         return nextSelectedId
@@ -382,6 +409,39 @@ export function useUpstreamAccounts(query: FetchUpstreamAccountsQuery = DEFAULT_
     [invalidateListRequest, loadList],
   )
 
+  const runBulkAction = useCallback(
+    async (payload: BulkUpstreamAccountActionPayload): Promise<BulkUpstreamAccountActionResponse> => {
+      const response = await bulkUpdateUpstreamAccounts(payload)
+      invalidateListRequest()
+      await loadList(selectedIdRef.current, {
+        respectCurrentSelection: true,
+        selectionAnchorId: selectedIdRef.current,
+      })
+      await refreshCurrentSelectedDetail()
+      emitUpstreamAccountsChanged()
+      return response
+    },
+    [invalidateListRequest, loadList, refreshCurrentSelectedDetail],
+  )
+
+  const startBulkSyncJob = useCallback(
+    async (payload: BulkUpstreamAccountSyncJobPayload): Promise<BulkUpstreamAccountSyncJobResponse> => {
+      return createBulkUpstreamAccountSyncJob(payload)
+    },
+    [],
+  )
+
+  const getBulkSyncJob = useCallback(
+    async (jobId: string): Promise<BulkUpstreamAccountSyncJobResponse> => {
+      return fetchBulkUpstreamAccountSyncJob(jobId)
+    },
+    [],
+  )
+
+  const stopBulkSyncJob = useCallback(async (jobId: string) => {
+    await cancelBulkUpstreamAccountSyncJob(jobId)
+  }, [])
+
   const runSync = useCallback(
     async (accountId: number) => {
       const response = await syncUpstreamAccount(accountId)
@@ -470,7 +530,15 @@ export function useUpstreamAccounts(query: FetchUpstreamAccountsQuery = DEFAULT_
     saveAccount,
     saveRouting,
     saveGroupNote,
+    runBulkAction,
+    startBulkSyncJob,
+    getBulkSyncJob,
+    stopBulkSyncJob,
     runSync,
     removeAccount,
+    total,
+    page,
+    pageSize,
+    metrics,
   }
 }

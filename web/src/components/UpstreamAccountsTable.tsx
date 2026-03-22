@@ -1,4 +1,4 @@
-import type { KeyboardEvent, ReactNode } from 'react'
+import { useEffect, useRef, type KeyboardEvent, type ReactNode } from 'react'
 import { AppIcon } from './AppIcon'
 import { MotherAccountBadge } from './MotherAccountToggle'
 import { Badge } from './ui/badge'
@@ -9,10 +9,15 @@ import { cn } from '../lib/utils'
 interface UpstreamAccountsTableProps {
   items: UpstreamAccountSummary[]
   selectedId: number | null
+  selectedAccountIds: Set<number>
   onSelect: (accountId: number) => void
+  onToggleSelected: (accountId: number, checked: boolean) => void
+  onToggleSelectAllCurrentPage: (checked: boolean) => void
   emptyTitle: string
   emptyDescription: string
   labels: {
+    selectPage: string
+    selectRow: (name: string) => string
     account: string
     sync: string
     lastSuccess: string
@@ -34,6 +39,38 @@ interface UpstreamAccountsTableProps {
     status: (item: UpstreamAccountSummary) => string
     statusValue: (item: UpstreamAccountSummary) => string
   }
+}
+
+function SelectAllCheckbox({
+  checked,
+  indeterminate,
+  ariaLabel,
+  onChange,
+}: {
+  checked: boolean
+  indeterminate: boolean
+  ariaLabel: string
+  onChange: (checked: boolean) => void
+}) {
+  const ref = useRef<HTMLInputElement | null>(null)
+
+  useEffect(() => {
+    if (!ref.current) return
+    ref.current.indeterminate = indeterminate
+  }, [indeterminate])
+
+  return (
+    <input
+      ref={ref}
+      type="checkbox"
+      className="h-4 w-4 cursor-pointer rounded border-base-300/90 bg-base-100 accent-primary"
+      aria-label={ariaLabel}
+      checked={checked}
+      onChange={(event) => onChange(event.target.checked)}
+      onClick={(event) => event.stopPropagation()}
+      onKeyDown={(event) => event.stopPropagation()}
+    />
+  )
 }
 
 function windowPercent(value?: number | null) {
@@ -61,7 +98,15 @@ function kindLabel(item: UpstreamAccountSummary, labels: UpstreamAccountsTablePr
 function badgeVariant(status: string): 'success' | 'warning' | 'error' | 'secondary' {
   if (status === 'active') return 'success'
   if (status === 'syncing') return 'warning'
-  if (status === 'error' || status === 'needs_reauth') return 'error'
+  if (
+    status === 'needs_reauth' ||
+    status === 'upstream_unavailable' ||
+    status === 'upstream_rejected' ||
+    status === 'error_other' ||
+    status === 'error'
+  ) {
+    return 'error'
+  }
   return 'secondary'
 }
 
@@ -206,7 +251,10 @@ function handleRowKeyDown(
 export function UpstreamAccountsTable({
   items,
   selectedId,
+  selectedAccountIds,
   onSelect,
+  onToggleSelected,
+  onToggleSelectAllCurrentPage,
   emptyTitle,
   emptyDescription,
   labels,
@@ -227,10 +275,16 @@ export function UpstreamAccountsTable({
     )
   }
 
+  const currentPageSelectedCount = items.filter((item) => selectedAccountIds.has(item.id)).length
+  const allCurrentPageSelected = items.length > 0 && currentPageSelectedCount === items.length
+  const partiallySelected =
+    currentPageSelectedCount > 0 && currentPageSelectedCount < items.length
+
   return (
     <div className="overflow-x-auto rounded-[1.35rem] border border-base-300/80 bg-base-100/72 md:overflow-x-visible">
       <table className="min-w-[54rem] w-full table-auto border-collapse md:min-w-0 md:table-fixed">
         <colgroup>
+          <col className="w-[3rem]" />
           <col className="w-[38%]" />
           <col className="w-[16%]" />
           <col className="w-[42%]" />
@@ -238,6 +292,14 @@ export function UpstreamAccountsTable({
         </colgroup>
         <thead>
           <tr className="border-b border-base-300/80 bg-base-100/86 text-left">
+            <th className="px-3 py-2.5 text-center">
+              <SelectAllCheckbox
+                checked={allCurrentPageSelected}
+                indeterminate={partiallySelected}
+                ariaLabel={labels.selectPage}
+                onChange={onToggleSelectAllCurrentPage}
+              />
+            </th>
             <th className="px-4 py-2.5 text-[11px] font-semibold uppercase tracking-[0.16em] text-base-content/55">
               {labels.account}
             </th>
@@ -276,6 +338,17 @@ export function UpstreamAccountsTable({
                   index % 2 === 1 && !selected && 'bg-base-100/32',
                 )}
               >
+                <td className="px-3 py-3 align-middle text-center">
+                  <input
+                    type="checkbox"
+                    className="h-4 w-4 cursor-pointer rounded border-base-300/90 bg-base-100 accent-primary"
+                    aria-label={labels.selectRow(item.displayName)}
+                    checked={selectedAccountIds.has(item.id)}
+                    onChange={(event) => onToggleSelected(item.id, event.target.checked)}
+                    onClick={(event) => event.stopPropagation()}
+                    onKeyDown={(event) => event.stopPropagation()}
+                  />
+                </td>
                 <td className="px-4 py-3">
                   <div className="min-w-0">
                     <p
@@ -295,7 +368,7 @@ export function UpstreamAccountsTable({
                           ? compactBadge(labels.duplicate, 'warning')
                           : null}
                         {compactBadge(labels.status(item), badgeVariant(displayStatus))}
-                        {!item.enabled
+                        {!item.enabled && displayStatus !== 'disabled'
                           ? compactBadge(labels.off, 'secondary')
                           : null}
                         {compactBadge(kindLabel(item, labels), 'secondary')}

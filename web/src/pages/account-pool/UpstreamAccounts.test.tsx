@@ -324,6 +324,7 @@ function mockAccountsPage() {
         displayName: "Existing OAuth",
         groupName: "prod",
         status: "active",
+        displayStatus: "active",
         enabled: true,
         isMother: true,
         planType: "team",
@@ -362,6 +363,7 @@ function mockAccountsPage() {
         displayName: "Another OAuth",
         groupName: "prod",
         status: "active",
+        displayStatus: "active",
         enabled: true,
         isMother: false,
         planType: "pro",
@@ -375,6 +377,15 @@ function mockAccountsPage() {
     ],
     hasUngroupedAccounts: true,
     writesEnabled: true,
+    total: 2,
+    page: 1,
+    pageSize: 20,
+    metrics: {
+      total: 2,
+      oauth: 2,
+      apiKey: 0,
+      attention: 0,
+    },
     selectedId: 5,
     selectedSummary: {
       id: 5,
@@ -383,6 +394,7 @@ function mockAccountsPage() {
       displayName: "Existing OAuth",
       groupName: "prod",
       status: "active",
+      displayStatus: "active",
       enabled: true,
       isMother: true,
       planType: "team",
@@ -423,6 +435,7 @@ function mockAccountsPage() {
       displayName: "Existing OAuth",
       groupName: "prod",
       status: "active",
+      displayStatus: "active",
       enabled: true,
       isMother: true,
       planType: "team",
@@ -470,13 +483,23 @@ function mockAccountsPage() {
     loadDetail: vi.fn(),
     beginOauthLogin: vi.fn(),
     beginRelogin: vi.fn(),
+    beginOauthMailboxSession: vi.fn(),
+    beginOauthMailboxSessionForAddress: vi.fn(),
+    getOauthMailboxStatuses: vi.fn(),
+    removeOauthMailboxSession: vi.fn(),
     getLoginSession: vi.fn(),
     completeOauthLogin: vi.fn(),
     createApiKeyAccount: vi.fn(),
     saveAccount: vi.fn(),
     saveRouting: vi.fn(),
+    saveGroupNote: vi.fn(),
+    runBulkAction: vi.fn(),
+    startBulkSyncJob: vi.fn(),
+    getBulkSyncJob: vi.fn(),
+    stopBulkSyncJob: vi.fn(),
     runSync: vi.fn(),
     removeAccount: vi.fn(),
+    groups: [],
     routing: { apiKeyConfigured: false, maskedApiKey: null },
   });
 }
@@ -489,7 +512,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     const headerCells = Array.from(document.body.querySelectorAll("thead th")).map((cell) =>
       cell.textContent?.trim() || "",
     );
-    expect(headerCells).toEqual(["Account", "Sync / Call", "Windows", ""]);
+    expect(headerCells).toEqual(["", "Account", "Sync / Call", "Windows", ""]);
     expect(document.body.textContent).toContain("vip");
     expect(document.body.textContent).toContain("+1");
     expect(document.body.textContent).toContain("team");
@@ -506,6 +529,9 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect(hookMocks.useUpstreamAccounts).toHaveBeenLastCalledWith({
       groupSearch: undefined,
       groupUngrouped: undefined,
+      status: undefined,
+      page: 1,
+      pageSize: 20,
       tagIds: [1, 2],
     });
   });
@@ -523,6 +549,9 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect(hookMocks.useUpstreamAccounts).toHaveBeenLastCalledWith({
       groupSearch: undefined,
       groupUngrouped: true,
+      status: undefined,
+      page: 1,
+      pageSize: 20,
       tagIds: [1, 2],
     });
   });
@@ -1555,6 +1584,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
           groupName: "prod",
           isMother: false,
           status: "error",
+          displayStatus: "error_other",
           enabled: true,
           lastError:
             "oauth bridge token exchange failed: oauth bridge responded with 502",
@@ -1570,6 +1600,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
         groupName: "prod",
         isMother: false,
         status: "error",
+        displayStatus: "error_other",
         enabled: true,
         lastError:
           "oauth bridge token exchange failed: oauth bridge responded with 502",
@@ -1582,6 +1613,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
         groupName: "prod",
         isMother: false,
         status: "error",
+        displayStatus: "error_other",
         enabled: true,
         lastError:
           "oauth bridge token exchange failed: oauth bridge responded with 502",
@@ -1615,8 +1647,10 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
     expect(document.body.textContent).toContain(
       "The stored last_error came from the removed OAuth bridge path",
     );
-    expect(document.body.textContent).toContain("Error");
-    expect(document.body.textContent).not.toContain("Needs re-auth");
+    expect(document.body.textContent).toContain("Other error");
+    expect(document.body.textContent).not.toContain(
+      "This OAuth account needs a fresh sign-in",
+    );
   });
 
   it("shows the re-auth hint only for explicit oauth invalidation", () => {
@@ -1630,6 +1664,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
           groupName: "prod",
           isMother: false,
           status: "needs_reauth",
+          displayStatus: "needs_reauth",
           enabled: true,
           lastError:
             "OAuth token endpoint returned 400: invalid_grant",
@@ -1645,6 +1680,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
         groupName: "prod",
         isMother: false,
         status: "needs_reauth",
+        displayStatus: "needs_reauth",
         enabled: true,
         lastError:
           "OAuth token endpoint returned 400: invalid_grant",
@@ -1657,6 +1693,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
         groupName: "prod",
         isMother: false,
         status: "needs_reauth",
+        displayStatus: "needs_reauth",
         enabled: true,
         lastError:
           "OAuth token endpoint returned 400: invalid_grant",
@@ -1701,6 +1738,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
           groupName: "prod",
           isMother: false,
           status: "needs_reauth",
+          displayStatus: "upstream_rejected",
           enabled: true,
           lastError:
             "oauth bridge upstream rejected request: 403 forbidden",
@@ -1716,6 +1754,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
         groupName: "prod",
         isMother: false,
         status: "needs_reauth",
+        displayStatus: "upstream_rejected",
         enabled: true,
         lastError:
           "oauth bridge upstream rejected request: 403 forbidden",
@@ -1728,6 +1767,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
         groupName: "prod",
         isMother: false,
         status: "needs_reauth",
+        displayStatus: "upstream_rejected",
         enabled: true,
         lastError:
           "oauth bridge upstream rejected request: 403 forbidden",
@@ -1758,11 +1798,10 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
     expect(document.body.textContent).toContain(
       "The OAuth data plane rejected this request",
     );
-    expect(document.body.textContent).toContain("Error");
+    expect(document.body.textContent).toContain("Upstream rejected");
     expect(document.body.textContent).not.toContain(
       "This OAuth account needs a fresh sign-in",
     );
-    expect(document.body.textContent).not.toContain("Needs re-auth");
   });
 });
 
