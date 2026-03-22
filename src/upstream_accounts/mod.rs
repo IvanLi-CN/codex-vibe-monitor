@@ -1336,7 +1336,8 @@ struct ImportedOauthCredentialsFile {
     source_type: String,
     email: String,
     account_id: String,
-    expired: String,
+    #[serde(default)]
+    expired: Option<String>,
     access_token: String,
     refresh_token: String,
     id_token: String,
@@ -1391,6 +1392,12 @@ struct ChatgptJwtOuterClaims {
     profile: Option<ChatgptJwtProfileClaims>,
     #[serde(rename = "https://api.openai.com/auth", default)]
     auth: Option<ChatgptJwtAuthClaims>,
+}
+
+#[derive(Debug, Deserialize)]
+struct JwtExpiryClaims {
+    #[serde(default)]
+    exp: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -8052,20 +8059,24 @@ fn decrypt_credentials(key: &[u8; 32], payload: &str) -> Result<StoredCredential
     serde_json::from_slice(&plaintext).context("failed to decode credential JSON")
 }
 
-fn parse_chatgpt_jwt_claims(id_token: &str) -> Result<ChatgptJwtClaims> {
-    let mut parts = id_token.split('.');
+fn decode_jwt_payload(token: &str, token_name: &str) -> Result<Vec<u8>> {
+    let mut parts = token.split('.');
     let (_header, payload, _sig) = match (parts.next(), parts.next(), parts.next()) {
         (Some(header), Some(payload), Some(sig))
             if !header.is_empty() && !payload.is_empty() && !sig.is_empty() =>
         {
             (header, payload, sig)
         }
-        _ => bail!("invalid id_token format"),
+        _ => bail!("invalid {token_name} format"),
     };
-    let payload_bytes = URL_SAFE_NO_PAD
+    URL_SAFE_NO_PAD
         .decode(payload)
         .or_else(|_| BASE64_STANDARD.decode(payload))
-        .context("failed to decode id_token payload")?;
+        .with_context(|| format!("failed to decode {token_name} payload"))
+}
+
+fn parse_chatgpt_jwt_claims(id_token: &str) -> Result<ChatgptJwtClaims> {
+    let payload_bytes = decode_jwt_payload(id_token, "id_token")?;
     let claims: ChatgptJwtOuterClaims =
         serde_json::from_slice(&payload_bytes).context("failed to parse id_token payload")?;
     Ok(ChatgptJwtClaims {
@@ -8087,6 +8098,31 @@ fn parse_chatgpt_jwt_claims(id_token: &str) -> Result<ChatgptJwtClaims> {
             .as_ref()
             .and_then(|value| value.chatgpt_account_id.clone()),
     })
+}
+
+fn parse_jwt_expiration_utc(token: &str, token_name: &str) -> Option<DateTime<Utc>> {
+    let payload_bytes = decode_jwt_payload(token, token_name).ok()?;
+    let claims: JwtExpiryClaims = serde_json::from_slice(&payload_bytes).ok()?;
+    claims
+        .exp
+        .and_then(|exp| DateTime::<Utc>::from_timestamp(exp, 0))
+}
+
+fn resolve_imported_token_expires_at(
+    expired: Option<&str>,
+    access_token: &str,
+    id_token: &str,
+) -> Result<String, String> {
+    if let Some(expired) = expired.map(str::trim).filter(|value| !value.is_empty()) {
+        return parse_rfc3339_utc(expired)
+            .map(format_utc_iso)
+            .ok_or_else(|| "expired must be a valid RFC3339 timestamp".to_string());
+    }
+
+    parse_jwt_expiration_utc(access_token, "access_token")
+        .or_else(|| parse_jwt_expiration_utc(id_token, "id_token"))
+        .map(format_utc_iso)
+        .ok_or_else(|| "expired is required when token exp is unavailable".to_string())
 }
 
 fn render_callback_page(success: bool, title: &str, message: &str) -> String {
@@ -8346,9 +8382,8 @@ fn normalize_imported_oauth_credentials(
         .map_err(|(_, message)| message)?;
     let id_token =
         normalize_required_secret(&parsed.id_token, "id_token").map_err(|(_, message)| message)?;
-    let token_expires_at = parse_rfc3339_utc(&parsed.expired)
-        .map(format_utc_iso)
-        .ok_or_else(|| "expired must be a valid RFC3339 timestamp".to_string())?;
+    let token_expires_at =
+        resolve_imported_token_expires_at(parsed.expired.as_deref(), &access_token, &id_token)?;
     let mut claims = parse_chatgpt_jwt_claims(&id_token)
         .map_err(|err| format!("failed to parse id_token: {err}"))?;
     if let Some(jwt_email) = claims.email.as_deref()
@@ -9584,6 +9619,124 @@ mod tests {
     }
 
     #[test]
+    fn normalize_imported_oauth_credentials_uses_access_token_exp_when_expired_blank() {
+        let access_exp = 1_777_777_777;
+        let id_exp = 1_666_666_666;
+        let item = ImportOauthCredentialFileRequest {
+            source_id: "file-blank-expired".to_string(),
+            file_name: "blank-expired.json".to_string(),
+            content: json!({
+                "type": "codex",
+                "email": "blank-expired@duckmail.sbs",
+                "account_id": "acct_blank_expired",
+                "expired": "",
+                "access_token": test_jwt_token(json!({ "exp": access_exp })),
+                "refresh_token": "refresh-token",
+                "id_token": test_jwt_token(json!({
+                    "exp": id_exp,
+                    "email": "blank-expired@duckmail.sbs",
+                    "https://api.openai.com/auth": {
+                        "chatgpt_account_id": "acct_blank_expired",
+                        "chatgpt_user_id": "user_blank_expired",
+                        "chatgpt_plan_type": "team"
+                    }
+                }))
+            })
+            .to_string(),
+        };
+
+        let normalized = normalize_imported_oauth_credentials(&item)
+            .expect("normalize imported oauth credentials");
+        assert_eq!(normalized.token_expires_at, "2026-05-03T03:09:37Z");
+    }
+
+    #[test]
+    fn normalize_imported_oauth_credentials_uses_id_token_exp_when_expired_missing() {
+        let id_exp = 1_666_666_666;
+        let item = ImportOauthCredentialFileRequest {
+            source_id: "file-missing-expired".to_string(),
+            file_name: "missing-expired.json".to_string(),
+            content: json!({
+                "type": "codex",
+                "email": "missing-expired@duckmail.sbs",
+                "account_id": "acct_missing_expired",
+                "access_token": "opaque-access-token",
+                "refresh_token": "refresh-token",
+                "id_token": test_jwt_token(json!({
+                    "exp": id_exp,
+                    "email": "missing-expired@duckmail.sbs",
+                    "https://api.openai.com/auth": {
+                        "chatgpt_account_id": "acct_missing_expired",
+                        "chatgpt_user_id": "user_missing_expired",
+                        "chatgpt_plan_type": "team"
+                    }
+                }))
+            })
+            .to_string(),
+        };
+
+        let normalized = normalize_imported_oauth_credentials(&item)
+            .expect("normalize imported oauth credentials");
+        assert_eq!(normalized.token_expires_at, "2022-10-25T02:57:46Z");
+    }
+
+    #[test]
+    fn normalize_imported_oauth_credentials_rejects_non_empty_invalid_expired() {
+        let item = ImportOauthCredentialFileRequest {
+            source_id: "file-invalid-expired".to_string(),
+            file_name: "invalid-expired.json".to_string(),
+            content: json!({
+                "type": "codex",
+                "email": "invalid-expired@duckmail.sbs",
+                "account_id": "acct_invalid_expired",
+                "expired": "not-a-date",
+                "access_token": test_jwt_token(json!({ "exp": 1_777_777_777 })),
+                "refresh_token": "refresh-token",
+                "id_token": test_jwt_token(json!({
+                    "exp": 1_666_666_666,
+                    "email": "invalid-expired@duckmail.sbs",
+                    "https://api.openai.com/auth": {
+                        "chatgpt_account_id": "acct_invalid_expired",
+                        "chatgpt_user_id": "user_invalid_expired",
+                        "chatgpt_plan_type": "team"
+                    }
+                }))
+            })
+            .to_string(),
+        };
+
+        let error = normalize_imported_oauth_credentials(&item)
+            .expect_err("expected invalid expired timestamp");
+        assert_eq!(error, "expired must be a valid RFC3339 timestamp");
+    }
+
+    #[test]
+    fn normalize_imported_oauth_credentials_rejects_missing_expired_without_token_exp() {
+        let item = ImportOauthCredentialFileRequest {
+            source_id: "file-missing-expired-no-exp".to_string(),
+            file_name: "missing-expired-no-exp.json".to_string(),
+            content: json!({
+                "type": "codex",
+                "email": "missing-expired-no-exp@duckmail.sbs",
+                "account_id": "acct_missing_expired_no_exp",
+                "access_token": "opaque-access-token",
+                "refresh_token": "refresh-token",
+                "id_token": test_id_token(
+                    "missing-expired-no-exp@duckmail.sbs",
+                    Some("acct_missing_expired_no_exp"),
+                    Some("user_missing_expired_no_exp"),
+                    Some("team"),
+                )
+            })
+            .to_string(),
+        };
+
+        let error = normalize_imported_oauth_credentials(&item)
+            .expect_err("expected missing expiry to be rejected");
+        assert_eq!(error, "expired is required when token exp is unavailable");
+    }
+
+    #[test]
     fn normalize_imported_oauth_credentials_rejects_id_token_mismatch() {
         let item = ImportOauthCredentialFileRequest {
             source_id: "file-2".to_string(),
@@ -10186,14 +10339,17 @@ mod tests {
         chatgpt_user_id: Option<&str>,
         plan_type: Option<&str>,
     ) -> String {
-        let payload = json!({
+        test_jwt_token(json!({
             "email": email,
             "https://api.openai.com/auth": {
                 "chatgpt_plan_type": plan_type,
                 "chatgpt_user_id": chatgpt_user_id,
                 "chatgpt_account_id": chatgpt_account_id,
             }
-        });
+        }))
+    }
+
+    fn test_jwt_token(payload: serde_json::Value) -> String {
         let encoded = URL_SAFE_NO_PAD.encode(b"{}");
         let body = URL_SAFE_NO_PAD.encode(payload.to_string().as_bytes());
         format!("{encoded}.{body}.{encoded}")
