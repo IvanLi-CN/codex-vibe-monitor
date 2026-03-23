@@ -8927,7 +8927,7 @@ async fn proxy_openai_v1_returns_bad_gateway_when_first_stream_chunk_fails() {
     )
     .await;
 
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read response body");
@@ -9011,7 +9011,7 @@ async fn proxy_openai_v1_blocks_cross_origin_redirect() {
     )
     .await;
 
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read response body");
@@ -11540,14 +11540,18 @@ async fn resolve_pool_account_for_request_exempts_accounts_without_local_limits_
         upsert_test_sticky_route_at(&state.pool, sticky_key, exempt_id, &recent_seen_at).await;
     }
 
-    let account =
-        match resolve_pool_account_for_request(state.as_ref(), Some("sticky-exempt-target"), &[])
-            .await
-            .expect("resolve pool account")
-        {
-            PoolAccountResolution::Resolved(account) => account,
-            other => panic!("pool account should resolve, got {other:?}"),
-        };
+    let account = match resolve_pool_account_for_request(
+        state.as_ref(),
+        Some("sticky-exempt-target"),
+        &[],
+        &HashSet::new(),
+    )
+    .await
+    .expect("resolve pool account")
+    {
+        PoolAccountResolution::Resolved(account) => account,
+        other => panic!("pool account should resolve, got {other:?}"),
+    };
 
     assert_eq!(account.account_id, exempt_id);
     assert_ne!(account.account_id, limited_id);
@@ -11579,6 +11583,7 @@ async fn resolve_pool_account_for_request_keeps_existing_sort_order_when_exempt_
         state.as_ref(),
         Some("sticky-mixed-order-target"),
         &[],
+        &HashSet::new(),
     )
     .await
     .expect("resolve pool account")
@@ -12693,7 +12698,7 @@ async fn capture_target_pool_route_stops_after_three_distinct_accounts() {
         ),
     )
     .await;
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     let _ = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read failure response body");
