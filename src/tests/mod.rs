@@ -2953,6 +2953,88 @@ async fn set_test_account_status(pool: &SqlitePool, account_id: i64, status: &st
         .expect("set test pool account status");
 }
 
+async fn clear_test_account_credentials(pool: &SqlitePool, account_id: i64) {
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET encrypted_credentials = NULL,
+            updated_at = ?1
+        WHERE id = ?2
+        "#,
+    )
+    .bind(&now_iso)
+    .bind(account_id)
+    .execute(pool)
+    .await
+    .expect("clear test pool account credentials");
+}
+
+async fn set_test_account_rate_limited_cooldown(
+    pool: &SqlitePool,
+    account_id: i64,
+    cooldown_secs: i64,
+) {
+    set_test_account_route_cooldown(
+        pool,
+        account_id,
+        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
+        "test rate limit cooldown",
+        cooldown_secs,
+    )
+    .await;
+}
+
+async fn set_test_account_generic_route_cooldown(
+    pool: &SqlitePool,
+    account_id: i64,
+    cooldown_secs: i64,
+) {
+    set_test_account_route_cooldown(
+        pool,
+        account_id,
+        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX,
+        "test generic cooldown",
+        cooldown_secs,
+    )
+    .await;
+}
+
+async fn set_test_account_route_cooldown(
+    pool: &SqlitePool,
+    account_id: i64,
+    failure_kind: &str,
+    error_message: &str,
+    cooldown_secs: i64,
+) {
+    let now = Utc::now();
+    let now_iso = format_utc_iso(now);
+    let cooldown_until = format_utc_iso(now + ChronoDuration::seconds(cooldown_secs));
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET status = ?1,
+            last_error = ?2,
+            last_error_at = ?3,
+            last_route_failure_at = ?3,
+            last_route_failure_kind = ?4,
+            cooldown_until = ?5,
+            consecutive_route_failures = 1,
+            updated_at = ?3
+        WHERE id = ?6
+        "#,
+    )
+    .bind("active")
+    .bind(error_message)
+    .bind(&now_iso)
+    .bind(failure_kind)
+    .bind(cooldown_until)
+    .bind(account_id)
+    .execute(pool)
+    .await
+    .expect("set test pool account route cooldown");
+}
+
 async fn upsert_test_sticky_route_at(
     pool: &SqlitePool,
     sticky_key: &str,
@@ -4354,6 +4436,28 @@ async fn count_request_forward_proxy_attempts_with_failure_kind(
     .fetch_one(pool)
     .await
     .expect("count request forward proxy attempts by failure kind")
+}
+
+async fn count_pool_upstream_request_attempts(pool: &SqlitePool) -> i64 {
+    sqlx::query_scalar("SELECT COUNT(*) FROM pool_upstream_request_attempts")
+        .fetch_one(pool)
+        .await
+        .expect("count pool upstream request attempts")
+}
+
+async fn wait_for_pool_upstream_request_attempts(pool: &SqlitePool, expected_min_count: i64) {
+    let started = Instant::now();
+    loop {
+        let count = count_pool_upstream_request_attempts(pool).await;
+        if count >= expected_min_count {
+            return;
+        }
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "timed out waiting pool upstream attempts; expected at least {expected_min_count}, got {count}"
+        );
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
 }
 
 async fn latest_request_forward_proxy_attempt_latency_ms(pool: &SqlitePool) -> Option<f64> {
@@ -10322,6 +10426,24 @@ struct PoolRetryUpstreamState {
 }
 
 #[derive(Clone)]
+struct PoolRateLimitResponsesUpstreamState {
+    attempts: Arc<StdMutex<HashMap<String, usize>>>,
+    rate_limit_attempts: Arc<HashMap<String, usize>>,
+}
+
+#[derive(Clone)]
+struct PoolRateLimitEchoUpstreamState {
+    attempts: Arc<StdMutex<HashMap<String, usize>>>,
+    rate_limit_attempts: Arc<HashMap<String, usize>>,
+}
+
+#[derive(Clone)]
+struct PoolStaticFailureResponsesUpstreamState {
+    attempts: Arc<StdMutex<HashMap<String, usize>>>,
+    statuses: Arc<HashMap<String, StatusCode>>,
+}
+
+#[derive(Clone)]
 struct PoolFirstChunkRetryUpstreamState {
     attempts: Arc<StdMutex<HashMap<String, usize>>>,
     fail_before_success: Arc<HashMap<String, usize>>,
@@ -10363,6 +10485,174 @@ async fn pool_retry_upstream(
             Json(json!({
                 "ok": false,
                 "authorization": authorization,
+                "attempt": attempt,
+            })),
+        )
+            .into_response();
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "ok": true,
+            "authorization": authorization,
+            "attempt": attempt,
+        })),
+    )
+        .into_response()
+}
+
+async fn pool_rate_limit_responses_upstream(
+    State(state): State<PoolRateLimitResponsesUpstreamState>,
+    headers: HeaderMap,
+) -> Response {
+    let authorization = headers
+        .get(http_header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+
+    let attempt = {
+        let mut attempts = state
+            .attempts
+            .lock()
+            .expect("lock pool rate-limit attempts");
+        let entry = attempts.entry(authorization.clone()).or_insert(0);
+        *entry += 1;
+        *entry
+    };
+
+    if attempt
+        <= state
+            .rate_limit_attempts
+            .get(&authorization)
+            .copied()
+            .unwrap_or(0)
+    {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({
+                "error": {
+                    "code": "rate_limit_exceeded",
+                    "message": format!("rate limited for {authorization}"),
+                }
+            })),
+        )
+            .into_response();
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "ok": true,
+            "authorization": authorization,
+            "attempt": attempt,
+        })),
+    )
+        .into_response()
+}
+
+async fn pool_rate_limit_echo_upstream(
+    State(state): State<PoolRateLimitEchoUpstreamState>,
+    headers: HeaderMap,
+    method: Method,
+    uri: Uri,
+    body: String,
+) -> Response {
+    let authorization = headers
+        .get(http_header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+
+    let attempt = {
+        let mut attempts = state
+            .attempts
+            .lock()
+            .expect("lock pool echo rate-limit attempts");
+        let entry = attempts.entry(authorization.clone()).or_insert(0);
+        *entry += 1;
+        *entry
+    };
+
+    if attempt
+        <= state
+            .rate_limit_attempts
+            .get(&authorization)
+            .copied()
+            .unwrap_or(0)
+    {
+        return (
+            StatusCode::TOO_MANY_REQUESTS,
+            Json(json!({
+                "error": {
+                    "code": "rate_limit_exceeded",
+                    "message": format!("rate limited for {authorization}"),
+                },
+                "attempt": attempt,
+            })),
+        )
+            .into_response();
+    }
+
+    (
+        StatusCode::CREATED,
+        Json(json!({
+            "attempt": attempt,
+            "authorization": authorization,
+            "method": method.as_str(),
+            "path": uri.path(),
+            "query": uri.query().unwrap_or_default(),
+            "body": body,
+        })),
+    )
+        .into_response()
+}
+
+async fn pool_static_failure_responses_upstream(
+    State(state): State<PoolStaticFailureResponsesUpstreamState>,
+    headers: HeaderMap,
+) -> Response {
+    let authorization = headers
+        .get(http_header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+
+    let attempt = {
+        let mut attempts = state
+            .attempts
+            .lock()
+            .expect("lock pool static failure attempts");
+        let entry = attempts.entry(authorization.clone()).or_insert(0);
+        *entry += 1;
+        *entry
+    };
+
+    let status = state
+        .statuses
+        .get(&authorization)
+        .copied()
+        .unwrap_or(StatusCode::OK);
+    if !status.is_success() {
+        let (error_code, error_message) = if status == StatusCode::TOO_MANY_REQUESTS {
+            (
+                "rate_limit_exceeded",
+                format!("rate limited for {authorization}"),
+            )
+        } else {
+            (
+                "server_error",
+                format!("upstream failure for {authorization}"),
+            )
+        };
+        return (
+            status,
+            Json(json!({
+                "error": {
+                    "code": error_code,
+                    "message": error_message,
+                },
                 "attempt": attempt,
             })),
         )
@@ -10776,6 +11066,111 @@ async fn spawn_pool_retry_upstream(
         axum::serve(listener, app)
             .await
             .expect("pool retry upstream should run");
+    });
+    (format!("http://{addr}"), attempts, handle)
+}
+
+async fn spawn_pool_rate_limit_responses_upstream(
+    rate_limit_attempts: &[(&str, usize)],
+) -> (
+    String,
+    Arc<StdMutex<HashMap<String, usize>>>,
+    JoinHandle<()>,
+) {
+    let attempts = Arc::new(StdMutex::new(HashMap::new()));
+    let rate_limit_attempts = Arc::new(
+        rate_limit_attempts
+            .iter()
+            .map(|(authorization, failures)| ((*authorization).to_string(), *failures))
+            .collect::<HashMap<_, _>>(),
+    );
+    let app = Router::new()
+        .route("/v1/responses", post(pool_rate_limit_responses_upstream))
+        .with_state(PoolRateLimitResponsesUpstreamState {
+            attempts: attempts.clone(),
+            rate_limit_attempts,
+        });
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind pool rate-limit responses upstream");
+    let addr = listener
+        .local_addr()
+        .expect("pool rate-limit responses upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("pool rate-limit responses upstream should run");
+    });
+    (format!("http://{addr}"), attempts, handle)
+}
+
+async fn spawn_pool_static_failure_responses_upstream(
+    statuses: &[(&str, StatusCode)],
+) -> (
+    String,
+    Arc<StdMutex<HashMap<String, usize>>>,
+    JoinHandle<()>,
+) {
+    let attempts = Arc::new(StdMutex::new(HashMap::new()));
+    let statuses = Arc::new(
+        statuses
+            .iter()
+            .map(|(authorization, status)| ((*authorization).to_string(), *status))
+            .collect::<HashMap<_, _>>(),
+    );
+    let app = Router::new()
+        .route(
+            "/v1/responses",
+            post(pool_static_failure_responses_upstream),
+        )
+        .with_state(PoolStaticFailureResponsesUpstreamState {
+            attempts: attempts.clone(),
+            statuses,
+        });
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind pool static failure upstream");
+    let addr = listener
+        .local_addr()
+        .expect("pool static failure upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("pool static failure upstream should run");
+    });
+    (format!("http://{addr}"), attempts, handle)
+}
+
+async fn spawn_pool_rate_limit_echo_upstream(
+    rate_limit_attempts: &[(&str, usize)],
+) -> (
+    String,
+    Arc<StdMutex<HashMap<String, usize>>>,
+    JoinHandle<()>,
+) {
+    let attempts = Arc::new(StdMutex::new(HashMap::new()));
+    let rate_limit_attempts = Arc::new(
+        rate_limit_attempts
+            .iter()
+            .map(|(authorization, failures)| ((*authorization).to_string(), *failures))
+            .collect::<HashMap<_, _>>(),
+    );
+    let app = Router::new()
+        .route("/v1/echo", any(pool_rate_limit_echo_upstream))
+        .with_state(PoolRateLimitEchoUpstreamState {
+            attempts: attempts.clone(),
+            rate_limit_attempts,
+        });
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind pool rate-limit echo upstream");
+    let addr = listener
+        .local_addr()
+        .expect("pool rate-limit echo upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("pool rate-limit echo upstream should run");
     });
     (format!("http://{addr}"), attempts, handle)
 }
@@ -11261,6 +11656,122 @@ async fn pool_route_switches_accounts_after_same_account_retries_are_exhausted()
 }
 
 #[tokio::test]
+async fn pool_route_switches_accounts_immediately_after_upstream_429() {
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_rate_limit_responses_upstream(&[("Bearer upstream-primary", 99)]).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let secondary_id =
+        insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-429-switch"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read proxy response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode proxy response");
+    assert_eq!(payload["authorization"], "Bearer upstream-secondary");
+    assert_eq!(payload["attempt"], 1);
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(1));
+    drop(attempts);
+
+    wait_for_pool_upstream_request_attempts(&state.pool, 2).await;
+    let attempt_rows = sqlx::query_as::<_, (i64, i64, i64, Option<String>)>(
+        r#"
+        SELECT attempt_index, distinct_account_index, same_account_retry_index, failure_kind
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load attempt rows");
+    assert_eq!(attempt_rows.len(), 2);
+    assert_eq!(attempt_rows[0].0, 1);
+    assert_eq!(attempt_rows[0].1, 1);
+    assert_eq!(attempt_rows[0].2, 1);
+    assert_eq!(
+        attempt_rows[0].3.as_deref(),
+        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
+    );
+    assert_eq!(attempt_rows[1].0, 2);
+    assert_eq!(attempt_rows[1].1, 2);
+    assert_eq!(attempt_rows[1].2, 1);
+    assert_eq!(attempt_rows[1].3, None);
+
+    let route_account_id = wait_for_test_sticky_route_account_id(&state.pool, "sticky-429-switch")
+        .await
+        .expect("sticky route should move to the successful account");
+    assert_eq!(route_account_id, secondary_id);
+    assert_ne!(route_account_id, primary_id);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_route_live_request_switches_accounts_immediately_after_upstream_429() {
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_rate_limit_echo_upstream(&[("Bearer upstream-primary", 99)]).await;
+    let state = test_state_with_openai_base_body_limit_and_read_timeout(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES,
+        Duration::from_millis(50),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/echo?mode=pool-live-429".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from("hello-live-429"),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read proxy response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode upstream payload");
+    assert_eq!(payload["authorization"], "Bearer upstream-secondary");
+    assert_eq!(payload["attempt"], 1);
+    assert_eq!(payload["body"], "hello-live-429");
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(1));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn pool_route_retries_first_chunk_failure_before_switching() {
     let (upstream_base, attempts, upstream_handle) =
         spawn_pool_first_chunk_retry_upstream(&[("Bearer upstream-primary", 2)]).await;
@@ -11494,6 +12005,434 @@ async fn pool_route_surfaces_last_upstream_error_when_failover_is_exhausted() {
         payload["error"].as_str(),
         Some("pool upstream responded with 500")
     );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_route_returns_clear_429_when_only_account_is_rate_limited() {
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_rate_limit_responses_upstream(&[("Bearer upstream-primary", 99)]).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-429-terminal"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read failure body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode failure payload");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some(POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE)
+    );
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_route_returns_clear_429_when_all_accounts_are_already_in_429_cooldown() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let secondary_id =
+        insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+    set_test_account_rate_limited_cooldown(&state.pool, primary_id, 120).await;
+    set_test_account_rate_limited_cooldown(&state.pool, secondary_id, 120).await;
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-429-cooldown"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read failure body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode failure payload");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some(POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE)
+    );
+}
+
+#[tokio::test]
+async fn pool_route_ignores_missing_credentials_when_all_routable_accounts_are_rate_limited() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let missing_credentials_id =
+        insert_test_pool_api_key_account(&state, "Missing Credentials", "upstream-missing").await;
+    set_test_account_rate_limited_cooldown(&state.pool, primary_id, 120).await;
+    clear_test_account_credentials(&state.pool, missing_credentials_id).await;
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-429-missing-creds"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read failure body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode failure payload");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some(POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE)
+    );
+}
+
+#[tokio::test]
+async fn pool_route_stale_sticky_binding_does_not_hide_pool_wide_429() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let secondary_id =
+        insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+    set_test_account_status(&state.pool, primary_id, "needs_reauth").await;
+    set_test_account_rate_limited_cooldown(&state.pool, secondary_id, 120).await;
+    let sticky_seen_at = format_utc_iso(Utc::now());
+    upsert_test_sticky_route_at(
+        &state.pool,
+        "sticky-429-stale-binding",
+        primary_id,
+        &sticky_seen_at,
+    )
+    .await;
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-429-stale-binding"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read failure body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode failure payload");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some(POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE)
+    );
+}
+
+#[tokio::test]
+async fn pool_route_missing_credentials_sticky_binding_does_not_hide_pool_wide_429() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let secondary_id =
+        insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+    clear_test_account_credentials(&state.pool, primary_id).await;
+    set_test_account_rate_limited_cooldown(&state.pool, secondary_id, 120).await;
+    let sticky_seen_at = format_utc_iso(Utc::now());
+    upsert_test_sticky_route_at(
+        &state.pool,
+        "sticky-429-missing-creds-binding",
+        primary_id,
+        &sticky_seen_at,
+    )
+    .await;
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-429-missing-creds-binding"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read failure body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode failure payload");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some(POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE)
+    );
+}
+
+#[tokio::test]
+async fn pool_route_keeps_generic_no_candidate_when_other_accounts_are_unavailable_for_other_reasons()
+ {
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_rate_limit_responses_upstream(&[("Bearer upstream-primary", 99)]).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let secondary_id =
+        insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+    set_test_account_generic_route_cooldown(&state.pool, secondary_id, 120).await;
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-429-mixed-no-candidate"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read failure body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode failure payload");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some("no healthy pool account is available")
+    );
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_route_returns_429_after_three_distinct_accounts_hit_upstream_429() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptRow {
+        attempt_index: i64,
+        distinct_account_index: i64,
+        same_account_retry_index: i64,
+        status: String,
+        http_status: Option<i64>,
+        failure_kind: Option<String>,
+    }
+
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_rate_limit_responses_upstream(&[
+        ("Bearer upstream-primary", 99),
+        ("Bearer upstream-secondary", 99),
+        ("Bearer upstream-tertiary", 99),
+    ])
+    .await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+    insert_test_pool_api_key_account(&state, "Tertiary", "upstream-tertiary").await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-429-budget"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read failure body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode failure payload");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some(POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE)
+    );
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(1));
+    assert_eq!(attempts.get("Bearer upstream-tertiary").copied(), Some(1));
+    drop(attempts);
+
+    let attempt_rows = sqlx::query_as::<_, AttemptRow>(
+        r#"
+        SELECT attempt_index, distinct_account_index, same_account_retry_index, status, http_status, failure_kind
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load attempt rows");
+    assert_eq!(attempt_rows.len(), 4);
+    assert_eq!(attempt_rows[0].attempt_index, 1);
+    assert_eq!(attempt_rows[0].distinct_account_index, 1);
+    assert_eq!(attempt_rows[0].same_account_retry_index, 1);
+    assert_eq!(
+        attempt_rows[0].failure_kind.as_deref(),
+        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
+    );
+    assert_eq!(attempt_rows[1].attempt_index, 2);
+    assert_eq!(attempt_rows[1].distinct_account_index, 2);
+    assert_eq!(attempt_rows[1].same_account_retry_index, 1);
+    assert_eq!(
+        attempt_rows[1].failure_kind.as_deref(),
+        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
+    );
+    assert_eq!(attempt_rows[2].attempt_index, 3);
+    assert_eq!(attempt_rows[2].distinct_account_index, 3);
+    assert_eq!(attempt_rows[2].same_account_retry_index, 1);
+    assert_eq!(
+        attempt_rows[2].failure_kind.as_deref(),
+        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
+    );
+    assert_eq!(attempt_rows[3].attempt_index, 4);
+    assert_eq!(attempt_rows[3].distinct_account_index, 3);
+    assert_eq!(attempt_rows[3].same_account_retry_index, 0);
+    assert_eq!(
+        attempt_rows[3].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL
+    );
+    assert_eq!(
+        attempt_rows[3].http_status,
+        Some(StatusCode::TOO_MANY_REQUESTS.as_u16() as i64)
+    );
+    assert_eq!(
+        attempt_rows[3].failure_kind.as_deref(),
+        Some(PROXY_FAILURE_POOL_MAX_DISTINCT_ACCOUNTS_EXHAUSTED)
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_route_does_not_use_pool_wide_429_message_when_budget_exhaustion_is_mixed() {
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_static_failure_responses_upstream(&[
+            ("Bearer upstream-primary", StatusCode::INTERNAL_SERVER_ERROR),
+            (
+                "Bearer upstream-secondary",
+                StatusCode::INTERNAL_SERVER_ERROR,
+            ),
+            ("Bearer upstream-tertiary", StatusCode::TOO_MANY_REQUESTS),
+        ])
+        .await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+    insert_test_pool_api_key_account(&state, "Tertiary", "upstream-tertiary").await;
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-429-mixed-budget"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read failure body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode failure payload");
+    assert_ne!(
+        payload["error"].as_str(),
+        Some(POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE)
+    );
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(3));
+    assert_eq!(attempts.get("Bearer upstream-tertiary").copied(), Some(1));
 
     upstream_handle.abort();
 }

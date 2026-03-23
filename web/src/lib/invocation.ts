@@ -3,13 +3,30 @@ import type { ApiInvocation } from './api'
 const DEFAULT_FALLBACK = '—'
 const PRIORITY_SERVICE_TIER = 'priority'
 const ROUTE_MODE_POOL = 'pool'
+const RESPONSES_ENDPOINT = '/v1/responses'
+const CHAT_COMPLETIONS_ENDPOINT = '/v1/chat/completions'
+const COMPACT_ENDPOINT = '/v1/responses/compact'
 
 export type ProxyWeightDeltaDirection = 'up' | 'down' | 'flat' | 'missing'
 export type FastIndicatorState = 'effective' | 'requested_only' | 'none'
+export type InvocationEndpointKind = 'responses' | 'chat' | 'compact' | 'raw'
+
+type InvocationEndpointBadgeVariant = 'default' | 'secondary' | 'info'
+type InvocationEndpointBadgeLabelKey =
+  | 'table.endpoint.responsesBadge'
+  | 'table.endpoint.chatBadge'
+  | 'table.endpoint.compactBadge'
 
 export interface ProxyWeightDeltaView {
   direction: ProxyWeightDeltaDirection
   value: string
+}
+
+export interface InvocationEndpointDisplay {
+  kind: InvocationEndpointKind
+  endpointValue: string
+  badgeVariant: InvocationEndpointBadgeVariant | null
+  labelKey: InvocationEndpointBadgeLabelKey | null
 }
 
 export function normalizeServiceTier(value: string | null | undefined): string | null {
@@ -92,6 +109,43 @@ export function formatResponseContentEncoding(
   if (typeof value !== 'string') return fallback
   const normalized = value.trim().toLowerCase()
   return normalized.length > 0 ? normalized : fallback
+}
+
+export function resolveInvocationEndpointDisplay(
+  value: string | null | undefined,
+  fallback: string = DEFAULT_FALLBACK,
+): InvocationEndpointDisplay {
+  const endpointValue = typeof value === 'string' ? value.trim() : ''
+  switch (endpointValue) {
+    case RESPONSES_ENDPOINT:
+      return {
+        kind: 'responses',
+        endpointValue,
+        badgeVariant: 'default',
+        labelKey: 'table.endpoint.responsesBadge',
+      }
+    case CHAT_COMPLETIONS_ENDPOINT:
+      return {
+        kind: 'chat',
+        endpointValue,
+        badgeVariant: 'secondary',
+        labelKey: 'table.endpoint.chatBadge',
+      }
+    case COMPACT_ENDPOINT:
+      return {
+        kind: 'compact',
+        endpointValue,
+        badgeVariant: 'info',
+        labelKey: 'table.endpoint.compactBadge',
+      }
+    default:
+      return {
+        kind: 'raw',
+        endpointValue: endpointValue || fallback,
+        badgeVariant: null,
+        labelKey: null,
+      }
+  }
 }
 
 export function invocationStableKey(record: Pick<ApiInvocation, 'invokeId' | 'occurredAt'>): string {

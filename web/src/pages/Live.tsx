@@ -16,6 +16,13 @@ import { cn } from "../lib/utils";
 import { SelectField } from "../components/ui/select-field";
 
 const LIMIT_OPTIONS = [20, 50, 100];
+const PROMPT_CACHE_SELECTION_STORAGE_KEY =
+  "codex-vibe-monitor.live.prompt-cache-selection";
+const DEFAULT_PROMPT_CACHE_SELECTION: PromptCacheConversationSelection = {
+  mode: "count",
+  limit: 50,
+};
+const DEFAULT_PROMPT_CACHE_SELECTION_VALUE = "count:50";
 const PROMPT_CACHE_SELECTION_OPTIONS: Array<
   | {
       value: string;
@@ -79,6 +86,9 @@ const PROMPT_CACHE_SELECTION_OPTIONS: Array<
     hours: 24,
   },
 ];
+const PROMPT_CACHE_SELECTION_LOOKUP = new Map(
+  PROMPT_CACHE_SELECTION_OPTIONS.map((option) => [option.value, option.selection]),
+);
 const SUMMARY_WINDOWS: { value: string; labelKey: TranslationKey }[] = [
   { value: "current", labelKey: "live.summary.current" },
   { value: "30m", labelKey: "live.summary.30m" },
@@ -86,14 +96,38 @@ const SUMMARY_WINDOWS: { value: string; labelKey: TranslationKey }[] = [
   { value: "1d", labelKey: "live.summary.1d" },
 ];
 
+function readPromptCacheSelectionValue() {
+  if (typeof window === "undefined") {
+    return DEFAULT_PROMPT_CACHE_SELECTION_VALUE;
+  }
+  try {
+    const cached = window.localStorage.getItem(
+      PROMPT_CACHE_SELECTION_STORAGE_KEY,
+    );
+    if (cached && PROMPT_CACHE_SELECTION_LOOKUP.has(cached)) {
+      return cached;
+    }
+  } catch {
+    // Ignore storage access failures and fall back to the default option.
+  }
+  return DEFAULT_PROMPT_CACHE_SELECTION_VALUE;
+}
+
+function persistPromptCacheSelectionValue(value: string) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(PROMPT_CACHE_SELECTION_STORAGE_KEY, value);
+  } catch {
+    // Ignore storage write failures and keep the UI responsive.
+  }
+}
+
 export default function LivePage() {
   const { t } = useTranslation();
   const [limit, setLimit] = useState(50);
-  const [conversationSelection, setConversationSelection] =
-    useState<PromptCacheConversationSelection>({
-      mode: "count",
-      limit: 50,
-    });
+  const [conversationSelectionValue, setConversationSelectionValue] = useState(
+    () => readPromptCacheSelectionValue(),
+  );
   const [summaryWindow, setSummaryWindow] = useState("current");
   const {
     stats: forwardProxyStats,
@@ -134,15 +168,14 @@ export default function LivePage() {
       }),
     [records],
   );
+  const conversationSelection =
+    PROMPT_CACHE_SELECTION_LOOKUP.get(conversationSelectionValue) ??
+    DEFAULT_PROMPT_CACHE_SELECTION;
   const {
     stats: conversationStats,
     isLoading: conversationsLoading,
     error: conversationsError,
   } = usePromptCacheConversations(conversationSelection);
-  const conversationSelectionValue =
-    conversationSelection.mode === "count"
-      ? `count:${conversationSelection.limit}`
-      : `activityWindow:${conversationSelection.activityHours}`;
   const promptCacheSelectionOptions = useMemo(
     () =>
       PROMPT_CACHE_SELECTION_OPTIONS.map((option) => ({
@@ -151,7 +184,6 @@ export default function LivePage() {
           "count" in option
             ? t(option.labelKey, { count: option.count })
             : t(option.labelKey, { hours: option.hours }),
-        selection: option.selection,
       })),
     [t],
   );
@@ -228,10 +260,9 @@ export default function LivePage() {
               value={conversationSelectionValue}
               options={promptCacheSelectionOptions}
               onValueChange={(value) => {
-                const next = promptCacheSelectionOptions.find(
-                  (option) => option.value === value,
-                );
-                if (next) setConversationSelection(next.selection);
+                if (!PROMPT_CACHE_SELECTION_LOOKUP.has(value)) return;
+                setConversationSelectionValue(value);
+                persistPromptCacheSelectionValue(value);
               }}
             />
           </div>

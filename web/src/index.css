@@ -269,6 +269,52 @@ body {
     color: oklch(var(--color-primary-content));
   }
 
+  .invocation-endpoint-badge {
+    background-image: none;
+    box-shadow: none;
+  }
+
+  .invocation-endpoint-badge[data-endpoint-kind='responses'] {
+    background-color: color-mix(in oklab, oklch(var(--color-base-100)) 88%, oklch(var(--color-primary)) 12%);
+    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 66%, oklch(var(--color-primary)) 34%);
+    color: color-mix(in oklab, oklch(var(--color-base-content)) 42%, oklch(var(--color-primary)) 58%);
+  }
+
+  .invocation-endpoint-badge[data-endpoint-kind='chat'] {
+    background-color: color-mix(in oklab, oklch(var(--color-base-100)) 88%, oklch(var(--color-secondary)) 12%);
+    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 64%, oklch(var(--color-secondary)) 36%);
+    color: color-mix(in oklab, oklch(var(--color-base-content)) 46%, oklch(var(--color-secondary)) 54%);
+  }
+
+  .invocation-endpoint-badge[data-endpoint-kind='compact'] {
+    background-color: color-mix(in oklab, oklch(var(--color-base-100)) 89%, oklch(var(--color-warning)) 11%);
+    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 62%, oklch(var(--color-warning)) 38%);
+    color: color-mix(in oklab, oklch(var(--color-base-content)) 50%, oklch(var(--color-warning)) 50%);
+  }
+
+  [data-theme='vibe-dark'] .invocation-endpoint-badge {
+    background-image: none;
+    box-shadow: none;
+  }
+
+  [data-theme='vibe-dark'] .invocation-endpoint-badge[data-endpoint-kind='responses'] {
+    background-color: color-mix(in oklab, oklch(var(--color-base-200)) 82%, oklch(var(--color-primary)) 18%);
+    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 54%, oklch(var(--color-primary)) 46%);
+    color: color-mix(in oklab, oklch(var(--color-base-content)) 38%, oklch(var(--color-primary)) 62%);
+  }
+
+  [data-theme='vibe-dark'] .invocation-endpoint-badge[data-endpoint-kind='chat'] {
+    background-color: color-mix(in oklab, oklch(var(--color-base-200)) 82%, oklch(var(--color-secondary)) 18%);
+    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 52%, oklch(var(--color-secondary)) 48%);
+    color: color-mix(in oklab, oklch(var(--color-base-content)) 42%, oklch(var(--color-secondary)) 58%);
+  }
+
+  [data-theme='vibe-dark'] .invocation-endpoint-badge[data-endpoint-kind='compact'] {
+    background-color: color-mix(in oklab, oklch(var(--color-base-200)) 83%, oklch(var(--color-warning)) 17%);
+    border-color: color-mix(in oklab, oklch(var(--color-base-300)) 50%, oklch(var(--color-warning)) 50%);
+    color: color-mix(in oklab, oklch(var(--color-base-content)) 46%, oklch(var(--color-warning)) 54%);
+  }
+
   .field {
     @apply flex flex-col gap-1.5;
   }
