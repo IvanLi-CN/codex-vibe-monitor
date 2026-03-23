@@ -1640,6 +1640,7 @@ struct UpstreamAccountRow {
     last_error_at: Option<String>,
     last_selected_at: Option<String>,
     last_route_failure_at: Option<String>,
+    last_route_failure_kind: Option<String>,
     cooldown_until: Option<String>,
     consecutive_route_failures: i64,
     local_primary_limit: Option<f64>,
@@ -1853,6 +1854,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             last_activity_at TEXT,
             last_selected_at TEXT,
             last_route_failure_at TEXT,
+            last_route_failure_kind TEXT,
             cooldown_until TEXT,
             consecutive_route_failures INTEGER NOT NULL DEFAULT 0,
             local_primary_limit REAL,
@@ -1877,6 +1879,9 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "last_route_failure_at")
         .await
         .context("failed to ensure pool_upstream_accounts.last_route_failure_at")?;
+    ensure_nullable_text_column(pool, "pool_upstream_accounts", "last_route_failure_kind")
+        .await
+        .context("failed to ensure pool_upstream_accounts.last_route_failure_kind")?;
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "cooldown_until")
         .await
         .context("failed to ensure pool_upstream_accounts.cooldown_until")?;
@@ -5212,9 +5217,9 @@ async fn find_existing_import_match(
             chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
             encrypted_credentials, token_expires_at, last_refreshed_at,
             last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
-            last_selected_at, last_route_failure_at, cooldown_until, consecutive_route_failures,
-            local_primary_limit, local_secondary_limit, local_limit_unit, upstream_base_url,
-            created_at, updated_at
+            last_selected_at, last_route_failure_at, last_route_failure_kind, cooldown_until,
+            consecutive_route_failures, local_primary_limit, local_secondary_limit,
+            local_limit_unit, upstream_base_url, created_at, updated_at
         FROM pool_upstream_accounts
         WHERE kind = ?1
           AND chatgpt_account_id = ?2
@@ -5242,9 +5247,9 @@ async fn find_existing_import_match(
             chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
             encrypted_credentials, token_expires_at, last_refreshed_at,
             last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
-            last_selected_at, last_route_failure_at, cooldown_until, consecutive_route_failures,
-            local_primary_limit, local_secondary_limit, local_limit_unit, upstream_base_url,
-            created_at, updated_at
+            last_selected_at, last_route_failure_at, last_route_failure_kind, cooldown_until,
+            consecutive_route_failures, local_primary_limit, local_secondary_limit,
+            local_limit_unit, upstream_base_url, created_at, updated_at
         FROM pool_upstream_accounts
         WHERE kind = ?1
           AND lower(trim(COALESCE(email, ''))) = lower(trim(?2))
@@ -6636,9 +6641,9 @@ async fn load_upstream_account_summaries_filtered(
             chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
             encrypted_credentials, token_expires_at, last_refreshed_at,
             last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
-            last_selected_at, last_route_failure_at, cooldown_until, consecutive_route_failures,
-            local_primary_limit, local_secondary_limit, local_limit_unit, upstream_base_url,
-            created_at, updated_at
+            last_selected_at, last_route_failure_at, last_route_failure_kind, cooldown_until,
+            consecutive_route_failures, local_primary_limit, local_secondary_limit,
+            local_limit_unit, upstream_base_url, created_at, updated_at
         FROM pool_upstream_accounts
         "#,
     );
@@ -6919,9 +6924,9 @@ async fn load_upstream_account_row_conn(
             chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
             encrypted_credentials, token_expires_at, last_refreshed_at,
             last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
-            last_selected_at, last_route_failure_at, cooldown_until, consecutive_route_failures,
-            local_primary_limit, local_secondary_limit, local_limit_unit, upstream_base_url,
-            created_at, updated_at
+            last_selected_at, last_route_failure_at, last_route_failure_kind, cooldown_until,
+            consecutive_route_failures, local_primary_limit, local_secondary_limit,
+            local_limit_unit, upstream_base_url, created_at, updated_at
         FROM pool_upstream_accounts
         WHERE id = ?1
         LIMIT 1
@@ -8662,6 +8667,22 @@ async fn set_account_status(
         SET status = ?2,
             last_error = ?3,
             last_error_at = CASE WHEN ?3 IS NULL THEN last_error_at ELSE ?4 END,
+            last_route_failure_at = CASE
+                WHEN ?2 = ?5 AND ?3 IS NULL THEN NULL
+                ELSE last_route_failure_at
+            END,
+            last_route_failure_kind = CASE
+                WHEN ?2 = ?5 AND ?3 IS NULL THEN NULL
+                ELSE last_route_failure_kind
+            END,
+            cooldown_until = CASE
+                WHEN ?2 = ?5 AND ?3 IS NULL THEN NULL
+                ELSE cooldown_until
+            END,
+            consecutive_route_failures = CASE
+                WHEN ?2 = ?5 AND ?3 IS NULL THEN 0
+                ELSE consecutive_route_failures
+            END,
             updated_at = ?4
         WHERE id = ?1
         "#,
@@ -8670,6 +8691,7 @@ async fn set_account_status(
     .bind(status)
     .bind(last_error)
     .bind(&now_iso)
+    .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
     .execute(pool)
     .await?;
     Ok(())
@@ -9806,6 +9828,8 @@ pub(crate) struct PoolResolvedAccount {
 #[derive(Debug, Clone)]
 pub(crate) enum PoolAccountResolution {
     Resolved(PoolResolvedAccount),
+    RateLimited,
+    Unavailable,
     NoCandidate,
     BlockedByPolicy(String),
 }
@@ -9855,6 +9879,9 @@ pub(crate) async fn resolve_pool_account_for_request(
     excluded_ids: &[i64],
 ) -> Result<PoolAccountResolution> {
     let mut tried = excluded_ids.iter().copied().collect::<HashSet<_>>();
+    let mut saw_rate_limited_candidate = false;
+    let mut saw_non_rate_limited_routing_candidate = false;
+    let mut saw_non_routing_candidate = false;
 
     let sticky_route = if let Some(sticky_key) = sticky_key {
         load_sticky_route(&state.pool, sticky_key).await?
@@ -9871,11 +9898,21 @@ pub(crate) async fn resolve_pool_account_for_request(
     if let Some(route) = sticky_route.as_ref() {
         if !tried.contains(&route.account_id)
             && let Some(row) = load_upstream_account_row(&state.pool, route.account_id).await?
-            && is_account_selectable_for_routing(&row)
         {
             tried.insert(route.account_id);
-            if let Some(account) = prepare_pool_account(state, &row).await? {
-                return Ok(PoolAccountResolution::Resolved(account));
+            if is_account_selectable_for_routing(&row) {
+                if let Some(account) = prepare_pool_account(state, &row).await? {
+                    return Ok(PoolAccountResolution::Resolved(account));
+                }
+                saw_non_rate_limited_routing_candidate = true;
+            } else if is_account_rate_limited_for_routing(&row) {
+                saw_rate_limited_candidate = true;
+            } else if is_routing_eligible_account(&row) {
+                saw_non_rate_limited_routing_candidate = true;
+            } else if is_pool_account_routing_candidate(&row) {
+                // Active accounts without usable credentials are not real
+                // routing candidates and should not mask an all-429 pool.
+                saw_non_routing_candidate = true;
             }
         }
         if sticky_source_rule
@@ -9896,6 +9933,13 @@ pub(crate) async fn resolve_pool_account_for_request(
             continue;
         };
         if !is_account_selectable_for_routing(&row) {
+            if is_account_rate_limited_for_routing(&row) {
+                saw_rate_limited_candidate = true;
+            } else if is_routing_eligible_account(&row) {
+                saw_non_rate_limited_routing_candidate = true;
+            } else {
+                saw_non_routing_candidate = true;
+            }
             continue;
         }
         let effective_rule = load_effective_routing_rule_for_account(&state.pool, row.id).await?;
@@ -9908,11 +9952,22 @@ pub(crate) async fn resolve_pool_account_for_request(
         )
         .await?
         {
+            saw_non_rate_limited_routing_candidate = true;
             continue;
         }
         if let Some(account) = prepare_pool_account(state, &row).await? {
             return Ok(PoolAccountResolution::Resolved(account));
         }
+        saw_non_rate_limited_routing_candidate = true;
+    }
+
+    if saw_rate_limited_candidate && !saw_non_rate_limited_routing_candidate {
+        return Ok(PoolAccountResolution::RateLimited);
+    }
+    if saw_non_rate_limited_routing_candidate
+        || (!saw_rate_limited_candidate && saw_non_routing_candidate)
+    {
+        return Ok(PoolAccountResolution::Unavailable);
     }
 
     Ok(PoolAccountResolution::NoCandidate)
@@ -9932,6 +9987,7 @@ pub(crate) async fn record_pool_route_success(
             last_error = NULL,
             last_error_at = NULL,
             last_route_failure_at = NULL,
+            last_route_failure_kind = NULL,
             cooldown_until = NULL,
             consecutive_route_failures = 0,
             updated_at = ?3
@@ -9978,6 +10034,7 @@ pub(crate) async fn record_pool_route_http_failure(
                 last_error = ?3,
                 last_error_at = ?4,
                 last_route_failure_at = ?4,
+                last_route_failure_kind = ?5,
                 cooldown_until = NULL,
                 consecutive_route_failures = consecutive_route_failures + 1,
                 updated_at = ?4
@@ -9988,6 +10045,7 @@ pub(crate) async fn record_pool_route_http_failure(
         .bind(next_status)
         .bind(error_message)
         .bind(now_iso)
+        .bind(PROXY_FAILURE_UPSTREAM_HTTP_AUTH)
         .execute(pool)
         .await?;
         return Ok(());
@@ -9998,7 +10056,15 @@ pub(crate) async fn record_pool_route_http_failure(
     } else {
         5
     };
-    apply_pool_route_cooldown_failure(pool, account_id, sticky_key, error_message, base_secs).await
+    apply_pool_route_cooldown_failure(
+        pool,
+        account_id,
+        sticky_key,
+        error_message,
+        pool_route_http_failure_kind(status),
+        base_secs,
+    )
+    .await
 }
 
 pub(crate) async fn record_pool_route_transport_failure(
@@ -10007,7 +10073,15 @@ pub(crate) async fn record_pool_route_transport_failure(
     sticky_key: Option<&str>,
     error_message: &str,
 ) -> Result<()> {
-    apply_pool_route_cooldown_failure(pool, account_id, sticky_key, error_message, 5).await
+    apply_pool_route_cooldown_failure(
+        pool,
+        account_id,
+        sticky_key,
+        error_message,
+        PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+        5,
+    )
+    .await
 }
 
 pub(crate) async fn build_account_sticky_keys_response(
@@ -10305,11 +10379,7 @@ async fn prepare_pool_account(
 }
 
 fn is_account_selectable_for_routing(row: &UpstreamAccountRow) -> bool {
-    if row.provider != UPSTREAM_ACCOUNT_PROVIDER_CODEX
-        || row.enabled == 0
-        || row.status != UPSTREAM_ACCOUNT_STATUS_ACTIVE
-        || row.encrypted_credentials.is_none()
-    {
+    if !is_routing_eligible_account(row) {
         return false;
     }
     let Some(cooldown_until) = row.cooldown_until.as_deref() else {
@@ -10318,6 +10388,30 @@ fn is_account_selectable_for_routing(row: &UpstreamAccountRow) -> bool {
     parse_rfc3339_utc(cooldown_until)
         .map(|until| until <= Utc::now())
         .unwrap_or(true)
+}
+
+fn is_pool_account_routing_candidate(row: &UpstreamAccountRow) -> bool {
+    row.provider == UPSTREAM_ACCOUNT_PROVIDER_CODEX
+        && row.enabled != 0
+        && row.status == UPSTREAM_ACCOUNT_STATUS_ACTIVE
+}
+
+fn is_routing_eligible_account(row: &UpstreamAccountRow) -> bool {
+    is_pool_account_routing_candidate(row) && row.encrypted_credentials.is_some()
+}
+
+fn is_account_rate_limited_for_routing(row: &UpstreamAccountRow) -> bool {
+    if !is_routing_eligible_account(row) {
+        return false;
+    }
+    let Some(cooldown_until) = row.cooldown_until.as_deref() else {
+        return false;
+    };
+    let in_cooldown = parse_rfc3339_utc(cooldown_until)
+        .map(|until| until > Utc::now())
+        .unwrap_or(false);
+    in_cooldown
+        && row.last_route_failure_kind.as_deref() == Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
 }
 
 async fn load_account_routing_candidates(
@@ -10370,8 +10464,7 @@ async fn load_account_routing_candidates(
         .push_bind(UPSTREAM_ACCOUNT_PROVIDER_CODEX)
         .push(" AND account.enabled = 1")
         .push(" AND account.status = ")
-        .push_bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
-        .push(" AND account.encrypted_credentials IS NOT NULL");
+        .push_bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE);
     if !excluded_ids.is_empty() {
         query.push(" AND account.id NOT IN (");
         {
@@ -10440,6 +10533,7 @@ async fn apply_pool_route_cooldown_failure(
     account_id: i64,
     sticky_key: Option<&str>,
     error_message: &str,
+    failure_kind: &str,
     base_secs: i64,
 ) -> Result<()> {
     if let Some(sticky_key) = sticky_key {
@@ -10461,8 +10555,9 @@ async fn apply_pool_route_cooldown_failure(
             last_error = ?3,
             last_error_at = ?4,
             last_route_failure_at = ?4,
-            cooldown_until = ?5,
-            consecutive_route_failures = ?6,
+            last_route_failure_kind = ?5,
+            cooldown_until = ?6,
+            consecutive_route_failures = ?7,
             updated_at = ?4
         WHERE id = ?1
         "#,
@@ -10471,6 +10566,7 @@ async fn apply_pool_route_cooldown_failure(
     .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
     .bind(error_message)
     .bind(&now_iso)
+    .bind(failure_kind)
     .bind(cooldown_until)
     .bind(next_failures)
     .execute(pool)
@@ -11019,6 +11115,7 @@ mod tests {
                 last_error_at: None,
                 last_selected_at: None,
                 last_route_failure_at: None,
+                last_route_failure_kind: None,
                 cooldown_until: None,
                 consecutive_route_failures: 0,
                 local_primary_limit: None,
@@ -12326,6 +12423,201 @@ mod tests {
         .execute(pool)
         .await
         .expect("insert limit sample");
+    }
+
+    async fn seed_route_cooldown(
+        pool: &SqlitePool,
+        account_id: i64,
+        failure_kind: &str,
+        cooldown_secs: i64,
+    ) {
+        let now = Utc::now();
+        let now_iso = format_utc_iso(now);
+        let cooldown_until = format_utc_iso(now + ChronoDuration::seconds(cooldown_secs));
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET status = ?2,
+                last_error = ?3,
+                last_error_at = ?4,
+                last_route_failure_at = ?4,
+                last_route_failure_kind = ?5,
+                cooldown_until = ?6,
+                consecutive_route_failures = 1,
+                updated_at = ?4
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+        .bind("seed route cooldown")
+        .bind(&now_iso)
+        .bind(failure_kind)
+        .bind(&cooldown_until)
+        .execute(pool)
+        .await
+        .expect("seed route cooldown");
+    }
+
+    #[tokio::test]
+    async fn mark_account_sync_success_preserves_route_cooldown_state() {
+        let pool = test_pool().await;
+        let account_id = insert_oauth_account(&pool, "Cooldown OAuth").await;
+        seed_route_cooldown(
+            &pool,
+            account_id,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
+            300,
+        )
+        .await;
+
+        let before = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load row before sync")
+            .expect("row exists before sync");
+        mark_account_sync_success(&pool, account_id)
+            .await
+            .expect("mark sync success");
+        let after = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load row after sync")
+            .expect("row exists after sync");
+
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert!(after.last_synced_at.is_some());
+        assert!(after.last_successful_sync_at.is_some());
+        assert_eq!(after.last_route_failure_at, before.last_route_failure_at);
+        assert_eq!(
+            after.last_route_failure_kind,
+            before.last_route_failure_kind
+        );
+        assert_eq!(after.cooldown_until, before.cooldown_until);
+        assert_eq!(
+            after.consecutive_route_failures,
+            before.consecutive_route_failures
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_api_key_account_preserves_route_cooldown_state() {
+        let pool = test_pool().await;
+        let account_id = insert_api_key_account(&pool, "Cooldown API Key").await;
+        seed_route_cooldown(
+            &pool,
+            account_id,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
+            300,
+        )
+        .await;
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load api key row")
+            .expect("api key row exists");
+
+        sync_api_key_account(&pool, &row)
+            .await
+            .expect("sync api key account");
+        let after = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load row after api key sync")
+            .expect("row exists after api key sync");
+
+        assert_eq!(
+            after.last_route_failure_kind.as_deref(),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
+        );
+        assert!(after.cooldown_until.is_some());
+        assert_eq!(after.consecutive_route_failures, 1);
+    }
+
+    #[tokio::test]
+    async fn upsert_oauth_account_preserves_route_cooldown_state_for_existing_account() {
+        let pool = test_pool().await;
+
+        let mut tx = pool.begin().await.expect("begin tx");
+        ensure_display_name_available(&mut *tx, "Cooldown OAuth Existing", None)
+            .await
+            .expect("name available");
+        let account_id = upsert_oauth_account(
+            &mut tx,
+            OauthAccountUpsert {
+                account_id: None,
+                display_name: "Cooldown OAuth Existing",
+                group_name: None,
+                is_mother: false,
+                note: None,
+                tag_ids: vec![],
+                group_note: None,
+                claims: &test_claims(
+                    "cooldown-existing@example.com",
+                    Some("cooldown_org"),
+                    Some("cooldown_user"),
+                ),
+                encrypted_credentials: "encrypted-original".to_string(),
+                token_expires_at: "2026-03-14T00:00:00Z",
+            },
+        )
+        .await
+        .expect("insert oauth account");
+        tx.commit().await.expect("commit insert tx");
+
+        seed_route_cooldown(
+            &pool,
+            account_id,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
+            300,
+        )
+        .await;
+        let before = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load row before update")
+            .expect("row exists before update");
+
+        let mut tx = pool.begin().await.expect("begin update tx");
+        let updated_id = upsert_oauth_account(
+            &mut tx,
+            OauthAccountUpsert {
+                account_id: Some(account_id),
+                display_name: "Cooldown OAuth Existing",
+                group_name: None,
+                is_mother: false,
+                note: Some("updated note".to_string()),
+                tag_ids: vec![],
+                group_note: None,
+                claims: &test_claims(
+                    "cooldown-existing@example.com",
+                    Some("cooldown_org"),
+                    Some("cooldown_user"),
+                ),
+                encrypted_credentials: "encrypted-updated".to_string(),
+                token_expires_at: "2026-03-15T00:00:00Z",
+            },
+        )
+        .await
+        .expect("update oauth account");
+        tx.commit().await.expect("commit update tx");
+
+        assert_eq!(updated_id, account_id);
+        let after = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load row after update")
+            .expect("row exists after update");
+
+        assert_eq!(after.last_route_failure_at, before.last_route_failure_at);
+        assert_eq!(
+            after.last_route_failure_kind,
+            before.last_route_failure_kind
+        );
+        assert_eq!(after.cooldown_until, before.cooldown_until);
+        assert_eq!(
+            after.consecutive_route_failures,
+            before.consecutive_route_failures
+        );
+        assert_eq!(after.note.as_deref(), Some("updated note"));
+        assert_eq!(
+            after.encrypted_credentials.as_deref(),
+            Some("encrypted-updated")
+        );
     }
 
     #[tokio::test]
