@@ -9743,6 +9743,8 @@ async fn send_pool_request_with_failover(
                     .filter(|value| !value.is_empty())
                     .map(|value| value.to_string());
                 let retry_after_header = response.headers().get(header::RETRY_AFTER).cloned();
+                let oauth_transport_failure_kind =
+                    oauth_bridge::oauth_transport_failure_kind(response.headers());
                 let (upstream_error_code, upstream_error_message, upstream_request_id, message) =
                     match read_pool_upstream_bytes_with_timeout(
                         response,
@@ -9767,7 +9769,8 @@ async fn send_pool_request_with_failover(
                             ),
                         ),
                     };
-                let failure_kind = pool_route_http_failure_kind(status);
+                let failure_kind = oauth_transport_failure_kind
+                    .unwrap_or_else(|| pool_route_http_failure_kind(status));
                 let is_timeout_shaped = uses_timeout_route_failover
                     && status.is_server_error()
                     && pool_failure_is_timeout_shaped(failure_kind, &message);
@@ -10357,6 +10360,8 @@ async fn proxy_openai_v1_via_pool(
                             .map(str::trim)
                             .filter(|value| !value.is_empty())
                             .map(|value| value.to_string());
+                        let oauth_transport_failure_kind =
+                            oauth_bridge::oauth_transport_failure_kind(response.headers());
                         let (
                             upstream_error_code,
                             upstream_error_message,
@@ -10385,7 +10390,8 @@ async fn proxy_openai_v1_via_pool(
                                 ),
                             ),
                         };
-                        let failure_kind = pool_route_http_failure_kind(status);
+                        let failure_kind = oauth_transport_failure_kind
+                            .unwrap_or_else(|| pool_route_http_failure_kind(status));
                         maybe_backfill_oauth_request_debug_from_replay_status(
                             &mut oauth_responses_debug,
                             original_uri,

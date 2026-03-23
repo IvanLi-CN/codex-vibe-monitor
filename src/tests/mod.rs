@@ -10507,6 +10507,11 @@ struct PoolDelayedFirstChunkUpstreamState {
 }
 
 #[derive(Clone)]
+struct PoolDelayedHeadersUpstreamState {
+    header_delay: Duration,
+}
+
+#[derive(Clone)]
 struct PoolHttpFailureUpstreamState {
     status: StatusCode,
     error_code: Option<String>,
@@ -10809,8 +10814,10 @@ async fn spawn_pool_delayed_first_chunk_upstream(delay: Duration) -> (String, Jo
     (format!("http://{addr}"), handle)
 }
 
-async fn pool_delayed_headers_upstream(State(delay): State<Duration>) -> Response {
-    tokio::time::sleep(delay).await;
+async fn pool_delayed_headers_upstream(
+    State(state): State<PoolDelayedHeadersUpstreamState>,
+) -> Response {
+    tokio::time::sleep(state.header_delay).await;
     (
         StatusCode::OK,
         Json(json!({
@@ -10824,7 +10831,9 @@ async fn pool_delayed_headers_upstream(State(delay): State<Duration>) -> Respons
 async fn spawn_pool_delayed_headers_upstream(delay: Duration) -> (String, JoinHandle<()>) {
     let app = Router::new()
         .route("/v1/responses", post(pool_delayed_headers_upstream))
-        .with_state(delay);
+        .with_state(PoolDelayedHeadersUpstreamState {
+            header_delay: delay,
+        });
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind delayed headers upstream");
@@ -11112,6 +11121,43 @@ async fn spawn_oauth_codex_responses_capture_upstream() -> (String, JoinHandle<(
         axum::serve(listener, app)
             .await
             .expect("oauth codex responses capture upstream should run");
+    });
+    (format!("http://{addr}"), handle)
+}
+
+async fn oauth_codex_delayed_headers_upstream(
+    State(state): State<PoolDelayedHeadersUpstreamState>,
+) -> Response {
+    tokio::time::sleep(state.header_delay).await;
+    (
+        StatusCode::OK,
+        Json(json!({
+            "ok": true,
+            "phase": "oauth-headers-delayed",
+        })),
+    )
+        .into_response()
+}
+
+async fn spawn_oauth_codex_delayed_headers_upstream(delay: Duration) -> (String, JoinHandle<()>) {
+    let app = Router::new()
+        .route(
+            "/backend-api/codex/responses",
+            post(oauth_codex_delayed_headers_upstream),
+        )
+        .with_state(PoolDelayedHeadersUpstreamState {
+            header_delay: delay,
+        });
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind delayed oauth responses upstream");
+    let addr = listener
+        .local_addr()
+        .expect("delayed oauth responses upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("delayed oauth responses upstream should run");
     });
     (format!("http://{addr}"), handle)
 }
@@ -15028,6 +15074,172 @@ async fn pool_route_oauth_observability_omits_fingerprints_without_crypto_key() 
     );
 
     upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+}
+
+#[tokio::test]
+async fn oauth_responses_timeout_marks_transport_failure_header() {
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
+
+    let (upstream_base, upstream_handle) =
+        spawn_oauth_codex_delayed_headers_upstream(Duration::from_millis(250)).await;
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
+    )
+    .await;
+
+    let oauth_response = oauth_bridge::send_oauth_upstream_request(
+        &reqwest::Client::new(),
+        Method::POST,
+        &"/v1/responses".parse().expect("valid uri"),
+        &HeaderMap::from_iter([(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )]),
+        oauth_bridge::OauthUpstreamRequestBody::Bytes(Bytes::from(
+            serde_json::to_vec(&json!({
+                "model": "gpt-5.4",
+                "input": "hello"
+            }))
+            .expect("serialize oauth responses body"),
+        )),
+        Duration::from_millis(100),
+        Duration::from_millis(120),
+        Some(7),
+        "oauth-timeout",
+        Some("02355c9d-fb23-4517-a96d-35e5f6758e9e"),
+        None,
+    )
+    .await;
+
+    assert_eq!(oauth_response.response.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(
+        oauth_bridge::oauth_transport_failure_kind(oauth_response.response.headers()),
+        Some(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT),
+    );
+    let body = to_bytes(oauth_response.response.into_body(), usize::MAX)
+        .await
+        .expect("read oauth timeout response body");
+    let payload = String::from_utf8_lossy(&body);
+    assert!(payload.contains("timed out"));
+
+    upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+}
+
+#[tokio::test]
+async fn pool_route_oauth_responses_timeout_switches_to_alternate_route() {
+    #[derive(sqlx::FromRow)]
+    struct PersistedPayloadRow {
+        payload: Option<String>,
+    }
+
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
+
+    let (slow_upstream_base, slow_upstream_handle) =
+        spawn_oauth_codex_delayed_headers_upstream(Duration::from_millis(250)).await;
+    let (fast_upstream_base, _attempts, fast_upstream_handle) =
+        spawn_pool_retry_upstream(&[("Bearer route-fast", 0)]).await;
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{slow_upstream_base}/backend-api/codex"))
+            .expect("valid oauth base url"),
+    )
+    .await;
+
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.openai_proxy_handshake_timeout = Duration::from_millis(100);
+    config.pool_upstream_responses_attempt_timeout = Duration::from_millis(120);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let oauth_id = insert_test_pool_oauth_account(&state, "Timeout OAuth", "oauth-timeout").await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Fast Route",
+        "route-fast",
+        None,
+        None,
+        Some(fast_upstream_base.as_str()),
+    )
+    .await;
+    let sticky_last_seen_at = format_utc_iso(Utc::now());
+    upsert_test_sticky_route_at(
+        &state.pool,
+        "sticky-oauth-timeout-switch",
+        oauth_id,
+        &sticky_last_seen_at,
+    )
+    .await;
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "stream": false,
+        "input": "hello",
+        "stickyKey": "sticky-oauth-timeout-switch",
+    }))
+    .expect("serialize request body");
+    let response = tokio::time::timeout(
+        Duration::from_secs(3),
+        proxy_openai_v1(
+            State(state.clone()),
+            OriginalUri("/v1/responses".parse().expect("valid uri")),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from(request_body),
+        ),
+    )
+    .await
+    .expect("oauth timeout failover request should not hang");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read oauth timeout failover body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode oauth timeout failover body");
+    assert_eq!(payload["ok"].as_bool(), Some(true));
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+
+    let row = sqlx::query_as::<_, PersistedPayloadRow>(
+        r#"
+        SELECT payload
+        FROM codex_invocations
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load oauth timeout failover payload");
+    let persisted_payload: Value = serde_json::from_str(
+        row.payload
+            .as_deref()
+            .expect("oauth timeout failover payload should be present"),
+    )
+    .expect("decode oauth timeout failover payload");
+    assert_eq!(persisted_payload["poolAttemptCount"].as_i64(), Some(2));
+    assert_eq!(
+        persisted_payload["poolDistinctAccountCount"].as_i64(),
+        Some(2)
+    );
+    assert!(persisted_payload["poolAttemptTerminalReason"].is_null());
+
+    slow_upstream_handle.abort();
+    fast_upstream_handle.abort();
     oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
 }
 
