@@ -65,6 +65,7 @@
 - 账号状态至少支持 `active`、`syncing`、`needs_reauth`、`error` 与 `disabled`；授权失效只能转 `needs_reauth`，不得静默删除账号或清空最后一次成功快照。
 - 对外列表 / 详情读模型必须把混合状态拆成 `workStatus`、`enableStatus`、`healthStatus`、`syncState` 四个维度；`限流` 只能出现在 `workStatus`，`同步中` 只能出现在 `syncState`，`enabled=false` 只能出现在 `enableStatus`，旧 `status` 查询参数只保留一轮兼容映射。
 - 状态拆分不得新增持久化状态列或新表；`workStatus`、`enableStatus`、`healthStatus`、`syncState` 必须统一由 `enabled`、`status`、`last_error`、`cooldown_until`、`last_selected_at` 的读模型派生得出，避免状态回写漂移。
+- `workStatus` 只允许在 `enableStatus=enabled`、`healthStatus=normal` 且 `syncState=idle` 时派生为 `working` 或 `rate_limited`；账号一旦进入 `needs_reauth`、上游异常、`syncing` 或 `disabled`，`workStatus` 必须统一回收为 `idle`，避免列表同时展示陈旧的限流状态与异常状态。
 - 任何导致组内母号归属变化的写操作，都必须触发系统级通知，并提供 10 秒可撤销窗口；同组后续切换应覆盖旧撤销上下文。
 - 账号详情页的操作忙碌态必须按账号隔离：当账号 A 正在同步/保存/删除/启停时，切到账号 B 的详情不得继承 A 的 loading/spinning 状态；若随后对账号 B 发起同类操作，账号 A 原有的按钮 busy 态也不得被覆盖或提前清除；同一账号存在任一进行中的写操作时，该账号的其它写操作入口必须一并禁用，直到该账号自己的请求结束。
 - 后端账号维护与人工写操作必须按账号粒度串行：同一账号上的维护、启停、保存、删除、立即同步、re-login callback 落库与导入覆盖不得并发执行，但无关账号之间不得被整池维护阻塞；在维护竞争下，对无关账号的人工启用/禁用写入必须以 `1 秒内完成服务端提交` 为目标。
@@ -101,7 +102,7 @@
 - routing 错误与账号级错误必须分别展示；当两类错误同时存在时，页面不得只保留其中一条。
 - 列表头部切换分组筛选或标签筛选时，前端只能更新请求参数并重新拉取 `GET /api/pool/upstream-accounts`；不得再用已拉取的 `items` 在本地做二次筛选，以免分组选项、未分组可见性和列表内容出现口径漂移。
 - 列表头部的主状态筛选必须拆成 `workStatus`、`enableStatus`、`healthStatus` 三组 query 参数，并继续由 `GET /api/pool/upstream-accounts` 在服务端做交集收口；`syncState=syncing` 只作为次级过程徽章展示，不进入主筛选体系。
-- 列表行必须常驻显示 `启用状态 + 工作状态` 两个主徽章；`syncState=syncing` 仅在同步进行中显示次级徽章，`healthStatus != normal` 仅在异常时显示补充徽章；详情抽屉头部显示完整四态。
+- 列表行必须常驻显示 `启用状态 + 工作状态` 两个主徽章；`syncState=syncing` 仅在同步进行中显示次级徽章，`healthStatus != normal` 仅在异常时显示补充徽章；当账号处于异常或同步中时，`工作状态` 必须显示为 `空闲`，不得与异常徽章并列展示 `限流`；详情抽屉头部显示完整四态。
 - 列表概览卡的“需要关注”口径必须只统计 `healthStatus != normal` 或 `workStatus=rate_limited` 的账号，不得再把 `syncing` 或 `disabled` 混入异常统计。
 - 页面级 `Refresh` 不得因为其它账号的保存/同步/启停/删除而被全局锁死；只有真正的全局路由保存过程才允许暂时禁用该按钮。
 - 删除账号的成功响应不得覆盖用户已经切换后的当前选中项；只有“当前正显示的账号被删除”时，才允许把选中项收口到 fallback。
@@ -139,10 +140,11 @@
 - Given 用户位于 `dashboard / live / settings` 任意页面，When 点击导航中的 `号池`，Then 页面进入 `号池 -> 上游账号` 且不影响现有四个模块。
 - Given 前端创建 OAuth 登录会话，When 打开 `authUrl` 并完成授权，Then callback 会把账号落库，轮询接口变为 `completed`，列表中出现该账号。
 - Given 用户进入 `Batch OAuth` 模式，When 在多行里分别生成授权链接、粘贴 callback 并完成其中一行，Then 该行显示 `completed` 且页面保持在批量表格，其他行仍可继续生成或完成。
-- Given 账号启用且 `cooldown_until > now`，When 列表返回该账号，Then `workStatus=rate_limited`，且 `healthStatus` 仍按账号固有状态独立计算。
+- Given 账号启用、`healthStatus=normal`、`syncState=idle` 且 `cooldown_until > now`，When 列表返回该账号，Then `workStatus=rate_limited`。
 - Given 账号启用且 `last_selected_at` 在最近 30 分钟内、且不在 cooldown，When 列表返回该账号，Then `workStatus=working`。
 - Given 账号禁用，When 列表与筛选渲染，Then `enableStatus=disabled`，且不会再通过旧混合状态把主状态显示成“已停用”。
 - Given 账号原始 `status=syncing`，When 列表与详情渲染，Then 仅出现 `syncState=syncing` 的次级徽章，不进入三组主筛选。
+- Given 账号进入 `needs_reauth`、上游异常或 `syncing`，When 列表返回该账号且它仍残留 `cooldown_until`，Then `workStatus` 仍必须回收为 `idle`，不得和异常状态同时显示。
 - Given 用户同时选择 `workStatus=rate_limited`、`enableStatus=enabled`、`healthStatus=normal`、分组与标签，When 调用列表接口，Then 服务端一次性完成交集筛选，不再由前端二次拼装状态口径。
 - Given 老请求仍使用 `status=disabled` 或 `status=needs_reauth`，When 请求到达后端，Then 仍能命中兼容映射并返回与旧语义一致的结果。
 - Given 列表概览卡展示“需要关注”，When 页面刷新，Then 只统计 `healthStatus != normal` 或 `workStatus=rate_limited` 的账号，不把 `syncing` 误算为异常。

@@ -79,6 +79,25 @@ const compactDefaultTags: AccountTagSummary[] = [
   },
 ]
 
+const storyTagMap = {
+  vip: compactDefaultTags[0],
+  burstSafe: compactDefaultTags[1],
+  prodApac: compactDefaultTags[2],
+  stickyPool: compactDefaultTags[3],
+  priority: { id: 20, name: 'priority-route', routingRule: defaultEffectiveRoutingRule },
+  analytics: { id: 21, name: 'analytics', routingRule: defaultEffectiveRoutingRule },
+  fallback: { id: 22, name: 'fallback', routingRule: defaultEffectiveRoutingRule },
+  sandbox: { id: 23, name: 'sandbox', routingRule: defaultEffectiveRoutingRule },
+  reporting: { id: 24, name: 'reporting', routingRule: defaultEffectiveRoutingRule },
+  rescue: { id: 25, name: 'rescue', routingRule: defaultEffectiveRoutingRule },
+  canary: { id: 26, name: 'canary', routingRule: defaultEffectiveRoutingRule },
+  overflow: { id: 27, name: 'overflow', routingRule: defaultEffectiveRoutingRule },
+  batch: { id: 28, name: 'batch', routingRule: defaultEffectiveRoutingRule },
+  emea: { id: 29, name: 'emea', routingRule: defaultEffectiveRoutingRule },
+} as const
+
+type StoryTagKey = keyof typeof storyTagMap
+
 export type StoryInitialEntry =
   | string
   | {
@@ -90,6 +109,10 @@ export type StoryInitialEntry =
 const now = '2026-03-17T12:30:00.000Z'
 const storyFutureExpiresAt = '2026-03-20T12:50:00.000Z'
 const storyFutureLoginExpiresAt = '2026-03-20T12:40:00.000Z'
+
+function atMinuteOffset(minutes: number) {
+  return new Date(Date.parse(now) + minutes * 60_000).toISOString()
+}
 
 function buildWindow(percent: number, durationMins: number, usedText: string, limitText: string, resetsAt: string) {
   return {
@@ -110,6 +133,310 @@ function buildHistory(seed = 0) {
   }))
 }
 
+function pickStoryTags(...keys: StoryTagKey[]) {
+  return keys.map((key) => storyTagMap[key])
+}
+
+function buildOauthUsage(primaryPercent: number, secondaryPercent: number) {
+  return {
+    primaryWindow: buildWindow(
+      primaryPercent,
+      300,
+      `${primaryPercent}% used`,
+      '5h rolling window',
+      atMinuteOffset(90),
+    ),
+    secondaryWindow: buildWindow(
+      secondaryPercent,
+      10080,
+      `${secondaryPercent}% used`,
+      '7d rolling window',
+      atMinuteOffset(3 * 24 * 60),
+    ),
+  }
+}
+
+function buildApiKeyUsage(primaryUsed: number, secondaryUsed: number, primaryLimit = 120, secondaryLimit = 500) {
+  return {
+    primaryWindow: buildWindow(
+      Math.round((primaryUsed / primaryLimit) * 100),
+      300,
+      `${primaryUsed} requests`,
+      `${primaryLimit} requests`,
+      atMinuteOffset(90),
+    ),
+    secondaryWindow: buildWindow(
+      Math.round((secondaryUsed / secondaryLimit) * 100),
+      10080,
+      `${secondaryUsed} requests`,
+      `${secondaryLimit} requests`,
+      atMinuteOffset(3 * 24 * 60),
+    ),
+    localLimits: {
+      primaryLimit,
+      secondaryLimit,
+      limitUnit: 'requests',
+    },
+  }
+}
+
+function buildOperationalRosterAccounts(replicaCount = 1) {
+  const baseSpecs: Array<{
+    id: number
+    kind: 'oauth_codex' | 'api_key_codex'
+    displayName: string
+    groupName?: string | null
+    planType?: string | null
+    tagKeys: StoryTagKey[]
+  }> = [
+    { id: 108, kind: 'oauth_codex', displayName: 'Codex Pro - Seoul', groupName: 'production-apac', planType: 'team', tagKeys: ['vip', 'prodApac', 'priority'] },
+    { id: 109, kind: 'api_key_codex', displayName: 'Team key - analytics', groupName: 'analytics', planType: 'local', tagKeys: ['analytics', 'reporting'] },
+    { id: 110, kind: 'oauth_codex', displayName: 'Codex Pro - Berlin', groupName: 'production-emea', planType: 'team', tagKeys: ['priority', 'emea'] },
+    { id: 111, kind: 'api_key_codex', displayName: 'Overflow key - queue burst', groupName: 'overflow', planType: 'local', tagKeys: ['overflow', 'burstSafe', 'fallback'] },
+    { id: 112, kind: 'oauth_codex', displayName: 'Codex Pro - Sydney', groupName: 'production-apac', planType: 'pro', tagKeys: ['prodApac', 'stickyPool'] },
+    { id: 113, kind: 'api_key_codex', displayName: 'Sandbox key - canary', groupName: 'sandbox', planType: 'local', tagKeys: ['sandbox', 'canary'] },
+    { id: 114, kind: 'oauth_codex', displayName: 'Codex Pro - Toronto', groupName: 'enterprise-ops', planType: 'enterprise', tagKeys: ['priority', 'reporting'] },
+    { id: 115, kind: 'api_key_codex', displayName: 'Research key - evals', groupName: 'experiments', planType: 'local', tagKeys: ['analytics', 'sandbox'] },
+    { id: 116, kind: 'oauth_codex', displayName: 'Codex Pro - London', groupName: 'production-emea', planType: 'team', tagKeys: ['vip', 'emea'] },
+    { id: 117, kind: 'api_key_codex', displayName: 'Night shift key', groupName: 'night-ops', planType: 'local', tagKeys: ['fallback', 'overflow'] },
+    { id: 118, kind: 'oauth_codex', displayName: 'Codex Pro - Mumbai', groupName: 'production-apac', planType: 'team', tagKeys: ['prodApac', 'burstSafe'] },
+    { id: 119, kind: 'api_key_codex', displayName: 'Support key - rescue', groupName: 'rescue', planType: 'local', tagKeys: ['rescue', 'fallback'] },
+    { id: 120, kind: 'oauth_codex', displayName: 'Codex Pro - Paris', groupName: 'production-emea', planType: 'pro', tagKeys: ['priority', 'emea'] },
+    { id: 121, kind: 'api_key_codex', displayName: 'Batch runner key', groupName: 'batch-ops', planType: 'local', tagKeys: ['batch', 'reporting'] },
+    { id: 122, kind: 'oauth_codex', displayName: 'Codex Pro - Sao Paulo', groupName: 'latam', planType: 'team', tagKeys: ['vip', 'priority'] },
+    { id: 123, kind: 'api_key_codex', displayName: 'Queue key - overflow west', groupName: 'overflow', planType: 'local', tagKeys: ['overflow', 'burstSafe'] },
+    { id: 124, kind: 'oauth_codex', displayName: 'Codex Pro - Frankfurt', groupName: 'production-emea', planType: 'team', tagKeys: ['stickyPool', 'emea'] },
+    { id: 125, kind: 'api_key_codex', displayName: 'Staging key - eu', groupName: 'staging-eu', planType: 'local', tagKeys: ['canary', 'fallback'] },
+    { id: 126, kind: 'oauth_codex', displayName: 'Codex Pro - Austin', groupName: null, planType: 'pro', tagKeys: ['vip'] },
+    { id: 127, kind: 'api_key_codex', displayName: 'Migration key - ops', groupName: 'ops', planType: 'local', tagKeys: ['batch', 'reporting'] },
+    { id: 128, kind: 'oauth_codex', displayName: 'Codex Pro - Melbourne', groupName: 'production-apac', planType: 'team', tagKeys: ['prodApac', 'priority'] },
+    { id: 129, kind: 'api_key_codex', displayName: 'Fallback key - sandbox east', groupName: 'sandbox', planType: 'local', tagKeys: ['sandbox', 'fallback'] },
+  ]
+
+  const specs = Array.from({ length: Math.max(1, replicaCount) }, (_, replicaIndex) =>
+    baseSpecs.map((spec, baseIndex) => ({
+      ...spec,
+      id: spec.id + replicaIndex * 100,
+      displayName:
+        replicaIndex === 0
+          ? spec.displayName
+          : `${spec.displayName} · lane ${replicaIndex + 1}`,
+      replicaIndex,
+      baseIndex,
+    })),
+  ).flat()
+
+  return specs.map((spec, index) => {
+    const pattern = index % 7
+    const commonOverrides: Partial<UpstreamAccountDetail> = {
+      displayName: spec.displayName,
+      groupName: spec.groupName ?? null,
+      isMother: false,
+      planType: spec.planType ?? null,
+      tags: pickStoryTags(...spec.tagKeys),
+      lastSyncedAt: atMinuteOffset(-(index * 17 + 8)),
+      lastSuccessfulSyncAt: atMinuteOffset(-(index * 17 + 10)),
+      lastActivityAt: atMinuteOffset(-(index * 13 + 4)),
+      email:
+        spec.kind === 'oauth_codex'
+          ? `mock-${spec.id}@example.com`
+          : null,
+      chatgptAccountId:
+        spec.kind === 'oauth_codex'
+          ? `org_mock_${spec.id}`
+          : null,
+      chatgptUserId:
+        spec.kind === 'oauth_codex'
+          ? `user_mock_${spec.id}`
+          : null,
+      maskedApiKey:
+        spec.kind === 'api_key_codex'
+          ? `sk-live••••••${String(spec.id).padStart(4, '0').slice(-4)}`
+          : null,
+      note: `${spec.displayName} mock account for pagination, filtering, and bulk selection coverage.`,
+    }
+
+    const statusOverrides: Partial<UpstreamAccountDetail> =
+      spec.kind === 'oauth_codex'
+        ? [
+            {
+              status: 'active',
+              displayStatus: 'active',
+              enabled: true,
+              enableStatus: 'enabled',
+              workStatus: 'working',
+              healthStatus: 'normal',
+              syncState: 'idle',
+              lastError: null,
+              lastErrorAt: null,
+              ...buildOauthUsage(58, 19),
+            },
+            {
+              status: 'active',
+              displayStatus: 'active',
+              enabled: true,
+              enableStatus: 'enabled',
+              workStatus: 'rate_limited',
+              healthStatus: 'normal',
+              syncState: 'idle',
+              lastError: null,
+              lastErrorAt: null,
+              ...buildOauthUsage(82, 44),
+            },
+            {
+              status: 'syncing',
+              displayStatus: 'syncing',
+              enabled: true,
+              enableStatus: 'enabled',
+              workStatus: 'idle',
+              healthStatus: 'normal',
+              syncState: 'syncing',
+              lastError: null,
+              lastErrorAt: null,
+              ...buildOauthUsage(36, 17),
+            },
+            {
+              status: 'needs_reauth',
+              displayStatus: 'needs_reauth',
+              enabled: true,
+              enableStatus: 'enabled',
+              workStatus: 'idle',
+              healthStatus: 'needs_reauth',
+              syncState: 'idle',
+              lastError: 'refresh token expired',
+              lastErrorAt: atMinuteOffset(-(index * 7 + 3)),
+              ...buildOauthUsage(74, 53),
+            },
+            {
+              status: 'active',
+              displayStatus: 'upstream_unavailable',
+              enabled: true,
+              enableStatus: 'enabled',
+              workStatus: 'idle',
+              healthStatus: 'upstream_unavailable',
+              syncState: 'idle',
+              lastError: 'upstream timeout',
+              lastErrorAt: atMinuteOffset(-(index * 5 + 2)),
+              ...buildOauthUsage(88, 61),
+            },
+            {
+              status: 'active',
+              displayStatus: 'active',
+              enabled: true,
+              enableStatus: 'enabled',
+              workStatus: 'idle',
+              healthStatus: 'normal',
+              syncState: 'idle',
+              lastError: null,
+              lastErrorAt: null,
+              ...buildOauthUsage(14, 6),
+            },
+            {
+              status: 'disabled',
+              displayStatus: 'disabled',
+              enabled: false,
+              enableStatus: 'disabled',
+              workStatus: 'idle',
+              healthStatus: 'normal',
+              syncState: 'idle',
+              lastError: null,
+              lastErrorAt: null,
+              ...buildOauthUsage(0, 0),
+            },
+          ][pattern]
+        : [
+            {
+              status: 'active',
+              displayStatus: 'active',
+              enabled: true,
+              enableStatus: 'enabled',
+              workStatus: 'working',
+              healthStatus: 'normal',
+              syncState: 'idle',
+              lastError: null,
+              lastErrorAt: null,
+              ...buildApiKeyUsage(28, 138),
+            },
+            {
+              status: 'active',
+              displayStatus: 'active',
+              enabled: true,
+              enableStatus: 'enabled',
+              workStatus: 'rate_limited',
+              healthStatus: 'normal',
+              syncState: 'idle',
+              lastError: null,
+              lastErrorAt: null,
+              ...buildApiKeyUsage(97, 402),
+            },
+            {
+              status: 'syncing',
+              displayStatus: 'syncing',
+              enabled: true,
+              enableStatus: 'enabled',
+              workStatus: 'idle',
+              healthStatus: 'normal',
+              syncState: 'syncing',
+              lastError: null,
+              lastErrorAt: null,
+              ...buildApiKeyUsage(32, 150),
+            },
+            {
+              status: 'needs_reauth',
+              displayStatus: 'needs_reauth',
+              enabled: true,
+              enableStatus: 'enabled',
+              workStatus: 'idle',
+              healthStatus: 'needs_reauth',
+              syncState: 'idle',
+              lastError: 'refresh token expired',
+              lastErrorAt: atMinuteOffset(-(index * 7 + 3)),
+              ...buildApiKeyUsage(104, 431),
+            },
+            {
+              status: 'active',
+              displayStatus: 'upstream_unavailable',
+              enabled: true,
+              enableStatus: 'enabled',
+              workStatus: 'idle',
+              healthStatus: 'upstream_unavailable',
+              syncState: 'idle',
+              lastError: 'upstream timeout',
+              lastErrorAt: atMinuteOffset(-(index * 5 + 2)),
+              ...buildApiKeyUsage(118, 500),
+            },
+            {
+              status: 'active',
+              displayStatus: 'active',
+              enabled: true,
+              enableStatus: 'enabled',
+              workStatus: 'idle',
+              healthStatus: 'normal',
+              syncState: 'idle',
+              lastError: null,
+              lastErrorAt: null,
+              ...buildApiKeyUsage(11, 52),
+            },
+            {
+              status: 'disabled',
+              displayStatus: 'disabled',
+              enabled: false,
+              enableStatus: 'disabled',
+              workStatus: 'idle',
+              healthStatus: 'normal',
+              syncState: 'idle',
+              lastError: null,
+              lastErrorAt: null,
+              ...buildApiKeyUsage(0, 0),
+            },
+          ][pattern]
+
+    return spec.kind === 'oauth_codex'
+      ? createOauthAccount(spec.id, { ...commonOverrides, ...statusOverrides })
+      : createApiKeyAccount(spec.id, { ...commonOverrides, ...statusOverrides })
+  })
+}
+
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
 }
@@ -117,6 +444,74 @@ function clone<T>(value: T): T {
 function normalizeGroupName(value?: string | null) {
   const trimmed = value?.trim() ?? ''
   return trimmed || null
+}
+
+function storyEnableStatus(item: Pick<UpstreamAccountSummary, 'enableStatus' | 'enabled' | 'displayStatus'>) {
+  if (typeof item.enableStatus === 'string' && item.enableStatus) return item.enableStatus
+  return item.enabled === false || item.displayStatus === 'disabled' ? 'disabled' : 'enabled'
+}
+
+function storyHealthStatus(
+  item: Pick<UpstreamAccountSummary, 'healthStatus' | 'displayStatus' | 'status'>,
+) {
+  const legacyStatus = item.displayStatus ?? item.status ?? 'error_other'
+  if (
+    legacyStatus === 'needs_reauth' ||
+    legacyStatus === 'upstream_unavailable' ||
+    legacyStatus === 'upstream_rejected' ||
+    legacyStatus === 'error_other'
+  ) {
+    return legacyStatus
+  }
+  if (legacyStatus === 'error') return 'error_other'
+  return 'normal'
+}
+
+function storySyncState(item: Pick<UpstreamAccountSummary, 'syncState' | 'displayStatus' | 'status'>) {
+  return item.status === 'syncing' || item.displayStatus === 'syncing' ? 'syncing' : 'idle'
+}
+
+function storyWorkStatus(
+  item: Pick<
+    UpstreamAccountSummary,
+    'workStatus' | 'enableStatus' | 'enabled' | 'displayStatus' | 'status' | 'healthStatus' | 'syncState'
+  >,
+  healthStatus: string,
+  syncState: string,
+) {
+  if (storyEnableStatus(item) === 'disabled') return 'idle'
+  if (syncState === 'syncing') return 'idle'
+  if (healthStatus !== 'normal') return 'idle'
+  return typeof item.workStatus === 'string' && item.workStatus ? item.workStatus : 'idle'
+}
+
+function storyDisplayStatus(
+  item: Pick<
+    UpstreamAccountSummary,
+    'displayStatus' | 'healthStatus' | 'syncState' | 'enableStatus' | 'enabled' | 'status'
+  >,
+) {
+  if (typeof item.displayStatus === 'string' && item.displayStatus) return item.displayStatus
+  if (storyEnableStatus(item) === 'disabled') return 'disabled'
+  if (storySyncState(item) === 'syncing') return 'syncing'
+  const healthStatus = storyHealthStatus(item)
+  if (healthStatus !== 'normal') return healthStatus
+  return 'active'
+}
+
+function withDerivedStatusFields<T extends UpstreamAccountDetail>(detail: T): T {
+  const enableStatus = storyEnableStatus(detail)
+  const healthStatus = storyHealthStatus(detail)
+  const syncState = storySyncState(detail)
+  const workStatus = storyWorkStatus(detail, healthStatus, syncState)
+  return {
+    ...detail,
+    enableStatus,
+    workStatus,
+    healthStatus,
+    syncState,
+    displayStatus: storyDisplayStatus(detail),
+  }
 }
 
 function listGroupSummaries(store: StoryStore) {
@@ -175,15 +570,24 @@ function filterAccountsForQuery(store: StoryStore, url: URL) {
   const groupSearch = (url.searchParams.get('groupSearch') || '').trim().toLowerCase()
   const groupUngrouped = url.searchParams.get('groupUngrouped') === 'true'
   const tagIds = url.searchParams.getAll('tagIds').map((value) => Number(value)).filter(Number.isFinite)
+  const workStatus = (url.searchParams.get('workStatus') || '').trim()
+  const enableStatus = (url.searchParams.get('enableStatus') || '').trim()
+  const healthStatus = (url.searchParams.get('healthStatus') || '').trim()
 
   return store.accounts.filter((account) => {
     const normalizedGroup = normalizeGroupName(account.groupName)?.toLowerCase() ?? ''
+    const derivedHealthStatus = storyHealthStatus(account)
+    const derivedSyncState = storySyncState(account)
+    const derivedWorkStatus = storyWorkStatus(account, derivedHealthStatus, derivedSyncState)
     const matchesGroup = groupUngrouped
       ? !normalizeGroupName(account.groupName)
       : groupSearch
         ? normalizedGroup.includes(groupSearch)
         : true
     if (!matchesGroup) return false
+    if (workStatus && derivedWorkStatus !== workStatus) return false
+    if (enableStatus && storyEnableStatus(account) !== enableStatus) return false
+    if (healthStatus && derivedHealthStatus !== healthStatus) return false
     if (tagIds.length === 0) return true
     const accountTagIds = new Set(account.tags.map((tag) => tag.id))
     return tagIds.every((tagId) => accountTagIds.has(tagId))
@@ -199,7 +603,12 @@ function createOauthAccount(id: number, overrides?: Partial<UpstreamAccountDetai
     groupName: 'production',
     isMother: true,
     status: 'active',
+    displayStatus: 'active',
     enabled: true,
+    enableStatus: 'enabled',
+    workStatus: 'working',
+    healthStatus: 'normal',
+    syncState: 'idle',
     email: 'tokyo@example.com',
     chatgptAccountId: 'org_tokyo',
     chatgptUserId: 'user_tokyo',
@@ -229,7 +638,11 @@ function createOauthAccount(id: number, overrides?: Partial<UpstreamAccountDetai
     maskedApiKey: null,
     history: buildHistory(2),
   }
-  return { ...detail, ...overrides, history: overrides?.history ?? detail.history }
+  return withDerivedStatusFields({
+    ...detail,
+    ...overrides,
+    history: overrides?.history ?? detail.history,
+  })
 }
 
 function createApiKeyAccount(id: number, overrides?: Partial<UpstreamAccountDetail>): UpstreamAccountDetail {
@@ -244,7 +657,12 @@ function createApiKeyAccount(id: number, overrides?: Partial<UpstreamAccountDeta
     groupName: 'staging',
     isMother: false,
     status: 'active',
+    displayStatus: 'active',
     enabled: true,
+    enableStatus: 'enabled',
+    workStatus: 'rate_limited',
+    healthStatus: 'normal',
+    syncState: 'idle',
     email: null,
     chatgptAccountId: null,
     chatgptUserId: null,
@@ -280,36 +698,46 @@ function createApiKeyAccount(id: number, overrides?: Partial<UpstreamAccountDeta
       creditsBalance: null,
     })),
   }
-  return { ...detail, ...overrides, history: overrides?.history ?? detail.history }
+  return withDerivedStatusFields({
+    ...detail,
+    ...overrides,
+    history: overrides?.history ?? detail.history,
+  })
 }
 
 function toSummary(detail: UpstreamAccountDetail): UpstreamAccountSummary {
+  const normalized = withDerivedStatusFields(detail)
   return {
-    id: detail.id,
-    kind: detail.kind,
-    provider: detail.provider,
-    displayName: detail.displayName,
-    groupName: detail.groupName,
-    isMother: detail.isMother,
-    status: detail.status,
-    enabled: detail.enabled,
-    email: detail.email,
-    chatgptAccountId: detail.chatgptAccountId,
-    planType: detail.planType,
-    maskedApiKey: detail.maskedApiKey,
-    lastSyncedAt: detail.lastSyncedAt,
-    lastSuccessfulSyncAt: detail.lastSuccessfulSyncAt,
-    lastActivityAt: detail.lastActivityAt,
-    lastError: detail.lastError,
-    lastErrorAt: detail.lastErrorAt,
-    tokenExpiresAt: detail.tokenExpiresAt,
-    primaryWindow: detail.primaryWindow,
-    secondaryWindow: detail.secondaryWindow,
-    credits: detail.credits,
-    localLimits: detail.localLimits,
-    duplicateInfo: detail.duplicateInfo,
-    tags: detail.tags,
-    effectiveRoutingRule: detail.effectiveRoutingRule,
+    id: normalized.id,
+    kind: normalized.kind,
+    provider: normalized.provider,
+    displayName: normalized.displayName,
+    groupName: normalized.groupName,
+    isMother: normalized.isMother,
+    status: normalized.status,
+    displayStatus: normalized.displayStatus,
+    enabled: normalized.enabled,
+    enableStatus: normalized.enableStatus,
+    workStatus: normalized.workStatus,
+    healthStatus: normalized.healthStatus,
+    syncState: normalized.syncState,
+    email: normalized.email,
+    chatgptAccountId: normalized.chatgptAccountId,
+    planType: normalized.planType,
+    maskedApiKey: normalized.maskedApiKey,
+    lastSyncedAt: normalized.lastSyncedAt,
+    lastSuccessfulSyncAt: normalized.lastSuccessfulSyncAt,
+    lastActivityAt: normalized.lastActivityAt,
+    lastError: normalized.lastError,
+    lastErrorAt: normalized.lastErrorAt,
+    tokenExpiresAt: normalized.tokenExpiresAt,
+    primaryWindow: normalized.primaryWindow,
+    secondaryWindow: normalized.secondaryWindow,
+    credits: normalized.credits,
+    localLimits: normalized.localLimits,
+    duplicateInfo: normalized.duplicateInfo,
+    tags: normalized.tags,
+    effectiveRoutingRule: normalized.effectiveRoutingRule,
   }
 }
 
@@ -322,10 +750,15 @@ function currentStoryId() {
 function createStore(): StoryStore {
   const storyId = currentStoryId()
   const duplicateStory =
-    storyId === 'account-pool-pages-upstream-accounts--duplicate-oauth-warning' ||
-    storyId === 'account-pool-pages-upstream-accounts--duplicate-oauth-detail'
-  const compactStory = storyId === 'account-pool-pages-upstream-accounts--compact-long-labels'
-  const tagFilterStory = storyId === 'account-pool-pages-upstream-accounts--tag-filter-all-match'
+    storyId?.endsWith('--duplicate-oauth-warning') === true ||
+    storyId?.endsWith('--duplicate-oauth-detail') === true
+  const compactStory = storyId?.endsWith('--compact-long-labels') === true
+  const tagFilterStory = storyId?.endsWith('--tag-filter-all-match') === true
+  const denseRosterStory =
+    storyId?.endsWith('--dense-roster') === true ||
+    storyId?.endsWith('--operational') === true ||
+    storyId?.endsWith('--status-filters') === true ||
+    storyId?.endsWith('--bulk-selection') === true
 
   const oauth = createOauthAccount(101, duplicateStory
     ? {
@@ -357,6 +790,15 @@ function createStore(): StoryStore {
     : undefined)
   const apiKey = createApiKeyAccount(102, compactStory
     ? {
+        enabled: false,
+        enableStatus: 'disabled',
+        workStatus: 'idle',
+        healthStatus: 'normal',
+        syncState: 'idle',
+        status: 'disabled',
+        displayStatus: 'disabled',
+        lastError: null,
+        lastErrorAt: null,
         tags: [
           compactDefaultTags[0],
           compactDefaultTags[1],
@@ -393,6 +835,11 @@ function createStore(): StoryStore {
           groupName: 'production-apac-weekly',
           isMother: false,
           status: 'active',
+          displayStatus: 'active',
+          enableStatus: 'enabled',
+          workStatus: 'working',
+          healthStatus: 'normal',
+          syncState: 'idle',
           planType: 'team',
           lastSuccessfulSyncAt: '2026-03-11T20:10:00.000Z',
           lastActivityAt: '2026-03-11T20:08:00.000Z',
@@ -410,6 +857,11 @@ function createStore(): StoryStore {
           groupName: 'production-apac-burst',
           isMother: false,
           status: 'syncing',
+          displayStatus: 'syncing',
+          enableStatus: 'enabled',
+          workStatus: 'rate_limited',
+          healthStatus: 'normal',
+          syncState: 'syncing',
           planType: 'team',
           lastSuccessfulSyncAt: '2026-03-11T19:58:00.000Z',
           lastActivityAt: '2026-03-11T19:56:00.000Z',
@@ -426,7 +878,12 @@ function createStore(): StoryStore {
           displayName: 'Backup key - weekly redline',
           groupName: 'staging-overflow',
           status: 'active',
+          displayStatus: 'upstream_unavailable',
           enabled: true,
+          enableStatus: 'enabled',
+          workStatus: 'rate_limited',
+          healthStatus: 'upstream_unavailable',
+          syncState: 'idle',
           planType: 'local',
           lastSuccessfulSyncAt: '2026-03-11T19:42:00.000Z',
           lastActivityAt: '2026-03-11T20:18:00.000Z',
@@ -444,6 +901,11 @@ function createStore(): StoryStore {
           groupName: 'rescue',
           status: 'needs_reauth',
           enabled: true,
+          displayStatus: 'needs_reauth',
+          enableStatus: 'enabled',
+          workStatus: 'rate_limited',
+          healthStatus: 'needs_reauth',
+          syncState: 'idle',
           planType: 'local',
           lastSuccessfulSyncAt: '2026-03-11T18:55:00.000Z',
           lastActivityAt: '2026-03-11T19:14:00.000Z',
@@ -457,12 +919,20 @@ function createStore(): StoryStore {
         }),
       ]
     : []
-  const accounts = [toSummary(oauth), ...(duplicateOauth ? [toSummary(duplicateOauth)] : []), toSummary(apiKey), ...compactExtraAccounts.map(toSummary)]
+  const operationalRosterAccounts = compactStory ? [] : buildOperationalRosterAccounts(denseRosterStory ? 3 : 1)
+  const accounts = [
+    toSummary(oauth),
+    ...(duplicateOauth ? [toSummary(duplicateOauth)] : []),
+    toSummary(apiKey),
+    ...compactExtraAccounts.map(toSummary),
+    ...operationalRosterAccounts.map(toSummary),
+  ]
   const details = {
     [oauth.id]: oauth,
     ...(duplicateOauth ? { [duplicateOauth.id]: duplicateOauth } : {}),
     [apiKey.id]: apiKey,
     ...Object.fromEntries(compactExtraAccounts.map((account) => [account.id, account])),
+    ...Object.fromEntries(operationalRosterAccounts.map((account) => [account.id, account])),
   }
   return {
     writesEnabled: true,
@@ -475,12 +945,24 @@ function createStore(): StoryStore {
       staging: 'Staging fallback group note.',
       'production-apac-weekly': 'Weekly cap watch list.',
       'production-apac-burst': 'Burst-heavy rotation group.',
+      'production-apac': 'APAC production roster for regional failover and premium traffic.',
+      'production-emea': 'EMEA production roster with mixed OAuth and API key coverage.',
+      analytics: 'Analytics workloads with lower latency sensitivity.',
+      overflow: 'Overflow keys reserved for burst absorption and emergency routing.',
+      sandbox: 'Sandbox and canary accounts used for smoke traffic.',
+      'enterprise-ops': 'Enterprise workspace accounts for higher-tier traffic.',
+      experiments: 'Evaluation and research traffic that can tolerate instability.',
+      'night-ops': 'Night shift routing accounts for off-hours coverage.',
+      'batch-ops': 'Batch processing keys used by scheduled jobs.',
+      latam: 'LATAM fallback coverage for regional traffic.',
+      'staging-eu': 'European staging accounts and shared API keys.',
+      ops: 'Internal operational accounts for migration and support tooling.',
       'staging-overflow': 'Fallback keys that often ride the weekly edge.',
       rescue: 'Emergency pool for overflow and incident recovery.',
     },
     accounts,
     details,
-    nextId: compactStory ? 108 : duplicateOauth ? 104 : 103,
+    nextId: Math.max(...Object.keys(details).map((value) => Number(value))) + 1,
     sessions: {},
     mailboxStatuses: {},
     nextMailboxId: 1,
@@ -674,15 +1156,15 @@ function parseBody<T>(raw: BodyInit | null | undefined, fallback: T): T {
 }
 
 function syncLocalWindows(detail: UpstreamAccountDetail) {
-  if (detail.kind !== 'api_key_codex') return detail
+  if (detail.kind !== 'api_key_codex') return withDerivedStatusFields(detail)
   const primaryLimit = detail.localLimits?.primaryLimit ?? 120
   const secondaryLimit = detail.localLimits?.secondaryLimit ?? 500
   const limitUnit = detail.localLimits?.limitUnit ?? 'requests'
-  return {
+  return withDerivedStatusFields({
     ...detail,
     primaryWindow: buildWindow(0, 300, `0 ${limitUnit}`, `${primaryLimit} ${limitUnit}`, '2026-03-11T14:00:00.000Z'),
     secondaryWindow: buildWindow(0, 10080, `0 ${limitUnit}`, `${secondaryLimit} ${limitUnit}`, '2026-03-18T00:00:00.000Z'),
-  }
+  })
 }
 
 export function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
@@ -703,12 +1185,38 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
       const store = storeRef.current
 
       if (path === '/api/pool/upstream-accounts' && method === 'GET') {
+        const filteredItems = filterAccountsForQuery(store, parsedUrl)
+        const rawPageSize = Number(parsedUrl.searchParams.get('pageSize') || 20)
+        const requestedPageSize = Number.isFinite(rawPageSize) && rawPageSize > 0 ? rawPageSize : 20
+        const total = filteredItems.length
+        const pageCount = Math.max(1, Math.ceil(total / requestedPageSize))
+        const rawPage = Number(parsedUrl.searchParams.get('page') || 1)
+        const requestedPage = Number.isFinite(rawPage) && rawPage > 0 ? rawPage : 1
+        const page = Math.min(requestedPage, pageCount)
+        const start = (page - 1) * requestedPageSize
+        const pageItems = filteredItems.slice(start, start + requestedPageSize).map((item) => clone(item))
         const payload: UpstreamAccountListResponse = {
           writesEnabled: store.writesEnabled,
           groups: listGroupSummaries(store),
           hasUngroupedAccounts: store.accounts.some((account) => !normalizeGroupName(account.groupName)),
           routing: clone(store.routing),
-          items: filterAccountsForQuery(store, parsedUrl).map((item) => clone(item)),
+          items: pageItems,
+          total,
+          page,
+          pageSize: requestedPageSize,
+          metrics: {
+            total,
+            oauth: filteredItems.filter((item) => item.kind === 'oauth_codex').length,
+            apiKey: filteredItems.filter((item) => item.kind === 'api_key_codex').length,
+            attention: filteredItems.filter((item) => {
+              const derivedHealthStatus = storyHealthStatus(item)
+              const derivedSyncState = storySyncState(item)
+              return (
+                derivedHealthStatus !== 'normal'
+                || storyWorkStatus(item, derivedHealthStatus, derivedSyncState) === 'rate_limited'
+              )
+            }).length,
+          },
         }
         return jsonResponse(payload)
       }
@@ -1026,7 +1534,7 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
 
       if (detailMatch && method === 'DELETE') {
         const accountId = Number(detailMatch[1])
-        if (storyId === 'account-pool-pages-upstream-accounts--delete-failure') {
+        if (storyId?.endsWith('--delete-failure')) {
           return Promise.resolve(
             new Response('error returned from database: (code: 5) database is locked', {
               status: 500,

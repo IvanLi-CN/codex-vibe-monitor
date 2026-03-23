@@ -20,6 +20,7 @@ import { FormFieldFeedback } from '../../components/ui/form-field-feedback'
 import { Input } from '../../components/ui/input'
 import { Popover, PopoverArrow, PopoverContent, PopoverTrigger } from '../../components/ui/popover'
 import { OverlayHostProvider } from '../../components/ui/overlay-host'
+import { formFieldSpanVariants } from '../../components/ui/form-control'
 import { SelectField } from '../../components/ui/select-field'
 import { MotherAccountBadge, MotherAccountToggle } from '../../components/MotherAccountToggle'
 import { Spinner } from '../../components/ui/spinner'
@@ -215,6 +216,10 @@ function accountEnableStatus(item?: AccountStatusSnapshot | null) {
 }
 
 function accountWorkStatus(item?: AccountStatusSnapshot | null) {
+  if (!item) return 'idle'
+  if (accountEnableStatus(item) !== 'enabled') return 'idle'
+  if (accountSyncState(item) === 'syncing') return 'idle'
+  if (accountHealthStatus(item) !== 'normal') return 'idle'
   return item?.workStatus ?? 'idle'
 }
 
@@ -1574,42 +1579,54 @@ export default function UpstreamAccountsPage() {
       <section className="grid gap-6">
         <div className="surface-panel overflow-hidden">
           <div className="surface-panel-body gap-4">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="section-heading">
-                <h2 className="section-title">{t('accountPool.upstreamAccounts.listTitle')}</h2>
-                <p className="section-description">{t('accountPool.upstreamAccounts.listDescription')}</p>
+            <div className="space-y-4">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div className="section-heading">
+                  <h2 className="section-title">{t('accountPool.upstreamAccounts.listTitle')}</h2>
+                  <p className="section-description">{t('accountPool.upstreamAccounts.listDescription')}</p>
+                </div>
+                {isLoading ? (
+                  <div className="flex items-center justify-start lg:justify-end">
+                    <Spinner className="text-primary" />
+                  </div>
+                ) : null}
               </div>
-              <div className="flex flex-wrap items-end gap-3">
+
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-12">
                 <SelectField
                   label={t('accountPool.upstreamAccounts.workStatusFilterLabel')}
-                  className="min-w-[12rem]"
+                  className={cn('min-w-0', formFieldSpanVariants({ size: 'compact' }))}
                   value={workStatusFilter}
                   options={workStatusFilterOptions}
-                  triggerClassName="h-12 rounded-xl border-base-300/90 bg-base-100 px-4 text-[15px]"
+                  size="filter"
+                  triggerClassName="border-base-300/90 bg-base-100"
                   aria-label={t('accountPool.upstreamAccounts.workStatusFilterLabel')}
                   onValueChange={handleWorkStatusFilterChange}
                 />
                 <SelectField
                   label={t('accountPool.upstreamAccounts.enableStatusFilterLabel')}
-                  className="min-w-[12rem]"
+                  className={cn('min-w-0', formFieldSpanVariants({ size: 'compact' }))}
                   value={enableStatusFilter}
                   options={enableStatusFilterOptions}
-                  triggerClassName="h-12 rounded-xl border-base-300/90 bg-base-100 px-4 text-[15px]"
+                  size="filter"
+                  triggerClassName="border-base-300/90 bg-base-100"
                   aria-label={t('accountPool.upstreamAccounts.enableStatusFilterLabel')}
                   onValueChange={handleEnableStatusFilterChange}
                 />
                 <SelectField
                   label={t('accountPool.upstreamAccounts.healthStatusFilterLabel')}
-                  className="min-w-[12rem]"
+                  className={cn('min-w-0', formFieldSpanVariants({ size: 'compact' }))}
                   value={healthStatusFilter}
                   options={healthStatusFilterOptions}
-                  triggerClassName="h-12 rounded-xl border-base-300/90 bg-base-100 px-4 text-[15px]"
+                  size="filter"
+                  triggerClassName="border-base-300/90 bg-base-100"
                   aria-label={t('accountPool.upstreamAccounts.healthStatusFilterLabel')}
                   onValueChange={handleHealthStatusFilterChange}
                 />
-                <label className="field min-w-[15rem]">
+                <label className={cn('field min-w-0', formFieldSpanVariants({ size: 'wide' }))}>
                   <span className="field-label">{t('accountPool.upstreamAccounts.groupFilterLabel')}</span>
                   <UpstreamAccountGroupCombobox
+                    size="filter"
                     value={groupFilterQuery}
                     suggestions={groupFilterSuggestions}
                     placeholder={t('accountPool.upstreamAccounts.groupFilterPlaceholder')}
@@ -1617,12 +1634,14 @@ export default function UpstreamAccountsPage() {
                     emptyLabel={t('accountPool.upstreamAccounts.groupFilterEmpty')}
                     createLabel={(value) => t('accountPool.upstreamAccounts.groupFilterUseValue', { value })}
                     ariaLabel={t('accountPool.upstreamAccounts.groupFilterLabel')}
+                    triggerClassName="border-base-300/90 bg-base-100"
                     onValueChange={handleGroupFilterChange}
                   />
                 </label>
-                <label className="field min-w-[15rem]">
+                <label className={cn('field min-w-0', formFieldSpanVariants({ size: 'wide' }))}>
                   <span className="field-label">{t('accountPool.upstreamAccounts.tagFilterLabel')}</span>
                   <AccountTagFilterCombobox
+                    size="filter"
                     tags={tagItems}
                     value={selectedTagIds}
                     placeholder={t('accountPool.upstreamAccounts.tagFilterPlaceholder')}
@@ -1630,10 +1649,10 @@ export default function UpstreamAccountsPage() {
                     emptyLabel={t('accountPool.upstreamAccounts.tagFilterEmpty')}
                     clearLabel={t('accountPool.upstreamAccounts.tagFilterClear')}
                     ariaLabel={t('accountPool.upstreamAccounts.tagFilterAriaLabel')}
+                    triggerClassName="border-base-300/90 bg-base-100"
                     onValueChange={handleTagFilterChange}
                   />
                 </label>
-                {isLoading ? <Spinner className="text-primary" /> : null}
               </div>
             </div>
 
@@ -1836,21 +1855,26 @@ export default function UpstreamAccountsPage() {
                 })}
               </div>
               <div className="flex flex-wrap items-center gap-3">
-                <SelectField
-                  label={t('accountPool.upstreamAccounts.pagination.pageSize')}
-                  className="min-w-[8rem]"
-                  value={String(pageSize)}
-                  options={pageSizeOptions}
-                  size="sm"
-                  triggerClassName="h-10 rounded-xl border-base-300/90 bg-base-100 px-3 text-sm"
-                  aria-label={t('accountPool.upstreamAccounts.pagination.pageSize')}
-                  onValueChange={(value) => handlePageSizeChange(Number(value))}
-                />
+                <div className="flex items-center gap-2 rounded-xl border border-base-300/70 bg-base-100/55 px-3 py-2">
+                  <span className="text-sm font-medium text-base-content/65">
+                    {t('accountPool.upstreamAccounts.pagination.pageSize')}
+                  </span>
+                  <SelectField
+                    className="min-w-[7rem]"
+                    value={String(pageSize)}
+                    options={pageSizeOptions}
+                    size="sm"
+                    triggerClassName="h-10 rounded-xl border-base-300/90 bg-base-100 px-3 text-sm"
+                    aria-label={t('accountPool.upstreamAccounts.pagination.pageSize')}
+                    onValueChange={(value) => handlePageSizeChange(Number(value))}
+                  />
+                </div>
                 <div className="flex items-center gap-2">
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
+                    className="h-10 rounded-xl px-4"
                     onClick={() => setPage((current) => Math.max(1, current - 1))}
                     disabled={page <= 1}
                   >
@@ -1860,6 +1884,7 @@ export default function UpstreamAccountsPage() {
                     type="button"
                     variant="outline"
                     size="sm"
+                    className="h-10 rounded-xl px-4"
                     onClick={() => setPage((current) => Math.min(pageCount, current + 1))}
                     disabled={page >= pageCount}
                   >

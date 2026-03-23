@@ -3522,6 +3522,131 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
 }
 
 #[tokio::test]
+async fn list_upstream_accounts_clamps_work_status_for_abnormal_or_syncing_accounts() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let reauth_id =
+        insert_test_pool_api_key_account(&state, "Needs Reauth", "upstream-reauth").await;
+    let syncing_id =
+        insert_test_pool_api_key_account(&state, "Currently Syncing", "upstream-syncing").await;
+
+    let now = Utc::now();
+    let now_iso = format_utc_iso(now);
+    let cooldown_until = format_utc_iso(now + ChronoDuration::minutes(10));
+    let recently_selected = format_utc_iso(now - ChronoDuration::minutes(5));
+
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET status = ?2,
+            last_error = ?3,
+            last_error_at = ?4,
+            cooldown_until = ?5,
+            last_selected_at = ?6
+        WHERE id = ?1
+        "#,
+    )
+    .bind(reauth_id)
+    .bind("needs_reauth")
+    .bind("refresh token expired")
+    .bind(&now_iso)
+    .bind(&cooldown_until)
+    .bind(&recently_selected)
+    .execute(&state.pool)
+    .await
+    .expect("mark reauth account abnormal");
+
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET status = ?2,
+            last_error = NULL,
+            last_error_at = NULL,
+            cooldown_until = ?3,
+            last_selected_at = ?4
+        WHERE id = ?1
+        "#,
+    )
+    .bind(syncing_id)
+    .bind("syncing")
+    .bind(&cooldown_until)
+    .bind(&recently_selected)
+    .execute(&state.pool)
+    .await
+    .expect("mark syncing account in cooldown");
+
+    let Json(response) = list_upstream_accounts(
+        State(state),
+        Query(ListUpstreamAccountsQuery {
+            group_search: None,
+            group_ungrouped: None,
+            status: None,
+            work_status: None,
+            enable_status: None,
+            health_status: None,
+            page: Some(1),
+            page_size: Some(20),
+            tag_ids: Vec::new(),
+        }),
+    )
+    .await
+    .expect("list upstream accounts with abnormal states");
+    let response_json =
+        serde_json::to_value(response).expect("serialize abnormal upstream accounts");
+    let items = response_json["items"]
+        .as_array()
+        .expect("abnormal items array");
+
+    let reauth_item = items
+        .iter()
+        .find(|item| item.get("id").and_then(serde_json::Value::as_i64) == Some(reauth_id))
+        .expect("reauth item present");
+    assert_eq!(
+        reauth_item
+            .get("workStatus")
+            .and_then(serde_json::Value::as_str),
+        Some("idle")
+    );
+    assert_eq!(
+        reauth_item
+            .get("healthStatus")
+            .and_then(serde_json::Value::as_str),
+        Some("needs_reauth")
+    );
+    assert_eq!(
+        reauth_item
+            .get("syncState")
+            .and_then(serde_json::Value::as_str),
+        Some("idle")
+    );
+
+    let syncing_item = items
+        .iter()
+        .find(|item| item.get("id").and_then(serde_json::Value::as_i64) == Some(syncing_id))
+        .expect("syncing item present");
+    assert_eq!(
+        syncing_item
+            .get("workStatus")
+            .and_then(serde_json::Value::as_str),
+        Some("idle")
+    );
+    assert_eq!(
+        syncing_item
+            .get("healthStatus")
+            .and_then(serde_json::Value::as_str),
+        Some("normal")
+    );
+    assert_eq!(
+        syncing_item
+            .get("syncState")
+            .and_then(serde_json::Value::as_str),
+        Some("syncing")
+    );
+}
+
+#[tokio::test]
 async fn list_upstream_accounts_includes_archived_last_activity_at() {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)

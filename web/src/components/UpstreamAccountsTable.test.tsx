@@ -224,6 +224,66 @@ describe('UpstreamAccountsTable', () => {
     expect(html).toContain('truncate whitespace-nowrap')
   })
 
+  it('suppresses stale work badges when the account is syncing or unhealthy', () => {
+    const html = renderTable([
+      {
+        id: 13,
+        kind: 'api_key_codex',
+        provider: 'codex',
+        displayName: 'Needs Reauth Key',
+        groupName: null,
+        isMother: false,
+        status: 'needs_reauth',
+        displayStatus: 'needs_reauth',
+        enabled: true,
+        enableStatus: 'enabled',
+        workStatus: 'rate_limited',
+        healthStatus: 'needs_reauth',
+        syncState: 'idle',
+        planType: null,
+        lastSuccessfulSyncAt: null,
+        lastActivityAt: null,
+        primaryWindow: null,
+        secondaryWindow: null,
+        credits: null,
+        localLimits: null,
+        duplicateInfo: null,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
+      {
+        id: 14,
+        kind: 'oauth_codex',
+        provider: 'codex',
+        displayName: 'Syncing OAuth',
+        groupName: null,
+        isMother: false,
+        status: 'syncing',
+        displayStatus: 'syncing',
+        enabled: true,
+        enableStatus: 'enabled',
+        workStatus: 'rate_limited',
+        healthStatus: 'normal',
+        syncState: 'syncing',
+        planType: null,
+        lastSuccessfulSyncAt: null,
+        lastActivityAt: null,
+        primaryWindow: null,
+        secondaryWindow: null,
+        credits: null,
+        localLimits: null,
+        duplicateInfo: null,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
+    ])
+
+    expect(html).toContain('Needs reauth')
+    expect(html).toContain('Syncing')
+    expect(html).not.toContain('Rate limited')
+    expect((html.match(/>Idle</g) ?? []).length).toBeGreaterThanOrEqual(2)
+  })
+
   it('keeps the folded tags trigger inside the row click target', () => {
     const onSelect = renderInteractiveTable([
       {

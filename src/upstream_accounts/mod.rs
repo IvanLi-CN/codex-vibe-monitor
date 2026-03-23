@@ -7095,6 +7095,8 @@ fn build_summary_from_row(
     let sync_state = derive_upstream_account_sync_state(&row.status);
     let work_status = derive_upstream_account_work_status(
         row.enabled != 0,
+        health_status,
+        sync_state,
         row.cooldown_until.as_deref(),
         row.last_selected_at.as_deref(),
         now,
@@ -8792,11 +8794,16 @@ fn is_transient_route_failure_error(
 
 fn derive_upstream_account_work_status(
     enabled: bool,
+    health_status: &str,
+    sync_state: &str,
     cooldown_until: Option<&str>,
     last_selected_at: Option<&str>,
     now: DateTime<Utc>,
 ) -> &'static str {
-    if !enabled {
+    if !enabled
+        || health_status != UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL
+        || sync_state == UPSTREAM_ACCOUNT_SYNC_STATE_SYNCING
+    {
         return UPSTREAM_ACCOUNT_WORK_STATUS_IDLE;
     }
     if cooldown_until

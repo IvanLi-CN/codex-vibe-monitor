@@ -1,6 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { userEvent, within, expect } from 'storybook/test'
-import { SystemNotificationProvider } from './ui/system-notifications'
+import { expect, userEvent, within } from 'storybook/test'
 import { I18nProvider } from '../i18n'
 import UpstreamAccountsPage from '../pages/account-pool/UpstreamAccounts'
 import {
@@ -8,9 +7,10 @@ import {
   StorybookUpstreamAccountsMock,
 } from './UpstreamAccountsPage.story-helpers'
 import { duplicateReasons } from './UpstreamAccountsPage.story-data'
+import { SystemNotificationProvider } from './ui/system-notifications'
 
 const meta = {
-  title: 'Account Pool/Pages/Upstream Accounts',
+  title: 'Account Pool/Pages/Upstream Accounts/Overlays',
   component: UpstreamAccountsPage,
   tags: ['autodocs'],
   parameters: {
@@ -32,14 +32,6 @@ const meta = {
 export default meta
 
 type Story = StoryObj<typeof meta>
-
-export const Operational: Story = {
-  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
-}
-
-export const CompactLongLabels: Story = {
-  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
-}
 
 export const DetailDrawer: Story = {
   render: () => (
@@ -127,43 +119,6 @@ export const RoutingDialog: Story = {
   },
 }
 
-export const CreateAccount: Story = {
-  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new" />,
-}
-
-export const CreateAccountApiKeyInvalidUpstreamUrl: Story = {
-  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new?mode=apiKey" />,
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    await userEvent.type(canvas.getByLabelText(/display name/i), 'Gateway Key')
-    await userEvent.type(canvas.getByLabelText(/^api key$/i), 'sk-gateway')
-    await userEvent.type(canvas.getByLabelText(/upstream base url/i), 'proxy.example.com/gateway')
-    await expect(canvas.getByText(/absolute http\(s\) url|http\(s\) 的绝对 url/i)).toBeInTheDocument()
-    await expect(canvas.getByRole('button', { name: /create api key account/i })).toBeDisabled()
-  },
-}
-
-export const CreateAccountOauthReady: Story = {
-  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new" />,
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    await userEvent.type(canvas.getByLabelText(/display name/i), 'Codex Pro - Manual')
-    await userEvent.click(canvas.getByRole('button', { name: /generate oauth url/i }))
-    await expect(canvas.getByRole('button', { name: /copy oauth url/i })).toBeInTheDocument()
-    await expect(canvas.getByLabelText(/callback url/i)).toBeInTheDocument()
-  },
-}
-
-export const CreateAccountBatchOauthReady: Story = {
-  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new?mode=batchOauth" />,
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    await userEvent.click(canvas.getByRole('button', { name: /generate oauth url/i }))
-    await expect(canvas.getByDisplayValue(/https:\/\/auth\.openai\.com\/authorize/i)).toBeInTheDocument()
-    await expect(canvas.getByRole('button', { name: /complete oauth login/i })).toBeInTheDocument()
-  },
-}
-
 export const DetailDrawerGroupNotes: Story = {
   render: () => (
     <AccountPoolStoryRouter
@@ -210,57 +165,6 @@ export const DetailDrawerApiKeyInvalidUpstreamUrl: Story = {
     await userEvent.type(field, 'https://proxy.example.com/gateway?team=staging')
     await expect(documentScope.getByText(/cannot include a query string or fragment|不能包含查询串或片段/i)).toBeInTheDocument()
     await expect(within(dialog).getByRole('button', { name: /save changes/i })).toBeDisabled()
-  },
-}
-
-export const TagFilterAllMatch: Story = {
-  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    const documentScope = within(canvasElement.ownerDocument.body)
-    const filterTrigger = await canvas.findByRole('button', {
-      name: /按标签筛选账号|filter accounts by tags/i,
-    })
-    await userEvent.click(filterTrigger)
-    await userEvent.click(await documentScope.findByText(/^vip$/i))
-    await userEvent.click(await documentScope.findByText(/^burst-safe$/i))
-    await expect(canvas.getByText(/Codex Pro - Tokyo/i)).toBeInTheDocument()
-    await expect(canvas.queryByText(/Team key - staging/i)).not.toBeInTheDocument()
-  },
-}
-
-export const CreateAccountBatchGroupNoteDraft: Story = {
-  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new?mode=batchOauth" />,
-  play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    const doc = canvasElement.ownerDocument
-    const trigger = canvas.getAllByRole('combobox')[0]
-    await userEvent.click(trigger)
-
-    const searchInput = doc.body.querySelector('[cmdk-input]')
-    if (!(searchInput instanceof HTMLInputElement)) {
-      throw new Error('missing group combobox search input')
-    }
-    await userEvent.type(searchInput, 'new-team')
-
-    const createOption = Array.from(doc.body.querySelectorAll('[cmdk-item]')).find((candidate) =>
-      (candidate.textContent || '').toLowerCase().includes('new-team'),
-    )
-    if (!(createOption instanceof HTMLElement)) {
-      throw new Error('missing create option for new-team')
-    }
-    await userEvent.click(createOption)
-
-    const documentScope = within(doc.body)
-    await userEvent.click(
-      await documentScope.findByRole('button', {
-        name: /编辑分组备注|edit group note/i,
-      }),
-    )
-    await expect(
-      documentScope.getByRole('dialog', { name: /编辑分组备注|edit group note/i }),
-    ).toBeInTheDocument()
-    await expect(documentScope.getByText(/new-team/i)).toBeInTheDocument()
   },
 }
 

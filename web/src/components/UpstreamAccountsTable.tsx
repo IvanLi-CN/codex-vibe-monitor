@@ -101,6 +101,9 @@ function accountEnableStatus(item: UpstreamAccountSummary) {
 }
 
 function accountWorkStatus(item: UpstreamAccountSummary) {
+  if (accountEnableStatus(item) !== 'enabled') return 'idle'
+  if (accountSyncState(item) === 'syncing') return 'idle'
+  if (accountHealthStatus(item) !== 'normal') return 'idle'
   return item.workStatus ?? 'idle'
 }
 
@@ -403,8 +406,8 @@ export function UpstreamAccountsTable({
                     >
                       {item.displayName}
                     </p>
-                    <div className="mt-2 grid min-w-0 grid-cols-[minmax(0,max-content),minmax(3rem,1fr)] items-center gap-1">
-                      <div className="flex min-w-0 items-center gap-1 overflow-hidden">
+                    <div className="mt-2 min-w-0 space-y-1.5">
+                      <div className="flex min-w-0 flex-wrap items-center gap-1">
                         {item.isMother ? (
                           <div className="shrink-0">
                             <MotherAccountBadge label={labels.mother} />
@@ -426,13 +429,11 @@ export function UpstreamAccountsTable({
                           ? compactBadge(item.planType, 'accent')
                           : null}
                       </div>
-                      <div className="flex min-w-[3rem] items-center justify-end gap-1">
-                        <div className="flex min-w-0 flex-1 justify-end gap-1 overflow-hidden">
+                      <div className="flex min-w-0 flex-wrap items-center gap-1">
+                        <div className="flex min-w-0 flex-wrap items-center gap-1">
                           {renderTagBadges(item.tags)}
                         </div>
-                        <div className="shrink-0">
-                          {renderTagOverflowBadge(labels, item.tags)}
-                        </div>
+                        {renderTagOverflowBadge(labels, item.tags)}
                       </div>
                     </div>
                   </div>
