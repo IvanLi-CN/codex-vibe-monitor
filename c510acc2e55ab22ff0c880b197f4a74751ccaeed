@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.20.3",
+  "base_stable_version": "1.20.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-23T06:05:37Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.20.3",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "4e976b08c0238aa6296fe0ce6287bb3f44a450b7",
+  "pr_number": 208,
+  "pr_title": "fix(pool): fail over immediately on upstream 429",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.20.3",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.20.3,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "c510acc2e55ab22ff0c880b197f4a74751ccaeed",
+  "type_label": "type:patch"
+}
