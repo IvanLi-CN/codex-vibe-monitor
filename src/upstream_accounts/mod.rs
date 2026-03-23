@@ -8628,7 +8628,8 @@ fn parse_mailbox_code(detail: &MoeMailMessageDetail) -> Option<ParsedMailboxCode
     let message_has_brand = mailbox_text_has_brand(&message_context);
 
     let subject_text = normalize_mailbox_text(subject);
-    if let Some(value) = extract_mailbox_code_candidate(&subject_text, message_has_brand) {
+    let subject_has_brand = mailbox_text_has_brand(&subject_text);
+    if let Some(value) = extract_mailbox_code_candidate(&subject_text, subject_has_brand) {
         return Some(ParsedMailboxCode {
             value,
             source: "subject".to_string(),
@@ -15740,6 +15741,19 @@ mod tests {
         let parsed = parse_mailbox_code(&detail).expect("verification code");
         assert_eq!(parsed.value, "567890");
         assert_eq!(parsed.source, "content");
+    }
+
+    #[test]
+    fn parse_mailbox_code_rejects_weak_subject_match_without_local_brand() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_weak_subject_without_local_brand".to_string(),
+            subject: Some("Your code is 123456".to_string()),
+            content: Some("OpenAI account activity summary".to_string()),
+            html: None,
+            received_at: Some("2026-03-24T00:05:45Z".to_string()),
+        };
+
+        assert!(parse_mailbox_code(&detail).is_none());
     }
 
     #[test]
