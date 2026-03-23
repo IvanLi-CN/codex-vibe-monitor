@@ -3782,6 +3782,60 @@ async fn list_upstream_accounts_clamps_work_status_for_abnormal_or_syncing_accou
 }
 
 #[tokio::test]
+async fn list_upstream_accounts_keeps_generic_retry_cooldown_idle() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let generic_cooldown_id =
+        insert_test_pool_api_key_account(&state, "Generic Cooldown", "upstream-generic").await;
+
+    set_test_account_generic_route_cooldown(&state.pool, generic_cooldown_id, 600).await;
+
+    let Json(response) = list_upstream_accounts(
+        State(state),
+        Query(ListUpstreamAccountsQuery {
+            group_search: None,
+            group_ungrouped: None,
+            status: None,
+            work_status: None,
+            enable_status: None,
+            health_status: None,
+            page: Some(1),
+            page_size: Some(20),
+            tag_ids: Vec::new(),
+        }),
+    )
+    .await
+    .expect("list upstream accounts with generic cooldown");
+    let response_json =
+        serde_json::to_value(response).expect("serialize generic cooldown upstream accounts");
+    let items = response_json["items"]
+        .as_array()
+        .expect("generic cooldown items array");
+
+    let generic_item = items
+        .iter()
+        .find(|item| {
+            item.get("id").and_then(serde_json::Value::as_i64) == Some(generic_cooldown_id)
+        })
+        .expect("generic cooldown item present");
+    assert_eq!(
+        generic_item
+            .get("workStatus")
+            .and_then(serde_json::Value::as_str),
+        Some("idle")
+    );
+    assert_eq!(
+        generic_item
+            .get("healthStatus")
+            .and_then(serde_json::Value::as_str),
+        Some("normal")
+    );
+    assert_eq!(response_json["metrics"]["attention"].as_u64(), Some(0));
+}
+
+#[tokio::test]
 async fn list_upstream_accounts_includes_archived_last_activity_at() {
     let pool = SqlitePoolOptions::new()
         .max_connections(1)

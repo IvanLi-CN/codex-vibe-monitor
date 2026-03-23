@@ -7664,6 +7664,8 @@ fn build_summary_from_row(
         health_status,
         sync_state,
         row.cooldown_until.as_deref(),
+        row.last_route_failure_kind.as_deref(),
+        row.last_action_reason_code.as_deref(),
         row.last_selected_at.as_deref(),
         now,
     );
@@ -9666,6 +9668,8 @@ fn derive_upstream_account_work_status(
     health_status: &str,
     sync_state: &str,
     cooldown_until: Option<&str>,
+    last_route_failure_kind: Option<&str>,
+    last_action_reason_code: Option<&str>,
     last_selected_at: Option<&str>,
     now: DateTime<Utc>,
 ) -> &'static str {
@@ -9677,7 +9681,16 @@ fn derive_upstream_account_work_status(
     }
     if cooldown_until
         .and_then(parse_rfc3339_utc)
-        .is_some_and(|until| until > now)
+        .is_some_and(|until| {
+            until > now
+                && (matches!(
+                    last_route_failure_kind,
+                    Some(
+                        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429
+                            | FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
+                    )
+                ) || account_reason_is_rate_limited(last_action_reason_code))
+        })
     {
         return UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED;
     }
