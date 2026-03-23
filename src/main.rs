@@ -90,9 +90,10 @@ const DEFAULT_OPENAI_UPSTREAM_BASE_URL: &str = "https://api.openai.com/";
 const DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES: usize = 256 * 1024 * 1024;
 const IMPORTED_OAUTH_ROUTE_MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
 const DEFAULT_OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS: u64 = 60;
-const DEFAULT_OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS: u64 = 180;
+const DEFAULT_OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS: u64 = 300;
 const DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS: u64 = 180;
 const DEFAULT_SQLITE_BUSY_TIMEOUT_SECS: u64 = 30;
+const CVM_INVOKE_ID_HEADER: &str = "x-cvm-invoke-id";
 const BACKFILL_BATCH_SIZE: i64 = 200;
 const BACKFILL_ACCOUNT_BIND_BATCH_SIZE: usize = 400;
 const STARTUP_BACKFILL_SCAN_LIMIT: u64 = 2_000;
@@ -2275,7 +2276,7 @@ struct DryRunBatchCount {
 const CODEX_INVOCATIONS_ARCHIVE_COLUMNS: &str = "id, invoke_id, occurred_at, source, model, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens, cost, status, error_message, failure_kind, failure_class, is_actionable, payload, raw_response, cost_estimated, price_version, request_raw_path, request_raw_size, request_raw_truncated, request_raw_truncated_reason, response_raw_path, response_raw_size, response_raw_truncated, response_raw_truncated_reason, detail_level, detail_pruned_at, detail_prune_reason, t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, created_at";
 const FORWARD_PROXY_ATTEMPTS_ARCHIVE_COLUMNS: &str =
     "id, proxy_key, occurred_at, is_success, latency_ms, failure_kind, is_probe";
-const POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_COLUMNS: &str = "id, invoke_id, occurred_at, endpoint, route_mode, sticky_key, upstream_account_id, upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index, requester_ip, started_at, finished_at, status, http_status, failure_kind, error_message, connect_latency_ms, first_byte_latency_ms, stream_latency_ms, upstream_request_id, created_at";
+const POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_COLUMNS: &str = "id, invoke_id, occurred_at, endpoint, route_mode, sticky_key, upstream_account_id, upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index, requester_ip, started_at, finished_at, status, http_status, failure_kind, error_message, connect_latency_ms, first_byte_latency_ms, stream_latency_ms, upstream_request_id, compact_support_status, compact_support_reason, created_at";
 const STATS_SOURCE_SNAPSHOTS_ARCHIVE_COLUMNS: &str = "id, source, period, stats_date, model, requests, input_tokens, output_tokens, cache_create_tokens, cache_read_tokens, all_tokens, cost_input, cost_output, cost_cache_write, cost_cache_read, cost_total, raw_response, captured_at, captured_at_epoch, created_at";
 const CODEX_QUOTA_SNAPSHOTS_ARCHIVE_COLUMNS: &str = "id, captured_at, amount_limit, used_amount, remaining_amount, period, period_reset_time, expire_time, is_active, total_cost, total_requests, total_tokens, last_request_time, billing_type, remaining_count, used_count, sub_type_name";
 
@@ -2361,6 +2362,8 @@ CREATE TABLE IF NOT EXISTS archive_db.pool_upstream_request_attempts (
     first_byte_latency_ms REAL,
     stream_latency_ms REAL,
     upstream_request_id TEXT,
+    compact_support_status TEXT,
+    compact_support_reason TEXT,
     created_at TEXT NOT NULL
 )
 "#;
@@ -6498,7 +6501,11 @@ async fn ensure_pool_upstream_request_attempts_archive_schema(
         "pool_upstream_request_attempts",
     )
     .await?;
-    for (column, ty) in [("upstream_route_key", "TEXT")] {
+    for (column, ty) in [
+        ("upstream_route_key", "TEXT"),
+        ("compact_support_status", "TEXT"),
+        ("compact_support_reason", "TEXT"),
+    ] {
         if !archive_columns.contains(column) {
             let statement = format!(
                 "ALTER TABLE archive_db.pool_upstream_request_attempts ADD COLUMN {column} {ty}"
@@ -7511,6 +7518,8 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             first_byte_latency_ms REAL,
             stream_latency_ms REAL,
             upstream_request_id TEXT,
+            compact_support_status TEXT,
+            compact_support_reason TEXT,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
         "#,
@@ -7521,7 +7530,11 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     let existing_pool_attempt_columns =
         load_sqlite_table_columns(pool, "pool_upstream_request_attempts").await?;
-    for (column, ty) in [("upstream_route_key", "TEXT")] {
+    for (column, ty) in [
+        ("upstream_route_key", "TEXT"),
+        ("compact_support_status", "TEXT"),
+        ("compact_support_reason", "TEXT"),
+    ] {
         if !existing_pool_attempt_columns.contains(column) {
             let statement =
                 format!("ALTER TABLE pool_upstream_request_attempts ADD COLUMN {column} {ty}");
@@ -8420,6 +8433,7 @@ async fn proxy_openai_v1_common(
     peer_ip: Option<IpAddr>,
 ) -> Response {
     let proxy_request_id = next_proxy_request_id();
+    let invoke_id = format!("proxy-{proxy_request_id}-{}", Utc::now().timestamp_millis());
     let started_at = Instant::now();
     let request_content_length = headers
         .get(header::CONTENT_LENGTH)
@@ -8442,6 +8456,7 @@ async fn proxy_openai_v1_common(
     match proxy_openai_v1_inner(
         state,
         proxy_request_id,
+        invoke_id.clone(),
         original_uri,
         method,
         headers,
@@ -8462,18 +8477,51 @@ async fn proxy_openai_v1_common(
             );
             response
         }
-        Err((status, message)) => {
+        Err(err) => {
             warn!(
                 proxy_request_id,
                 method = %method_for_log,
                 uri = %uri_for_log,
-                status = %status,
-                error = %message,
+                status = %err.status,
+                error = %err.message,
                 elapsed_ms = started_at.elapsed().as_millis(),
                 "openai proxy request failed"
             );
-            (status, Json(json!({ "error": message }))).into_response()
+            match err.cvm_id {
+                Some(cvm_id) => {
+                    let mut response = (
+                        err.status,
+                        Json(json!({ "error": err.message, "cvmId": cvm_id })),
+                    )
+                        .into_response();
+                    if let Ok(header_value) = HeaderValue::from_str(&invoke_id) {
+                        response
+                            .headers_mut()
+                            .insert(HeaderName::from_static(CVM_INVOKE_ID_HEADER), header_value);
+                    }
+                    response
+                }
+                None => (err.status, Json(json!({ "error": err.message }))).into_response(),
+            }
         }
+    }
+}
+
+#[derive(Debug)]
+struct ProxyErrorResponse {
+    status: StatusCode,
+    message: String,
+    cvm_id: Option<String>,
+}
+
+async fn resolve_proxy_request_timeouts(
+    state: &AppState,
+    pool_route_active: bool,
+) -> Result<PoolRoutingTimeoutSettingsResolved> {
+    if pool_route_active {
+        resolve_pool_routing_timeouts(&state.pool, &state.config).await
+    } else {
+        Ok(pool_routing_timeouts_from_config(&state.config))
     }
 }
 
@@ -8741,6 +8789,8 @@ pub(crate) struct PendingPoolAttemptRecord {
     pub(crate) started_at: String,
     pub(crate) connect_latency_ms: f64,
     pub(crate) first_byte_latency_ms: f64,
+    pub(crate) compact_support_status: Option<String>,
+    pub(crate) compact_support_reason: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -8760,6 +8810,12 @@ struct PoolUpstreamAttemptTraceContext {
     endpoint: String,
     sticky_key: Option<String>,
     requester_ip: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct CompactSupportObservation {
+    status: &'static str,
+    reason: Option<String>,
 }
 
 const POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS: &str = "success";
@@ -8956,6 +9012,67 @@ pub(crate) fn classify_pool_account_http_failure(
     }
 }
 
+fn compact_support_negative_signal(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    let has_compact_signal = normalized.contains("compact")
+        || normalized.contains("responses/compact")
+        || normalized.contains("gpt-5.4-openai-compact");
+    if normalized.contains("no available channel for model") && has_compact_signal {
+        return true;
+    }
+    has_compact_signal
+        && [
+            "unsupported model",
+            "unsupported endpoint",
+            "unsupported path",
+            "unsupported route",
+            "not support",
+            "does not support",
+            "is not supported",
+            "unknown model",
+            "model not found",
+            "no channel",
+        ]
+        .iter()
+        .any(|needle| normalized.contains(needle))
+}
+
+fn classify_compact_support_observation(
+    original_uri: &Uri,
+    status: Option<StatusCode>,
+    message: Option<&str>,
+) -> Option<CompactSupportObservation> {
+    if original_uri.path() != "/v1/responses/compact" {
+        return None;
+    }
+    match status {
+        Some(code) if code.is_success() => Some(CompactSupportObservation {
+            status: COMPACT_SUPPORT_STATUS_SUPPORTED,
+            reason: Some("compact request succeeded".to_string()),
+        }),
+        _ => {
+            let message = message
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(|value| value.to_string());
+            if message
+                .as_deref()
+                .is_some_and(compact_support_negative_signal)
+            {
+                Some(CompactSupportObservation {
+                    status: COMPACT_SUPPORT_STATUS_UNSUPPORTED,
+                    reason: message,
+                })
+            } else {
+                Some(CompactSupportObservation {
+                    status: COMPACT_SUPPORT_STATUS_UNKNOWN,
+                    reason: message,
+                })
+            }
+        }
+    }
+}
+
 fn fallback_proxy_429_retry_delay(retry_index: u32) -> Duration {
     let exponent = retry_index.saturating_sub(1).min(16);
     let multiplier = 1_u64 << exponent;
@@ -9099,7 +9216,7 @@ fn build_pool_replay_temp_path(proxy_request_id: u64) -> PathBuf {
 fn spawn_pool_replayable_request_body(
     body: Body,
     body_limit: usize,
-    _request_read_timeout: Duration,
+    request_read_timeout: Duration,
     proxy_request_id: u64,
 ) -> PoolReplayableRequestBody {
     let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(16);
@@ -9111,10 +9228,38 @@ fn spawn_pool_replayable_request_body(
         let mut buffer = PoolReplayBodyBuffer::new(proxy_request_id);
         let mut data_len = 0usize;
         let mut stream = body.into_data_stream();
+        let read_deadline = Instant::now() + request_read_timeout;
 
         loop {
             if cancel_for_task.is_cancelled() {
                 let _ = status_tx.send(PoolReplayBodyStatus::Incomplete);
+                return;
+            }
+
+            let remaining = read_deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                let read_error = RequestBodyReadError {
+                    status: StatusCode::REQUEST_TIMEOUT,
+                    message: format!(
+                        "request body read timed out after {}ms",
+                        request_read_timeout.as_millis()
+                    ),
+                    failure_kind: PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
+                    partial_body: Vec::new(),
+                };
+                warn!(
+                    proxy_request_id,
+                    timeout_ms = request_read_timeout.as_millis(),
+                    read_bytes = data_len,
+                    "openai proxy request body read timed out"
+                );
+                let _ = status_tx.send(PoolReplayBodyStatus::ReadError(read_error.clone()));
+                let _ = tx
+                    .send(Err(io::Error::new(
+                        io::ErrorKind::TimedOut,
+                        read_error.message,
+                    )))
+                    .await;
                 return;
             }
 
@@ -9123,7 +9268,36 @@ fn spawn_pool_replayable_request_body(
                     let _ = status_tx.send(PoolReplayBodyStatus::Incomplete);
                     return;
                 }
-                chunk = stream.next() => chunk,
+                chunk = timeout(remaining, stream.next()) => {
+                    match chunk {
+                        Ok(chunk) => chunk,
+                        Err(_) => {
+                            let read_error = RequestBodyReadError {
+                                status: StatusCode::REQUEST_TIMEOUT,
+                                message: format!(
+                                    "request body read timed out after {}ms",
+                                    request_read_timeout.as_millis()
+                                ),
+                                failure_kind: PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
+                                partial_body: Vec::new(),
+                            };
+                            warn!(
+                                proxy_request_id,
+                                timeout_ms = request_read_timeout.as_millis(),
+                                read_bytes = data_len,
+                                "openai proxy request body read timed out"
+                            );
+                            let _ = status_tx.send(PoolReplayBodyStatus::ReadError(read_error.clone()));
+                            let _ = tx
+                                .send(Err(io::Error::new(
+                                    io::ErrorKind::TimedOut,
+                                    read_error.message,
+                                )))
+                                .await;
+                            return;
+                        }
+                    }
+                }
             };
 
             let Some(chunk) = next_chunk else {
@@ -9144,27 +9318,27 @@ fn spawn_pool_replayable_request_body(
                 Ok(chunk) => chunk,
                 Err(err) => {
                     let msg = format!("failed to read request body stream: {err}");
-                    let _ = tx.send(Err(io::Error::other(msg.clone()))).await;
-                    let _ = status_tx.send(PoolReplayBodyStatus::ReadError(RequestBodyReadError {
+                    let read_error = RequestBodyReadError {
                         status: StatusCode::BAD_REQUEST,
                         message: msg,
                         failure_kind: PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED,
                         partial_body: Vec::new(),
-                    }));
+                    };
+                    let _ = status_tx.send(PoolReplayBodyStatus::ReadError(read_error.clone()));
+                    let _ = tx.send(Err(io::Error::other(read_error.message))).await;
                     return;
                 }
             };
 
             if data_len.saturating_add(chunk.len()) > body_limit {
-                let _ = tx
-                    .send(Err(io::Error::other("request body exceeds limit")))
-                    .await;
-                let _ = status_tx.send(PoolReplayBodyStatus::ReadError(RequestBodyReadError {
+                let read_error = RequestBodyReadError {
                     status: StatusCode::PAYLOAD_TOO_LARGE,
                     message: format!("request body exceeds {body_limit} bytes"),
                     failure_kind: PROXY_FAILURE_BODY_TOO_LARGE,
                     partial_body: Vec::new(),
-                }));
+                };
+                let _ = status_tx.send(PoolReplayBodyStatus::ReadError(read_error.clone()));
+                let _ = tx.send(Err(io::Error::other(read_error.message))).await;
                 return;
             }
             data_len = data_len.saturating_add(chunk.len());
@@ -9223,8 +9397,30 @@ async fn send_pool_request_with_failover(
     same_account_attempts: u8,
 ) -> Result<PoolUpstreamResponse, PoolUpstreamError> {
     let request_connection_scoped = connection_scoped_header_names(headers);
-    let pre_first_byte_timeout =
-        pool_upstream_first_chunk_timeout(&state.config, original_uri, &method, handshake_timeout);
+    let runtime_timeouts = resolve_pool_routing_timeouts(&state.pool, &state.config)
+        .await
+        .map_err(|err| PoolUpstreamError {
+            account: preferred_account.clone(),
+            status: StatusCode::BAD_GATEWAY,
+            message: format!("failed to resolve pool routing timeouts: {err}"),
+            failure_kind: PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT,
+            connect_latency_ms: 0.0,
+            upstream_error_code: None,
+            upstream_error_message: None,
+            upstream_request_id: None,
+            oauth_responses_debug: None,
+            attempt_summary: pool_attempt_summary(
+                failover_progress.attempt_count,
+                failover_progress.excluded_account_ids.len(),
+                Some(PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT.to_string()),
+            ),
+        })?;
+    let pre_first_byte_timeout = pool_upstream_first_chunk_timeout(
+        &runtime_timeouts,
+        original_uri,
+        &method,
+        handshake_timeout,
+    );
     let uses_timeout_route_failover =
         pool_uses_responses_timeout_failover_policy(original_uri, &method);
     let responses_total_timeout =
@@ -9747,6 +9943,11 @@ async fn send_pool_request_with_failover(
                         Ok(Ok(response)) => (ProxyUpstreamResponseBody::Reqwest(response), None),
                         Ok(Err(err)) => {
                             let message = format!("failed to contact upstream: {err}");
+                            let compact_support_observation = classify_compact_support_observation(
+                                original_uri,
+                                None,
+                                Some(message.as_str()),
+                            );
                             let is_timeout_shaped = uses_timeout_route_failover
                                 && pool_failure_is_timeout_shaped(
                                     PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
@@ -9772,6 +9973,12 @@ async fn send_pool_request_with_failover(
                                     None,
                                     None,
                                     None,
+                                    compact_support_observation
+                                        .as_ref()
+                                        .map(|value| value.status),
+                                    compact_support_observation
+                                        .as_ref()
+                                        .and_then(|value| value.reason.as_deref()),
                                 )
                                 .await
                             {
@@ -9832,6 +10039,11 @@ async fn send_pool_request_with_failover(
                                 "{PROXY_UPSTREAM_HANDSHAKE_TIMEOUT} after {}ms",
                                 attempt_send_timeout.as_millis()
                             );
+                            let compact_support_observation = classify_compact_support_observation(
+                                original_uri,
+                                None,
+                                Some(message.as_str()),
+                            );
                             let is_timeout_shaped = uses_timeout_route_failover;
                             let finished_at = shanghai_now_string();
                             if let Some(trace) = trace_context.as_ref()
@@ -9853,6 +10065,12 @@ async fn send_pool_request_with_failover(
                                     None,
                                     None,
                                     None,
+                                    compact_support_observation
+                                        .as_ref()
+                                        .map(|value| value.status),
+                                    compact_support_observation
+                                        .as_ref()
+                                        .and_then(|value| value.reason.as_deref()),
                                 )
                                 .await
                             {
@@ -10077,6 +10295,11 @@ async fn send_pool_request_with_failover(
                     classify_pool_account_http_failure(&account.kind, status, &route_error_message);
                 let failure_kind = oauth_transport_failure_kind
                     .unwrap_or(http_failure_classification.failure_kind);
+                let compact_support_observation = classify_compact_support_observation(
+                    original_uri,
+                    Some(status),
+                    Some(route_error_message.as_str()),
+                );
                 let is_timeout_shaped = uses_timeout_route_failover
                     && status.is_server_error()
                     && pool_failure_is_timeout_shaped(failure_kind, &message);
@@ -10112,6 +10335,12 @@ async fn send_pool_request_with_failover(
                         None,
                         None,
                         upstream_request_id.as_deref(),
+                        compact_support_observation
+                            .as_ref()
+                            .map(|value| value.status),
+                        compact_support_observation
+                            .as_ref()
+                            .and_then(|value| value.reason.as_deref()),
                     )
                     .await
                 {
@@ -10146,6 +10375,21 @@ async fn send_pool_request_with_failover(
                 {
                     warn!(account_id = account.account_id, error = %route_err, "failed to record pool upstream http failure");
                 }
+                if let Some(observation) = compact_support_observation.as_ref()
+                    && let Err(observation_err) = record_compact_support_observation(
+                        &state.pool,
+                        account.account_id,
+                        observation.status,
+                        observation.reason.as_deref(),
+                    )
+                    .await
+                {
+                    warn!(
+                        account_id = account.account_id,
+                        error = %observation_err,
+                        "failed to record compact support observation"
+                    );
+                }
                 last_error = Some(PoolUpstreamError {
                     account: Some(account.clone()),
                     status,
@@ -10177,6 +10421,11 @@ async fn send_pool_request_with_failover(
                 Ok(value) => value,
                 Err(err) => {
                     let message = format!("upstream stream error before first chunk: {err}");
+                    let compact_support_observation = classify_compact_support_observation(
+                        original_uri,
+                        None,
+                        Some(message.as_str()),
+                    );
                     let is_timeout_shaped = uses_timeout_route_failover
                         && pool_failure_is_timeout_shaped(
                             PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
@@ -10202,6 +10451,12 @@ async fn send_pool_request_with_failover(
                             None,
                             None,
                             None,
+                            compact_support_observation
+                                .as_ref()
+                                .map(|value| value.status),
+                            compact_support_observation
+                                .as_ref()
+                                .and_then(|value| value.reason.as_deref()),
                         )
                         .await
                     {
@@ -10257,6 +10512,24 @@ async fn send_pool_request_with_failover(
                 }
             };
 
+            let compact_support_observation =
+                classify_compact_support_observation(original_uri, Some(status), None);
+            if let Some(observation) = compact_support_observation.as_ref()
+                && let Err(observation_err) = record_compact_support_observation(
+                    &state.pool,
+                    account.account_id,
+                    observation.status,
+                    observation.reason.as_deref(),
+                )
+                .await
+            {
+                warn!(
+                    account_id = account.account_id,
+                    error = %observation_err,
+                    "failed to record compact support observation"
+                );
+            }
+
             return Ok(PoolUpstreamResponse {
                 account: account.clone(),
                 response,
@@ -10281,6 +10554,12 @@ async fn send_pool_request_with_failover(
                             .unwrap_or_else(shanghai_now_string),
                         connect_latency_ms,
                         first_byte_latency_ms: elapsed_ms(first_byte_started),
+                        compact_support_status: compact_support_observation
+                            .as_ref()
+                            .map(|value| value.status.to_string()),
+                        compact_support_reason: compact_support_observation
+                            .as_ref()
+                            .and_then(|value| value.reason.clone()),
                     }
                 }),
                 attempt_summary: pool_attempt_summary(attempt_count, distinct_account_count, None),
@@ -10472,14 +10751,18 @@ async fn proxy_openai_v1_via_pool(
     method: Method,
     headers: HeaderMap,
     body: Body,
+    runtime_timeouts: PoolRoutingTimeoutSettingsResolved,
 ) -> Result<Response, (StatusCode, String)> {
     let body_limit = state.config.openai_proxy_max_request_body_bytes;
     let capture_target = capture_target_for_request(original_uri.path(), &method);
-    let handshake_timeout = state
-        .config
-        .proxy_upstream_handshake_timeout(capture_target);
-    let pre_first_byte_timeout =
-        pool_upstream_first_chunk_timeout(&state.config, original_uri, &method, handshake_timeout);
+    let handshake_timeout =
+        proxy_upstream_handshake_timeout_for_capture_target(&runtime_timeouts, capture_target);
+    let pre_first_byte_timeout = pool_upstream_first_chunk_timeout(
+        &runtime_timeouts,
+        original_uri,
+        &method,
+        handshake_timeout,
+    );
     let responses_total_timeout =
         pool_upstream_responses_total_timeout(&state.config, original_uri, &method);
     let mut responses_total_timeout_started_at = None;
@@ -10505,7 +10788,7 @@ async fn proxy_openai_v1_via_pool(
             let request_body_bytes = read_request_body_with_limit(
                 body,
                 body_limit,
-                state.config.openai_proxy_request_read_timeout,
+                runtime_timeouts.request_read_timeout,
                 proxy_request_id,
             )
             .await
@@ -10580,7 +10863,7 @@ async fn proxy_openai_v1_via_pool(
                     let request_body_snapshot = read_request_body_snapshot_with_limit(
                         body,
                         body_limit,
-                        state.config.openai_proxy_request_read_timeout,
+                        runtime_timeouts.request_read_timeout,
                         proxy_request_id,
                     )
                     .await
@@ -10630,7 +10913,7 @@ async fn proxy_openai_v1_via_pool(
                     let replayable = spawn_pool_replayable_request_body(
                         body,
                         body_limit,
-                        state.config.openai_proxy_request_read_timeout,
+                        runtime_timeouts.request_read_timeout,
                         proxy_request_id,
                     );
                     if let Err(route_err) =
@@ -10861,7 +11144,7 @@ async fn proxy_openai_v1_via_pool(
                 let replayable = spawn_pool_replayable_request_body(
                     body,
                     body_limit,
-                    state.config.openai_proxy_request_read_timeout,
+                    runtime_timeouts.request_read_timeout,
                     proxy_request_id,
                 );
                 if let Err(route_err) =
@@ -11422,12 +11705,13 @@ pub(crate) async fn send_forward_proxy_request_with_429_retry(
 async fn proxy_openai_v1_inner(
     state: Arc<AppState>,
     proxy_request_id: u64,
+    invoke_id: String,
     original_uri: Uri,
     method: Method,
     headers: HeaderMap,
     body: Body,
     peer_ip: Option<IpAddr>,
-) -> Result<Response, (StatusCode, String)> {
+) -> Result<Response, ProxyErrorResponse> {
     let target_url =
         build_proxy_upstream_url(&state.config.openai_upstream_base_url, &original_uri).map_err(
             |err| {
@@ -11441,17 +11725,27 @@ async fn proxy_openai_v1_inner(
                 } else {
                     StatusCode::INTERNAL_SERVER_ERROR
                 };
-                (status, format!("failed to build upstream url: {err}"))
+                ProxyErrorResponse {
+                    status,
+                    message: format!("failed to build upstream url: {err}"),
+                    cvm_id: None,
+                }
             },
         )?;
 
     let pool_route_active = request_matches_pool_route(state.as_ref(), &headers)
         .await
-        .map_err(|err| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to resolve pool routing settings: {err}"),
-            )
+        .map_err(|err| ProxyErrorResponse {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: format!("failed to resolve pool routing settings: {err}"),
+            cvm_id: None,
+        })?;
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), pool_route_active)
+        .await
+        .map_err(|err| ProxyErrorResponse {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: format!("failed to resolve pool routing timeouts: {err}"),
+            cvm_id: None,
         })?;
 
     if method == Method::GET && is_models_list_path(original_uri.path()) {
@@ -11463,8 +11757,14 @@ async fn proxy_openai_v1_inner(
                 method,
                 headers,
                 body,
+                runtime_timeouts,
             )
-            .await;
+            .await
+            .map_err(|(status, message)| ProxyErrorResponse {
+                status,
+                message,
+                cvm_id: None,
+            });
         }
         let settings = state.proxy_model_settings.read().await.clone();
         if settings.hijack_enabled {
@@ -11521,17 +11821,26 @@ async fn proxy_openai_v1_inner(
     }
 
     if let Some(target) = capture_target_for_request(original_uri.path(), &method) {
+        let tracked_invoke_id = invoke_id.clone();
         return proxy_openai_v1_capture_target(
             state,
             proxy_request_id,
+            invoke_id,
             &original_uri,
             headers,
             body,
             target,
             target_url,
             peer_ip,
+            pool_route_active,
+            runtime_timeouts,
         )
-        .await;
+        .await
+        .map_err(|(status, message)| ProxyErrorResponse {
+            status,
+            message,
+            cvm_id: Some(tracked_invoke_id),
+        });
     }
 
     if pool_route_active {
@@ -11542,8 +11851,14 @@ async fn proxy_openai_v1_inner(
             method,
             headers,
             body,
+            runtime_timeouts,
         )
-        .await;
+        .await
+        .map_err(|(status, message)| ProxyErrorResponse {
+            status,
+            message,
+            cvm_id: None,
+        });
     }
 
     let body_limit = state.config.openai_proxy_max_request_body_bytes;
@@ -11553,13 +11868,15 @@ async fn proxy_openai_v1_inner(
         .and_then(|value| value.parse::<usize>().ok())
         && content_length > body_limit
     {
-        return Err((
-            StatusCode::PAYLOAD_TOO_LARGE,
-            format!("request body exceeds {body_limit} bytes"),
-        ));
+        return Err(ProxyErrorResponse {
+            status: StatusCode::PAYLOAD_TOO_LARGE,
+            message: format!("request body exceeds {body_limit} bytes"),
+            cvm_id: None,
+        });
     }
 
-    let handshake_timeout = state.config.proxy_upstream_handshake_timeout(None);
+    let handshake_timeout =
+        proxy_upstream_handshake_timeout_for_capture_target(&runtime_timeouts, None);
     let upstream_429_max_retries = state
         .proxy_model_settings
         .read()
@@ -11582,10 +11899,11 @@ async fn proxy_openai_v1_inner(
                     false,
                 )
                 .await;
-                return Err((
-                    StatusCode::BAD_GATEWAY,
-                    format!("failed to initialize forward proxy client: {err}"),
-                ));
+                return Err(ProxyErrorResponse {
+                    status: StatusCode::BAD_GATEWAY,
+                    message: format!("failed to initialize forward proxy client: {err}"),
+                    cvm_id: None,
+                });
             }
         };
 
@@ -11619,15 +11937,17 @@ async fn proxy_openai_v1_inner(
 
         let map_upstream_error = |err: reqwest::Error| {
             if is_body_too_large_error(&err) {
-                (
-                    StatusCode::PAYLOAD_TOO_LARGE,
-                    format!("request body exceeds {body_limit} bytes"),
-                )
+                ProxyErrorResponse {
+                    status: StatusCode::PAYLOAD_TOO_LARGE,
+                    message: format!("request body exceeds {body_limit} bytes"),
+                    cvm_id: None,
+                }
             } else {
-                (
-                    StatusCode::BAD_GATEWAY,
-                    format!("failed to contact upstream: {err}"),
-                )
+                ProxyErrorResponse {
+                    status: StatusCode::BAD_GATEWAY,
+                    message: format!("failed to contact upstream: {err}"),
+                    cvm_id: None,
+                }
             }
         };
 
@@ -11657,13 +11977,14 @@ async fn proxy_openai_v1_inner(
                     false,
                 )
                 .await;
-                return Err((
-                    StatusCode::BAD_GATEWAY,
-                    format!(
+                return Err(ProxyErrorResponse {
+                    status: StatusCode::BAD_GATEWAY,
+                    message: format!(
                         "{PROXY_UPSTREAM_HANDSHAKE_TIMEOUT} after {}ms",
                         handshake_timeout.as_millis()
                     ),
-                ));
+                    cvm_id: None,
+                });
             }
         };
 
@@ -11679,11 +12000,15 @@ async fn proxy_openai_v1_inner(
         let request_body_bytes = read_request_body_with_limit(
             body,
             body_limit,
-            state.config.openai_proxy_request_read_timeout,
+            runtime_timeouts.request_read_timeout,
             proxy_request_id,
         )
         .await
-        .map_err(|err| (err.status, err.message))?;
+        .map_err(|err| ProxyErrorResponse {
+            status: err.status,
+            message: err.message,
+            cvm_id: None,
+        })?;
         let request_body_bytes = Bytes::from(request_body_bytes);
         match send_forward_proxy_request_with_429_retry(
             state.clone(),
@@ -11707,7 +12032,11 @@ async fn proxy_openai_v1_inner(
                     false,
                 )
                 .await;
-                Err((err.status, err.message))
+                Err(ProxyErrorResponse {
+                    status: err.status,
+                    message: err.message,
+                    cvm_id: None,
+                })
             }
         }
     }?;
@@ -11733,10 +12062,11 @@ async fn proxy_openai_v1_inner(
                 false,
             )
             .await;
-            return Err((
-                StatusCode::BAD_GATEWAY,
-                format!("failed to process upstream redirect: {err}"),
-            ));
+            return Err(ProxyErrorResponse {
+                status: StatusCode::BAD_GATEWAY,
+                message: format!("failed to process upstream redirect: {err}"),
+                cvm_id: None,
+            });
         }
     };
 
@@ -11784,10 +12114,11 @@ async fn proxy_openai_v1_inner(
                 error = %err,
                 "openai proxy upstream response stream failed before first chunk"
             );
-            return Err((
-                StatusCode::BAD_GATEWAY,
-                format!("upstream stream error before first chunk: {err}"),
-            ));
+            return Err(ProxyErrorResponse {
+                status: StatusCode::BAD_GATEWAY,
+                message: format!("upstream stream error before first chunk: {err}"),
+                cvm_id: None,
+            });
         }
         None => {
             if !attempt_already_recorded {
@@ -11807,12 +12138,13 @@ async fn proxy_openai_v1_inner(
                 ttfb_ms = stream_ttfb_started.elapsed().as_millis(),
                 "openai proxy upstream response stream completed without body"
             );
-            return response_builder.body(Body::empty()).map_err(|err| {
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    format!("failed to build proxy response: {err}"),
-                )
-            });
+            return response_builder
+                .body(Body::empty())
+                .map_err(|err| ProxyErrorResponse {
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                    message: format!("failed to build proxy response: {err}"),
+                    cvm_id: None,
+                });
         }
     };
 
@@ -11916,11 +12248,10 @@ async fn proxy_openai_v1_inner(
 
     response_builder
         .body(Body::from_stream(ReceiverStream::new(rx)))
-        .map_err(|err| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to build proxy response: {err}"),
-            )
+        .map_err(|err| ProxyErrorResponse {
+            status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: format!("failed to build proxy response: {err}"),
+            cvm_id: None,
         })
 }
 
@@ -11940,38 +12271,29 @@ fn capture_target_for_request(path: &str, method: &Method) -> Option<ProxyCaptur
 async fn proxy_openai_v1_capture_target(
     state: Arc<AppState>,
     proxy_request_id: u64,
+    invoke_id: String,
     original_uri: &Uri,
     headers: HeaderMap,
     body: Body,
     capture_target: ProxyCaptureTarget,
     target_url: Url,
     peer_ip: Option<IpAddr>,
+    pool_route_active: bool,
+    runtime_timeouts: PoolRoutingTimeoutSettingsResolved,
 ) -> Result<Response, (StatusCode, String)> {
     let capture_started = Instant::now();
     let occurred_at_utc = Utc::now();
     let occurred_at = format_naive(occurred_at_utc.with_timezone(&Shanghai).naive_local());
-    let invoke_id = format!(
-        "proxy-{proxy_request_id}-{}",
-        occurred_at_utc.timestamp_millis()
-    );
     let body_limit = state.config.openai_proxy_max_request_body_bytes;
     let requester_ip = extract_requester_ip(&headers, peer_ip);
     let header_sticky_key = extract_sticky_key_from_headers(&headers);
     let header_prompt_cache_key = extract_prompt_cache_key_from_headers(&headers);
-    let pool_route_active = request_matches_pool_route(state.as_ref(), &headers)
-        .await
-        .map_err(|err| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to resolve pool routing settings: {err}"),
-            )
-        })?;
 
     let req_read_started = Instant::now();
     let request_body_bytes = match read_request_body_with_limit(
         body,
         body_limit,
-        state.config.openai_proxy_request_read_timeout,
+        runtime_timeouts.request_read_timeout,
         proxy_request_id,
     )
     .await
@@ -12146,9 +12468,10 @@ async fn proxy_openai_v1_capture_target(
     if body_rewritten {
         upstream_headers.remove(header::CONTENT_LENGTH);
     }
-    let handshake_timeout = state
-        .config
-        .proxy_upstream_handshake_timeout(Some(capture_target));
+    let handshake_timeout = proxy_upstream_handshake_timeout_for_capture_target(
+        &runtime_timeouts,
+        Some(capture_target),
+    );
     let (
         selected_proxy,
         pool_account,
@@ -13344,18 +13667,18 @@ fn prepare_target_request_body(
 }
 
 fn proxy_upstream_handshake_timeout_for_capture_target(
-    config: &AppConfig,
+    timeouts: &PoolRoutingTimeoutSettingsResolved,
     capture_target: Option<ProxyCaptureTarget>,
 ) -> Duration {
     if capture_target.is_some_and(ProxyCaptureTarget::uses_compact_upstream_timeout) {
-        config.openai_proxy_compact_handshake_timeout
+        timeouts.compact_upstream_handshake_timeout
     } else {
-        config.openai_proxy_handshake_timeout
+        timeouts.upstream_handshake_timeout
     }
 }
 
 fn pool_upstream_first_chunk_timeout(
-    config: &AppConfig,
+    timeouts: &PoolRoutingTimeoutSettingsResolved,
     original_uri: &Uri,
     method: &Method,
     handshake_timeout: Duration,
@@ -13365,9 +13688,9 @@ fn pool_upstream_first_chunk_timeout(
     {
         handshake_timeout
     } else if original_uri.path() == "/v1/responses" {
-        config.pool_upstream_responses_attempt_timeout
+        timeouts.responses_first_byte_timeout
     } else {
-        config.request_timeout
+        timeouts.default_first_byte_timeout
     }
 }
 
@@ -14190,6 +14513,8 @@ async fn insert_pool_upstream_request_attempt(
     first_byte_latency_ms: Option<f64>,
     stream_latency_ms: Option<f64>,
     upstream_request_id: Option<&str>,
+    compact_support_status: Option<&str>,
+    compact_support_reason: Option<&str>,
 ) -> Result<()> {
     sqlx::query(
         r#"
@@ -14214,10 +14539,12 @@ async fn insert_pool_upstream_request_attempt(
             connect_latency_ms,
             first_byte_latency_ms,
             stream_latency_ms,
-            upstream_request_id
+            upstream_request_id,
+            compact_support_status,
+            compact_support_reason
         )
         VALUES (
-            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23
         )
         "#,
     )
@@ -14242,6 +14569,8 @@ async fn insert_pool_upstream_request_attempt(
     .bind(first_byte_latency_ms)
     .bind(stream_latency_ms)
     .bind(upstream_request_id)
+    .bind(compact_support_status)
+    .bind(compact_support_reason)
     .execute(pool)
     .await?;
     Ok(())
@@ -14283,6 +14612,8 @@ async fn finalize_pool_upstream_request_attempt(
         Some(pending.first_byte_latency_ms),
         stream_latency_ms,
         upstream_request_id,
+        pending.compact_support_status.as_deref(),
+        pending.compact_support_reason.as_deref(),
     )
     .await
 }
@@ -14321,6 +14652,8 @@ async fn insert_pool_upstream_terminal_attempt(
         None,
         None,
         final_error.upstream_request_id.as_deref(),
+        None,
+        None,
     )
     .await
 }
@@ -19169,7 +19502,8 @@ impl AppConfig {
         &self,
         capture_target: Option<ProxyCaptureTarget>,
     ) -> Duration {
-        proxy_upstream_handshake_timeout_for_capture_target(self, capture_target)
+        let timeouts = pool_routing_timeouts_from_config(self);
+        proxy_upstream_handshake_timeout_for_capture_target(&timeouts, capture_target)
     }
 
     fn from_sources(overrides: &CliArgs) -> Result<Self> {

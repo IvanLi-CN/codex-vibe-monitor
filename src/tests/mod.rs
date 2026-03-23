@@ -2892,6 +2892,38 @@ async fn test_state_from_config(config: AppConfig, startup_ready: bool) -> Arc<A
     })
 }
 
+fn clone_state_with_upstream_accounts(
+    state: &Arc<AppState>,
+    upstream_accounts: Arc<UpstreamAccountsRuntime>,
+) -> Arc<AppState> {
+    Arc::new(AppState {
+        config: state.config.clone(),
+        pool: state.pool.clone(),
+        hourly_rollup_sync_lock: state.hourly_rollup_sync_lock.clone(),
+        http_clients: state.http_clients.clone(),
+        broadcaster: state.broadcaster.clone(),
+        broadcast_state_cache: state.broadcast_state_cache.clone(),
+        proxy_summary_quota_broadcast_seq: state.proxy_summary_quota_broadcast_seq.clone(),
+        proxy_summary_quota_broadcast_running: state.proxy_summary_quota_broadcast_running.clone(),
+        proxy_summary_quota_broadcast_handle: state.proxy_summary_quota_broadcast_handle.clone(),
+        startup_ready: state.startup_ready.clone(),
+        shutdown: state.shutdown.clone(),
+        semaphore: state.semaphore.clone(),
+        proxy_model_settings: state.proxy_model_settings.clone(),
+        proxy_model_settings_update_lock: state.proxy_model_settings_update_lock.clone(),
+        forward_proxy: state.forward_proxy.clone(),
+        xray_supervisor: state.xray_supervisor.clone(),
+        forward_proxy_settings_update_lock: state.forward_proxy_settings_update_lock.clone(),
+        forward_proxy_subscription_refresh_lock: state
+            .forward_proxy_subscription_refresh_lock
+            .clone(),
+        pricing_settings_update_lock: state.pricing_settings_update_lock.clone(),
+        pricing_catalog: state.pricing_catalog.clone(),
+        prompt_cache_conversation_cache: state.prompt_cache_conversation_cache.clone(),
+        upstream_accounts,
+    })
+}
+
 async fn test_state_from_existing_pool(
     pool: SqlitePool,
     config: AppConfig,
@@ -6425,7 +6457,7 @@ async fn proxy_openai_v1_streams_request_body_when_429_retry_is_disabled() {
 }
 
 #[tokio::test]
-async fn pool_route_streams_non_capture_request_body_without_eager_prebuffering() {
+async fn pool_route_non_capture_request_body_read_timeout_applies_to_replay_stream() {
     let (upstream_base, _attempts, _seen_bodies, upstream_handle) =
         spawn_retrying_echo_upstream(0, None).await;
     let state = test_state_with_openai_base_body_limit_and_read_timeout(
@@ -6456,13 +6488,17 @@ async fn pool_route_streams_non_capture_request_body_without_eager_prebuffering(
     )
     .await;
 
-    assert_eq!(response.status(), StatusCode::CREATED);
+    assert_eq!(response.status(), StatusCode::REQUEST_TIMEOUT);
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read proxy response body");
-    let payload: Value = serde_json::from_slice(&body).expect("decode upstream payload");
-    assert_eq!(payload["attempt"], 1);
-    assert_eq!(payload["body"], "hello-pool");
+    let payload: Value = serde_json::from_slice(&body).expect("decode pool timeout payload");
+    assert!(
+        payload["error"]
+            .as_str()
+            .expect("error message should be present")
+            .contains("request body read timed out")
+    );
 
     upstream_handle.abort();
 }
@@ -8973,6 +9009,44 @@ async fn proxy_openai_v1_models_bypass_hijack_for_pool_route_requests() {
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_models_pool_failures_do_not_return_untracked_cvm_id() {
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_retrying_models_upstream(99, Some("0")).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/models".parse().expect("valid uri")),
+        Method::GET,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::empty(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    assert!(response.headers().get(CVM_INVOKE_ID_HEADER).is_none());
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read models failure body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode models failure payload");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some(POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE)
+    );
+    assert!(payload.get("cvmId").is_none());
+    assert_eq!(attempts.load(Ordering::SeqCst), 1);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_models_merges_upstream_after_429_retry() {
     let (upstream_base, attempts, upstream_handle) =
         spawn_retrying_models_upstream(1, Some("0")).await;
@@ -10534,9 +10608,10 @@ fn pool_upstream_first_chunk_timeout_uses_compact_budget_for_compact_route() {
     let mut config = test_config();
     config.request_timeout = Duration::from_millis(200);
     config.openai_proxy_compact_handshake_timeout = Duration::from_millis(400);
+    let timeouts = pool_routing_timeouts_from_config(&config);
 
     let timeout = pool_upstream_first_chunk_timeout(
-        &config,
+        &timeouts,
         &"/v1/responses/compact".parse().expect("valid uri"),
         &Method::POST,
         config.proxy_upstream_handshake_timeout(Some(ProxyCaptureTarget::ResponsesCompact)),
@@ -10551,9 +10626,10 @@ fn pool_upstream_first_chunk_timeout_uses_responses_budget_for_responses_route()
     config.request_timeout = Duration::from_millis(200);
     config.pool_upstream_responses_attempt_timeout = Duration::from_millis(1200);
     config.openai_proxy_compact_handshake_timeout = Duration::from_millis(400);
+    let timeouts = pool_routing_timeouts_from_config(&config);
 
     let timeout = pool_upstream_first_chunk_timeout(
-        &config,
+        &timeouts,
         &"/v1/responses".parse().expect("valid uri"),
         &Method::POST,
         config.proxy_upstream_handshake_timeout(Some(ProxyCaptureTarget::Responses)),
@@ -10582,9 +10658,10 @@ fn pool_upstream_first_chunk_timeout_keeps_default_budget_for_non_responses_rout
     let mut config = test_config();
     config.request_timeout = Duration::from_millis(200);
     config.pool_upstream_responses_attempt_timeout = Duration::from_millis(1200);
+    let timeouts = pool_routing_timeouts_from_config(&config);
 
     let timeout = pool_upstream_first_chunk_timeout(
-        &config,
+        &timeouts,
         &"/v1/chat/completions".parse().expect("valid uri"),
         &Method::POST,
         config.proxy_upstream_handshake_timeout(Some(ProxyCaptureTarget::ChatCompletions)),
@@ -10606,6 +10683,276 @@ fn pool_upstream_send_timeout_keeps_handshake_budget_for_non_responses_route() {
     );
 
     assert_eq!(timeout, handshake_timeout);
+}
+
+#[test]
+fn classify_compact_support_observation_is_conservative() {
+    let compact_uri: Uri = "/v1/responses/compact".parse().expect("valid compact uri");
+
+    let supported = classify_compact_support_observation(&compact_uri, Some(StatusCode::OK), None)
+        .expect("compact success observation");
+    assert_eq!(supported.status, COMPACT_SUPPORT_STATUS_SUPPORTED);
+
+    let unsupported = classify_compact_support_observation(
+        &compact_uri,
+        Some(StatusCode::SERVICE_UNAVAILABLE),
+        Some("No available channel for model gpt-5.4-openai-compact under group default (distributor)"),
+    )
+    .expect("compact unsupported observation");
+    assert_eq!(unsupported.status, COMPACT_SUPPORT_STATUS_UNSUPPORTED);
+
+    let unknown = classify_compact_support_observation(
+        &compact_uri,
+        None,
+        Some("upstream handshake timed out after 300000ms"),
+    )
+    .expect("compact unknown observation");
+    assert_eq!(unknown.status, COMPACT_SUPPORT_STATUS_UNKNOWN);
+
+    assert!(
+        classify_compact_support_observation(
+            &"/v1/responses".parse().expect("valid responses uri"),
+            Some(StatusCode::OK),
+            None,
+        )
+        .is_none()
+    );
+}
+
+#[tokio::test]
+async fn pool_routing_settings_backfill_defaults_and_persist_timeout_updates() {
+    let mut config = test_config();
+    config.request_timeout = Duration::from_secs(61);
+    config.pool_upstream_responses_attempt_timeout = Duration::from_secs(121);
+    config.openai_proxy_handshake_timeout = Duration::from_secs(71);
+    config.openai_proxy_compact_handshake_timeout = Duration::from_secs(305);
+    config.openai_proxy_request_read_timeout = Duration::from_secs(181);
+    let state = test_state_from_config(config.clone(), true).await;
+
+    let Json(initial) = get_pool_routing_settings(State(state.clone()))
+        .await
+        .expect("load initial pool routing settings");
+    assert_eq!(initial.timeouts.default_first_byte_timeout_secs, 61);
+    assert_eq!(initial.timeouts.responses_first_byte_timeout_secs, 121);
+    assert_eq!(initial.timeouts.upstream_handshake_timeout_secs, 71);
+    assert_eq!(
+        initial.timeouts.compact_upstream_handshake_timeout_secs,
+        305
+    );
+    assert_eq!(initial.timeouts.request_read_timeout_secs, 181);
+
+    let persisted = sqlx::query_as::<
+        _,
+        (
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+        ),
+    >(
+        r#"
+        SELECT
+            default_first_byte_timeout_secs,
+            responses_first_byte_timeout_secs,
+            upstream_handshake_timeout_secs,
+            compact_upstream_handshake_timeout_secs,
+            request_read_timeout_secs
+        FROM pool_routing_settings
+        WHERE id = 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load unresolved timeout row");
+    assert_eq!(persisted.0, None);
+    assert_eq!(persisted.1, None);
+    assert_eq!(persisted.2, None);
+    assert_eq!(persisted.3, None);
+    assert_eq!(persisted.4, None);
+
+    let payload = UpdatePoolRoutingSettingsRequest {
+        api_key: None,
+        maintenance: None,
+        timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
+            default_first_byte_timeout_secs: Some(75),
+            responses_first_byte_timeout_secs: Some(135),
+            upstream_handshake_timeout_secs: Some(85),
+            compact_upstream_handshake_timeout_secs: Some(325),
+            request_read_timeout_secs: Some(205),
+        }),
+    };
+    let Json(updated) =
+        update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(payload))
+            .await
+            .expect("update pool routing timeouts");
+    assert_eq!(updated.timeouts.default_first_byte_timeout_secs, 75);
+    assert_eq!(updated.timeouts.responses_first_byte_timeout_secs, 135);
+    assert_eq!(updated.timeouts.upstream_handshake_timeout_secs, 85);
+    assert_eq!(
+        updated.timeouts.compact_upstream_handshake_timeout_secs,
+        325
+    );
+    assert_eq!(updated.timeouts.request_read_timeout_secs, 205);
+
+    let resolved = resolve_pool_routing_timeouts(&state.pool, &state.config)
+        .await
+        .expect("resolve updated pool routing timeouts");
+    assert_eq!(resolved.default_first_byte_timeout, Duration::from_secs(75));
+    assert_eq!(
+        resolved.responses_first_byte_timeout,
+        Duration::from_secs(135)
+    );
+    assert_eq!(resolved.upstream_handshake_timeout, Duration::from_secs(85));
+    assert_eq!(
+        resolved.compact_upstream_handshake_timeout,
+        Duration::from_secs(325),
+    );
+    assert_eq!(resolved.request_read_timeout, Duration::from_secs(205));
+}
+
+#[tokio::test]
+async fn pool_routing_settings_timeout_updates_succeed_without_crypto_key() {
+    let state = test_state_from_config(test_config(), true).await;
+    let _env_guard = EnvVarGuard::set(&[(ENV_UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET, None)]);
+    let read_only_runtime = Arc::new(
+        UpstreamAccountsRuntime::from_env().expect("build read-only upstream accounts runtime"),
+    );
+    assert!(!read_only_runtime.writes_enabled());
+    let state = clone_state_with_upstream_accounts(&state, read_only_runtime);
+
+    let payload = UpdatePoolRoutingSettingsRequest {
+        api_key: None,
+        maintenance: None,
+        timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
+            default_first_byte_timeout_secs: Some(75),
+            responses_first_byte_timeout_secs: None,
+            upstream_handshake_timeout_secs: None,
+            compact_upstream_handshake_timeout_secs: None,
+            request_read_timeout_secs: None,
+        }),
+    };
+    let Json(response) =
+        update_pool_routing_settings(State(state), HeaderMap::new(), Json(payload))
+            .await
+            .expect("timeout-only routing update should succeed without crypto key");
+    assert_eq!(response.timeouts.default_first_byte_timeout_secs, 75);
+}
+
+#[tokio::test]
+async fn pool_routing_settings_api_key_updates_require_crypto_key() {
+    let state = test_state_from_config(test_config(), true).await;
+    let _env_guard = EnvVarGuard::set(&[(ENV_UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET, None)]);
+    let read_only_runtime = Arc::new(
+        UpstreamAccountsRuntime::from_env().expect("build read-only upstream accounts runtime"),
+    );
+    assert!(!read_only_runtime.writes_enabled());
+    let state = clone_state_with_upstream_accounts(&state, read_only_runtime);
+
+    let payload = UpdatePoolRoutingSettingsRequest {
+        api_key: Some("pool-secret".to_string()),
+        maintenance: None,
+        timeouts: None,
+    };
+    let err = update_pool_routing_settings(State(state), HeaderMap::new(), Json(payload))
+        .await
+        .expect_err("api key routing update should stay blocked in read-only mode");
+    assert_eq!(err.0, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(err.1.contains(ENV_UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET));
+}
+
+#[tokio::test]
+async fn pool_routing_settings_reject_timeouts_above_i64_max() {
+    let state = test_state_from_config(test_config(), true).await;
+
+    let payload = UpdatePoolRoutingSettingsRequest {
+        api_key: None,
+        maintenance: None,
+        timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
+            default_first_byte_timeout_secs: Some(i64::MAX as u64 + 1),
+            responses_first_byte_timeout_secs: None,
+            upstream_handshake_timeout_secs: None,
+            compact_upstream_handshake_timeout_secs: None,
+            request_read_timeout_secs: None,
+        }),
+    };
+    let err = update_pool_routing_settings(State(state), HeaderMap::new(), Json(payload))
+        .await
+        .expect_err("timeouts above i64::MAX should be rejected");
+    assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    assert!(err.1.contains("defaultFirstByteTimeoutSecs"));
+    assert!(err.1.contains(&i64::MAX.to_string()));
+}
+
+#[tokio::test]
+async fn proxy_request_timeouts_only_apply_pool_overrides_to_pool_routes() {
+    let mut config = test_config();
+    config.request_timeout = Duration::from_secs(61);
+    config.pool_upstream_responses_attempt_timeout = Duration::from_secs(121);
+    config.openai_proxy_handshake_timeout = Duration::from_secs(71);
+    config.openai_proxy_compact_handshake_timeout = Duration::from_secs(305);
+    config.openai_proxy_request_read_timeout = Duration::from_secs(181);
+    let state = test_state_from_config(config.clone(), true).await;
+
+    let payload = UpdatePoolRoutingSettingsRequest {
+        api_key: None,
+        maintenance: None,
+        timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
+            default_first_byte_timeout_secs: Some(75),
+            responses_first_byte_timeout_secs: Some(135),
+            upstream_handshake_timeout_secs: Some(85),
+            compact_upstream_handshake_timeout_secs: Some(325),
+            request_read_timeout_secs: Some(205),
+        }),
+    };
+    let _ = update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(payload))
+        .await
+        .expect("update pool routing timeouts");
+
+    let direct_timeouts = resolve_proxy_request_timeouts(state.as_ref(), false)
+        .await
+        .expect("resolve direct request timeouts");
+    assert_eq!(
+        direct_timeouts.default_first_byte_timeout,
+        Duration::from_secs(61)
+    );
+    assert_eq!(
+        direct_timeouts.responses_first_byte_timeout,
+        Duration::from_secs(121)
+    );
+    assert_eq!(
+        direct_timeouts.upstream_handshake_timeout,
+        Duration::from_secs(71)
+    );
+    assert_eq!(
+        direct_timeouts.compact_upstream_handshake_timeout,
+        Duration::from_secs(305)
+    );
+    assert_eq!(
+        direct_timeouts.request_read_timeout,
+        Duration::from_secs(181)
+    );
+
+    let pool_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool request timeouts");
+    assert_eq!(
+        pool_timeouts.default_first_byte_timeout,
+        Duration::from_secs(75)
+    );
+    assert_eq!(
+        pool_timeouts.responses_first_byte_timeout,
+        Duration::from_secs(135)
+    );
+    assert_eq!(
+        pool_timeouts.upstream_handshake_timeout,
+        Duration::from_secs(85)
+    );
+    assert_eq!(
+        pool_timeouts.compact_upstream_handshake_timeout,
+        Duration::from_secs(325)
+    );
+    assert_eq!(pool_timeouts.request_read_timeout, Duration::from_secs(205));
 }
 
 #[test]
@@ -10870,6 +11217,11 @@ struct PoolStaticFailureResponsesUpstreamState {
 }
 
 #[derive(Clone)]
+struct PoolCompactUnsupportedUpstreamState {
+    attempts: Arc<StdMutex<HashMap<String, usize>>>,
+}
+
+#[derive(Clone)]
 struct PoolFirstChunkRetryUpstreamState {
     attempts: Arc<StdMutex<HashMap<String, usize>>>,
     fail_before_success: Arc<HashMap<String, usize>>,
@@ -11099,6 +11451,40 @@ async fn pool_static_failure_responses_upstream(
         StatusCode::OK,
         Json(json!({
             "ok": true,
+            "authorization": authorization,
+            "attempt": attempt,
+        })),
+    )
+        .into_response()
+}
+
+async fn pool_compact_unsupported_upstream(
+    State(state): State<PoolCompactUnsupportedUpstreamState>,
+    headers: HeaderMap,
+) -> Response {
+    let authorization = headers
+        .get(http_header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+
+    let attempt = {
+        let mut attempts = state
+            .attempts
+            .lock()
+            .expect("lock compact unsupported attempts");
+        let entry = attempts.entry(authorization.clone()).or_insert(0);
+        *entry += 1;
+        *entry
+    };
+
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({
+            "error": {
+                "code": "channel_unavailable",
+                "message": "No available channel for model gpt-5.4-openai-compact under group default (distributor)",
+            },
             "authorization": authorization,
             "attempt": attempt,
         })),
@@ -11688,6 +12074,34 @@ async fn spawn_pool_static_failure_responses_upstream(
         axum::serve(listener, app)
             .await
             .expect("pool static failure upstream should run");
+    });
+    (format!("http://{addr}"), attempts, handle)
+}
+
+async fn spawn_pool_compact_unsupported_upstream() -> (
+    String,
+    Arc<StdMutex<HashMap<String, usize>>>,
+    JoinHandle<()>,
+) {
+    let attempts = Arc::new(StdMutex::new(HashMap::new()));
+    let app = Router::new()
+        .route(
+            "/v1/responses/compact",
+            post(pool_compact_unsupported_upstream),
+        )
+        .with_state(PoolCompactUnsupportedUpstreamState {
+            attempts: attempts.clone(),
+        });
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind pool compact unsupported upstream");
+    let addr = listener
+        .local_addr()
+        .expect("pool compact unsupported upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("pool compact unsupported upstream should run");
     });
     (format!("http://{addr}"), attempts, handle)
 }
@@ -13558,6 +13972,129 @@ async fn pool_route_responses_compact_limits_follow_up_accounts_to_single_attemp
     assert_eq!(payload["poolAttemptCount"].as_i64(), Some(5));
     assert_eq!(payload["poolDistinctAccountCount"].as_i64(), Some(3));
     assert!(payload["poolAttemptTerminalReason"].is_null());
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_route_compact_502_returns_cvm_id_and_attempt_observations() {
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_compact_unsupported_upstream().await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+    insert_test_pool_api_key_account(&state, "Tertiary", "upstream-tertiary").await;
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "previous_response_id": "resp_prev_002",
+        "input": [{"role": "user", "content": "compact this thread"}],
+    }))
+    .expect("serialize compact request body");
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses/compact".parse().expect("valid compact uri")),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(request_body),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let cvm_id = response
+        .headers()
+        .get(CVM_INVOKE_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+        .expect("cvm id header should be present");
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read compact 502 response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode compact 502 payload");
+    assert_eq!(payload["cvmId"].as_str(), Some(cvm_id.as_str()));
+    assert_eq!(
+        payload["error"].as_str(),
+        Some("pool distinct-account retry budget exhausted"),
+    );
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    wait_for_pool_attempt_row_count(&state.pool, 6).await;
+
+    let invocation_status: Option<String> =
+        sqlx::query_scalar("SELECT status FROM codex_invocations WHERE invoke_id = ?1 LIMIT 1")
+            .bind(&cvm_id)
+            .fetch_optional(&state.pool)
+            .await
+            .expect("load compact invocation status");
+    assert_eq!(invocation_status.as_deref(), Some("http_502"));
+
+    let Json(attempt_rows) =
+        fetch_invocation_pool_attempts(State(state.clone()), axum::extract::Path(cvm_id.clone()))
+            .await
+            .expect("fetch invocation pool attempts");
+    assert_eq!(attempt_rows.len(), 6);
+    assert_eq!(
+        attempt_rows[0].compact_support_status.as_deref(),
+        Some(COMPACT_SUPPORT_STATUS_UNSUPPORTED),
+    );
+    assert!(
+        attempt_rows[0]
+            .compact_support_reason
+            .as_deref()
+            .is_some_and(|value| value.contains("No available channel for model")),
+    );
+    assert_eq!(
+        attempt_rows[1].compact_support_status.as_deref(),
+        Some(COMPACT_SUPPORT_STATUS_UNSUPPORTED),
+    );
+    assert_eq!(
+        attempt_rows[2].compact_support_status.as_deref(),
+        Some(COMPACT_SUPPORT_STATUS_UNSUPPORTED),
+    );
+    assert_eq!(
+        attempt_rows[3].compact_support_status.as_deref(),
+        Some(COMPACT_SUPPORT_STATUS_UNSUPPORTED),
+    );
+    assert_eq!(
+        attempt_rows[4].compact_support_status.as_deref(),
+        Some(COMPACT_SUPPORT_STATUS_UNSUPPORTED),
+    );
+    assert_eq!(attempt_rows[5].compact_support_status, None);
+
+    let account_support_states = sqlx::query_as::<_, (String, Option<String>)>(
+        r#"
+        SELECT compact_support_status, compact_support_reason
+        FROM pool_upstream_accounts
+        ORDER BY id ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load compact support states");
+    assert_eq!(account_support_states.len(), 3);
+    assert!(
+        account_support_states
+            .iter()
+            .all(|row| row.0 == COMPACT_SUPPORT_STATUS_UNSUPPORTED)
+    );
+
+    let attempts = attempts.lock().expect("lock compact unsupported attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(1));
+    assert_eq!(attempts.get("Bearer upstream-tertiary").copied(), Some(1));
+    drop(attempts);
 
     upstream_handle.abort();
 }
@@ -15858,7 +16395,7 @@ async fn pool_route_oauth_passthrough_streams_without_eager_prebuffering() {
 
     let uri = "/v1/chat/completions".parse().expect("valid uri");
     let response = proxy_openai_v1_via_pool(
-        state,
+        state.clone(),
         42,
         &uri,
         Method::POST,
@@ -15913,6 +16450,7 @@ async fn pool_route_oauth_passthrough_streams_without_eager_prebuffering() {
             ),
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        pool_routing_timeouts_from_config(&state.config),
     )
     .await
     .expect("oauth pool passthrough response");

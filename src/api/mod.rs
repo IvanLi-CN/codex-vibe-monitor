@@ -1744,6 +1744,18 @@ async fn query_pool_attempt_records_from_archive_range(
         } else {
             "NULL AS upstream_route_key"
         };
+        let compact_support_status_projection =
+            if archive_columns.contains("compact_support_status") {
+                "compact_support_status"
+            } else {
+                "NULL AS compact_support_status"
+            };
+        let compact_support_reason_projection =
+            if archive_columns.contains("compact_support_reason") {
+                "compact_support_reason"
+            } else {
+                "NULL AS compact_support_reason"
+            };
         let archived_records_query = format!(
             r#"
             SELECT
@@ -1769,6 +1781,8 @@ async fn query_pool_attempt_records_from_archive_range(
                 first_byte_latency_ms,
                 stream_latency_ms,
                 upstream_request_id,
+                {compact_support_status_projection},
+                {compact_support_reason_projection},
                 created_at
             FROM pool_upstream_request_attempts
             WHERE invoke_id = ?1
@@ -1827,6 +1841,8 @@ async fn query_pool_attempt_records_from_live(
             attempts.first_byte_latency_ms,
             attempts.stream_latency_ms,
             attempts.upstream_request_id,
+            attempts.compact_support_status,
+            attempts.compact_support_reason,
             attempts.created_at
         FROM pool_upstream_request_attempts AS attempts
         LEFT JOIN pool_upstream_accounts AS accounts
@@ -4737,6 +4753,10 @@ pub(crate) struct ApiPoolUpstreamRequestAttempt {
     pub(crate) stream_latency_ms: Option<f64>,
     #[sqlx(default)]
     pub(crate) upstream_request_id: Option<String>,
+    #[sqlx(default)]
+    pub(crate) compact_support_status: Option<String>,
+    #[sqlx(default)]
+    pub(crate) compact_support_reason: Option<String>,
     #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
     pub(crate) created_at: String,
 }

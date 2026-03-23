@@ -168,9 +168,8 @@ CRS_STATS_POLL_INTERVAL_SECS=10                  # (10，默认跟随 POLL_INTER
 ```
 
 价格配置已迁移到数据库持久化（可在 Web 设置页 `/settings` 在线编辑）；服务启动会自动写入默认模型价格模板。
-
 号池维护同步配置同样支持运行期在线编辑：在 Web 的 `号池 -> 上游账号 -> 高级路由与同步设置` 中，可直接调整主频、次频与主层账号上限。`UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS` 仅作为新库或旧库缺失维护字段时的主频默认值回退；次频默认 `1800` 秒、主层上限默认 `100`。
-`OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS` 为可选覆盖项：未配置时，`/v1/responses/compact` 的上游等待超时默认使用 `180` 秒；其他代理路径默认使用 `OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS=60`。
+`OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS` 为可选覆盖项：未配置时，`/v1/responses/compact` 的上游等待超时默认使用 `300` 秒；其他代理路径默认使用 `OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS=60`。这组请求链路超时也会同步暴露到账号池页的 `Pool routing settings`，支持在线调整并对后续请求即时生效。
 成本估算默认采用“精确模型优先 + 日期后缀模型回退”（如 `gpt-5.2-2025-12-11 -> gpt-5.2`），历史 `cost IS NULL` 的成功代理记录会在启动后由后台任务按批次增量补算（仅回填空成本，不覆盖已有值）。
 raw 请求/响应文件的生命周期不再由独立环境变量控制，而是跟随 retention 窗口：新写入文件保持热数据明文 `*.bin`，超过 `PROXY_RAW_HOT_SECS=86400` 后由 retention 自动转为 `*.bin.gz`；成功调用按 `INVOCATION_SUCCESS_FULL_DAYS` 进入结构化保留，超出 `INVOCATION_MAX_DAYS` 后再归档出主库。`requestRawPath` / `responseRawPath` 应视为 opaque path，而不是假定固定后缀。
 
