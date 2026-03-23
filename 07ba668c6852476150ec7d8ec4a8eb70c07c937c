@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.21.3",
+  "base_stable_version": "1.21.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-23T20:27:08Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.21.3",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "df47352b260b1704475194e1a266cf8249d485b9",
+  "pr_number": 215,
+  "pr_title": "fix(account-pool): recognize localized oauth mailbox messages",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.21.3",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.21.3,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "07ba668c6852476150ec7d8ec4a8eb70c07c937c",
+  "type_label": "type:patch"
+}
