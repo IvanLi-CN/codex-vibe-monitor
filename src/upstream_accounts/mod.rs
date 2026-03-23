@@ -8574,10 +8574,8 @@ fn extract_mailbox_code_candidate(text: &str, message_has_brand: bool) -> Option
 
 fn mailbox_url_looks_like_invite(url: &str) -> bool {
     let lower = url.to_ascii_lowercase();
-    lower.contains("workspace")
-        || lower.contains("invite")
-        || lower.contains("invitation")
-        || lower.contains("accept")
+    (lower.contains("invite") || lower.contains("invitation") || lower.contains("accept"))
+        && (lower.contains("workspace") || lower.contains("openai") || lower.contains("chatgpt"))
 }
 
 fn mailbox_url_has_brand(url: &str) -> bool {
@@ -15751,6 +15749,19 @@ mod tests {
             content: Some("Workspace docs: https://chatgpt.com/workspace".to_string()),
             html: None,
             received_at: Some("2026-03-24T00:07:00Z".to_string()),
+        };
+
+        assert!(parse_mailbox_invite(&detail).is_none());
+    }
+
+    #[test]
+    fn parse_mailbox_invite_rejects_generic_workspace_url_even_with_invite_subject() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_negative_workspace_home".to_string(),
+            subject: Some("Alice has invited you to a workspace".to_string()),
+            content: Some("Open workspace: https://chatgpt.com/workspace".to_string()),
+            html: None,
+            received_at: Some("2026-03-24T00:08:00Z".to_string()),
         };
 
         assert!(parse_mailbox_invite(&detail).is_none());

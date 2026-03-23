@@ -139,6 +139,7 @@
 - 2026-03-24: 新建 follow-up spec，冻结 OAuth 邮件多语言验证码与邀请识别的后端解析边界、误判门禁与质量门槛。
 - 2026-03-24: 完成后端解析升级与 Rust 回归测试补齐，等待 fast-track 的本地全量验证、PR 收敛与 merge cleanup。
 - 2026-03-24: 本地 `cargo check`、`cargo test`、`cd web && bun run test` 与 `cd web && bun run build` 已通过，进入 fast-track 的 PR / review / merge 收口阶段。
+- 2026-03-24: 创建 PR #215，并根据 review 收紧 invite CTA 链接判定，避免把普通 workspace 页面误存成邀请链接。
 
 ## 参考（References）
 
