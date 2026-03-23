@@ -152,6 +152,30 @@
 - 风险：旧库没有新增列时若默认值拼装不完整，会让前端 routing 卡片出现 `maintenance` 空对象；后端读取路径已统一回退到 `300 / 1800 / 100`。
 - 假设：当前快车道终点仍是 merge-ready，不自动 merge。
 
+## Visual Evidence (PR)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: `Account Pool/Pages/Upstream Accounts/RoutingDialogMaintenanceOnlySave`
+  state: reopened with persisted maintenance values
+  evidence_note: 验证高级路由与同步设置弹窗在仅保存 maintenance 参数后，重新打开仍回显已保存的主频、次频与主层上限。
+  image:
+  ![Routing dialog persisted maintenance values](./assets/routing-dialog-maintenance-only-save.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: `Account Pool/Pages/Upstream Accounts/Operational`
+  state: routing settings summary card
+  evidence_note: 验证列表页右侧 routing 卡片仅保留当前号池 API Key 与编辑入口，不再展示 maintenance 摘要字段。
+  image:
+  ![Routing settings summary card without maintenance metrics](./assets/routing-settings-card.png)
+
 ## 变更记录（Change log）
 
 - 2026-03-23: 创建 spec，冻结号池分层维护配置、队列排序和 UI 入口范围。
