@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.22.0",
+  "base_stable_version": "1.21.3",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-23T22:23:41Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.22.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "0f0db319af81b325d7e37bf69f81e6e73d75bcac",
+  "pr_number": 209,
+  "pr_title": "feat(pool): split upstream account status filters",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.22.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.22.0,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "263023608c569ba31097755b2209ae9f22e3fa88",
+  "type_label": "type:minor"
+}
