@@ -9249,10 +9249,10 @@ async fn send_pool_request_with_failover(
                     if terminal_failure_kind
                         == PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT
                     {
-                        err.failure_kind = terminal_failure_kind;
                         err.status = StatusCode::BAD_GATEWAY;
                         err.message =
                             "no alternate upstream route is available after timeout".to_string();
+                        err.failure_kind = terminal_failure_kind;
                         err.upstream_error_code = None;
                         err.upstream_error_message = None;
                         err.upstream_request_id = None;

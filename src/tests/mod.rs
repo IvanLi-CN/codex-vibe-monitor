@@ -13187,6 +13187,7 @@ async fn capture_target_pool_route_timeout_returns_no_alternate_when_only_same_r
 
     #[derive(Debug, sqlx::FromRow)]
     struct PersistedPayloadRow {
+        error_message: Option<String>,
         payload: Option<String>,
     }
 
@@ -13233,9 +13234,17 @@ async fn capture_target_pool_route_timeout_returns_no_alternate_when_only_same_r
     )
     .await;
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-    let _ = to_bytes(response.into_body(), usize::MAX)
+    let body = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read timeout no-alternate response body");
+    let response_payload: Value =
+        serde_json::from_slice(&body).expect("decode timeout no-alternate response body");
+    assert!(
+        response_payload["error"]
+            .as_str()
+            .expect("timeout no-alternate error should be present")
+            .contains("no alternate upstream route is available after timeout")
+    );
 
     wait_for_codex_invocations(&state.pool, 1).await;
     wait_for_pool_attempt_row_count(&state.pool, 2).await;
@@ -13281,7 +13290,7 @@ async fn capture_target_pool_route_timeout_returns_no_alternate_when_only_same_r
 
     let row = sqlx::query_as::<_, PersistedPayloadRow>(
         r#"
-        SELECT payload
+        SELECT error_message, payload
         FROM codex_invocations
         ORDER BY id DESC
         LIMIT 1
@@ -13296,12 +13305,18 @@ async fn capture_target_pool_route_timeout_returns_no_alternate_when_only_same_r
             .expect("timeout no-alternate payload should be present"),
     )
     .expect("decode timeout no-alternate payload");
+    assert!(
+        row.error_message.as_deref().is_some_and(
+            |msg| msg.contains("no alternate upstream route is available after timeout")
+        )
+    );
     assert_eq!(payload["poolAttemptCount"].as_i64(), Some(1));
     assert_eq!(payload["poolDistinctAccountCount"].as_i64(), Some(1));
     assert_eq!(
         payload["poolAttemptTerminalReason"].as_str(),
         Some(PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT),
     );
+    assert!(payload["upstreamErrorMessage"].is_null());
 
     shared_upstream_handle.abort();
 }
@@ -13466,6 +13481,7 @@ async fn capture_target_pool_route_timeout_exhausts_after_three_routes() {
 
     #[derive(Debug, sqlx::FromRow)]
     struct PersistedPayloadRow {
+        error_message: Option<String>,
         payload: Option<String>,
     }
 
@@ -13536,9 +13552,17 @@ async fn capture_target_pool_route_timeout_exhausts_after_three_routes() {
     )
     .await;
     assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-    let _ = to_bytes(response.into_body(), usize::MAX)
+    let body = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read timeout terminal response body");
+    let response_payload: Value =
+        serde_json::from_slice(&body).expect("decode timeout terminal response body");
+    assert!(
+        response_payload["error"]
+            .as_str()
+            .expect("timeout terminal error should be present")
+            .contains("no alternate upstream route is available after timeout")
+    );
 
     wait_for_codex_invocations(&state.pool, 1).await;
     wait_for_pool_attempt_row_count(&state.pool, 4).await;
@@ -13579,7 +13603,7 @@ async fn capture_target_pool_route_timeout_exhausts_after_three_routes() {
 
     let row = sqlx::query_as::<_, PersistedPayloadRow>(
         r#"
-        SELECT payload
+        SELECT error_message, payload
         FROM codex_invocations
         ORDER BY id DESC
         LIMIT 1
@@ -13594,6 +13618,11 @@ async fn capture_target_pool_route_timeout_exhausts_after_three_routes() {
             .expect("timeout terminal payload should be present"),
     )
     .expect("decode timeout terminal payload");
+    assert!(
+        row.error_message.as_deref().is_some_and(
+            |msg| msg.contains("no alternate upstream route is available after timeout")
+        )
+    );
     assert_eq!(
         payload["failureKind"].as_str(),
         Some(PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT),
@@ -13604,6 +13633,7 @@ async fn capture_target_pool_route_timeout_exhausts_after_three_routes() {
         payload["poolAttemptTerminalReason"].as_str(),
         Some(PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT),
     );
+    assert!(payload["upstreamErrorMessage"].is_null());
 
     slow_one_handle.abort();
     slow_two_handle.abort();
