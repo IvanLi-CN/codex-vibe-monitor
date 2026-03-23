@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 已完成（4/5）
+- Status: 已完成（4/5，PR#211）
 - Created: 2026-03-23
 - Last: 2026-03-23
 
@@ -156,4 +156,5 @@
 
 - 2026-03-23: 创建 spec，冻结号池分层维护配置、队列排序和 UI 入口范围。
 - 2026-03-23: 已完成 `pool_routing_settings` 维护字段持久化、部分更新 API、批量 tier resolver、固定短 tick 维护调度，以及 routing UI/文案/Storybook 同步。
-- 2026-03-23: 本地验证已通过 `cargo check`、3 个定向 Rust 测试、`cd web && bun x vitest run src/lib/api.test.ts src/hooks/useUpstreamAccounts.test.tsx src/pages/account-pool/UpstreamAccounts.test.tsx`、`cd web && bun run build`；PR 与 review-loop 仍待收口。
+- 2026-03-23: 本地验证已通过 `cargo check`、3 个定向 Rust 测试、`cd web && bun x vitest run src/lib/api.test.ts src/hooks/useUpstreamAccounts.test.tsx src/pages/account-pool/UpstreamAccounts.test.tsx`、`cd web && bun run build`。
+- 2026-03-23: PR #211 已在最新 `HEAD=431509d2` 上收敛到 `mergeable_state=clean`，GitHub PR checks 全绿；fresh `codex review --base origin/main` 仍在慢速扫描阶段被中断，尚未形成最终 review proof。
