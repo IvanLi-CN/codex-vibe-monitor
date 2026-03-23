@@ -7503,6 +7503,9 @@ async fn forward_proxy_timeseries_keeps_hourly_attempt_history_after_retention()
         false,
     )
     .await;
+    sync_hourly_rollups_from_live_tables(&state.pool)
+        .await
+        .expect("seed forward proxy hourly rollups before retention");
 
     let summary = run_data_retention_maintenance(&state.pool, &state.config, Some(false), None)
         .await
