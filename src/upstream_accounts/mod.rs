@@ -9918,8 +9918,12 @@ pub(crate) async fn resolve_pool_account_for_request(
                 saw_non_rate_limited_candidate = true;
             } else if is_account_rate_limited_for_routing(&row) {
                 saw_rate_limited_candidate = true;
-            } else {
+            } else if is_pool_account_routing_candidate(&row) {
+                // A stale sticky binding should not hide that every actually
+                // routable fallback account is upstream-rate-limited.
                 saw_non_rate_limited_candidate = true;
+            } else {
+                tried.insert(route.account_id);
             }
         }
         if sticky_source_rule
@@ -10393,11 +10397,14 @@ fn is_account_selectable_for_routing(row: &UpstreamAccountRow) -> bool {
         .unwrap_or(true)
 }
 
-fn is_routing_eligible_account(row: &UpstreamAccountRow) -> bool {
+fn is_pool_account_routing_candidate(row: &UpstreamAccountRow) -> bool {
     row.provider == UPSTREAM_ACCOUNT_PROVIDER_CODEX
         && row.enabled != 0
         && row.status == UPSTREAM_ACCOUNT_STATUS_ACTIVE
-        && row.encrypted_credentials.is_some()
+}
+
+fn is_routing_eligible_account(row: &UpstreamAccountRow) -> bool {
+    is_pool_account_routing_candidate(row) && row.encrypted_credentials.is_some()
 }
 
 fn is_account_rate_limited_for_routing(row: &UpstreamAccountRow) -> bool {
