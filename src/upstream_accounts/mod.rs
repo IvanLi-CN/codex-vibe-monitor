@@ -13501,9 +13501,11 @@ mod tests {
                 .expect("serve usage server");
         });
 
-        let state =
-            test_app_state_with_usage_base_and_parallelism(&format!("http://{addr}/backend-api"), 1)
-                .await;
+        let state = test_app_state_with_usage_base_and_parallelism(
+            &format!("http://{addr}/backend-api"),
+            1,
+        )
+        .await;
         let crypto_key = state
             .upstream_accounts
             .crypto_key
