@@ -141,6 +141,7 @@
 - 2026-03-24: 本地 `cargo check`、`cargo test`、`cd web && bun run test` 与 `cd web && bun run build` 已通过，进入 fast-track 的 PR / review / merge 收口阶段。
 - 2026-03-24: 创建 PR #215，并根据 review 收紧 invite CTA 链接判定，避免把普通 workspace 页面误存成邀请链接。
 - 2026-03-24: 根据后续 review 继续收紧 body-only invite 判定，要求 workspace 语义与真实邀请 CTA 同时成立，并排除帮助文档类链接。
+- 2026-03-24: 根据后续 review 恢复 query 型邀请 CTA 识别（如 `?invite=` / `?accept=`），避免误伤合法邀请链接。
 
 ## 参考（References）
 

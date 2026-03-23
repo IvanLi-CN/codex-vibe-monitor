@@ -8592,7 +8592,12 @@ fn mailbox_url_looks_like_invite(url: &str) -> bool {
 
     let host = host.to_ascii_lowercase();
     let path = parsed.path().to_ascii_lowercase();
-    let combined = format!("{host}{path}");
+    let query = parsed.query().unwrap_or_default().to_ascii_lowercase();
+    let combined = if query.is_empty() {
+        format!("{host}{path}")
+    } else {
+        format!("{host}{path}?{query}")
+    };
     let has_invite_action = combined.contains("invite")
         || combined.contains("invitation")
         || combined.contains("accept");
@@ -15792,6 +15797,25 @@ mod tests {
         assert_eq!(
             parsed.copy_value,
             "https://chatgpt.com/workspace/invite/accept?workspace=ws_789"
+        );
+    }
+
+    #[test]
+    fn parse_mailbox_invite_accepts_query_driven_cta_links() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_query_invite".to_string(),
+            subject: Some("Alice has invited you to a workspace".to_string()),
+            content: Some(
+                "Open your invite: https://chatgpt.com/workspace?invite=abc123".to_string(),
+            ),
+            html: None,
+            received_at: Some("2026-03-24T00:06:45Z".to_string()),
+        };
+
+        let parsed = parse_mailbox_invite(&detail).expect("query invite");
+        assert_eq!(
+            parsed.copy_value,
+            "https://chatgpt.com/workspace?invite=abc123"
         );
     }
 
