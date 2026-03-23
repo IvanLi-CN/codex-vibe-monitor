@@ -354,6 +354,7 @@ export interface ApiPoolUpstreamRequestAttempt {
   stickyKey?: string | null;
   upstreamAccountId?: number | null;
   upstreamAccountName?: string | null;
+  upstreamRouteKey?: string | null;
   attemptIndex: number;
   distinctAccountIndex: number;
   sameAccountRetryIndex: number;
