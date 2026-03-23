@@ -5,6 +5,11 @@ const API_BASE = rawBase.endsWith("/") ? rawBase.slice(0, -1) : rawBase;
 const FORWARD_PROXY_VALIDATION_TIMEOUT_MS = 5_000;
 const FORWARD_PROXY_SUBSCRIPTION_VALIDATION_TIMEOUT_MS = 60_000;
 const FORWARD_PROXY_HISTORY_DAY_MS = 86_400_000;
+export const DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS = {
+  primarySyncIntervalSecs: 300,
+  secondarySyncIntervalSecs: 1_800,
+  priorityAvailableAccountCap: 100,
+} as const;
 
 type ZonedDateParts = {
   year: number;
@@ -1355,10 +1360,32 @@ function normalizePoolRoutingSettings(
 ): PoolRoutingSettings | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
   if (typeof payload.apiKeyConfigured !== "boolean") return null;
+  const maintenanceRaw =
+    payload.maintenance && typeof payload.maintenance === "object"
+      ? (payload.maintenance as Record<string, unknown>)
+      : null;
+  const maintenance: PoolRoutingMaintenanceSettings = {
+    primarySyncIntervalSecs:
+      typeof maintenanceRaw?.primarySyncIntervalSecs === "number" &&
+      Number.isFinite(maintenanceRaw.primarySyncIntervalSecs)
+        ? Math.trunc(maintenanceRaw.primarySyncIntervalSecs)
+        : DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS.primarySyncIntervalSecs,
+    secondarySyncIntervalSecs:
+      typeof maintenanceRaw?.secondarySyncIntervalSecs === "number" &&
+      Number.isFinite(maintenanceRaw.secondarySyncIntervalSecs)
+        ? Math.trunc(maintenanceRaw.secondarySyncIntervalSecs)
+        : DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS.secondarySyncIntervalSecs,
+    priorityAvailableAccountCap:
+      typeof maintenanceRaw?.priorityAvailableAccountCap === "number" &&
+      Number.isFinite(maintenanceRaw.priorityAvailableAccountCap)
+        ? Math.trunc(maintenanceRaw.priorityAvailableAccountCap)
+        : DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS.priorityAvailableAccountCap,
+  };
   return {
     apiKeyConfigured: payload.apiKeyConfigured,
     maskedApiKey:
       typeof payload.maskedApiKey === "string" ? payload.maskedApiKey : null,
+    maintenance,
   };
 }
 
@@ -1587,10 +1614,24 @@ export interface UpstreamAccountGroupSummary {
 export interface PoolRoutingSettings {
   apiKeyConfigured: boolean;
   maskedApiKey?: string | null;
+  maintenance?: PoolRoutingMaintenanceSettings;
+}
+
+export interface PoolRoutingMaintenanceSettings {
+  primarySyncIntervalSecs: number;
+  secondarySyncIntervalSecs: number;
+  priorityAvailableAccountCap: number;
+}
+
+export interface UpdatePoolRoutingMaintenanceSettingsPayload {
+  primarySyncIntervalSecs?: number;
+  secondarySyncIntervalSecs?: number;
+  priorityAvailableAccountCap?: number;
 }
 
 export interface UpdatePoolRoutingSettingsPayload {
   apiKey?: string;
+  maintenance?: UpdatePoolRoutingMaintenanceSettingsPayload;
 }
 
 export interface UpstreamAccountListResponse {

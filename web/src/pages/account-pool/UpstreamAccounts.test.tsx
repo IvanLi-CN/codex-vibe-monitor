@@ -972,8 +972,9 @@ describe("UpstreamAccountsPage duplicates", () => {
 
     render();
 
-    clickButton(/Edit pool key/i);
-    clickButton(/Save pool key/i);
+    clickButton(/Edit routing settings/i);
+    setInputValue('input[name="secondarySyncIntervalSecs"]', "2400");
+    clickButton(/Save settings/i);
     await flushAsync();
 
     expect(document.body.textContent).toContain("Routing failed");
@@ -1119,8 +1120,9 @@ describe("UpstreamAccountsPage duplicates", () => {
 
     render();
 
-    clickButton(/Edit pool key/i);
-    clickButton(/Save pool key/i);
+    clickButton(/Edit routing settings/i);
+    setInputValue('input[name="secondarySyncIntervalSecs"]', "2400");
+    clickButton(/Save settings/i);
     await flushAsync();
     clickFirstRosterRow();
     clickButton(/Sync now/i);
@@ -1128,6 +1130,120 @@ describe("UpstreamAccountsPage duplicates", () => {
 
     expect(document.body.textContent).toContain("Routing failed");
     expect(document.body.textContent).toContain("Sync failed");
+  });
+
+  it("saves maintenance settings without requiring a new pool key", async () => {
+    const saveRouting = vi.fn().mockResolvedValue(undefined);
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [],
+      writesEnabled: false,
+      selectedId: null,
+      selectedSummary: null,
+      detail: null,
+      isLoading: false,
+      isDetailLoading: false,
+      listError: null,
+      detailError: null,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting,
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      routing: {
+        apiKeyConfigured: true,
+        maskedApiKey: "pool-live••••",
+        maintenance: {
+          primarySyncIntervalSecs: 300,
+          secondarySyncIntervalSecs: 1800,
+          priorityAvailableAccountCap: 100,
+        },
+      },
+      groups: [],
+    });
+    hookMocks.useUpstreamStickyConversations.mockReturnValue({
+      stats: { conversations: [], rangeStart: "", rangeEnd: "" },
+      isLoading: false,
+      error: null,
+    });
+
+    render();
+
+    clickButton(/Edit routing settings/i);
+    setInputValue('input[name="secondarySyncIntervalSecs"]', "2400");
+    clickButton(/Save settings/i);
+    await flushAsync();
+
+    expect(saveRouting).toHaveBeenCalledWith({
+      maintenance: {
+        primarySyncIntervalSecs: 300,
+        secondarySyncIntervalSecs: 2400,
+        priorityAvailableAccountCap: 100,
+      },
+    });
+  });
+
+  it("blocks invalid tiered maintenance values before saving", async () => {
+    const saveRouting = vi.fn().mockResolvedValue(undefined);
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [],
+      writesEnabled: true,
+      selectedId: null,
+      selectedSummary: null,
+      detail: null,
+      isLoading: false,
+      isDetailLoading: false,
+      listError: null,
+      detailError: null,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting,
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      routing: {
+        apiKeyConfigured: true,
+        maskedApiKey: "pool-live••••",
+        maintenance: {
+          primarySyncIntervalSecs: 300,
+          secondarySyncIntervalSecs: 1800,
+          priorityAvailableAccountCap: 100,
+        },
+      },
+      groups: [],
+    });
+    hookMocks.useUpstreamStickyConversations.mockReturnValue({
+      stats: { conversations: [], rangeStart: "", rangeEnd: "" },
+      isLoading: false,
+      error: null,
+    });
+
+    render();
+
+    clickButton(/Edit routing settings/i);
+    setInputValue('input[name="primarySyncIntervalSecs"]', "3600");
+    setInputValue('input[name="secondarySyncIntervalSecs"]', "300");
+
+    const saveButton = findButton(/Save settings/i);
+    expect(saveButton).toBeInstanceOf(HTMLButtonElement);
+    expect((saveButton as HTMLButtonElement).disabled).toBe(true);
+    expect(saveRouting).not.toHaveBeenCalled();
   });
 });
 
