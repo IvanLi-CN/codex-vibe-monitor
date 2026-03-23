@@ -723,8 +723,73 @@ const baseTranslations = {
       "Last successful sync",
     "accountPool.upstreamAccounts.fields.credits": "Credits",
     "accountPool.upstreamAccounts.fields.lastError": "Last error",
+    "accountPool.upstreamAccounts.table.latestActionShort": "Latest",
     "accountPool.upstreamAccounts.validation.displayNameDuplicate":
       "Display name must be unique.",
+    "accountPool.upstreamAccounts.latestAction.title": "Latest account action",
+    "accountPool.upstreamAccounts.latestAction.empty":
+      "No account action has been recorded yet.",
+    "accountPool.upstreamAccounts.latestAction.unknown": "Unknown",
+    "accountPool.upstreamAccounts.latestAction.fields.action": "Action",
+    "accountPool.upstreamAccounts.latestAction.fields.source": "Source",
+    "accountPool.upstreamAccounts.latestAction.fields.reason": "Reason",
+    "accountPool.upstreamAccounts.latestAction.fields.httpStatus":
+      "HTTP status",
+    "accountPool.upstreamAccounts.latestAction.fields.occurredAt":
+      "Occurred at",
+    "accountPool.upstreamAccounts.latestAction.fields.invokeId":
+      "Invoke ID",
+    "accountPool.upstreamAccounts.latestAction.fields.message": "Message",
+    "accountPool.upstreamAccounts.latestAction.actions.route_recovered":
+      "Route recovered",
+    "accountPool.upstreamAccounts.latestAction.actions.route_cooldown_started":
+      "Route cooldown",
+    "accountPool.upstreamAccounts.latestAction.actions.route_hard_unavailable":
+      "Hard unavailable",
+    "accountPool.upstreamAccounts.latestAction.actions.sync_succeeded":
+      "Sync succeeded",
+    "accountPool.upstreamAccounts.latestAction.actions.sync_failed":
+      "Sync failed",
+    "accountPool.upstreamAccounts.latestAction.actions.account_updated":
+      "Account updated",
+    "accountPool.upstreamAccounts.latestAction.sources.call": "Call",
+    "accountPool.upstreamAccounts.latestAction.sources.sync_manual":
+      "Manual sync",
+    "accountPool.upstreamAccounts.latestAction.sources.sync_maintenance":
+      "Maintenance sync",
+    "accountPool.upstreamAccounts.latestAction.sources.sync_post_create":
+      "Post-create sync",
+    "accountPool.upstreamAccounts.latestAction.sources.oauth_import":
+      "OAuth import",
+    "accountPool.upstreamAccounts.latestAction.sources.account_update":
+      "Account update",
+    "accountPool.upstreamAccounts.latestAction.reasons.sync_ok":
+      "Sync completed successfully",
+    "accountPool.upstreamAccounts.latestAction.reasons.account_updated":
+      "Account settings were updated",
+    "accountPool.upstreamAccounts.latestAction.reasons.sync_error":
+      "Sync failed",
+    "accountPool.upstreamAccounts.latestAction.reasons.transport_failure":
+      "Transport failure",
+    "accountPool.upstreamAccounts.latestAction.reasons.reauth_required":
+      "Reauthentication required",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_401":
+      "Upstream rejected credentials (401)",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_402":
+      "Plan or billing rejected upstream access (402)",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_403":
+      "Upstream rejected permissions (403)",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_429_rate_limit":
+      "Upstream rate limited the account",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_429_quota_exhausted":
+      "Upstream quota or weekly cap was exhausted",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_5xx":
+      "Upstream service failure",
+    "accountPool.upstreamAccounts.recentActions.title": "Recent account events",
+    "accountPool.upstreamAccounts.recentActions.description":
+      "Latest call and sync actions for this account.",
+    "accountPool.upstreamAccounts.recentActions.empty":
+      "No recent account events yet.",
     "accountPool.upstreamAccounts.duplicate.badge": "Duplicate",
     "accountPool.upstreamAccounts.duplicate.warningTitle":
       "{{name}} was saved, but the upstream identity looks duplicated.",
@@ -1968,8 +2033,68 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.fields.lastSuccessSync": "最近成功同步",
     "accountPool.upstreamAccounts.fields.credits": "Credits",
     "accountPool.upstreamAccounts.fields.lastError": "最近错误",
+    "accountPool.upstreamAccounts.table.latestActionShort": "最近动作",
     "accountPool.upstreamAccounts.validation.displayNameDuplicate":
       "显示名称必须唯一。",
+    "accountPool.upstreamAccounts.latestAction.title": "最近账号动作",
+    "accountPool.upstreamAccounts.latestAction.empty":
+      "暂时还没有记录到账号动作。",
+    "accountPool.upstreamAccounts.latestAction.unknown": "未知",
+    "accountPool.upstreamAccounts.latestAction.fields.action": "动作",
+    "accountPool.upstreamAccounts.latestAction.fields.source": "来源",
+    "accountPool.upstreamAccounts.latestAction.fields.reason": "原因",
+    "accountPool.upstreamAccounts.latestAction.fields.httpStatus": "HTTP 状态",
+    "accountPool.upstreamAccounts.latestAction.fields.occurredAt": "发生时间",
+    "accountPool.upstreamAccounts.latestAction.fields.invokeId": "调用 ID",
+    "accountPool.upstreamAccounts.latestAction.fields.message": "消息",
+    "accountPool.upstreamAccounts.latestAction.actions.route_recovered":
+      "路由恢复成功",
+    "accountPool.upstreamAccounts.latestAction.actions.route_cooldown_started":
+      "进入冷却",
+    "accountPool.upstreamAccounts.latestAction.actions.route_hard_unavailable":
+      "标记为硬失效",
+    "accountPool.upstreamAccounts.latestAction.actions.sync_succeeded":
+      "同步成功",
+    "accountPool.upstreamAccounts.latestAction.actions.sync_failed": "同步失败",
+    "accountPool.upstreamAccounts.latestAction.actions.account_updated":
+      "账号已更新",
+    "accountPool.upstreamAccounts.latestAction.sources.call": "调用",
+    "accountPool.upstreamAccounts.latestAction.sources.sync_manual":
+      "手动同步",
+    "accountPool.upstreamAccounts.latestAction.sources.sync_maintenance":
+      "维护同步",
+    "accountPool.upstreamAccounts.latestAction.sources.sync_post_create":
+      "创建后同步",
+    "accountPool.upstreamAccounts.latestAction.sources.oauth_import":
+      "OAuth 导入",
+    "accountPool.upstreamAccounts.latestAction.sources.account_update":
+      "账号修改",
+    "accountPool.upstreamAccounts.latestAction.reasons.sync_ok": "同步完成",
+    "accountPool.upstreamAccounts.latestAction.reasons.account_updated":
+      "账号设置已更新",
+    "accountPool.upstreamAccounts.latestAction.reasons.sync_error":
+      "同步失败",
+    "accountPool.upstreamAccounts.latestAction.reasons.transport_failure":
+      "网络或传输失败",
+    "accountPool.upstreamAccounts.latestAction.reasons.reauth_required":
+      "需要重新登录",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_401":
+      "上游拒绝凭据（401）",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_402":
+      "上游因套餐或计费拒绝访问（402）",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_403":
+      "上游拒绝权限（403）",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_429_rate_limit":
+      "上游对该账号限流",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_429_quota_exhausted":
+      "上游额度或周限已耗尽",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_5xx":
+      "上游服务异常",
+    "accountPool.upstreamAccounts.recentActions.title": "最近账号事件",
+    "accountPool.upstreamAccounts.recentActions.description":
+      "展示这条账号最近的调用与同步动作。",
+    "accountPool.upstreamAccounts.recentActions.empty":
+      "暂时还没有最近事件。",
     "accountPool.upstreamAccounts.duplicate.badge": "重复账号",
     "accountPool.upstreamAccounts.duplicate.warningTitle":
       "{{name}} 已保存，但检测到上游身份重复。",

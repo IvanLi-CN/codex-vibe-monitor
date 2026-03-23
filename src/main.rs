@@ -277,7 +277,10 @@ const FORWARD_PROXY_FAILURE_SEND_ERROR: &str = "send_error";
 const FORWARD_PROXY_FAILURE_HANDSHAKE_TIMEOUT: &str = "handshake_timeout";
 const FORWARD_PROXY_FAILURE_STREAM_ERROR: &str = "stream_error";
 const FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429: &str = "upstream_http_429";
+const FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED: &str =
+    "upstream_http_429_quota_exhausted";
 const FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX: &str = "upstream_http_5xx";
+const PROXY_FAILURE_UPSTREAM_HTTP_402: &str = "upstream_http_402";
 const PROXY_FAILURE_UPSTREAM_HTTP_AUTH: &str = "upstream_http_auth";
 const DEFAULT_XRAY_BINARY: &str = "xray";
 const DEFAULT_XRAY_RUNTIME_DIR: &str = ".codex/xray-forward";
@@ -8668,7 +8671,9 @@ fn pool_upstream_error_is_rate_limited(err: &PoolUpstreamError) -> bool {
     err.status == StatusCode::TOO_MANY_REQUESTS
         || matches!(
             err.failure_kind,
-            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429 | PROXY_FAILURE_POOL_ALL_ACCOUNTS_RATE_LIMITED
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429
+                | FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
+                | PROXY_FAILURE_POOL_ALL_ACCOUNTS_RATE_LIMITED
         )
 }
 
@@ -8841,15 +8846,105 @@ fn proxy_capture_response_failure_kind(
     }
 }
 
-fn pool_route_http_failure_kind(status: StatusCode) -> &'static str {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum UpstreamAccountFailureDisposition {
+    HardUnavailable,
+    RateLimited,
+    Retryable,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct UpstreamAccountHttpFailureClassification {
+    pub(crate) disposition: UpstreamAccountFailureDisposition,
+    pub(crate) failure_kind: &'static str,
+    pub(crate) reason_code: &'static str,
+    pub(crate) next_account_status: Option<&'static str>,
+}
+
+pub(crate) fn upstream_error_indicates_quota_exhausted(message: &str) -> bool {
+    let normalized = message.to_ascii_lowercase();
+    [
+        "insufficient_quota",
+        "quota exhausted",
+        "quota_exhausted",
+        "billing",
+        "payment required",
+        "subscription required",
+        "weekly cap",
+        "weekly limit",
+        "plan limit",
+        "plan quota",
+        "check your plan",
+    ]
+    .iter()
+    .any(|needle| normalized.contains(needle))
+}
+
+pub(crate) fn classify_pool_account_http_failure(
+    account_kind: &str,
+    status: StatusCode,
+    error_message: &str,
+) -> UpstreamAccountHttpFailureClassification {
+    if status == StatusCode::TOO_MANY_REQUESTS
+        && upstream_error_indicates_quota_exhausted(error_message)
+    {
+        return UpstreamAccountHttpFailureClassification {
+            disposition: UpstreamAccountFailureDisposition::HardUnavailable,
+            failure_kind: FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            reason_code: "upstream_http_429_quota_exhausted",
+            next_account_status: Some("error"),
+        };
+    }
     if status == StatusCode::TOO_MANY_REQUESTS {
-        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429
-    } else if status.is_server_error() {
-        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX
-    } else if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
-        PROXY_FAILURE_UPSTREAM_HTTP_AUTH
-    } else {
-        PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT
+        return UpstreamAccountHttpFailureClassification {
+            disposition: UpstreamAccountFailureDisposition::RateLimited,
+            failure_kind: FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
+            reason_code: "upstream_http_429_rate_limit",
+            next_account_status: None,
+        };
+    }
+    if status == StatusCode::PAYMENT_REQUIRED {
+        return UpstreamAccountHttpFailureClassification {
+            disposition: UpstreamAccountFailureDisposition::HardUnavailable,
+            failure_kind: PROXY_FAILURE_UPSTREAM_HTTP_402,
+            reason_code: "upstream_http_402",
+            next_account_status: Some("error"),
+        };
+    }
+    if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
+        let next_account_status = if account_kind == "oauth_codex"
+            && is_explicit_reauth_error_message(error_message)
+            && !is_scope_permission_error_message(error_message)
+            && !is_bridge_error_message(error_message)
+        {
+            Some("needs_reauth")
+        } else {
+            Some("error")
+        };
+        return UpstreamAccountHttpFailureClassification {
+            disposition: UpstreamAccountFailureDisposition::HardUnavailable,
+            failure_kind: PROXY_FAILURE_UPSTREAM_HTTP_AUTH,
+            reason_code: if status == StatusCode::UNAUTHORIZED {
+                "upstream_http_401"
+            } else {
+                "upstream_http_403"
+            },
+            next_account_status,
+        };
+    }
+    if status.is_server_error() {
+        return UpstreamAccountHttpFailureClassification {
+            disposition: UpstreamAccountFailureDisposition::Retryable,
+            failure_kind: FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX,
+            reason_code: "upstream_http_5xx",
+            next_account_status: None,
+        };
+    }
+    UpstreamAccountHttpFailureClassification {
+        disposition: UpstreamAccountFailureDisposition::Retryable,
+        failure_kind: PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT,
+        reason_code: "sync_error",
+        next_account_status: None,
     }
 }
 
@@ -9586,6 +9681,7 @@ async fn send_pool_request_with_failover(
                                 account.account_id,
                                 sticky_key,
                                 &message,
+                                trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
                             )
                             .await
                             {
@@ -9665,6 +9761,7 @@ async fn send_pool_request_with_failover(
                                 account.account_id,
                                 sticky_key,
                                 &message,
+                                trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
                             )
                             .await
                             {
@@ -9811,7 +9908,10 @@ async fn send_pool_request_with_failover(
             let status = response.status();
             if status == StatusCode::TOO_MANY_REQUESTS
                 || status.is_server_error()
-                || matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
+                || matches!(
+                    status,
+                    StatusCode::UNAUTHORIZED | StatusCode::PAYMENT_REQUIRED | StatusCode::FORBIDDEN
+                )
             {
                 let has_retry_budget = same_account_attempt + 1 < same_account_attempts;
                 let upstream_request_id_header = response
@@ -9848,8 +9948,13 @@ async fn send_pool_request_with_failover(
                             ),
                         ),
                     };
+                let route_error_message = upstream_error_code
+                    .as_deref()
+                    .map_or_else(|| message.clone(), |code| format!("{code}: {message}"));
+                let http_failure_classification =
+                    classify_pool_account_http_failure(&account.kind, status, &route_error_message);
                 let failure_kind = oauth_transport_failure_kind
-                    .unwrap_or_else(|| pool_route_http_failure_kind(status));
+                    .unwrap_or(http_failure_classification.failure_kind);
                 let is_timeout_shaped = uses_timeout_route_failover
                     && status.is_server_error()
                     && pool_failure_is_timeout_shaped(failure_kind, &message);
@@ -9865,9 +9970,6 @@ async fn send_pool_request_with_failover(
                                 fallback_proxy_429_retry_delay(u32::from(same_account_attempt) + 1)
                             })
                     });
-                let route_error_message = upstream_error_code
-                    .as_deref()
-                    .map_or_else(|| message.clone(), |code| format!("{code}: {message}"));
                 let finished_at = shanghai_now_string();
                 if let Some(trace) = trace_context.as_ref()
                     && let Err(record_err) = insert_pool_upstream_request_attempt(
@@ -9916,6 +10018,7 @@ async fn send_pool_request_with_failover(
                     sticky_key,
                     status,
                     &route_error_message,
+                    trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
                 )
                 .await
                 {
@@ -10005,6 +10108,7 @@ async fn send_pool_request_with_failover(
                         account.account_id,
                         sticky_key,
                         &message,
+                        trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
                     )
                     .await
                     {
@@ -10431,8 +10535,12 @@ async fn proxy_openai_v1_via_pool(
                     let status = response.status();
                     let upstream = if status == StatusCode::TOO_MANY_REQUESTS
                         || status.is_server_error()
-                        || matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
-                    {
+                        || matches!(
+                            status,
+                            StatusCode::UNAUTHORIZED
+                                | StatusCode::PAYMENT_REQUIRED
+                                | StatusCode::FORBIDDEN
+                        ) {
                         let upstream_request_id_header = response
                             .headers()
                             .get("x-request-id")
@@ -10470,8 +10578,17 @@ async fn proxy_openai_v1_via_pool(
                                 ),
                             ),
                         };
-                        let failure_kind = oauth_transport_failure_kind
-                            .unwrap_or_else(|| pool_route_http_failure_kind(status));
+                        let route_error_message = upstream_error_code
+                            .as_deref()
+                            .map_or_else(|| message.clone(), |code| format!("{code}: {message}"));
+                        let failure_kind = oauth_transport_failure_kind.unwrap_or(
+                            classify_pool_account_http_failure(
+                                &initial_account.kind,
+                                status,
+                                &route_error_message,
+                            )
+                            .failure_kind,
+                        );
                         maybe_backfill_oauth_request_debug_from_replay_status(
                             &mut oauth_responses_debug,
                             original_uri,
@@ -10634,7 +10751,12 @@ async fn proxy_openai_v1_via_pool(
                         let status = response.status();
                         if status == StatusCode::TOO_MANY_REQUESTS
                             || status.is_server_error()
-                            || matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN)
+                            || matches!(
+                                status,
+                                StatusCode::UNAUTHORIZED
+                                    | StatusCode::PAYMENT_REQUIRED
+                                    | StatusCode::FORBIDDEN
+                            )
                         {
                             let upstream_request_id_header = response
                                 .headers()
@@ -10671,7 +10793,16 @@ async fn proxy_openai_v1_via_pool(
                                     ),
                                 ),
                             };
-                            let failure_kind = pool_route_http_failure_kind(status);
+                            let route_error_message = upstream_error_code.as_deref().map_or_else(
+                                || message.clone(),
+                                |code| format!("{code}: {message}"),
+                            );
+                            let failure_kind = classify_pool_account_http_failure(
+                                &initial_account.kind,
+                                status,
+                                &route_error_message,
+                            )
+                            .failure_kind;
                             let first_error = PoolUpstreamError {
                                 account: Some(initial_account.clone()),
                                 status,
@@ -10835,6 +10966,10 @@ async fn proxy_openai_v1_via_pool(
     };
 
     let account = upstream.account;
+    let upstream_invoke_id = upstream
+        .pending_attempt_record
+        .as_ref()
+        .map(|record| record.invoke_id.clone());
     let t_upstream_connect_ms = upstream.connect_latency_ms;
     let t_upstream_ttfb_ms = upstream.first_byte_latency_ms;
     let upstream_response = upstream.response;
@@ -10876,8 +11011,13 @@ async fn proxy_openai_v1_via_pool(
             "pool upstream response first chunk ready"
         );
     } else {
-        if let Err(route_err) =
-            record_pool_route_success(&state.pool, account.account_id, sticky_key.as_deref()).await
+        if let Err(route_err) = record_pool_route_success(
+            &state.pool,
+            account.account_id,
+            sticky_key.as_deref(),
+            upstream_invoke_id.as_deref(),
+        )
+        .await
         {
             warn!(account_id = account.account_id, error = %route_err, "failed to record pool route success");
         }
@@ -10892,6 +11032,7 @@ async fn proxy_openai_v1_via_pool(
     let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(16);
     let state_for_record = state.clone();
     let sticky_key_for_record = sticky_key.clone();
+    let invoke_id_for_record = upstream_invoke_id.clone();
     tokio::spawn(async move {
         let mut forwarded_chunks = 0usize;
         let mut forwarded_bytes = 0usize;
@@ -10937,6 +11078,7 @@ async fn proxy_openai_v1_via_pool(
                 account.account_id,
                 sticky_key_for_record.as_deref(),
                 message,
+                invoke_id_for_record.as_deref(),
             )
             .await
             {
@@ -10946,6 +11088,7 @@ async fn proxy_openai_v1_via_pool(
             &state_for_record.pool,
             account.account_id,
             sticky_key_for_record.as_deref(),
+            invoke_id_for_record.as_deref(),
         )
         .await
         {
@@ -12542,6 +12685,7 @@ async fn proxy_openai_v1_capture_target(
                         &state_for_task.pool,
                         account.account_id,
                         sticky_key_for_task.as_deref(),
+                        None,
                     )
                     .await
                 } else if had_stream_error {
@@ -12554,6 +12698,7 @@ async fn proxy_openai_v1_capture_target(
                         account.account_id,
                         sticky_key_for_task.as_deref(),
                         &route_message,
+                        None,
                     )
                     .await
                 } else {
@@ -12568,6 +12713,7 @@ async fn proxy_openai_v1_capture_target(
                         sticky_key_for_task.as_deref(),
                         upstream_status,
                         &route_message,
+                        None,
                     )
                     .await
                 };

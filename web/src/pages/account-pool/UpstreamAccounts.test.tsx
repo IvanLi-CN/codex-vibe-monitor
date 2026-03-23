@@ -343,6 +343,10 @@ function mockAccountsPage() {
         enabled: true,
         isMother: true,
         planType: "team",
+        lastActionSource: "call",
+        lastActionReasonCode: "upstream_http_429_quota_exhausted",
+        lastActionHttpStatus: 429,
+        lastActionAt: "2026-03-16T02:06:00.000Z",
         primaryWindow: {
           usedPercent: 42,
           usedText: "42 requests",
@@ -415,6 +419,13 @@ function mockAccountsPage() {
       planType: "team",
       lastSuccessfulSyncAt: "2026-03-16T01:55:00.000Z",
       lastActivityAt: "2026-03-16T02:05:00.000Z",
+      lastAction: "route_hard_unavailable",
+      lastActionSource: "call",
+      lastActionReasonCode: "upstream_http_429_quota_exhausted",
+      lastActionReasonMessage: "Weekly cap exhausted for this account",
+      lastActionHttpStatus: 429,
+      lastActionInvokeId: "invk_action_001",
+      lastActionAt: "2026-03-16T02:06:00.000Z",
       primaryWindow: {
         usedPercent: 42,
         usedText: "42 requests",
@@ -456,6 +467,13 @@ function mockAccountsPage() {
       planType: "team",
       lastSuccessfulSyncAt: "2026-03-16T01:55:00.000Z",
       lastActivityAt: "2026-03-16T02:05:00.000Z",
+      lastAction: "route_hard_unavailable",
+      lastActionSource: "call",
+      lastActionReasonCode: "upstream_http_429_quota_exhausted",
+      lastActionReasonMessage: "Weekly cap exhausted for this account",
+      lastActionHttpStatus: 429,
+      lastActionInvokeId: "invk_action_001",
+      lastActionAt: "2026-03-16T02:06:00.000Z",
       primaryWindow: {
         usedPercent: 42,
         usedText: "42 requests",
@@ -487,6 +505,21 @@ function mockAccountsPage() {
       ],
       effectiveRoutingRule: defaultEffectiveRoutingRule,
       history: [],
+      recentActions: [
+        {
+          id: 71,
+          occurredAt: "2026-03-16T02:06:00.000Z",
+          action: "route_hard_unavailable",
+          source: "call",
+          reasonCode: "upstream_http_429_quota_exhausted",
+          reasonMessage: "Weekly cap exhausted for this account",
+          httpStatus: 429,
+          failureKind: "upstream_http_429_quota_exhausted",
+          invokeId: "invk_action_001",
+          stickyKey: "sticky-dup-001",
+          createdAt: "2026-03-16T02:06:00.000Z",
+        },
+      ],
     },
     isLoading: false,
     isDetailLoading: false,
@@ -531,6 +564,20 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect(document.body.textContent).toContain("vip");
     expect(document.body.textContent).toContain("+1");
     expect(document.body.textContent).toContain("team");
+  });
+
+  it("shows latest account action details and recent events in the drawer", async () => {
+    mockAccountsPage();
+    render("/account-pool/upstream-accounts");
+
+    clickFirstRosterRow();
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Latest account action");
+    expect(document.body.textContent).toContain("Hard unavailable");
+    expect(document.body.textContent).toContain("Weekly cap exhausted for this account");
+    expect(document.body.textContent).toContain("Recent account events");
+    expect(document.body.textContent).toContain("invk_action_001");
   });
 
   it("passes all-match tag filters to the roster hook", () => {

@@ -138,6 +138,7 @@ const labels = {
   sync: 'Sync / Call',
   lastSuccess: 'Sync',
   lastCall: 'Call',
+  latestAction: 'Latest',
   windows: 'Windows',
   never: 'Never',
   primary: '5h',
@@ -163,6 +164,9 @@ const labels = {
       error: 'Error',
       disabled: 'Disabled',
     })[item.displayStatus ?? item.status] ?? item.displayStatus ?? item.status,
+  actionSource: () => 'Call',
+  actionReason: (item: { lastActionReasonCode?: string | null }) =>
+    item.lastActionReasonCode ?? null,
 }
 
 const meta = {
