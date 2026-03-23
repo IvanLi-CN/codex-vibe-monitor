@@ -13130,6 +13130,47 @@ fn canonical_pool_upstream_route_key_collapses_trailing_slashes() {
         ),
         "https://route.example/",
     );
+    assert_eq!(
+        canonical_pool_upstream_route_key(
+            &Url::parse("https://route.example:443/base").expect("valid default https port route")
+        ),
+        canonical_pool_upstream_route_key(
+            &Url::parse("https://route.example/base").expect("valid https route")
+        ),
+    );
+    assert_eq!(
+        canonical_pool_upstream_route_key(
+            &Url::parse("http://route.example:80/base").expect("valid default http port route")
+        ),
+        canonical_pool_upstream_route_key(
+            &Url::parse("http://route.example/base").expect("valid http route")
+        ),
+    );
+    assert_ne!(
+        canonical_pool_upstream_route_key(
+            &Url::parse("https://route.example:8443/base")
+                .expect("valid non-default https port route")
+        ),
+        canonical_pool_upstream_route_key(
+            &Url::parse("https://route.example/base").expect("valid https route")
+        ),
+    );
+}
+
+#[test]
+fn pool_failure_is_timeout_shaped_ignores_upstream_5xx_text_timeouts() {
+    assert!(!pool_failure_is_timeout_shaped(
+        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX,
+        "pool upstream responded with 500: operation timed out after 30s"
+    ));
+    assert!(pool_failure_is_timeout_shaped(
+        PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
+        "upstream handshake timed out after 60000ms"
+    ));
+    assert!(pool_failure_is_timeout_shaped(
+        PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+        "request timed out after 120000ms while waiting for first upstream chunk"
+    ));
 }
 
 #[tokio::test]

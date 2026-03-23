@@ -12953,16 +12953,20 @@ fn pool_uses_responses_timeout_failover_policy(original_uri: &Uri, method: &Meth
     method == Method::POST && original_uri.path() == "/v1/responses"
 }
 
-fn pool_error_message_indicates_timeout(message: &str) -> bool {
+fn pool_error_message_indicates_proxy_timeout(message: &str) -> bool {
     let message_lower = message.trim().to_ascii_lowercase();
     message_lower.contains("request timed out after")
-        || message_lower.contains("timed out after")
-        || message_lower.contains("upstream handshake timed out")
+        || message_lower.contains("upstream handshake timed out after")
 }
 
 fn pool_failure_is_timeout_shaped(failure_kind: &str, message: &str) -> bool {
-    failure_kind == PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT
-        || pool_error_message_indicates_timeout(message)
+    matches!(
+        failure_kind,
+        PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT
+            | PROXY_FAILURE_FAILED_CONTACT_UPSTREAM
+            | PROXY_FAILURE_UPSTREAM_STREAM_ERROR
+            | PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED
+    ) && pool_error_message_indicates_proxy_timeout(message)
 }
 
 fn extract_sticky_key_from_request_body(value: &Value) -> Option<String> {
