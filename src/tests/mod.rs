@@ -1744,6 +1744,7 @@ fn app_config_from_sources_uses_proxy_timeout_defaults() {
         "OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS",
         "OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS",
         ENV_POOL_UPSTREAM_RESPONSES_ATTEMPT_TIMEOUT_SECS,
+        ENV_POOL_UPSTREAM_RESPONSES_TOTAL_TIMEOUT_SECS,
     ];
     let previous = names
         .iter()
@@ -1780,6 +1781,10 @@ fn app_config_from_sources_uses_proxy_timeout_defaults() {
         config.pool_upstream_responses_attempt_timeout,
         Duration::from_secs(DEFAULT_POOL_UPSTREAM_RESPONSES_ATTEMPT_TIMEOUT_SECS)
     );
+    assert_eq!(
+        config.pool_upstream_responses_total_timeout,
+        Duration::from_secs(DEFAULT_POOL_UPSTREAM_RESPONSES_TOTAL_TIMEOUT_SECS)
+    );
 }
 
 #[test]
@@ -1790,6 +1795,7 @@ fn app_config_from_sources_reads_proxy_timeout_envs() {
         "OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS",
         "OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS",
         ENV_POOL_UPSTREAM_RESPONSES_ATTEMPT_TIMEOUT_SECS,
+        ENV_POOL_UPSTREAM_RESPONSES_TOTAL_TIMEOUT_SECS,
     ];
     let previous = names
         .iter()
@@ -1801,6 +1807,7 @@ fn app_config_from_sources_reads_proxy_timeout_envs() {
         env::set_var("OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS", "181");
         env::set_var("OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS", "182");
         env::set_var(ENV_POOL_UPSTREAM_RESPONSES_ATTEMPT_TIMEOUT_SECS, "183");
+        env::set_var(ENV_POOL_UPSTREAM_RESPONSES_TOTAL_TIMEOUT_SECS, "301");
     }
 
     let result = AppConfig::from_sources(&CliArgs::default());
@@ -1829,6 +1836,10 @@ fn app_config_from_sources_reads_proxy_timeout_envs() {
         config.pool_upstream_responses_attempt_timeout,
         Duration::from_secs(183)
     );
+    assert_eq!(
+        config.pool_upstream_responses_total_timeout,
+        Duration::from_secs(301)
+    );
 }
 
 #[test]
@@ -1844,6 +1855,19 @@ fn app_config_from_sources_rejects_zero_pool_upstream_responses_attempt_timeout(
     );
 }
 
+#[test]
+fn app_config_from_sources_rejects_zero_pool_upstream_responses_total_timeout() {
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
+    let _env = EnvVarGuard::set(&[(ENV_POOL_UPSTREAM_RESPONSES_TOTAL_TIMEOUT_SECS, Some("0"))]);
+
+    let err = AppConfig::from_sources(&CliArgs::default())
+        .expect_err("zero responses total timeout should be rejected");
+    assert_eq!(
+        err.to_string(),
+        format!("{ENV_POOL_UPSTREAM_RESPONSES_TOTAL_TIMEOUT_SECS} must be greater than 0")
+    );
+}
+
 fn test_config() -> AppConfig {
     AppConfig {
         openai_upstream_base_url: Url::parse("https://api.openai.com/").expect("valid url"),
@@ -1852,6 +1876,9 @@ fn test_config() -> AppConfig {
         request_timeout: Duration::from_secs(30),
         pool_upstream_responses_attempt_timeout: Duration::from_secs(
             DEFAULT_POOL_UPSTREAM_RESPONSES_ATTEMPT_TIMEOUT_SECS,
+        ),
+        pool_upstream_responses_total_timeout: Duration::from_secs(
+            DEFAULT_POOL_UPSTREAM_RESPONSES_TOTAL_TIMEOUT_SECS,
         ),
         openai_proxy_handshake_timeout: Duration::from_secs(
             DEFAULT_OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS,
@@ -13994,6 +14021,443 @@ async fn capture_target_pool_route_timeout_exhausts_after_three_routes() {
     slow_two_handle.abort();
     slow_three_handle.abort();
     fast_four_handle.abort();
+}
+
+#[tokio::test]
+async fn capture_target_pool_route_total_timeout_can_succeed_on_second_route() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptRouteRow {
+        attempt_index: i64,
+        distinct_account_index: i64,
+        status: String,
+        failure_kind: Option<String>,
+    }
+
+    #[derive(Debug, sqlx::FromRow)]
+    struct PersistedPayloadRow {
+        payload: Option<String>,
+    }
+
+    let (slow_one_base, slow_one_handle) =
+        spawn_pool_delayed_first_chunk_upstream(Duration::from_millis(250)).await;
+    let (fast_two_base, attempts, fast_two_handle) =
+        spawn_pool_retry_upstream(&[("Bearer route-two", 0)]).await;
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.pool_upstream_responses_attempt_timeout = Duration::from_millis(180);
+    config.pool_upstream_responses_total_timeout = Duration::from_millis(300);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Timeout Route One",
+        "route-one",
+        None,
+        None,
+        Some(slow_one_base.as_str()),
+    )
+    .await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Success Route Two",
+        "route-two",
+        None,
+        None,
+        Some(fast_two_base.as_str()),
+    )
+    .await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-timeout-budget-success-004"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read timeout budget success response body");
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    wait_for_pool_attempt_row_count(&state.pool, 2).await;
+
+    let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
+        r#"
+        SELECT
+            attempt_index,
+            distinct_account_index,
+            status,
+            failure_kind
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load timeout budget success rows");
+    assert_eq!(attempt_rows.len(), 2);
+    assert_eq!(attempt_rows[0].attempt_index, 1);
+    assert_eq!(attempt_rows[0].distinct_account_index, 1);
+    assert_eq!(
+        attempt_rows[0].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+    );
+    assert_eq!(
+        attempt_rows[0].failure_kind.as_deref(),
+        Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
+    );
+    assert_eq!(attempt_rows[1].attempt_index, 2);
+    assert_eq!(attempt_rows[1].distinct_account_index, 2);
+    assert_eq!(
+        attempt_rows[1].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+    );
+
+    let attempts = attempts.lock().expect("lock route-two attempts");
+    assert_eq!(attempts.get("Bearer route-two").copied(), Some(1));
+    drop(attempts);
+
+    let row = sqlx::query_as::<_, PersistedPayloadRow>(
+        r#"
+        SELECT payload
+        FROM codex_invocations
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load timeout budget success payload");
+    let payload: Value = serde_json::from_str(
+        row.payload
+            .as_deref()
+            .expect("timeout budget success payload should be present"),
+    )
+    .expect("decode timeout budget success payload");
+    assert_eq!(payload["poolAttemptCount"].as_i64(), Some(2));
+    assert_eq!(payload["poolDistinctAccountCount"].as_i64(), Some(2));
+    assert!(payload["poolAttemptTerminalReason"].is_null());
+
+    slow_one_handle.abort();
+    fast_two_handle.abort();
+}
+
+#[tokio::test]
+async fn capture_target_pool_route_total_timeout_exhausts_before_third_route() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptRouteRow {
+        attempt_index: i64,
+        distinct_account_index: i64,
+        status: String,
+        failure_kind: Option<String>,
+    }
+
+    #[derive(Debug, sqlx::FromRow)]
+    struct PersistedPayloadRow {
+        error_message: Option<String>,
+        payload: Option<String>,
+    }
+
+    let (slow_one_base, slow_one_handle) =
+        spawn_pool_delayed_first_chunk_upstream(Duration::from_millis(250)).await;
+    let (slow_two_base, slow_two_handle) =
+        spawn_pool_delayed_first_chunk_upstream(Duration::from_millis(250)).await;
+    let (fast_three_base, attempts, fast_three_handle) =
+        spawn_pool_retry_upstream(&[("Bearer route-three", 0)]).await;
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.pool_upstream_responses_attempt_timeout = Duration::from_millis(180);
+    config.pool_upstream_responses_total_timeout = Duration::from_millis(300);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Timeout Route One",
+        "route-one",
+        None,
+        None,
+        Some(slow_one_base.as_str()),
+    )
+    .await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Timeout Route Two",
+        "route-two",
+        None,
+        None,
+        Some(slow_two_base.as_str()),
+    )
+    .await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Unused Route Three",
+        "route-three",
+        None,
+        None,
+        Some(fast_three_base.as_str()),
+    )
+    .await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-timeout-budget-stop-005"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read timeout budget terminal response body");
+    let response_payload: Value =
+        serde_json::from_slice(&body).expect("decode timeout budget terminal response body");
+    assert!(
+        response_payload["error"]
+            .as_str()
+            .expect("timeout budget terminal error should be present")
+            .contains("pool upstream total timeout exhausted after 300ms")
+    );
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    wait_for_pool_attempt_row_count(&state.pool, 3).await;
+
+    let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
+        r#"
+        SELECT
+            attempt_index,
+            distinct_account_index,
+            status,
+            failure_kind
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load timeout budget terminal rows");
+    assert_eq!(attempt_rows.len(), 3);
+    assert_eq!(attempt_rows[0].attempt_index, 1);
+    assert_eq!(attempt_rows[0].distinct_account_index, 1);
+    assert_eq!(
+        attempt_rows[0].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+    );
+    assert_eq!(attempt_rows[1].attempt_index, 2);
+    assert_eq!(attempt_rows[1].distinct_account_index, 2);
+    assert_eq!(
+        attempt_rows[1].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+    );
+    assert_eq!(attempt_rows[2].attempt_index, 3);
+    assert_eq!(attempt_rows[2].distinct_account_index, 2);
+    assert_eq!(
+        attempt_rows[2].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL,
+    );
+    assert_eq!(
+        attempt_rows[2].failure_kind.as_deref(),
+        Some(PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED),
+    );
+
+    let attempts = attempts.lock().expect("lock unused route attempts");
+    assert_eq!(attempts.get("Bearer route-three").copied(), None);
+    drop(attempts);
+
+    let row = sqlx::query_as::<_, PersistedPayloadRow>(
+        r#"
+        SELECT error_message, payload
+        FROM codex_invocations
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load timeout budget terminal payload");
+    let payload: Value = serde_json::from_str(
+        row.payload
+            .as_deref()
+            .expect("timeout budget terminal payload should be present"),
+    )
+    .expect("decode timeout budget terminal payload");
+    assert!(
+        row.error_message
+            .as_deref()
+            .is_some_and(|msg| msg.contains("pool upstream total timeout exhausted after 300ms"))
+    );
+    assert_eq!(payload["statusCode"].as_i64(), Some(504));
+    assert_eq!(
+        payload["failureKind"].as_str(),
+        Some(PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED),
+    );
+    assert_eq!(payload["poolAttemptCount"].as_i64(), Some(2));
+    assert_eq!(payload["poolDistinctAccountCount"].as_i64(), Some(2));
+    assert_eq!(
+        payload["poolAttemptTerminalReason"].as_str(),
+        Some(PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED),
+    );
+
+    slow_one_handle.abort();
+    slow_two_handle.abort();
+    fast_three_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_openai_v1_responses_compact_total_timeout_exhausts_before_third_route() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct PersistedPayloadRow {
+        error_message: Option<String>,
+        payload: Option<String>,
+    }
+
+    let (slow_one_base, slow_one_requests, slow_one_handle) =
+        spawn_capture_target_body_upstream().await;
+    let (slow_two_base, slow_two_requests, slow_two_handle) =
+        spawn_capture_target_body_upstream().await;
+    let (fast_three_base, fast_three_requests, fast_three_handle) =
+        spawn_capture_target_body_upstream().await;
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.openai_proxy_compact_handshake_timeout = Duration::from_millis(180);
+    config.pool_upstream_responses_total_timeout = Duration::from_millis(300);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Compact Timeout Route One",
+        "route-one",
+        None,
+        None,
+        Some(slow_one_base.as_str()),
+    )
+    .await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Compact Timeout Route Two",
+        "route-two",
+        None,
+        None,
+        Some(slow_two_base.as_str()),
+    )
+    .await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Compact Unused Route Three",
+        "route-three",
+        None,
+        None,
+        Some(fast_three_base.as_str()),
+    )
+    .await;
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "previous_response_id": "resp_prev_002",
+        "input": [{"role": "user", "content": "compact this thread"}],
+    }))
+    .expect("serialize compact request body");
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(
+            "/v1/responses/compact?mode=slow-first-chunk"
+                .parse()
+                .expect("valid uri"),
+        ),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(request_body),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read compact timeout budget terminal response body");
+    let response_payload: Value = serde_json::from_slice(&body)
+        .expect("decode compact timeout budget terminal response body");
+    assert!(
+        response_payload["error"]
+            .as_str()
+            .expect("compact timeout budget terminal error should be present")
+            .contains("pool upstream total timeout exhausted after 300ms")
+    );
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    wait_for_pool_attempt_row_count(&state.pool, 3).await;
+
+    let slow_one_requests = slow_one_requests.lock().await;
+    let slow_two_requests = slow_two_requests.lock().await;
+    let fast_three_requests = fast_three_requests.lock().await;
+    assert_eq!(slow_one_requests.len(), 1);
+    assert_eq!(slow_two_requests.len(), 1);
+    assert_eq!(fast_three_requests.len(), 0);
+    drop(slow_one_requests);
+    drop(slow_two_requests);
+    drop(fast_three_requests);
+
+    let row = sqlx::query_as::<_, PersistedPayloadRow>(
+        r#"
+        SELECT error_message, payload
+        FROM codex_invocations
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load compact timeout budget terminal payload");
+    let payload: Value = serde_json::from_str(
+        row.payload
+            .as_deref()
+            .expect("compact timeout budget terminal payload should be present"),
+    )
+    .expect("decode compact timeout budget terminal payload");
+    assert!(
+        row.error_message
+            .as_deref()
+            .is_some_and(|msg| msg.contains("pool upstream total timeout exhausted after 300ms"))
+    );
+    assert_eq!(payload["statusCode"].as_i64(), Some(504));
+    assert_eq!(
+        payload["failureKind"].as_str(),
+        Some(PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED),
+    );
+    assert_eq!(
+        payload["poolAttemptTerminalReason"].as_str(),
+        Some(PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED),
+    );
+
+    slow_one_handle.abort();
+    slow_two_handle.abort();
+    fast_three_handle.abort();
 }
 
 #[tokio::test]
