@@ -1,7 +1,10 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { I18nProvider } from '../i18n'
 import { InvocationRecordsTable } from './InvocationRecordsTable'
-import { STORYBOOK_INVOCATION_RECORDS } from './invocationRecordsStoryFixtures'
+import {
+  STORYBOOK_FIRST_RESPONSE_BYTE_SEMANTICS_RECORDS,
+  STORYBOOK_INVOCATION_RECORDS,
+} from './invocationRecordsStoryFixtures'
 
 function StorySurface({ children }: { children: React.ReactNode }) {
   return (
@@ -47,6 +50,23 @@ export const NetworkFocus: Story = {
     records: STORYBOOK_INVOCATION_RECORDS,
     isLoading: false,
     error: null,
+  },
+}
+
+export const FirstResponseByteSemantics: Story = {
+  args: {
+    focus: 'network',
+    records: STORYBOOK_FIRST_RESPONSE_BYTE_SEMANTICS_RECORDS,
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Focused network view for the new first-response-byte-total semantics. The first row deliberately keeps `上游首字节 = 0.0 ms` while the cumulative `首字总耗时` stays near `9.36 s`, matching the user-facing clarification in the monitoring table.',
+      },
+    },
   },
 }
 
