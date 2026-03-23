@@ -9166,14 +9166,26 @@ async fn send_pool_request_with_failover(
                 final_error.status = StatusCode::TOO_MANY_REQUESTS;
                 final_error.message = POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string();
                 final_error.failure_kind = PROXY_FAILURE_POOL_ALL_ACCOUNTS_RATE_LIMITED;
-            } else {
+                final_error.upstream_error_code = None;
+                final_error.upstream_error_message = None;
+                final_error.upstream_request_id = None;
+            } else if terminal_failure_kind
+                == PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT
+            {
                 final_error.status = StatusCode::BAD_GATEWAY;
                 final_error.message = terminal_message;
                 final_error.failure_kind = terminal_failure_kind;
+                final_error.upstream_error_code = None;
+                final_error.upstream_error_message = None;
+                final_error.upstream_request_id = None;
+            } else if final_error.status != StatusCode::TOO_MANY_REQUESTS {
+                final_error.status = StatusCode::BAD_GATEWAY;
+                final_error.message = terminal_message;
+                final_error.failure_kind = terminal_failure_kind;
+                final_error.upstream_error_code = None;
+                final_error.upstream_error_message = None;
+                final_error.upstream_request_id = None;
             }
-            final_error.upstream_error_code = None;
-            final_error.upstream_error_message = None;
-            final_error.upstream_request_id = None;
             final_error.attempt_summary = pool_attempt_summary(
                 attempt_count,
                 distinct_account_count,
@@ -9824,7 +9836,8 @@ async fn send_pool_request_with_failover(
                     && pool_failure_is_timeout_shaped(failure_kind, &message);
                 let retry_delay = (has_retry_budget
                     && !is_timeout_shaped
-                    && (status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()))
+                    && status.is_server_error()
+                    && status != StatusCode::TOO_MANY_REQUESTS)
                 .then(|| {
                     retry_after_header
                         .as_ref()
