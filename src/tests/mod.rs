@@ -3515,6 +3515,15 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
         .execute(&state.pool)
         .await
         .expect("disable beta account");
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET last_error = ?2, last_error_at = ?3, last_route_failure_at = NULL, last_route_failure_kind = NULL WHERE id = ?1",
+    )
+    .bind(beta_id)
+    .bind("Authentication token has been invalidated, please sign in again")
+    .bind(format_utc_iso(now))
+    .execute(&state.pool)
+    .await
+    .expect("seed beta stale disabled error");
     set_test_account_rate_limited_cooldown(&state.pool, gamma_id, 600).await;
 
     let Json(active_page_two) = list_upstream_accounts(

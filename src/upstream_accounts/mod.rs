@@ -7651,6 +7651,7 @@ fn build_summary_from_row(
     let status = effective_account_status(row);
     let enable_status = derive_upstream_account_enable_status(row.enabled != 0);
     let health_status = derive_upstream_account_health_status(
+        row.enabled != 0,
         &row.status,
         row.last_error.as_deref(),
         row.last_error_at.as_deref(),
@@ -9594,19 +9595,21 @@ fn derive_upstream_account_sync_state(raw_status: &str) -> &'static str {
 }
 
 fn derive_upstream_account_health_status(
+    enabled: bool,
     raw_status: &str,
     last_error: Option<&str>,
     last_error_at: Option<&str>,
     last_route_failure_at: Option<&str>,
     last_route_failure_kind: Option<&str>,
 ) -> &'static str {
+    if !enabled {
+        return UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL;
+    }
     let status = raw_status.trim().to_ascii_lowercase();
     let error_message = last_error.unwrap_or_default();
     if matches!(
         status.as_str(),
-        UPSTREAM_ACCOUNT_STATUS_ACTIVE
-            | UPSTREAM_ACCOUNT_STATUS_SYNCING
-            | UPSTREAM_ACCOUNT_STATUS_DISABLED
+        UPSTREAM_ACCOUNT_STATUS_ACTIVE | UPSTREAM_ACCOUNT_STATUS_SYNCING
     ) && is_transient_route_failure_error(
         last_error_at,
         last_route_failure_at,
@@ -9705,6 +9708,7 @@ fn classify_upstream_account_display_status(
         return UPSTREAM_ACCOUNT_STATUS_SYNCING;
     }
     let health_status = derive_upstream_account_health_status(
+        enabled,
         raw_status,
         last_error,
         last_error_at,
