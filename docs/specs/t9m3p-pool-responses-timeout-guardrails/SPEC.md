@@ -121,3 +121,4 @@
 
 - 2026-03-23: 创建 spec，冻结 `180s / 300s / 504` 的 timeout guardrails 边界、验收与验证要求。
 - 2026-03-23: 完成本地实现与 targeted regression；待 fast-track 交付收口。
+- 2026-03-23: 补齐总预算从首次 upstream 尝试起算、same-account retry 的 distinct-account 统计保持稳定，以及 OAuth `/v1/responses/compact` send-phase 也受总预算裁剪；本地 `cargo test` 全量通过。

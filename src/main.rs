@@ -9226,11 +9226,8 @@ async fn send_pool_request_with_failover(
         pool_uses_responses_timeout_failover_policy(original_uri, &method);
     let responses_total_timeout =
         pool_upstream_responses_total_timeout(&state.config, original_uri, &method);
-    let responses_total_timeout_started_at = responses_total_timeout.map(|_| {
-        failover_progress
-            .responses_total_timeout_started_at
-            .unwrap_or_else(Instant::now)
-    });
+    let mut responses_total_timeout_started_at =
+        failover_progress.responses_total_timeout_started_at;
     let send_timeout = pool_upstream_send_timeout(
         original_uri,
         &method,
@@ -9240,6 +9237,14 @@ async fn send_pool_request_with_failover(
     let mut excluded_ids = failover_progress.excluded_account_ids;
     let mut excluded_upstream_route_keys = failover_progress.excluded_upstream_route_keys;
     let mut last_error = failover_progress.last_error;
+    let mut attempted_account_ids = excluded_ids.iter().copied().collect::<HashSet<_>>();
+    if let Some(account_id) = last_error
+        .as_ref()
+        .and_then(|error| error.account.as_ref())
+        .map(|account| account.account_id)
+    {
+        attempted_account_ids.insert(account_id);
+    }
     let initial_errors_all_rate_limited = if failover_progress.attempt_count == 0 {
         true
     } else {
@@ -9255,7 +9260,7 @@ async fn send_pool_request_with_failover(
     let mut exhausted_accounts_all_rate_limited = initial_errors_all_rate_limited;
 
     'account_loop: loop {
-        let mut distinct_account_count = excluded_ids.len();
+        let mut distinct_account_count = attempted_account_ids.len();
         if let (Some(total_timeout), Some(started_at)) =
             (responses_total_timeout, responses_total_timeout_started_at)
             && pool_total_timeout_exhausted(total_timeout, started_at)
@@ -9595,7 +9600,8 @@ async fn send_pool_request_with_failover(
         timeout_route_failover_pending = false;
 
         excluded_ids.push(account.account_id);
-        distinct_account_count = excluded_ids.len();
+        attempted_account_ids.insert(account.account_id);
+        distinct_account_count = attempted_account_ids.len();
         let distinct_account_index = distinct_account_count as i64;
         let upstream_route_key = account.upstream_route_key();
         let api_key_target_url = match &account.auth {
@@ -9627,10 +9633,14 @@ async fn send_pool_request_with_failover(
         let client = state.http_clients.client_for_pool_upstream();
 
         for same_account_attempt in 0..same_account_attempts {
+            let attempt_total_timeout_started_at = ensure_pool_total_timeout_started_at(
+                responses_total_timeout,
+                &mut responses_total_timeout_started_at,
+            );
             let Some(attempt_pre_first_byte_timeout) = pool_timeout_budget_with_total_limit(
                 pre_first_byte_timeout,
                 responses_total_timeout,
-                responses_total_timeout_started_at,
+                attempt_total_timeout_started_at,
             ) else {
                 let final_error = build_pool_total_timeout_exhausted_error(
                     responses_total_timeout.expect("responses total timeout should be present"),
@@ -9660,7 +9670,7 @@ async fn send_pool_request_with_failover(
             let Some(attempt_send_timeout) = pool_timeout_budget_with_total_limit(
                 send_timeout,
                 responses_total_timeout,
-                responses_total_timeout_started_at,
+                attempt_total_timeout_started_at,
             ) else {
                 let final_error = build_pool_total_timeout_exhausted_error(
                     responses_total_timeout.expect("responses total timeout should be present"),
@@ -9989,7 +9999,7 @@ async fn send_pool_request_with_failover(
                             original_uri,
                             headers,
                             oauth_body,
-                            handshake_timeout,
+                            attempt_send_timeout,
                             attempt_pre_first_byte_timeout,
                             Some(account.account_id),
                             access_token,
@@ -10463,7 +10473,7 @@ async fn proxy_openai_v1_via_pool(
         pool_upstream_first_chunk_timeout(&state.config, original_uri, &method, handshake_timeout);
     let responses_total_timeout =
         pool_upstream_responses_total_timeout(&state.config, original_uri, &method);
-    let responses_total_timeout_started_at = responses_total_timeout.map(|_| Instant::now());
+    let mut responses_total_timeout_started_at = None;
     let header_sticky_key = extract_sticky_key_from_headers(&headers);
     let body_size_hint_exact = body
         .size_hint()
@@ -10626,10 +10636,25 @@ async fn proxy_openai_v1_via_pool(
                     let replay_status_rx = replayable.status_rx.clone();
                     let replay_cancel = replayable.cancel.clone();
                     let connect_started = Instant::now();
+                    let attempt_total_timeout_started_at = ensure_pool_total_timeout_started_at(
+                        responses_total_timeout,
+                        &mut responses_total_timeout_started_at,
+                    );
                     let attempt_pre_first_byte_timeout = pool_timeout_budget_with_total_limit(
                         pre_first_byte_timeout,
                         responses_total_timeout,
-                        responses_total_timeout_started_at,
+                        attempt_total_timeout_started_at,
+                    )
+                    .expect("fresh responses total timeout budget should be available");
+                    let attempt_send_timeout = pool_timeout_budget_with_total_limit(
+                        pool_upstream_send_timeout(
+                            original_uri,
+                            &method,
+                            handshake_timeout,
+                            pre_first_byte_timeout,
+                        ),
+                        responses_total_timeout,
+                        attempt_total_timeout_started_at,
                     )
                     .expect("fresh responses total timeout budget should be available");
                     let oauth_response = oauth_bridge::send_oauth_upstream_request(
@@ -10641,7 +10666,7 @@ async fn proxy_openai_v1_via_pool(
                             body: replayable.body,
                             debug_body_prefix: None,
                         },
-                        handshake_timeout,
+                        attempt_send_timeout,
                         attempt_pre_first_byte_timeout,
                         Some(initial_account.account_id),
                         access_token,
@@ -10860,6 +10885,10 @@ async fn proxy_openai_v1_via_pool(
                 );
 
                 let connect_started = Instant::now();
+                let attempt_total_timeout_started_at = ensure_pool_total_timeout_started_at(
+                    responses_total_timeout,
+                    &mut responses_total_timeout_started_at,
+                );
                 let send_timeout = pool_timeout_budget_with_total_limit(
                     pool_upstream_send_timeout(
                         original_uri,
@@ -10868,13 +10897,13 @@ async fn proxy_openai_v1_via_pool(
                         pre_first_byte_timeout,
                     ),
                     responses_total_timeout,
-                    responses_total_timeout_started_at,
+                    attempt_total_timeout_started_at,
                 )
                 .expect("fresh responses total timeout budget should be available");
                 let attempt_pre_first_byte_timeout = pool_timeout_budget_with_total_limit(
                     pre_first_byte_timeout,
                     responses_total_timeout,
-                    responses_total_timeout_started_at,
+                    attempt_total_timeout_started_at,
                 )
                 .expect("fresh responses total timeout budget should be available");
                 let upstream = match timeout(send_timeout, request.send()).await {
@@ -13376,6 +13405,16 @@ fn pool_timeout_budget_with_total_limit(
         (Some(total_timeout), None) => Some(timeout.min(total_timeout)),
         (None, _) => Some(timeout),
     }
+}
+
+fn ensure_pool_total_timeout_started_at(
+    total_timeout: Option<Duration>,
+    total_timeout_started_at: &mut Option<Instant>,
+) -> Option<Instant> {
+    if total_timeout.is_some() && total_timeout_started_at.is_none() {
+        *total_timeout_started_at = Some(Instant::now());
+    }
+    *total_timeout_started_at
 }
 
 fn pool_total_timeout_exhausted(total_timeout: Duration, started_at: Instant) -> bool {

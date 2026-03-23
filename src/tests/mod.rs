@@ -10922,6 +10922,13 @@ async fn spawn_oauth_codex_http_failure(
 }
 
 async fn oauth_codex_capture_upstream(request: axum::extract::Request) -> Response {
+    if request
+        .uri()
+        .query()
+        .is_some_and(|query| query.contains("mode=delay"))
+    {
+        tokio::time::sleep(Duration::from_millis(350)).await;
+    }
     let path = request.uri().path().to_string();
     let mut forwarded_header_names = request
         .headers()
@@ -13780,7 +13787,7 @@ async fn capture_target_pool_route_timeout_can_switch_twice_then_succeed() {
         .expect("read timeout double-switch success body");
 
     wait_for_codex_invocations(&state.pool, 1).await;
-    wait_for_pool_attempt_row_count(&state.pool, 3).await;
+    wait_for_pool_attempt_row_count(&state.pool, 2).await;
 
     let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
         r#"
@@ -14238,7 +14245,7 @@ async fn capture_target_pool_route_total_timeout_exhausts_before_third_route() {
     );
 
     wait_for_codex_invocations(&state.pool, 1).await;
-    wait_for_pool_attempt_row_count(&state.pool, 3).await;
+    wait_for_pool_attempt_row_count(&state.pool, 2).await;
 
     let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
         r#"
@@ -14411,7 +14418,7 @@ async fn pool_openai_v1_responses_compact_total_timeout_exhausts_before_third_ro
     );
 
     wait_for_codex_invocations(&state.pool, 1).await;
-    wait_for_pool_attempt_row_count(&state.pool, 3).await;
+    wait_for_pool_attempt_row_count(&state.pool, 2).await;
 
     let slow_one_requests = slow_one_requests.lock().await;
     let slow_two_requests = slow_two_requests.lock().await;
@@ -14458,6 +14465,191 @@ async fn pool_openai_v1_responses_compact_total_timeout_exhausts_before_third_ro
     slow_one_handle.abort();
     slow_two_handle.abort();
     fast_three_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_openai_v1_responses_total_timeout_starts_at_first_upstream_attempt() {
+    let (fast_upstream_base, attempts, fast_upstream_handle) =
+        spawn_pool_retry_upstream(&[("Bearer route-one", 0)]).await;
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.pool_upstream_responses_attempt_timeout = Duration::from_millis(180);
+    config.pool_upstream_responses_total_timeout = Duration::from_millis(300);
+    config.openai_proxy_request_read_timeout = Duration::from_millis(500);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Fast Route One",
+        "route-one",
+        None,
+        None,
+        Some(fast_upstream_base.as_str()),
+    )
+    .await;
+
+    let request_body =
+        br#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-timeout-budget-start-007"}"#
+            .to_vec();
+    let content_length =
+        HeaderValue::from_str(&request_body.len().to_string()).expect("content length header");
+    let slow_body = stream::unfold(Some(request_body), |state| async move {
+        match state {
+            Some(body) => {
+                tokio::time::sleep(Duration::from_millis(220)).await;
+                Some((Ok::<Bytes, Infallible>(Bytes::from(body)), None))
+            }
+            None => None,
+        }
+    });
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+            (http_header::CONTENT_LENGTH, content_length),
+        ]),
+        Body::from_stream(slow_body),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read delayed body success response");
+
+    let attempts = attempts.lock().expect("lock fast route attempts");
+    assert_eq!(attempts.get("Bearer route-one").copied(), Some(1));
+    drop(attempts);
+
+    fast_upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_openai_v1_responses_total_timeout_preserves_distinct_account_count_on_same_account_retry_exhaustion()
+ {
+    #[derive(Debug, sqlx::FromRow)]
+    struct PersistedPayloadRow {
+        error_message: Option<String>,
+        payload: Option<String>,
+    }
+
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptRouteRow {
+        distinct_account_index: i64,
+    }
+
+    let (retry_upstream_base, retry_attempts, retry_upstream_handle) =
+        spawn_pool_retry_upstream(&[("Bearer route-one", 2)]).await;
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.pool_upstream_responses_attempt_timeout = Duration::from_millis(180);
+    config.pool_upstream_responses_total_timeout = Duration::from_millis(300);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Retry Route One",
+        "route-one",
+        None,
+        None,
+        Some(retry_upstream_base.as_str()),
+    )
+    .await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-timeout-budget-distinct-008"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read same-account timeout exhaustion response");
+    let response_payload: Value =
+        serde_json::from_slice(&body).expect("decode same-account timeout exhaustion body");
+    assert!(
+        response_payload["error"]
+            .as_str()
+            .expect("timeout exhaustion error should be present")
+            .contains("pool upstream total timeout exhausted")
+    );
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    wait_for_pool_attempt_row_count(&state.pool, 2).await;
+
+    let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
+        r#"
+        SELECT
+            distinct_account_index
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load same-account timeout exhaustion rows");
+    assert_eq!(attempt_rows.len(), 2);
+    assert_eq!(attempt_rows[0].distinct_account_index, 1);
+    assert_eq!(attempt_rows[1].distinct_account_index, 1);
+
+    let attempts = retry_attempts.lock().expect("lock retry route attempts");
+    assert_eq!(attempts.get("Bearer route-one").copied(), Some(1));
+    drop(attempts);
+
+    let row = sqlx::query_as::<_, PersistedPayloadRow>(
+        r#"
+        SELECT error_message, payload
+        FROM codex_invocations
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load same-account timeout exhaustion payload");
+    let payload: Value = serde_json::from_str(
+        row.payload
+            .as_deref()
+            .expect("same-account timeout exhaustion payload should be present"),
+    )
+    .expect("decode same-account timeout exhaustion payload");
+    assert!(
+        row.error_message
+            .as_deref()
+            .is_some_and(|msg| msg.contains("pool upstream total timeout exhausted"))
+    );
+    assert_eq!(
+        payload["failureKind"].as_str(),
+        Some(PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED),
+    );
+    assert_eq!(payload["poolAttemptCount"].as_i64(), Some(1));
+    assert_eq!(payload["poolDistinctAccountCount"].as_i64(), Some(1));
+    assert_eq!(
+        payload["poolAttemptTerminalReason"].as_str(),
+        Some(PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED),
+    );
+
+    retry_upstream_handle.abort();
 }
 
 #[tokio::test]
@@ -15847,6 +16039,87 @@ async fn pool_route_large_oauth_responses_falls_back_to_api_key_account() {
     assert_eq!(selected_at.len(), 2);
     assert_eq!(selected_at[0], (oauth_id, None));
     assert!(selected_at[1].1.is_some());
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_route_oauth_compact_total_timeout_caps_send_phase() {
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
+
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_capture_upstream().await;
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
+    )
+    .await;
+
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.openai_proxy_compact_handshake_timeout = Duration::from_millis(600);
+    config.pool_upstream_responses_total_timeout = Duration::from_millis(300);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_oauth_account(&state, "Compact OAuth", "oauth-compact").await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(
+            "/v1/responses/compact?mode=delay"
+                .parse()
+                .expect("valid compact uri"),
+        ),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(
+            serde_json::to_vec(&json!({
+                "model": "gpt-5.4",
+                "input": [{"role": "user", "content": "compact me slowly"}]
+            }))
+            .expect("serialize oauth compact timeout body"),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+    let payload: Value = serde_json::from_slice(
+        &to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read oauth compact timeout response"),
+    )
+    .expect("decode oauth compact timeout response");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some("pool upstream total timeout exhausted after 300ms")
+    );
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    let failure_kind: Option<String> = sqlx::query_scalar(
+        r#"
+        SELECT json_extract(payload, '$.failureKind')
+        FROM codex_invocations
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load oauth compact timeout failure kind");
+    assert_eq!(
+        failure_kind.as_deref(),
+        Some(PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED),
+    );
 
     upstream_handle.abort();
 }
