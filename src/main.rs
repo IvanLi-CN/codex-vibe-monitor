@@ -9119,7 +9119,6 @@ async fn send_pool_request_with_failover(
         .filter(|account| !excluded_upstream_route_keys.contains(&account.upstream_route_key()));
     let mut same_account_attempts = same_account_attempts.max(1);
     let mut attempt_count = failover_progress.attempt_count;
-    let mut distinct_account_count = excluded_ids.len();
     let mut timeout_route_failover_pending = failover_progress.timeout_route_failover_pending;
     let mut exhausted_accounts_all_rate_limited = initial_errors_all_rate_limited;
 
@@ -9138,16 +9137,17 @@ async fn send_pool_request_with_failover(
                 } else {
                     PROXY_FAILURE_POOL_MAX_DISTINCT_ACCOUNTS_EXHAUSTED
                 };
+            let terminal_message = if terminal_failure_kind
+                == PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT
+            {
+                "no alternate upstream route is available after timeout".to_string()
+            } else {
+                "pool distinct-account retry budget exhausted".to_string()
+            };
             let mut final_error = last_error.unwrap_or(PoolUpstreamError {
                 account: None,
                 status: StatusCode::BAD_GATEWAY,
-                message: if terminal_failure_kind
-                    == PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT
-                {
-                    "no alternate upstream route is available after timeout".to_string()
-                } else {
-                    "pool distinct-account retry budget exhausted".to_string()
-                },
+                message: terminal_message.clone(),
                 failure_kind: terminal_failure_kind,
                 connect_latency_ms: 0.0,
                 upstream_error_code: None,
@@ -9159,7 +9159,15 @@ async fn send_pool_request_with_failover(
             if exhausted_accounts_all_rate_limited && distinct_account_count > 0 {
                 final_error.status = StatusCode::TOO_MANY_REQUESTS;
                 final_error.message = POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string();
+                final_error.failure_kind = PROXY_FAILURE_POOL_ALL_ACCOUNTS_RATE_LIMITED;
+            } else {
+                final_error.status = StatusCode::BAD_GATEWAY;
+                final_error.message = terminal_message;
+                final_error.failure_kind = terminal_failure_kind;
             }
+            final_error.upstream_error_code = None;
+            final_error.upstream_error_message = None;
+            final_error.upstream_request_id = None;
             final_error.attempt_summary = pool_attempt_summary(
                 attempt_count,
                 distinct_account_count,

@@ -13461,6 +13461,10 @@ async fn capture_target_pool_route_timeout_exhausts_after_three_routes() {
             .expect("timeout terminal payload should be present"),
     )
     .expect("decode timeout terminal payload");
+    assert_eq!(
+        payload["failureKind"].as_str(),
+        Some(PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT),
+    );
     assert_eq!(payload["poolAttemptCount"].as_i64(), Some(3));
     assert_eq!(payload["poolDistinctAccountCount"].as_i64(), Some(3));
     assert_eq!(
