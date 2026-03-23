@@ -648,8 +648,9 @@ impl AccountOpCoordinator {
     fn dispatch_maintenance_sync(
         &self,
         state: Arc<AppState>,
-        id: i64,
+        plan: MaintenanceDispatchPlan,
     ) -> Result<MaintenanceQueueOutcome, anyhow::Error> {
+        let id = plan.account_id;
         let handle = self.actor_handle(id);
         if handle.maintenance_pending.swap(true, Ordering::AcqRel) {
             return Ok(MaintenanceQueueOutcome::Deduped);
@@ -677,8 +678,7 @@ impl AccountOpCoordinator {
                     AccountCommand::MaintenanceSync,
                     handle,
                     move |state, id| async move {
-                        sync_upstream_account_by_id(state.as_ref(), id, SyncCause::Maintenance)
-                            .await
+                        execute_queued_maintenance_sync(state.as_ref(), plan, id).await
                     },
                 )
                 .await
@@ -5381,7 +5381,7 @@ async fn run_upstream_account_maintenance_once(state: Arc<AppState>) -> Result<(
         match state
             .upstream_accounts
             .account_ops
-            .dispatch_maintenance_sync(state.clone(), plan.account_id)
+            .dispatch_maintenance_sync(state.clone(), plan)
         {
             Ok(MaintenanceQueueOutcome::Queued) => queued += 1,
             Ok(MaintenanceQueueOutcome::Deduped) => deduped += 1,
@@ -5471,6 +5471,47 @@ async fn load_maintenance_candidates(pool: &Pool<Sqlite>) -> Result<Vec<Maintena
     .map_err(Into::into)
 }
 
+async fn load_maintenance_candidate(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+) -> Result<Option<MaintenanceCandidateRow>> {
+    sqlx::query_as::<_, MaintenanceCandidateRow>(
+        r#"
+        SELECT
+            account.id,
+            account.status,
+            account.last_synced_at,
+            account.last_error_at,
+            account.token_expires_at,
+            (
+                SELECT sample.primary_used_percent
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS primary_used_percent,
+            (
+                SELECT sample.secondary_used_percent
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS secondary_used_percent
+        FROM pool_upstream_accounts account
+        WHERE account.id = ?1
+          AND account.kind = ?2
+          AND account.enabled = 1
+          AND account.status <> ?3
+        "#,
+    )
+    .bind(account_id)
+    .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
+    .bind(UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH)
+    .fetch_optional(pool)
+    .await
+    .map_err(Into::into)
+}
+
 fn maintenance_refresh_due(
     candidate: &MaintenanceCandidateRow,
     refresh_lead_time: Duration,
@@ -5546,23 +5587,52 @@ fn maintenance_last_attempt_at(candidate: &MaintenanceCandidateRow) -> Option<Da
     }
 }
 
+fn maintenance_interval_is_due(
+    candidate: &MaintenanceCandidateRow,
+    interval_secs: u64,
+    now: DateTime<Utc>,
+) -> bool {
+    maintenance_last_attempt_at(candidate)
+        .map(|last| now.signed_duration_since(last).num_seconds() >= interval_secs as i64)
+        .unwrap_or(true)
+}
+
+fn maintenance_interval_for_tier(
+    tier: MaintenanceTier,
+    settings: PoolRoutingMaintenanceSettings,
+) -> u64 {
+    match tier {
+        MaintenanceTier::Priority => settings.primary_sync_interval_secs,
+        MaintenanceTier::Secondary => settings.secondary_sync_interval_secs,
+    }
+}
+
 fn maintenance_plan_is_due(
     candidate: &MaintenanceCandidateRow,
     tier: MaintenanceTier,
     settings: PoolRoutingMaintenanceSettings,
-    refresh_lead_time: Duration,
     now: DateTime<Utc>,
 ) -> bool {
-    if maintenance_refresh_due(candidate, refresh_lead_time, now) {
-        return true;
-    }
-    let interval_secs = match tier {
-        MaintenanceTier::Priority => settings.primary_sync_interval_secs,
-        MaintenanceTier::Secondary => settings.secondary_sync_interval_secs,
+    maintenance_interval_is_due(
+        candidate,
+        maintenance_interval_for_tier(tier, settings),
+        now,
+    )
+}
+
+async fn execute_queued_maintenance_sync(
+    state: &AppState,
+    plan: MaintenanceDispatchPlan,
+    id: i64,
+) -> Result<Option<UpstreamAccountDetail>> {
+    let Some(candidate) = load_maintenance_candidate(&state.pool, id).await? else {
+        return Ok(None);
     };
-    maintenance_last_attempt_at(candidate)
-        .map(|last| now.signed_duration_since(last).num_seconds() >= interval_secs as i64)
-        .unwrap_or(true)
+    if !maintenance_interval_is_due(&candidate, plan.sync_interval_secs, Utc::now()) {
+        return Ok(None);
+    }
+
+    sync_upstream_account_by_id(state, id, SyncCause::Maintenance).await
 }
 
 fn resolve_due_maintenance_dispatch_plans(
@@ -5591,13 +5661,7 @@ fn resolve_due_maintenance_dispatch_plans(
 
     let mut plans = Vec::new();
     for candidate in forced_priority {
-        if maintenance_plan_is_due(
-            &candidate,
-            MaintenanceTier::Priority,
-            settings,
-            refresh_lead_time,
-            now,
-        ) {
+        if maintenance_plan_is_due(&candidate, MaintenanceTier::Priority, settings, now) {
             plans.push(MaintenanceDispatchPlan {
                 account_id: candidate.id,
                 tier: MaintenanceTier::Priority,
@@ -5611,7 +5675,7 @@ fn resolve_due_maintenance_dispatch_plans(
         } else {
             MaintenanceTier::Secondary
         };
-        if maintenance_plan_is_due(&candidate, tier, settings, refresh_lead_time, now) {
+        if maintenance_plan_is_due(&candidate, tier, settings, now) {
             plans.push(MaintenanceDispatchPlan {
                 account_id: candidate.id,
                 tier,
@@ -5623,13 +5687,7 @@ fn resolve_due_maintenance_dispatch_plans(
         }
     }
     for candidate in secondary {
-        if maintenance_plan_is_due(
-            &candidate,
-            MaintenanceTier::Secondary,
-            settings,
-            refresh_lead_time,
-            now,
-        ) {
+        if maintenance_plan_is_due(&candidate, MaintenanceTier::Secondary, settings, now) {
             plans.push(MaintenanceDispatchPlan {
                 account_id: candidate.id,
                 tier: MaintenanceTier::Secondary,
@@ -13405,6 +13463,134 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn queued_maintenance_sync_revalidates_due_window_before_execution() {
+        async fn handler(State(requests): State<Arc<AtomicUsize>>) -> (StatusCode, String) {
+            requests.fetch_add(1, Ordering::SeqCst);
+            (
+                StatusCode::OK,
+                json!({
+                    "planType": "team",
+                    "rateLimit": {
+                        "primaryWindow": {
+                            "usedPercent": 8,
+                            "windowDurationMins": 300,
+                            "resetsAt": 1771322400
+                        },
+                        "secondaryWindow": {
+                            "usedPercent": 8,
+                            "windowDurationMins": 10080,
+                            "resetsAt": 1771927200
+                        }
+                    }
+                })
+                .to_string(),
+            )
+        }
+
+        let requests = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .route("/backend-api/wham/usage", get(handler))
+            .with_state(requests.clone());
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind usage server");
+        let addr = listener.local_addr().expect("usage server addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve usage server");
+        });
+
+        let state = test_app_state_with_usage_base(&format!("http://{addr}/backend-api")).await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Queued Revalidation OAuth",
+            "queued-revalidation@example.com",
+            "org_queued_revalidation",
+            "user_queued_revalidation",
+        )
+        .await;
+        insert_limit_sample_with_usage(
+            &state.pool,
+            account_id,
+            "2026-03-23T11:00:00Z",
+            Some(12.0),
+            Some(10.0),
+        )
+        .await;
+
+        let due_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(10));
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET last_synced_at = ?2,
+                last_successful_sync_at = ?2
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .bind(&due_at)
+        .execute(&state.pool)
+        .await
+        .expect("seed due sync time");
+
+        let held_slot = state
+            .upstream_accounts
+            .account_ops
+            .maintenance_slots
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("hold maintenance slot");
+        assert_eq!(
+            state
+                .upstream_accounts
+                .account_ops
+                .dispatch_maintenance_sync(
+                    state.clone(),
+                    MaintenanceDispatchPlan {
+                        account_id,
+                        tier: MaintenanceTier::Priority,
+                        sync_interval_secs: 300,
+                    },
+                )
+                .expect("queue maintenance plan"),
+            MaintenanceQueueOutcome::Queued
+        );
+
+        let fresh_sync_at = format_utc_iso(Utc::now());
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET last_synced_at = ?2,
+                last_successful_sync_at = ?2
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .bind(&fresh_sync_at)
+        .execute(&state.pool)
+        .await
+        .expect("refresh sync time before queued maintenance executes");
+
+        drop(held_slot);
+        state.upstream_accounts.drain_background_tasks().await;
+
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            0,
+            "queued maintenance should skip once a newer sync makes the plan stale"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn maintenance_dedupe_flag_resets_after_panicking_job() {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
         let account_id = 777_i64;
@@ -13550,7 +13736,7 @@ mod tests {
                 MaintenanceCandidateRow {
                     id: 6,
                     status: UPSTREAM_ACCOUNT_STATUS_ACTIVE.to_string(),
-                    last_synced_at: Some("2026-03-23T11:59:00Z".to_string()),
+                    last_synced_at: Some("2026-03-23T11:54:00Z".to_string()),
                     last_error_at: None,
                     token_expires_at: Some("2026-03-23T12:10:00Z".to_string()),
                     primary_used_percent: Some(4.0),
@@ -13572,6 +13758,39 @@ mod tests {
         assert_eq!(plan_map.get(&5), Some(&(MaintenanceTier::Priority, 300)));
         assert_eq!(plan_map.get(&6), Some(&(MaintenanceTier::Priority, 300)));
         assert!(!plan_map.contains_key(&3));
+    }
+
+    #[test]
+    fn resolve_due_maintenance_dispatch_plans_keeps_refresh_due_accounts_on_primary_cadence() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 3, 23, 12, 0, 0)
+            .single()
+            .expect("valid time");
+        let settings = PoolRoutingMaintenanceSettings {
+            primary_sync_interval_secs: 300,
+            secondary_sync_interval_secs: 1800,
+            priority_available_account_cap: 100,
+        };
+
+        let plans = resolve_due_maintenance_dispatch_plans(
+            vec![MaintenanceCandidateRow {
+                id: 7,
+                status: UPSTREAM_ACCOUNT_STATUS_ACTIVE.to_string(),
+                last_synced_at: Some("2026-03-23T11:59:00Z".to_string()),
+                last_error_at: None,
+                token_expires_at: Some("2026-03-23T12:10:00Z".to_string()),
+                primary_used_percent: Some(6.0),
+                secondary_used_percent: Some(6.0),
+            }],
+            settings,
+            Duration::from_secs(15 * 60),
+            now,
+        );
+
+        assert!(
+            plans.is_empty(),
+            "refresh-due accounts should stay on the configured primary cadence until the interval elapses"
+        );
     }
 
     #[tokio::test]
