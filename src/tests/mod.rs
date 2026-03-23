@@ -15773,7 +15773,7 @@ async fn pool_openai_v1_responses_still_times_out_before_first_chunk() {
         .await
         .expect("read responses pool error body");
     let payload = String::from_utf8_lossy(&body);
-    assert!(payload.contains("first upstream chunk"));
+    assert!(payload.contains("no alternate upstream route is available after timeout"));
 
     upstream_handle.abort();
 }
