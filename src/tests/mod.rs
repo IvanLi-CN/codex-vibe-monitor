@@ -16385,7 +16385,7 @@ async fn pool_route_oauth_passthrough_streams_without_eager_prebuffering() {
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
     tokio::spawn(async move {
         let _ = tx.send(Ok(Bytes::from_static(b"{\"messages\":["))).await;
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
         let _ = tx
             .send(Ok(Bytes::from_static(
                 b"{\"role\":\"user\",\"content\":\"hello\"}]}",
