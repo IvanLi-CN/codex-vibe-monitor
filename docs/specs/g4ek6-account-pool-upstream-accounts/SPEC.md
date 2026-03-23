@@ -223,6 +223,39 @@
 
 - source_type: storybook_canvas
   target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Account Pool / Pages / Upstream Accounts / List / Status Filters
+  state: split-status-filters
+  evidence_note: 验证账号列表已拆分为工作状态、启用状态、账号状态三组独立筛选，并且服务端筛选后的列表结果只保留符合条件的账号。
+  image:
+  ![Upstream accounts split status filters](./assets/upstream-accounts-status-filters.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Account Pool / Pages / Upstream Accounts / List / Bulk Selection
+  state: cross-page-bulk-selection
+  evidence_note: 验证列表在高密度账号样本下可展示跨页选择提示条，以及与批量启用、停用、分组和标签操作并排的主操作布局。
+  image:
+  ![Upstream accounts bulk selection bar](./assets/upstream-accounts-bulk-selection.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Account Pool / Pages / Upstream Accounts / Overlays / Detail Drawer
+  state: detail-drawer-status-breakdown
+  evidence_note: 验证账号详情抽屉顶部展示了解耦后的启用状态、工作状态、同步状态和账号固有状态，并保留母号标记与核心操作入口。
+  image:
+  ![Upstream account detail drawer status breakdown](./assets/upstream-accounts-detail-drawer-statuses.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
   submission_gate: approved
