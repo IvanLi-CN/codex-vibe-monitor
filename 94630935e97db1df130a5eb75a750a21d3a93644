@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.20.4",
+  "base_stable_version": "1.20.3",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-23T09:33:44Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.20.4",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "c23cd5ae693fd5c219d7f13dbe7482c9e2fd7341",
+  "pr_number": 206,
+  "pr_title": "fix(pool): tighten responses timeout failover",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.20.4",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.20.4,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "94630935e97db1df130a5eb75a750a21d3a93644",
+  "type_label": "type:patch"
+}
