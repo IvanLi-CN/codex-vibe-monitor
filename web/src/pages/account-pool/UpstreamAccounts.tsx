@@ -65,7 +65,7 @@ import { validateUpstreamBaseUrl } from '../../lib/upstreamBaseUrl'
 import { generatePoolRoutingKey } from '../../lib/poolRouting'
 import { applyMotherUpdateToItems } from '../../lib/upstreamMother'
 import { cn } from '../../lib/utils'
-import { useTranslation } from '../../i18n'
+import { useTranslation, type TranslationValues } from '../../i18n'
 
 type AccountDraft = {
   displayName: string
@@ -400,7 +400,7 @@ function compactSupportLabel(
 
 function compactSupportHint(
   support: CompactSupportState | null | undefined,
-  t: (key: string, options?: Record<string, unknown>) => string,
+  t: (key: string, values?: TranslationValues) => string,
 ) {
   if (!support || support.status === 'unknown') return null
   const statusLabel =
@@ -906,7 +906,7 @@ export default function UpstreamAccountsPage() {
   const notifyMotherSwitches = useMotherSwitchNotifications()
 
   const [draft, setDraft] = useState<AccountDraft>(buildDraft(null))
-  const [routingDraft, setRoutingDraft] = useState(() => buildRoutingDraft(null, null))
+  const [routingDraft, setRoutingDraft] = useState(() => buildRoutingDraft(null))
   const [actionError, setActionError] = useState<ActionErrorState>(() => ({
     routing: null,
     accountMessages: {},

@@ -942,6 +942,7 @@ function createStore(): StoryStore {
   return {
     writesEnabled: true,
     routing: {
+      writesEnabled: true,
       apiKeyConfigured: true,
       maskedApiKey: 'pool-live••••••c0de',
       maintenance: clone(defaultRoutingMaintenance),
