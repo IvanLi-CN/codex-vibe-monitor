@@ -933,6 +933,25 @@ export default function UpstreamAccountsPage() {
   const accountStatusLabel = (status: string) => t(`accountPool.upstreamAccounts.status.${status}`)
   const accountSummaryStatusLabel = (item: UpstreamAccountSummary) =>
     accountStatusLabel(accountDisplayStatus(item))
+  const accountActionLabel = (action?: string | null) => {
+    if (!action) return t('accountPool.upstreamAccounts.latestAction.empty')
+    const key = `accountPool.upstreamAccounts.latestAction.actions.${action}`
+    const translated = t(key)
+    return translated === key ? action : translated
+  }
+  const accountActionSourceLabel = (source?: string | null) => {
+    if (!source) return null
+    const key = `accountPool.upstreamAccounts.latestAction.sources.${source}`
+    const translated = t(key)
+    return translated === key ? source : translated
+  }
+  const accountActionReasonLabel = (reason?: string | null) => {
+    if (!reason) return null
+    const key = `accountPool.upstreamAccounts.latestAction.reasons.${reason}`
+    const translated = t(key)
+    return translated === key ? reason : translated
+  }
+  const selectedRecentActions = selectedDetail?.recentActions ?? []
   const accountKindLabel = (kind: string) =>
     kind === 'oauth_codex'
       ? t('accountPool.upstreamAccounts.kind.oauth')
@@ -1697,6 +1716,7 @@ export default function UpstreamAccountsPage() {
                 sync: t('accountPool.upstreamAccounts.table.syncAndCall'),
                 lastSuccess: t('accountPool.upstreamAccounts.table.lastSuccessShort'),
                 lastCall: t('accountPool.upstreamAccounts.table.lastCallShort'),
+                latestAction: t('accountPool.upstreamAccounts.table.latestActionShort'),
                 windows: t('accountPool.upstreamAccounts.table.windows'),
                 never: t('accountPool.upstreamAccounts.never'),
                 primary: t('accountPool.upstreamAccounts.primaryWindowLabel'),
@@ -1714,6 +1734,8 @@ export default function UpstreamAccountsPage() {
                   t('accountPool.upstreamAccounts.table.hiddenTagsA11y', { count, names }),
                 status: accountSummaryStatusLabel,
                 statusValue: (item) => accountDisplayStatus(item),
+                actionSource: (item) => accountActionSourceLabel(item.lastActionSource),
+                actionReason: (item) => accountActionReasonLabel(item.lastActionReasonCode),
               }}
             />
 
@@ -2368,10 +2390,107 @@ export default function UpstreamAccountsPage() {
                           </div>
                         </Alert>
                       ) : null}
-                      <p className="metric-label">{t('accountPool.upstreamAccounts.fields.lastError')}</p>
-                      <p className="mt-2 text-sm leading-6 text-base-content/75">{selectedDetail.lastError ?? t('accountPool.upstreamAccounts.noError')}</p>
-                      <p className="mt-2 text-xs text-base-content/55">{formatDateTime(selectedDetail.lastErrorAt)}</p>
+                      <p className="metric-label">{t('accountPool.upstreamAccounts.latestAction.title')}</p>
+                      {selectedDetail.lastAction ? (
+                        <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                          <DetailField
+                            label={t('accountPool.upstreamAccounts.latestAction.fields.action')}
+                            value={accountActionLabel(selectedDetail.lastAction)}
+                          />
+                          <DetailField
+                            label={t('accountPool.upstreamAccounts.latestAction.fields.source')}
+                            value={
+                              accountActionSourceLabel(selectedDetail.lastActionSource)
+                              ?? t('accountPool.upstreamAccounts.latestAction.unknown')
+                            }
+                          />
+                          <DetailField
+                            label={t('accountPool.upstreamAccounts.latestAction.fields.reason')}
+                            value={
+                              accountActionReasonLabel(selectedDetail.lastActionReasonCode)
+                              ?? t('accountPool.upstreamAccounts.latestAction.unknown')
+                            }
+                          />
+                          <DetailField
+                            label={t('accountPool.upstreamAccounts.latestAction.fields.httpStatus')}
+                            value={
+                              Number.isFinite(selectedDetail.lastActionHttpStatus ?? NaN)
+                                ? `HTTP ${selectedDetail.lastActionHttpStatus}`
+                                : t('accountPool.upstreamAccounts.unavailable')
+                            }
+                          />
+                          <DetailField
+                            label={t('accountPool.upstreamAccounts.latestAction.fields.occurredAt')}
+                            value={formatDateTime(selectedDetail.lastActionAt)}
+                          />
+                          <DetailField
+                            label={t('accountPool.upstreamAccounts.latestAction.fields.invokeId')}
+                            value={selectedDetail.lastActionInvokeId ?? t('accountPool.upstreamAccounts.unavailable')}
+                          />
+                          <div className="metric-cell md:col-span-2 xl:col-span-3">
+                            <p className="metric-label">{t('accountPool.upstreamAccounts.latestAction.fields.message')}</p>
+                            <p className="mt-2 break-words text-sm leading-6 text-base-content/80">
+                              {selectedDetail.lastActionReasonMessage ?? selectedDetail.lastError ?? t('accountPool.upstreamAccounts.noError')}
+                            </p>
+                          </div>
+                        </div>
+                      ) : (
+                        <p className="mt-2 text-sm leading-6 text-base-content/75">
+                          {t('accountPool.upstreamAccounts.latestAction.empty')}
+                        </p>
+                      )}
                     </div>
+                  </CardContent>
+                </Card>
+
+                <Card className="border-base-300/80 bg-base-100/72">
+                  <CardHeader>
+                    <CardTitle>{t('accountPool.upstreamAccounts.recentActions.title')}</CardTitle>
+                    <CardDescription>{t('accountPool.upstreamAccounts.recentActions.description')}</CardDescription>
+                  </CardHeader>
+                  <CardContent>
+                    {selectedRecentActions.length === 0 ? (
+                      <p className="text-sm leading-6 text-base-content/68">
+                        {t('accountPool.upstreamAccounts.recentActions.empty')}
+                      </p>
+                    ) : (
+                      <div className="space-y-2">
+                        {selectedRecentActions.map((actionEvent) => (
+                          <div
+                            key={actionEvent.id}
+                            className="rounded-[1rem] border border-base-300/70 bg-base-100/70 p-3"
+                          >
+                            <div className="flex flex-wrap items-center gap-2">
+                              <Badge variant="secondary">{accountActionLabel(actionEvent.action)}</Badge>
+                              <Badge variant="secondary">
+                                {accountActionSourceLabel(actionEvent.source) ?? t('accountPool.upstreamAccounts.latestAction.unknown')}
+                              </Badge>
+                              {actionEvent.reasonCode ? (
+                                <Badge variant="secondary">
+                                  {accountActionReasonLabel(actionEvent.reasonCode)}
+                                </Badge>
+                              ) : null}
+                              {Number.isFinite(actionEvent.httpStatus ?? NaN) ? (
+                                <Badge variant="secondary">{`HTTP ${actionEvent.httpStatus}`}</Badge>
+                              ) : null}
+                              <span className="text-xs text-base-content/55">
+                                {formatDateTime(actionEvent.occurredAt)}
+                              </span>
+                            </div>
+                            {actionEvent.reasonMessage ? (
+                              <p className="mt-2 text-sm leading-6 text-base-content/75">
+                                {actionEvent.reasonMessage}
+                              </p>
+                            ) : null}
+                            {actionEvent.invokeId ? (
+                              <p className="mt-2 text-xs text-base-content/55">
+                                {t('accountPool.upstreamAccounts.latestAction.fields.invokeId')}: {actionEvent.invokeId}
+                              </p>
+                            ) : null}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
                 </>

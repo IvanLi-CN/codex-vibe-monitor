@@ -32,6 +32,7 @@ const labels = {
   sync: 'Sync / Call',
   lastSuccess: 'Sync',
   lastCall: 'Call',
+  latestAction: 'Latest',
   windows: 'Windows',
   never: 'Never',
   primary: '5h',
@@ -57,6 +58,9 @@ const labels = {
       error: 'Error',
       disabled: 'Disabled',
     })[item.displayStatus ?? item.status] ?? item.displayStatus ?? item.status,
+  actionSource: () => 'Call',
+  actionReason: (item: { lastActionReasonCode?: string | null }) =>
+    item.lastActionReasonCode ?? null,
 }
 
 function renderTable(items: UpstreamAccountSummary[]) {
@@ -125,6 +129,10 @@ describe('UpstreamAccountsTable', () => {
         planType: 'team',
         lastSuccessfulSyncAt: '2026-03-16T01:55:00.000Z',
         lastActivityAt: '2026-03-16T02:05:00.000Z',
+        lastActionSource: 'call',
+        lastActionReasonCode: 'upstream_http_429_quota_exhausted',
+        lastActionHttpStatus: 429,
+        lastActionAt: '2026-03-16T02:06:00.000Z',
         primaryWindow: {
           usedPercent: 42,
           usedText: '42 requests',
@@ -153,6 +161,9 @@ describe('UpstreamAccountsTable', () => {
     expect(html).toContain('Windows')
     expect(html).toContain('Sync / Call')
     expect(html).toContain('Call')
+    expect(html).toContain('Latest')
+    expect(html).toContain('upstream_http_429_quota_exhausted')
+    expect(html).toContain('HTTP 429')
     expect(html).toContain('font-mono tabular-nums')
     expect(html).toContain('Duplicate')
     expect(html).toContain('Mother')

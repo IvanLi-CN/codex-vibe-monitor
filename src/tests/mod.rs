@@ -11837,7 +11837,7 @@ async fn resolve_pool_account_for_request_defers_sticky_binding_until_success() 
         "sticky binding should not move before request success"
     );
 
-    record_pool_route_success(&state.pool, account.account_id, Some("sticky-001"))
+    record_pool_route_success(&state.pool, account.account_id, Some("sticky-001"), None)
         .await
         .expect("record route success");
 
@@ -12023,6 +12023,82 @@ async fn pool_route_switches_accounts_immediately_after_upstream_429() {
         .expect("sticky route should move to the successful account");
     assert_eq!(route_account_id, secondary_id);
     assert_ne!(route_account_id, primary_id);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_route_switches_accounts_immediately_after_upstream_402() {
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_static_failure_responses_upstream(
+        &[("Bearer upstream-primary", StatusCode::PAYMENT_REQUIRED)],
+    )
+    .await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let secondary_id =
+        insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-402-switch"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read proxy response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode proxy response");
+    assert_eq!(payload["authorization"], "Bearer upstream-secondary");
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(1));
+    drop(attempts);
+
+    let primary_status: String =
+        sqlx::query_scalar("SELECT status FROM pool_upstream_accounts WHERE id = ?1")
+            .bind(primary_id)
+            .fetch_one(&state.pool)
+            .await
+            .expect("load primary status");
+    assert_eq!(primary_status, "error");
+    assert_eq!(
+        wait_for_test_sticky_route_account_id(&state.pool, "sticky-402-switch").await,
+        Some(secondary_id)
+    );
+
+    wait_for_pool_upstream_request_attempts(&state.pool, 2).await;
+    let attempt_rows = sqlx::query_as::<_, (i64, Option<String>)>(
+        r#"
+        SELECT distinct_account_index, failure_kind
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load attempt rows");
+    assert_eq!(attempt_rows[0].0, 1);
+    assert_eq!(
+        attempt_rows[0].1.as_deref(),
+        Some(PROXY_FAILURE_UPSTREAM_HTTP_402)
+    );
+    assert_eq!(attempt_rows[1].0, 2);
+    assert_eq!(attempt_rows[1].1, None);
 
     upstream_handle.abort();
 }
@@ -13954,7 +14030,7 @@ async fn pool_route_marks_oauth_missing_scopes_as_error_and_persists_upstream_de
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let account_id = insert_test_pool_oauth_account(&state, "Scope OAuth", "oauth-scope").await;
-    record_pool_route_success(&state.pool, account_id, Some("sticky-scope-001"))
+    record_pool_route_success(&state.pool, account_id, Some("sticky-scope-001"), None)
         .await
         .expect("seed sticky route");
 
@@ -14743,7 +14819,7 @@ async fn pool_route_oauth_body_sticky_binding_applies_before_first_send() {
         insert_test_pool_oauth_account(&state, "Primary OAuth", "oauth-primary").await;
     let secondary_id =
         insert_test_pool_oauth_account(&state, "Secondary OAuth", "oauth-secondary").await;
-    record_pool_route_success(&state.pool, secondary_id, Some("sticky-oauth-body"))
+    record_pool_route_success(&state.pool, secondary_id, Some("sticky-oauth-body"), None)
         .await
         .expect("seed oauth sticky route");
 
@@ -15549,7 +15625,7 @@ async fn pool_route_honors_existing_body_sticky_binding_for_non_capture_requests
     let _primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
     let secondary_id =
         insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
-    record_pool_route_success(&state.pool, secondary_id, Some("sticky-body-001"))
+    record_pool_route_success(&state.pool, secondary_id, Some("sticky-body-001"), None)
         .await
         .expect("seed sticky route");
     let request_body =
@@ -15630,7 +15706,7 @@ async fn capture_target_pool_route_marks_response_failed_stream_as_route_failure
             .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let account_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
-    record_pool_route_success(&state.pool, account_id, Some("sticky-cap-logical"))
+    record_pool_route_success(&state.pool, account_id, Some("sticky-cap-logical"), None)
         .await
         .expect("seed sticky route");
 

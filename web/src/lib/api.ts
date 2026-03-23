@@ -1539,6 +1539,13 @@ export interface UpstreamAccountSummary {
   lastActivityAt?: string | null;
   lastError?: string | null;
   lastErrorAt?: string | null;
+  lastAction?: string | null;
+  lastActionSource?: string | null;
+  lastActionReasonCode?: string | null;
+  lastActionReasonMessage?: string | null;
+  lastActionHttpStatus?: number | null;
+  lastActionInvokeId?: string | null;
+  lastActionAt?: string | null;
   tokenExpiresAt?: string | null;
   primaryWindow?: RateWindowSnapshot | null;
   secondaryWindow?: RateWindowSnapshot | null;
@@ -1549,12 +1556,27 @@ export interface UpstreamAccountSummary {
   effectiveRoutingRule: EffectiveRoutingRule;
 }
 
+export interface UpstreamAccountActionEvent {
+  id: number;
+  occurredAt: string;
+  action: string;
+  source: string;
+  reasonCode?: string | null;
+  reasonMessage?: string | null;
+  httpStatus?: number | null;
+  failureKind?: string | null;
+  invokeId?: string | null;
+  stickyKey?: string | null;
+  createdAt: string;
+}
+
 export interface UpstreamAccountDetail extends UpstreamAccountSummary {
   note?: string | null;
   upstreamBaseUrl?: string | null;
   chatgptUserId?: string | null;
   lastRefreshedAt?: string | null;
   history: UpstreamAccountHistoryPoint[];
+  recentActions?: UpstreamAccountActionEvent[];
 }
 
 export interface UpstreamAccountGroupSummary {
@@ -2094,6 +2116,28 @@ function normalizeUpstreamAccountSummary(
     lastError: typeof payload.lastError === "string" ? payload.lastError : null,
     lastErrorAt:
       typeof payload.lastErrorAt === "string" ? payload.lastErrorAt : null,
+    lastAction:
+      typeof payload.lastAction === "string" ? payload.lastAction : null,
+    lastActionSource:
+      typeof payload.lastActionSource === "string"
+        ? payload.lastActionSource
+        : null,
+    lastActionReasonCode:
+      typeof payload.lastActionReasonCode === "string"
+        ? payload.lastActionReasonCode
+        : null,
+    lastActionReasonMessage:
+      typeof payload.lastActionReasonMessage === "string"
+        ? payload.lastActionReasonMessage
+        : null,
+    lastActionHttpStatus:
+      normalizeFiniteNumber(payload.lastActionHttpStatus) ?? null,
+    lastActionInvokeId:
+      typeof payload.lastActionInvokeId === "string"
+        ? payload.lastActionInvokeId
+        : null,
+    lastActionAt:
+      typeof payload.lastActionAt === "string" ? payload.lastActionAt : null,
     tokenExpiresAt:
       typeof payload.tokenExpiresAt === "string"
         ? payload.tokenExpiresAt
@@ -2168,6 +2212,39 @@ function normalizeUpstreamAccountHistoryPoint(
   };
 }
 
+function normalizeUpstreamAccountActionEvent(
+  raw: unknown,
+): UpstreamAccountActionEvent | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const id = normalizeFiniteNumber(payload.id);
+  const occurredAt =
+    typeof payload.occurredAt === "string" ? payload.occurredAt : "";
+  const action = typeof payload.action === "string" ? payload.action : "";
+  const source = typeof payload.source === "string" ? payload.source : "";
+  const createdAt =
+    typeof payload.createdAt === "string" ? payload.createdAt : "";
+  if (id == null || !occurredAt || !action || !source || !createdAt) {
+    return null;
+  }
+  return {
+    id,
+    occurredAt,
+    action,
+    source,
+    reasonCode:
+      typeof payload.reasonCode === "string" ? payload.reasonCode : null,
+    reasonMessage:
+      typeof payload.reasonMessage === "string" ? payload.reasonMessage : null,
+    httpStatus: normalizeFiniteNumber(payload.httpStatus) ?? null,
+    failureKind:
+      typeof payload.failureKind === "string" ? payload.failureKind : null,
+    invokeId: typeof payload.invokeId === "string" ? payload.invokeId : null,
+    stickyKey:
+      typeof payload.stickyKey === "string" ? payload.stickyKey : null,
+    createdAt,
+  };
+}
+
 function normalizeUpstreamAccountDetail(raw: unknown): UpstreamAccountDetail {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const summary = normalizeUpstreamAccountSummary(payload);
@@ -2191,6 +2268,13 @@ function normalizeUpstreamAccountDetail(raw: unknown): UpstreamAccountDetail {
     history: historyRaw
       .map(normalizeUpstreamAccountHistoryPoint)
       .filter((item): item is UpstreamAccountHistoryPoint => item != null),
+    recentActions: Array.isArray(payload.recentActions)
+      ? payload.recentActions
+          .map(normalizeUpstreamAccountActionEvent)
+          .filter(
+            (item): item is UpstreamAccountActionEvent => item != null,
+          )
+      : [],
   };
 }
 

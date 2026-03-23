@@ -22,6 +22,7 @@ interface UpstreamAccountsTableProps {
     sync: string
     lastSuccess: string
     lastCall: string
+    latestAction: string
     never: string
     windows: string
     primary: string
@@ -38,6 +39,8 @@ interface UpstreamAccountsTableProps {
     hiddenTagsA11y: (count: number, names: string) => string
     status: (item: UpstreamAccountSummary) => string
     statusValue: (item: UpstreamAccountSummary) => string
+    actionSource: (item: UpstreamAccountSummary) => string | null
+    actionReason: (item: UpstreamAccountSummary) => string | null
   }
 }
 
@@ -237,6 +240,24 @@ function CompactTimestampLine({
   )
 }
 
+function buildLatestActionSummary(
+  item: UpstreamAccountSummary,
+  labels: UpstreamAccountsTableProps['labels'],
+) {
+  const source = labels.actionSource(item)
+  const reason = labels.actionReason(item)
+  const parts = [source, reason]
+  if (Number.isFinite(item.lastActionHttpStatus ?? NaN)) {
+    parts.push(`HTTP ${item.lastActionHttpStatus}`)
+  }
+  const compact = parts
+    .filter((value): value is string => Boolean(value && value.trim()))
+    .join(' · ')
+  if (!compact) return formatDateTime(item.lastActionAt, labels.never)
+  const timestamp = formatDateTime(item.lastActionAt, labels.never)
+  return timestamp === labels.never ? compact : `${compact} · ${timestamp}`
+}
+
 function handleRowKeyDown(
   event: KeyboardEvent<HTMLTableRowElement>,
   accountId: number,
@@ -396,6 +417,10 @@ export function UpstreamAccountsTable({
                     <CompactTimestampLine
                       label={labels.lastCall}
                       value={formatDateTime(item.lastActivityAt, labels.never)}
+                    />
+                    <CompactTimestampLine
+                      label={labels.latestAction}
+                      value={buildLatestActionSummary(item, labels)}
                     />
                   </div>
                 </td>

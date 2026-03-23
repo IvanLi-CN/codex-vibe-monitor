@@ -57,6 +57,27 @@ const UPSTREAM_ACCOUNT_STATUS_DISABLED: &str = "disabled";
 const UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE: &str = "upstream_unavailable";
 const UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED: &str = "upstream_rejected";
 const UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER: &str = "error_other";
+const UPSTREAM_ACCOUNT_ACTION_ROUTE_RECOVERED: &str = "route_recovered";
+const UPSTREAM_ACCOUNT_ACTION_ROUTE_COOLDOWN_STARTED: &str = "route_cooldown_started";
+const UPSTREAM_ACCOUNT_ACTION_ROUTE_HARD_UNAVAILABLE: &str = "route_hard_unavailable";
+const UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED: &str = "sync_succeeded";
+const UPSTREAM_ACCOUNT_ACTION_SYNC_FAILED: &str = "sync_failed";
+const UPSTREAM_ACCOUNT_ACTION_ACCOUNT_UPDATED: &str = "account_updated";
+const UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL: &str = "call";
+const UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MANUAL: &str = "sync_manual";
+const UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE: &str = "sync_maintenance";
+const UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_POST_CREATE: &str = "sync_post_create";
+const UPSTREAM_ACCOUNT_ACTION_SOURCE_OAUTH_IMPORT: &str = "oauth_import";
+const UPSTREAM_ACCOUNT_ACTION_SOURCE_ACCOUNT_UPDATE: &str = "account_update";
+const UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_OK: &str = "sync_ok";
+const UPSTREAM_ACCOUNT_ACTION_REASON_ACCOUNT_UPDATED: &str = "account_updated";
+const UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR: &str = "sync_error";
+const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_RATE_LIMIT: &str =
+    "upstream_http_429_rate_limit";
+const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED: &str =
+    "upstream_http_429_quota_exhausted";
+const UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE: &str = "transport_failure";
+const UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED: &str = "reauth_required";
 const BULK_UPSTREAM_ACCOUNT_ACTION_ENABLE: &str = "enable";
 const BULK_UPSTREAM_ACCOUNT_ACTION_DISABLE: &str = "disable";
 const BULK_UPSTREAM_ACCOUNT_ACTION_DELETE: &str = "delete";
@@ -868,6 +889,13 @@ pub(crate) struct UpstreamAccountSummary {
     last_activity_at: Option<String>,
     last_error: Option<String>,
     last_error_at: Option<String>,
+    last_action: Option<String>,
+    last_action_source: Option<String>,
+    last_action_reason_code: Option<String>,
+    last_action_reason_message: Option<String>,
+    last_action_http_status: Option<u16>,
+    last_action_invoke_id: Option<String>,
+    last_action_at: Option<String>,
     token_expires_at: Option<String>,
     primary_window: Option<RateWindowSnapshot>,
     secondary_window: Option<RateWindowSnapshot>,
@@ -888,6 +916,23 @@ pub(crate) struct UpstreamAccountDetail {
     chatgpt_user_id: Option<String>,
     last_refreshed_at: Option<String>,
     history: Vec<UpstreamAccountHistoryPoint>,
+    recent_actions: Vec<UpstreamAccountActionEvent>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpstreamAccountActionEvent {
+    id: i64,
+    occurred_at: String,
+    action: String,
+    source: String,
+    reason_code: Option<String>,
+    reason_message: Option<String>,
+    http_status: Option<u16>,
+    failure_kind: Option<String>,
+    invoke_id: Option<String>,
+    sticky_key: Option<String>,
+    created_at: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1638,6 +1683,13 @@ struct UpstreamAccountRow {
     last_activity_at: Option<String>,
     last_error: Option<String>,
     last_error_at: Option<String>,
+    last_action: Option<String>,
+    last_action_source: Option<String>,
+    last_action_reason_code: Option<String>,
+    last_action_reason_message: Option<String>,
+    last_action_http_status: Option<i64>,
+    last_action_invoke_id: Option<String>,
+    last_action_at: Option<String>,
     last_selected_at: Option<String>,
     last_route_failure_at: Option<String>,
     last_route_failure_kind: Option<String>,
@@ -1752,6 +1804,21 @@ struct AccountLastActivityRow {
     last_activity_at: String,
 }
 
+#[derive(Debug, Clone, FromRow)]
+struct UpstreamAccountActionEventRow {
+    id: i64,
+    occurred_at: String,
+    action: String,
+    source: String,
+    reason_code: Option<String>,
+    reason_message: Option<String>,
+    http_status: Option<i64>,
+    failure_kind: Option<String>,
+    invoke_id: Option<String>,
+    sticky_key: Option<String>,
+    created_at: String,
+}
+
 #[derive(Debug, FromRow)]
 struct StickyKeyEventRow {
     occurred_at: String,
@@ -1851,6 +1918,13 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             last_successful_sync_at TEXT,
             last_error TEXT,
             last_error_at TEXT,
+            last_action TEXT,
+            last_action_source TEXT,
+            last_action_reason_code TEXT,
+            last_action_reason_message TEXT,
+            last_action_http_status INTEGER,
+            last_action_invoke_id TEXT,
+            last_action_at TEXT,
             last_activity_at TEXT,
             last_selected_at TEXT,
             last_route_failure_at TEXT,
@@ -1897,6 +1971,27 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "last_activity_at")
         .await
         .context("failed to ensure pool_upstream_accounts.last_activity_at")?;
+    ensure_nullable_text_column(pool, "pool_upstream_accounts", "last_action")
+        .await
+        .context("failed to ensure pool_upstream_accounts.last_action")?;
+    ensure_nullable_text_column(pool, "pool_upstream_accounts", "last_action_source")
+        .await
+        .context("failed to ensure pool_upstream_accounts.last_action_source")?;
+    ensure_nullable_text_column(pool, "pool_upstream_accounts", "last_action_reason_code")
+        .await
+        .context("failed to ensure pool_upstream_accounts.last_action_reason_code")?;
+    ensure_nullable_text_column(pool, "pool_upstream_accounts", "last_action_reason_message")
+        .await
+        .context("failed to ensure pool_upstream_accounts.last_action_reason_message")?;
+    ensure_nullable_integer_column(pool, "pool_upstream_accounts", "last_action_http_status")
+        .await
+        .context("failed to ensure pool_upstream_accounts.last_action_http_status")?;
+    ensure_nullable_text_column(pool, "pool_upstream_accounts", "last_action_invoke_id")
+        .await
+        .context("failed to ensure pool_upstream_accounts.last_action_invoke_id")?;
+    ensure_nullable_text_column(pool, "pool_upstream_accounts", "last_action_at")
+        .await
+        .context("failed to ensure pool_upstream_accounts.last_action_at")?;
     if let Err(err) = sqlx::query(
         r#"
         ALTER TABLE pool_upstream_accounts
@@ -1959,6 +2054,38 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to ensure idx_pool_upstream_accounts_chatgpt_account_id")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS pool_upstream_account_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            account_id INTEGER NOT NULL,
+            occurred_at TEXT NOT NULL,
+            action TEXT NOT NULL,
+            source TEXT NOT NULL,
+            reason_code TEXT,
+            reason_message TEXT,
+            http_status INTEGER,
+            failure_kind TEXT,
+            invoke_id TEXT,
+            sticky_key TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY(account_id) REFERENCES pool_upstream_accounts(id) ON DELETE CASCADE
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure pool_upstream_account_events table existence")?;
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_upstream_account_events_account_time
+        ON pool_upstream_account_events (account_id, occurred_at DESC, id DESC)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure idx_pool_upstream_account_events_account_time")?;
 
     sqlx::query(
         r#"
@@ -2243,6 +2370,28 @@ async fn ensure_nullable_text_column(
     }
 
     let statement = format!("ALTER TABLE {table_name} ADD COLUMN {column_name} TEXT");
+    sqlx::query(&statement).execute(pool).await?;
+    Ok(())
+}
+
+async fn ensure_nullable_integer_column(
+    pool: &Pool<Sqlite>,
+    table_name: &str,
+    column_name: &str,
+) -> Result<()> {
+    let pragma = format!("PRAGMA table_info('{table_name}')");
+    let columns = sqlx::query(&pragma)
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .collect::<HashSet<_>>();
+
+    if columns.contains(column_name) {
+        return Ok(());
+    }
+
+    let statement = format!("ALTER TABLE {table_name} ADD COLUMN {column_name} INTEGER");
     sqlx::query(&statement).execute(pool).await?;
     Ok(())
 }
@@ -4677,6 +4826,9 @@ async fn update_upstream_account_inner(
             .await
             .map_err(internal_error_tuple)?;
     }
+    record_account_update_action(&state.pool, id, "account settings were updated")
+        .await
+        .map_err(internal_error_tuple)?;
 
     let detail = load_upstream_account_detail(&state.pool, id)
         .await
@@ -5217,6 +5369,8 @@ async fn find_existing_import_match(
             chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
             encrypted_credentials, token_expires_at, last_refreshed_at,
             last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
+            last_action, last_action_source, last_action_reason_code, last_action_reason_message,
+            last_action_http_status, last_action_invoke_id, last_action_at,
             last_selected_at, last_route_failure_at, last_route_failure_kind, cooldown_until,
             consecutive_route_failures, local_primary_limit, local_secondary_limit,
             local_limit_unit, upstream_base_url, created_at, updated_at
@@ -5247,6 +5401,8 @@ async fn find_existing_import_match(
             chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
             encrypted_credentials, token_expires_at, last_refreshed_at,
             last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
+            last_action, last_action_source, last_action_reason_code, last_action_reason_message,
+            last_action_http_status, last_action_invoke_id, last_action_at,
             last_selected_at, last_route_failure_at, last_route_failure_kind, cooldown_until,
             consecutive_route_failures, local_primary_limit, local_secondary_limit,
             local_limit_unit, upstream_base_url, created_at, updated_at
@@ -5414,8 +5570,10 @@ async fn sync_upstream_account_by_id(
     }
 
     match row.kind.as_str() {
-        UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX => sync_oauth_account(state, &row).await?,
-        UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX => sync_api_key_account(&state.pool, &row).await?,
+        UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX => sync_oauth_account(state, &row, cause).await?,
+        UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX => {
+            sync_api_key_account(&state.pool, &row, cause).await?
+        }
         _ => bail!("unsupported account kind: {}", row.kind),
     }
 
@@ -5425,29 +5583,20 @@ async fn sync_upstream_account_by_id(
     Ok(Some(detail))
 }
 
-async fn sync_api_key_account(pool: &Pool<Sqlite>, row: &UpstreamAccountRow) -> Result<()> {
-    let now_iso = format_utc_iso(Utc::now());
-    sqlx::query(
-        r#"
-        UPDATE pool_upstream_accounts
-        SET status = ?2,
-            last_synced_at = ?3,
-            last_successful_sync_at = ?3,
-            last_error = NULL,
-            last_error_at = NULL,
-            updated_at = ?3
-        WHERE id = ?1
-        "#,
-    )
-    .bind(row.id)
-    .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
-    .bind(&now_iso)
-    .execute(pool)
-    .await?;
-    Ok(())
+async fn sync_api_key_account(
+    pool: &Pool<Sqlite>,
+    row: &UpstreamAccountRow,
+    cause: SyncCause,
+) -> Result<()> {
+    mark_account_sync_success(pool, row.id, sync_cause_action_source(cause)).await
 }
 
-async fn sync_oauth_account(state: &AppState, row: &UpstreamAccountRow) -> Result<()> {
+async fn sync_oauth_account(
+    state: &AppState,
+    row: &UpstreamAccountRow,
+    cause: SyncCause,
+) -> Result<()> {
+    let sync_source = sync_cause_action_source(cause);
     set_account_status(&state.pool, row.id, UPSTREAM_ACCOUNT_STATUS_SYNCING, None).await?;
     let now = Utc::now();
     let crypto_key = state
@@ -5506,21 +5655,40 @@ async fn sync_oauth_account(state: &AppState, row: &UpstreamAccountRow) -> Resul
                 .await?;
             }
             Err(err) if is_reauth_error(&err) => {
-                update_account_error(
+                record_account_sync_failure(
                     &state.pool,
                     row.id,
+                    sync_source,
                     UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH,
                     &err.to_string(),
+                    UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED,
+                    None,
+                    PROXY_FAILURE_UPSTREAM_HTTP_AUTH,
                 )
                 .await?;
                 return Ok(());
             }
             Err(err) => {
-                update_account_error(
+                let (disposition, reason_code, next_status, http_status, failure_kind) =
+                    classify_sync_failure(&row.kind, &err.to_string());
+                let next_status = match disposition {
+                    UpstreamAccountFailureDisposition::HardUnavailable => {
+                        next_status.unwrap_or(UPSTREAM_ACCOUNT_STATUS_ERROR)
+                    }
+                    UpstreamAccountFailureDisposition::RateLimited
+                    | UpstreamAccountFailureDisposition::Retryable => {
+                        UPSTREAM_ACCOUNT_STATUS_ACTIVE
+                    }
+                };
+                record_account_sync_failure(
                     &state.pool,
                     row.id,
-                    UPSTREAM_ACCOUNT_STATUS_ERROR,
+                    sync_source,
+                    next_status,
                     &err.to_string(),
+                    reason_code,
+                    http_status,
+                    failure_kind,
                 )
                 .await?;
                 return Ok(());
@@ -5593,21 +5761,40 @@ async fn sync_oauth_account(state: &AppState, row: &UpstreamAccountRow) -> Resul
                     .await?
                 }
                 Err(refresh_err) if is_reauth_error(&refresh_err) => {
-                    update_account_error(
+                    record_account_sync_failure(
                         &state.pool,
                         row.id,
+                        sync_source,
                         UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH,
                         &refresh_err.to_string(),
+                        UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED,
+                        None,
+                        PROXY_FAILURE_UPSTREAM_HTTP_AUTH,
                     )
                     .await?;
                     return Ok(());
                 }
                 Err(refresh_err) => {
-                    update_account_error(
+                    let (disposition, reason_code, next_status, http_status, failure_kind) =
+                        classify_sync_failure(&row.kind, &refresh_err.to_string());
+                    let next_status = match disposition {
+                        UpstreamAccountFailureDisposition::HardUnavailable => {
+                            next_status.unwrap_or(UPSTREAM_ACCOUNT_STATUS_ERROR)
+                        }
+                        UpstreamAccountFailureDisposition::RateLimited
+                        | UpstreamAccountFailureDisposition::Retryable => {
+                            UPSTREAM_ACCOUNT_STATUS_ACTIVE
+                        }
+                    };
+                    record_account_sync_failure(
                         &state.pool,
                         row.id,
-                        UPSTREAM_ACCOUNT_STATUS_ERROR,
+                        sync_source,
+                        next_status,
                         &refresh_err.to_string(),
+                        reason_code,
+                        http_status,
+                        failure_kind,
                     )
                     .await?;
                     return Ok(());
@@ -5615,11 +5802,24 @@ async fn sync_oauth_account(state: &AppState, row: &UpstreamAccountRow) -> Resul
             }
         }
         Err(err) => {
-            update_account_error(
+            let (disposition, reason_code, next_status, http_status, failure_kind) =
+                classify_sync_failure(&row.kind, &err.to_string());
+            let next_status = match disposition {
+                UpstreamAccountFailureDisposition::HardUnavailable => {
+                    next_status.unwrap_or(UPSTREAM_ACCOUNT_STATUS_ERROR)
+                }
+                UpstreamAccountFailureDisposition::RateLimited
+                | UpstreamAccountFailureDisposition::Retryable => UPSTREAM_ACCOUNT_STATUS_ACTIVE,
+            };
+            record_account_sync_failure(
                 &state.pool,
                 row.id,
-                UPSTREAM_ACCOUNT_STATUS_ERROR,
+                sync_source,
+                next_status,
                 &err.to_string(),
+                reason_code,
+                http_status,
+                failure_kind,
             )
             .await?;
             return Ok(());
@@ -5636,7 +5836,7 @@ async fn sync_oauth_account(state: &AppState, row: &UpstreamAccountRow) -> Resul
         state.config.upstream_accounts_history_retention_days,
     )
     .await?;
-    mark_account_sync_success(&state.pool, row.id).await?;
+    mark_account_sync_success(&state.pool, row.id, sync_source).await?;
     Ok(())
 }
 
@@ -5785,7 +5985,12 @@ async fn apply_imported_oauth_probe_result(
             state.config.upstream_accounts_history_retention_days,
         )
         .await?;
-        mark_account_sync_success(&state.pool, account_id).await?;
+        mark_account_sync_success(
+            &state.pool,
+            account_id,
+            UPSTREAM_ACCOUNT_ACTION_SOURCE_OAUTH_IMPORT,
+        )
+        .await?;
     }
     Ok(probe.usage_snapshot_warning.clone())
 }
@@ -6641,6 +6846,8 @@ async fn load_upstream_account_summaries_filtered(
             chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
             encrypted_credentials, token_expires_at, last_refreshed_at,
             last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
+            last_action, last_action_source, last_action_reason_code, last_action_reason_message,
+            last_action_http_status, last_action_invoke_id, last_action_at,
             last_selected_at, last_route_failure_at, last_route_failure_kind, cooldown_until,
             consecutive_route_failures, local_primary_limit, local_secondary_limit,
             local_limit_unit, upstream_base_url, created_at, updated_at
@@ -6887,6 +7094,20 @@ async fn load_upstream_account_detail(
         })
         .collect::<Vec<_>>();
     history.reverse();
+    let recent_action_rows = sqlx::query_as::<_, UpstreamAccountActionEventRow>(
+        r#"
+        SELECT
+            id, occurred_at, action, source, reason_code, reason_message,
+            http_status, failure_kind, invoke_id, sticky_key, created_at
+        FROM pool_upstream_account_events
+        WHERE account_id = ?1
+        ORDER BY occurred_at DESC, id DESC
+        LIMIT 20
+        "#,
+    )
+    .bind(id)
+    .fetch_all(pool)
+    .await?;
 
     let duplicate_info_map = load_duplicate_info_map(pool).await?;
     Ok(Some(UpstreamAccountDetail {
@@ -6902,6 +7123,10 @@ async fn load_upstream_account_detail(
         chatgpt_user_id: row.chatgpt_user_id,
         last_refreshed_at: row.last_refreshed_at,
         history,
+        recent_actions: recent_action_rows
+            .iter()
+            .map(build_action_event_from_row)
+            .collect(),
     }))
 }
 
@@ -6924,6 +7149,8 @@ async fn load_upstream_account_row_conn(
             chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
             encrypted_credentials, token_expires_at, last_refreshed_at,
             last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
+            last_action, last_action_source, last_action_reason_code, last_action_reason_message,
+            last_action_http_status, last_action_invoke_id, last_action_at,
             last_selected_at, last_route_failure_at, last_route_failure_kind, cooldown_until,
             consecutive_route_failures, local_primary_limit, local_secondary_limit,
             local_limit_unit, upstream_base_url, created_at, updated_at
@@ -7083,6 +7310,15 @@ fn build_summary_from_row(
             .or(last_activity_at),
         last_error: row.last_error.clone(),
         last_error_at: row.last_error_at.clone(),
+        last_action: row.last_action.clone(),
+        last_action_source: row.last_action_source.clone(),
+        last_action_reason_code: row.last_action_reason_code.clone(),
+        last_action_reason_message: row.last_action_reason_message.clone(),
+        last_action_http_status: row
+            .last_action_http_status
+            .and_then(|value| u16::try_from(value).ok()),
+        last_action_invoke_id: row.last_action_invoke_id.clone(),
+        last_action_at: row.last_action_at.clone(),
         token_expires_at: row.token_expires_at.clone(),
         primary_window,
         secondary_window,
@@ -7091,6 +7327,22 @@ fn build_summary_from_row(
         duplicate_info,
         tags,
         effective_routing_rule,
+    }
+}
+
+fn build_action_event_from_row(row: &UpstreamAccountActionEventRow) -> UpstreamAccountActionEvent {
+    UpstreamAccountActionEvent {
+        id: row.id,
+        occurred_at: row.occurred_at.clone(),
+        action: row.action.clone(),
+        source: row.source.clone(),
+        reason_code: row.reason_code.clone(),
+        reason_message: row.reason_message.clone(),
+        http_status: row.http_status.and_then(|value| u16::try_from(value).ok()),
+        failure_kind: row.failure_kind.clone(),
+        invoke_id: row.invoke_id.clone(),
+        sticky_key: row.sticky_key.clone(),
+        created_at: row.created_at.clone(),
     }
 }
 
@@ -8654,6 +8906,225 @@ fn build_window_snapshot(
     })
 }
 
+struct UpstreamAccountActionPayload<'a> {
+    action: &'a str,
+    source: &'a str,
+    reason_code: Option<&'a str>,
+    reason_message: Option<&'a str>,
+    http_status: Option<StatusCode>,
+    failure_kind: Option<&'a str>,
+    invoke_id: Option<&'a str>,
+    sticky_key: Option<&'a str>,
+    occurred_at: &'a str,
+}
+
+fn sync_cause_action_source(cause: SyncCause) -> &'static str {
+    match cause {
+        SyncCause::Manual => UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MANUAL,
+        SyncCause::Maintenance => UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
+        SyncCause::PostCreate => UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_POST_CREATE,
+    }
+}
+
+fn sanitize_account_action_message(message: &str) -> Option<String> {
+    let collapsed = message
+        .chars()
+        .map(|ch| {
+            if ch.is_control() && ch != '\n' && ch != '\t' {
+                ' '
+            } else {
+                ch
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let trimmed = collapsed.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.chars().take(240).collect())
+}
+
+fn upstream_account_history_retention_days() -> u64 {
+    parse_u64_env_var(
+        ENV_UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS,
+        DEFAULT_UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS,
+    )
+    .unwrap_or(DEFAULT_UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS)
+}
+
+async fn record_upstream_account_action(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    payload: UpstreamAccountActionPayload<'_>,
+) -> Result<()> {
+    let reason_message = payload
+        .reason_message
+        .and_then(sanitize_account_action_message);
+    let created_at = payload.occurred_at;
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_account_events (
+            account_id, occurred_at, action, source, reason_code, reason_message,
+            http_status, failure_kind, invoke_id, sticky_key, created_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+        "#,
+    )
+    .bind(account_id)
+    .bind(payload.occurred_at)
+    .bind(payload.action)
+    .bind(payload.source)
+    .bind(payload.reason_code)
+    .bind(&reason_message)
+    .bind(payload.http_status.map(|value| i64::from(value.as_u16())))
+    .bind(payload.failure_kind)
+    .bind(payload.invoke_id)
+    .bind(payload.sticky_key)
+    .bind(created_at)
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET last_action = ?2,
+            last_action_source = ?3,
+            last_action_reason_code = ?4,
+            last_action_reason_message = ?5,
+            last_action_http_status = ?6,
+            last_action_invoke_id = ?7,
+            last_action_at = ?8
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .bind(payload.action)
+    .bind(payload.source)
+    .bind(payload.reason_code)
+    .bind(&reason_message)
+    .bind(payload.http_status.map(|value| i64::from(value.as_u16())))
+    .bind(payload.invoke_id)
+    .bind(payload.occurred_at)
+    .execute(pool)
+    .await?;
+
+    let retention_cutoff = format_utc_iso(
+        Utc::now() - ChronoDuration::days(upstream_account_history_retention_days() as i64),
+    );
+    sqlx::query(
+        r#"
+        DELETE FROM pool_upstream_account_events
+        WHERE account_id = ?1 AND occurred_at < ?2
+        "#,
+    )
+    .bind(account_id)
+    .bind(retention_cutoff)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+fn message_mentions_http_status(message: &str, status: StatusCode) -> bool {
+    let code = status.as_u16();
+    let code_text = code.to_string();
+    [
+        format!("returned {code_text}"),
+        format!("responded with {code_text}"),
+        format!("{code_text}:"),
+        format!("status {code_text}"),
+        format!("status code {code_text}"),
+        format!(" {code_text} "),
+    ]
+    .iter()
+    .any(|needle| message.contains(needle))
+}
+
+fn extract_status_code_from_error_message(message: &str) -> Option<StatusCode> {
+    [
+        StatusCode::UNAUTHORIZED,
+        StatusCode::PAYMENT_REQUIRED,
+        StatusCode::FORBIDDEN,
+        StatusCode::TOO_MANY_REQUESTS,
+        StatusCode::INTERNAL_SERVER_ERROR,
+        StatusCode::BAD_GATEWAY,
+        StatusCode::SERVICE_UNAVAILABLE,
+        StatusCode::GATEWAY_TIMEOUT,
+    ]
+    .into_iter()
+    .find(|status| message_mentions_http_status(message, *status))
+}
+
+fn classify_sync_failure(
+    account_kind: &str,
+    error_message: &str,
+) -> (
+    UpstreamAccountFailureDisposition,
+    &'static str,
+    Option<&'static str>,
+    Option<StatusCode>,
+    &'static str,
+) {
+    if account_kind == UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX
+        && is_explicit_reauth_error_message(error_message)
+        && !is_scope_permission_error_message(error_message)
+        && !is_bridge_error_message(error_message)
+    {
+        return (
+            UpstreamAccountFailureDisposition::HardUnavailable,
+            UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED,
+            Some(UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH),
+            extract_status_code_from_error_message(error_message),
+            PROXY_FAILURE_UPSTREAM_HTTP_AUTH,
+        );
+    }
+
+    if let Some(status) = extract_status_code_from_error_message(error_message) {
+        let classification =
+            classify_pool_account_http_failure(account_kind, status, error_message);
+        return (
+            classification.disposition,
+            classification.reason_code,
+            classification.next_account_status,
+            Some(status),
+            classification.failure_kind,
+        );
+    }
+
+    let normalized = error_message.to_ascii_lowercase();
+    if normalized.contains("failed to request")
+        || normalized.contains("timed out")
+        || normalized.contains("connection")
+        || normalized.contains("transport")
+    {
+        return (
+            UpstreamAccountFailureDisposition::Retryable,
+            UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE,
+            None,
+            None,
+            PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+        );
+    }
+
+    (
+        UpstreamAccountFailureDisposition::Retryable,
+        UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR,
+        None,
+        None,
+        PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+    )
+}
+
+fn account_reason_is_rate_limited(reason_code: Option<&str>) -> bool {
+    matches!(
+        reason_code,
+        Some(
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_RATE_LIMIT
+                | UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
+        )
+    )
+}
+
 async fn set_account_status(
     pool: &Pool<Sqlite>,
     account_id: i64,
@@ -8697,16 +9168,11 @@ async fn set_account_status(
     Ok(())
 }
 
-async fn update_account_error(
+async fn mark_account_sync_success(
     pool: &Pool<Sqlite>,
     account_id: i64,
-    status: &str,
-    error_message: &str,
+    source: &str,
 ) -> Result<()> {
-    set_account_status(pool, account_id, status, Some(error_message)).await
-}
-
-async fn mark_account_sync_success(pool: &Pool<Sqlite>, account_id: i64) -> Result<()> {
     let now_iso = format_utc_iso(Utc::now());
     sqlx::query(
         r#"
@@ -8725,7 +9191,94 @@ async fn mark_account_sync_success(pool: &Pool<Sqlite>, account_id: i64) -> Resu
     .bind(&now_iso)
     .execute(pool)
     .await?;
+    record_upstream_account_action(
+        pool,
+        account_id,
+        UpstreamAccountActionPayload {
+            action: UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED,
+            source,
+            reason_code: Some(UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_OK),
+            reason_message: None,
+            http_status: None,
+            failure_kind: None,
+            invoke_id: None,
+            sticky_key: None,
+            occurred_at: &now_iso,
+        },
+    )
+    .await?;
     Ok(())
+}
+
+async fn record_account_sync_failure(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    source: &str,
+    status: &str,
+    error_message: &str,
+    reason_code: &'static str,
+    http_status: Option<StatusCode>,
+    failure_kind: &'static str,
+) -> Result<()> {
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET status = ?2,
+            last_synced_at = ?3,
+            last_error = ?4,
+            last_error_at = ?3,
+            updated_at = ?3
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .bind(status)
+    .bind(&now_iso)
+    .bind(error_message)
+    .execute(pool)
+    .await?;
+    record_upstream_account_action(
+        pool,
+        account_id,
+        UpstreamAccountActionPayload {
+            action: UPSTREAM_ACCOUNT_ACTION_SYNC_FAILED,
+            source,
+            reason_code: Some(reason_code),
+            reason_message: Some(error_message),
+            http_status,
+            failure_kind: Some(failure_kind),
+            invoke_id: None,
+            sticky_key: None,
+            occurred_at: &now_iso,
+        },
+    )
+    .await?;
+    Ok(())
+}
+
+async fn record_account_update_action(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    message: &str,
+) -> Result<()> {
+    let now_iso = format_utc_iso(Utc::now());
+    record_upstream_account_action(
+        pool,
+        account_id,
+        UpstreamAccountActionPayload {
+            action: UPSTREAM_ACCOUNT_ACTION_ACCOUNT_UPDATED,
+            source: UPSTREAM_ACCOUNT_ACTION_SOURCE_ACCOUNT_UPDATE,
+            reason_code: Some(UPSTREAM_ACCOUNT_ACTION_REASON_ACCOUNT_UPDATED),
+            reason_message: Some(message),
+            http_status: None,
+            failure_kind: None,
+            invoke_id: None,
+            sticky_key: None,
+            occurred_at: &now_iso,
+        },
+    )
+    .await
 }
 
 async fn exchange_authorization_code(
@@ -9674,7 +10227,7 @@ fn extract_error_message(body: &str) -> String {
     body.trim().chars().take(240).collect()
 }
 
-fn is_scope_permission_error_message(message: &str) -> bool {
+pub(crate) fn is_scope_permission_error_message(message: &str) -> bool {
     let msg = message.to_ascii_lowercase();
     msg.contains("missing scopes")
         || msg.contains("insufficient permissions for this operation")
@@ -9708,7 +10261,7 @@ fn is_upstream_unavailable_error_message(message: &str) -> bool {
         || msg.contains("http_504")
 }
 
-fn is_bridge_error_message(message: &str) -> bool {
+pub(crate) fn is_bridge_error_message(message: &str) -> bool {
     let msg = message.to_ascii_lowercase();
     msg.contains("oauth bridge")
         || msg.contains("token exchange failed")
@@ -9716,7 +10269,7 @@ fn is_bridge_error_message(message: &str) -> bool {
         || msg.contains("bridge token")
 }
 
-fn is_explicit_reauth_error_message(message: &str) -> bool {
+pub(crate) fn is_explicit_reauth_error_message(message: &str) -> bool {
     let msg = message.to_ascii_lowercase();
     msg.contains("invalid_grant")
         || msg.contains("token has been invalidated")
@@ -10017,6 +10570,7 @@ pub(crate) async fn record_pool_route_success(
     pool: &Pool<Sqlite>,
     account_id: i64,
     sticky_key: Option<&str>,
+    invoke_id: Option<&str>,
 ) -> Result<()> {
     let now_iso = format_utc_iso(Utc::now());
     sqlx::query(
@@ -10042,6 +10596,22 @@ pub(crate) async fn record_pool_route_success(
     if let Some(sticky_key) = sticky_key {
         upsert_sticky_route(pool, sticky_key, account_id, &now_iso).await?;
     }
+    record_upstream_account_action(
+        pool,
+        account_id,
+        UpstreamAccountActionPayload {
+            action: UPSTREAM_ACCOUNT_ACTION_ROUTE_RECOVERED,
+            source: UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL,
+            reason_code: None,
+            reason_message: None,
+            http_status: None,
+            failure_kind: None,
+            invoke_id,
+            sticky_key,
+            occurred_at: &now_iso,
+        },
+    )
+    .await?;
     Ok(())
 }
 
@@ -10052,59 +10622,79 @@ pub(crate) async fn record_pool_route_http_failure(
     sticky_key: Option<&str>,
     status: StatusCode,
     error_message: &str,
+    invoke_id: Option<&str>,
 ) -> Result<()> {
-    if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
-        if let Some(sticky_key) = sticky_key {
-            delete_sticky_route(pool, sticky_key).await?;
+    let classification = classify_pool_account_http_failure(account_kind, status, error_message);
+    match classification.disposition {
+        UpstreamAccountFailureDisposition::HardUnavailable => {
+            if let Some(sticky_key) = sticky_key {
+                delete_sticky_route(pool, sticky_key).await?;
+            }
+            let now_iso = format_utc_iso(Utc::now());
+            sqlx::query(
+                r#"
+                UPDATE pool_upstream_accounts
+                SET status = ?2,
+                    last_error = ?3,
+                    last_error_at = ?4,
+                    last_route_failure_at = ?4,
+                    last_route_failure_kind = ?5,
+                    cooldown_until = NULL,
+                    consecutive_route_failures = consecutive_route_failures + 1,
+                    updated_at = ?4
+                WHERE id = ?1
+                "#,
+            )
+            .bind(account_id)
+            .bind(
+                classification
+                    .next_account_status
+                    .unwrap_or(UPSTREAM_ACCOUNT_STATUS_ERROR),
+            )
+            .bind(error_message)
+            .bind(&now_iso)
+            .bind(classification.failure_kind)
+            .execute(pool)
+            .await?;
+            record_upstream_account_action(
+                pool,
+                account_id,
+                UpstreamAccountActionPayload {
+                    action: UPSTREAM_ACCOUNT_ACTION_ROUTE_HARD_UNAVAILABLE,
+                    source: UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL,
+                    reason_code: Some(classification.reason_code),
+                    reason_message: Some(error_message),
+                    http_status: Some(status),
+                    failure_kind: Some(classification.failure_kind),
+                    invoke_id,
+                    sticky_key,
+                    occurred_at: &now_iso,
+                },
+            )
+            .await?;
+            Ok(())
         }
-        let next_status = if account_kind == UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX
-            && is_explicit_reauth_error_message(error_message)
-            && !is_scope_permission_error_message(error_message)
-            && !is_bridge_error_message(error_message)
-        {
-            UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH
-        } else {
-            UPSTREAM_ACCOUNT_STATUS_ERROR
-        };
-        let now_iso = format_utc_iso(Utc::now());
-        sqlx::query(
-            r#"
-            UPDATE pool_upstream_accounts
-            SET status = ?2,
-                last_error = ?3,
-                last_error_at = ?4,
-                last_route_failure_at = ?4,
-                last_route_failure_kind = ?5,
-                cooldown_until = NULL,
-                consecutive_route_failures = consecutive_route_failures + 1,
-                updated_at = ?4
-            WHERE id = ?1
-            "#,
-        )
-        .bind(account_id)
-        .bind(next_status)
-        .bind(error_message)
-        .bind(now_iso)
-        .bind(PROXY_FAILURE_UPSTREAM_HTTP_AUTH)
-        .execute(pool)
-        .await?;
-        return Ok(());
+        UpstreamAccountFailureDisposition::RateLimited
+        | UpstreamAccountFailureDisposition::Retryable => {
+            let base_secs = if status == StatusCode::TOO_MANY_REQUESTS {
+                15
+            } else {
+                5
+            };
+            apply_pool_route_cooldown_failure(
+                pool,
+                account_id,
+                sticky_key,
+                error_message,
+                classification.failure_kind,
+                classification.reason_code,
+                status,
+                base_secs,
+                invoke_id,
+            )
+            .await
+        }
     }
-
-    let base_secs = if status == StatusCode::TOO_MANY_REQUESTS {
-        15
-    } else {
-        5
-    };
-    apply_pool_route_cooldown_failure(
-        pool,
-        account_id,
-        sticky_key,
-        error_message,
-        pool_route_http_failure_kind(status),
-        base_secs,
-    )
-    .await
 }
 
 pub(crate) async fn record_pool_route_transport_failure(
@@ -10112,6 +10702,7 @@ pub(crate) async fn record_pool_route_transport_failure(
     account_id: i64,
     sticky_key: Option<&str>,
     error_message: &str,
+    invoke_id: Option<&str>,
 ) -> Result<()> {
     apply_pool_route_cooldown_failure(
         pool,
@@ -10119,7 +10710,10 @@ pub(crate) async fn record_pool_route_transport_failure(
         sticky_key,
         error_message,
         PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+        UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE,
+        StatusCode::BAD_GATEWAY,
         5,
+        invoke_id,
     )
     .await
 }
@@ -10382,23 +10976,108 @@ async fn prepare_pool_account(
                         .await?;
                     }
                     Err(err) if is_reauth_error(&err) => {
-                        update_account_error(
+                        let err_text = err.to_string();
+                        let now_iso = format_utc_iso(Utc::now());
+                        sqlx::query(
+                            r#"
+                            UPDATE pool_upstream_accounts
+                            SET status = ?2,
+                                last_error = ?3,
+                                last_error_at = ?4,
+                                last_route_failure_at = ?4,
+                                last_route_failure_kind = ?5,
+                                cooldown_until = NULL,
+                                consecutive_route_failures = consecutive_route_failures + 1,
+                                updated_at = ?4
+                            WHERE id = ?1
+                            "#,
+                        )
+                        .bind(row.id)
+                        .bind(UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH)
+                        .bind(&err_text)
+                        .bind(&now_iso)
+                        .bind(PROXY_FAILURE_UPSTREAM_HTTP_AUTH)
+                        .execute(&state.pool)
+                        .await?;
+                        record_upstream_account_action(
                             &state.pool,
                             row.id,
-                            UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH,
-                            &err.to_string(),
+                            UpstreamAccountActionPayload {
+                                action: UPSTREAM_ACCOUNT_ACTION_ROUTE_HARD_UNAVAILABLE,
+                                source: UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL,
+                                reason_code: Some(UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED),
+                                reason_message: Some(&err_text),
+                                http_status: None,
+                                failure_kind: Some(PROXY_FAILURE_UPSTREAM_HTTP_AUTH),
+                                invoke_id: None,
+                                sticky_key: None,
+                                occurred_at: &now_iso,
+                            },
                         )
                         .await?;
                         return Ok(None);
                     }
                     Err(err) => {
-                        update_account_error(
-                            &state.pool,
-                            row.id,
-                            UPSTREAM_ACCOUNT_STATUS_ERROR,
-                            &err.to_string(),
-                        )
-                        .await?;
+                        let err_text = err.to_string();
+                        let (disposition, reason_code, next_status, http_status, failure_kind) =
+                            classify_sync_failure(&row.kind, &err_text);
+                        match disposition {
+                            UpstreamAccountFailureDisposition::HardUnavailable => {
+                                let now_iso = format_utc_iso(Utc::now());
+                                sqlx::query(
+                                    r#"
+                                    UPDATE pool_upstream_accounts
+                                    SET status = ?2,
+                                        last_error = ?3,
+                                        last_error_at = ?4,
+                                        last_route_failure_at = ?4,
+                                        last_route_failure_kind = ?5,
+                                        cooldown_until = NULL,
+                                        consecutive_route_failures = consecutive_route_failures + 1,
+                                        updated_at = ?4
+                                    WHERE id = ?1
+                                    "#,
+                                )
+                                .bind(row.id)
+                                .bind(next_status.unwrap_or(UPSTREAM_ACCOUNT_STATUS_ERROR))
+                                .bind(&err_text)
+                                .bind(&now_iso)
+                                .bind(failure_kind)
+                                .execute(&state.pool)
+                                .await?;
+                                record_upstream_account_action(
+                                    &state.pool,
+                                    row.id,
+                                    UpstreamAccountActionPayload {
+                                        action: UPSTREAM_ACCOUNT_ACTION_ROUTE_HARD_UNAVAILABLE,
+                                        source: UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL,
+                                        reason_code: Some(reason_code),
+                                        reason_message: Some(&err_text),
+                                        http_status,
+                                        failure_kind: Some(failure_kind),
+                                        invoke_id: None,
+                                        sticky_key: None,
+                                        occurred_at: &now_iso,
+                                    },
+                                )
+                                .await?;
+                            }
+                            UpstreamAccountFailureDisposition::RateLimited
+                            | UpstreamAccountFailureDisposition::Retryable => {
+                                apply_pool_route_cooldown_failure(
+                                    &state.pool,
+                                    row.id,
+                                    None,
+                                    &err_text,
+                                    failure_kind,
+                                    reason_code,
+                                    http_status.unwrap_or(StatusCode::BAD_GATEWAY),
+                                    5,
+                                    None,
+                                )
+                                .await?;
+                            }
+                        }
                         return Ok(None);
                     }
                 }
@@ -10441,17 +11120,26 @@ fn is_routing_eligible_account(row: &UpstreamAccountRow) -> bool {
 }
 
 fn is_account_rate_limited_for_routing(row: &UpstreamAccountRow) -> bool {
-    if !is_routing_eligible_account(row) {
+    if row.provider != UPSTREAM_ACCOUNT_PROVIDER_CODEX
+        || row.enabled == 0
+        || row.encrypted_credentials.is_none()
+    {
         return false;
     }
-    let Some(cooldown_until) = row.cooldown_until.as_deref() else {
-        return false;
-    };
-    let in_cooldown = parse_rfc3339_utc(cooldown_until)
+    let in_429_cooldown = row
+        .cooldown_until
+        .as_deref()
+        .and_then(parse_rfc3339_utc)
         .map(|until| until > Utc::now())
-        .unwrap_or(false);
-    in_cooldown
-        && row.last_route_failure_kind.as_deref() == Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
+        .unwrap_or(false)
+        && matches!(
+            row.last_route_failure_kind.as_deref(),
+            Some(
+                FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429
+                    | FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
+            )
+        );
+    in_429_cooldown || account_reason_is_rate_limited(row.last_action_reason_code.as_deref())
 }
 
 async fn load_account_routing_candidates(
@@ -10574,7 +11262,10 @@ async fn apply_pool_route_cooldown_failure(
     sticky_key: Option<&str>,
     error_message: &str,
     failure_kind: &str,
+    reason_code: &str,
+    http_status: StatusCode,
     base_secs: i64,
+    invoke_id: Option<&str>,
 ) -> Result<()> {
     if let Some(sticky_key) = sticky_key {
         delete_sticky_route(pool, sticky_key).await?;
@@ -10610,6 +11301,22 @@ async fn apply_pool_route_cooldown_failure(
     .bind(cooldown_until)
     .bind(next_failures)
     .execute(pool)
+    .await?;
+    record_upstream_account_action(
+        pool,
+        account_id,
+        UpstreamAccountActionPayload {
+            action: UPSTREAM_ACCOUNT_ACTION_ROUTE_COOLDOWN_STARTED,
+            source: UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL,
+            reason_code: Some(reason_code),
+            reason_message: Some(error_message),
+            http_status: Some(http_status),
+            failure_kind: Some(failure_kind),
+            invoke_id,
+            sticky_key,
+            occurred_at: &now_iso,
+        },
+    )
     .await?;
     Ok(())
 }
@@ -11153,6 +11860,13 @@ mod tests {
                 last_activity_at: None,
                 last_error: None,
                 last_error_at: None,
+                last_action: None,
+                last_action_source: None,
+                last_action_reason_code: None,
+                last_action_reason_message: None,
+                last_action_http_status: None,
+                last_action_invoke_id: None,
+                last_action_at: None,
                 last_selected_at: None,
                 last_route_failure_at: None,
                 last_route_failure_kind: None,
@@ -12376,6 +13090,7 @@ mod tests {
             Some("sticky-scope"),
             StatusCode::UNAUTHORIZED,
             "pool upstream responded with 401: Missing scopes: api.responses.write",
+            None,
         )
         .await
         .expect("record route failure");
@@ -12401,6 +13116,7 @@ mod tests {
             Some("sticky-invalidated"),
             StatusCode::FORBIDDEN,
             "pool upstream responded with 403: Authentication token has been invalidated, please sign in again",
+            None,
         )
         .await
         .expect("record route failure");
@@ -12426,6 +13142,7 @@ mod tests {
             Some("sticky-bridge"),
             StatusCode::UNAUTHORIZED,
             "oauth bridge token exchange failed: oauth bridge responded with 502",
+            None,
         )
         .await
         .expect("record route failure");
@@ -12437,6 +13154,78 @@ mod tests {
                 .await
                 .expect("load account status");
         assert_eq!(status, UPSTREAM_ACCOUNT_STATUS_ERROR);
+    }
+
+    #[tokio::test]
+    async fn record_pool_route_http_failure_marks_402_as_hard_error_and_records_reason() {
+        let pool = test_pool().await;
+        let account_id = insert_api_key_account(&pool, "Plan Blocked Key").await;
+
+        record_pool_route_http_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
+            Some("sticky-402"),
+            StatusCode::PAYMENT_REQUIRED,
+            "pool upstream responded with 402: subscription required",
+            Some("invk_402"),
+        )
+        .await
+        .expect("record route failure");
+
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load account row")
+            .expect("account should exist");
+        assert_eq!(row.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
+        assert_eq!(
+            row.last_action_reason_code.as_deref(),
+            Some("upstream_http_402")
+        );
+        assert_eq!(
+            row.last_action_source.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL)
+        );
+        assert_eq!(row.last_action_http_status, Some(402));
+        assert_eq!(
+            row.last_route_failure_kind.as_deref(),
+            Some(PROXY_FAILURE_UPSTREAM_HTTP_402)
+        );
+        assert!(row.cooldown_until.is_none());
+    }
+
+    #[tokio::test]
+    async fn record_pool_route_http_failure_marks_quota_429_as_hard_error_and_records_reason() {
+        let pool = test_pool().await;
+        let account_id = insert_api_key_account(&pool, "Quota Exhausted Key").await;
+
+        record_pool_route_http_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
+            Some("sticky-429-quota"),
+            StatusCode::TOO_MANY_REQUESTS,
+            "insufficient_quota: pool upstream responded with 429: weekly cap exhausted",
+            Some("invk_quota_429"),
+        )
+        .await
+        .expect("record route failure");
+
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load account row")
+            .expect("account should exist");
+        assert_eq!(row.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
+        assert_eq!(
+            row.last_action_reason_code.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+        );
+        assert_eq!(row.last_action_http_status, Some(429));
+        assert_eq!(
+            row.last_route_failure_kind.as_deref(),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+        );
+        assert!(row.cooldown_until.is_none());
     }
 
     async fn insert_limit_sample(
@@ -12518,9 +13307,13 @@ mod tests {
             .await
             .expect("load row before sync")
             .expect("row exists before sync");
-        mark_account_sync_success(&pool, account_id)
-            .await
-            .expect("mark sync success");
+        mark_account_sync_success(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MANUAL,
+        )
+        .await
+        .expect("mark sync success");
         let after = load_upstream_account_row(&pool, account_id)
             .await
             .expect("load row after sync")
@@ -12557,7 +13350,7 @@ mod tests {
             .expect("load api key row")
             .expect("api key row exists");
 
-        sync_api_key_account(&pool, &row)
+        sync_api_key_account(&pool, &row, SyncCause::Manual)
             .await
             .expect("sync api key account");
         let after = load_upstream_account_row(&pool, account_id)
