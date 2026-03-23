@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 已完成（4/5，PR#211）
+- Status: 已完成（5/5，PR#211）
 - Created: 2026-03-23
 - Last: 2026-03-23
 
@@ -137,7 +137,7 @@
 - [x] M2: 扩展 `pool_routing_settings` schema、响应体与部分更新接口。
 - [x] M3: 完成分层维护候选查询、tier resolver 与到期过滤。
 - [x] M4: 完成账号池 routing 对话框高级设置 UI、校验与前端类型更新。
-- [ ] M5: 补齐 Rust/Web 验证、spec sync、PR 与 review-loop 收敛。
+- [x] M5: 补齐 Rust/Web 验证、spec sync、PR 与 review-loop 收敛。
 
 ## 方案概述（Approach, high-level）
 
@@ -150,11 +150,12 @@
 
 - 风险：维护 loop 从“按主频 tick”改成固定短 tick 后，若过滤逻辑遗漏，会导致次层账号被更频繁 dispatch；已用定向 Rust 回归锁住该场景。
 - 风险：旧库没有新增列时若默认值拼装不完整，会让前端 routing 卡片出现 `maintenance` 空对象；后端读取路径已统一回退到 `300 / 1800 / 100`。
-- 假设：当前快车道终点仍是 merge-ready，不自动 merge；因此 M5 需要在 PR 与 review-loop 收口后再勾选。
+- 假设：当前快车道终点仍是 merge-ready，不自动 merge。
 
 ## 变更记录（Change log）
 
 - 2026-03-23: 创建 spec，冻结号池分层维护配置、队列排序和 UI 入口范围。
 - 2026-03-23: 已完成 `pool_routing_settings` 维护字段持久化、部分更新 API、批量 tier resolver、固定短 tick 维护调度，以及 routing UI/文案/Storybook 同步。
 - 2026-03-23: 本地验证已通过 `cargo check`、3 个定向 Rust 测试、`cd web && bun x vitest run src/lib/api.test.ts src/hooks/useUpstreamAccounts.test.tsx src/pages/account-pool/UpstreamAccounts.test.tsx`、`cd web && bun run build`。
-- 2026-03-23: PR #211 已对齐最新 `origin/main`；GitHub PR checks 与 fresh `codex review --base origin/main` 仍在本轮主干同步后重新收敛，尚未形成最终 review proof。
+- 2026-03-23: 已补上 review-loop 修复：`refresh-due` 账号继续遵守主频节奏，queued maintenance 在执行前会重验计划是否仍然到期；新增 Rust 回归覆盖这两类场景。
+- 2026-03-23: PR #211 当前已对齐最新 `origin/main`，GitHub PR checks 全绿、`mergeable_state=clean`；fresh `codex review --base origin/main` 未再产出新的代码 finding，期间暴露的一次前端测试超时已本地复跑 `cd web && bun x vitest run src/lib/api.test.ts src/pages/account-pool/UpstreamAccounts.test.tsx` 通过。
