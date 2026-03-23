@@ -9838,14 +9838,14 @@ async fn send_pool_request_with_failover(
                     && !is_timeout_shaped
                     && status.is_server_error()
                     && status != StatusCode::TOO_MANY_REQUESTS)
-                .then(|| {
-                    retry_after_header
-                        .as_ref()
-                        .and_then(parse_retry_after_delay)
-                        .unwrap_or_else(|| {
-                            fallback_proxy_429_retry_delay(u32::from(same_account_attempt) + 1)
-                        })
-                });
+                    .then(|| {
+                        retry_after_header
+                            .as_ref()
+                            .and_then(parse_retry_after_delay)
+                            .unwrap_or_else(|| {
+                                fallback_proxy_429_retry_delay(u32::from(same_account_attempt) + 1)
+                            })
+                    });
                 let route_error_message = upstream_error_code
                     .as_deref()
                     .map_or_else(|| message.clone(), |code| format!("{code}: {message}"));
