@@ -9922,13 +9922,17 @@ pub(crate) async fn resolve_pool_account_for_request(
         {
             tried.insert(route.account_id);
             if is_account_selectable_for_routing(&row) {
+                let mut sticky_route_was_excluded = false;
                 if let Some(account) = prepare_pool_account(state, &row).await? {
                     if !excluded_upstream_route_keys.contains(&account.upstream_route_key()) {
                         return Ok(PoolAccountResolution::Resolved(account));
                     }
                     sticky_route_excluded_by_route_key = true;
+                    sticky_route_was_excluded = true;
                 }
-                saw_non_rate_limited_routing_candidate = true;
+                if !sticky_route_was_excluded {
+                    saw_non_rate_limited_routing_candidate = true;
+                }
             } else if is_account_rate_limited_for_routing(&row) {
                 saw_rate_limited_candidate = true;
             } else if is_routing_eligible_account(&row) {

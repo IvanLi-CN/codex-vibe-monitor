@@ -11519,6 +11519,93 @@ async fn resolve_pool_account_for_request_falls_back_after_soft_bucket_candidate
 }
 
 #[tokio::test]
+async fn resolve_pool_account_for_request_allows_timeout_failover_past_cut_out_rule() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let source_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Source",
+        "upstream-source",
+        None,
+        None,
+        Some("https://route-a.example.com/backend-api/"),
+    )
+    .await;
+    let alternate_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Alternate",
+        "upstream-alternate",
+        None,
+        None,
+        Some("https://route-b.example.com/backend-api/"),
+    )
+    .await;
+    let recent_seen_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(5));
+    let now_iso = format_utc_iso(Utc::now());
+
+    upsert_test_sticky_route_at(
+        &state.pool,
+        "sticky-timeout-cut-out",
+        source_id,
+        &recent_seen_at,
+    )
+    .await;
+
+    let disallow_cut_out_tag_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO pool_tags (
+            name, guard_enabled, lookback_hours, max_conversations,
+            allow_cut_out, allow_cut_in, created_at, updated_at
+        ) VALUES (?1, 0, NULL, NULL, 0, 1, ?2, ?2)
+        RETURNING id
+        "#,
+    )
+    .bind("no-cut-out")
+    .bind(&now_iso)
+    .fetch_one(&state.pool)
+    .await
+    .expect("insert no-cut-out tag");
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_account_tags (
+            account_id, tag_id, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?3)
+        "#,
+    )
+    .bind(source_id)
+    .bind(disallow_cut_out_tag_id)
+    .bind(&now_iso)
+    .execute(&state.pool)
+    .await
+    .expect("attach no-cut-out tag");
+
+    let mut excluded_upstream_route_keys = HashSet::new();
+    excluded_upstream_route_keys.insert(
+        crate::upstream_accounts::canonical_pool_upstream_route_key(
+            &Url::parse("https://route-a.example.com/backend-api/").expect("valid route a url"),
+        ),
+    );
+
+    let account = match resolve_pool_account_for_request(
+        state.as_ref(),
+        Some("sticky-timeout-cut-out"),
+        &[],
+        &excluded_upstream_route_keys,
+    )
+    .await
+    .expect("resolve pool account")
+    {
+        PoolAccountResolution::Resolved(account) => account,
+        other => panic!("pool account should resolve after timeout route exclusion, got {other:?}"),
+    };
+
+    assert_eq!(account.account_id, alternate_id);
+    assert_ne!(account.account_id, source_id);
+}
+
+#[tokio::test]
 async fn resolve_pool_account_for_request_exempts_accounts_without_local_limits_from_soft_sticky_deprioritization()
  {
     let state = test_state_with_openai_base(
@@ -12082,7 +12169,7 @@ async fn pool_route_surfaces_last_upstream_error_when_failover_is_exhausted() {
     )
     .await;
 
-    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read failure body");
@@ -15301,6 +15388,56 @@ async fn pool_openai_v1_responses_stream_survives_short_request_timeout() {
 }
 
 #[tokio::test]
+async fn pool_openai_v1_responses_waits_for_first_chunk_beyond_request_timeout() {
+    let (upstream_base, upstream_handle) =
+        spawn_pool_delayed_first_chunk_upstream(Duration::from_millis(250)).await;
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.request_timeout = Duration::from_millis(100);
+    config.pool_upstream_responses_attempt_timeout = Duration::from_millis(400);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "stream": false,
+        "input": "hello",
+    }))
+    .expect("serialize request body");
+    let response = tokio::time::timeout(
+        Duration::from_secs(3),
+        proxy_openai_v1(
+            State(state),
+            OriginalUri("/v1/responses".parse().expect("valid uri")),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from(request_body),
+        ),
+    )
+    .await
+    .expect("responses pool request should not hang");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read responses pool body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode responses pool response");
+    assert_eq!(payload["ok"].as_bool(), Some(true));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn pool_openai_v1_responses_compact_waits_for_dedicated_first_chunk_timeout() {
     let (upstream_base, _captured_requests, upstream_handle) =
         spawn_capture_target_body_upstream().await;
@@ -15367,8 +15504,9 @@ async fn pool_openai_v1_responses_still_times_out_before_first_chunk() {
         spawn_capture_target_body_upstream().await;
     let mut config = test_config();
     config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
-    config.request_timeout = Duration::from_millis(200);
+    config.request_timeout = Duration::from_secs(5);
     config.openai_proxy_compact_handshake_timeout = Duration::from_millis(400);
+    config.pool_upstream_responses_attempt_timeout = Duration::from_millis(200);
     let state = test_state_from_config(config, true).await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
