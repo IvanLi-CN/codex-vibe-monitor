@@ -8263,16 +8263,6 @@ const OAUTH_INVITE_BODY_MARKERS: &[&str] = &[
     "워크스페이스",
     "초대 수락",
 ];
-const OAUTH_INVITE_WORKSPACE_MARKERS: &[&str] = &[
-    "workspace",
-    "workspaces",
-    "工作区",
-    "工作區",
-    "工作空间",
-    "工作空間",
-    "ワークスペース",
-    "워크스페이스",
-];
 static OAUTH_CODE_CANDIDATE_REGEX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?:^|[^0-9])([0-9]{4,8})(?:[^0-9]|$)").expect("valid oauth code candidate regex")
 });
@@ -8540,6 +8530,12 @@ fn mailbox_context_slice(raw: &str, start: usize, end: usize, radius: usize) -> 
     &raw[context_start..context_end]
 }
 
+fn mailbox_context_before(raw: &str, index: usize, radius: usize) -> &str {
+    let context_start = clamp_mailbox_context_start(raw, index.saturating_sub(radius));
+    let context_end = clamp_mailbox_context_end(raw, index);
+    &raw[context_start..context_end]
+}
+
 fn extract_mailbox_code_candidate(text: &str, message_has_brand: bool) -> Option<String> {
     let mut best_match: Option<(u8, usize, String)> = None;
 
@@ -8552,9 +8548,14 @@ fn extract_mailbox_code_candidate(text: &str, message_has_brand: bool) -> Option
             whole_match.end(),
             MAILBOX_CODE_CONTEXT_WINDOW_BYTES,
         );
-        let context_has_strong_code = mailbox_text_contains_any(context, OAUTH_STRONG_CODE_MARKERS);
-        let context_has_weak_code = mailbox_text_contains_any(context, OAUTH_WEAK_CODE_MARKERS);
-        let context_has_brand = mailbox_text_has_brand(context);
+        let prefix_context =
+            mailbox_context_before(text, digit_match.start(), MAILBOX_CODE_CONTEXT_WINDOW_BYTES);
+        let context_has_strong_code =
+            mailbox_text_contains_any(prefix_context, OAUTH_STRONG_CODE_MARKERS);
+        let context_has_weak_code =
+            mailbox_text_contains_any(prefix_context, OAUTH_WEAK_CODE_MARKERS);
+        let context_has_brand =
+            mailbox_text_has_brand(prefix_context) || mailbox_text_has_brand(context);
         let score = if context_has_strong_code {
             3
         } else if context_has_weak_code && (message_has_brand || context_has_brand) {
@@ -8675,8 +8676,6 @@ fn parse_mailbox_invite(detail: &MoeMailMessageDetail) -> Option<ParsedMailboxIn
         mailbox_text_contains_any(&subject_text, OAUTH_INVITE_SUBJECT_MARKERS);
     let body_has_invite_semantics =
         mailbox_text_contains_any(&body_text, OAUTH_INVITE_BODY_MARKERS);
-    let body_has_workspace_semantics =
-        mailbox_text_contains_any(&body_text, OAUTH_INVITE_WORKSPACE_MARKERS);
 
     let body_with_urls = format!(
         "{}\n{}",
@@ -8687,7 +8686,7 @@ fn parse_mailbox_invite(detail: &MoeMailMessageDetail) -> Option<ParsedMailboxIn
         .find_iter(&body_with_urls)
         .map(|value| value.as_str().trim_end_matches('.').to_string())
         .find(|value| mailbox_url_looks_like_invite(value))?;
-    let body_can_drive_invite = body_has_invite_semantics && body_has_workspace_semantics;
+    let body_can_drive_invite = body_has_invite_semantics;
     if !subject_has_invite_semantics && !body_can_drive_invite {
         return None;
     }
@@ -15729,6 +15728,21 @@ mod tests {
     }
 
     #[test]
+    fn parse_mailbox_code_prefers_digits_after_marker() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_order_and_code".to_string(),
+            subject: Some("OpenAI order update".to_string()),
+            content: Some("Order 1234. Your verification code is 567890.".to_string()),
+            html: None,
+            received_at: Some("2026-03-24T00:05:30Z".to_string()),
+        };
+
+        let parsed = parse_mailbox_code(&detail).expect("verification code");
+        assert_eq!(parsed.value, "567890");
+        assert_eq!(parsed.source, "content");
+    }
+
+    #[test]
     fn parse_mailbox_code_rejects_unrelated_numbers_without_code_semantics() {
         let detail = MoeMailMessageDetail {
             id: "msg_negative_code".to_string(),
@@ -15817,6 +15831,20 @@ mod tests {
             parsed.copy_value,
             "https://chatgpt.com/workspace?invite=abc123"
         );
+    }
+
+    #[test]
+    fn parse_mailbox_invite_accepts_body_only_invites_without_workspace_keyword() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_body_only_plain_invite".to_string(),
+            subject: Some("OpenAI account notice".to_string()),
+            content: Some("Accept invitation: https://chatgpt.com/invite/abc123".to_string()),
+            html: None,
+            received_at: Some("2026-03-24T00:06:50Z".to_string()),
+        };
+
+        let parsed = parse_mailbox_invite(&detail).expect("body invite without workspace");
+        assert_eq!(parsed.copy_value, "https://chatgpt.com/invite/abc123");
     }
 
     #[test]
