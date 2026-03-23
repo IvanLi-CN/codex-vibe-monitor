@@ -3373,11 +3373,6 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
         insert_test_pool_api_key_account(&state, &display_name, &api_key).await;
     }
 
-    sqlx::query("UPDATE pool_upstream_accounts SET enabled = 0 WHERE id = ?1")
-        .bind(beta_id)
-        .execute(&state.pool)
-        .await
-        .expect("disable beta account");
     let now = Utc::now();
     sqlx::query(
         "UPDATE pool_upstream_accounts SET last_selected_at = ?2, cooldown_until = ?3 WHERE id = ?1",
@@ -3388,12 +3383,13 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
     .execute(&state.pool)
     .await
     .expect("mark alpha working");
-    sqlx::query("UPDATE pool_upstream_accounts SET cooldown_until = ?2 WHERE id = ?1")
-        .bind(gamma_id)
-        .bind(format_utc_iso(now + ChronoDuration::minutes(10)))
+    set_test_account_rate_limited_cooldown(&state.pool, beta_id, 600).await;
+    sqlx::query("UPDATE pool_upstream_accounts SET enabled = 0 WHERE id = ?1")
+        .bind(beta_id)
         .execute(&state.pool)
         .await
-        .expect("mark gamma rate limited");
+        .expect("disable beta account");
+    set_test_account_rate_limited_cooldown(&state.pool, gamma_id, 600).await;
 
     let Json(active_page_two) = list_upstream_accounts(
         State(state.clone()),
@@ -3465,6 +3461,13 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
             .and_then(serde_json::Value::as_str),
         Some("disabled")
     );
+    assert_eq!(
+        disabled_items[0]
+            .get("healthStatus")
+            .and_then(serde_json::Value::as_str),
+        Some("normal")
+    );
+    assert_eq!(disabled_only_json["metrics"]["attention"].as_u64(), Some(0));
 
     let Json(split_status_filtered) = list_upstream_accounts(
         State(state),

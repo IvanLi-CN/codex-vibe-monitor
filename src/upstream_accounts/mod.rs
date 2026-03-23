@@ -7085,8 +7085,13 @@ fn build_summary_from_row(
     let effective_routing_rule = build_effective_routing_rule(&tags);
     let status = effective_account_status(row);
     let enable_status = derive_upstream_account_enable_status(row.enabled != 0);
-    let health_status =
-        derive_upstream_account_health_status(&row.status, row.last_error.as_deref());
+    let health_status = derive_upstream_account_health_status(
+        &row.status,
+        row.last_error.as_deref(),
+        row.last_error_at.as_deref(),
+        row.last_route_failure_at.as_deref(),
+        row.last_route_failure_kind.as_deref(),
+    );
     let sync_state = derive_upstream_account_sync_state(&row.status);
     let work_status = derive_upstream_account_work_status(
         row.enabled != 0,
@@ -7098,6 +7103,9 @@ fn build_summary_from_row(
         row.enabled != 0,
         &row.status,
         row.last_error.as_deref(),
+        row.last_error_at.as_deref(),
+        row.last_route_failure_at.as_deref(),
+        row.last_route_failure_kind.as_deref(),
     )
     .to_string();
 
@@ -8720,9 +8728,24 @@ fn derive_upstream_account_sync_state(raw_status: &str) -> &'static str {
 fn derive_upstream_account_health_status(
     raw_status: &str,
     last_error: Option<&str>,
+    last_error_at: Option<&str>,
+    last_route_failure_at: Option<&str>,
+    last_route_failure_kind: Option<&str>,
 ) -> &'static str {
     let status = raw_status.trim().to_ascii_lowercase();
     let error_message = last_error.unwrap_or_default();
+    if matches!(
+        status.as_str(),
+        UPSTREAM_ACCOUNT_STATUS_ACTIVE
+            | UPSTREAM_ACCOUNT_STATUS_SYNCING
+            | UPSTREAM_ACCOUNT_STATUS_DISABLED
+    ) && is_transient_route_failure_error(
+        last_error_at,
+        last_route_failure_at,
+        last_route_failure_kind,
+    ) {
+        return UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL;
+    }
     if is_upstream_unavailable_error_message(error_message) {
         return UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE;
     }
@@ -8741,6 +8764,30 @@ fn derive_upstream_account_health_status(
         return UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER;
     }
     UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL
+}
+
+fn is_transient_route_failure_error(
+    last_error_at: Option<&str>,
+    last_route_failure_at: Option<&str>,
+    last_route_failure_kind: Option<&str>,
+) -> bool {
+    if last_error_at.is_none() || last_error_at != last_route_failure_at {
+        return false;
+    }
+    matches!(
+        last_route_failure_kind
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+        Some(
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429
+                | FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX
+                | FORWARD_PROXY_FAILURE_SEND_ERROR
+                | FORWARD_PROXY_FAILURE_HANDSHAKE_TIMEOUT
+                | FORWARD_PROXY_FAILURE_STREAM_ERROR
+                | PROXY_FAILURE_FAILED_CONTACT_UPSTREAM
+                | PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT
+        )
+    )
 }
 
 fn derive_upstream_account_work_status(
@@ -8772,6 +8819,9 @@ fn classify_upstream_account_display_status(
     enabled: bool,
     raw_status: &str,
     last_error: Option<&str>,
+    last_error_at: Option<&str>,
+    last_route_failure_at: Option<&str>,
+    last_route_failure_kind: Option<&str>,
 ) -> &'static str {
     let enable_status = derive_upstream_account_enable_status(enabled);
     if enable_status == UPSTREAM_ACCOUNT_ENABLE_STATUS_DISABLED {
@@ -8781,7 +8831,13 @@ fn classify_upstream_account_display_status(
     if sync_state == UPSTREAM_ACCOUNT_SYNC_STATE_SYNCING {
         return UPSTREAM_ACCOUNT_STATUS_SYNCING;
     }
-    let health_status = derive_upstream_account_health_status(raw_status, last_error);
+    let health_status = derive_upstream_account_health_status(
+        raw_status,
+        last_error,
+        last_error_at,
+        last_route_failure_at,
+        last_route_failure_kind,
+    );
     if health_status == UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL {
         return UPSTREAM_ACCOUNT_STATUS_ACTIVE;
     }
