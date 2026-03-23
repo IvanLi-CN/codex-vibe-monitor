@@ -100,24 +100,54 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.limitLegendTitle": "Quota legend",
     "accountPool.upstreamAccounts.limitLegendDescription":
       "OAuth accounts show normalized upstream usage snapshots. API key accounts show local placeholder limits until routing metrics are wired in.",
-    "accountPool.upstreamAccounts.routing.title": "Pool routing settings",
+    "accountPool.upstreamAccounts.routing.title":
+      "Advanced routing & sync settings",
     "accountPool.upstreamAccounts.routing.description":
-      "Set the single downstream API key that routes /v1 traffic into the internal account pool.",
+      "Edit the downstream pool API key and the tiered maintenance sync cadence for the account pool.",
     "accountPool.upstreamAccounts.routing.currentKey": "Current pool API key",
-    "accountPool.upstreamAccounts.routing.edit": "Edit pool key",
+    "accountPool.upstreamAccounts.routing.edit": "Edit routing settings",
     "accountPool.upstreamAccounts.routing.close": "Close dialog",
     "accountPool.upstreamAccounts.routing.configured": "Configured",
     "accountPool.upstreamAccounts.routing.notConfigured": "Not configured",
+    "accountPool.upstreamAccounts.routing.apiKeySectionTitle":
+      "Pool route key",
+    "accountPool.upstreamAccounts.routing.apiKeySectionDescription":
+      "Optional. Leave blank to keep the current downstream pool API key unchanged.",
     "accountPool.upstreamAccounts.routing.apiKeyLabel":
       "Downstream pool API key",
     "accountPool.upstreamAccounts.routing.generate": "Generate key",
     "accountPool.upstreamAccounts.routing.apiKeyPlaceholder":
       "Paste a new pool API key to rotate the route target",
+    "accountPool.upstreamAccounts.routing.maintenanceSectionTitle":
+      "Tiered maintenance sync",
+    "accountPool.upstreamAccounts.routing.maintenanceSectionDescription":
+      "Healthy OAuth accounts with both windows available stay in the priority queue until the cap is reached; overflow accounts fall back to the secondary sync interval.",
+    "accountPool.upstreamAccounts.routing.primarySyncIntervalLabel":
+      "Priority sync interval",
+    "accountPool.upstreamAccounts.routing.secondarySyncIntervalLabel":
+      "Secondary sync interval",
+    "accountPool.upstreamAccounts.routing.priorityCapLabel":
+      "Priority available account cap",
+    "accountPool.upstreamAccounts.routing.priorityCapValue":
+      "Top {{count}} accounts",
+    "accountPool.upstreamAccounts.routing.intervalHours": "{{count}}h",
+    "accountPool.upstreamAccounts.routing.intervalMinutes": "{{count}}m",
+    "accountPool.upstreamAccounts.routing.intervalSeconds": "{{count}}s",
     "accountPool.upstreamAccounts.routing.dialogTitle":
-      "Update pool routing key",
+      "Advanced routing & sync settings",
     "accountPool.upstreamAccounts.routing.dialogDescription":
-      "Replace the downstream API key that routes /v1 traffic into the internal account pool.",
-    "accountPool.upstreamAccounts.routing.save": "Save pool key",
+      "Edit the pool route key and the two-tier maintenance queue without touching environment variables.",
+    "accountPool.upstreamAccounts.routing.save": "Save settings",
+    "accountPool.upstreamAccounts.routing.validation.integerRequired":
+      "Sync fields must be positive integers.",
+    "accountPool.upstreamAccounts.routing.validation.primaryMin":
+      "Priority sync interval must be at least 60 seconds.",
+    "accountPool.upstreamAccounts.routing.validation.secondaryMin":
+      "Secondary sync interval must be at least 60 seconds.",
+    "accountPool.upstreamAccounts.routing.validation.secondaryAtLeastPrimary":
+      "Secondary sync interval must be greater than or equal to the priority sync interval.",
+    "accountPool.upstreamAccounts.routing.validation.priorityCapMin":
+      "Priority available account cap must be at least 1.",
     "accountPool.upstreamAccounts.actions.refresh": "Refresh",
     "accountPool.upstreamAccounts.actions.addAccount": "Add account",
     "accountPool.upstreamAccounts.actions.addOauth": "Add OAuth account",
@@ -1465,22 +1495,50 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.limitLegendTitle": "额度说明",
     "accountPool.upstreamAccounts.limitLegendDescription":
       "OAuth 账号展示上游归一化后的真实快照；API Key 账号在路由计量接入前，展示本地占位限额。",
-    "accountPool.upstreamAccounts.routing.title": "号池路由设置",
+    "accountPool.upstreamAccounts.routing.title": "高级路由与同步设置",
     "accountPool.upstreamAccounts.routing.description":
-      "填写唯一的下游 API Key；命中它的 /v1 请求会改走内部账号池。",
+      "直接编辑号池下游 API Key，以及分层维护同步频率，不再依赖环境变量。",
     "accountPool.upstreamAccounts.routing.currentKey": "当前号池 API Key",
-    "accountPool.upstreamAccounts.routing.edit": "编辑号池密钥",
+    "accountPool.upstreamAccounts.routing.edit": "编辑路由设置",
     "accountPool.upstreamAccounts.routing.close": "关闭弹窗",
     "accountPool.upstreamAccounts.routing.configured": "已配置",
     "accountPool.upstreamAccounts.routing.notConfigured": "未配置",
+    "accountPool.upstreamAccounts.routing.apiKeySectionTitle": "号池路由密钥",
+    "accountPool.upstreamAccounts.routing.apiKeySectionDescription":
+      "可选。留空即可保留当前下游号池 API Key，不会强制你重新填写。",
     "accountPool.upstreamAccounts.routing.apiKeyLabel": "下游号池 API Key",
     "accountPool.upstreamAccounts.routing.generate": "生成密钥",
     "accountPool.upstreamAccounts.routing.apiKeyPlaceholder":
       "粘贴新的号池 API Key 以切换内部路由入口",
-    "accountPool.upstreamAccounts.routing.dialogTitle": "编辑号池路由密钥",
+    "accountPool.upstreamAccounts.routing.maintenanceSectionTitle":
+      "分层维护同步",
+    "accountPool.upstreamAccounts.routing.maintenanceSectionDescription":
+      "双窗口都有额度的健康 OAuth 账号会先进入优先队列，超过上限的账号自动落到次级同步频率。",
+    "accountPool.upstreamAccounts.routing.primarySyncIntervalLabel":
+      "优先队列同步间隔",
+    "accountPool.upstreamAccounts.routing.secondarySyncIntervalLabel":
+      "次级队列同步间隔",
+    "accountPool.upstreamAccounts.routing.priorityCapLabel":
+      "优先可用账号上限",
+    "accountPool.upstreamAccounts.routing.priorityCapValue":
+      "前 {{count}} 个账号",
+    "accountPool.upstreamAccounts.routing.intervalHours": "{{count}} 小时",
+    "accountPool.upstreamAccounts.routing.intervalMinutes": "{{count}} 分钟",
+    "accountPool.upstreamAccounts.routing.intervalSeconds": "{{count}} 秒",
+    "accountPool.upstreamAccounts.routing.dialogTitle": "高级路由与同步设置",
     "accountPool.upstreamAccounts.routing.dialogDescription":
-      "通过对话框替换当前生效的下游 API Key；保存后新的 /v1 请求会按新 key 命中内部账号池。",
-    "accountPool.upstreamAccounts.routing.save": "保存号池密钥",
+      "在项目界面里直接编辑号池路由密钥和双层 maintenance 队列参数。",
+    "accountPool.upstreamAccounts.routing.save": "保存设置",
+    "accountPool.upstreamAccounts.routing.validation.integerRequired":
+      "同步字段必须填写为正整数。",
+    "accountPool.upstreamAccounts.routing.validation.primaryMin":
+      "优先队列同步间隔不能小于 60 秒。",
+    "accountPool.upstreamAccounts.routing.validation.secondaryMin":
+      "次级队列同步间隔不能小于 60 秒。",
+    "accountPool.upstreamAccounts.routing.validation.secondaryAtLeastPrimary":
+      "次级队列同步间隔必须大于等于优先队列同步间隔。",
+    "accountPool.upstreamAccounts.routing.validation.priorityCapMin":
+      "优先可用账号上限不能小于 1。",
     "accountPool.upstreamAccounts.actions.refresh": "刷新列表",
     "accountPool.upstreamAccounts.actions.addAccount": "新增账号",
     "accountPool.upstreamAccounts.actions.addOauth": "新增 OAuth 账号",

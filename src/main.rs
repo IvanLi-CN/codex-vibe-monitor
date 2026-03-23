@@ -9254,7 +9254,7 @@ async fn send_pool_request_with_failover(
     };
     let mut preferred_account = preferred_account
         .filter(|account| !excluded_upstream_route_keys.contains(&account.upstream_route_key()));
-    let mut same_account_attempts = same_account_attempts.max(1);
+    let initial_same_account_attempts = same_account_attempts.max(1);
     let mut attempt_count = failover_progress.attempt_count;
     let mut timeout_route_failover_pending = failover_progress.timeout_route_failover_pending;
     let mut exhausted_accounts_all_rate_limited = initial_errors_all_rate_limited;
@@ -9631,8 +9631,14 @@ async fn send_pool_request_with_failover(
             PoolResolvedAuth::Oauth { .. } => None,
         };
         let client = state.http_clients.client_for_pool_upstream();
+        let same_account_attempt_budget = pool_same_account_attempt_budget(
+            original_uri,
+            &method,
+            distinct_account_count,
+            initial_same_account_attempts,
+        );
 
-        for same_account_attempt in 0..same_account_attempts {
+        for same_account_attempt in 0..same_account_attempt_budget {
             let attempt_total_timeout_started_at = ensure_pool_total_timeout_started_at(
                 responses_total_timeout,
                 &mut responses_total_timeout_started_at,
@@ -9772,7 +9778,8 @@ async fn send_pool_request_with_failover(
                                     "failed to persist pool transport attempt"
                                 );
                             }
-                            let has_retry_budget = same_account_attempt + 1 < same_account_attempts;
+                            let has_retry_budget =
+                                same_account_attempt + 1 < same_account_attempt_budget;
                             if has_retry_budget && !is_timeout_shaped {
                                 let retry_delay = fallback_proxy_429_retry_delay(
                                     u32::from(same_account_attempt) + 1,
@@ -9780,7 +9787,7 @@ async fn send_pool_request_with_failover(
                                 info!(
                                     account_id = account.account_id,
                                     retry_index = same_account_attempt + 1,
-                                    max_same_account_attempts = same_account_attempts,
+                                    max_same_account_attempts = same_account_attempt_budget,
                                     retry_after_ms = retry_delay.as_millis(),
                                     "pool upstream transport failure; retrying same account"
                                 );
@@ -9852,7 +9859,8 @@ async fn send_pool_request_with_failover(
                                     "failed to persist pool handshake timeout attempt"
                                 );
                             }
-                            let has_retry_budget = same_account_attempt + 1 < same_account_attempts;
+                            let has_retry_budget =
+                                same_account_attempt + 1 < same_account_attempt_budget;
                             if has_retry_budget && !is_timeout_shaped {
                                 let retry_delay = fallback_proxy_429_retry_delay(
                                     u32::from(same_account_attempt) + 1,
@@ -9860,7 +9868,7 @@ async fn send_pool_request_with_failover(
                                 info!(
                                     account_id = account.account_id,
                                     retry_index = same_account_attempt + 1,
-                                    max_same_account_attempts = same_account_attempts,
+                                    max_same_account_attempts = same_account_attempt_budget,
                                     retry_after_ms = retry_delay.as_millis(),
                                     "pool upstream handshake timeout; retrying same account"
                                 );
@@ -10024,7 +10032,7 @@ async fn send_pool_request_with_failover(
                     StatusCode::UNAUTHORIZED | StatusCode::PAYMENT_REQUIRED | StatusCode::FORBIDDEN
                 )
             {
-                let has_retry_budget = same_account_attempt + 1 < same_account_attempts;
+                let has_retry_budget = same_account_attempt + 1 < same_account_attempt_budget;
                 let upstream_request_id_header = response
                     .headers()
                     .get("x-request-id")
@@ -10115,7 +10123,7 @@ async fn send_pool_request_with_failover(
                         account_id = account.account_id,
                         status = status.as_u16(),
                         retry_index = same_account_attempt + 1,
-                        max_same_account_attempts = same_account_attempts,
+                        max_same_account_attempts = same_account_attempt_budget,
                         retry_after_ms = retry_delay.as_millis(),
                         "pool upstream responded with retryable status; retrying same account"
                     );
@@ -10200,14 +10208,14 @@ async fn send_pool_request_with_failover(
                             "failed to persist pool first-chunk transport attempt"
                         );
                     }
-                    let has_retry_budget = same_account_attempt + 1 < same_account_attempts;
+                    let has_retry_budget = same_account_attempt + 1 < same_account_attempt_budget;
                     if has_retry_budget && !is_timeout_shaped {
                         let retry_delay =
                             fallback_proxy_429_retry_delay(u32::from(same_account_attempt) + 1);
                         info!(
                             account_id = account.account_id,
                             retry_index = same_account_attempt + 1,
-                            max_same_account_attempts = same_account_attempts,
+                            max_same_account_attempts = same_account_attempt_budget,
                             retry_after_ms = retry_delay.as_millis(),
                             "pool upstream first chunk failed; retrying same account"
                         );
@@ -10275,8 +10283,6 @@ async fn send_pool_request_with_failover(
                 attempt_summary: pool_attempt_summary(attempt_count, distinct_account_count, None),
             });
         }
-
-        same_account_attempts = POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS;
     }
 }
 
@@ -13458,6 +13464,33 @@ fn build_pool_total_timeout_exhausted_error(
         Some(PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED.to_string()),
     );
     final_error
+}
+
+fn pool_uses_responses_family_retry_budget_policy(original_uri: &Uri, method: &Method) -> bool {
+    method == Method::POST
+        && matches!(
+            original_uri.path(),
+            "/v1/responses" | "/v1/responses/compact"
+        )
+}
+
+fn pool_same_account_attempt_budget(
+    original_uri: &Uri,
+    method: &Method,
+    distinct_account_count: usize,
+    initial_same_account_attempts: u8,
+) -> u8 {
+    if pool_uses_responses_family_retry_budget_policy(original_uri, method) {
+        if distinct_account_count <= 1 {
+            initial_same_account_attempts.max(1)
+        } else {
+            1
+        }
+    } else if distinct_account_count <= 1 {
+        initial_same_account_attempts.max(1)
+    } else {
+        POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS
+    }
 }
 
 fn pool_error_message_indicates_proxy_timeout(message: &str) -> bool {

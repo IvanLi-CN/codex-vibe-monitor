@@ -10329,6 +10329,68 @@ fn pool_upstream_send_timeout_keeps_handshake_budget_for_non_responses_route() {
     assert_eq!(timeout, handshake_timeout);
 }
 
+#[test]
+fn pool_same_account_attempt_budget_limits_follow_up_accounts_for_responses_family() {
+    assert_eq!(
+        pool_same_account_attempt_budget(
+            &"/v1/responses".parse().expect("valid uri"),
+            &Method::POST,
+            1,
+            3,
+        ),
+        3
+    );
+    assert_eq!(
+        pool_same_account_attempt_budget(
+            &"/v1/responses".parse().expect("valid uri"),
+            &Method::POST,
+            2,
+            3,
+        ),
+        1
+    );
+    assert_eq!(
+        pool_same_account_attempt_budget(
+            &"/v1/responses/compact".parse().expect("valid compact uri"),
+            &Method::POST,
+            3,
+            3,
+        ),
+        1
+    );
+    assert_eq!(
+        pool_same_account_attempt_budget(
+            &"/v1/responses".parse().expect("valid uri"),
+            &Method::POST,
+            1,
+            2,
+        ),
+        2
+    );
+}
+
+#[test]
+fn pool_same_account_attempt_budget_keeps_legacy_budget_for_non_responses_routes() {
+    assert_eq!(
+        pool_same_account_attempt_budget(
+            &"/v1/chat/completions".parse().expect("valid uri"),
+            &Method::POST,
+            1,
+            2,
+        ),
+        2
+    );
+    assert_eq!(
+        pool_same_account_attempt_budget(
+            &"/v1/chat/completions".parse().expect("valid uri"),
+            &Method::POST,
+            2,
+            2,
+        ),
+        POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS
+    );
+}
+
 #[tokio::test]
 async fn proxy_capture_target_responses_uses_default_handshake_timeout() {
     let (upstream_base, _captured_requests, upstream_handle) =
@@ -11262,6 +11324,8 @@ async fn spawn_pool_retry_upstream(
     );
     let app = Router::new()
         .route("/v1/responses", post(pool_retry_upstream))
+        .route("/v1/responses/compact", post(pool_retry_upstream))
+        .route("/v1/chat/completions", post(pool_retry_upstream))
         .with_state(PoolRetryUpstreamState {
             attempts: attempts.clone(),
             fail_before_success,
@@ -12839,7 +12903,7 @@ async fn pool_route_does_not_use_pool_wide_429_message_when_budget_exhaustion_is
 
     let attempts = attempts.lock().expect("lock attempts");
     assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
-    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(3));
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(1));
     assert_eq!(attempts.get("Bearer upstream-tertiary").copied(), Some(1));
 
     upstream_handle.abort();
@@ -12980,6 +13044,7 @@ async fn capture_target_pool_route_stops_after_three_distinct_accounts() {
     struct AttemptStatusRow {
         attempt_index: i64,
         distinct_account_index: i64,
+        same_account_retry_index: i64,
         status: String,
         failure_kind: Option<String>,
     }
@@ -13033,7 +13098,7 @@ async fn capture_target_pool_route_stops_after_three_distinct_accounts() {
         .fetch_one(&state.pool)
         .await
         .expect("count budget attempt rows");
-        if count >= 10 {
+        if count >= 6 {
             break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -13041,7 +13106,7 @@ async fn capture_target_pool_route_stops_after_three_distinct_accounts() {
 
     let attempt_status_rows = sqlx::query_as::<_, AttemptStatusRow>(
         r#"
-        SELECT attempt_index, distinct_account_index, status, failure_kind
+        SELECT attempt_index, distinct_account_index, same_account_retry_index, status, failure_kind
         FROM pool_upstream_request_attempts
         ORDER BY attempt_index ASC
         "#,
@@ -13049,24 +13114,29 @@ async fn capture_target_pool_route_stops_after_three_distinct_accounts() {
     .fetch_all(&state.pool)
     .await
     .expect("load attempt status rows");
-    assert_eq!(attempt_status_rows.len(), 10);
-    assert_eq!(attempt_status_rows[8].attempt_index, 9);
-    assert_eq!(attempt_status_rows[8].distinct_account_index, 3);
+    assert_eq!(attempt_status_rows.len(), 6);
+    assert_eq!(attempt_status_rows[0].same_account_retry_index, 1);
+    assert_eq!(attempt_status_rows[1].same_account_retry_index, 2);
+    assert_eq!(attempt_status_rows[2].same_account_retry_index, 3);
+    assert_eq!(attempt_status_rows[3].same_account_retry_index, 1);
+    assert_eq!(attempt_status_rows[4].same_account_retry_index, 1);
+    assert_eq!(attempt_status_rows[4].attempt_index, 5);
+    assert_eq!(attempt_status_rows[4].distinct_account_index, 3);
     assert_eq!(
-        attempt_status_rows[9].status,
+        attempt_status_rows[5].status,
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL,
     );
-    assert_eq!(attempt_status_rows[9].attempt_index, 10);
-    assert_eq!(attempt_status_rows[9].distinct_account_index, 3);
+    assert_eq!(attempt_status_rows[5].attempt_index, 6);
+    assert_eq!(attempt_status_rows[5].distinct_account_index, 3);
     assert_eq!(
-        attempt_status_rows[9].failure_kind.as_deref(),
+        attempt_status_rows[5].failure_kind.as_deref(),
         Some(PROXY_FAILURE_POOL_MAX_DISTINCT_ACCOUNTS_EXHAUSTED),
     );
 
     let attempts = attempts.lock().expect("lock attempt counters");
     assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
-    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(3));
-    assert_eq!(attempts.get("Bearer upstream-tertiary").copied(), Some(3));
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(1));
+    assert_eq!(attempts.get("Bearer upstream-tertiary").copied(), Some(1));
     assert_eq!(attempts.get("Bearer upstream-quaternary").copied(), None);
     drop(attempts);
 
@@ -13087,12 +13157,243 @@ async fn capture_target_pool_route_stops_after_three_distinct_accounts() {
             .expect("exhausted payload should be present"),
     )
     .expect("decode exhausted payload");
-    assert_eq!(payload["poolAttemptCount"].as_i64(), Some(9));
+    assert_eq!(payload["poolAttemptCount"].as_i64(), Some(5));
     assert_eq!(payload["poolDistinctAccountCount"].as_i64(), Some(3));
     assert_eq!(
         payload["poolAttemptTerminalReason"].as_str(),
         Some(PROXY_FAILURE_POOL_MAX_DISTINCT_ACCOUNTS_EXHAUSTED),
     );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_route_responses_compact_limits_follow_up_accounts_to_single_attempt() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptRow {
+        attempt_index: i64,
+        distinct_account_index: i64,
+        same_account_retry_index: i64,
+        status: String,
+    }
+
+    #[derive(Debug, sqlx::FromRow)]
+    struct PersistedPayloadRow {
+        payload: Option<String>,
+    }
+
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[
+        ("Bearer upstream-primary", 99),
+        ("Bearer upstream-secondary", 99),
+        ("Bearer upstream-tertiary", 0),
+    ])
+    .await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+    insert_test_pool_api_key_account(&state, "Tertiary", "upstream-tertiary").await;
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "previous_response_id": "resp_prev_001",
+        "input": [{"role": "user", "content": "compact this thread"}],
+    }))
+    .expect("serialize compact request body");
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses/compact".parse().expect("valid compact uri")),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(request_body),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read compact retry body");
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    wait_for_pool_attempt_row_count(&state.pool, 5).await;
+
+    let attempt_rows = sqlx::query_as::<_, AttemptRow>(
+        r#"
+        SELECT attempt_index, distinct_account_index, same_account_retry_index, status
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load compact retry rows");
+    assert_eq!(attempt_rows.len(), 5);
+    assert_eq!(attempt_rows[0].distinct_account_index, 1);
+    assert_eq!(attempt_rows[0].same_account_retry_index, 1);
+    assert_eq!(attempt_rows[1].distinct_account_index, 1);
+    assert_eq!(attempt_rows[1].same_account_retry_index, 2);
+    assert_eq!(attempt_rows[2].distinct_account_index, 1);
+    assert_eq!(attempt_rows[2].same_account_retry_index, 3);
+    assert_eq!(attempt_rows[3].distinct_account_index, 2);
+    assert_eq!(attempt_rows[3].same_account_retry_index, 1);
+    assert_eq!(attempt_rows[4].distinct_account_index, 3);
+    assert_eq!(attempt_rows[4].same_account_retry_index, 1);
+    assert_eq!(
+        attempt_rows[4].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
+    );
+
+    let attempts = attempts.lock().expect("lock compact attempt counters");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(1));
+    assert_eq!(attempts.get("Bearer upstream-tertiary").copied(), Some(1));
+    drop(attempts);
+
+    let row = sqlx::query_as::<_, PersistedPayloadRow>(
+        r#"
+        SELECT payload
+        FROM codex_invocations
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load compact invocation payload");
+    let payload: Value = serde_json::from_str(
+        row.payload
+            .as_deref()
+            .expect("compact payload should be present"),
+    )
+    .expect("decode compact payload");
+    assert_eq!(payload["poolAttemptCount"].as_i64(), Some(5));
+    assert_eq!(payload["poolDistinctAccountCount"].as_i64(), Some(3));
+    assert!(payload["poolAttemptTerminalReason"].is_null());
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_route_chat_completions_keeps_three_attempts_for_follow_up_accounts() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptRow {
+        attempt_index: i64,
+        distinct_account_index: i64,
+        same_account_retry_index: i64,
+        status: String,
+    }
+
+    #[derive(Debug, sqlx::FromRow)]
+    struct PersistedPayloadRow {
+        payload: Option<String>,
+    }
+
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[
+        ("Bearer upstream-primary", 99),
+        ("Bearer upstream-secondary", 2),
+    ])
+    .await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "messages": [{"role": "user", "content": "hello"}],
+    }))
+    .expect("serialize chat completions body");
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(
+            "/v1/chat/completions"
+                .parse()
+                .expect("valid chat completions uri"),
+        ),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(request_body),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read chat completions retry body");
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    wait_for_pool_attempt_row_count(&state.pool, 6).await;
+
+    let attempt_rows = sqlx::query_as::<_, AttemptRow>(
+        r#"
+        SELECT attempt_index, distinct_account_index, same_account_retry_index, status
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load chat completions retry rows");
+    assert_eq!(attempt_rows.len(), 6);
+    assert_eq!(attempt_rows[0].same_account_retry_index, 1);
+    assert_eq!(attempt_rows[1].same_account_retry_index, 2);
+    assert_eq!(attempt_rows[2].same_account_retry_index, 3);
+    assert_eq!(attempt_rows[3].distinct_account_index, 2);
+    assert_eq!(attempt_rows[3].same_account_retry_index, 1);
+    assert_eq!(attempt_rows[4].same_account_retry_index, 2);
+    assert_eq!(attempt_rows[5].same_account_retry_index, 3);
+    assert_eq!(
+        attempt_rows[5].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
+    );
+
+    let attempts = attempts
+        .lock()
+        .expect("lock chat completions attempt counters");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(3));
+    drop(attempts);
+
+    let row = sqlx::query_as::<_, PersistedPayloadRow>(
+        r#"
+        SELECT payload
+        FROM codex_invocations
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load chat completions payload");
+    let payload: Value = serde_json::from_str(
+        row.payload
+            .as_deref()
+            .expect("chat completions payload should be present"),
+    )
+    .expect("decode chat completions payload");
+    assert_eq!(payload["poolAttemptCount"].as_i64(), Some(6));
+    assert_eq!(payload["poolDistinctAccountCount"].as_i64(), Some(2));
+    assert!(payload["poolAttemptTerminalReason"].is_null());
 
     upstream_handle.abort();
 }
