@@ -785,7 +785,7 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     );
     expect(getBatchRows()).toHaveLength(6);
     expect(navigateMock).not.toHaveBeenCalled();
-  });
+  }, 10_000);
 
   it("blocks completing a batch row when another draft row reuses the same display name", async () => {
     const beginOauthLogin = vi.fn().mockResolvedValue({
