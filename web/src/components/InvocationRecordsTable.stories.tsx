@@ -59,6 +59,24 @@ export const ExceptionFocus: Story = {
   },
 }
 
+export const StructuredOnlyFocus: Story = {
+  args: {
+    focus: 'exception',
+    records: STORYBOOK_INVOCATION_RECORDS.filter((record) => record.detailLevel === 'structured_only'),
+    isLoading: false,
+    error: null,
+  },
+}
+
+export const PoolRouteFocus: Story = {
+  args: {
+    focus: 'network',
+    records: STORYBOOK_INVOCATION_RECORDS.filter((record) => record.routeMode === 'pool'),
+    isLoading: false,
+    error: null,
+  },
+}
+
 export const Loading: Story = {
   args: {
     focus: 'token',
