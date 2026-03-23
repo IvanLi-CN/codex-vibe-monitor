@@ -9841,6 +9841,7 @@ pub(crate) struct PoolResolvedAccount {
 pub(crate) enum PoolAccountResolution {
     Resolved(PoolResolvedAccount),
     RateLimited,
+    Unavailable,
     NoCandidate,
     BlockedByPolicy(String),
 }
@@ -9891,6 +9892,7 @@ pub(crate) async fn resolve_pool_account_for_request(
 ) -> Result<PoolAccountResolution> {
     let mut tried = excluded_ids.iter().copied().collect::<HashSet<_>>();
     let mut saw_rate_limited_candidate = false;
+    let mut saw_non_rate_limited_candidate = false;
 
     let sticky_route = if let Some(sticky_key) = sticky_key {
         load_sticky_route(&state.pool, sticky_key).await?
@@ -9913,8 +9915,11 @@ pub(crate) async fn resolve_pool_account_for_request(
                 if let Some(account) = prepare_pool_account(state, &row).await? {
                     return Ok(PoolAccountResolution::Resolved(account));
                 }
+                saw_non_rate_limited_candidate = true;
             } else if is_account_rate_limited_for_routing(&row) {
                 saw_rate_limited_candidate = true;
+            } else {
+                saw_non_rate_limited_candidate = true;
             }
         }
         if sticky_source_rule
@@ -9937,6 +9942,8 @@ pub(crate) async fn resolve_pool_account_for_request(
         if !is_account_selectable_for_routing(&row) {
             if is_account_rate_limited_for_routing(&row) {
                 saw_rate_limited_candidate = true;
+            } else {
+                saw_non_rate_limited_candidate = true;
             }
             continue;
         }
@@ -9950,15 +9957,20 @@ pub(crate) async fn resolve_pool_account_for_request(
         )
         .await?
         {
+            saw_non_rate_limited_candidate = true;
             continue;
         }
         if let Some(account) = prepare_pool_account(state, &row).await? {
             return Ok(PoolAccountResolution::Resolved(account));
         }
+        saw_non_rate_limited_candidate = true;
     }
 
-    if saw_rate_limited_candidate {
+    if saw_rate_limited_candidate && !saw_non_rate_limited_candidate {
         return Ok(PoolAccountResolution::RateLimited);
+    }
+    if saw_non_rate_limited_candidate {
+        return Ok(PoolAccountResolution::Unavailable);
     }
 
     Ok(PoolAccountResolution::NoCandidate)
@@ -10452,8 +10464,7 @@ async fn load_account_routing_candidates(
         .push_bind(UPSTREAM_ACCOUNT_PROVIDER_CODEX)
         .push(" AND account.enabled = 1")
         .push(" AND account.status = ")
-        .push_bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
-        .push(" AND account.encrypted_credentials IS NOT NULL");
+        .push_bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE);
     if !excluded_ids.is_empty() {
         query.push(" AND account.id NOT IN (");
         {

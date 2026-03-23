@@ -8605,6 +8605,28 @@ fn build_pool_rate_limited_error(
     }
 }
 
+fn build_pool_no_available_account_error(
+    attempt_count: usize,
+    distinct_account_count: usize,
+) -> PoolUpstreamError {
+    PoolUpstreamError {
+        account: None,
+        status: StatusCode::BAD_GATEWAY,
+        message: "no healthy pool account is available".to_string(),
+        failure_kind: PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT,
+        connect_latency_ms: 0.0,
+        upstream_error_code: None,
+        upstream_error_message: None,
+        upstream_request_id: None,
+        oauth_responses_debug: None,
+        attempt_summary: pool_attempt_summary(
+            attempt_count,
+            distinct_account_count,
+            Some(PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT.to_string()),
+        ),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct PendingPoolAttemptRecord {
     pub(crate) invoke_id: String,
@@ -9032,11 +9054,19 @@ async fn send_pool_request_with_failover_seeded(
     let first_chunk_timeout =
         pool_upstream_first_chunk_timeout(&state.config, original_uri, &method, handshake_timeout);
     let mut excluded_ids = initial_excluded_ids;
+    let initial_errors_all_rate_limited = if initial_attempt_count == 0 {
+        true
+    } else {
+        initial_last_error
+            .as_ref()
+            .is_some_and(pool_upstream_error_is_rate_limited)
+    };
     let mut last_error = initial_last_error;
     let mut preferred_account = preferred_account;
     let mut same_account_attempts = same_account_attempts.max(1);
     let mut attempt_count = initial_attempt_count;
     let mut distinct_account_count = excluded_ids.len();
+    let mut exhausted_accounts_all_rate_limited = initial_errors_all_rate_limited;
 
     'account_loop: loop {
         if preferred_account.is_none() && excluded_ids.len() >= POOL_UPSTREAM_MAX_DISTINCT_ACCOUNTS
@@ -9053,7 +9083,7 @@ async fn send_pool_request_with_failover_seeded(
                 oauth_responses_debug: None,
                 attempt_summary: PoolAttemptSummary::default(),
             });
-            if pool_upstream_error_is_rate_limited(&final_error) {
+            if exhausted_accounts_all_rate_limited && distinct_account_count > 0 {
                 final_error.status = StatusCode::TOO_MANY_REQUESTS;
                 final_error.message = POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string();
             }
@@ -9110,33 +9140,45 @@ async fn send_pool_request_with_failover_seeded(
                         PROXY_FAILURE_POOL_ALL_ACCOUNTS_RATE_LIMITED,
                     ));
                 }
-                Ok(PoolAccountResolution::NoCandidate) => {
-                    let rate_limited = last_error
-                        .as_ref()
-                        .is_some_and(pool_upstream_error_is_rate_limited);
-                    let mut err = last_error.unwrap_or(PoolUpstreamError {
-                        account: None,
-                        status: StatusCode::BAD_GATEWAY,
-                        message: "no healthy pool account is available".to_string(),
-                        failure_kind: PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT,
-                        connect_latency_ms: 0.0,
-                        upstream_error_code: None,
-                        upstream_error_message: None,
-                        upstream_request_id: None,
-                        oauth_responses_debug: None,
-                        attempt_summary: PoolAttemptSummary::default(),
-                    });
-                    if rate_limited {
-                        err.status = StatusCode::TOO_MANY_REQUESTS;
-                        err.message = POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string();
-                        err.failure_kind = PROXY_FAILURE_POOL_ALL_ACCOUNTS_RATE_LIMITED;
-                    }
+                Ok(PoolAccountResolution::Unavailable) => {
+                    let mut err = last_error
+                        .filter(|candidate| !pool_upstream_error_is_rate_limited(candidate))
+                        .unwrap_or_else(|| {
+                            build_pool_no_available_account_error(
+                                attempt_count,
+                                distinct_account_count,
+                            )
+                        });
                     err.attempt_summary = pool_attempt_summary(
                         attempt_count,
                         distinct_account_count,
                         Some(err.failure_kind.to_string()),
                     );
                     return Err(err);
+                }
+                Ok(PoolAccountResolution::NoCandidate) => {
+                    return Err(
+                        if exhausted_accounts_all_rate_limited && distinct_account_count > 0 {
+                            build_pool_rate_limited_error(
+                                attempt_count,
+                                distinct_account_count,
+                                PROXY_FAILURE_POOL_ALL_ACCOUNTS_RATE_LIMITED,
+                            )
+                        } else {
+                            let mut err = last_error.unwrap_or_else(|| {
+                                build_pool_no_available_account_error(
+                                    attempt_count,
+                                    distinct_account_count,
+                                )
+                            });
+                            err.attempt_summary = pool_attempt_summary(
+                                attempt_count,
+                                distinct_account_count,
+                                Some(err.failure_kind.to_string()),
+                            );
+                            err
+                        },
+                    );
                 }
                 Ok(PoolAccountResolution::BlockedByPolicy(message)) => {
                     return Err(PoolUpstreamError {
@@ -9315,6 +9357,7 @@ async fn send_pool_request_with_failover_seeded(
                                 oauth_responses_debug: None,
                                 attempt_summary: PoolAttemptSummary::default(),
                             });
+                            exhausted_accounts_all_rate_limited = false;
                             continue 'account_loop;
                         }
                         Err(_) => {
@@ -9387,6 +9430,7 @@ async fn send_pool_request_with_failover_seeded(
                                 oauth_responses_debug: None,
                                 attempt_summary: PoolAttemptSummary::default(),
                             });
+                            exhausted_accounts_all_rate_limited = false;
                             continue 'account_loop;
                         }
                     }
@@ -9419,6 +9463,7 @@ async fn send_pool_request_with_failover_seeded(
                                     Some(PROXY_FAILURE_BODY_TOO_LARGE.to_string()),
                                 ),
                             });
+                            exhausted_accounts_all_rate_limited = false;
                             continue 'account_loop;
                         }
                         Some(snapshot) if original_uri.path() == "/v1/responses" => {
@@ -9624,6 +9669,7 @@ async fn send_pool_request_with_failover_seeded(
                     oauth_responses_debug: oauth_responses_debug.clone(),
                     attempt_summary: PoolAttemptSummary::default(),
                 });
+                exhausted_accounts_all_rate_limited &= status == StatusCode::TOO_MANY_REQUESTS;
                 continue 'account_loop;
             }
 
@@ -9702,6 +9748,7 @@ async fn send_pool_request_with_failover_seeded(
                         oauth_responses_debug: oauth_responses_debug.clone(),
                         attempt_summary: PoolAttemptSummary::default(),
                     });
+                    exhausted_accounts_all_rate_limited = false;
                     continue 'account_loop;
                 }
             };
@@ -9963,6 +10010,12 @@ async fn proxy_openai_v1_via_pool(
                         return Err((
                             StatusCode::TOO_MANY_REQUESTS,
                             POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
+                        ));
+                    }
+                    Ok(PoolAccountResolution::Unavailable) => {
+                        return Err((
+                            StatusCode::BAD_GATEWAY,
+                            "no healthy pool account is available".to_string(),
                         ));
                     }
                     Ok(PoolAccountResolution::NoCandidate) => {
