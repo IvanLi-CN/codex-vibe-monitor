@@ -9802,7 +9802,7 @@ async fn send_pool_request_with_failover(
                         Some(finished_at.as_str()),
                         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
                         Some(status),
-                        Some(pool_route_http_failure_kind(status)),
+                        Some(failure_kind),
                         Some(message.as_str()),
                         Some(connect_latency_ms),
                         None,
