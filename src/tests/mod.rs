@@ -1831,6 +1831,19 @@ fn app_config_from_sources_reads_proxy_timeout_envs() {
     );
 }
 
+#[test]
+fn app_config_from_sources_rejects_zero_pool_upstream_responses_attempt_timeout() {
+    let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
+    let _env = EnvVarGuard::set(&[(ENV_POOL_UPSTREAM_RESPONSES_ATTEMPT_TIMEOUT_SECS, Some("0"))]);
+
+    let err = AppConfig::from_sources(&CliArgs::default())
+        .expect_err("zero responses attempt timeout should be rejected");
+    assert_eq!(
+        err.to_string(),
+        format!("{ENV_POOL_UPSTREAM_RESPONSES_ATTEMPT_TIMEOUT_SECS} must be greater than 0")
+    );
+}
+
 fn test_config() -> AppConfig {
     AppConfig {
         openai_upstream_base_url: Url::parse("https://api.openai.com/").expect("valid url"),
@@ -10238,6 +10251,21 @@ fn pool_upstream_first_chunk_timeout_uses_responses_budget_for_responses_route()
 }
 
 #[test]
+fn pool_upstream_send_timeout_uses_responses_budget_for_responses_route() {
+    let handshake_timeout = Duration::from_millis(100);
+    let responses_timeout = Duration::from_millis(1200);
+
+    let timeout = pool_upstream_send_timeout(
+        &"/v1/responses".parse().expect("valid uri"),
+        &Method::POST,
+        handshake_timeout,
+        responses_timeout,
+    );
+
+    assert_eq!(timeout, responses_timeout);
+}
+
+#[test]
 fn pool_upstream_first_chunk_timeout_keeps_default_budget_for_non_responses_route() {
     let mut config = test_config();
     config.request_timeout = Duration::from_millis(200);
@@ -10251,6 +10279,21 @@ fn pool_upstream_first_chunk_timeout_keeps_default_budget_for_non_responses_rout
     );
 
     assert_eq!(timeout, Duration::from_millis(200));
+}
+
+#[test]
+fn pool_upstream_send_timeout_keeps_handshake_budget_for_non_responses_route() {
+    let handshake_timeout = Duration::from_millis(100);
+    let responses_timeout = Duration::from_millis(1200);
+
+    let timeout = pool_upstream_send_timeout(
+        &"/v1/chat/completions".parse().expect("valid uri"),
+        &Method::POST,
+        handshake_timeout,
+        responses_timeout,
+    );
+
+    assert_eq!(timeout, handshake_timeout);
 }
 
 #[tokio::test]
@@ -10762,6 +10805,36 @@ async fn spawn_pool_delayed_first_chunk_upstream(delay: Duration) -> (String, Jo
         axum::serve(listener, app)
             .await
             .expect("delayed first chunk upstream should run");
+    });
+    (format!("http://{addr}"), handle)
+}
+
+async fn pool_delayed_headers_upstream(State(delay): State<Duration>) -> Response {
+    tokio::time::sleep(delay).await;
+    (
+        StatusCode::OK,
+        Json(json!({
+            "ok": true,
+            "phase": "headers-delayed",
+        })),
+    )
+        .into_response()
+}
+
+async fn spawn_pool_delayed_headers_upstream(delay: Duration) -> (String, JoinHandle<()>) {
+    let app = Router::new()
+        .route("/v1/responses", post(pool_delayed_headers_upstream))
+        .with_state(delay);
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind delayed headers upstream");
+    let addr = listener
+        .local_addr()
+        .expect("delayed headers upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("delayed headers upstream should run");
     });
     (format!("http://{addr}"), handle)
 }
@@ -15658,6 +15731,57 @@ async fn pool_openai_v1_responses_waits_for_first_chunk_beyond_request_timeout()
         .expect("read responses pool body");
     let payload: Value = serde_json::from_slice(&body).expect("decode responses pool response");
     assert_eq!(payload["ok"].as_bool(), Some(true));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_openai_v1_responses_waits_for_headers_beyond_handshake_timeout() {
+    let (upstream_base, upstream_handle) =
+        spawn_pool_delayed_headers_upstream(Duration::from_millis(250)).await;
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.openai_proxy_handshake_timeout = Duration::from_millis(100);
+    config.pool_upstream_responses_attempt_timeout = Duration::from_millis(400);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "stream": false,
+        "input": "hello",
+    }))
+    .expect("serialize request body");
+    let response = tokio::time::timeout(
+        Duration::from_secs(3),
+        proxy_openai_v1(
+            State(state),
+            OriginalUri("/v1/responses".parse().expect("valid uri")),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from(request_body),
+        ),
+    )
+    .await
+    .expect("responses pool request should not hang");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read responses pool body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode responses pool response");
+    assert_eq!(payload["ok"].as_bool(), Some(true));
+    assert_eq!(payload["phase"].as_str(), Some("headers-delayed"));
 
     upstream_handle.abort();
 }

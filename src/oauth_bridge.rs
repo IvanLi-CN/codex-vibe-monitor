@@ -337,7 +337,7 @@ async fn oauth_models(
 async fn oauth_responses(
     client: &Client,
     headers: &HeaderMap,
-    handshake_timeout: Duration,
+    _handshake_timeout: Duration,
     response_timeout: Duration,
     account_id: Option<i64>,
     access_token: &str,
@@ -408,7 +408,7 @@ async fn oauth_responses(
         "forwarding oauth responses request"
     );
     let request_started = Instant::now();
-    let upstream = match timeout(handshake_timeout, request.send()).await {
+    let upstream = match timeout(response_timeout, request.send()).await {
         Ok(Ok(response)) => response,
         Ok(Err(err)) => {
             return OauthUpstreamResponse {
@@ -426,7 +426,7 @@ async fn oauth_responses(
                     StatusCode::BAD_GATEWAY,
                     &format!(
                         "oauth codex upstream handshake timed out after {}ms",
-                        handshake_timeout.as_millis()
+                        response_timeout.as_millis()
                     ),
                     "oauth_upstream_handshake_timeout",
                 ),

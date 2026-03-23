@@ -9101,10 +9101,16 @@ async fn send_pool_request_with_failover(
     same_account_attempts: u8,
 ) -> Result<PoolUpstreamResponse, PoolUpstreamError> {
     let request_connection_scoped = connection_scoped_header_names(headers);
-    let first_chunk_timeout =
+    let pre_first_byte_timeout =
         pool_upstream_first_chunk_timeout(&state.config, original_uri, &method, handshake_timeout);
     let uses_timeout_route_failover =
         pool_uses_responses_timeout_failover_policy(original_uri, &method);
+    let send_timeout = pool_upstream_send_timeout(
+        original_uri,
+        &method,
+        handshake_timeout,
+        pre_first_byte_timeout,
+    );
     let mut excluded_ids = failover_progress.excluded_account_ids;
     let mut excluded_upstream_route_keys = failover_progress.excluded_upstream_route_keys;
     let mut last_error = failover_progress.last_error;
@@ -9443,7 +9449,7 @@ async fn send_pool_request_with_failover(
                         );
                     }
 
-                    match timeout(handshake_timeout, request.send()).await {
+                    match timeout(send_timeout, request.send()).await {
                         Ok(Ok(response)) => (ProxyUpstreamResponseBody::Reqwest(response), None),
                         Ok(Err(err)) => {
                             let message = format!("failed to contact upstream: {err}");
@@ -9528,7 +9534,7 @@ async fn send_pool_request_with_failover(
                         Err(_) => {
                             let message = format!(
                                 "{PROXY_UPSTREAM_HANDSHAKE_TIMEOUT} after {}ms",
-                                handshake_timeout.as_millis()
+                                send_timeout.as_millis()
                             );
                             let is_timeout_shaped = uses_timeout_route_failover;
                             let finished_at = shanghai_now_string();
@@ -9707,7 +9713,7 @@ async fn send_pool_request_with_failover(
                             headers,
                             oauth_body,
                             handshake_timeout,
-                            first_chunk_timeout,
+                            pre_first_byte_timeout,
                             Some(account.account_id),
                             access_token,
                             chatgpt_account_id.as_deref(),
@@ -9740,7 +9746,7 @@ async fn send_pool_request_with_failover(
                 let (upstream_error_code, upstream_error_message, upstream_request_id, message) =
                     match read_pool_upstream_bytes_with_timeout(
                         response,
-                        first_chunk_timeout,
+                        pre_first_byte_timeout,
                         connect_started,
                         "reading upstream error body",
                     )
@@ -9855,7 +9861,7 @@ async fn send_pool_request_with_failover(
             let first_byte_started = Instant::now();
             let (response, first_chunk) = match read_pool_upstream_first_chunk_with_timeout(
                 response,
-                first_chunk_timeout,
+                pre_first_byte_timeout,
                 connect_started,
             )
             .await
@@ -10161,7 +10167,7 @@ async fn proxy_openai_v1_via_pool(
     let handshake_timeout = state
         .config
         .proxy_upstream_handshake_timeout(capture_target);
-    let first_chunk_timeout =
+    let pre_first_byte_timeout =
         pool_upstream_first_chunk_timeout(&state.config, original_uri, &method, handshake_timeout);
     let header_sticky_key = extract_sticky_key_from_headers(&headers);
     let body_size_hint_exact = body
@@ -10329,7 +10335,7 @@ async fn proxy_openai_v1_via_pool(
                             debug_body_prefix: None,
                         },
                         handshake_timeout,
-                        first_chunk_timeout,
+                        pre_first_byte_timeout,
                         Some(initial_account.account_id),
                         access_token,
                         chatgpt_account_id.as_deref(),
@@ -10358,7 +10364,7 @@ async fn proxy_openai_v1_via_pool(
                             message,
                         ) = match read_pool_upstream_bytes_with_timeout(
                             response,
-                            first_chunk_timeout,
+                            pre_first_byte_timeout,
                             connect_started,
                             "reading upstream error body",
                         )
@@ -10417,7 +10423,7 @@ async fn proxy_openai_v1_via_pool(
                         let first_byte_started = Instant::now();
                         match read_pool_upstream_first_chunk_with_timeout(
                             response,
-                            first_chunk_timeout,
+                            pre_first_byte_timeout,
                             connect_started,
                         )
                         .await
@@ -10529,7 +10535,13 @@ async fn proxy_openai_v1_via_pool(
                 );
 
                 let connect_started = Instant::now();
-                let upstream = match timeout(handshake_timeout, request.send()).await {
+                let send_timeout = pool_upstream_send_timeout(
+                    original_uri,
+                    &method,
+                    handshake_timeout,
+                    pre_first_byte_timeout,
+                );
+                let upstream = match timeout(send_timeout, request.send()).await {
                     Ok(Ok(response)) => {
                         let connect_latency_ms = elapsed_ms(connect_started);
                         let response = ProxyUpstreamResponseBody::Reqwest(response);
@@ -10552,7 +10564,7 @@ async fn proxy_openai_v1_via_pool(
                                 message,
                             ) = match read_pool_upstream_bytes_with_timeout(
                                 response,
-                                first_chunk_timeout,
+                                pre_first_byte_timeout,
                                 connect_started,
                                 "reading upstream error body",
                             )
@@ -10604,7 +10616,7 @@ async fn proxy_openai_v1_via_pool(
                             let first_byte_started = Instant::now();
                             match read_pool_upstream_first_chunk_with_timeout(
                                 response,
-                                first_chunk_timeout,
+                                pre_first_byte_timeout,
                                 connect_started,
                             )
                             .await
@@ -10686,7 +10698,7 @@ async fn proxy_openai_v1_via_pool(
                             status: StatusCode::BAD_GATEWAY,
                             message: format!(
                                 "{PROXY_UPSTREAM_HANDSHAKE_TIMEOUT} after {}ms",
-                                handshake_timeout.as_millis()
+                                send_timeout.as_millis()
                             ),
                             failure_kind: PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
                             connect_latency_ms: elapsed_ms(connect_started),
@@ -12946,6 +12958,19 @@ fn pool_upstream_first_chunk_timeout(
         config.pool_upstream_responses_attempt_timeout
     } else {
         config.request_timeout
+    }
+}
+
+fn pool_upstream_send_timeout(
+    original_uri: &Uri,
+    method: &Method,
+    handshake_timeout: Duration,
+    pre_first_byte_timeout: Duration,
+) -> Duration {
+    if pool_uses_responses_timeout_failover_policy(original_uri, method) {
+        pre_first_byte_timeout
+    } else {
+        handshake_timeout
     }
 }
 
@@ -18656,10 +18681,11 @@ impl AppConfig {
             })
             .map(Duration::from_secs)
             .unwrap_or_else(|| Duration::from_secs(60));
-        let pool_upstream_responses_attempt_timeout = Duration::from_secs(parse_u64_env_var(
-            ENV_POOL_UPSTREAM_RESPONSES_ATTEMPT_TIMEOUT_SECS,
-            DEFAULT_POOL_UPSTREAM_RESPONSES_ATTEMPT_TIMEOUT_SECS,
-        )?);
+        let pool_upstream_responses_attempt_timeout =
+            Duration::from_secs(parse_non_zero_u64_env_var(
+                ENV_POOL_UPSTREAM_RESPONSES_ATTEMPT_TIMEOUT_SECS,
+                DEFAULT_POOL_UPSTREAM_RESPONSES_ATTEMPT_TIMEOUT_SECS,
+            )?);
         let openai_proxy_handshake_timeout = env::var("OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -18997,6 +19023,14 @@ fn parse_u64_env_var(name: &str, default_value: u64) -> Result<u64> {
         Err(env::VarError::NotPresent) => Ok(default_value),
         Err(err) => Err(anyhow!("failed to read {name}: {err}")),
     }
+}
+
+fn parse_non_zero_u64_env_var(name: &str, default_value: u64) -> Result<u64> {
+    let value = parse_u64_env_var(name, default_value)?;
+    if value == 0 {
+        bail!("{name} must be greater than 0");
+    }
+    Ok(value)
 }
 
 fn parse_usize_env_var(name: &str, default_value: usize) -> Result<usize> {
