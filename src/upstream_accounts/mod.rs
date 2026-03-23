@@ -12463,6 +12463,9 @@ mod tests {
             pool_upstream_responses_attempt_timeout: Duration::from_secs(
                 DEFAULT_POOL_UPSTREAM_RESPONSES_ATTEMPT_TIMEOUT_SECS,
             ),
+            pool_upstream_responses_total_timeout: Duration::from_secs(
+                DEFAULT_POOL_UPSTREAM_RESPONSES_TOTAL_TIMEOUT_SECS,
+            ),
             openai_proxy_handshake_timeout: Duration::from_secs(
                 DEFAULT_OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS,
             ),
