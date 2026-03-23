@@ -145,6 +145,7 @@
 - 2026-03-24: 根据后续 review 收紧验证码候选方向性，只接受位于验证码语义之后的数字候选，并放宽 body-only invite 对 `workspace` 文本的额外依赖。
 - 2026-03-24: 根据最终 review 收紧 subject 弱验证码匹配；subject 路径不再借用正文全局品牌词，仅接受 subject 本地 OpenAI/ChatGPT 上下文。
 - 2026-03-24: 为 batch OAuth 页面补齐慢测超时，确保 `cd web && bun run test` 在完整套件下稳定通过，作为 fast-track 合并门槛的一部分。
+- 2026-03-24: 根据终轮 review 进一步收紧 subject-only 验证码门槛为“subject 自带品牌语义”，并支持从 redirect CTA 中解析出真实 ChatGPT/OpenAI invite 目标链接。
 
 ## 参考（References）
 

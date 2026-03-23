@@ -8583,7 +8583,29 @@ fn extract_mailbox_code_candidate(text: &str, message_has_brand: bool) -> Option
     best_match.map(|(_, _, value)| value)
 }
 
-fn mailbox_url_looks_like_invite(url: &str) -> bool {
+fn mailbox_url_candidate_urls(url: &str) -> Vec<String> {
+    let mut candidates = vec![url.trim_end_matches('.').to_string()];
+    let Ok(parsed) = Url::parse(url) else {
+        return candidates;
+    };
+
+    for value in parsed
+        .query_pairs()
+        .map(|(_, value)| value.into_owned())
+        .chain(parsed.fragment().map(ToOwned::to_owned))
+    {
+        if let Some(nested) = URL_REGEX.find(&value) {
+            let nested = nested.as_str().trim_end_matches('.').to_string();
+            if !candidates.iter().any(|existing| existing == &nested) {
+                candidates.push(nested);
+            }
+        }
+    }
+
+    candidates
+}
+
+fn mailbox_url_looks_like_direct_invite(url: &str) -> bool {
     let Ok(parsed) = Url::parse(url) else {
         return false;
     };
@@ -8615,9 +8637,28 @@ fn mailbox_url_looks_like_invite(url: &str) -> bool {
     has_invite_action && has_workspace_context && !is_help_like
 }
 
+fn mailbox_url_resolve_invite_target(url: &str) -> Option<String> {
+    let candidates = mailbox_url_candidate_urls(url);
+    candidates
+        .iter()
+        .skip(1)
+        .find(|candidate| mailbox_url_looks_like_direct_invite(candidate))
+        .cloned()
+        .or_else(|| {
+            candidates
+                .into_iter()
+                .next()
+                .filter(|candidate| mailbox_url_looks_like_direct_invite(candidate))
+        })
+}
+
 fn mailbox_url_has_brand(url: &str) -> bool {
-    let lower = url.to_ascii_lowercase();
-    lower.contains("openai") || lower.contains("chatgpt")
+    mailbox_url_candidate_urls(url)
+        .into_iter()
+        .any(|candidate| {
+            let lower = candidate.to_ascii_lowercase();
+            lower.contains("openai") || lower.contains("chatgpt")
+        })
 }
 
 fn parse_mailbox_code(detail: &MoeMailMessageDetail) -> Option<ParsedMailboxCode> {
@@ -8629,15 +8670,17 @@ fn parse_mailbox_code(detail: &MoeMailMessageDetail) -> Option<ParsedMailboxCode
 
     let subject_text = normalize_mailbox_text(subject);
     let subject_has_brand = mailbox_text_has_brand(&subject_text);
-    if let Some(value) = extract_mailbox_code_candidate(&subject_text, subject_has_brand) {
-        return Some(ParsedMailboxCode {
-            value,
-            source: "subject".to_string(),
-            updated_at: detail
-                .received_at
-                .clone()
-                .unwrap_or_else(|| format_utc_iso(Utc::now())),
-        });
+    if subject_has_brand {
+        if let Some(value) = extract_mailbox_code_candidate(&subject_text, subject_has_brand) {
+            return Some(ParsedMailboxCode {
+                value,
+                source: "subject".to_string(),
+                updated_at: detail
+                    .received_at
+                    .clone()
+                    .unwrap_or_else(|| format_utc_iso(Utc::now())),
+            });
+        }
     }
 
     for (source, raw) in [
@@ -8685,8 +8728,7 @@ fn parse_mailbox_invite(detail: &MoeMailMessageDetail) -> Option<ParsedMailboxIn
     );
     let copy_value = URL_REGEX
         .find_iter(&body_with_urls)
-        .map(|value| value.as_str().trim_end_matches('.').to_string())
-        .find(|value| mailbox_url_looks_like_invite(value))?;
+        .find_map(|value| mailbox_url_resolve_invite_target(value.as_str()))?;
     let body_can_drive_invite = body_has_invite_semantics;
     if !subject_has_invite_semantics && !body_can_drive_invite {
         return None;
@@ -15757,6 +15799,19 @@ mod tests {
     }
 
     #[test]
+    fn parse_mailbox_code_rejects_strong_subject_match_without_brand() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_strong_subject_without_brand".to_string(),
+            subject: Some("验证码 123456".to_string()),
+            content: Some("请在十分钟内完成验证。".to_string()),
+            html: None,
+            received_at: Some("2026-03-24T00:05:50Z".to_string()),
+        };
+
+        assert!(parse_mailbox_code(&detail).is_none());
+    }
+
+    #[test]
     fn parse_mailbox_code_rejects_unrelated_numbers_without_code_semantics() {
         let detail = MoeMailMessageDetail {
             id: "msg_negative_code".to_string(),
@@ -15859,6 +15914,25 @@ mod tests {
 
         let parsed = parse_mailbox_invite(&detail).expect("body invite without workspace");
         assert_eq!(parsed.copy_value, "https://chatgpt.com/invite/abc123");
+    }
+
+    #[test]
+    fn parse_mailbox_invite_accepts_redirect_wrapped_brand_invites() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_redirect_wrapped_invite".to_string(),
+            subject: Some("Alex has invited you to a workspace".to_string()),
+            content: Some(
+                "Accept invitation: https://click.example.com/track?target=https%3A%2F%2Fchatgpt.com%2Fworkspace%2Finvite%2Fabc123".to_string(),
+            ),
+            html: None,
+            received_at: Some("2026-03-24T00:07:10Z".to_string()),
+        };
+
+        let parsed = parse_mailbox_invite(&detail).expect("redirect wrapped invite");
+        assert_eq!(
+            parsed.copy_value,
+            "https://chatgpt.com/workspace/invite/abc123"
+        );
     }
 
     #[test]
