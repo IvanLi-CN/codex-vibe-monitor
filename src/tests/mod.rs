@@ -2915,6 +2915,22 @@ async fn test_state_from_existing_pool(
     })
 }
 
+async fn apply_forward_proxy_settings_without_bootstrap(
+    state: &Arc<AppState>,
+    settings: ForwardProxySettings,
+) -> ForwardProxySettingsResponse {
+    {
+        let mut manager = state.forward_proxy.lock().await;
+        manager.apply_settings(settings);
+    }
+    sync_forward_proxy_routes(state.as_ref())
+        .await
+        .expect("sync forward proxy routes for test settings");
+    build_forward_proxy_settings_response(state.as_ref())
+        .await
+        .expect("build forward proxy settings response")
+}
+
 async fn seed_pool_routing_api_key(state: &Arc<AppState>, api_key: &str) {
     ensure_upstream_accounts_schema(&state.pool)
         .await
@@ -7534,18 +7550,16 @@ async fn forward_proxy_timeseries_includes_intersecting_edge_hours() {
     )
     .await;
 
-    let Json(settings_response) = put_forward_proxy_settings(
-        State(state.clone()),
-        HeaderMap::new(),
-        Json(ForwardProxySettingsUpdateRequest {
+    let settings_response = apply_forward_proxy_settings_without_bootstrap(
+        &state,
+        ForwardProxySettings {
             proxy_urls: vec!["socks5://127.0.0.1:1082".to_string()],
             subscription_urls: vec![],
             subscription_update_interval_secs: 3600,
             insert_direct: true,
-        }),
+        },
     )
-    .await
-    .expect("put forward proxy settings should succeed");
+    .await;
     let manual_key = settings_response
         .nodes
         .iter()
@@ -7695,18 +7709,16 @@ async fn forward_proxy_timeseries_keeps_single_partial_hour_ranges_non_empty() {
     )
     .await;
 
-    let Json(settings_response) = put_forward_proxy_settings(
-        State(state.clone()),
-        HeaderMap::new(),
-        Json(ForwardProxySettingsUpdateRequest {
+    let settings_response = apply_forward_proxy_settings_without_bootstrap(
+        &state,
+        ForwardProxySettings {
             proxy_urls: vec!["socks5://127.0.0.1:1083".to_string()],
             subscription_urls: vec![],
             subscription_update_interval_secs: 3600,
             insert_direct: true,
-        }),
+        },
     )
-    .await
-    .expect("put forward proxy settings should succeed");
+    .await;
     let manual_key = settings_response
         .nodes
         .iter()
@@ -7781,18 +7793,16 @@ async fn forward_proxy_timeseries_seeds_leading_weight_buckets_from_first_histor
     )
     .await;
 
-    let Json(settings_response) = put_forward_proxy_settings(
-        State(state.clone()),
-        HeaderMap::new(),
-        Json(ForwardProxySettingsUpdateRequest {
+    let settings_response = apply_forward_proxy_settings_without_bootstrap(
+        &state,
+        ForwardProxySettings {
             proxy_urls: vec!["socks5://127.0.0.1:1084".to_string()],
             subscription_urls: vec![],
             subscription_update_interval_secs: 3600,
             insert_direct: true,
-        }),
+        },
     )
-    .await
-    .expect("put forward proxy settings should succeed");
+    .await;
     let manual_key = settings_response
         .nodes
         .iter()
@@ -7862,18 +7872,16 @@ async fn forward_proxy_timeseries_preserves_retired_proxy_metadata() {
     )
     .await;
 
-    let Json(settings_response) = put_forward_proxy_settings(
-        State(state.clone()),
-        HeaderMap::new(),
-        Json(ForwardProxySettingsUpdateRequest {
+    let settings_response = apply_forward_proxy_settings_without_bootstrap(
+        &state,
+        ForwardProxySettings {
             proxy_urls: vec!["socks5://127.0.0.1:1085".to_string()],
             subscription_urls: vec![],
             subscription_update_interval_secs: 3600,
             insert_direct: true,
-        }),
+        },
     )
-    .await
-    .expect("put forward proxy settings should succeed");
+    .await;
     let manual = settings_response
         .nodes
         .iter()
@@ -7904,18 +7912,16 @@ async fn forward_proxy_timeseries_preserves_retired_proxy_metadata() {
     )
     .await;
 
-    let _ = put_forward_proxy_settings(
-        State(state.clone()),
-        HeaderMap::new(),
-        Json(ForwardProxySettingsUpdateRequest {
+    let _ = apply_forward_proxy_settings_without_bootstrap(
+        &state,
+        ForwardProxySettings {
             proxy_urls: vec![],
             subscription_urls: vec![],
             subscription_update_interval_secs: 3600,
             insert_direct: true,
-        }),
+        },
     )
-    .await
-    .expect("remove manual proxy from runtime");
+    .await;
 
     let range_start = Utc
         .timestamp_opt(bucket_start, 0)
@@ -21901,6 +21907,25 @@ fn is_sqlite_lock_error_detects_structured_sqlite_codes() {
         },
     )));
     assert!(!is_sqlite_lock_error(&non_lock_error));
+}
+
+#[tokio::test]
+async fn run_best_effort_retention_pragma_tolerates_sqlite_lock_errors() {
+    let err = run_best_effort_retention_pragma(
+        &SqlitePool::connect_lazy("sqlite::memory:").expect("construct lazy sqlite pool"),
+        "SELECT 1",
+        "retention wal checkpoint",
+    )
+    .await;
+    assert!(err.is_ok());
+
+    let locked = anyhow::Error::new(sqlx::Error::Database(Box::new(
+        FakeSqliteCodeDatabaseError {
+            message: "database table is locked",
+            code: "SQLITE_LOCKED",
+        },
+    )));
+    assert!(is_sqlite_lock_error(&locked));
 }
 
 #[tokio::test]

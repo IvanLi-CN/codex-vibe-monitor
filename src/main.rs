@@ -2616,14 +2616,14 @@ async fn run_data_retention_maintenance(
     }
 
     if !dry_run && summary.touched_anything() {
-        sqlx::query("PRAGMA wal_checkpoint(PASSIVE)")
-            .execute(pool)
-            .await
-            .context("failed to run retention wal checkpoint")?;
-        sqlx::query("PRAGMA optimize")
-            .execute(pool)
-            .await
-            .context("failed to run retention optimize pragma")?;
+        run_best_effort_retention_pragma(
+            pool,
+            "PRAGMA wal_checkpoint(PASSIVE)",
+            "retention wal checkpoint",
+        )
+        .await?;
+        run_best_effort_retention_pragma(pool, "PRAGMA optimize", "retention optimize pragma")
+            .await?;
     }
 
     info!(
@@ -2632,6 +2632,25 @@ async fn run_data_retention_maintenance(
         "data retention maintenance finished"
     );
     Ok(summary)
+}
+
+async fn run_best_effort_retention_pragma(
+    pool: &Pool<Sqlite>,
+    sql: &str,
+    description: &'static str,
+) -> Result<()> {
+    match sqlx::query(sql)
+        .execute(pool)
+        .await
+        .with_context(|| format!("failed to run {description}"))
+    {
+        Ok(_) => Ok(()),
+        Err(err) if is_sqlite_lock_error(&err) => {
+            warn!(error = %err, sql, "{description} skipped because the database is busy");
+            Ok(())
+        }
+        Err(err) => Err(err),
+    }
 }
 
 async fn compress_cold_proxy_raw_payloads(
@@ -16871,7 +16890,6 @@ async fn backfill_failure_classification(
     )
 }
 
-#[cfg(test)]
 fn is_sqlite_lock_error(err: &anyhow::Error) -> bool {
     if err.chain().any(|cause| {
         let Some(sqlx_err) = cause.downcast_ref::<sqlx::Error>() else {
