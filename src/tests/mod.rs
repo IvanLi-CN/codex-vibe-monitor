@@ -2953,6 +2953,23 @@ async fn set_test_account_status(pool: &SqlitePool, account_id: i64, status: &st
         .expect("set test pool account status");
 }
 
+async fn clear_test_account_credentials(pool: &SqlitePool, account_id: i64) {
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET encrypted_credentials = NULL,
+            updated_at = ?1
+        WHERE id = ?2
+        "#,
+    )
+    .bind(&now_iso)
+    .bind(account_id)
+    .execute(pool)
+    .await
+    .expect("clear test pool account credentials");
+}
+
 async fn set_test_account_rate_limited_cooldown(
     pool: &SqlitePool,
     account_id: i64,
@@ -11997,6 +12014,46 @@ async fn pool_route_returns_clear_429_when_all_accounts_are_already_in_429_coold
 }
 
 #[tokio::test]
+async fn pool_route_ignores_missing_credentials_when_all_routable_accounts_are_rate_limited() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let missing_credentials_id =
+        insert_test_pool_api_key_account(&state, "Missing Credentials", "upstream-missing").await;
+    set_test_account_rate_limited_cooldown(&state.pool, primary_id, 120).await;
+    clear_test_account_credentials(&state.pool, missing_credentials_id).await;
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-429-missing-creds"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read failure body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode failure payload");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some(POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE)
+    );
+}
+
+#[tokio::test]
 async fn pool_route_stale_sticky_binding_does_not_hide_pool_wide_429() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -12027,6 +12084,54 @@ async fn pool_route_stale_sticky_binding_does_not_hide_pool_wide_429() {
         )]),
         Body::from(
             r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-429-stale-binding"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::TOO_MANY_REQUESTS);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read failure body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode failure payload");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some(POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE)
+    );
+}
+
+#[tokio::test]
+async fn pool_route_missing_credentials_sticky_binding_does_not_hide_pool_wide_429() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let secondary_id =
+        insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+    clear_test_account_credentials(&state.pool, primary_id).await;
+    set_test_account_rate_limited_cooldown(&state.pool, secondary_id, 120).await;
+    let sticky_seen_at = format_utc_iso(Utc::now());
+    upsert_test_sticky_route_at(
+        &state.pool,
+        "sticky-429-missing-creds-binding",
+        primary_id,
+        &sticky_seen_at,
+    )
+    .await;
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-429-missing-creds-binding"}"#
                 .as_bytes()
                 .to_vec(),
         ),

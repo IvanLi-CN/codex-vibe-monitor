@@ -5435,10 +5435,6 @@ async fn sync_api_key_account(pool: &Pool<Sqlite>, row: &UpstreamAccountRow) -> 
             last_successful_sync_at = ?3,
             last_error = NULL,
             last_error_at = NULL,
-            last_route_failure_at = NULL,
-            last_route_failure_kind = NULL,
-            cooldown_until = NULL,
-            consecutive_route_failures = 0,
             updated_at = ?3
         WHERE id = ?1
         "#,
@@ -8724,10 +8720,6 @@ async fn mark_account_sync_success(pool: &Pool<Sqlite>, account_id: i64) -> Resu
             last_successful_sync_at = ?3,
             last_error = NULL,
             last_error_at = NULL,
-            last_route_failure_at = NULL,
-            last_route_failure_kind = NULL,
-            cooldown_until = NULL,
-            consecutive_route_failures = 0,
             updated_at = ?3
         WHERE id = ?1
         "#,
@@ -9892,7 +9884,8 @@ pub(crate) async fn resolve_pool_account_for_request(
 ) -> Result<PoolAccountResolution> {
     let mut tried = excluded_ids.iter().copied().collect::<HashSet<_>>();
     let mut saw_rate_limited_candidate = false;
-    let mut saw_non_rate_limited_candidate = false;
+    let mut saw_non_rate_limited_routing_candidate = false;
+    let mut saw_non_routing_candidate = false;
 
     let sticky_route = if let Some(sticky_key) = sticky_key {
         load_sticky_route(&state.pool, sticky_key).await?
@@ -9910,20 +9903,20 @@ pub(crate) async fn resolve_pool_account_for_request(
         if !tried.contains(&route.account_id)
             && let Some(row) = load_upstream_account_row(&state.pool, route.account_id).await?
         {
+            tried.insert(route.account_id);
             if is_account_selectable_for_routing(&row) {
-                tried.insert(route.account_id);
                 if let Some(account) = prepare_pool_account(state, &row).await? {
                     return Ok(PoolAccountResolution::Resolved(account));
                 }
-                saw_non_rate_limited_candidate = true;
+                saw_non_rate_limited_routing_candidate = true;
             } else if is_account_rate_limited_for_routing(&row) {
                 saw_rate_limited_candidate = true;
+            } else if is_routing_eligible_account(&row) {
+                saw_non_rate_limited_routing_candidate = true;
             } else if is_pool_account_routing_candidate(&row) {
-                // A stale sticky binding should not hide that every actually
-                // routable fallback account is upstream-rate-limited.
-                saw_non_rate_limited_candidate = true;
-            } else {
-                tried.insert(route.account_id);
+                // Active accounts without usable credentials are not real
+                // routing candidates and should not mask an all-429 pool.
+                saw_non_routing_candidate = true;
             }
         }
         if sticky_source_rule
@@ -9946,8 +9939,10 @@ pub(crate) async fn resolve_pool_account_for_request(
         if !is_account_selectable_for_routing(&row) {
             if is_account_rate_limited_for_routing(&row) {
                 saw_rate_limited_candidate = true;
+            } else if is_routing_eligible_account(&row) {
+                saw_non_rate_limited_routing_candidate = true;
             } else {
-                saw_non_rate_limited_candidate = true;
+                saw_non_routing_candidate = true;
             }
             continue;
         }
@@ -9961,19 +9956,21 @@ pub(crate) async fn resolve_pool_account_for_request(
         )
         .await?
         {
-            saw_non_rate_limited_candidate = true;
+            saw_non_rate_limited_routing_candidate = true;
             continue;
         }
         if let Some(account) = prepare_pool_account(state, &row).await? {
             return Ok(PoolAccountResolution::Resolved(account));
         }
-        saw_non_rate_limited_candidate = true;
+        saw_non_rate_limited_routing_candidate = true;
     }
 
-    if saw_rate_limited_candidate && !saw_non_rate_limited_candidate {
+    if saw_rate_limited_candidate && !saw_non_rate_limited_routing_candidate {
         return Ok(PoolAccountResolution::RateLimited);
     }
-    if saw_non_rate_limited_candidate {
+    if saw_non_rate_limited_routing_candidate
+        || (!saw_rate_limited_candidate && saw_non_routing_candidate)
+    {
         return Ok(PoolAccountResolution::Unavailable);
     }
 
@@ -12430,6 +12427,111 @@ mod tests {
         .execute(pool)
         .await
         .expect("insert limit sample");
+    }
+
+    async fn seed_route_cooldown(
+        pool: &SqlitePool,
+        account_id: i64,
+        failure_kind: &str,
+        cooldown_secs: i64,
+    ) {
+        let now = Utc::now();
+        let now_iso = format_utc_iso(now);
+        let cooldown_until = format_utc_iso(now + ChronoDuration::seconds(cooldown_secs));
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET status = ?2,
+                last_error = ?3,
+                last_error_at = ?4,
+                last_route_failure_at = ?4,
+                last_route_failure_kind = ?5,
+                cooldown_until = ?6,
+                consecutive_route_failures = 1,
+                updated_at = ?4
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+        .bind("seed route cooldown")
+        .bind(&now_iso)
+        .bind(failure_kind)
+        .bind(&cooldown_until)
+        .execute(pool)
+        .await
+        .expect("seed route cooldown");
+    }
+
+    #[tokio::test]
+    async fn mark_account_sync_success_preserves_route_cooldown_state() {
+        let pool = test_pool().await;
+        let account_id = insert_oauth_account(&pool, "Cooldown OAuth").await;
+        seed_route_cooldown(
+            &pool,
+            account_id,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
+            300,
+        )
+        .await;
+
+        let before = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load row before sync")
+            .expect("row exists before sync");
+        mark_account_sync_success(&pool, account_id)
+            .await
+            .expect("mark sync success");
+        let after = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load row after sync")
+            .expect("row exists after sync");
+
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert!(after.last_synced_at.is_some());
+        assert!(after.last_successful_sync_at.is_some());
+        assert_eq!(after.last_route_failure_at, before.last_route_failure_at);
+        assert_eq!(
+            after.last_route_failure_kind,
+            before.last_route_failure_kind
+        );
+        assert_eq!(after.cooldown_until, before.cooldown_until);
+        assert_eq!(
+            after.consecutive_route_failures,
+            before.consecutive_route_failures
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_api_key_account_preserves_route_cooldown_state() {
+        let pool = test_pool().await;
+        let account_id = insert_api_key_account(&pool, "Cooldown API Key").await;
+        seed_route_cooldown(
+            &pool,
+            account_id,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
+            300,
+        )
+        .await;
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load api key row")
+            .expect("api key row exists");
+
+        sync_api_key_account(&pool, &row)
+            .await
+            .expect("sync api key account");
+        let after = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load row after api key sync")
+            .expect("row exists after api key sync");
+
+        assert_eq!(
+            after.last_route_failure_kind.as_deref(),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
+        );
+        assert!(after.cooldown_until.is_some());
+        assert_eq!(after.consecutive_route_failures, 1);
     }
 
     #[tokio::test]
