@@ -5960,10 +5960,6 @@ async fn upsert_oauth_account(
                 last_refreshed_at = ?15,
                 last_error = NULL,
                 last_error_at = NULL,
-                last_route_failure_at = NULL,
-                last_route_failure_kind = NULL,
-                cooldown_until = NULL,
-                consecutive_route_failures = 0,
                 updated_at = ?15
             WHERE id = ?1
             "#,
@@ -12532,6 +12528,96 @@ mod tests {
         );
         assert!(after.cooldown_until.is_some());
         assert_eq!(after.consecutive_route_failures, 1);
+    }
+
+    #[tokio::test]
+    async fn upsert_oauth_account_preserves_route_cooldown_state_for_existing_account() {
+        let pool = test_pool().await;
+
+        let mut tx = pool.begin().await.expect("begin tx");
+        ensure_display_name_available(&mut *tx, "Cooldown OAuth Existing", None)
+            .await
+            .expect("name available");
+        let account_id = upsert_oauth_account(
+            &mut tx,
+            OauthAccountUpsert {
+                account_id: None,
+                display_name: "Cooldown OAuth Existing",
+                group_name: None,
+                is_mother: false,
+                note: None,
+                tag_ids: vec![],
+                group_note: None,
+                claims: &test_claims(
+                    "cooldown-existing@example.com",
+                    Some("cooldown_org"),
+                    Some("cooldown_user"),
+                ),
+                encrypted_credentials: "encrypted-original".to_string(),
+                token_expires_at: "2026-03-14T00:00:00Z",
+            },
+        )
+        .await
+        .expect("insert oauth account");
+        tx.commit().await.expect("commit insert tx");
+
+        seed_route_cooldown(
+            &pool,
+            account_id,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
+            300,
+        )
+        .await;
+        let before = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load row before update")
+            .expect("row exists before update");
+
+        let mut tx = pool.begin().await.expect("begin update tx");
+        let updated_id = upsert_oauth_account(
+            &mut tx,
+            OauthAccountUpsert {
+                account_id: Some(account_id),
+                display_name: "Cooldown OAuth Existing",
+                group_name: None,
+                is_mother: false,
+                note: Some("updated note".to_string()),
+                tag_ids: vec![],
+                group_note: None,
+                claims: &test_claims(
+                    "cooldown-existing@example.com",
+                    Some("cooldown_org"),
+                    Some("cooldown_user"),
+                ),
+                encrypted_credentials: "encrypted-updated".to_string(),
+                token_expires_at: "2026-03-15T00:00:00Z",
+            },
+        )
+        .await
+        .expect("update oauth account");
+        tx.commit().await.expect("commit update tx");
+
+        assert_eq!(updated_id, account_id);
+        let after = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load row after update")
+            .expect("row exists after update");
+
+        assert_eq!(after.last_route_failure_at, before.last_route_failure_at);
+        assert_eq!(
+            after.last_route_failure_kind,
+            before.last_route_failure_kind
+        );
+        assert_eq!(after.cooldown_until, before.cooldown_until);
+        assert_eq!(
+            after.consecutive_route_failures,
+            before.consecutive_route_failures
+        );
+        assert_eq!(after.note.as_deref(), Some("updated note"));
+        assert_eq!(
+            after.encrypted_credentials.as_deref(),
+            Some("encrypted-updated")
+        );
     }
 
     #[tokio::test]
