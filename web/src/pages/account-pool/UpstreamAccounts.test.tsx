@@ -70,6 +70,21 @@ beforeAll(() => {
     writable: true,
     value: vi.fn(),
   });
+  Object.defineProperty(HTMLElement.prototype, "hasPointerCapture", {
+    configurable: true,
+    writable: true,
+    value: vi.fn(() => false),
+  });
+  Object.defineProperty(HTMLElement.prototype, "setPointerCapture", {
+    configurable: true,
+    writable: true,
+    value: vi.fn(),
+  });
+  Object.defineProperty(HTMLElement.prototype, "releasePointerCapture", {
+    configurable: true,
+    writable: true,
+    value: vi.fn(),
+  });
   Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
     configurable: true,
     writable: true,
@@ -259,6 +274,21 @@ function clickCommandItem(matcher: RegExp) {
     item.dispatchEvent(new MouseEvent("click", { bubbles: true }))
   })
   return item
+}
+
+function clickSelectOption(matcher: RegExp) {
+  const option = Array.from(document.body.querySelectorAll('[role="option"]')).find(
+    (candidate) =>
+      candidate instanceof HTMLElement &&
+      matcher.test(candidate.textContent || ''),
+  )
+  if (!(option instanceof HTMLElement)) {
+    throw new Error(`missing select option: ${matcher}`)
+  }
+  act(() => {
+    option.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+  })
+  return option
 }
 
 function pressButton(button: HTMLButtonElement) {
@@ -544,7 +574,9 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect(hookMocks.useUpstreamAccounts).toHaveBeenLastCalledWith({
       groupSearch: undefined,
       groupUngrouped: undefined,
-      status: undefined,
+      workStatus: undefined,
+      enableStatus: undefined,
+      healthStatus: undefined,
       page: 1,
       pageSize: 20,
       tagIds: [1, 2],
@@ -564,10 +596,35 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect(hookMocks.useUpstreamAccounts).toHaveBeenLastCalledWith({
       groupSearch: undefined,
       groupUngrouped: true,
-      status: undefined,
+      workStatus: undefined,
+      enableStatus: undefined,
+      healthStatus: undefined,
       page: 1,
       pageSize: 20,
       tagIds: [1, 2],
+    });
+  });
+
+  it("passes split status filters to the roster hook", () => {
+    mockAccountsPage();
+    render("/account-pool/upstream-accounts");
+
+    clickCombobox(/work status/i);
+    clickSelectOption(/^rate limited$/i);
+    clickCombobox(/enable status/i);
+    clickSelectOption(/^enabled$/i);
+    clickCombobox(/account health/i);
+    clickSelectOption(/^needs re-auth$/i);
+
+    expect(hookMocks.useUpstreamAccounts).toHaveBeenLastCalledWith({
+      groupSearch: undefined,
+      groupUngrouped: undefined,
+      workStatus: "rate_limited",
+      enableStatus: "enabled",
+      healthStatus: "needs_reauth",
+      page: 1,
+      pageSize: 20,
+      tagIds: undefined,
     });
   });
 

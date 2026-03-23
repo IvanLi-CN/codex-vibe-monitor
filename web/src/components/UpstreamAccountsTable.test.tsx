@@ -43,20 +43,32 @@ const labels = {
   apiKey: 'API key',
   duplicate: 'Duplicate',
   mother: 'Mother',
-  off: 'Off',
   hiddenTagsA11y: (count: number, names: string) => `Show ${count} hidden tags: ${names}`,
-  statusValue: (item: { displayStatus?: string; status: string }) => item.displayStatus ?? item.status,
-  status: (item: { displayStatus?: string; status: string }) =>
+  workStatus: (status: string) =>
     ({
-      active: 'Active',
-      syncing: 'Syncing',
+      working: 'Working',
+      idle: 'Idle',
+      rate_limited: 'Rate limited',
+    })[status] ?? status,
+  enableStatus: (status: string) =>
+    ({
+      enabled: 'Enabled',
+      disabled: 'Disabled',
+    })[status] ?? status,
+  healthStatus: (status: string) =>
+    ({
+      normal: 'Normal',
       needs_reauth: 'Needs reauth',
       upstream_unavailable: 'Upstream unavailable',
       upstream_rejected: 'Upstream rejected',
       error_other: 'Other error',
       error: 'Error',
-      disabled: 'Disabled',
-    })[item.displayStatus ?? item.status] ?? item.displayStatus ?? item.status,
+    })[status] ?? status,
+  syncState: (status: string) =>
+    ({
+      idle: 'Sync idle',
+      syncing: 'Syncing',
+    })[status] ?? status,
 }
 
 function renderTable(items: UpstreamAccountSummary[]) {
@@ -122,6 +134,10 @@ describe('UpstreamAccountsTable', () => {
         status: 'active',
         displayStatus: 'active',
         enabled: true,
+        enableStatus: 'enabled',
+        workStatus: 'working',
+        healthStatus: 'normal',
+        syncState: 'idle',
         planType: 'team',
         lastSuccessfulSyncAt: '2026-03-16T01:55:00.000Z',
         lastActivityAt: '2026-03-16T02:05:00.000Z',
@@ -184,6 +200,10 @@ describe('UpstreamAccountsTable', () => {
         status: 'disabled',
         displayStatus: 'disabled',
         enabled: false,
+        enableStatus: 'disabled',
+        workStatus: 'idle',
+        healthStatus: 'normal',
+        syncState: 'idle',
         planType: null,
         lastSuccessfulSyncAt: null,
         lastActivityAt: null,
@@ -199,6 +219,7 @@ describe('UpstreamAccountsTable', () => {
 
     expect(html).toContain('Fallback API key')
     expect(html).toContain('Disabled')
+    expect(html).toContain('Idle')
     expect(html).toContain('Never')
     expect(html).toContain('truncate whitespace-nowrap')
   })
@@ -215,6 +236,10 @@ describe('UpstreamAccountsTable', () => {
         status: 'active',
         displayStatus: 'active',
         enabled: true,
+        enableStatus: 'enabled',
+        workStatus: 'working',
+        healthStatus: 'normal',
+        syncState: 'idle',
         planType: 'team',
         lastSuccessfulSyncAt: '2026-03-16T01:55:00.000Z',
         lastActivityAt: '2026-03-16T02:05:00.000Z',

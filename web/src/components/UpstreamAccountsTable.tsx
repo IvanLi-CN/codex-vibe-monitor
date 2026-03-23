@@ -34,10 +34,11 @@ interface UpstreamAccountsTableProps {
     apiKey: string
     mother: string
     duplicate: string
-    off: string
     hiddenTagsA11y: (count: number, names: string) => string
-    status: (item: UpstreamAccountSummary) => string
-    statusValue: (item: UpstreamAccountSummary) => string
+    workStatus: (status: string) => string
+    enableStatus: (status: string) => string
+    healthStatus: (status: string) => string
+    syncState: (status: string) => string
   }
 }
 
@@ -95,12 +96,50 @@ function kindLabel(item: UpstreamAccountSummary, labels: UpstreamAccountsTablePr
   return item.kind === 'oauth_codex' ? labels.oauth : labels.apiKey
 }
 
-function badgeVariant(status: string): 'success' | 'warning' | 'error' | 'secondary' {
-  if (status === 'active') return 'success'
-  if (status === 'syncing') return 'warning'
+function accountEnableStatus(item: UpstreamAccountSummary) {
+  return item.enableStatus ?? (item.enabled === false || item.displayStatus === 'disabled' ? 'disabled' : 'enabled')
+}
+
+function accountWorkStatus(item: UpstreamAccountSummary) {
+  return item.workStatus ?? 'idle'
+}
+
+function accountHealthStatus(item: UpstreamAccountSummary) {
+  if (item.healthStatus) return item.healthStatus
+  const legacyStatus = item.displayStatus ?? item.status
+  if (
+    legacyStatus === 'needs_reauth' ||
+    legacyStatus === 'upstream_unavailable' ||
+    legacyStatus === 'upstream_rejected' ||
+    legacyStatus === 'error_other'
+  ) {
+    return legacyStatus
+  }
+  if (legacyStatus === 'error') {
+    return 'error_other'
+  }
+  return 'normal'
+}
+
+function accountSyncState(item: UpstreamAccountSummary) {
+  if (item.syncState) return item.syncState
+  return (item.displayStatus ?? item.status) === 'syncing' ? 'syncing' : 'idle'
+}
+
+function enableBadgeVariant(status: string): 'success' | 'secondary' {
+  return status === 'enabled' ? 'success' : 'secondary'
+}
+
+function workBadgeVariant(status: string): 'info' | 'warning' | 'secondary' {
+  if (status === 'working') return 'info'
+  if (status === 'rate_limited') return 'warning'
+  return 'secondary'
+}
+
+function healthBadgeVariant(status: string): 'warning' | 'error' | 'secondary' {
+  if (status === 'upstream_unavailable') return 'warning'
   if (
     status === 'needs_reauth' ||
-    status === 'upstream_unavailable' ||
     status === 'upstream_rejected' ||
     status === 'error_other' ||
     status === 'error'
@@ -108,6 +147,10 @@ function badgeVariant(status: string): 'success' | 'warning' | 'error' | 'second
     return 'error'
   }
   return 'secondary'
+}
+
+function syncBadgeVariant(status: string): 'warning' | 'secondary' {
+  return status === 'syncing' ? 'warning' : 'secondary'
 }
 
 function compactBadge(content: ReactNode, variant: 'accent' | 'secondary' | 'success' | 'warning' | 'error' | 'info') {
@@ -323,7 +366,10 @@ export function UpstreamAccountsTable({
               ? `${labels.nextResetCompact ?? labels.nextReset} ${formatDateTime(item.secondaryWindow.resetsAt)}`
               : undefined
             const selected = item.id === selectedId
-            const displayStatus = labels.statusValue(item)
+            const enableStatus = accountEnableStatus(item)
+            const workStatus = accountWorkStatus(item)
+            const healthStatus = accountHealthStatus(item)
+            const syncState = accountSyncState(item)
             return (
               <tr
                 key={item.id}
@@ -367,9 +413,13 @@ export function UpstreamAccountsTable({
                         {item.duplicateInfo
                           ? compactBadge(labels.duplicate, 'warning')
                           : null}
-                        {compactBadge(labels.status(item), badgeVariant(displayStatus))}
-                        {!item.enabled && displayStatus !== 'disabled'
-                          ? compactBadge(labels.off, 'secondary')
+                        {compactBadge(labels.enableStatus(enableStatus), enableBadgeVariant(enableStatus))}
+                        {compactBadge(labels.workStatus(workStatus), workBadgeVariant(workStatus))}
+                        {syncState === 'syncing'
+                          ? compactBadge(labels.syncState(syncState), syncBadgeVariant(syncState))
+                          : null}
+                        {healthStatus !== 'normal'
+                          ? compactBadge(labels.healthStatus(healthStatus), healthBadgeVariant(healthStatus))
                           : null}
                         {compactBadge(kindLabel(item, labels), 'secondary')}
                         {item.planType

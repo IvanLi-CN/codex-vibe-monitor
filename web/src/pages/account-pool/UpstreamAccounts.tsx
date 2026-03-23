@@ -203,18 +203,76 @@ function buildRoutingDraft(maskedApiKey?: string | null) {
   }
 }
 
-function statusVariant(status: string): 'success' | 'warning' | 'error' | 'secondary' {
-  if (status === 'active') return 'success'
-  if (status === 'syncing') return 'warning'
+type AccountStatusSnapshot = Pick<
+  UpstreamAccountSummary,
+  'status' | 'displayStatus' | 'enabled' | 'workStatus' | 'enableStatus' | 'healthStatus' | 'syncState'
+>
+
+function accountEnableStatus(item?: AccountStatusSnapshot | null) {
+  if (item?.enableStatus) return item.enableStatus
+  if (item?.enabled === false || item?.displayStatus === 'disabled') return 'disabled'
+  return 'enabled'
+}
+
+function accountWorkStatus(item?: AccountStatusSnapshot | null) {
+  return item?.workStatus ?? 'idle'
+}
+
+function accountHealthStatus(item?: AccountStatusSnapshot | null) {
+  if (item?.healthStatus) return item.healthStatus
+  const legacyStatus = item?.displayStatus ?? item?.status ?? 'error_other'
+  if (
+    legacyStatus === 'needs_reauth' ||
+    legacyStatus === 'upstream_unavailable' ||
+    legacyStatus === 'upstream_rejected' ||
+    legacyStatus === 'error_other'
+  ) {
+    return legacyStatus
+  }
+  if (legacyStatus === 'error') {
+    return 'error_other'
+  }
+  return 'normal'
+}
+
+function accountSyncState(item?: AccountStatusSnapshot | null) {
+  if (item?.syncState) return item.syncState
+  const legacyStatus = item?.displayStatus ?? item?.status
+  return legacyStatus === 'syncing' ? 'syncing' : 'idle'
+}
+
+function enableStatusVariant(status: string): 'success' | 'secondary' {
+  return status === 'enabled' ? 'success' : 'secondary'
+}
+
+function workStatusVariant(status: string): 'info' | 'warning' | 'secondary' {
+  if (status === 'working') return 'info'
+  if (status === 'rate_limited') return 'warning'
+  return 'secondary'
+}
+
+function healthStatusVariant(status: string): 'success' | 'warning' | 'error' | 'secondary' {
+  if (status === 'normal') return 'success'
+  if (status === 'upstream_unavailable') return 'warning'
   if (
     status === 'needs_reauth' ||
-    status === 'upstream_unavailable' ||
     status === 'upstream_rejected' ||
     status === 'error_other' ||
     status === 'error'
   ) {
     return 'error'
   }
+  return 'secondary'
+}
+
+function syncStateVariant(status: string): 'warning' | 'secondary' {
+  return status === 'syncing' ? 'warning' : 'secondary'
+}
+
+function bulkSyncRowStatusVariant(status: string): 'success' | 'warning' | 'error' | 'secondary' {
+  if (status === 'succeeded') return 'success'
+  if (status === 'pending') return 'warning'
+  if (status === 'failed') return 'error'
   return 'secondary'
 }
 
@@ -229,7 +287,7 @@ function isLegacyOauthBridgeExchangeError(lastError?: string | null) {
 
 function resolveOauthRecoveryHint(
   kind: string,
-  displayStatus: string,
+  healthStatus: string,
   lastError?: string | null,
 ): OauthRecoveryHint | null {
   if (kind !== 'oauth_codex') return null
@@ -239,19 +297,19 @@ function resolveOauthRecoveryHint(
       bodyKey: 'accountPool.upstreamAccounts.hints.bridgeExchangeBody',
     }
   }
-  if (displayStatus === 'upstream_unavailable') {
+  if (healthStatus === 'upstream_unavailable') {
     return {
       titleKey: 'accountPool.upstreamAccounts.hints.dataPlaneUnavailableTitle',
       bodyKey: 'accountPool.upstreamAccounts.hints.dataPlaneUnavailableBody',
     }
   }
-  if (displayStatus === 'upstream_rejected') {
+  if (healthStatus === 'upstream_rejected') {
     return {
       titleKey: 'accountPool.upstreamAccounts.hints.dataPlaneRejectedTitle',
       bodyKey: 'accountPool.upstreamAccounts.hints.dataPlaneRejectedBody',
     }
   }
-  if (displayStatus === 'needs_reauth') {
+  if (healthStatus === 'needs_reauth') {
     return {
       titleKey: 'accountPool.upstreamAccounts.hints.reauthTitle',
       bodyKey: 'accountPool.upstreamAccounts.hints.reauthBody',
@@ -501,7 +559,9 @@ export default function UpstreamAccountsPage() {
   const navigate = useNavigate()
   const [groupFilterQuery, setGroupFilterQuery] = useState('')
   const [selectedTagIds, setSelectedTagIds] = useState<number[]>([])
-  const [statusFilter, setStatusFilter] = useState('all')
+  const [workStatusFilter, setWorkStatusFilter] = useState('all')
+  const [enableStatusFilter, setEnableStatusFilter] = useState('all')
+  const [healthStatusFilter, setHealthStatusFilter] = useState('all')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [selectedAccountIds, setSelectedAccountIds] = useState<number[]>([])
@@ -518,28 +578,45 @@ export default function UpstreamAccountsPage() {
           ? undefined
           : normalizedQuery,
       groupUngrouped: normalizedQuery ? normalizedLowerQuery === ungroupedLabel : undefined,
-      status: statusFilter === 'all' ? undefined : statusFilter,
+      workStatus: workStatusFilter === 'all' ? undefined : workStatusFilter,
+      enableStatus: enableStatusFilter === 'all' ? undefined : enableStatusFilter,
+      healthStatus: healthStatusFilter === 'all' ? undefined : healthStatusFilter,
       page,
       pageSize,
       tagIds: selectedTagIds.length > 0 ? selectedTagIds : undefined,
     }
-  }, [groupFilterQuery, page, pageSize, selectedTagIds, statusFilter, t])
-  const statusFilterOptions = useMemo(
+  }, [enableStatusFilter, groupFilterQuery, healthStatusFilter, page, pageSize, selectedTagIds, t, workStatusFilter])
+  const workStatusFilterOptions = useMemo(
     () => [
-      { value: 'all', label: t('accountPool.upstreamAccounts.statusFilter.all') },
-      { value: 'active', label: t('accountPool.upstreamAccounts.status.active') },
-      { value: 'syncing', label: t('accountPool.upstreamAccounts.status.syncing') },
-      { value: 'needs_reauth', label: t('accountPool.upstreamAccounts.status.needs_reauth') },
+      { value: 'all', label: t('accountPool.upstreamAccounts.workStatusFilter.all') },
+      { value: 'working', label: t('accountPool.upstreamAccounts.workStatus.working') },
+      { value: 'idle', label: t('accountPool.upstreamAccounts.workStatus.idle') },
+      { value: 'rate_limited', label: t('accountPool.upstreamAccounts.workStatus.rate_limited') },
+    ],
+    [t],
+  )
+  const enableStatusFilterOptions = useMemo(
+    () => [
+      { value: 'all', label: t('accountPool.upstreamAccounts.enableStatusFilter.all') },
+      { value: 'enabled', label: t('accountPool.upstreamAccounts.enableStatus.enabled') },
+      { value: 'disabled', label: t('accountPool.upstreamAccounts.enableStatus.disabled') },
+    ],
+    [t],
+  )
+  const healthStatusFilterOptions = useMemo(
+    () => [
+      { value: 'all', label: t('accountPool.upstreamAccounts.healthStatusFilter.all') },
+      { value: 'normal', label: t('accountPool.upstreamAccounts.healthStatus.normal') },
+      { value: 'needs_reauth', label: t('accountPool.upstreamAccounts.healthStatus.needs_reauth') },
       {
         value: 'upstream_unavailable',
-        label: t('accountPool.upstreamAccounts.status.upstream_unavailable'),
+        label: t('accountPool.upstreamAccounts.healthStatus.upstream_unavailable'),
       },
       {
         value: 'upstream_rejected',
-        label: t('accountPool.upstreamAccounts.status.upstream_rejected'),
+        label: t('accountPool.upstreamAccounts.healthStatus.upstream_rejected'),
       },
-      { value: 'error_other', label: t('accountPool.upstreamAccounts.status.error_other') },
-      { value: 'disabled', label: t('accountPool.upstreamAccounts.status.disabled') },
+      { value: 'error_other', label: t('accountPool.upstreamAccounts.healthStatus.error_other') },
     ],
     [t],
   )
@@ -627,10 +704,9 @@ export default function UpstreamAccountsPage() {
     total: items.length,
     oauth: items.filter((item) => item.kind === 'oauth_codex').length,
     apiKey: items.filter((item) => item.kind === 'api_key_codex').length,
-    attention: items.filter((item) => {
-      const status = item.displayStatus ?? item.status
-      return status === 'syncing' || status === 'needs_reauth' || status === 'upstream_unavailable' || status === 'upstream_rejected' || status === 'error_other'
-    }).length,
+    attention: items.filter((item) =>
+      accountHealthStatus(item) !== 'normal' || accountWorkStatus(item) === 'rate_limited',
+    ).length,
   }
   const effectiveTotal = total ?? effectiveMetrics.total
   const pageCount = Math.max(1, Math.ceil(effectiveTotal / Math.max(pageSize, 1)))
@@ -658,8 +734,20 @@ export default function UpstreamAccountsPage() {
     clearBulkSelection()
   }, [clearBulkSelection])
 
-  const handleStatusFilterChange = useCallback((value: string) => {
-    setStatusFilter(value)
+  const handleWorkStatusFilterChange = useCallback((value: string) => {
+    setWorkStatusFilter(value)
+    setPage(1)
+    clearBulkSelection()
+  }, [clearBulkSelection])
+
+  const handleEnableStatusFilterChange = useCallback((value: string) => {
+    setEnableStatusFilter(value)
+    setPage(1)
+    clearBulkSelection()
+  }, [clearBulkSelection])
+
+  const handleHealthStatusFilterChange = useCallback((value: string) => {
+    setHealthStatusFilter(value)
     setPage(1)
     clearBulkSelection()
   }, [clearBulkSelection])
@@ -903,11 +991,9 @@ export default function UpstreamAccountsPage() {
   const visibleAccountActionError =
     typeof selectedId === 'number' ? actionError.accountMessages[selectedId] ?? null : null
   const visibleRoutingError = actionError.routing
-  const accountDisplayStatus = (item?: Pick<UpstreamAccountSummary, 'displayStatus' | 'status'> | null) =>
-    item?.displayStatus ?? item?.status ?? 'error'
   const selectedRecoveryHint = resolveOauthRecoveryHint(
     selectedDetail?.kind ?? selected?.kind ?? '',
-    accountDisplayStatus(selectedDetail ?? selected),
+    accountHealthStatus(selectedDetail ?? selected),
     selectedDetail?.lastError ?? selected?.lastError,
   )
   const formatDuplicateReasons = (
@@ -930,9 +1016,14 @@ export default function UpstreamAccountsPage() {
       })
       .join(' / ')
   }
-  const accountStatusLabel = (status: string) => t(`accountPool.upstreamAccounts.status.${status}`)
-  const accountSummaryStatusLabel = (item: UpstreamAccountSummary) =>
-    accountStatusLabel(accountDisplayStatus(item))
+  const accountEnableStatusLabel = (status: string) =>
+    t(`accountPool.upstreamAccounts.enableStatus.${status}`)
+  const accountWorkStatusLabel = (status: string) =>
+    t(`accountPool.upstreamAccounts.workStatus.${status}`)
+  const accountHealthStatusLabel = (status: string) =>
+    t(`accountPool.upstreamAccounts.healthStatus.${status}`)
+  const accountSyncStateLabel = (status: string) =>
+    t(`accountPool.upstreamAccounts.syncState.${status}`)
   const accountKindLabel = (kind: string) =>
     kind === 'oauth_codex'
       ? t('accountPool.upstreamAccounts.kind.oauth')
@@ -1490,13 +1581,31 @@ export default function UpstreamAccountsPage() {
               </div>
               <div className="flex flex-wrap items-end gap-3">
                 <SelectField
-                  label={t('accountPool.upstreamAccounts.statusFilterLabel')}
+                  label={t('accountPool.upstreamAccounts.workStatusFilterLabel')}
                   className="min-w-[12rem]"
-                  value={statusFilter}
-                  options={statusFilterOptions}
+                  value={workStatusFilter}
+                  options={workStatusFilterOptions}
                   triggerClassName="h-12 rounded-xl border-base-300/90 bg-base-100 px-4 text-[15px]"
-                  aria-label={t('accountPool.upstreamAccounts.statusFilterLabel')}
-                  onValueChange={handleStatusFilterChange}
+                  aria-label={t('accountPool.upstreamAccounts.workStatusFilterLabel')}
+                  onValueChange={handleWorkStatusFilterChange}
+                />
+                <SelectField
+                  label={t('accountPool.upstreamAccounts.enableStatusFilterLabel')}
+                  className="min-w-[12rem]"
+                  value={enableStatusFilter}
+                  options={enableStatusFilterOptions}
+                  triggerClassName="h-12 rounded-xl border-base-300/90 bg-base-100 px-4 text-[15px]"
+                  aria-label={t('accountPool.upstreamAccounts.enableStatusFilterLabel')}
+                  onValueChange={handleEnableStatusFilterChange}
+                />
+                <SelectField
+                  label={t('accountPool.upstreamAccounts.healthStatusFilterLabel')}
+                  className="min-w-[12rem]"
+                  value={healthStatusFilter}
+                  options={healthStatusFilterOptions}
+                  triggerClassName="h-12 rounded-xl border-base-300/90 bg-base-100 px-4 text-[15px]"
+                  aria-label={t('accountPool.upstreamAccounts.healthStatusFilterLabel')}
+                  onValueChange={handleHealthStatusFilterChange}
                 />
                 <label className="field min-w-[15rem]">
                   <span className="field-label">{t('accountPool.upstreamAccounts.groupFilterLabel')}</span>
@@ -1671,7 +1780,7 @@ export default function UpstreamAccountsPage() {
                       <div key={row.accountId} className="flex flex-col gap-1 rounded-xl border border-base-300/60 px-3 py-2 text-sm">
                         <div className="flex items-center justify-between gap-3">
                           <span className="font-medium text-base-content">{row.displayName}</span>
-                          <Badge variant={statusVariant(row.status)}>{t(`accountPool.upstreamAccounts.bulk.rowStatus.${row.status}`)}</Badge>
+                          <Badge variant={bulkSyncRowStatusVariant(row.status)}>{t(`accountPool.upstreamAccounts.bulk.rowStatus.${row.status}`)}</Badge>
                         </div>
                         {row.detail ? <p className="text-xs text-base-content/68">{row.detail}</p> : null}
                       </div>
@@ -1709,11 +1818,12 @@ export default function UpstreamAccountsPage() {
                 apiKey: t('accountPool.upstreamAccounts.kind.apiKey'),
                 mother: t('accountPool.upstreamAccounts.mother.badge'),
                 duplicate: t('accountPool.upstreamAccounts.duplicate.badge'),
-                off: t('accountPool.upstreamAccounts.table.off'),
                 hiddenTagsA11y: (count, names) =>
                   t('accountPool.upstreamAccounts.table.hiddenTagsA11y', { count, names }),
-                status: accountSummaryStatusLabel,
-                statusValue: (item) => accountDisplayStatus(item),
+                workStatus: accountWorkStatusLabel,
+                enableStatus: accountEnableStatusLabel,
+                healthStatus: accountHealthStatusLabel,
+                syncState: accountSyncStateLabel,
               }}
             />
 
@@ -1933,10 +2043,17 @@ export default function UpstreamAccountsPage() {
             <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
               <div className="space-y-3">
                 <div className="flex flex-wrap items-center gap-2">
-                  <Badge
-                    variant={statusVariant(accountDisplayStatus(selected))}
-                  >
-                    {accountStatusLabel(accountDisplayStatus(selected))}
+                  <Badge variant={enableStatusVariant(accountEnableStatus(selected))}>
+                    {accountEnableStatusLabel(accountEnableStatus(selected))}
+                  </Badge>
+                  <Badge variant={workStatusVariant(accountWorkStatus(selected))}>
+                    {accountWorkStatusLabel(accountWorkStatus(selected))}
+                  </Badge>
+                  <Badge variant={syncStateVariant(accountSyncState(selected))}>
+                    {accountSyncStateLabel(accountSyncState(selected))}
+                  </Badge>
+                  <Badge variant={healthStatusVariant(accountHealthStatus(selected))}>
+                    {accountHealthStatusLabel(accountHealthStatus(selected))}
                   </Badge>
                   <Badge variant={kindVariant(selected.kind)}>{accountKindLabel(selected.kind)}</Badge>
                   {selected.planType ? <Badge variant="secondary">{selected.planType}</Badge> : null}

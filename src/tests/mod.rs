@@ -3225,6 +3225,9 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
             group_search: Some("prod".to_string()),
             group_ungrouped: None,
             status: None,
+            work_status: None,
+            enable_status: None,
+            health_status: None,
             page: None,
             page_size: None,
             tag_ids: vec![vip_tag_id, burst_safe_tag_id, vip_tag_id],
@@ -3252,6 +3255,9 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
             group_search: None,
             group_ungrouped: Some(true),
             status: None,
+            work_status: None,
+            enable_status: None,
+            health_status: None,
             page: None,
             page_size: None,
             tag_ids: vec![vip_tag_id, burst_safe_tag_id],
@@ -3290,6 +3296,22 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
         .execute(&state.pool)
         .await
         .expect("disable beta account");
+    let now = Utc::now();
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET last_selected_at = ?2, cooldown_until = ?3 WHERE id = ?1",
+    )
+    .bind(alpha_id)
+    .bind(format_utc_iso(now - ChronoDuration::minutes(5)))
+    .bind::<Option<String>>(None)
+    .execute(&state.pool)
+    .await
+    .expect("mark alpha working");
+    sqlx::query("UPDATE pool_upstream_accounts SET cooldown_until = ?2 WHERE id = ?1")
+        .bind(gamma_id)
+        .bind(format_utc_iso(now + ChronoDuration::minutes(10)))
+        .execute(&state.pool)
+        .await
+        .expect("mark gamma rate limited");
 
     let Json(active_page_two) = list_upstream_accounts(
         State(state.clone()),
@@ -3297,6 +3319,9 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
             group_search: None,
             group_ungrouped: None,
             status: Some("active".to_string()),
+            work_status: None,
+            enable_status: None,
+            health_status: None,
             page: Some(2),
             page_size: Some(20),
             tag_ids: Vec::new(),
@@ -3320,15 +3345,18 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
     assert_eq!(active_page_two_json["metrics"]["apiKey"].as_u64(), Some(21));
     assert_eq!(
         active_page_two_json["metrics"]["attention"].as_u64(),
-        Some(0)
+        Some(1)
     );
 
     let Json(disabled_only) = list_upstream_accounts(
-        State(state),
+        State(state.clone()),
         Query(ListUpstreamAccountsQuery {
             group_search: None,
             group_ungrouped: None,
             status: Some("disabled".to_string()),
+            work_status: None,
+            enable_status: None,
+            health_status: None,
             page: Some(1),
             page_size: Some(20),
             tag_ids: Vec::new(),
@@ -3354,6 +3382,56 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
             .get("displayStatus")
             .and_then(serde_json::Value::as_str),
         Some("disabled")
+    );
+
+    let Json(split_status_filtered) = list_upstream_accounts(
+        State(state),
+        Query(ListUpstreamAccountsQuery {
+            group_search: None,
+            group_ungrouped: None,
+            status: None,
+            work_status: Some("rate_limited".to_string()),
+            enable_status: Some("enabled".to_string()),
+            health_status: Some("normal".to_string()),
+            page: Some(1),
+            page_size: Some(20),
+            tag_ids: Vec::new(),
+        }),
+    )
+    .await
+    .expect("list split status filtered upstream accounts");
+    let split_status_filtered_json =
+        serde_json::to_value(split_status_filtered).expect("serialize split status response");
+    let split_items = split_status_filtered_json["items"]
+        .as_array()
+        .expect("split status items array");
+    assert_eq!(split_status_filtered_json["total"].as_u64(), Some(1));
+    assert_eq!(split_items.len(), 1);
+    assert_eq!(
+        split_items[0].get("id").and_then(serde_json::Value::as_i64),
+        Some(gamma_id)
+    );
+    assert_eq!(
+        split_items[0]
+            .get("workStatus")
+            .and_then(serde_json::Value::as_str),
+        Some("rate_limited")
+    );
+    assert_eq!(
+        split_items[0]
+            .get("enableStatus")
+            .and_then(serde_json::Value::as_str),
+        Some("enabled")
+    );
+    assert_eq!(
+        split_items[0]
+            .get("healthStatus")
+            .and_then(serde_json::Value::as_str),
+        Some("normal")
+    );
+    assert_eq!(
+        split_status_filtered_json["metrics"]["attention"].as_u64(),
+        Some(1)
     );
     assert_ne!(alpha_id, gamma_id);
 }

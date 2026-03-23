@@ -629,7 +629,7 @@ describe("account pool frontend API helpers", () => {
   it("serializes upstream account roster filters into the query string", async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL) => {
       expect(String(_input)).toContain(
-        "/api/pool/upstream-accounts?groupSearch=prod&groupUngrouped=false&tagIds=1&tagIds=2",
+        "/api/pool/upstream-accounts?groupSearch=prod&groupUngrouped=false&workStatus=rate_limited&enableStatus=enabled&healthStatus=normal&tagIds=1&tagIds=2",
       );
       return new Response(
         JSON.stringify({
@@ -650,11 +650,67 @@ describe("account pool frontend API helpers", () => {
     const response = await fetchUpstreamAccounts({
       groupSearch: "prod",
       groupUngrouped: false,
+      workStatus: "rate_limited",
+      enableStatus: "enabled",
+      healthStatus: "normal",
       tagIds: [1, 2],
     });
 
     expect(response.hasUngroupedAccounts).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("normalizes split status dimensions from legacy upstream account payloads", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(
+          JSON.stringify({
+            writesEnabled: true,
+            groups: [],
+            hasUngroupedAccounts: false,
+            items: [
+              {
+                id: 9,
+                kind: "oauth_codex",
+                provider: "codex",
+                displayName: "Legacy OAuth",
+                isMother: false,
+                status: "syncing",
+                displayStatus: "needs_reauth",
+                enabled: true,
+              },
+              {
+                id: 10,
+                kind: "api_key_codex",
+                provider: "codex",
+                displayName: "Legacy API key",
+                isMother: false,
+                status: "disabled",
+                displayStatus: "disabled",
+                enabled: false,
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch,
+    );
+
+    const response = await fetchUpstreamAccounts();
+
+    expect(response.items[0]).toMatchObject({
+      enableStatus: "enabled",
+      workStatus: "idle",
+      healthStatus: "needs_reauth",
+      syncState: "syncing",
+    });
+    expect(response.items[1]).toMatchObject({
+      enableStatus: "disabled",
+      workStatus: "idle",
+      healthStatus: "normal",
+      syncState: "idle",
+    });
   });
 
   it("saves pool routing settings through the dedicated endpoint", async () => {

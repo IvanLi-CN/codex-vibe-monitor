@@ -48,6 +48,10 @@ const items: UpstreamAccountSummary[] = [
     status: 'active',
     displayStatus: 'active',
     enabled: true,
+    enableStatus: 'enabled',
+    workStatus: 'working',
+    healthStatus: 'normal',
+    syncState: 'idle',
     email: 'tokyo@example.com',
     chatgptAccountId: 'org_tokyo',
     planType: 'pro',
@@ -91,6 +95,10 @@ const items: UpstreamAccountSummary[] = [
     status: 'needs_reauth',
     displayStatus: 'needs_reauth',
     enabled: true,
+    enableStatus: 'enabled',
+    workStatus: 'rate_limited',
+    healthStatus: 'needs_reauth',
+    syncState: 'syncing',
     maskedApiKey: 'sk-live••••••c9f2',
     lastSyncedAt: '2026-03-11T08:10:00.000Z',
     lastSuccessfulSyncAt: '2026-03-11T07:48:00.000Z',
@@ -149,20 +157,32 @@ const labels = {
   apiKey: 'API key',
   duplicate: 'Duplicate',
   mother: 'Mother',
-  off: 'Off',
   hiddenTagsA11y: (count: number, names: string) => `Show ${count} hidden tags: ${names}`,
-  statusValue: (item: { displayStatus?: string; status: string }) => item.displayStatus ?? item.status,
-  status: (item: { displayStatus?: string; status: string }) =>
+  workStatus: (status: string) =>
     ({
-      active: 'Active',
-      syncing: 'Syncing',
+      working: 'Working',
+      idle: 'Idle',
+      rate_limited: 'Rate limited',
+    })[status] ?? status,
+  enableStatus: (status: string) =>
+    ({
+      enabled: 'Enabled',
+      disabled: 'Disabled',
+    })[status] ?? status,
+  healthStatus: (status: string) =>
+    ({
+      normal: 'Normal',
       needs_reauth: 'Needs reauth',
       upstream_unavailable: 'Upstream unavailable',
       upstream_rejected: 'Upstream rejected',
       error_other: 'Other error',
       error: 'Error',
-      disabled: 'Disabled',
-    })[item.displayStatus ?? item.status] ?? item.displayStatus ?? item.status,
+    })[status] ?? status,
+  syncState: (status: string) =>
+    ({
+      idle: 'Sync idle',
+      syncing: 'Syncing',
+    })[status] ?? status,
 }
 
 const meta = {
@@ -237,6 +257,10 @@ export const CompactLongLabels: Story = {
           reasons: ['sharedChatgptUserId'],
         },
         enabled: false,
+        enableStatus: 'disabled',
+        workStatus: 'idle',
+        healthStatus: 'normal',
+        syncState: 'idle',
         status: 'disabled',
         displayStatus: 'disabled',
         planType: null,
