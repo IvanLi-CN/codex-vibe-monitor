@@ -2852,6 +2852,56 @@ async fn test_state_from_config(config: AppConfig, startup_ready: bool) -> Arc<A
     })
 }
 
+async fn test_state_from_existing_pool(
+    pool: SqlitePool,
+    config: AppConfig,
+    startup_ready: bool,
+) -> Arc<AppState> {
+    ensure_schema(&pool)
+        .await
+        .expect("schema should initialize for existing pool");
+
+    let http_clients = HttpClients::build(&config).expect("http clients");
+    let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
+    let (broadcaster, _rx) = broadcast::channel(16);
+    let pricing_catalog = load_pricing_catalog(&pool)
+        .await
+        .expect("pricing catalog should initialize");
+
+    Arc::new(AppState {
+        config: config.clone(),
+        pool,
+        http_clients,
+        broadcaster,
+        broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache::default())),
+        proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
+        proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
+        proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(Vec::new())),
+        startup_ready: Arc::new(AtomicBool::new(startup_ready)),
+        shutdown: CancellationToken::new(),
+        semaphore,
+        proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
+        proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
+        forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
+            ForwardProxySettings::default(),
+            Vec::new(),
+        ))),
+        xray_supervisor: Arc::new(Mutex::new(XraySupervisor::new(
+            config.xray_binary.clone(),
+            config.xray_runtime_dir.clone(),
+        ))),
+        forward_proxy_settings_update_lock: Arc::new(Mutex::new(())),
+        forward_proxy_subscription_refresh_lock: Arc::new(Mutex::new(())),
+        pricing_settings_update_lock: Arc::new(Mutex::new(())),
+        pricing_catalog: Arc::new(RwLock::new(pricing_catalog)),
+        prompt_cache_conversation_cache: Arc::new(Mutex::new(
+            PromptCacheConversationsCacheState::default(),
+        )),
+        hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
+        upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
+    })
+}
+
 async fn seed_pool_routing_api_key(state: &Arc<AppState>, api_key: &str) {
     ensure_upstream_accounts_schema(&state.pool)
         .await
@@ -12969,6 +13019,25 @@ async fn capture_target_pool_route_timeout_switches_to_alternate_upstream_route(
 
     slow_upstream_handle.abort();
     fast_upstream_handle.abort();
+}
+
+#[test]
+fn canonical_pool_upstream_route_key_collapses_trailing_slashes() {
+    let without_trailing_slash =
+        Url::parse("https://route.example/base?foo=bar").expect("valid route url");
+    let with_trailing_slash =
+        Url::parse("https://route.example/base/?baz=qux#frag").expect("valid route url");
+
+    assert_eq!(
+        canonical_pool_upstream_route_key(&without_trailing_slash),
+        canonical_pool_upstream_route_key(&with_trailing_slash),
+    );
+    assert_eq!(
+        canonical_pool_upstream_route_key(
+            &Url::parse("https://route.example/?foo=bar").expect("valid root route url")
+        ),
+        "https://route.example/",
+    );
 }
 
 #[tokio::test]
@@ -23987,6 +24056,257 @@ async fn retention_archives_into_legacy_archive_batch_with_raw_expires_at_column
         "historical archive files should keep their legacy schema"
     );
     archived_pool.close().await;
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_archives_into_legacy_pool_attempt_archive_batch_without_route_key_column() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("retention-legacy-pool-attempt-archive").await;
+    let occurred_at = shanghai_local_days_ago(91, 9, 0, 0);
+    let month_key = occurred_at[..7].to_string();
+    let final_archive_path =
+        archive_batch_file_path(&config, "pool_upstream_request_attempts", &month_key)
+            .expect("resolve legacy pool attempt archive path");
+    fs::create_dir_all(
+        final_archive_path
+            .parent()
+            .expect("legacy pool attempt archive path should have parent"),
+    )
+    .expect("create legacy pool attempt archive dir");
+
+    let legacy_archive_db_path = temp_dir.join("legacy-pool-attempt-archive.sqlite");
+    fs::File::create(&legacy_archive_db_path).expect("create legacy pool attempt sqlite file");
+    let legacy_archive_pool = SqlitePool::connect(&sqlite_url_for_path(&legacy_archive_db_path))
+        .await
+        .expect("open legacy pool attempt archive sqlite");
+    let legacy_create_sql = POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_CREATE_SQL
+        .replace("archive_db.", "")
+        .replace("    upstream_route_key TEXT,\n", "");
+    sqlx::query(&legacy_create_sql)
+        .execute(&legacy_archive_pool)
+        .await
+        .expect("create legacy pool attempt archive schema baseline");
+    sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+        .execute(&legacy_archive_pool)
+        .await
+        .expect("checkpoint legacy pool attempt archive sqlite before compression");
+    legacy_archive_pool.close().await;
+    deflate_sqlite_file_to_gzip(&legacy_archive_db_path, &final_archive_path)
+        .expect("compress legacy pool attempt archive batch");
+
+    insert_retention_pool_upstream_request_attempt(
+        &pool,
+        "legacy-pool-attempt-archive-row",
+        &occurred_at,
+        Some(42),
+        1,
+        1,
+        1,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+        Some(200),
+        None,
+        Some(&occurred_at),
+        Some(&occurred_at),
+    )
+    .await;
+
+    let live_row_id: i64 = sqlx::query_scalar(
+        "SELECT id FROM pool_upstream_request_attempts WHERE invoke_id = ?1 AND occurred_at = ?2",
+    )
+    .bind("legacy-pool-attempt-archive-row")
+    .bind(&occurred_at)
+    .fetch_one(&pool)
+    .await
+    .expect("load live pool attempt row id");
+    let archive_outcome = archive_rows_into_month_batch(
+        &pool,
+        &config,
+        archive_table_spec("pool_upstream_request_attempts"),
+        &month_key,
+        &[live_row_id],
+    )
+    .await
+    .expect("append into legacy pool attempt archive batch");
+    assert!(
+        archive_outcome.row_count >= 1,
+        "legacy pool attempt archive batch should accept appended rows (row_count={})",
+        archive_outcome.row_count
+    );
+
+    let inflated_legacy_path = temp_dir.join("legacy-pool-attempt-archive-inflated.sqlite");
+    inflate_gzip_sqlite_file(&final_archive_path, &inflated_legacy_path)
+        .expect("inflate retained legacy pool attempt archive batch");
+    let archived_pool = SqlitePool::connect(&sqlite_url_for_path(&inflated_legacy_path))
+        .await
+        .expect("open retained legacy pool attempt archive batch");
+    let archived_invoke_ids: HashSet<String> =
+        sqlx::query_scalar("SELECT invoke_id FROM pool_upstream_request_attempts")
+            .fetch_all(&archived_pool)
+            .await
+            .expect("load legacy pool attempt archive invoke ids")
+            .into_iter()
+            .collect();
+    assert!(archived_invoke_ids.contains("legacy-pool-attempt-archive-row"));
+    let archive_columns: HashSet<String> =
+        sqlx::query("PRAGMA table_info('pool_upstream_request_attempts')")
+            .fetch_all(&archived_pool)
+            .await
+            .expect("inspect retained legacy pool attempt archive schema")
+            .into_iter()
+            .map(|row| row.get::<String, _>("name"))
+            .collect();
+    assert!(
+        archive_columns.contains("upstream_route_key"),
+        "legacy pool attempt archive batches should be upgraded with upstream_route_key"
+    );
+    archived_pool.close().await;
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn fetch_invocation_pool_attempts_reads_archived_upstream_route_keys() {
+    let temp_dir = make_temp_test_dir("api-pool-attempts-archive-route-key");
+    let mut config = test_config();
+    config.archive_dir = temp_dir.join("archives");
+    fs::create_dir_all(&config.archive_dir).expect("create archive dir");
+    let state = test_state_from_existing_pool(
+        SqlitePool::connect("sqlite:file:pool-attempt-archive-route-key?mode=memory&cache=shared")
+            .await
+            .expect("connect archive route-key sqlite"),
+        config,
+        true,
+    )
+    .await;
+    ensure_upstream_accounts_schema(&state.pool)
+        .await
+        .expect("ensure upstream accounts schema");
+
+    let occurred_at = shanghai_local_days_ago(120, 9, 0, 0);
+    let month_key = occurred_at[..7].to_string();
+    let invoke_id = "archived-pool-attempt-route-key";
+    let route_key = "https://route.example/base";
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'), datetime('now'))
+        "#,
+    )
+    .bind(42_i64)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Archive account")
+    .bind("active")
+    .bind(1_i64)
+    .execute(&state.pool)
+    .await
+    .expect("insert upstream account");
+    insert_retention_invocation(
+        &state.pool,
+        invoke_id,
+        &occurred_at,
+        SOURCE_PROXY,
+        "success",
+        Some(r#"{"routeMode":"pool","endpoint":"/v1/responses"}"#),
+        "{\"ok\":true}",
+        None,
+        None,
+        None,
+        Some(0.1),
+    )
+    .await;
+
+    let archive_db_path = temp_dir.join("pool-attempts-archive-route-key.sqlite");
+    fs::File::create(&archive_db_path).expect("create archive sqlite file");
+    let archive_pool = SqlitePool::connect(&sqlite_url_for_path(&archive_db_path))
+        .await
+        .expect("open archive sqlite");
+    let create_sql = POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_CREATE_SQL.replace("archive_db.", "");
+    sqlx::query(&create_sql)
+        .execute(&archive_pool)
+        .await
+        .expect("create archive pool attempt schema");
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_request_attempts (
+            id,
+            invoke_id,
+            occurred_at,
+            endpoint,
+            route_mode,
+            sticky_key,
+            upstream_account_id,
+            upstream_route_key,
+            attempt_index,
+            distinct_account_index,
+            same_account_retry_index,
+            requester_ip,
+            started_at,
+            finished_at,
+            status,
+            http_status,
+            failure_kind,
+            error_message,
+            connect_latency_ms,
+            first_byte_latency_ms,
+            stream_latency_ms,
+            upstream_request_id,
+            created_at
+        )
+        VALUES (
+            1, ?1, ?2, '/v1/responses', ?3, 'sticky-key', ?4, ?5, 1, 1, 1, '203.0.113.5', ?2,
+            ?2, ?6, 200, NULL, NULL, 12.5, 34.5, 56.5, 'req_archived', datetime('now')
+        )
+        "#,
+    )
+    .bind(invoke_id)
+    .bind(&occurred_at)
+    .bind(INVOCATION_ROUTE_MODE_POOL)
+    .bind(42_i64)
+    .bind(route_key)
+    .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS)
+    .execute(&archive_pool)
+    .await
+    .expect("insert archive pool attempt row");
+    archive_pool.close().await;
+
+    let archive_path = temp_dir
+        .join("archives")
+        .join("pool-attempts-archive-route-key.sqlite.gz");
+    deflate_sqlite_file_to_gzip(&archive_db_path, &archive_path)
+        .expect("compress archive pool attempt batch");
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (dataset, month_key, file_path, sha256, row_count, status, created_at)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+        "#,
+    )
+    .bind("pool_upstream_request_attempts")
+    .bind(&month_key)
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind(sha256_hex_file(&archive_path).expect("archive sha256"))
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .execute(&state.pool)
+    .await
+    .expect("insert archive batch manifest");
+
+    let Json(records) = fetch_invocation_pool_attempts(
+        State(state.clone()),
+        axum::extract::Path(invoke_id.to_string()),
+    )
+    .await
+    .expect("fetch archived pool attempt records");
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0].upstream_route_key.as_deref(), Some(route_key));
+    assert_eq!(
+        records[0].upstream_account_name.as_deref(),
+        Some("Archive account")
+    );
 
     cleanup_temp_test_dir(&temp_dir);
 }

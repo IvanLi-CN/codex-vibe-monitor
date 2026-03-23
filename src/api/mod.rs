@@ -1727,7 +1727,24 @@ async fn query_pool_attempt_records_from_archive_range(
             .connect_with(connect_opts)
             .await
             .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
-        let archived_records = sqlx::query_as::<_, ApiPoolUpstreamRequestAttempt>(
+        let archive_columns = sqlx::query("PRAGMA table_info('pool_upstream_request_attempts')")
+            .fetch_all(&archive_pool)
+            .await
+            .with_context(|| {
+                format!(
+                    "failed to inspect pool_upstream_request_attempts archive schema {}",
+                    archive_path.display()
+                )
+            })?
+            .into_iter()
+            .filter_map(|row| row.try_get::<String, _>("name").ok())
+            .collect::<HashSet<_>>();
+        let upstream_route_key_projection = if archive_columns.contains("upstream_route_key") {
+            "upstream_route_key"
+        } else {
+            "NULL AS upstream_route_key"
+        };
+        let archived_records_query = format!(
             r#"
             SELECT
                 id,
@@ -1737,7 +1754,7 @@ async fn query_pool_attempt_records_from_archive_range(
                 sticky_key,
                 upstream_account_id,
                 NULL AS upstream_account_name,
-                NULL AS upstream_route_key,
+                {upstream_route_key_projection},
                 attempt_index,
                 distinct_account_index,
                 same_account_retry_index,
@@ -1757,10 +1774,12 @@ async fn query_pool_attempt_records_from_archive_range(
             WHERE invoke_id = ?1
             ORDER BY attempt_index ASC, id ASC
             "#,
-        )
-        .bind(invoke_id)
-        .fetch_all(&archive_pool)
-        .await?;
+        );
+        let archived_records =
+            sqlx::query_as::<_, ApiPoolUpstreamRequestAttempt>(&archived_records_query)
+                .bind(invoke_id)
+                .fetch_all(&archive_pool)
+                .await?;
         archive_pool.close().await;
         drop(temp_cleanup);
 

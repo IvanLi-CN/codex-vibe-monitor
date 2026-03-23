@@ -9297,8 +9297,11 @@ pub(crate) fn canonical_pool_upstream_route_key(url: &Url) -> String {
     let mut normalized = url.clone();
     normalized.set_query(None);
     normalized.set_fragment(None);
-    if normalized.path().is_empty() {
+    let normalized_path = normalized.path().trim_end_matches('/').to_string();
+    if normalized_path.is_empty() {
         normalized.set_path("/");
+    } else {
+        normalized.set_path(&normalized_path);
     }
     normalized.to_string()
 }

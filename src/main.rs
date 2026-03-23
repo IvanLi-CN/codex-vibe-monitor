@@ -3986,6 +3986,9 @@ async fn archive_rows_into_month_batch(
             .execute(&mut *conn)
             .await
             .with_context(|| format!("failed to ensure archive schema for {}", spec.dataset))?;
+        if spec.dataset == "pool_upstream_request_attempts" {
+            ensure_pool_upstream_request_attempts_archive_schema(&mut conn).await?;
+        }
 
         let upstream_last_activity = if spec.dataset == "codex_invocations" {
             let mut rows = Vec::new();
@@ -6439,6 +6442,52 @@ async fn load_sqlite_table_columns(
         .filter_map(|row| row.try_get::<String, _>("name").ok())
         .collect::<HashSet<_>>();
     Ok(columns)
+}
+
+async fn load_sqlite_table_columns_from_connection(
+    conn: &mut SqliteConnection,
+    schema_name: Option<&str>,
+    table_name: &str,
+) -> Result<HashSet<String>> {
+    let pragma = schema_name.map_or_else(
+        || format!("PRAGMA table_info('{table_name}')"),
+        |schema_name| format!("PRAGMA {schema_name}.table_info('{table_name}')"),
+    );
+    let columns = sqlx::query(&pragma)
+        .fetch_all(&mut *conn)
+        .await
+        .with_context(|| format!("failed to inspect {table_name} schema"))?
+        .into_iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .collect::<HashSet<_>>();
+    Ok(columns)
+}
+
+async fn ensure_pool_upstream_request_attempts_archive_schema(
+    conn: &mut SqliteConnection,
+) -> Result<()> {
+    let archive_columns = load_sqlite_table_columns_from_connection(
+        conn,
+        Some("archive_db"),
+        "pool_upstream_request_attempts",
+    )
+    .await?;
+    for (column, ty) in [("upstream_route_key", "TEXT")] {
+        if !archive_columns.contains(column) {
+            let statement = format!(
+                "ALTER TABLE archive_db.pool_upstream_request_attempts ADD COLUMN {column} {ty}"
+            );
+            sqlx::query(&statement)
+                .execute(&mut *conn)
+                .await
+                .with_context(|| {
+                    format!(
+                        "failed to add archive_db.pool_upstream_request_attempts column {column}"
+                    )
+                })?;
+        }
+    }
+    Ok(())
 }
 
 async fn migrate_codex_invocations_drop_raw_expires_at(
