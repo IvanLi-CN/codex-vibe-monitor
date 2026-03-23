@@ -8263,6 +8263,16 @@ const OAUTH_INVITE_BODY_MARKERS: &[&str] = &[
     "워크스페이스",
     "초대 수락",
 ];
+const OAUTH_INVITE_WORKSPACE_MARKERS: &[&str] = &[
+    "workspace",
+    "workspaces",
+    "工作区",
+    "工作區",
+    "工作空间",
+    "工作空間",
+    "ワークスペース",
+    "워크스페이스",
+];
 static OAUTH_CODE_CANDIDATE_REGEX: Lazy<Regex> = Lazy::new(|| {
     Regex::new(r"(?:^|[^0-9])([0-9]{4,8})(?:[^0-9]|$)").expect("valid oauth code candidate regex")
 });
@@ -8573,9 +8583,30 @@ fn extract_mailbox_code_candidate(text: &str, message_has_brand: bool) -> Option
 }
 
 fn mailbox_url_looks_like_invite(url: &str) -> bool {
-    let lower = url.to_ascii_lowercase();
-    (lower.contains("invite") || lower.contains("invitation") || lower.contains("accept"))
-        && (lower.contains("workspace") || lower.contains("openai") || lower.contains("chatgpt"))
+    let Ok(parsed) = Url::parse(url) else {
+        return false;
+    };
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+
+    let host = host.to_ascii_lowercase();
+    let path = parsed.path().to_ascii_lowercase();
+    let combined = format!("{host}{path}");
+    let has_invite_action = combined.contains("invite")
+        || combined.contains("invitation")
+        || combined.contains("accept");
+    let has_workspace_context =
+        combined.contains("workspace") || host.contains("chatgpt") || host.contains("openai");
+    let is_help_like = host.starts_with("help.")
+        || host.starts_with("docs.")
+        || host.contains("support")
+        || path.contains("/articles/")
+        || path.contains("/hc/")
+        || path.contains("/help/")
+        || path.contains("/docs/");
+
+    has_invite_action && has_workspace_context && !is_help_like
 }
 
 fn mailbox_url_has_brand(url: &str) -> bool {
@@ -8639,9 +8670,8 @@ fn parse_mailbox_invite(detail: &MoeMailMessageDetail) -> Option<ParsedMailboxIn
         mailbox_text_contains_any(&subject_text, OAUTH_INVITE_SUBJECT_MARKERS);
     let body_has_invite_semantics =
         mailbox_text_contains_any(&body_text, OAUTH_INVITE_BODY_MARKERS);
-    if !subject_has_invite_semantics && !body_has_invite_semantics {
-        return None;
-    }
+    let body_has_workspace_semantics =
+        mailbox_text_contains_any(&body_text, OAUTH_INVITE_WORKSPACE_MARKERS);
 
     let body_with_urls = format!(
         "{}\n{}",
@@ -8652,6 +8682,10 @@ fn parse_mailbox_invite(detail: &MoeMailMessageDetail) -> Option<ParsedMailboxIn
         .find_iter(&body_with_urls)
         .map(|value| value.as_str().trim_end_matches('.').to_string())
         .find(|value| mailbox_url_looks_like_invite(value))?;
+    let body_can_drive_invite = body_has_invite_semantics && body_has_workspace_semantics;
+    if !subject_has_invite_semantics && !body_can_drive_invite {
+        return None;
+    }
     if !mailbox_text_has_brand(&format!("{subject_text}\n{body_text}"))
         && !mailbox_url_has_brand(&copy_value)
     {
@@ -15742,6 +15776,26 @@ mod tests {
     }
 
     #[test]
+    fn parse_mailbox_invite_accepts_body_only_workspace_invites() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_body_only_invite".to_string(),
+            subject: Some("OpenAI workspace update".to_string()),
+            content: Some(
+                "请接受邀请并加入工作区：https://chatgpt.com/workspace/invite/accept?workspace=ws_789"
+                    .to_string(),
+            ),
+            html: None,
+            received_at: Some("2026-03-24T00:06:30Z".to_string()),
+        };
+
+        let parsed = parse_mailbox_invite(&detail).expect("body invite");
+        assert_eq!(
+            parsed.copy_value,
+            "https://chatgpt.com/workspace/invite/accept?workspace=ws_789"
+        );
+    }
+
+    #[test]
     fn parse_mailbox_invite_rejects_non_invite_workspace_links() {
         let detail = MoeMailMessageDetail {
             id: "msg_negative_invite".to_string(),
@@ -15749,6 +15803,22 @@ mod tests {
             content: Some("Workspace docs: https://chatgpt.com/workspace".to_string()),
             html: None,
             received_at: Some("2026-03-24T00:07:00Z".to_string()),
+        };
+
+        assert!(parse_mailbox_invite(&detail).is_none());
+    }
+
+    #[test]
+    fn parse_mailbox_invite_rejects_help_articles_about_accepting_invites() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_help_article".to_string(),
+            subject: Some("OpenAI workspace help".to_string()),
+            content: Some(
+                "Need help to accept invitation to your workspace? Read https://help.openai.com/en/articles/12345-accept-invitation-to-workspace"
+                    .to_string(),
+            ),
+            html: None,
+            received_at: Some("2026-03-24T00:07:30Z".to_string()),
         };
 
         assert!(parse_mailbox_invite(&detail).is_none());
