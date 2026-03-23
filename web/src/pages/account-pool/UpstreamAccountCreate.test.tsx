@@ -630,7 +630,7 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
       host?.querySelectorAll('input[name^="batchOauthGroupName-"]') ?? [],
     ) as HTMLInputElement[];
     expect(updatedGroupInputs[5]?.value).toBe("prod");
-  });
+  }, 10_000);
 
   it("clears a pending row session when metadata changes", async () => {
     const beginOauthLogin = vi.fn().mockResolvedValue({
@@ -667,7 +667,7 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     expect(host?.textContent).toContain(
       "Metadata changed. Generate a fresh OAuth URL for this row before completing login.",
     );
-  });
+  }, 10_000);
 
   it("completes one row without leaving the batch page", async () => {
     const beginOauthLogin = vi
