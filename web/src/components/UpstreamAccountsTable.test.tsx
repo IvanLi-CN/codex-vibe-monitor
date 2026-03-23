@@ -44,20 +44,32 @@ const labels = {
   apiKey: 'API key',
   duplicate: 'Duplicate',
   mother: 'Mother',
-  off: 'Off',
   hiddenTagsA11y: (count: number, names: string) => `Show ${count} hidden tags: ${names}`,
-  statusValue: (item: { displayStatus?: string; status: string }) => item.displayStatus ?? item.status,
-  status: (item: { displayStatus?: string; status: string }) =>
+  workStatus: (status: string) =>
     ({
-      active: 'Active',
-      syncing: 'Syncing',
+      working: 'Working',
+      idle: 'Idle',
+      rate_limited: 'Rate limited',
+    })[status] ?? status,
+  enableStatus: (status: string) =>
+    ({
+      enabled: 'Enabled',
+      disabled: 'Disabled',
+    })[status] ?? status,
+  healthStatus: (status: string) =>
+    ({
+      normal: 'Normal',
       needs_reauth: 'Needs reauth',
       upstream_unavailable: 'Upstream unavailable',
       upstream_rejected: 'Upstream rejected',
       error_other: 'Other error',
       error: 'Error',
-      disabled: 'Disabled',
-    })[item.displayStatus ?? item.status] ?? item.displayStatus ?? item.status,
+    })[status] ?? status,
+  syncState: (status: string) =>
+    ({
+      idle: 'Sync idle',
+      syncing: 'Syncing',
+    })[status] ?? status,
   actionSource: () => 'Call',
   actionReason: (item: { lastActionReasonCode?: string | null }) =>
     item.lastActionReasonCode ?? null,
@@ -126,6 +138,10 @@ describe('UpstreamAccountsTable', () => {
         status: 'active',
         displayStatus: 'active',
         enabled: true,
+        enableStatus: 'enabled',
+        workStatus: 'working',
+        healthStatus: 'normal',
+        syncState: 'idle',
         planType: 'team',
         lastSuccessfulSyncAt: '2026-03-16T01:55:00.000Z',
         lastActivityAt: '2026-03-16T02:05:00.000Z',
@@ -195,6 +211,10 @@ describe('UpstreamAccountsTable', () => {
         status: 'disabled',
         displayStatus: 'disabled',
         enabled: false,
+        enableStatus: 'disabled',
+        workStatus: 'idle',
+        healthStatus: 'normal',
+        syncState: 'idle',
         planType: null,
         lastSuccessfulSyncAt: null,
         lastActivityAt: null,
@@ -210,8 +230,69 @@ describe('UpstreamAccountsTable', () => {
 
     expect(html).toContain('Fallback API key')
     expect(html).toContain('Disabled')
+    expect(html).toContain('Idle')
     expect(html).toContain('Never')
     expect(html).toContain('truncate whitespace-nowrap')
+  })
+
+  it('suppresses stale work badges when the account is syncing or unhealthy', () => {
+    const html = renderTable([
+      {
+        id: 13,
+        kind: 'api_key_codex',
+        provider: 'codex',
+        displayName: 'Needs Reauth Key',
+        groupName: null,
+        isMother: false,
+        status: 'needs_reauth',
+        displayStatus: 'needs_reauth',
+        enabled: true,
+        enableStatus: 'enabled',
+        workStatus: 'rate_limited',
+        healthStatus: 'needs_reauth',
+        syncState: 'idle',
+        planType: null,
+        lastSuccessfulSyncAt: null,
+        lastActivityAt: null,
+        primaryWindow: null,
+        secondaryWindow: null,
+        credits: null,
+        localLimits: null,
+        duplicateInfo: null,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
+      {
+        id: 14,
+        kind: 'oauth_codex',
+        provider: 'codex',
+        displayName: 'Syncing OAuth',
+        groupName: null,
+        isMother: false,
+        status: 'syncing',
+        displayStatus: 'syncing',
+        enabled: true,
+        enableStatus: 'enabled',
+        workStatus: 'rate_limited',
+        healthStatus: 'normal',
+        syncState: 'syncing',
+        planType: null,
+        lastSuccessfulSyncAt: null,
+        lastActivityAt: null,
+        primaryWindow: null,
+        secondaryWindow: null,
+        credits: null,
+        localLimits: null,
+        duplicateInfo: null,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
+    ])
+
+    expect(html).toContain('Needs reauth')
+    expect(html).toContain('Syncing')
+    expect(html).not.toContain('Rate limited')
+    expect((html.match(/>Idle</g) ?? []).length).toBeGreaterThanOrEqual(2)
   })
 
   it('keeps the folded tags trigger inside the row click target', () => {
@@ -226,6 +307,10 @@ describe('UpstreamAccountsTable', () => {
         status: 'active',
         displayStatus: 'active',
         enabled: true,
+        enableStatus: 'enabled',
+        workStatus: 'working',
+        healthStatus: 'normal',
+        syncState: 'idle',
         planType: 'team',
         lastSuccessfulSyncAt: '2026-03-16T01:55:00.000Z',
         lastActivityAt: '2026-03-16T02:05:00.000Z',

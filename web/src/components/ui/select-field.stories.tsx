@@ -22,7 +22,7 @@ function ControlledSelectField({
   label: string
   initialValue: string
   placeholder?: string
-  size?: 'default' | 'sm'
+  size?: 'default' | 'sm' | 'filter'
   disabled?: boolean
 }) {
   const [value, setValue] = useState(initialValue)
@@ -110,6 +110,17 @@ export const Disabled: Story = {
       label="Proxy policy"
       initialValue="100"
       disabled
+    />
+  ),
+}
+
+export const Filter: Story = {
+  render: () => (
+    <ControlledSelectField
+      label="Account status"
+      initialValue=""
+      placeholder="All account states"
+      size="filter"
     />
   ),
 }

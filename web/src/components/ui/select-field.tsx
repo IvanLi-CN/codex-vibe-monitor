@@ -6,6 +6,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from './select'
+import { formControlSizeVariants, type FormControlSize } from './form-control'
 import { cn } from '../../lib/utils'
 
 const EMPTY_OPTION_SENTINEL = '__cvm_selectfield_empty__'
@@ -23,7 +24,7 @@ export interface SelectFieldProps {
   label?: string
   name?: string
   placeholder?: string
-  size?: 'default' | 'sm'
+  size?: FormControlSize
   disabled?: boolean
   className?: string
   triggerClassName?: string
@@ -61,7 +62,7 @@ export function SelectField({
   const selectValue = options.some((option) => option.value === value)
     ? toInternalValue(value)
     : undefined
-  const triggerSizeClass = size === 'sm' ? 'h-8 text-sm' : 'h-9 text-sm'
+  const triggerSizeClass = formControlSizeVariants({ size })
 
   const content = (
     <>

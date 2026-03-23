@@ -3433,6 +3433,9 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
             group_search: Some("prod".to_string()),
             group_ungrouped: None,
             status: None,
+            work_status: None,
+            enable_status: None,
+            health_status: None,
             page: None,
             page_size: None,
             tag_ids: vec![vip_tag_id, burst_safe_tag_id, vip_tag_id],
@@ -3460,6 +3463,9 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
             group_search: None,
             group_ungrouped: Some(true),
             status: None,
+            work_status: None,
+            enable_status: None,
+            health_status: None,
             page: None,
             page_size: None,
             tag_ids: vec![vip_tag_id, burst_safe_tag_id],
@@ -3493,11 +3499,33 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
         insert_test_pool_api_key_account(&state, &display_name, &api_key).await;
     }
 
+    let now = Utc::now();
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET last_selected_at = ?2, cooldown_until = ?3 WHERE id = ?1",
+    )
+    .bind(alpha_id)
+    .bind(format_utc_iso(now - ChronoDuration::minutes(5)))
+    .bind::<Option<String>>(None)
+    .execute(&state.pool)
+    .await
+    .expect("mark alpha working");
+    set_test_account_rate_limited_cooldown(&state.pool, beta_id, 600).await;
     sqlx::query("UPDATE pool_upstream_accounts SET enabled = 0 WHERE id = ?1")
         .bind(beta_id)
         .execute(&state.pool)
         .await
         .expect("disable beta account");
+    sqlx::query(
+        "UPDATE pool_upstream_accounts SET status = ?2, last_error = ?3, last_error_at = ?4, last_route_failure_at = NULL, last_route_failure_kind = NULL WHERE id = ?1",
+    )
+    .bind(beta_id)
+    .bind("syncing")
+    .bind("Authentication token has been invalidated, please sign in again")
+    .bind(format_utc_iso(now))
+    .execute(&state.pool)
+    .await
+    .expect("seed beta stale disabled syncing state");
+    set_test_account_rate_limited_cooldown(&state.pool, gamma_id, 600).await;
 
     let Json(active_page_two) = list_upstream_accounts(
         State(state.clone()),
@@ -3505,6 +3533,9 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
             group_search: None,
             group_ungrouped: None,
             status: Some("active".to_string()),
+            work_status: None,
+            enable_status: None,
+            health_status: None,
             page: Some(2),
             page_size: Some(20),
             tag_ids: Vec::new(),
@@ -3528,15 +3559,18 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
     assert_eq!(active_page_two_json["metrics"]["apiKey"].as_u64(), Some(21));
     assert_eq!(
         active_page_two_json["metrics"]["attention"].as_u64(),
-        Some(0)
+        Some(1)
     );
 
     let Json(disabled_only) = list_upstream_accounts(
-        State(state),
+        State(state.clone()),
         Query(ListUpstreamAccountsQuery {
             group_search: None,
             group_ungrouped: None,
             status: Some("disabled".to_string()),
+            work_status: None,
+            enable_status: None,
+            health_status: None,
             page: Some(1),
             page_size: Some(20),
             tag_ids: Vec::new(),
@@ -3563,7 +3597,249 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
             .and_then(serde_json::Value::as_str),
         Some("disabled")
     );
+    assert_eq!(
+        disabled_items[0]
+            .get("healthStatus")
+            .and_then(serde_json::Value::as_str),
+        Some("normal")
+    );
+    assert_eq!(
+        disabled_items[0]
+            .get("syncState")
+            .and_then(serde_json::Value::as_str),
+        Some("idle")
+    );
+    assert_eq!(disabled_only_json["metrics"]["attention"].as_u64(), Some(0));
+
+    let Json(split_status_filtered) = list_upstream_accounts(
+        State(state),
+        Query(ListUpstreamAccountsQuery {
+            group_search: None,
+            group_ungrouped: None,
+            status: None,
+            work_status: Some("rate_limited".to_string()),
+            enable_status: Some("enabled".to_string()),
+            health_status: Some("normal".to_string()),
+            page: Some(1),
+            page_size: Some(20),
+            tag_ids: Vec::new(),
+        }),
+    )
+    .await
+    .expect("list split status filtered upstream accounts");
+    let split_status_filtered_json =
+        serde_json::to_value(split_status_filtered).expect("serialize split status response");
+    let split_items = split_status_filtered_json["items"]
+        .as_array()
+        .expect("split status items array");
+    assert_eq!(split_status_filtered_json["total"].as_u64(), Some(1));
+    assert_eq!(split_items.len(), 1);
+    assert_eq!(
+        split_items[0].get("id").and_then(serde_json::Value::as_i64),
+        Some(gamma_id)
+    );
+    assert_eq!(
+        split_items[0]
+            .get("workStatus")
+            .and_then(serde_json::Value::as_str),
+        Some("rate_limited")
+    );
+    assert_eq!(
+        split_items[0]
+            .get("enableStatus")
+            .and_then(serde_json::Value::as_str),
+        Some("enabled")
+    );
+    assert_eq!(
+        split_items[0]
+            .get("healthStatus")
+            .and_then(serde_json::Value::as_str),
+        Some("normal")
+    );
+    assert_eq!(
+        split_status_filtered_json["metrics"]["attention"].as_u64(),
+        Some(1)
+    );
     assert_ne!(alpha_id, gamma_id);
+}
+
+#[tokio::test]
+async fn list_upstream_accounts_clamps_work_status_for_abnormal_or_syncing_accounts() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let reauth_id =
+        insert_test_pool_api_key_account(&state, "Needs Reauth", "upstream-reauth").await;
+    let syncing_id =
+        insert_test_pool_api_key_account(&state, "Currently Syncing", "upstream-syncing").await;
+
+    let now = Utc::now();
+    let now_iso = format_utc_iso(now);
+    let cooldown_until = format_utc_iso(now + ChronoDuration::minutes(10));
+    let recently_selected = format_utc_iso(now - ChronoDuration::minutes(5));
+
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET status = ?2,
+            last_error = ?3,
+            last_error_at = ?4,
+            cooldown_until = ?5,
+            last_selected_at = ?6
+        WHERE id = ?1
+        "#,
+    )
+    .bind(reauth_id)
+    .bind("needs_reauth")
+    .bind("refresh token expired")
+    .bind(&now_iso)
+    .bind(&cooldown_until)
+    .bind(&recently_selected)
+    .execute(&state.pool)
+    .await
+    .expect("mark reauth account abnormal");
+
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET status = ?2,
+            last_error = NULL,
+            last_error_at = NULL,
+            cooldown_until = ?3,
+            last_selected_at = ?4
+        WHERE id = ?1
+        "#,
+    )
+    .bind(syncing_id)
+    .bind("syncing")
+    .bind(&cooldown_until)
+    .bind(&recently_selected)
+    .execute(&state.pool)
+    .await
+    .expect("mark syncing account in cooldown");
+
+    let Json(response) = list_upstream_accounts(
+        State(state),
+        Query(ListUpstreamAccountsQuery {
+            group_search: None,
+            group_ungrouped: None,
+            status: None,
+            work_status: None,
+            enable_status: None,
+            health_status: None,
+            page: Some(1),
+            page_size: Some(20),
+            tag_ids: Vec::new(),
+        }),
+    )
+    .await
+    .expect("list upstream accounts with abnormal states");
+    let response_json =
+        serde_json::to_value(response).expect("serialize abnormal upstream accounts");
+    let items = response_json["items"]
+        .as_array()
+        .expect("abnormal items array");
+
+    let reauth_item = items
+        .iter()
+        .find(|item| item.get("id").and_then(serde_json::Value::as_i64) == Some(reauth_id))
+        .expect("reauth item present");
+    assert_eq!(
+        reauth_item
+            .get("workStatus")
+            .and_then(serde_json::Value::as_str),
+        Some("idle")
+    );
+    assert_eq!(
+        reauth_item
+            .get("healthStatus")
+            .and_then(serde_json::Value::as_str),
+        Some("needs_reauth")
+    );
+    assert_eq!(
+        reauth_item
+            .get("syncState")
+            .and_then(serde_json::Value::as_str),
+        Some("idle")
+    );
+
+    let syncing_item = items
+        .iter()
+        .find(|item| item.get("id").and_then(serde_json::Value::as_i64) == Some(syncing_id))
+        .expect("syncing item present");
+    assert_eq!(
+        syncing_item
+            .get("workStatus")
+            .and_then(serde_json::Value::as_str),
+        Some("idle")
+    );
+    assert_eq!(
+        syncing_item
+            .get("healthStatus")
+            .and_then(serde_json::Value::as_str),
+        Some("normal")
+    );
+    assert_eq!(
+        syncing_item
+            .get("syncState")
+            .and_then(serde_json::Value::as_str),
+        Some("syncing")
+    );
+}
+
+#[tokio::test]
+async fn list_upstream_accounts_keeps_generic_retry_cooldown_idle() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let generic_cooldown_id =
+        insert_test_pool_api_key_account(&state, "Generic Cooldown", "upstream-generic").await;
+
+    set_test_account_generic_route_cooldown(&state.pool, generic_cooldown_id, 600).await;
+
+    let Json(response) = list_upstream_accounts(
+        State(state),
+        Query(ListUpstreamAccountsQuery {
+            group_search: None,
+            group_ungrouped: None,
+            status: None,
+            work_status: None,
+            enable_status: None,
+            health_status: None,
+            page: Some(1),
+            page_size: Some(20),
+            tag_ids: Vec::new(),
+        }),
+    )
+    .await
+    .expect("list upstream accounts with generic cooldown");
+    let response_json =
+        serde_json::to_value(response).expect("serialize generic cooldown upstream accounts");
+    let items = response_json["items"]
+        .as_array()
+        .expect("generic cooldown items array");
+
+    let generic_item = items
+        .iter()
+        .find(|item| {
+            item.get("id").and_then(serde_json::Value::as_i64) == Some(generic_cooldown_id)
+        })
+        .expect("generic cooldown item present");
+    assert_eq!(
+        generic_item
+            .get("workStatus")
+            .and_then(serde_json::Value::as_str),
+        Some("idle")
+    );
+    assert_eq!(
+        generic_item
+            .get("healthStatus")
+            .and_then(serde_json::Value::as_str),
+        Some("normal")
+    );
+    assert_eq!(response_json["metrics"]["attention"].as_u64(), Some(0));
 }
 
 #[tokio::test]

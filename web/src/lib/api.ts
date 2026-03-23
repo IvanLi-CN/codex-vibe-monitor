@@ -1547,6 +1547,16 @@ export interface UpstreamAccountSummary {
   groupName?: string | null;
   isMother: boolean;
   status: "active" | "syncing" | "needs_reauth" | "error" | "disabled" | string;
+  workStatus?: "working" | "idle" | "rate_limited" | string;
+  enableStatus?: "enabled" | "disabled" | string;
+  healthStatus?:
+    | "normal"
+    | "needs_reauth"
+    | "upstream_unavailable"
+    | "upstream_rejected"
+    | "error_other"
+    | string;
+  syncState?: "idle" | "syncing" | string;
   displayStatus?:
     | "active"
     | "syncing"
@@ -1650,6 +1660,9 @@ export interface FetchUpstreamAccountsQuery {
   groupSearch?: string;
   groupUngrouped?: boolean;
   status?: string;
+  workStatus?: string;
+  enableStatus?: string;
+  healthStatus?: string;
   page?: number;
   pageSize?: number;
   tagIds?: number[];
@@ -2125,6 +2138,33 @@ function normalizeUpstreamAccountSummary(
   const status = typeof payload.status === "string" ? payload.status : "error";
   const displayStatus =
     typeof payload.displayStatus === "string" ? payload.displayStatus : status;
+  const enableStatus =
+    typeof payload.enableStatus === "string"
+      ? payload.enableStatus
+      : payload.enabled === false || displayStatus === "disabled"
+        ? "disabled"
+        : "enabled";
+  const syncState =
+    typeof payload.syncState === "string"
+      ? payload.syncState
+      : status === "syncing" || displayStatus === "syncing"
+        ? "syncing"
+        : "idle";
+  const healthStatus =
+    typeof payload.healthStatus === "string"
+      ? payload.healthStatus
+      : displayStatus === "needs_reauth" ||
+          displayStatus === "upstream_unavailable" ||
+          displayStatus === "upstream_rejected" ||
+          displayStatus === "error_other"
+        ? displayStatus
+        : status === "needs_reauth"
+          ? "needs_reauth"
+          : status === "error"
+            ? "error_other"
+            : "normal";
+  const workStatus =
+    typeof payload.workStatus === "string" ? payload.workStatus : "idle";
   if (id == null || !displayName || !kind || !provider) return null;
   return {
     id,
@@ -2134,6 +2174,10 @@ function normalizeUpstreamAccountSummary(
     groupName: typeof payload.groupName === "string" ? payload.groupName : null,
     isMother: payload.isMother === true,
     status,
+    workStatus,
+    enableStatus,
+    healthStatus,
+    syncState,
     displayStatus,
     enabled: payload.enabled !== false,
     email: typeof payload.email === "string" ? payload.email : null,
@@ -3052,6 +3096,9 @@ export async function fetchUpstreamAccounts(
   if (query?.groupUngrouped != null)
     search.set("groupUngrouped", String(query.groupUngrouped));
   if (query?.status) search.set("status", query.status);
+  if (query?.workStatus) search.set("workStatus", query.workStatus);
+  if (query?.enableStatus) search.set("enableStatus", query.enableStatus);
+  if (query?.healthStatus) search.set("healthStatus", query.healthStatus);
   if (query?.page != null) search.set("page", String(query.page));
   if (query?.pageSize != null) search.set("pageSize", String(query.pageSize));
   for (const tagId of query?.tagIds ?? []) {

@@ -6,9 +6,13 @@
 
 - `groupSearch`：按分组名模糊匹配；空值表示不过滤。
 - `groupUngrouped=true`：只返回未分组账号。
+- `workStatus=working|idle|rate_limited`：按系统工作状态筛选；只有 `enableStatus=enabled`、`healthStatus=normal` 且 `syncState=idle` 的账号才可能返回 `working` 或 `rate_limited`，其它账号统一返回 `idle`。
+- `enableStatus=enabled|disabled`：按启用状态筛选。
+- `healthStatus=normal|needs_reauth|upstream_unavailable|upstream_rejected|error_other`：按账号固有健康状态筛选。
 - `tagIds=1&tagIds=2...`：标签多选全匹配；只有同时包含全部已选 tag 的账号才返回。
+- `status=...`：旧状态参数兼容一轮；`active -> healthStatus=normal`、`disabled -> enableStatus=disabled`、`syncing -> syncState=syncing`，其它旧异常值映射到对应 `healthStatus`。
 
-上述筛选均由后端执行；前端只负责透传当前筛选状态。
+上述筛选均由后端执行；前端只负责透传当前筛选状态。`syncState` 不提供主筛选参数，只作为响应里的次级过程状态返回。
 
 返回账号列表：
 
@@ -23,6 +27,11 @@
       "groupName": "production",
       "isMother": true,
       "status": "active",
+      "displayStatus": "active",
+      "workStatus": "working",
+      "enableStatus": "enabled",
+      "healthStatus": "normal",
+      "syncState": "idle",
       "enabled": true,
       "email": "user@example.com",
       "chatgptAccountId": "org_xxx",
@@ -63,6 +72,7 @@
 
 在 summary 基础上补充：
 
+- 保留 `workStatus`、`enableStatus`、`healthStatus`、`syncState` 四个读模型状态字段
 - `note`
 - `chatgptUserId`
 - `tokenExpiresAt`

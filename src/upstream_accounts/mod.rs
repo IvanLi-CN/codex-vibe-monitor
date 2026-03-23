@@ -58,9 +58,17 @@ const UPSTREAM_ACCOUNT_STATUS_SYNCING: &str = "syncing";
 const UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH: &str = "needs_reauth";
 const UPSTREAM_ACCOUNT_STATUS_ERROR: &str = "error";
 const UPSTREAM_ACCOUNT_STATUS_DISABLED: &str = "disabled";
+const UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED: &str = "enabled";
+const UPSTREAM_ACCOUNT_ENABLE_STATUS_DISABLED: &str = "disabled";
+const UPSTREAM_ACCOUNT_WORK_STATUS_WORKING: &str = "working";
+const UPSTREAM_ACCOUNT_WORK_STATUS_IDLE: &str = "idle";
+const UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED: &str = "rate_limited";
+const UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL: &str = "normal";
 const UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE: &str = "upstream_unavailable";
 const UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED: &str = "upstream_rejected";
 const UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER: &str = "error_other";
+const UPSTREAM_ACCOUNT_SYNC_STATE_IDLE: &str = "idle";
+const UPSTREAM_ACCOUNT_SYNC_STATE_SYNCING: &str = "syncing";
 const UPSTREAM_ACCOUNT_ACTION_ROUTE_RECOVERED: &str = "route_recovered";
 const UPSTREAM_ACCOUNT_ACTION_ROUTE_COOLDOWN_STARTED: &str = "route_cooldown_started";
 const UPSTREAM_ACCOUNT_ACTION_ROUTE_HARD_UNAVAILABLE: &str = "route_hard_unavailable";
@@ -780,6 +788,9 @@ pub(crate) struct ListUpstreamAccountsQuery {
     pub(crate) group_search: Option<String>,
     pub(crate) group_ungrouped: Option<bool>,
     pub(crate) status: Option<String>,
+    pub(crate) work_status: Option<String>,
+    pub(crate) enable_status: Option<String>,
+    pub(crate) health_status: Option<String>,
     pub(crate) page: Option<usize>,
     pub(crate) page_size: Option<usize>,
     #[serde(default)]
@@ -884,6 +895,10 @@ pub(crate) struct UpstreamAccountSummary {
     status: String,
     display_status: String,
     enabled: bool,
+    work_status: String,
+    enable_status: String,
+    health_status: String,
+    sync_state: String,
     email: Option<String>,
     chatgpt_account_id: Option<String>,
     plan_type: Option<String>,
@@ -7167,7 +7182,18 @@ async fn load_upstream_account_summaries_filtered(
     pool: &Pool<Sqlite>,
     params: &ListUpstreamAccountsQuery,
 ) -> Result<Vec<UpstreamAccountSummary>> {
-    let status_filter = normalize_upstream_account_display_status_filter(params.status.as_deref());
+    let legacy_status_filter =
+        normalize_legacy_upstream_account_status_filter(params.status.as_deref());
+    let work_status_filter =
+        normalize_upstream_account_work_status_filter(params.work_status.as_deref())
+            .or(legacy_status_filter.work_status);
+    let enable_status_filter =
+        normalize_upstream_account_enable_status_filter(params.enable_status.as_deref())
+            .or(legacy_status_filter.enable_status);
+    let health_status_filter =
+        normalize_upstream_account_health_status_filter(params.health_status.as_deref())
+            .or(legacy_status_filter.health_status);
+    let sync_state_filter = legacy_status_filter.sync_state;
     let duplicate_info_map = load_duplicate_info_map(pool).await?;
     let mut normalized_tag_ids = params
         .tag_ids
@@ -7226,6 +7252,7 @@ async fn load_upstream_account_summaries_filtered(
         .build_query_as::<UpstreamAccountRow>()
         .fetch_all(pool)
         .await?;
+    let now = Utc::now();
     let account_ids = rows.iter().map(|row| row.id).collect::<Vec<_>>();
     let tag_map = load_account_tag_map(pool, &account_ids).await?;
 
@@ -7239,16 +7266,21 @@ async fn load_upstream_account_summaries_filtered(
             row.last_activity_at.clone(),
             tags,
             duplicate_info_map.get(&row.id).cloned(),
+            now.clone(),
         ));
     }
-    if let Some(status_filter) = status_filter {
-        Ok(items
-            .into_iter()
-            .filter(|item| item.display_status == status_filter)
-            .collect())
-    } else {
-        Ok(items)
-    }
+    Ok(items
+        .into_iter()
+        .filter(|item| {
+            matches_upstream_account_filters(
+                item,
+                work_status_filter,
+                enable_status_filter,
+                health_status_filter,
+                sync_state_filter,
+            )
+        })
+        .collect())
 }
 
 async fn build_bulk_upstream_account_sync_pending_rows(
@@ -7455,6 +7487,7 @@ async fn load_upstream_account_detail(
             row.last_activity_at.clone(),
             tags,
             duplicate_info_map.get(&row.id).cloned(),
+            Utc::now(),
         ),
         note: row.note,
         upstream_base_url: row.upstream_base_url,
@@ -7561,6 +7594,7 @@ fn build_summary_from_row(
     last_activity_at: Option<String>,
     tags: Vec<AccountTagSummary>,
     duplicate_info: Option<DuplicateInfo>,
+    now: DateTime<Utc>,
 ) -> UpstreamAccountSummary {
     let local_limits = if row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
         Some(LocalLimitSnapshot {
@@ -7615,10 +7649,33 @@ fn build_summary_from_row(
     });
     let effective_routing_rule = build_effective_routing_rule(&tags);
     let status = effective_account_status(row);
+    let enable_status = derive_upstream_account_enable_status(row.enabled != 0);
+    let health_status = derive_upstream_account_health_status(
+        row.enabled != 0,
+        &row.status,
+        row.last_error.as_deref(),
+        row.last_error_at.as_deref(),
+        row.last_route_failure_at.as_deref(),
+        row.last_route_failure_kind.as_deref(),
+    );
+    let sync_state = derive_upstream_account_sync_state(row.enabled != 0, &row.status);
+    let work_status = derive_upstream_account_work_status(
+        row.enabled != 0,
+        health_status,
+        sync_state,
+        row.cooldown_until.as_deref(),
+        row.last_route_failure_kind.as_deref(),
+        row.last_action_reason_code.as_deref(),
+        row.last_selected_at.as_deref(),
+        now,
+    );
     let display_status = classify_upstream_account_display_status(
         row.enabled != 0,
-        &status,
+        &row.status,
         row.last_error.as_deref(),
+        row.last_error_at.as_deref(),
+        row.last_route_failure_at.as_deref(),
+        row.last_route_failure_kind.as_deref(),
     )
     .to_string();
 
@@ -7632,6 +7689,10 @@ fn build_summary_from_row(
         status,
         display_status,
         enabled: row.enabled != 0,
+        work_status: work_status.to_string(),
+        enable_status: enable_status.to_string(),
+        health_status: health_status.to_string(),
+        sync_state: sync_state.to_string(),
         email: row.email.clone(),
         chatgpt_account_id: row.chatgpt_account_id.clone(),
         plan_type: resolve_effective_plan_type(
@@ -9255,20 +9316,116 @@ fn normalize_upstream_account_list_page_size(value: Option<usize>) -> usize {
         .unwrap_or(DEFAULT_UPSTREAM_ACCOUNT_LIST_PAGE_SIZE)
 }
 
-fn normalize_upstream_account_display_status_filter(value: Option<&str>) -> Option<String> {
+#[derive(Debug, Default, Clone, Copy)]
+struct LegacyUpstreamAccountStatusFilter {
+    work_status: Option<&'static str>,
+    enable_status: Option<&'static str>,
+    health_status: Option<&'static str>,
+    sync_state: Option<&'static str>,
+}
+
+fn normalize_upstream_account_work_status_filter(value: Option<&str>) -> Option<&'static str> {
     let normalized = value?.trim().to_ascii_lowercase();
     if normalized.is_empty() {
         return None;
     }
     match normalized.as_str() {
-        UPSTREAM_ACCOUNT_STATUS_ACTIVE
-        | UPSTREAM_ACCOUNT_STATUS_SYNCING
-        | UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH
-        | UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE
-        | UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
-        | UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER
-        | UPSTREAM_ACCOUNT_STATUS_DISABLED => Some(normalized),
+        UPSTREAM_ACCOUNT_WORK_STATUS_WORKING => Some(UPSTREAM_ACCOUNT_WORK_STATUS_WORKING),
+        UPSTREAM_ACCOUNT_WORK_STATUS_IDLE => Some(UPSTREAM_ACCOUNT_WORK_STATUS_IDLE),
+        UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED => {
+            Some(UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED)
+        }
         _ => None,
+    }
+}
+
+fn normalize_upstream_account_enable_status_filter(value: Option<&str>) -> Option<&'static str> {
+    let normalized = value?.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+    match normalized.as_str() {
+        UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED => Some(UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED),
+        UPSTREAM_ACCOUNT_ENABLE_STATUS_DISABLED => Some(UPSTREAM_ACCOUNT_ENABLE_STATUS_DISABLED),
+        _ => None,
+    }
+}
+
+fn normalize_upstream_account_health_status_filter(value: Option<&str>) -> Option<&'static str> {
+    let normalized = value?.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+    match normalized.as_str() {
+        UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL => Some(UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL),
+        UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH => Some(UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH),
+        UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE => {
+            Some(UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE)
+        }
+        UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED => {
+            Some(UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED)
+        }
+        UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER | UPSTREAM_ACCOUNT_STATUS_ERROR => {
+            Some(UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER)
+        }
+        _ => None,
+    }
+}
+
+fn normalize_legacy_upstream_account_status_filter(
+    value: Option<&str>,
+) -> LegacyUpstreamAccountStatusFilter {
+    let normalized = value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase());
+    match normalized.as_deref() {
+        Some(UPSTREAM_ACCOUNT_STATUS_ACTIVE) => LegacyUpstreamAccountStatusFilter {
+            enable_status: Some(UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED),
+            health_status: Some(UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL),
+            sync_state: Some(UPSTREAM_ACCOUNT_SYNC_STATE_IDLE),
+            ..LegacyUpstreamAccountStatusFilter::default()
+        },
+        Some(UPSTREAM_ACCOUNT_STATUS_SYNCING) => LegacyUpstreamAccountStatusFilter {
+            enable_status: Some(UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED),
+            sync_state: Some(UPSTREAM_ACCOUNT_SYNC_STATE_SYNCING),
+            ..LegacyUpstreamAccountStatusFilter::default()
+        },
+        Some(UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH) => LegacyUpstreamAccountStatusFilter {
+            enable_status: Some(UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED),
+            health_status: Some(UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH),
+            sync_state: Some(UPSTREAM_ACCOUNT_SYNC_STATE_IDLE),
+            ..LegacyUpstreamAccountStatusFilter::default()
+        },
+        Some(UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE) => {
+            LegacyUpstreamAccountStatusFilter {
+                enable_status: Some(UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED),
+                health_status: Some(UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE),
+                sync_state: Some(UPSTREAM_ACCOUNT_SYNC_STATE_IDLE),
+                ..LegacyUpstreamAccountStatusFilter::default()
+            }
+        }
+        Some(UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED) => {
+            LegacyUpstreamAccountStatusFilter {
+                enable_status: Some(UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED),
+                health_status: Some(UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED),
+                sync_state: Some(UPSTREAM_ACCOUNT_SYNC_STATE_IDLE),
+                ..LegacyUpstreamAccountStatusFilter::default()
+            }
+        }
+        Some(UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER) | Some(UPSTREAM_ACCOUNT_STATUS_ERROR) => {
+            LegacyUpstreamAccountStatusFilter {
+                enable_status: Some(UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED),
+                health_status: Some(UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER),
+                sync_state: Some(UPSTREAM_ACCOUNT_SYNC_STATE_IDLE),
+                ..LegacyUpstreamAccountStatusFilter::default()
+            }
+        }
+        Some(UPSTREAM_ACCOUNT_STATUS_DISABLED) => LegacyUpstreamAccountStatusFilter {
+            enable_status: Some(UPSTREAM_ACCOUNT_ENABLE_STATUS_DISABLED),
+            ..LegacyUpstreamAccountStatusFilter::default()
+        },
+        _ => LegacyUpstreamAccountStatusFilter::default(),
     }
 }
 
@@ -9420,21 +9577,50 @@ fn effective_account_status(row: &UpstreamAccountRow) -> String {
     }
 }
 
-fn classify_upstream_account_display_status(
+fn derive_upstream_account_enable_status(enabled: bool) -> &'static str {
+    if enabled {
+        UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED
+    } else {
+        UPSTREAM_ACCOUNT_ENABLE_STATUS_DISABLED
+    }
+}
+
+fn derive_upstream_account_sync_state(enabled: bool, raw_status: &str) -> &'static str {
+    if !enabled {
+        return UPSTREAM_ACCOUNT_SYNC_STATE_IDLE;
+    }
+    if raw_status
+        .trim()
+        .eq_ignore_ascii_case(UPSTREAM_ACCOUNT_STATUS_SYNCING)
+    {
+        UPSTREAM_ACCOUNT_SYNC_STATE_SYNCING
+    } else {
+        UPSTREAM_ACCOUNT_SYNC_STATE_IDLE
+    }
+}
+
+fn derive_upstream_account_health_status(
     enabled: bool,
     raw_status: &str,
     last_error: Option<&str>,
+    last_error_at: Option<&str>,
+    last_route_failure_at: Option<&str>,
+    last_route_failure_kind: Option<&str>,
 ) -> &'static str {
+    if !enabled {
+        return UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL;
+    }
     let status = raw_status.trim().to_ascii_lowercase();
     let error_message = last_error.unwrap_or_default();
-    if !enabled || status == UPSTREAM_ACCOUNT_STATUS_DISABLED {
-        return UPSTREAM_ACCOUNT_STATUS_DISABLED;
-    }
-    if status == UPSTREAM_ACCOUNT_STATUS_SYNCING {
-        return UPSTREAM_ACCOUNT_STATUS_SYNCING;
-    }
-    if status == UPSTREAM_ACCOUNT_STATUS_ACTIVE {
-        return UPSTREAM_ACCOUNT_STATUS_ACTIVE;
+    if matches!(
+        status.as_str(),
+        UPSTREAM_ACCOUNT_STATUS_ACTIVE | UPSTREAM_ACCOUNT_STATUS_SYNCING
+    ) && is_transient_route_failure_error(
+        last_error_at,
+        last_route_failure_at,
+        last_route_failure_kind,
+    ) {
+        return UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL;
     }
     if is_upstream_unavailable_error_message(error_message) {
         return UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE;
@@ -9453,7 +9639,115 @@ fn classify_upstream_account_display_status(
     {
         return UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER;
     }
-    UPSTREAM_ACCOUNT_STATUS_ACTIVE
+    UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL
+}
+
+fn is_transient_route_failure_error(
+    last_error_at: Option<&str>,
+    last_route_failure_at: Option<&str>,
+    last_route_failure_kind: Option<&str>,
+) -> bool {
+    if last_error_at.is_none() || last_error_at != last_route_failure_at {
+        return false;
+    }
+    matches!(
+        last_route_failure_kind
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+        Some(
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429
+                | FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX
+                | FORWARD_PROXY_FAILURE_SEND_ERROR
+                | FORWARD_PROXY_FAILURE_HANDSHAKE_TIMEOUT
+                | FORWARD_PROXY_FAILURE_STREAM_ERROR
+                | PROXY_FAILURE_FAILED_CONTACT_UPSTREAM
+                | PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT
+        )
+    )
+}
+
+fn derive_upstream_account_work_status(
+    enabled: bool,
+    health_status: &str,
+    sync_state: &str,
+    cooldown_until: Option<&str>,
+    last_route_failure_kind: Option<&str>,
+    last_action_reason_code: Option<&str>,
+    last_selected_at: Option<&str>,
+    now: DateTime<Utc>,
+) -> &'static str {
+    if !enabled
+        || health_status != UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL
+        || sync_state == UPSTREAM_ACCOUNT_SYNC_STATE_SYNCING
+    {
+        return UPSTREAM_ACCOUNT_WORK_STATUS_IDLE;
+    }
+    if cooldown_until
+        .and_then(parse_rfc3339_utc)
+        .is_some_and(|until| {
+            until > now
+                && (matches!(
+                    last_route_failure_kind,
+                    Some(
+                        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429
+                            | FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
+                    )
+                ) || account_reason_is_rate_limited(last_action_reason_code))
+        })
+    {
+        return UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED;
+    }
+    let active_cutoff = now - ChronoDuration::minutes(POOL_ROUTE_ACTIVE_STICKY_WINDOW_MINUTES);
+    if last_selected_at
+        .and_then(parse_rfc3339_utc)
+        .is_some_and(|selected_at| selected_at >= active_cutoff)
+    {
+        return UPSTREAM_ACCOUNT_WORK_STATUS_WORKING;
+    }
+    UPSTREAM_ACCOUNT_WORK_STATUS_IDLE
+}
+
+fn classify_upstream_account_display_status(
+    enabled: bool,
+    raw_status: &str,
+    last_error: Option<&str>,
+    last_error_at: Option<&str>,
+    last_route_failure_at: Option<&str>,
+    last_route_failure_kind: Option<&str>,
+) -> &'static str {
+    let enable_status = derive_upstream_account_enable_status(enabled);
+    if enable_status == UPSTREAM_ACCOUNT_ENABLE_STATUS_DISABLED {
+        return UPSTREAM_ACCOUNT_STATUS_DISABLED;
+    }
+    let sync_state = derive_upstream_account_sync_state(enabled, raw_status);
+    if sync_state == UPSTREAM_ACCOUNT_SYNC_STATE_SYNCING {
+        return UPSTREAM_ACCOUNT_STATUS_SYNCING;
+    }
+    let health_status = derive_upstream_account_health_status(
+        enabled,
+        raw_status,
+        last_error,
+        last_error_at,
+        last_route_failure_at,
+        last_route_failure_kind,
+    );
+    if health_status == UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL {
+        return UPSTREAM_ACCOUNT_STATUS_ACTIVE;
+    }
+    health_status
+}
+
+fn matches_upstream_account_filters(
+    item: &UpstreamAccountSummary,
+    work_status_filter: Option<&str>,
+    enable_status_filter: Option<&str>,
+    health_status_filter: Option<&str>,
+    sync_state_filter: Option<&str>,
+) -> bool {
+    work_status_filter.is_none_or(|value| item.work_status == value)
+        && enable_status_filter.is_none_or(|value| item.enable_status == value)
+        && health_status_filter.is_none_or(|value| item.health_status == value)
+        && sync_state_filter.is_none_or(|value| item.sync_state == value)
 }
 
 fn build_upstream_account_list_metrics(
@@ -9472,11 +9766,8 @@ fn build_upstream_account_list_metrics(
         attention: items
             .iter()
             .filter(|item| {
-                item.display_status == UPSTREAM_ACCOUNT_STATUS_SYNCING
-                    || item.display_status == UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH
-                    || item.display_status == UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE
-                    || item.display_status == UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
-                    || item.display_status == UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER
+                item.health_status != UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL
+                    || item.work_status == UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
             })
             .count(),
     }

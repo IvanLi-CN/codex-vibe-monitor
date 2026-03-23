@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { AppIcon } from './AppIcon'
 import { Button } from './ui/button'
+import { formControlSizeVariants, type FormControlSize } from './ui/form-control'
 import {
   Command,
   CommandEmpty,
@@ -26,6 +27,7 @@ interface UpstreamAccountGroupComboboxProps {
   ariaLabel?: string
   className?: string
   triggerClassName?: string
+  size?: FormControlSize
 }
 
 function normalizeSuggestions(suggestions: string[]) {
@@ -52,6 +54,7 @@ export function UpstreamAccountGroupCombobox({
   ariaLabel,
   className,
   triggerClassName,
+  size = 'default',
 }: UpstreamAccountGroupComboboxProps) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -95,8 +98,9 @@ export function UpstreamAccountGroupCombobox({
             aria-label={ariaLabel}
             disabled={disabled}
             className={cn(
-              'h-10 w-full justify-between rounded-lg bg-base-100 px-3 text-left font-normal hover:bg-base-100',
+              'w-full justify-between bg-base-100 text-left font-normal hover:bg-base-100',
               'border-base-300 text-base-content shadow-sm',
+              formControlSizeVariants({ size }),
               !trimmedValue && 'text-base-content/45',
               triggerClassName,
             )}
