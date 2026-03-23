@@ -8201,13 +8201,70 @@ struct MoeMailMessageDetail {
     received_at: Option<String>,
 }
 
-static OAUTH_SUBJECT_CODE_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)your\s+(?:chatgpt|openai)\s+code\s+is\s+(\d{4,8})")
-        .expect("valid oauth subject code regex")
-});
-static OAUTH_BODY_CODE_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)(?:verification\s+code|code\s+is)[^0-9]{0,24}(\d{4,8})")
-        .expect("valid oauth body code regex")
+const MAILBOX_CODE_CONTEXT_WINDOW_BYTES: usize = 64;
+const OAUTH_BRAND_MARKERS: &[&str] = &["openai", "chatgpt"];
+const OAUTH_STRONG_CODE_MARKERS: &[&str] = &[
+    "verification code",
+    "temporary verification code",
+    "one-time code",
+    "one time code",
+    "security code",
+    "验证码",
+    "驗證碼",
+    "校验码",
+    "校驗碼",
+    "验证代码",
+    "驗證代碼",
+    "認證碼",
+    "認証コード",
+    "인증 코드",
+    "인증번호",
+];
+const OAUTH_WEAK_CODE_MARKERS: &[&str] = &[
+    "your code",
+    "code is",
+    "code:",
+    "temporary code",
+    "代码为",
+    "代碼為",
+    "代码是",
+    "代碼是",
+    "臨時代碼",
+    "临时代码",
+];
+const OAUTH_INVITE_SUBJECT_MARKERS: &[&str] = &[
+    "has invited you",
+    "invited you to",
+    "invite you to",
+    "邀请你",
+    "邀請你",
+    "邀请您",
+    "邀請您",
+    "招待",
+    "초대",
+];
+const OAUTH_INVITE_BODY_MARKERS: &[&str] = &[
+    "join workspace",
+    "join the workspace",
+    "accept invitation",
+    "accept invite",
+    "workspace invite",
+    "accept the invitation",
+    "加入工作区",
+    "加入工作區",
+    "加入工作空间",
+    "加入工作空間",
+    "接受邀请",
+    "接受邀請",
+    "接受此邀请",
+    "接受此邀請",
+    "ワークスペース",
+    "招待",
+    "워크스페이스",
+    "초대 수락",
+];
+static OAUTH_CODE_CANDIDATE_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?:^|[^0-9])([0-9]{4,8})(?:[^0-9]|$)").expect("valid oauth code candidate regex")
 });
 static URL_REGEX: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"https?://[^\s"'<>)]+"#).expect("valid url regex"));
@@ -8400,31 +8457,238 @@ fn strip_html_tags(raw: &str) -> String {
     HTML_TAG_REGEX.replace_all(raw, " ").into_owned()
 }
 
+fn normalize_mailbox_text(raw: &str) -> String {
+    let mut normalized = String::with_capacity(raw.len());
+    let mut previous_was_space = true;
+
+    for ch in raw.chars() {
+        let mapped = match ch {
+            '\u{00a0}' | '\u{3000}' => ' ',
+            '０'..='９' => {
+                char::from_u32(u32::from(ch) - u32::from('０') + u32::from('0')).unwrap_or(ch)
+            }
+            'Ａ'..='Ｚ' => {
+                char::from_u32(u32::from(ch) - u32::from('Ａ') + u32::from('a')).unwrap_or(ch)
+            }
+            'ａ'..='ｚ' => {
+                char::from_u32(u32::from(ch) - u32::from('ａ') + u32::from('a')).unwrap_or(ch)
+            }
+            '：' => ':',
+            '－' => '-',
+            '／' => '/',
+            '．' => '.',
+            '，' => ',',
+            '（' => '(',
+            '）' => ')',
+            '【' => '[',
+            '】' => ']',
+            _ if ch.is_ascii_uppercase() => ch.to_ascii_lowercase(),
+            _ => ch,
+        };
+
+        if mapped.is_whitespace() {
+            if !previous_was_space && !normalized.is_empty() {
+                normalized.push(' ');
+            }
+            previous_was_space = true;
+        } else {
+            normalized.push(mapped);
+            previous_was_space = false;
+        }
+    }
+
+    normalized.trim().to_string()
+}
+
+fn mailbox_text_contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
+}
+
+fn mailbox_text_has_brand(text: &str) -> bool {
+    mailbox_text_contains_any(text, OAUTH_BRAND_MARKERS)
+}
+
+fn clamp_mailbox_context_start(raw: &str, index: usize) -> usize {
+    let mut candidate = index.min(raw.len());
+    while candidate > 0 && !raw.is_char_boundary(candidate) {
+        candidate -= 1;
+    }
+    candidate
+}
+
+fn clamp_mailbox_context_end(raw: &str, index: usize) -> usize {
+    let mut candidate = index.min(raw.len());
+    while candidate < raw.len() && !raw.is_char_boundary(candidate) {
+        candidate += 1;
+    }
+    candidate
+}
+
+fn mailbox_context_slice(raw: &str, start: usize, end: usize, radius: usize) -> &str {
+    let context_start = clamp_mailbox_context_start(raw, start.saturating_sub(radius));
+    let context_end = clamp_mailbox_context_end(raw, end.saturating_add(radius));
+    &raw[context_start..context_end]
+}
+
+fn mailbox_context_before(raw: &str, index: usize, radius: usize) -> &str {
+    let context_start = clamp_mailbox_context_start(raw, index.saturating_sub(radius));
+    let context_end = clamp_mailbox_context_end(raw, index);
+    &raw[context_start..context_end]
+}
+
+fn extract_mailbox_code_candidate(text: &str, message_has_brand: bool) -> Option<String> {
+    let mut best_match: Option<(u8, usize, String)> = None;
+
+    for captures in OAUTH_CODE_CANDIDATE_REGEX.captures_iter(text) {
+        let whole_match = captures.get(0)?;
+        let digit_match = captures.get(1)?;
+        let context = mailbox_context_slice(
+            text,
+            whole_match.start(),
+            whole_match.end(),
+            MAILBOX_CODE_CONTEXT_WINDOW_BYTES,
+        );
+        let prefix_context =
+            mailbox_context_before(text, digit_match.start(), MAILBOX_CODE_CONTEXT_WINDOW_BYTES);
+        let context_has_strong_code =
+            mailbox_text_contains_any(prefix_context, OAUTH_STRONG_CODE_MARKERS);
+        let context_has_weak_code =
+            mailbox_text_contains_any(prefix_context, OAUTH_WEAK_CODE_MARKERS);
+        let context_has_brand =
+            mailbox_text_has_brand(prefix_context) || mailbox_text_has_brand(context);
+        let score = if context_has_strong_code {
+            3
+        } else if context_has_weak_code && (message_has_brand || context_has_brand) {
+            2
+        } else {
+            0
+        };
+
+        if score == 0 {
+            continue;
+        }
+
+        let candidate = (score, digit_match.start(), digit_match.as_str().to_string());
+        if best_match
+            .as_ref()
+            .map(|existing| {
+                candidate.0 > existing.0 || (candidate.0 == existing.0 && candidate.1 < existing.1)
+            })
+            .unwrap_or(true)
+        {
+            best_match = Some(candidate);
+        }
+    }
+
+    best_match.map(|(_, _, value)| value)
+}
+
+fn mailbox_url_candidate_urls(url: &str) -> Vec<String> {
+    let mut candidates = vec![url.trim_end_matches('.').to_string()];
+    let Ok(parsed) = Url::parse(url) else {
+        return candidates;
+    };
+
+    for value in parsed
+        .query_pairs()
+        .map(|(_, value)| value.into_owned())
+        .chain(parsed.fragment().map(ToOwned::to_owned))
+    {
+        if let Some(nested) = URL_REGEX.find(&value) {
+            let nested = nested.as_str().trim_end_matches('.').to_string();
+            if !candidates.iter().any(|existing| existing == &nested) {
+                candidates.push(nested);
+            }
+        }
+    }
+
+    candidates
+}
+
+fn mailbox_url_looks_like_direct_invite(url: &str) -> bool {
+    let Ok(parsed) = Url::parse(url) else {
+        return false;
+    };
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+
+    let host = host.to_ascii_lowercase();
+    let path = parsed.path().to_ascii_lowercase();
+    let query = parsed.query().unwrap_or_default().to_ascii_lowercase();
+    let combined = if query.is_empty() {
+        format!("{host}{path}")
+    } else {
+        format!("{host}{path}?{query}")
+    };
+    let has_invite_action = combined.contains("invite")
+        || combined.contains("invitation")
+        || combined.contains("accept");
+    let has_workspace_context =
+        combined.contains("workspace") || host.contains("chatgpt") || host.contains("openai");
+    let is_help_like = host.starts_with("help.")
+        || host.starts_with("docs.")
+        || host.contains("support")
+        || path.contains("/articles/")
+        || path.contains("/hc/")
+        || path.contains("/help/")
+        || path.contains("/docs/");
+
+    has_invite_action && has_workspace_context && !is_help_like
+}
+
+fn mailbox_url_resolve_invite_target(url: &str) -> Option<String> {
+    let candidates = mailbox_url_candidate_urls(url);
+    candidates
+        .iter()
+        .skip(1)
+        .find(|candidate| mailbox_url_looks_like_direct_invite(candidate))
+        .cloned()
+        .or_else(|| {
+            candidates
+                .into_iter()
+                .next()
+                .filter(|candidate| mailbox_url_looks_like_direct_invite(candidate))
+        })
+}
+
+fn mailbox_url_has_brand(url: &str) -> bool {
+    mailbox_url_candidate_urls(url)
+        .into_iter()
+        .any(|candidate| {
+            let lower = candidate.to_ascii_lowercase();
+            lower.contains("openai") || lower.contains("chatgpt")
+        })
+}
+
 fn parse_mailbox_code(detail: &MoeMailMessageDetail) -> Option<ParsedMailboxCode> {
     let subject = detail.subject.as_deref().unwrap_or_default();
-    if let Some(captures) = OAUTH_SUBJECT_CODE_REGEX.captures(subject) {
-        let value = captures.get(1)?.as_str().to_string();
-        return Some(ParsedMailboxCode {
-            value,
-            source: "subject".to_string(),
-            updated_at: detail
-                .received_at
-                .clone()
-                .unwrap_or_else(|| format_utc_iso(Utc::now())),
-        });
+    let content = detail.content.as_deref().unwrap_or_default();
+    let html_text = strip_html_tags(detail.html.as_deref().unwrap_or_default());
+    let message_context = normalize_mailbox_text(&format!("{subject}\n{content}\n{html_text}"));
+    let message_has_brand = mailbox_text_has_brand(&message_context);
+
+    let subject_text = normalize_mailbox_text(subject);
+    let subject_has_brand = mailbox_text_has_brand(&subject_text);
+    if subject_has_brand {
+        if let Some(value) = extract_mailbox_code_candidate(&subject_text, subject_has_brand) {
+            return Some(ParsedMailboxCode {
+                value,
+                source: "subject".to_string(),
+                updated_at: detail
+                    .received_at
+                    .clone()
+                    .unwrap_or_else(|| format_utc_iso(Utc::now())),
+            });
+        }
     }
 
     for (source, raw) in [
-        ("content", detail.content.as_deref().unwrap_or_default()),
-        ("html", detail.html.as_deref().unwrap_or_default()),
+        ("content", content.to_string()),
+        ("html", html_text.clone()),
     ] {
-        let normalized = if source == "html" {
-            strip_html_tags(raw)
-        } else {
-            raw.to_string()
-        };
-        if let Some(captures) = OAUTH_BODY_CODE_REGEX.captures(&normalized) {
-            let value = captures.get(1)?.as_str().to_string();
+        let normalized = normalize_mailbox_text(&raw);
+        if let Some(value) = extract_mailbox_code_candidate(&normalized, message_has_brand) {
             return Some(ParsedMailboxCode {
                 value,
                 source: source.to_string(),
@@ -8441,27 +8705,39 @@ fn parse_mailbox_code(detail: &MoeMailMessageDetail) -> Option<ParsedMailboxCode
 
 fn parse_mailbox_invite(detail: &MoeMailMessageDetail) -> Option<ParsedMailboxInvite> {
     let subject = detail.subject.as_deref().unwrap_or_default().trim();
-    if subject.is_empty() || !subject.to_ascii_lowercase().contains("has invited you") {
+    if subject.is_empty() {
         return None;
     }
 
-    let text_candidates = [
-        detail.content.as_deref().unwrap_or_default().to_string(),
-        strip_html_tags(detail.html.as_deref().unwrap_or_default()),
-    ];
-    let body = text_candidates.join("\n");
-    let normalized = body.to_ascii_lowercase();
-    if !normalized.contains("join workspace") && !normalized.contains("accept invitation") {
-        return None;
-    }
+    let stripped_html = strip_html_tags(detail.html.as_deref().unwrap_or_default());
+    let subject_text = normalize_mailbox_text(subject);
+    let body_text = normalize_mailbox_text(&format!(
+        "{}\n{}",
+        detail.content.as_deref().unwrap_or_default(),
+        stripped_html
+    ));
+    let subject_has_invite_semantics =
+        mailbox_text_contains_any(&subject_text, OAUTH_INVITE_SUBJECT_MARKERS);
+    let body_has_invite_semantics =
+        mailbox_text_contains_any(&body_text, OAUTH_INVITE_BODY_MARKERS);
 
+    let body_with_urls = format!(
+        "{}\n{}",
+        detail.content.as_deref().unwrap_or_default(),
+        stripped_html
+    );
     let copy_value = URL_REGEX
-        .find_iter(&body)
-        .map(|value| value.as_str().trim_end_matches('.').to_string())
-        .find(|value| {
-            let lower = value.to_ascii_lowercase();
-            lower.contains("workspace") || lower.contains("invite") || lower.contains("accept")
-        })?;
+        .find_iter(&body_with_urls)
+        .find_map(|value| mailbox_url_resolve_invite_target(value.as_str()))?;
+    let body_can_drive_invite = body_has_invite_semantics;
+    if !subject_has_invite_semantics && !body_can_drive_invite {
+        return None;
+    }
+    if !mailbox_text_has_brand(&format!("{subject_text}\n{body_text}"))
+        && !mailbox_url_has_brand(&copy_value)
+    {
+        return None;
+    }
 
     Some(ParsedMailboxInvite {
         subject: subject.to_string(),
@@ -15462,6 +15738,93 @@ mod tests {
     }
 
     #[test]
+    fn parse_mailbox_code_supports_localized_subjects() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_zh_subject".to_string(),
+            subject: Some("你的 OpenAI 代码为 438211".to_string()),
+            content: Some("如果这不是你本人操作，请重置密码。".to_string()),
+            html: None,
+            received_at: Some("2026-03-23T23:48:33Z".to_string()),
+        };
+
+        let parsed = parse_mailbox_code(&detail).expect("localized subject code");
+        assert_eq!(parsed.value, "438211");
+        assert_eq!(parsed.source, "subject");
+    }
+
+    #[test]
+    fn parse_mailbox_code_supports_localized_html_and_fullwidth_digits() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_zh_html".to_string(),
+            subject: Some("安全提醒".to_string()),
+            content: None,
+            html: Some(
+                "<div>OpenAI</div><p>输入此临时验证码以继续：</p><strong>４３８２１１</strong>"
+                    .to_string(),
+            ),
+            received_at: Some("2026-03-24T00:00:00Z".to_string()),
+        };
+
+        let parsed = parse_mailbox_code(&detail).expect("localized html code");
+        assert_eq!(parsed.value, "438211");
+        assert_eq!(parsed.source, "html");
+    }
+
+    #[test]
+    fn parse_mailbox_code_prefers_digits_after_marker() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_order_and_code".to_string(),
+            subject: Some("OpenAI order update".to_string()),
+            content: Some("Order 1234. Your verification code is 567890.".to_string()),
+            html: None,
+            received_at: Some("2026-03-24T00:05:30Z".to_string()),
+        };
+
+        let parsed = parse_mailbox_code(&detail).expect("verification code");
+        assert_eq!(parsed.value, "567890");
+        assert_eq!(parsed.source, "content");
+    }
+
+    #[test]
+    fn parse_mailbox_code_rejects_weak_subject_match_without_local_brand() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_weak_subject_without_local_brand".to_string(),
+            subject: Some("Your code is 123456".to_string()),
+            content: Some("OpenAI account activity summary".to_string()),
+            html: None,
+            received_at: Some("2026-03-24T00:05:45Z".to_string()),
+        };
+
+        assert!(parse_mailbox_code(&detail).is_none());
+    }
+
+    #[test]
+    fn parse_mailbox_code_rejects_strong_subject_match_without_brand() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_strong_subject_without_brand".to_string(),
+            subject: Some("验证码 123456".to_string()),
+            content: Some("请在十分钟内完成验证。".to_string()),
+            html: None,
+            received_at: Some("2026-03-24T00:05:50Z".to_string()),
+        };
+
+        assert!(parse_mailbox_code(&detail).is_none());
+    }
+
+    #[test]
+    fn parse_mailbox_code_rejects_unrelated_numbers_without_code_semantics() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_negative_code".to_string(),
+            subject: Some("OpenAI receipt 438211".to_string()),
+            content: Some("Invoice total: 23.00 USD".to_string()),
+            html: None,
+            received_at: Some("2026-03-24T00:05:00Z".to_string()),
+        };
+
+        assert!(parse_mailbox_code(&detail).is_none());
+    }
+
+    #[test]
     fn parse_mailbox_invite_extracts_workspace_link() {
         let detail = MoeMailMessageDetail {
             id: "msg_3".to_string(),
@@ -15480,6 +15843,146 @@ mod tests {
             "https://chatgpt.com/workspace/invite/abc123"
         );
         assert_eq!(parsed.copy_label, "invite-link");
+    }
+
+    #[test]
+    fn parse_mailbox_invite_supports_localized_templates() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_zh_invite".to_string(),
+            subject: Some("Alice 邀请你加入 OpenAI 工作区".to_string()),
+            content: Some("请接受邀请：https://chatgpt.com/workspace/invite/abc123".to_string()),
+            html: None,
+            received_at: Some("2026-03-24T00:06:00Z".to_string()),
+        };
+
+        let parsed = parse_mailbox_invite(&detail).expect("localized invite");
+        assert_eq!(parsed.subject, "Alice 邀请你加入 OpenAI 工作区");
+        assert_eq!(
+            parsed.copy_value,
+            "https://chatgpt.com/workspace/invite/abc123"
+        );
+    }
+
+    #[test]
+    fn parse_mailbox_invite_accepts_body_only_workspace_invites() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_body_only_invite".to_string(),
+            subject: Some("OpenAI workspace update".to_string()),
+            content: Some(
+                "请接受邀请并加入工作区：https://chatgpt.com/workspace/invite/accept?workspace=ws_789"
+                    .to_string(),
+            ),
+            html: None,
+            received_at: Some("2026-03-24T00:06:30Z".to_string()),
+        };
+
+        let parsed = parse_mailbox_invite(&detail).expect("body invite");
+        assert_eq!(
+            parsed.copy_value,
+            "https://chatgpt.com/workspace/invite/accept?workspace=ws_789"
+        );
+    }
+
+    #[test]
+    fn parse_mailbox_invite_accepts_query_driven_cta_links() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_query_invite".to_string(),
+            subject: Some("Alice has invited you to a workspace".to_string()),
+            content: Some(
+                "Open your invite: https://chatgpt.com/workspace?invite=abc123".to_string(),
+            ),
+            html: None,
+            received_at: Some("2026-03-24T00:06:45Z".to_string()),
+        };
+
+        let parsed = parse_mailbox_invite(&detail).expect("query invite");
+        assert_eq!(
+            parsed.copy_value,
+            "https://chatgpt.com/workspace?invite=abc123"
+        );
+    }
+
+    #[test]
+    fn parse_mailbox_invite_accepts_body_only_invites_without_workspace_keyword() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_body_only_plain_invite".to_string(),
+            subject: Some("OpenAI account notice".to_string()),
+            content: Some("Accept invitation: https://chatgpt.com/invite/abc123".to_string()),
+            html: None,
+            received_at: Some("2026-03-24T00:06:50Z".to_string()),
+        };
+
+        let parsed = parse_mailbox_invite(&detail).expect("body invite without workspace");
+        assert_eq!(parsed.copy_value, "https://chatgpt.com/invite/abc123");
+    }
+
+    #[test]
+    fn parse_mailbox_invite_accepts_redirect_wrapped_brand_invites() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_redirect_wrapped_invite".to_string(),
+            subject: Some("Alex has invited you to a workspace".to_string()),
+            content: Some(
+                "Accept invitation: https://click.example.com/track?target=https%3A%2F%2Fchatgpt.com%2Fworkspace%2Finvite%2Fabc123".to_string(),
+            ),
+            html: None,
+            received_at: Some("2026-03-24T00:07:10Z".to_string()),
+        };
+
+        let parsed = parse_mailbox_invite(&detail).expect("redirect wrapped invite");
+        assert_eq!(
+            parsed.copy_value,
+            "https://chatgpt.com/workspace/invite/abc123"
+        );
+    }
+
+    #[test]
+    fn parse_mailbox_invite_rejects_non_invite_workspace_links() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_negative_invite".to_string(),
+            subject: Some("OpenAI workspace digest".to_string()),
+            content: Some("Workspace docs: https://chatgpt.com/workspace".to_string()),
+            html: None,
+            received_at: Some("2026-03-24T00:07:00Z".to_string()),
+        };
+
+        assert!(parse_mailbox_invite(&detail).is_none());
+    }
+
+    #[test]
+    fn parse_mailbox_invite_rejects_help_articles_about_accepting_invites() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_help_article".to_string(),
+            subject: Some("OpenAI workspace help".to_string()),
+            content: Some(
+                "Need help to accept invitation to your workspace? Read https://help.openai.com/en/articles/12345-accept-invitation-to-workspace"
+                    .to_string(),
+            ),
+            html: None,
+            received_at: Some("2026-03-24T00:07:30Z".to_string()),
+        };
+
+        assert!(parse_mailbox_invite(&detail).is_none());
+    }
+
+    #[test]
+    fn parse_mailbox_invite_rejects_generic_workspace_url_even_with_invite_subject() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_negative_workspace_home".to_string(),
+            subject: Some("Alice has invited you to a workspace".to_string()),
+            content: Some("Open workspace: https://chatgpt.com/workspace".to_string()),
+            html: None,
+            received_at: Some("2026-03-24T00:08:00Z".to_string()),
+        };
+
+        assert!(parse_mailbox_invite(&detail).is_none());
+    }
+
+    #[test]
+    fn normalize_mailbox_text_converts_fullwidth_digits_and_collapses_whitespace() {
+        assert_eq!(
+            normalize_mailbox_text("  OpenAI　验证码：４３８２１１ \n 下一步  "),
+            "openai 验证码:438211 下一步"
+        );
     }
 
     #[test]
