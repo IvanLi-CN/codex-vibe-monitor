@@ -217,7 +217,9 @@ const PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT: &str = "upstream_handshake_timeo
 const PROXY_FAILURE_UPSTREAM_STREAM_ERROR: &str = "upstream_stream_error";
 const PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED: &str = "upstream_response_failed";
 const PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT: &str = "pool_no_available_account";
+const PROXY_FAILURE_POOL_ALL_ACCOUNTS_RATE_LIMITED: &str = "pool_all_accounts_rate_limited";
 const PROXY_FAILURE_POOL_MAX_DISTINCT_ACCOUNTS_EXHAUSTED: &str = "max_distinct_accounts_exhausted";
+const POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE: &str = "no pool account is currently available because all candidate accounts are rate limited upstream (429 / quota exhausted)";
 const PROXY_STREAM_TERMINAL_COMPLETED: &str = "stream_completed";
 const PROXY_STREAM_TERMINAL_ERROR: &str = "stream_error";
 const PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED: &str = "downstream_closed";
@@ -8572,6 +8574,37 @@ fn pool_attempt_summary(
     }
 }
 
+fn pool_upstream_error_is_rate_limited(err: &PoolUpstreamError) -> bool {
+    err.status == StatusCode::TOO_MANY_REQUESTS
+        || matches!(
+            err.failure_kind,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429 | PROXY_FAILURE_POOL_ALL_ACCOUNTS_RATE_LIMITED
+        )
+}
+
+fn build_pool_rate_limited_error(
+    attempt_count: usize,
+    distinct_account_count: usize,
+    failure_kind: &'static str,
+) -> PoolUpstreamError {
+    PoolUpstreamError {
+        account: None,
+        status: StatusCode::TOO_MANY_REQUESTS,
+        message: POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
+        failure_kind,
+        connect_latency_ms: 0.0,
+        upstream_error_code: None,
+        upstream_error_message: None,
+        upstream_request_id: None,
+        oauth_responses_debug: None,
+        attempt_summary: pool_attempt_summary(
+            attempt_count,
+            distinct_account_count,
+            Some(failure_kind.to_string()),
+        ),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct PendingPoolAttemptRecord {
     pub(crate) invoke_id: String,
@@ -8962,15 +8995,48 @@ async fn send_pool_request_with_failover(
     preferred_account: Option<PoolResolvedAccount>,
     same_account_attempts: u8,
 ) -> Result<PoolUpstreamResponse, PoolUpstreamError> {
+    send_pool_request_with_failover_seeded(
+        state,
+        method,
+        original_uri,
+        headers,
+        body,
+        handshake_timeout,
+        trace_context,
+        sticky_key,
+        preferred_account,
+        same_account_attempts,
+        Vec::new(),
+        0,
+        None,
+    )
+    .await
+}
+
+async fn send_pool_request_with_failover_seeded(
+    state: Arc<AppState>,
+    method: Method,
+    original_uri: &Uri,
+    headers: &HeaderMap,
+    body: Option<PoolReplayBodySnapshot>,
+    handshake_timeout: Duration,
+    trace_context: Option<PoolUpstreamAttemptTraceContext>,
+    sticky_key: Option<&str>,
+    preferred_account: Option<PoolResolvedAccount>,
+    same_account_attempts: u8,
+    initial_excluded_ids: Vec<i64>,
+    initial_attempt_count: usize,
+    initial_last_error: Option<PoolUpstreamError>,
+) -> Result<PoolUpstreamResponse, PoolUpstreamError> {
     let request_connection_scoped = connection_scoped_header_names(headers);
     let first_chunk_timeout =
         pool_upstream_first_chunk_timeout(&state.config, original_uri, &method, handshake_timeout);
-    let mut excluded_ids = Vec::new();
-    let mut last_error: Option<PoolUpstreamError> = None;
+    let mut excluded_ids = initial_excluded_ids;
+    let mut last_error = initial_last_error;
     let mut preferred_account = preferred_account;
     let mut same_account_attempts = same_account_attempts.max(1);
-    let mut attempt_count = 0usize;
-    let mut distinct_account_count = 0usize;
+    let mut attempt_count = initial_attempt_count;
+    let mut distinct_account_count = excluded_ids.len();
 
     'account_loop: loop {
         if preferred_account.is_none() && excluded_ids.len() >= POOL_UPSTREAM_MAX_DISTINCT_ACCOUNTS
@@ -8987,6 +9053,10 @@ async fn send_pool_request_with_failover(
                 oauth_responses_debug: None,
                 attempt_summary: PoolAttemptSummary::default(),
             });
+            if pool_upstream_error_is_rate_limited(&final_error) {
+                final_error.status = StatusCode::TOO_MANY_REQUESTS;
+                final_error.message = POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string();
+            }
             final_error.attempt_summary = pool_attempt_summary(
                 attempt_count,
                 distinct_account_count,
@@ -9033,7 +9103,17 @@ async fn send_pool_request_with_failover(
             match resolve_pool_account_for_request(state.as_ref(), sticky_key, &excluded_ids).await
             {
                 Ok(PoolAccountResolution::Resolved(account)) => account,
+                Ok(PoolAccountResolution::RateLimited) => {
+                    return Err(build_pool_rate_limited_error(
+                        attempt_count,
+                        distinct_account_count,
+                        PROXY_FAILURE_POOL_ALL_ACCOUNTS_RATE_LIMITED,
+                    ));
+                }
                 Ok(PoolAccountResolution::NoCandidate) => {
+                    let rate_limited = last_error
+                        .as_ref()
+                        .is_some_and(pool_upstream_error_is_rate_limited);
                     let mut err = last_error.unwrap_or(PoolUpstreamError {
                         account: None,
                         status: StatusCode::BAD_GATEWAY,
@@ -9046,6 +9126,11 @@ async fn send_pool_request_with_failover(
                         oauth_responses_debug: None,
                         attempt_summary: PoolAttemptSummary::default(),
                     });
+                    if rate_limited {
+                        err.status = StatusCode::TOO_MANY_REQUESTS;
+                        err.message = POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string();
+                        err.failure_kind = PROXY_FAILURE_POOL_ALL_ACCOUNTS_RATE_LIMITED;
+                    }
                     err.attempt_summary = pool_attempt_summary(
                         attempt_count,
                         distinct_account_count,
@@ -9126,8 +9211,8 @@ async fn send_pool_request_with_failover(
         for same_account_attempt in 0..same_account_attempts {
             let same_account_retry_index = i64::from(same_account_attempt) + 1;
             let connect_started = Instant::now();
-            let mut attempt_started_at: Option<String> = None;
-            let mut attempt_index = 0_i64;
+            let attempt_started_at: Option<String>;
+            let attempt_index: i64;
             let (response, oauth_responses_debug) = match &account.auth {
                 PoolResolvedAuth::ApiKey { authorization } => {
                     attempt_count += 1;
@@ -9429,7 +9514,8 @@ async fn send_pool_request_with_failover(
             {
                 let has_retry_budget = same_account_attempt + 1 < same_account_attempts;
                 let should_retry_same_account = has_retry_budget
-                    && (status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error());
+                    && status != StatusCode::TOO_MANY_REQUESTS
+                    && status.is_server_error();
                 let retry_delay = should_retry_same_account.then(|| {
                     response
                         .headers()
@@ -9708,19 +9794,38 @@ async fn continue_or_retry_pool_live_request(
             let replay_sticky_key = extract_sticky_key_from_replay_snapshot(&snapshot)
                 .await
                 .or(sticky_key);
-            send_pool_request_with_failover(
-                state,
-                method,
-                original_uri,
-                headers,
-                Some(snapshot),
-                handshake_timeout,
-                None,
-                replay_sticky_key.as_deref(),
-                Some(initial_account),
-                POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS.saturating_sub(1),
-            )
-            .await
+            if pool_upstream_error_is_rate_limited(&first_error) {
+                send_pool_request_with_failover_seeded(
+                    state,
+                    method,
+                    original_uri,
+                    headers,
+                    Some(snapshot),
+                    handshake_timeout,
+                    None,
+                    replay_sticky_key.as_deref(),
+                    None,
+                    POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
+                    vec![initial_account.account_id],
+                    1,
+                    Some(first_error),
+                )
+                .await
+            } else {
+                send_pool_request_with_failover(
+                    state,
+                    method,
+                    original_uri,
+                    headers,
+                    Some(snapshot),
+                    handshake_timeout,
+                    None,
+                    replay_sticky_key.as_deref(),
+                    Some(initial_account),
+                    POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS.saturating_sub(1),
+                )
+                .await
+            }
         }
         PoolReplayBodyStatus::ReadError(err) => Err(PoolUpstreamError {
             account: Some(initial_account),
@@ -9854,6 +9959,12 @@ async fn proxy_openai_v1_via_pool(
                     .await
                 {
                     Ok(PoolAccountResolution::Resolved(account)) => account,
+                    Ok(PoolAccountResolution::RateLimited) => {
+                        return Err((
+                            StatusCode::TOO_MANY_REQUESTS,
+                            POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
+                        ));
+                    }
                     Ok(PoolAccountResolution::NoCandidate) => {
                         return Err((
                             StatusCode::BAD_GATEWAY,

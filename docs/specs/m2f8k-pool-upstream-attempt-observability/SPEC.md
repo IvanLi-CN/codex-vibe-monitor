@@ -70,7 +70,8 @@
 
 - 一次 `routeMode=pool` 请求开始后，主 invocation 仍只落一条 `codex_invocations` 记录；所有内部 failover 细节进入 `pool_upstream_request_attempts`。
 - 每次真正发往上游账号的请求，无论最终成功、HTTP 失败、传输失败还是首 chunk 前失败，都要立刻落一条 attempt 记录。
-- 当同一个账号返回 `429/5xx` 且仍有同账号 retry 预算时，先记录这次失败 attempt，再按现有策略 sleep 后重试同一账号。
+- 当同一个账号返回 `5xx` 且仍有同账号 retry 预算时，先记录这次失败 attempt，再按现有策略 sleep 后重试同一账号。
+- 当同一个账号返回 `429` 时，必须先记录这次失败 attempt，并立即切到下一个不同账号；若没有可切账号，则对调用方返回 `429` 终态。
 - 当一个账号的 retry 预算耗尽且需要换号时，递增 `distinct_account_index` 并继续 `continue 'account_loop`；一旦即将超过 3 个不同账号，终止 failover 并写 `budget_exhausted_final`。
 - 最终成功 attempt 在流结束后补全 `stream_latency_ms`；失败 attempt 只要求落当前已知的连接/HTTP 失败信息。
 - retention 任务先 archive 再 purge live rows，并给 `archive_batches` 写入 `coverage_start_at`、`coverage_end_at`、`archive_expires_at`；archive TTL 清理只按 manifest 覆盖窗口判断，不按文件 mtime 猜测。
@@ -97,7 +98,8 @@
 
 - Given 一个 pool 调用在第 1 或第 2 个账号成功，When 请求完成，Then `codex_invocations` 仍只有一条主记录，且 attempts API 返回完整 attempt 顺序与最终成功 attempt。
 - Given 一个 pool 调用连续失败，When 第 3 个不同账号仍失败，Then 服务立即返回失败，不再尝试第 4 个账号，且 attempts 列表最后包含 `budget_exhausted_final` / `max_distinct_accounts_exhausted`。
-- Given 同账号内出现 retryable `429/5xx`，When 读取 attempts，Then `same_account_retry_index` 递增而 `distinct_account_index` 不变。
+- Given 同账号内出现 retryable `5xx`，When 读取 attempts，Then `same_account_retry_index` 递增而 `distinct_account_index` 不变。
+- Given 任一账号收到 `429`，When 读取 attempts，Then 该 attempt 的 `same_account_retry_index` 固定为 `1`，且后续 failover 必须切到下一个 distinct account 或直接返回 `429`。
 - Given 一个非 pool invocation，When 展开 InvocationTable 详情，Then UI 显示明确的“非号池调用无 attempt 明细”空态，且不会发起 attempts 请求。
 - Given 一个 pool invocation 的 live attempts 已被 retention 清理，When 调用 attempts API，Then 服务可以从对应 archive 月份回读 attempts。
 - Given attempt archive 超过 `30` 个上海自然日，When 运行 retention live 模式，Then 过期 archive 文件与对应 `archive_batches` manifest 行会一起被删除。

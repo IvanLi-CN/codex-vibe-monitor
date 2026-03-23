@@ -1640,6 +1640,7 @@ struct UpstreamAccountRow {
     last_error_at: Option<String>,
     last_selected_at: Option<String>,
     last_route_failure_at: Option<String>,
+    last_route_failure_kind: Option<String>,
     cooldown_until: Option<String>,
     consecutive_route_failures: i64,
     local_primary_limit: Option<f64>,
@@ -1853,6 +1854,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             last_activity_at TEXT,
             last_selected_at TEXT,
             last_route_failure_at TEXT,
+            last_route_failure_kind TEXT,
             cooldown_until TEXT,
             consecutive_route_failures INTEGER NOT NULL DEFAULT 0,
             local_primary_limit REAL,
@@ -1877,6 +1879,9 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "last_route_failure_at")
         .await
         .context("failed to ensure pool_upstream_accounts.last_route_failure_at")?;
+    ensure_nullable_text_column(pool, "pool_upstream_accounts", "last_route_failure_kind")
+        .await
+        .context("failed to ensure pool_upstream_accounts.last_route_failure_kind")?;
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "cooldown_until")
         .await
         .context("failed to ensure pool_upstream_accounts.cooldown_until")?;
@@ -5212,9 +5217,9 @@ async fn find_existing_import_match(
             chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
             encrypted_credentials, token_expires_at, last_refreshed_at,
             last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
-            last_selected_at, last_route_failure_at, cooldown_until, consecutive_route_failures,
-            local_primary_limit, local_secondary_limit, local_limit_unit, upstream_base_url,
-            created_at, updated_at
+            last_selected_at, last_route_failure_at, last_route_failure_kind, cooldown_until,
+            consecutive_route_failures, local_primary_limit, local_secondary_limit,
+            local_limit_unit, upstream_base_url, created_at, updated_at
         FROM pool_upstream_accounts
         WHERE kind = ?1
           AND chatgpt_account_id = ?2
@@ -5242,9 +5247,9 @@ async fn find_existing_import_match(
             chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
             encrypted_credentials, token_expires_at, last_refreshed_at,
             last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
-            last_selected_at, last_route_failure_at, cooldown_until, consecutive_route_failures,
-            local_primary_limit, local_secondary_limit, local_limit_unit, upstream_base_url,
-            created_at, updated_at
+            last_selected_at, last_route_failure_at, last_route_failure_kind, cooldown_until,
+            consecutive_route_failures, local_primary_limit, local_secondary_limit,
+            local_limit_unit, upstream_base_url, created_at, updated_at
         FROM pool_upstream_accounts
         WHERE kind = ?1
           AND lower(trim(COALESCE(email, ''))) = lower(trim(?2))
@@ -5430,6 +5435,10 @@ async fn sync_api_key_account(pool: &Pool<Sqlite>, row: &UpstreamAccountRow) -> 
             last_successful_sync_at = ?3,
             last_error = NULL,
             last_error_at = NULL,
+            last_route_failure_at = NULL,
+            last_route_failure_kind = NULL,
+            cooldown_until = NULL,
+            consecutive_route_failures = 0,
             updated_at = ?3
         WHERE id = ?1
         "#,
@@ -5955,6 +5964,10 @@ async fn upsert_oauth_account(
                 last_refreshed_at = ?15,
                 last_error = NULL,
                 last_error_at = NULL,
+                last_route_failure_at = NULL,
+                last_route_failure_kind = NULL,
+                cooldown_until = NULL,
+                consecutive_route_failures = 0,
                 updated_at = ?15
             WHERE id = ?1
             "#,
@@ -6636,9 +6649,9 @@ async fn load_upstream_account_summaries_filtered(
             chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
             encrypted_credentials, token_expires_at, last_refreshed_at,
             last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
-            last_selected_at, last_route_failure_at, cooldown_until, consecutive_route_failures,
-            local_primary_limit, local_secondary_limit, local_limit_unit, upstream_base_url,
-            created_at, updated_at
+            last_selected_at, last_route_failure_at, last_route_failure_kind, cooldown_until,
+            consecutive_route_failures, local_primary_limit, local_secondary_limit,
+            local_limit_unit, upstream_base_url, created_at, updated_at
         FROM pool_upstream_accounts
         "#,
     );
@@ -6919,9 +6932,9 @@ async fn load_upstream_account_row_conn(
             chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
             encrypted_credentials, token_expires_at, last_refreshed_at,
             last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
-            last_selected_at, last_route_failure_at, cooldown_until, consecutive_route_failures,
-            local_primary_limit, local_secondary_limit, local_limit_unit, upstream_base_url,
-            created_at, updated_at
+            last_selected_at, last_route_failure_at, last_route_failure_kind, cooldown_until,
+            consecutive_route_failures, local_primary_limit, local_secondary_limit,
+            local_limit_unit, upstream_base_url, created_at, updated_at
         FROM pool_upstream_accounts
         WHERE id = ?1
         LIMIT 1
@@ -8662,6 +8675,22 @@ async fn set_account_status(
         SET status = ?2,
             last_error = ?3,
             last_error_at = CASE WHEN ?3 IS NULL THEN last_error_at ELSE ?4 END,
+            last_route_failure_at = CASE
+                WHEN ?2 = ?5 AND ?3 IS NULL THEN NULL
+                ELSE last_route_failure_at
+            END,
+            last_route_failure_kind = CASE
+                WHEN ?2 = ?5 AND ?3 IS NULL THEN NULL
+                ELSE last_route_failure_kind
+            END,
+            cooldown_until = CASE
+                WHEN ?2 = ?5 AND ?3 IS NULL THEN NULL
+                ELSE cooldown_until
+            END,
+            consecutive_route_failures = CASE
+                WHEN ?2 = ?5 AND ?3 IS NULL THEN 0
+                ELSE consecutive_route_failures
+            END,
             updated_at = ?4
         WHERE id = ?1
         "#,
@@ -8670,6 +8699,7 @@ async fn set_account_status(
     .bind(status)
     .bind(last_error)
     .bind(&now_iso)
+    .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
     .execute(pool)
     .await?;
     Ok(())
@@ -8694,6 +8724,10 @@ async fn mark_account_sync_success(pool: &Pool<Sqlite>, account_id: i64) -> Resu
             last_successful_sync_at = ?3,
             last_error = NULL,
             last_error_at = NULL,
+            last_route_failure_at = NULL,
+            last_route_failure_kind = NULL,
+            cooldown_until = NULL,
+            consecutive_route_failures = 0,
             updated_at = ?3
         WHERE id = ?1
         "#,
@@ -9806,6 +9840,7 @@ pub(crate) struct PoolResolvedAccount {
 #[derive(Debug, Clone)]
 pub(crate) enum PoolAccountResolution {
     Resolved(PoolResolvedAccount),
+    RateLimited,
     NoCandidate,
     BlockedByPolicy(String),
 }
@@ -9855,6 +9890,7 @@ pub(crate) async fn resolve_pool_account_for_request(
     excluded_ids: &[i64],
 ) -> Result<PoolAccountResolution> {
     let mut tried = excluded_ids.iter().copied().collect::<HashSet<_>>();
+    let mut saw_rate_limited_candidate = false;
 
     let sticky_route = if let Some(sticky_key) = sticky_key {
         load_sticky_route(&state.pool, sticky_key).await?
@@ -9871,11 +9907,14 @@ pub(crate) async fn resolve_pool_account_for_request(
     if let Some(route) = sticky_route.as_ref() {
         if !tried.contains(&route.account_id)
             && let Some(row) = load_upstream_account_row(&state.pool, route.account_id).await?
-            && is_account_selectable_for_routing(&row)
         {
-            tried.insert(route.account_id);
-            if let Some(account) = prepare_pool_account(state, &row).await? {
-                return Ok(PoolAccountResolution::Resolved(account));
+            if is_account_selectable_for_routing(&row) {
+                tried.insert(route.account_id);
+                if let Some(account) = prepare_pool_account(state, &row).await? {
+                    return Ok(PoolAccountResolution::Resolved(account));
+                }
+            } else if is_account_rate_limited_for_routing(&row) {
+                saw_rate_limited_candidate = true;
             }
         }
         if sticky_source_rule
@@ -9896,6 +9935,9 @@ pub(crate) async fn resolve_pool_account_for_request(
             continue;
         };
         if !is_account_selectable_for_routing(&row) {
+            if is_account_rate_limited_for_routing(&row) {
+                saw_rate_limited_candidate = true;
+            }
             continue;
         }
         let effective_rule = load_effective_routing_rule_for_account(&state.pool, row.id).await?;
@@ -9915,6 +9957,10 @@ pub(crate) async fn resolve_pool_account_for_request(
         }
     }
 
+    if saw_rate_limited_candidate {
+        return Ok(PoolAccountResolution::RateLimited);
+    }
+
     Ok(PoolAccountResolution::NoCandidate)
 }
 
@@ -9932,6 +9978,7 @@ pub(crate) async fn record_pool_route_success(
             last_error = NULL,
             last_error_at = NULL,
             last_route_failure_at = NULL,
+            last_route_failure_kind = NULL,
             cooldown_until = NULL,
             consecutive_route_failures = 0,
             updated_at = ?3
@@ -9978,6 +10025,7 @@ pub(crate) async fn record_pool_route_http_failure(
                 last_error = ?3,
                 last_error_at = ?4,
                 last_route_failure_at = ?4,
+                last_route_failure_kind = ?5,
                 cooldown_until = NULL,
                 consecutive_route_failures = consecutive_route_failures + 1,
                 updated_at = ?4
@@ -9988,6 +10036,7 @@ pub(crate) async fn record_pool_route_http_failure(
         .bind(next_status)
         .bind(error_message)
         .bind(now_iso)
+        .bind(PROXY_FAILURE_UPSTREAM_HTTP_AUTH)
         .execute(pool)
         .await?;
         return Ok(());
@@ -9998,7 +10047,15 @@ pub(crate) async fn record_pool_route_http_failure(
     } else {
         5
     };
-    apply_pool_route_cooldown_failure(pool, account_id, sticky_key, error_message, base_secs).await
+    apply_pool_route_cooldown_failure(
+        pool,
+        account_id,
+        sticky_key,
+        error_message,
+        pool_route_http_failure_kind(status),
+        base_secs,
+    )
+    .await
 }
 
 pub(crate) async fn record_pool_route_transport_failure(
@@ -10007,7 +10064,15 @@ pub(crate) async fn record_pool_route_transport_failure(
     sticky_key: Option<&str>,
     error_message: &str,
 ) -> Result<()> {
-    apply_pool_route_cooldown_failure(pool, account_id, sticky_key, error_message, 5).await
+    apply_pool_route_cooldown_failure(
+        pool,
+        account_id,
+        sticky_key,
+        error_message,
+        PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+        5,
+    )
+    .await
 }
 
 pub(crate) async fn build_account_sticky_keys_response(
@@ -10305,11 +10370,7 @@ async fn prepare_pool_account(
 }
 
 fn is_account_selectable_for_routing(row: &UpstreamAccountRow) -> bool {
-    if row.provider != UPSTREAM_ACCOUNT_PROVIDER_CODEX
-        || row.enabled == 0
-        || row.status != UPSTREAM_ACCOUNT_STATUS_ACTIVE
-        || row.encrypted_credentials.is_none()
-    {
+    if !is_routing_eligible_account(row) {
         return false;
     }
     let Some(cooldown_until) = row.cooldown_until.as_deref() else {
@@ -10318,6 +10379,27 @@ fn is_account_selectable_for_routing(row: &UpstreamAccountRow) -> bool {
     parse_rfc3339_utc(cooldown_until)
         .map(|until| until <= Utc::now())
         .unwrap_or(true)
+}
+
+fn is_routing_eligible_account(row: &UpstreamAccountRow) -> bool {
+    row.provider == UPSTREAM_ACCOUNT_PROVIDER_CODEX
+        && row.enabled != 0
+        && row.status == UPSTREAM_ACCOUNT_STATUS_ACTIVE
+        && row.encrypted_credentials.is_some()
+}
+
+fn is_account_rate_limited_for_routing(row: &UpstreamAccountRow) -> bool {
+    if !is_routing_eligible_account(row) {
+        return false;
+    }
+    let Some(cooldown_until) = row.cooldown_until.as_deref() else {
+        return false;
+    };
+    let in_cooldown = parse_rfc3339_utc(cooldown_until)
+        .map(|until| until > Utc::now())
+        .unwrap_or(false);
+    in_cooldown
+        && row.last_route_failure_kind.as_deref() == Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
 }
 
 async fn load_account_routing_candidates(
@@ -10440,6 +10522,7 @@ async fn apply_pool_route_cooldown_failure(
     account_id: i64,
     sticky_key: Option<&str>,
     error_message: &str,
+    failure_kind: &str,
     base_secs: i64,
 ) -> Result<()> {
     if let Some(sticky_key) = sticky_key {
@@ -10461,8 +10544,9 @@ async fn apply_pool_route_cooldown_failure(
             last_error = ?3,
             last_error_at = ?4,
             last_route_failure_at = ?4,
-            cooldown_until = ?5,
-            consecutive_route_failures = ?6,
+            last_route_failure_kind = ?5,
+            cooldown_until = ?6,
+            consecutive_route_failures = ?7,
             updated_at = ?4
         WHERE id = ?1
         "#,
@@ -10471,6 +10555,7 @@ async fn apply_pool_route_cooldown_failure(
     .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
     .bind(error_message)
     .bind(&now_iso)
+    .bind(failure_kind)
     .bind(cooldown_until)
     .bind(next_failures)
     .execute(pool)
@@ -11019,6 +11104,7 @@ mod tests {
                 last_error_at: None,
                 last_selected_at: None,
                 last_route_failure_at: None,
+                last_route_failure_kind: None,
                 cooldown_until: None,
                 consecutive_route_failures: 0,
                 local_primary_limit: None,
