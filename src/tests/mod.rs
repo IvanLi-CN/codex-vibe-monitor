@@ -4087,6 +4087,9 @@ fn runtime_api_invocation_from_running_proxy_capture_record_uses_transient_shape
         Some(17),
         Some("pool-account-17"),
         Some("jp-relay-01"),
+        None,
+        None,
+        None,
         Some("gzip"),
         22.0,
         4.0,
@@ -4146,6 +4149,9 @@ async fn broadcast_proxy_capture_runtime_snapshot_emits_records_payload() {
         None,
         None,
         Some("edge-runtime"),
+        None,
+        None,
+        None,
         None,
         12.0,
         3.0,
@@ -9163,7 +9169,7 @@ async fn proxy_capture_persist_and_broadcast_emits_records_summary_and_quota() {
                 saw_quota = true;
                 assert_eq!(snapshot.total_requests, 9);
             }
-            BroadcastPayload::Version { .. } => {}
+            BroadcastPayload::Version { .. } | BroadcastPayload::PoolAttempts { .. } => {}
         }
 
         if saw_record && saw_quota && summary_windows.len() == expected_summary_windows {
@@ -14275,6 +14281,7 @@ async fn pool_route_oauth_passthrough_replays_large_file_backed_body() {
         Duration::from_secs(5),
         None,
         None,
+        None,
         Some(account),
         PoolFailoverProgress::default(),
         1,
@@ -15360,6 +15367,7 @@ async fn pool_route_large_oauth_responses_falls_back_to_api_key_account() {
         None,
         None,
         None,
+        None,
         PoolFailoverProgress::default(),
         1,
     )
@@ -15438,6 +15446,7 @@ async fn pool_route_oauth_responses_rejects_large_file_backed_rewrite_body() {
             size: body.len(),
         }),
         Duration::from_secs(5),
+        None,
         None,
         None,
         Some(account),
@@ -27814,7 +27823,9 @@ async fn finish_summary_quota_broadcast_idle_flushes_pending_tail_when_shutdown_
                 saw_quota = true;
                 assert_eq!(snapshot.total_requests, 9);
             }
-            BroadcastPayload::Records { .. } | BroadcastPayload::Version { .. } => {}
+            BroadcastPayload::Records { .. }
+            | BroadcastPayload::Version { .. }
+            | BroadcastPayload::PoolAttempts { .. } => {}
         }
 
         if saw_quota && summary_windows.len() == expected_summary_windows {
@@ -27876,7 +27887,7 @@ async fn persist_and_broadcast_proxy_capture_flushes_follow_up_when_shutdown_beg
                 saw_quota = true;
                 assert_eq!(snapshot.total_requests, 9);
             }
-            BroadcastPayload::Version { .. } => {}
+            BroadcastPayload::Version { .. } | BroadcastPayload::PoolAttempts { .. } => {}
         }
 
         if saw_record && saw_quota && summary_windows.len() == expected_summary_windows {
@@ -27937,4 +27948,161 @@ async fn persist_and_broadcast_proxy_capture_skips_summary_worker_during_shutdow
             .load(Ordering::Acquire),
         "summary/quota broadcast worker should not stay active during shutdown"
     );
+}
+
+#[tokio::test]
+async fn finalize_pool_upstream_request_attempt_updates_pending_row_in_place() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let trace = PoolUpstreamAttemptTraceContext {
+        invoke_id: "pending-attempt-update".to_string(),
+        occurred_at: "2026-03-23 20:49:00".to_string(),
+        endpoint: "/v1/responses".to_string(),
+        sticky_key: Some("sticky-pending".to_string()),
+        requester_ip: Some("192.168.31.6".to_string()),
+    };
+
+    let pending = begin_pool_upstream_request_attempt(
+        &state.pool,
+        &trace,
+        account_id,
+        "route-primary",
+        1,
+        1,
+        1,
+        "2026-03-23 20:49:00",
+    )
+    .await;
+    let attempt_id = pending
+        .attempt_id
+        .expect("pending attempt should be inserted immediately");
+
+    let pending_row = sqlx::query_as::<_, (i64, String, Option<String>)>(
+        r#"
+        SELECT id, status, finished_at
+        FROM pool_upstream_request_attempts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(attempt_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load pending attempt row");
+    assert_eq!(pending_row.0, attempt_id);
+    assert_eq!(pending_row.1, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING);
+    assert_eq!(pending_row.2, None);
+
+    finalize_pool_upstream_request_attempt(
+        &state.pool,
+        &pending,
+        "2026-03-23 20:49:05",
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+        Some(StatusCode::OK),
+        None,
+        None,
+        Some(42.5),
+        Some(15.0),
+        Some(188.4),
+        Some("req_pool_123"),
+    )
+    .await
+    .expect("finalize pending attempt");
+
+    let rows = sqlx::query_as::<
+        _,
+        (
+            i64,
+            String,
+            Option<i64>,
+            Option<String>,
+            Option<f64>,
+            Option<f64>,
+            Option<f64>,
+            Option<String>,
+        ),
+    >(
+        r#"
+        SELECT
+            id,
+            status,
+            http_status,
+            finished_at,
+            connect_latency_ms,
+            first_byte_latency_ms,
+            stream_latency_ms,
+            upstream_request_id
+        FROM pool_upstream_request_attempts
+        WHERE invoke_id = ?1
+        ORDER BY id ASC
+        "#,
+    )
+    .bind("pending-attempt-update")
+    .fetch_all(&state.pool)
+    .await
+    .expect("load finalized attempt rows");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].0, attempt_id);
+    assert_eq!(rows[0].1, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS);
+    assert_eq!(rows[0].2, Some(200));
+    assert_eq!(rows[0].3.as_deref(), Some("2026-03-23 20:49:05"));
+    assert_eq!(rows[0].4, Some(42.5));
+    assert_eq!(rows[0].5, Some(15.0));
+    assert_eq!(rows[0].6, Some(188.4));
+    assert_eq!(rows[0].7.as_deref(), Some("req_pool_123"));
+}
+
+#[tokio::test]
+async fn broadcast_pool_upstream_attempts_snapshot_emits_pending_attempts() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let trace = PoolUpstreamAttemptTraceContext {
+        invoke_id: "pending-attempt-broadcast".to_string(),
+        occurred_at: "2026-03-23 20:49:02".to_string(),
+        endpoint: "/v1/responses".to_string(),
+        sticky_key: Some("sticky-broadcast".to_string()),
+        requester_ip: Some("192.168.31.6".to_string()),
+    };
+    let _pending = begin_pool_upstream_request_attempt(
+        &state.pool,
+        &trace,
+        account_id,
+        "route-primary",
+        1,
+        1,
+        1,
+        "2026-03-23 20:49:02",
+    )
+    .await;
+
+    let mut rx = state.broadcaster.subscribe();
+    broadcast_pool_upstream_attempts_snapshot(state.as_ref(), "pending-attempt-broadcast")
+        .await
+        .expect("broadcast pool attempt snapshot");
+
+    let payload = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("timed out waiting for pool-attempt snapshot")
+        .expect("broadcast channel should stay open");
+    match payload {
+        BroadcastPayload::PoolAttempts {
+            invoke_id,
+            attempts,
+        } => {
+            assert_eq!(invoke_id, "pending-attempt-broadcast");
+            assert_eq!(attempts.len(), 1);
+            assert_eq!(
+                attempts[0].status,
+                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING
+            );
+            assert_eq!(attempts[0].finished_at, None);
+            assert_eq!(attempts[0].upstream_account_id, Some(account_id));
+        }
+        other => panic!("expected pool-attempts payload, got {other:?}"),
+    }
 }

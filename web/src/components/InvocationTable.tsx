@@ -27,6 +27,7 @@ import { Badge } from './ui/badge'
 import { Spinner } from './ui/spinner'
 import { cn } from '../lib/utils'
 import { getReasoningEffortTone, REASONING_EFFORT_TONE_CLASSNAMES } from './invocation-table-reasoning'
+import { subscribeToSse } from '../lib/sse'
 
 interface InvocationTableProps {
   records: ApiInvocation[]
@@ -223,6 +224,8 @@ function poolAttemptStatusMeta(
   status: string | null | undefined,
 ): { variant: 'success' | 'warning' | 'error' | 'secondary'; key: TranslationKey } {
   switch (status?.trim().toLowerCase()) {
+    case 'pending':
+      return { variant: 'warning', key: 'table.poolAttempts.status.pending' }
     case 'success':
       return { variant: 'success', key: 'table.poolAttempts.status.success' }
     case 'http_failure':
@@ -667,9 +670,33 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
   }, [hasInFlightRows])
 
   useEffect(() => {
-    if (!expandedRecord || !isPoolRouteMode(expandedRecord.routeMode)) return
-    const invokeId = expandedRecord.invokeId
-    if (poolAttemptsByInvokeId[invokeId] || poolAttemptLoadingByInvokeId[invokeId]) return
+    const unsubscribe = subscribeToSse((payload) => {
+      if (payload.type !== 'pool_attempts') return
+      setPoolAttemptsByInvokeId((current) => ({ ...current, [payload.invokeId]: payload.attempts }))
+      setPoolAttemptLoadingByInvokeId((current) => ({ ...current, [payload.invokeId]: false }))
+      setPoolAttemptErrorByInvokeId((current) => ({ ...current, [payload.invokeId]: null }))
+    })
+
+    return unsubscribe
+  }, [])
+
+  const expandedInvokeId = expandedRecord?.invokeId ?? null
+  const expandedRouteMode = expandedRecord?.routeMode ?? null
+  const expandedPoolAttemptCount = expandedRecord?.poolAttemptCount ?? null
+
+  useEffect(() => {
+    if (!expandedInvokeId || !expandedRouteMode || !isPoolRouteMode(expandedRouteMode)) return
+    const invokeId = expandedInvokeId
+    const cachedAttempts = poolAttemptsByInvokeId[invokeId]
+    const expectedAttemptCount =
+      typeof expandedPoolAttemptCount === 'number' && Number.isFinite(expandedPoolAttemptCount)
+        ? Math.max(Math.trunc(expandedPoolAttemptCount), 0)
+        : null
+    const cachedAttemptCount = cachedAttempts?.length ?? 0
+    const shouldRefetch =
+      cachedAttempts === undefined ||
+      (expectedAttemptCount != null && cachedAttemptCount < expectedAttemptCount)
+    if (!shouldRefetch || poolAttemptLoadingByInvokeId[invokeId]) return
 
     let cancelled = false
     setPoolAttemptLoadingByInvokeId((current) => ({ ...current, [invokeId]: true }))
@@ -678,7 +705,13 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
     fetchInvocationPoolAttempts(invokeId)
       .then((attempts) => {
         if (cancelled) return
-        setPoolAttemptsByInvokeId((current) => ({ ...current, [invokeId]: attempts }))
+        setPoolAttemptsByInvokeId((current) => {
+          const existingAttempts = current[invokeId]
+          if ((existingAttempts?.length ?? 0) > attempts.length) {
+            return current
+          }
+          return { ...current, [invokeId]: attempts }
+        })
       })
       .catch((error) => {
         if (cancelled) return
@@ -693,7 +726,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
     return () => {
       cancelled = true
     }
-  }, [expandedRecord])
+  }, [expandedInvokeId, expandedPoolAttemptCount, expandedRouteMode])
 
   const renderPoolAttemptsContent = (record: ApiInvocation) => {
     const invokeId = record.invokeId

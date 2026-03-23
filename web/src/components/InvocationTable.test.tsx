@@ -7,6 +7,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { I18nProvider } from '../i18n'
 import type { ApiInvocation } from '../lib/api'
 import type { UpstreamAccountDetail } from '../lib/api'
+import type { BroadcastPayload } from '../lib/api'
 import {
   formatProxyWeightDelta,
   formatServiceTier,
@@ -22,6 +23,10 @@ const apiMocks = vi.hoisted(() => ({
   fetchInvocationPoolAttempts: vi.fn(),
 }))
 
+const sseMocks = vi.hoisted(() => ({
+  onMessage: null as null | ((payload: BroadcastPayload) => void),
+}))
+
 vi.mock('../lib/api', async () => {
   const actual = await vi.importActual<typeof import('../lib/api')>('../lib/api')
   return {
@@ -30,6 +35,15 @@ vi.mock('../lib/api', async () => {
     fetchInvocationPoolAttempts: apiMocks.fetchInvocationPoolAttempts,
   }
 })
+
+vi.mock('../lib/sse', () => ({
+  subscribeToSse: (handler: (payload: BroadcastPayload) => void) => {
+    sseMocks.onMessage = handler
+    return () => {
+      sseMocks.onMessage = null
+    }
+  },
+}))
 
 const LONG_PROXY_NAME = 'ivan-hkl-vless-vision-01KFXRNYWYXKN4JHCF3CCV78GD'
 let host: HTMLDivElement | null = null
@@ -61,6 +75,7 @@ beforeEach(() => {
   apiMocks.fetchUpstreamAccountDetail.mockReset()
   apiMocks.fetchInvocationPoolAttempts.mockReset()
   apiMocks.fetchInvocationPoolAttempts.mockResolvedValue([])
+  sseMocks.onMessage = null
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
@@ -71,6 +86,7 @@ afterEach(async () => {
   await act(async () => {
     root?.unmount()
   })
+  sseMocks.onMessage = null
   host?.remove()
   host = null
   root = null
@@ -95,6 +111,23 @@ async function renderInteractiveTable(records: ApiInvocation[]) {
       </MemoryRouter>,
     )
   })
+}
+
+async function waitForCondition(
+  predicate: () => boolean,
+  options?: { attempts?: number; delayMs?: number },
+) {
+  const attempts = options?.attempts ?? 25
+  const delayMs = options?.delayMs ?? 0
+
+  for (let index = 0; index < attempts; index += 1) {
+    if (predicate()) return
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, delayMs))
+    })
+  }
+
+  throw new Error('Condition was not met before timeout')
 }
 
 describe('formatProxyWeightDelta', () => {
@@ -516,14 +549,84 @@ describe('InvocationTable', () => {
       'invocation-pool-attempts-visible',
     )
 
-    await act(async () => {
-      await Promise.resolve()
-      await Promise.resolve()
-    })
+    await waitForCondition(
+      () => document.querySelector('[data-testid="pool-attempt-item"]') !== null,
+    )
 
     expect(document.body.textContent).toContain('号池尝试明细')
     expect(document.body.textContent).toContain('pool-account-a')
-    expect(document.body.textContent).toContain('req_pool_123')
+    expect(document.body.textContent).toContain('成功')
+  })
+
+  it('replaces an empty cached pool-attempt detail with live SSE attempts', async () => {
+    apiMocks.fetchInvocationPoolAttempts.mockResolvedValue([])
+
+    await renderInteractiveTable([
+      {
+        id: 42,
+        invokeId: 'invocation-pool-attempts-live-sse',
+        occurredAt: '2026-03-07T03:13:51Z',
+        createdAt: '2026-03-07T03:13:51Z',
+        source: 'proxy',
+        routeMode: 'pool',
+        upstreamAccountId: 7,
+        upstreamAccountName: 'pool-account-a',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'running',
+        poolAttemptCount: 0,
+      },
+    ])
+
+    const toggle = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.getAttribute('aria-expanded') === 'false',
+    )
+    expect(toggle).toBeTruthy()
+
+    await act(async () => {
+      toggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenCalledWith(
+      'invocation-pool-attempts-live-sse',
+    )
+    expect(sseMocks.onMessage).toBeTruthy()
+
+    await act(async () => {
+      sseMocks.onMessage?.({
+        type: 'pool_attempts',
+        invokeId: 'invocation-pool-attempts-live-sse',
+        attempts: [
+          {
+            id: 9,
+            invokeId: 'invocation-pool-attempts-live-sse',
+            occurredAt: '2026-03-07T03:13:51Z',
+            endpoint: '/v1/responses',
+            upstreamAccountId: 7,
+            upstreamAccountName: 'pool-account-a',
+            attemptIndex: 1,
+            distinctAccountIndex: 1,
+            sameAccountRetryIndex: 1,
+            startedAt: '2026-03-07T03:13:51Z',
+            finishedAt: null,
+            status: 'pending',
+            httpStatus: null,
+            connectLatencyMs: null,
+            firstByteLatencyMs: null,
+            streamLatencyMs: null,
+            upstreamRequestId: null,
+            createdAt: '2026-03-07T03:13:51Z',
+          },
+        ],
+      })
+      await Promise.resolve()
+    })
+
+    await waitForCondition(() => document.body.textContent?.includes('进行中') === true)
+
+    expect(document.body.textContent).toContain('pool-account-a')
+    expect(document.body.textContent).toContain('进行中')
   })
 
   it('shows a clear non-pool empty state without fetching attempts', async () => {

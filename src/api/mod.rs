@@ -1798,7 +1798,7 @@ async fn query_pool_attempt_records_from_archive_range(
     Ok(records)
 }
 
-async fn query_pool_attempt_records_from_live(
+pub(crate) async fn query_pool_attempt_records_from_live(
     pool: &Pool<Sqlite>,
     invoke_id: &str,
 ) -> Result<Vec<ApiPoolUpstreamRequestAttempt>, ApiError> {
@@ -4568,6 +4568,11 @@ pub(crate) enum BroadcastPayload {
     },
     Records {
         records: Vec<ApiInvocation>,
+    },
+    #[serde(rename = "pool_attempts")]
+    PoolAttempts {
+        invoke_id: String,
+        attempts: Vec<ApiPoolUpstreamRequestAttempt>,
     },
     Summary {
         window: String,

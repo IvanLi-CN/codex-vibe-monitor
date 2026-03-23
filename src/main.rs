@@ -8724,6 +8724,7 @@ fn build_pool_no_available_account_error(
 
 #[derive(Debug, Clone)]
 pub(crate) struct PendingPoolAttemptRecord {
+    pub(crate) attempt_id: Option<i64>,
     pub(crate) invoke_id: String,
     pub(crate) occurred_at: String,
     pub(crate) endpoint: String,
@@ -8735,8 +8736,6 @@ pub(crate) struct PendingPoolAttemptRecord {
     pub(crate) distinct_account_index: i64,
     pub(crate) same_account_retry_index: i64,
     pub(crate) started_at: String,
-    pub(crate) connect_latency_ms: f64,
-    pub(crate) first_byte_latency_ms: f64,
 }
 
 #[derive(Debug, Default)]
@@ -8757,6 +8756,16 @@ struct PoolUpstreamAttemptTraceContext {
     requester_ip: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct PoolAttemptRuntimeSnapshotContext {
+    capture_target: ProxyCaptureTarget,
+    request_info: RequestCaptureInfo,
+    prompt_cache_key: Option<String>,
+    t_req_read_ms: f64,
+    t_req_parse_ms: f64,
+}
+
+const POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING: &str = "pending";
 const POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS: &str = "success";
 const POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE: &str = "http_failure";
 const POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE: &str = "transport_failure";
@@ -9209,6 +9218,7 @@ async fn send_pool_request_with_failover(
     body: Option<PoolReplayBodySnapshot>,
     handshake_timeout: Duration,
     trace_context: Option<PoolUpstreamAttemptTraceContext>,
+    runtime_snapshot_context: Option<PoolAttemptRuntimeSnapshotContext>,
     sticky_key: Option<&str>,
     preferred_account: Option<PoolResolvedAccount>,
     failover_progress: PoolFailoverProgress,
@@ -9588,13 +9598,14 @@ async fn send_pool_request_with_failover(
         for same_account_attempt in 0..same_account_attempts {
             let same_account_retry_index = i64::from(same_account_attempt) + 1;
             let connect_started = Instant::now();
-            let attempt_started_at: Option<String>;
+            let attempt_started_at: String;
             let attempt_index: i64;
+            let pending_attempt_record: Option<PendingPoolAttemptRecord>;
             let (response, oauth_responses_debug) = match &account.auth {
                 PoolResolvedAuth::ApiKey { authorization } => {
                     attempt_count += 1;
                     attempt_index = attempt_count as i64;
-                    attempt_started_at = Some(shanghai_now_string());
+                    attempt_started_at = shanghai_now_string();
                     let mut request = client.request(
                         method.clone(),
                         api_key_target_url
@@ -9622,6 +9633,36 @@ async fn send_pool_request_with_failover(
                             "failed to record selected pool account"
                         );
                     }
+                    pending_attempt_record = if let Some(trace) = trace_context.as_ref() {
+                        Some(
+                            begin_pool_upstream_request_attempt(
+                                &state.pool,
+                                trace,
+                                account.account_id,
+                                upstream_route_key.as_str(),
+                                attempt_index,
+                                distinct_account_index,
+                                same_account_retry_index,
+                                attempt_started_at.as_str(),
+                            )
+                            .await,
+                        )
+                    } else {
+                        None
+                    };
+                    if let (Some(trace), Some(runtime_snapshot)) =
+                        (trace_context.as_ref(), runtime_snapshot_context.as_ref())
+                    {
+                        broadcast_pool_attempt_started_runtime_snapshot(
+                            state.as_ref(),
+                            trace,
+                            runtime_snapshot,
+                            &account,
+                            attempt_count,
+                            distinct_account_count,
+                        )
+                        .await;
+                    }
 
                     match timeout(send_timeout, request.send()).await {
                         Ok(Ok(response)) => (ProxyUpstreamResponseBody::Reqwest(response), None),
@@ -9633,17 +9674,11 @@ async fn send_pool_request_with_failover(
                                     &message,
                                 );
                             let finished_at = shanghai_now_string();
-                            if let Some(trace) = trace_context.as_ref()
-                                && let Err(record_err) = insert_pool_upstream_request_attempt(
+                            if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                                && let Err(record_err) = finalize_pool_upstream_request_attempt(
                                     &state.pool,
-                                    trace,
-                                    Some(account.account_id),
-                                    Some(upstream_route_key.as_str()),
-                                    attempt_index,
-                                    distinct_account_index,
-                                    same_account_retry_index,
-                                    attempt_started_at.as_deref(),
-                                    Some(finished_at.as_str()),
+                                    pending_attempt_record,
+                                    finished_at.as_str(),
                                     POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
                                     None,
                                     Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM),
@@ -9656,9 +9691,22 @@ async fn send_pool_request_with_failover(
                                 .await
                             {
                                 warn!(
-                                    invoke_id = trace.invoke_id,
+                                    invoke_id = pending_attempt_record.invoke_id,
                                     error = %record_err,
                                     "failed to persist pool transport attempt"
+                                );
+                            }
+                            if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                                && let Err(err) = broadcast_pool_upstream_attempts_snapshot(
+                                    state.as_ref(),
+                                    &pending_attempt_record.invoke_id,
+                                )
+                                .await
+                            {
+                                warn!(
+                                    invoke_id = pending_attempt_record.invoke_id,
+                                    error = %err,
+                                    "failed to broadcast pool transport attempt snapshot"
                                 );
                             }
                             let has_retry_budget = same_account_attempt + 1 < same_account_attempts;
@@ -9713,17 +9761,11 @@ async fn send_pool_request_with_failover(
                             );
                             let is_timeout_shaped = uses_timeout_route_failover;
                             let finished_at = shanghai_now_string();
-                            if let Some(trace) = trace_context.as_ref()
-                                && let Err(record_err) = insert_pool_upstream_request_attempt(
+                            if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                                && let Err(record_err) = finalize_pool_upstream_request_attempt(
                                     &state.pool,
-                                    trace,
-                                    Some(account.account_id),
-                                    Some(upstream_route_key.as_str()),
-                                    attempt_index,
-                                    distinct_account_index,
-                                    same_account_retry_index,
-                                    attempt_started_at.as_deref(),
-                                    Some(finished_at.as_str()),
+                                    pending_attempt_record,
+                                    finished_at.as_str(),
                                     POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
                                     None,
                                     Some(PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT),
@@ -9736,9 +9778,22 @@ async fn send_pool_request_with_failover(
                                 .await
                             {
                                 warn!(
-                                    invoke_id = trace.invoke_id,
+                                    invoke_id = pending_attempt_record.invoke_id,
                                     error = %record_err,
                                     "failed to persist pool handshake timeout attempt"
+                                );
+                            }
+                            if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                                && let Err(err) = broadcast_pool_upstream_attempts_snapshot(
+                                    state.as_ref(),
+                                    &pending_attempt_record.invoke_id,
+                                )
+                                .await
+                            {
+                                warn!(
+                                    invoke_id = pending_attempt_record.invoke_id,
+                                    error = %err,
+                                    "failed to broadcast pool handshake timeout snapshot"
                                 );
                             }
                             let has_retry_budget = same_account_attempt + 1 < same_account_attempts;
@@ -9871,7 +9926,7 @@ async fn send_pool_request_with_failover(
                     };
                     attempt_count += 1;
                     attempt_index = attempt_count as i64;
-                    attempt_started_at = Some(shanghai_now_string());
+                    attempt_started_at = shanghai_now_string();
                     if let Err(route_err) =
                         record_account_selected(&state.pool, account.account_id).await
                     {
@@ -9880,6 +9935,36 @@ async fn send_pool_request_with_failover(
                             error = %route_err,
                             "failed to record selected pool account"
                         );
+                    }
+                    pending_attempt_record = if let Some(trace) = trace_context.as_ref() {
+                        Some(
+                            begin_pool_upstream_request_attempt(
+                                &state.pool,
+                                trace,
+                                account.account_id,
+                                upstream_route_key.as_str(),
+                                attempt_index,
+                                distinct_account_index,
+                                same_account_retry_index,
+                                attempt_started_at.as_str(),
+                            )
+                            .await,
+                        )
+                    } else {
+                        None
+                    };
+                    if let (Some(trace), Some(runtime_snapshot)) =
+                        (trace_context.as_ref(), runtime_snapshot_context.as_ref())
+                    {
+                        broadcast_pool_attempt_started_runtime_snapshot(
+                            state.as_ref(),
+                            trace,
+                            runtime_snapshot,
+                            &account,
+                            attempt_count,
+                            distinct_account_count,
+                        )
+                        .await;
                     }
                     {
                         let oauth_response = oauth_bridge::send_oauth_upstream_request(
@@ -9971,17 +10056,11 @@ async fn send_pool_request_with_failover(
                             })
                     });
                 let finished_at = shanghai_now_string();
-                if let Some(trace) = trace_context.as_ref()
-                    && let Err(record_err) = insert_pool_upstream_request_attempt(
+                if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                    && let Err(record_err) = finalize_pool_upstream_request_attempt(
                         &state.pool,
-                        trace,
-                        Some(account.account_id),
-                        Some(upstream_route_key.as_str()),
-                        attempt_index,
-                        distinct_account_index,
-                        same_account_retry_index,
-                        attempt_started_at.as_deref(),
-                        Some(finished_at.as_str()),
+                        pending_attempt_record,
+                        finished_at.as_str(),
                         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
                         Some(status),
                         Some(failure_kind),
@@ -9994,9 +10073,22 @@ async fn send_pool_request_with_failover(
                     .await
                 {
                     warn!(
-                        invoke_id = trace.invoke_id,
+                        invoke_id = pending_attempt_record.invoke_id,
                         error = %record_err,
                         "failed to persist pool http failure attempt"
+                    );
+                }
+                if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                    && let Err(err) = broadcast_pool_upstream_attempts_snapshot(
+                        state.as_ref(),
+                        &pending_attempt_record.invoke_id,
+                    )
+                    .await
+                {
+                    warn!(
+                        invoke_id = pending_attempt_record.invoke_id,
+                        error = %err,
+                        "failed to broadcast pool http failure snapshot"
                     );
                 }
                 if let Some(retry_delay) = retry_delay {
@@ -10061,17 +10153,11 @@ async fn send_pool_request_with_failover(
                             &message,
                         );
                     let finished_at = shanghai_now_string();
-                    if let Some(trace) = trace_context.as_ref()
-                        && let Err(record_err) = insert_pool_upstream_request_attempt(
+                    if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                        && let Err(record_err) = finalize_pool_upstream_request_attempt(
                             &state.pool,
-                            trace,
-                            Some(account.account_id),
-                            Some(upstream_route_key.as_str()),
-                            attempt_index,
-                            distinct_account_index,
-                            same_account_retry_index,
-                            attempt_started_at.as_deref(),
-                            Some(finished_at.as_str()),
+                            pending_attempt_record,
+                            finished_at.as_str(),
                             POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
                             None,
                             Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
@@ -10084,9 +10170,22 @@ async fn send_pool_request_with_failover(
                         .await
                     {
                         warn!(
-                            invoke_id = trace.invoke_id,
+                            invoke_id = pending_attempt_record.invoke_id,
                             error = %record_err,
                             "failed to persist pool first-chunk transport attempt"
+                        );
+                    }
+                    if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                        && let Err(err) = broadcast_pool_upstream_attempts_snapshot(
+                            state.as_ref(),
+                            &pending_attempt_record.invoke_id,
+                        )
+                        .await
+                    {
+                        warn!(
+                            invoke_id = pending_attempt_record.invoke_id,
+                            error = %err,
+                            "failed to broadcast pool first-chunk failure snapshot"
                         );
                     }
                     let has_retry_budget = same_account_attempt + 1 < same_account_attempts;
@@ -10142,25 +10241,7 @@ async fn send_pool_request_with_failover(
                 connect_latency_ms,
                 first_byte_latency_ms: elapsed_ms(first_byte_started),
                 first_chunk,
-                pending_attempt_record: trace_context.as_ref().map(|trace| {
-                    PendingPoolAttemptRecord {
-                        invoke_id: trace.invoke_id.clone(),
-                        occurred_at: trace.occurred_at.clone(),
-                        endpoint: trace.endpoint.clone(),
-                        sticky_key: trace.sticky_key.clone(),
-                        requester_ip: trace.requester_ip.clone(),
-                        upstream_account_id: account.account_id,
-                        upstream_route_key: upstream_route_key.clone(),
-                        attempt_index,
-                        distinct_account_index,
-                        same_account_retry_index,
-                        started_at: attempt_started_at
-                            .clone()
-                            .unwrap_or_else(shanghai_now_string),
-                        connect_latency_ms,
-                        first_byte_latency_ms: elapsed_ms(first_byte_started),
-                    }
-                }),
+                pending_attempt_record,
                 attempt_summary: pool_attempt_summary(attempt_count, distinct_account_count, None),
             });
         }
@@ -10271,6 +10352,7 @@ async fn continue_or_retry_pool_live_request(
                 headers,
                 Some(snapshot),
                 handshake_timeout,
+                None,
                 None,
                 replay_sticky_key.as_deref(),
                 preferred_account,
@@ -10396,6 +10478,7 @@ async fn proxy_openai_v1_via_pool(
                     Some(PoolReplayBodySnapshot::Memory(request_body_bytes)),
                     handshake_timeout,
                     None,
+                    None,
                     body_sticky_key.as_deref(),
                     None,
                     PoolFailoverProgress::default(),
@@ -10476,6 +10559,7 @@ async fn proxy_openai_v1_via_pool(
                             &headers,
                             Some(request_body_snapshot),
                             handshake_timeout,
+                            None,
                             None,
                             body_sticky_key.as_deref(),
                             preferred_account,
@@ -10953,6 +11037,7 @@ async fn proxy_openai_v1_via_pool(
                 &headers,
                 None,
                 handshake_timeout,
+                None,
                 None,
                 header_sticky_key.as_deref(),
                 None,
@@ -11949,6 +12034,9 @@ async fn proxy_openai_v1_capture_target(
         None,
         None,
         None,
+        None,
+        None,
+        None,
         t_req_read_ms,
         t_req_parse_ms,
         0.0,
@@ -11968,6 +12056,14 @@ async fn proxy_openai_v1_capture_target(
     if body_rewritten {
         upstream_headers.remove(header::CONTENT_LENGTH);
     }
+    let pool_attempt_runtime_snapshot =
+        pool_route_active.then(|| PoolAttemptRuntimeSnapshotContext {
+            capture_target,
+            request_info: request_info.clone(),
+            prompt_cache_key: prompt_cache_key.clone(),
+            t_req_read_ms,
+            t_req_parse_ms,
+        });
     let handshake_timeout = state
         .config
         .proxy_upstream_handshake_timeout(Some(capture_target));
@@ -11992,6 +12088,7 @@ async fn proxy_openai_v1_capture_target(
             Some(PoolReplayBodySnapshot::Memory(upstream_body_bytes)),
             handshake_timeout,
             pool_attempt_trace_context.clone(),
+            pool_attempt_runtime_snapshot.clone(),
             sticky_key.as_deref(),
             None,
             PoolFailoverProgress::default(),
@@ -12419,6 +12516,13 @@ async fn proxy_openai_v1_capture_target(
             .as_ref()
             .map(|account| account.display_name.as_str()),
         selected_proxy_display_name.as_deref(),
+        pool_account
+            .as_ref()
+            .map(|_| pending_pool_attempt_summary.pool_attempt_count),
+        pool_account
+            .as_ref()
+            .map(|_| pending_pool_attempt_summary.pool_distinct_account_count),
+        None,
         Some(response_content_encoding.as_str()),
         t_req_read_ms,
         t_req_parse_ms,
@@ -12512,6 +12616,13 @@ async fn proxy_openai_v1_capture_target(
                                 .as_ref()
                                 .map(|account| account.display_name.as_str()),
                             selected_proxy_display_name_for_task.as_deref(),
+                            pool_account_for_task
+                                .as_ref()
+                                .map(|_| pending_pool_attempt_summary_for_task.pool_attempt_count),
+                            pool_account_for_task.as_ref().map(|_| {
+                                pending_pool_attempt_summary_for_task.pool_distinct_account_count
+                            }),
+                            None,
                             Some(response_content_encoding.as_str()),
                             t_req_read_ms,
                             t_req_parse_ms,
@@ -12740,6 +12851,8 @@ async fn proxy_openai_v1_capture_target(
                 Some(upstream_status),
                 failure_kind,
                 error_message.as_deref(),
+                Some(t_upstream_connect_ms),
+                Some(t_upstream_ttfb_ms),
                 Some(t_upstream_stream_ms),
                 response_info.upstream_request_id.as_deref(),
             )
@@ -12749,6 +12862,18 @@ async fn proxy_openai_v1_capture_target(
                     invoke_id = %pending_attempt_record.invoke_id,
                     error = %err,
                     "failed to persist final pool attempt"
+                );
+            }
+            if let Err(err) = broadcast_pool_upstream_attempts_snapshot(
+                state_for_task.as_ref(),
+                &pending_attempt_record.invoke_id,
+            )
+            .await
+            {
+                warn!(
+                    invoke_id = %pending_attempt_record.invoke_id,
+                    error = %err,
+                    "failed to broadcast final pool attempt snapshot"
                 );
             }
         }
@@ -13904,8 +14029,8 @@ async fn insert_pool_upstream_request_attempt(
     first_byte_latency_ms: Option<f64>,
     stream_latency_ms: Option<f64>,
     upstream_request_id: Option<&str>,
-) -> Result<()> {
-    sqlx::query(
+) -> Result<i64> {
+    let result = sqlx::query(
         r#"
         INSERT INTO pool_upstream_request_attempts (
             invoke_id,
@@ -13958,7 +14083,132 @@ async fn insert_pool_upstream_request_attempt(
     .bind(upstream_request_id)
     .execute(pool)
     .await?;
+    Ok(result.last_insert_rowid())
+}
+
+async fn begin_pool_upstream_request_attempt(
+    pool: &Pool<Sqlite>,
+    trace: &PoolUpstreamAttemptTraceContext,
+    upstream_account_id: i64,
+    upstream_route_key: &str,
+    attempt_index: i64,
+    distinct_account_index: i64,
+    same_account_retry_index: i64,
+    started_at: &str,
+) -> PendingPoolAttemptRecord {
+    let attempt_id = match insert_pool_upstream_request_attempt(
+        pool,
+        trace,
+        Some(upstream_account_id),
+        Some(upstream_route_key),
+        attempt_index,
+        distinct_account_index,
+        same_account_retry_index,
+        Some(started_at),
+        None,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+    {
+        Ok(attempt_id) => Some(attempt_id),
+        Err(err) => {
+            warn!(
+                invoke_id = trace.invoke_id,
+                error = %err,
+                "failed to persist pending pool attempt"
+            );
+            None
+        }
+    };
+
+    PendingPoolAttemptRecord {
+        attempt_id,
+        invoke_id: trace.invoke_id.clone(),
+        occurred_at: trace.occurred_at.clone(),
+        endpoint: trace.endpoint.clone(),
+        sticky_key: trace.sticky_key.clone(),
+        requester_ip: trace.requester_ip.clone(),
+        upstream_account_id,
+        upstream_route_key: upstream_route_key.to_string(),
+        attempt_index,
+        distinct_account_index,
+        same_account_retry_index,
+        started_at: started_at.to_string(),
+    }
+}
+
+async fn broadcast_pool_upstream_attempts_snapshot(
+    state: &AppState,
+    invoke_id: &str,
+) -> Result<()> {
+    if state.broadcaster.receiver_count() == 0 {
+        return Ok(());
+    }
+
+    let attempts = query_pool_attempt_records_from_live(&state.pool, invoke_id)
+        .await
+        .map_err(|err| anyhow!("failed to load live pool attempts for SSE broadcast: {err:?}"))?;
+    state
+        .broadcaster
+        .send(BroadcastPayload::PoolAttempts {
+            invoke_id: invoke_id.to_string(),
+            attempts,
+        })
+        .map_err(|err| anyhow!("failed to broadcast pool attempts snapshot: {err}"))?;
     Ok(())
+}
+
+async fn broadcast_pool_attempt_started_runtime_snapshot(
+    state: &AppState,
+    trace: &PoolUpstreamAttemptTraceContext,
+    runtime_snapshot: &PoolAttemptRuntimeSnapshotContext,
+    account: &PoolResolvedAccount,
+    attempt_count: usize,
+    distinct_account_count: usize,
+) {
+    let running_record = build_running_proxy_capture_record(
+        &trace.invoke_id,
+        &trace.occurred_at,
+        runtime_snapshot.capture_target,
+        &runtime_snapshot.request_info,
+        trace.requester_ip.as_deref(),
+        trace.sticky_key.as_deref(),
+        runtime_snapshot.prompt_cache_key.as_deref(),
+        true,
+        Some(account.account_id),
+        Some(account.display_name.as_str()),
+        None,
+        Some(attempt_count),
+        Some(distinct_account_count),
+        None,
+        None,
+        runtime_snapshot.t_req_read_ms,
+        runtime_snapshot.t_req_parse_ms,
+        0.0,
+        0.0,
+    );
+    if let Err(err) = broadcast_proxy_capture_runtime_snapshot(&state.broadcaster, &running_record)
+    {
+        warn!(
+            ?err,
+            invoke_id = %trace.invoke_id,
+            "failed to broadcast pool attempt start runtime snapshot"
+        );
+    }
+    if let Err(err) = broadcast_pool_upstream_attempts_snapshot(state, &trace.invoke_id).await {
+        warn!(
+            invoke_id = %trace.invoke_id,
+            error = %err,
+            "failed to broadcast pool attempt start snapshot"
+        );
+    }
 }
 
 async fn finalize_pool_upstream_request_attempt(
@@ -13969,6 +14219,8 @@ async fn finalize_pool_upstream_request_attempt(
     http_status: Option<StatusCode>,
     failure_kind: Option<&str>,
     error_message: Option<&str>,
+    connect_latency_ms: Option<f64>,
+    first_byte_latency_ms: Option<f64>,
     stream_latency_ms: Option<f64>,
     upstream_request_id: Option<&str>,
 ) -> Result<()> {
@@ -13979,6 +14231,41 @@ async fn finalize_pool_upstream_request_attempt(
         sticky_key: pending.sticky_key.clone(),
         requester_ip: pending.requester_ip.clone(),
     };
+    if let Some(attempt_id) = pending.attempt_id {
+        let result = sqlx::query(
+            r#"
+            UPDATE pool_upstream_request_attempts
+            SET
+                finished_at = ?2,
+                status = ?3,
+                http_status = ?4,
+                failure_kind = ?5,
+                error_message = ?6,
+                connect_latency_ms = ?7,
+                first_byte_latency_ms = ?8,
+                stream_latency_ms = ?9,
+                upstream_request_id = ?10
+            WHERE id = ?1
+            "#,
+        )
+        .bind(attempt_id)
+        .bind(finished_at)
+        .bind(status)
+        .bind(http_status.map(|value| i64::from(value.as_u16())))
+        .bind(failure_kind)
+        .bind(error_message)
+        .bind(connect_latency_ms)
+        .bind(first_byte_latency_ms)
+        .bind(stream_latency_ms)
+        .bind(upstream_request_id)
+        .execute(pool)
+        .await?;
+
+        if result.rows_affected() > 0 {
+            return Ok(());
+        }
+    }
+
     insert_pool_upstream_request_attempt(
         pool,
         &trace,
@@ -13993,12 +14280,13 @@ async fn finalize_pool_upstream_request_attempt(
         http_status,
         failure_kind,
         error_message,
-        Some(pending.connect_latency_ms),
-        Some(pending.first_byte_latency_ms),
+        connect_latency_ms,
+        first_byte_latency_ms,
         stream_latency_ms,
         upstream_request_id,
     )
     .await
+    .map(|_| ())
 }
 
 async fn insert_pool_upstream_terminal_attempt(
@@ -14037,6 +14325,7 @@ async fn insert_pool_upstream_terminal_attempt(
         final_error.upstream_request_id.as_deref(),
     )
     .await
+    .map(|_| ())
 }
 
 fn prompt_cache_upstream_account_rollup_key(
@@ -14521,6 +14810,9 @@ fn build_running_proxy_capture_record(
     upstream_account_id: Option<i64>,
     upstream_account_name: Option<&str>,
     proxy_display_name: Option<&str>,
+    pool_attempt_count: Option<usize>,
+    pool_distinct_account_count: Option<usize>,
+    pool_attempt_terminal_reason: Option<&str>,
     response_content_encoding: Option<&str>,
     t_req_read_ms: f64,
     t_req_parse_ms: f64,
@@ -14582,9 +14874,9 @@ fn build_running_proxy_capture_record(
             response_content_encoding,
             proxy_display_name,
             proxy_weight_delta: None,
-            pool_attempt_count: None,
-            pool_distinct_account_count: None,
-            pool_attempt_terminal_reason: None,
+            pool_attempt_count,
+            pool_distinct_account_count,
+            pool_attempt_terminal_reason,
         })),
         raw_response: "{}".to_string(),
         req_raw: RawPayloadMeta::default(),

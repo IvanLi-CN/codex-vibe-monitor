@@ -587,6 +587,11 @@ export type BroadcastPayload =
       records: ApiInvocation[];
     }
   | {
+      type: "pool_attempts";
+      invokeId: string;
+      attempts: ApiPoolUpstreamRequestAttempt[];
+    }
+  | {
       type: "summary";
       window: string;
       summary: StatsResponse;

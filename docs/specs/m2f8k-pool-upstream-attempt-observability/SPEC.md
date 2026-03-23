@@ -25,7 +25,7 @@
 ### Non-goals
 
 - 不改写 pool 账号排序、stickyKey 语义或 tag 路由规则。
-- 不把 pool attempt 明细塞进 `/api/invocations` 列表响应或 SSE records。
+- 不把 pool attempt 明细塞进 `/api/invocations` 列表响应或 SSE `records` 载荷。
 - 不在上游账号详情页新增请求明细视图。
 - 不为 attempt 明细额外保存 raw request / response 文件。
 
@@ -50,18 +50,20 @@
 ### MUST
 
 - `pool_upstream_request_attempts` 至少记录：`invoke_id`、`occurred_at`、`endpoint`、`route_mode`、`sticky_key`、`upstream_account_id`、`attempt_index`、`distinct_account_index`、`same_account_retry_index`、`requester_ip`、`started_at`、`finished_at`、`status`、`http_status`、`failure_kind`、`error_message`、`connect_latency_ms`、`first_byte_latency_ms`、`stream_latency_ms`、`upstream_request_id`。
-- attempt `status` 必须收敛到有限集合：`success`、`http_failure`、`transport_failure`、`budget_exhausted_final`。
+- attempt `status` 必须收敛到有限集合：`pending`、`success`、`http_failure`、`transport_failure`、`budget_exhausted_final`。
 - pool failover 最多尝试 `3` 个不同账号；若即将进入第 `4` 个不同账号，必须停止继续 failover，并写一条 `budget_exhausted_final` attempt，`failure_kind=max_distinct_accounts_exhausted`。
 - 同账号内的 retry 仍可发生，但只能增加 `same_account_retry_index`，不得额外占用新的 `distinct_account_index`。
 - `codex_invocations.payload.upstreamAccountId` 继续表示最终落定账号；新增 `poolAttemptCount`、`poolDistinctAccountCount`、`poolAttemptTerminalReason` 作为汇总字段。
 - `GET /api/invocations/{invokeId}/pool-attempts` 只对 `routeMode=pool` 返回记录；非 pool 调用必须稳定返回空数组。
 - InvocationTable 只能在展开详情时按需请求 attempts；列表与 SSE 载荷不得内嵌完整 attempts。
+- `/events` 继续复用同一条 SSE 连接；attempt 明细必须通过单独的 `pool_attempts` 事件推送完整 attempts 列表，开始尝试与尝试终态更新都要触发推送。
 - `pool_upstream_request_attempts` 在线只保留最近 `7` 个上海自然日；更老数据按月归档到 `archives/pool_upstream_request_attempts/<yyyy>/pool_upstream_request_attempts-<yyyy-mm>.sqlite.gz`；archive 超过 `30` 个上海自然日后必须自动删除 archive 文件与对应 manifest 行。
 
 ### SHOULD
 
 - attempt 查询优先读 live DB；live miss 时按 invocation 的 `occurred_at` 所属 archive 月份回读。
 - UI 详情应同时展示尝试序号、账号、账号内重试序号、终态、HTTP 状态、失败类型、各阶段耗时、上游请求 ID 与时间点。
+- UI 在首次拿到空 attempts 后，只要主记录仍在运行中或后续收到 `poolAttemptCount` / `pool_attempts` 增量，就必须能被动刷新，不得把空结果当成最终真相缓存住。
 - 历史 invocation 缺少 pool summary 字段时，前端详情仍应稳定渲染，不把它误判成错误态。
 
 ## 功能与行为规格（Functional/Behavior Spec）
@@ -69,11 +71,12 @@
 ### Core flows
 
 - 一次 `routeMode=pool` 请求开始后，主 invocation 仍只落一条 `codex_invocations` 记录；所有内部 failover 细节进入 `pool_upstream_request_attempts`。
-- 每次真正发往上游账号的请求，无论最终成功、HTTP 失败、传输失败还是首 chunk 前失败，都要立刻落一条 attempt 记录。
+- 每次真正发往上游账号的请求，在开始尝试时就要先插入一条 `pending` attempt；后续成功或失败必须原地补全同一行，而不是再插入第二条终态行。
+- 每次 `pending` attempt 创建后，都要立即推送 `pool_attempts` SSE；主 invocation 的 running snapshot 也要同步补上最新 `poolAttemptCount`、`poolDistinctAccountCount` 与当前尝试账号。
 - 当同一个账号返回 `5xx` 且仍有同账号 retry 预算时，先记录这次失败 attempt，再按现有策略 sleep 后重试同一账号。
 - 当同一个账号返回 `429` 时，必须先记录这次失败 attempt，并立即切到下一个不同账号；若没有可切账号，则对调用方返回 `429` 终态。
 - 当一个账号的 retry 预算耗尽且需要换号时，递增 `distinct_account_index` 并继续 `continue 'account_loop`；一旦即将超过 3 个不同账号，终止 failover 并写 `budget_exhausted_final`。
-- 最终成功 attempt 在流结束后补全 `stream_latency_ms`；失败 attempt 只要求落当前已知的连接/HTTP 失败信息。
+- 最终成功 attempt 在流结束后补全 `stream_latency_ms`；失败 attempt 只要求补全当前已知的连接/HTTP/失败信息。
 - retention 任务先 archive 再 purge live rows，并给 `archive_batches` 写入 `coverage_start_at`、`coverage_end_at`、`archive_expires_at`；archive TTL 清理只按 manifest 覆盖窗口判断，不按文件 mtime 猜测。
 
 ### Edge cases / errors
@@ -92,11 +95,14 @@
 | `pool_upstream_request_attempts` | SQLite table | internal | Add | backend | retention / API / ops | 记录 pool 每次真实上游尝试 |
 | `GET /api/invocations/{invokeId}/pool-attempts` | HTTP API | internal | Add | backend | InvocationTable details | 非 pool 返回空数组 |
 | `ApiInvocation.poolAttempt*` | Rust + TS fields | internal | Modify | backend + web | Dashboard / Live / records detail | 仅是汇总字段，不内嵌 attempts |
+| `BroadcastPayload::pool_attempts` | SSE event | internal | Add | backend + web | InvocationTable details | 同一 SSE 通道内推送单条 invocation 的完整 attempts |
 | `archive_batches.coverage_* / archive_expires_at` | SQLite manifest fields | internal | Modify | backend | retention / archive reads | 支持 archive TTL 清理 |
 
 ## 验收标准（Acceptance Criteria）
 
 - Given 一个 pool 调用在第 1 或第 2 个账号成功，When 请求完成，Then `codex_invocations` 仍只有一条主记录，且 attempts API 返回完整 attempt 顺序与最终成功 attempt。
+- Given 一个正在进行中的 pool 调用，When 第一个上游账号刚开始尝试但请求尚未完成，Then attempts API 与 `pool_attempts` SSE 都已经能看到 1 条 `pending` attempt，且 `started_at` 已有值而 `finished_at` 为空。
+- Given 一个成功的 pool 调用，When 流结束，Then 之前那条 `pending` attempt 会被原地更新成 `success`，而不是新增第二条终态 attempt。
 - Given 一个 pool 调用连续失败，When 第 3 个不同账号仍失败，Then 服务立即返回失败，不再尝试第 4 个账号，且 attempts 列表最后包含 `budget_exhausted_final` / `max_distinct_accounts_exhausted`。
 - Given 同账号内出现 retryable `5xx`，When 读取 attempts，Then `same_account_retry_index` 递增而 `distinct_account_index` 不变。
 - Given 任一账号收到 `429`，When 读取 attempts，Then 该 attempt 的 `same_account_retry_index` 固定为 `1`，且后续 failover 必须切到下一个 distinct account 或直接返回 `429`。
@@ -138,6 +144,7 @@
 - [x] M2: 将 pool failover 不同账号预算收紧为最多 3 个账号，并写入预算耗尽终态。
 - [x] M3: 新增 attempts API，并在 InvocationTable 详情中懒加载展示。
 - [x] M4: 将 pool attempts 接入 7 天在线 + 30 天 archive TTL 的 retention/archive 清理链路。
+- [x] M4.5: 将 attempt 生命周期改成“开始即登记、结束原地更新”，并通过 `pool_attempts` SSE 推送详情增量。
 - [ ] M5: 完成 fast-track 交付收口（格式化、review-loop、提交、PR、checks 收敛到 merge-ready）。
 
 ## 方案概述（Approach, high-level）
@@ -155,6 +162,7 @@
 ## 变更记录（Change log）
 
 - 2026-03-22: 创建 spec，冻结 pool attempts schema、3 账号预算、attempt API、详情懒加载与 7+30 retention 策略。
+- 2026-03-23: 更新契约，要求 attempt 在开始时插入 `pending` 行，并通过 `pool_attempts` SSE 实时推送后续状态变化。
 
 ## 参考（References）
 
