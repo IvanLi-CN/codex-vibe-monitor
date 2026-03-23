@@ -80,7 +80,7 @@
 
 ### Core flows
 
-- 用户进入 `号池 -> 上游账号` 页面时，routing 卡片除了显示当前号池 API key，还会显示“主频 / 次频 / 主层上限”摘要。
+- 用户进入 `号池 -> 上游账号` 页面时，routing 卡片显示当前号池 API key，并提供进入“高级路由与同步设置”弹窗的编辑入口；maintenance 具体参数在弹窗中查看与修改。
 - 用户打开 routing 对话框后，可以同时编辑 API key 与高级维护设置；若只调整维护设置，保存请求不会要求重新输入 API key。
 - 后台维护每个 tick 会先读取 `pool_routing_settings` 的有效维护设置，再批量查询候选账号与最近样本，计算每个账号所属层级与本轮是否到期。
 - 主层账号按主频判断是否到期，次层账号按次频判断是否到期；未到期账号本轮不得 dispatch maintenance actor。
@@ -104,7 +104,7 @@
 ## 验收标准（Acceptance Criteria）
 
 - Given 旧库尚未保存过高级维护设置，When 打开账号池页或请求 `/api/pool/routing-settings`，Then 响应稳定包含 `300 / 1800 / 100` 这组默认值。
-- Given 用户只修改主频、次频或主层上限，When 保存 routing 设置，Then API 成功、当前 API key 保持不变，页面立即显示新的维护设置。
+- Given 用户只修改主频、次频或主层上限，When 保存 routing 设置，Then API 成功、当前 API key 保持不变，重新打开 routing 弹窗时会回显新的维护设置。
 - Given 健康且双窗口可用的 OAuth 账号数超过 `100`，When 后台维护运行，Then 周额度用量最小的前 `100` 个账号按主频判定到期，其余健康账号按次频判定到期。
 - Given 某账号状态为 `error`、缺少 usage sample，或 token 即将过期，When 后台维护运行，Then 该账号仍留在主层，不会被降到次频队列。
 - Given 某健康账号 `5 小时` 或 `7 天` 任一窗口已耗尽，When 后台维护运行，Then 该账号不会占用 available 主层名额，而是按次频刷新以等待 reset 后重新升层。

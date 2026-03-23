@@ -189,9 +189,34 @@ export const RoutingDialogMaintenanceOnlySave: Story = {
         }),
       ).not.toBeInTheDocument()
     })
-    await expect(canvas.getByText(/^(10m|10 分钟)$/i)).toBeInTheDocument()
-    await expect(canvas.getByText(/^(40m|40 分钟)$/i)).toBeInTheDocument()
-    await expect(canvas.getByText(/^(Top 42 accounts|前 42 个账号)$/i)).toBeInTheDocument()
+
+    await userEvent.click(
+      await canvas.findByRole('button', { name: /编辑路由设置|edit routing settings/i }),
+    )
+    const reopenedDialog = await documentScope.findByRole('dialog', {
+      name: /高级路由与同步设置|advanced routing & sync settings/i,
+    })
+    await expect(
+      (
+        within(reopenedDialog).getByLabelText(
+          /优先队列同步间隔|priority sync interval/i,
+        ) as HTMLInputElement
+      ).value,
+    ).toBe('600')
+    await expect(
+      (
+        within(reopenedDialog).getByLabelText(
+          /次级队列同步间隔|secondary sync interval/i,
+        ) as HTMLInputElement
+      ).value,
+    ).toBe('2400')
+    await expect(
+      (
+        within(reopenedDialog).getByLabelText(
+          /优先可用账号上限|priority available account cap/i,
+        ) as HTMLInputElement
+      ).value,
+    ).toBe('42')
   },
 }
 

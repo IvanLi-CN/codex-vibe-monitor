@@ -245,20 +245,6 @@ function parseRoutingPositiveInteger(value: string) {
   return Number.isSafeInteger(parsed) ? parsed : null
 }
 
-function formatRoutingInterval(seconds: number, t: ReturnType<typeof useTranslation>['t']) {
-  if (seconds % 3_600 === 0) {
-    return t('accountPool.upstreamAccounts.routing.intervalHours', {
-      count: seconds / 3_600,
-    })
-  }
-  if (seconds % 60 === 0) {
-    return t('accountPool.upstreamAccounts.routing.intervalMinutes', {
-      count: seconds / 60,
-    })
-  }
-  return t('accountPool.upstreamAccounts.routing.intervalSeconds', { count: seconds })
-}
-
 function statusVariant(status: string): 'success' | 'warning' | 'error' | 'secondary' {
   if (status === 'active') return 'success'
   if (status === 'syncing') return 'warning'
@@ -1707,28 +1693,6 @@ export default function UpstreamAccountsPage() {
                     <p className="mt-2 break-all font-mono text-sm text-base-content">
                       {routing?.apiKeyConfigured ? routing?.maskedApiKey ?? t('accountPool.upstreamAccounts.routing.configured') : t('accountPool.upstreamAccounts.routing.notConfigured')}
                     </p>
-                    <div className="mt-4 grid gap-3 sm:grid-cols-3">
-                      <div>
-                        <p className="metric-label">{t('accountPool.upstreamAccounts.routing.primarySyncIntervalLabel')}</p>
-                        <p className="mt-1 text-sm font-semibold text-base-content">
-                          {formatRoutingInterval(resolvedRoutingMaintenance.primarySyncIntervalSecs, t)}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="metric-label">{t('accountPool.upstreamAccounts.routing.secondarySyncIntervalLabel')}</p>
-                        <p className="mt-1 text-sm font-semibold text-base-content">
-                          {formatRoutingInterval(resolvedRoutingMaintenance.secondarySyncIntervalSecs, t)}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="metric-label">{t('accountPool.upstreamAccounts.routing.priorityCapLabel')}</p>
-                        <p className="mt-1 text-sm font-semibold text-base-content">
-                          {t('accountPool.upstreamAccounts.routing.priorityCapValue', {
-                            count: resolvedRoutingMaintenance.priorityAvailableAccountCap,
-                          })}
-                        </p>
-                      </div>
-                    </div>
                   </div>
                   <Button
                     type="button"
