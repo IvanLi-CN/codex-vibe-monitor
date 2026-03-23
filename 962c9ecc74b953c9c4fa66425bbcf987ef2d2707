@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.21.0",
+  "base_stable_version": "1.20.6",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-23T17:14:58Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.21.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "c1ef11e67cdb3fe0cec585eb8cb82bfb43f3ba3f",
+  "pr_number": 211,
+  "pr_title": "feat: add tiered account pool maintenance settings",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.21.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.21.0,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "962c9ecc74b953c9c4fa66425bbcf987ef2d2707",
+  "type_label": "type:minor"
+}
