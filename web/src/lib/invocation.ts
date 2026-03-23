@@ -29,6 +29,13 @@ export interface InvocationEndpointDisplay {
   labelKey: InvocationEndpointBadgeLabelKey | null
 }
 
+function normalizeInvocationTimingStage(value: number | null | undefined): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+    return null
+  }
+  return value
+}
+
 export function normalizeServiceTier(value: string | null | undefined): string | null {
   if (typeof value !== 'string') return null
   const normalized = value.trim().toLowerCase()
@@ -146,6 +153,24 @@ export function resolveInvocationEndpointDisplay(
         labelKey: null,
       }
   }
+}
+
+export function resolveFirstResponseByteTotalMs(
+  record: Pick<
+    ApiInvocation,
+    'tReqReadMs' | 'tReqParseMs' | 'tUpstreamConnectMs' | 'tUpstreamTtfbMs'
+  >,
+): number | null {
+  const stages = [
+    normalizeInvocationTimingStage(record.tReqReadMs),
+    normalizeInvocationTimingStage(record.tReqParseMs),
+    normalizeInvocationTimingStage(record.tUpstreamConnectMs),
+    normalizeInvocationTimingStage(record.tUpstreamTtfbMs),
+  ]
+  if (stages.some((value) => value === null)) {
+    return null
+  }
+  return (stages as number[]).reduce((sum, value) => sum + value, 0)
 }
 
 export function invocationStableKey(record: Pick<ApiInvocation, 'invokeId' | 'occurredAt'>): string {

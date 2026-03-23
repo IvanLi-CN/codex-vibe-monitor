@@ -109,17 +109,27 @@ describe('records stale-data rendering', () => {
     expect(text).toContain('0.025 s')
   })
 
-  it('renders network record totals in seconds while keeping ttfb in milliseconds', () => {
+  it('renders network record first-response-byte totals in seconds', () => {
     render(
       <InvocationRecordsTable
         focus="network"
-        records={[createRecord({ endpoint: '/v1/responses', requesterIp: '127.0.0.1', tUpstreamTtfbMs: 118.2, tTotalMs: 910.4 })]}
+        records={[
+          createRecord({
+            endpoint: '/v1/responses',
+            requesterIp: '127.0.0.1',
+            tReqReadMs: 200,
+            tReqParseMs: 100,
+            tUpstreamConnectMs: 100,
+            tUpstreamTtfbMs: 118.2,
+            tTotalMs: 910.4,
+          }),
+        ]}
         isLoading={false}
       />,
     )
 
     const text = host?.textContent ?? ''
-    expect(text).toContain('118 ms')
+    expect(text).toContain('0.518 s')
     expect(text).toContain('0.91 s')
   })
 
