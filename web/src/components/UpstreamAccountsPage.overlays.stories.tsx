@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { expect, userEvent, within } from 'storybook/test'
+import { userEvent, within, expect, waitFor } from 'storybook/test'
 import { I18nProvider } from '../i18n'
 import UpstreamAccountsPage from '../pages/account-pool/UpstreamAccounts'
 import {
@@ -101,24 +101,150 @@ export const RoutingDialog: Story = {
     const canvas = within(canvasElement)
     const documentScope = within(canvasElement.ownerDocument.body)
     const editButton = await canvas.findByRole('button', {
-      name: /编辑号池密钥|edit pool key/i,
+      name: /编辑路由设置|edit routing settings/i,
     })
     await userEvent.click(editButton)
-    const dialog = documentScope.getByRole('dialog', { name: /编辑号池路由密钥|update pool routing key/i })
+    const dialog = documentScope.getByRole('dialog', {
+      name: /高级路由与同步设置|advanced routing & sync settings/i,
+    })
     await expect(dialog).toBeInTheDocument()
     const generateButton = within(dialog).getByRole('button', { name: /生成密钥|generate key/i })
     await expect(generateButton).toBeInTheDocument()
+    await expect(
+      within(dialog).getByLabelText(/优先队列同步间隔|priority sync interval/i),
+    ).toBeInTheDocument()
+    await expect(
+      within(dialog).getByLabelText(/次级队列同步间隔|secondary sync interval/i),
+    ).toBeInTheDocument()
+    await expect(
+      within(dialog).getByLabelText(/优先可用账号上限|priority available account cap/i),
+    ).toBeInTheDocument()
     await userEvent.click(generateButton)
     const input = within(dialog).getByPlaceholderText(/粘贴新的号池 API Key|paste a new pool api key/i) as HTMLInputElement
     await expect(input.value).toMatch(/^cvm-[0-9a-f]{32}$/)
     await userEvent.click(within(dialog).getByRole('button', { name: /取消|cancel/i }))
-    await userEvent.click(await canvas.findByRole('button', { name: /编辑号池密钥|edit pool key/i }))
-    const reopenedDialog = documentScope.getByRole('dialog', { name: /编辑号池路由密钥|update pool routing key/i })
+    await userEvent.click(await canvas.findByRole('button', { name: /编辑路由设置|edit routing settings/i }))
+    const reopenedDialog = documentScope.getByRole('dialog', {
+      name: /高级路由与同步设置|advanced routing & sync settings/i,
+    })
     const reopenedInput = within(reopenedDialog).getByPlaceholderText(/粘贴新的号池 API Key|paste a new pool api key/i) as HTMLInputElement
     await expect(reopenedInput.value).toBe('')
   },
 }
 
+export const RoutingDialogMaintenanceOnlySave: Story = {
+  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const documentScope = within(canvasElement.ownerDocument.body)
+
+    await userEvent.click(
+      await canvas.findByRole('button', { name: /编辑路由设置|edit routing settings/i }),
+    )
+    const dialog = await documentScope.findByRole('dialog', {
+      name: /高级路由与同步设置|advanced routing & sync settings/i,
+    })
+    const primaryInput = within(dialog).getByLabelText(
+      /优先队列同步间隔|priority sync interval/i,
+    ) as HTMLInputElement
+    const secondaryInput = within(dialog).getByLabelText(
+      /次级队列同步间隔|secondary sync interval/i,
+    ) as HTMLInputElement
+    const capInput = within(dialog).getByLabelText(
+      /优先可用账号上限|priority available account cap/i,
+    ) as HTMLInputElement
+    const apiKeyInput = within(dialog).getByPlaceholderText(
+      /粘贴新的号池 API Key|paste a new pool api key/i,
+    ) as HTMLInputElement
+    const saveButton = within(dialog).getByRole('button', { name: /保存设置|save settings/i })
+
+    await expect(primaryInput.value).toBe('300')
+    await expect(secondaryInput.value).toBe('1800')
+    await expect(capInput.value).toBe('100')
+    await expect(apiKeyInput.value).toBe('')
+    await expect(saveButton).toBeDisabled()
+
+    await userEvent.clear(primaryInput)
+    await userEvent.type(primaryInput, '600')
+    await userEvent.clear(secondaryInput)
+    await userEvent.type(secondaryInput, '2400')
+    await userEvent.clear(capInput)
+    await userEvent.type(capInput, '42')
+
+    await expect(saveButton).toBeEnabled()
+    await userEvent.click(saveButton)
+
+    await waitFor(() => {
+      expect(
+        documentScope.queryByRole('dialog', {
+          name: /高级路由与同步设置|advanced routing & sync settings/i,
+        }),
+      ).not.toBeInTheDocument()
+    })
+
+    await userEvent.click(
+      await canvas.findByRole('button', { name: /编辑路由设置|edit routing settings/i }),
+    )
+    const reopenedDialog = await documentScope.findByRole('dialog', {
+      name: /高级路由与同步设置|advanced routing & sync settings/i,
+    })
+    await expect(
+      (
+        within(reopenedDialog).getByLabelText(
+          /优先队列同步间隔|priority sync interval/i,
+        ) as HTMLInputElement
+      ).value,
+    ).toBe('600')
+    await expect(
+      (
+        within(reopenedDialog).getByLabelText(
+          /次级队列同步间隔|secondary sync interval/i,
+        ) as HTMLInputElement
+      ).value,
+    ).toBe('2400')
+    await expect(
+      (
+        within(reopenedDialog).getByLabelText(
+          /优先可用账号上限|priority available account cap/i,
+        ) as HTMLInputElement
+      ).value,
+    ).toBe('42')
+  },
+}
+
+export const RoutingDialogValidation: Story = {
+  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const documentScope = within(canvasElement.ownerDocument.body)
+
+    await userEvent.click(
+      await canvas.findByRole('button', { name: /编辑路由设置|edit routing settings/i }),
+    )
+    const dialog = await documentScope.findByRole('dialog', {
+      name: /高级路由与同步设置|advanced routing & sync settings/i,
+    })
+    const primaryInput = within(dialog).getByLabelText(
+      /优先队列同步间隔|priority sync interval/i,
+    ) as HTMLInputElement
+    const secondaryInput = within(dialog).getByLabelText(
+      /次级队列同步间隔|secondary sync interval/i,
+    ) as HTMLInputElement
+    const saveButton = within(dialog).getByRole('button', { name: /保存设置|save settings/i })
+
+    await userEvent.clear(primaryInput)
+    await userEvent.type(primaryInput, '600')
+    await userEvent.clear(secondaryInput)
+    await userEvent.type(secondaryInput, '300')
+
+    await expect(
+      within(dialog).getByText(
+        /次级队列同步间隔必须大于等于优先队列同步间隔|secondary sync interval must be greater than or equal to the priority sync interval/i,
+      ),
+    ).toBeInTheDocument()
+    await expect(saveButton).toBeDisabled()
+  },
+}
 export const DetailDrawerGroupNotes: Story = {
   render: () => (
     <AccountPoolStoryRouter

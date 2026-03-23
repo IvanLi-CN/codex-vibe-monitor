@@ -107,6 +107,7 @@
 
 - `docs/specs/README.md`
 - `docs/specs/m2f8k-pool-upstream-attempt-observability/SPEC.md`
+- 后续硬失效矩阵与账号动作审计扩展由 `docs/specs/k2z9h-pool-account-hard-failure-audit/SPEC.md` 继续承接
 
 ## 方案概述（Approach, high-level）
 

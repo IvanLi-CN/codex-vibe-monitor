@@ -146,6 +146,7 @@ const labels = {
   sync: 'Sync / Call',
   lastSuccess: 'Sync',
   lastCall: 'Call',
+  latestAction: 'Latest',
   windows: 'Windows',
   never: 'Never',
   primary: '5h',
@@ -183,6 +184,9 @@ const labels = {
       idle: 'Sync idle',
       syncing: 'Syncing',
     })[status] ?? status,
+  actionSource: () => 'Call',
+  actionReason: (item: { lastActionReasonCode?: string | null }) =>
+    item.lastActionReasonCode ?? null,
 }
 
 const meta = {

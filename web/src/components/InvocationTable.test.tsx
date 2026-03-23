@@ -244,6 +244,9 @@ describe('InvocationTable', () => {
         reasoningEffort: 'high',
         totalTokens: 45642,
         cost: 0.0172,
+        tReqReadMs: 3200,
+        tReqParseMs: 20,
+        tUpstreamConnectMs: 456.7,
         tUpstreamTtfbMs: 149.5,
         tTotalMs: 7794.1,
       },
@@ -275,7 +278,7 @@ describe('InvocationTable', () => {
     expect(html).toContain('推理 41')
     expect(html).toContain('推理 —')
     expect(html).toContain('7.79 s')
-    expect(html).toContain('149.5 ms')
+    expect(html).toContain('3.83 s')
     expect(html).toContain('/v1/responses')
     expect(html).toContain('/v1/chat/completions')
     expect(html).toContain('data-reasoning-effort-tone="high"')
@@ -301,6 +304,9 @@ describe('InvocationTable', () => {
         status: 'success',
         totalTokens: 2048,
         cost: 0.0042,
+        tReqReadMs: 31,
+        tReqParseMs: 1,
+        tUpstreamConnectMs: 9330,
         tUpstreamTtfbMs: 118.2,
         tTotalMs: 910.4,
       },
@@ -317,6 +323,9 @@ describe('InvocationTable', () => {
         status: 'success',
         totalTokens: 1024,
         cost: 0.0021,
+        tReqReadMs: 120,
+        tReqParseMs: 18,
+        tUpstreamConnectMs: 512,
         tUpstreamTtfbMs: 96.5,
         tTotalMs: 804.4,
       },
@@ -325,8 +334,9 @@ describe('InvocationTable', () => {
     expect(html).toContain('账号')
     expect(html).toContain('代理')
     expect(html).toContain('用时')
-    expect(html).toContain('首字耗时')
-    expect(html).toContain('首字耗时 / HTTP 压缩')
+    expect(html).toContain('首字总耗时')
+    expect(html).toContain('首字总耗时 / HTTP 压缩')
+    expect(html).toContain('9.48 s')
     expect(html).toContain('pool-account-a')
     expect(html).toContain('反向代理')
     expect(html).toContain('gzip, br')
@@ -790,12 +800,57 @@ describe('InvocationTable', () => {
     })
 
     const text = document.body.textContent ?? ''
+    expect(text).toContain('首字总耗时')
+    expect(text).toContain('4.02 s')
     expect(text).toContain('3.45 s')
     expect(text).toContain('0.02 s')
     expect(text).toContain('0.457 s')
     expect(text).toContain('88.8 ms')
     expect(text).toContain('12 s')
     expect(text).toContain('12.35 s')
+  })
+
+  it('shows a non-zero first-response-byte total when upstream first-byte stage is 0 ms', async () => {
+    await renderInteractiveTable([
+      {
+        id: 92,
+        invokeId: 'invocation-zero-upstream-first-byte',
+        occurredAt: '2026-03-23T12:53:05Z',
+        createdAt: '2026-03-23T12:53:05Z',
+        source: 'proxy',
+        proxyDisplayName: 'relay-zero-ttfb',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'success',
+        tReqReadMs: 31,
+        tReqParseMs: 1,
+        tUpstreamConnectMs: 9330,
+        tUpstreamTtfbMs: 0,
+        tUpstreamStreamMs: 10080,
+        tRespParseMs: 1,
+        tPersistMs: 1,
+        tTotalMs: 19460,
+      },
+    ])
+
+    expect(document.body.textContent).toContain('首字总 9.36 s')
+
+    const trigger = Array.from(document.querySelectorAll('button')).find((button) => {
+      const label = button.getAttribute('aria-label')
+      return label === '展开详情' || label === 'Show details'
+    })
+    expect(trigger).toBeTruthy()
+
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    const text = document.body.textContent ?? ''
+    expect(text).toContain('首字总耗时')
+    expect(text).toContain('9.36 s')
+    expect(text).toContain('上游首字节')
+    expect(text).toContain('0.0 ms')
   })
 
   it('ticks running elapsed time on the client while leaving first-byte data empty', async () => {

@@ -8,7 +8,10 @@ import type {
   EffectiveRoutingRule,
   LoginSessionStatusResponse,
   OauthMailboxStatus,
+  PoolRoutingMaintenanceSettings,
+  PoolRoutingSettings,
   TagSummary,
+  UpdatePoolRoutingSettingsPayload,
   UpdateUpstreamAccountGroupPayload,
   UpdateUpstreamAccountPayload,
   UpstreamAccountDetail,
@@ -22,10 +25,7 @@ import { duplicateReasons } from './UpstreamAccountsPage.story-data'
 
 type StoryStore = {
   writesEnabled: boolean
-  routing: {
-    apiKeyConfigured: boolean
-    maskedApiKey?: string | null
-  }
+  routing: PoolRoutingSettings
   accounts: UpstreamAccountSummary[]
   details: Record<number, UpstreamAccountDetail>
   groupNotes: Record<string, string>
@@ -109,6 +109,11 @@ export type StoryInitialEntry =
 const now = '2026-03-17T12:30:00.000Z'
 const storyFutureExpiresAt = '2026-03-20T12:50:00.000Z'
 const storyFutureLoginExpiresAt = '2026-03-20T12:40:00.000Z'
+const defaultRoutingMaintenance: PoolRoutingMaintenanceSettings = {
+  primarySyncIntervalSecs: 300,
+  secondarySyncIntervalSecs: 1800,
+  priorityAvailableAccountCap: 100,
+}
 
 function atMinuteOffset(minutes: number) {
   return new Date(Date.parse(now) + minutes * 60_000).toISOString()
@@ -939,6 +944,7 @@ function createStore(): StoryStore {
     routing: {
       apiKeyConfigured: true,
       maskedApiKey: 'pool-live••••••c0de',
+      maintenance: clone(defaultRoutingMaintenance),
     },
     groupNotes: {
       production: 'Premium traffic group note.',
@@ -1229,11 +1235,34 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
       }
 
       if (path === '/api/pool/routing-settings' && method === 'PUT') {
-        const body = parseBody<{ apiKey?: string }>(init?.body, {})
-        const trimmed = body.apiKey?.trim() ?? ''
+        const body = parseBody<UpdatePoolRoutingSettingsPayload>(init?.body, {})
+        const trimmed = body.apiKey?.trim()
         store.routing = {
-          apiKeyConfigured: trimmed.length > 0,
-          maskedApiKey: trimmed ? maskApiKey(trimmed) : null,
+          ...store.routing,
+          ...(trimmed
+            ? {
+                apiKeyConfigured: true,
+                maskedApiKey: maskApiKey(trimmed),
+              }
+            : {}),
+          ...(body.maintenance
+            ? {
+                maintenance: {
+                  primarySyncIntervalSecs:
+                    body.maintenance.primarySyncIntervalSecs ??
+                    store.routing.maintenance?.primarySyncIntervalSecs ??
+                    defaultRoutingMaintenance.primarySyncIntervalSecs,
+                  secondarySyncIntervalSecs:
+                    body.maintenance.secondarySyncIntervalSecs ??
+                    store.routing.maintenance?.secondarySyncIntervalSecs ??
+                    defaultRoutingMaintenance.secondarySyncIntervalSecs,
+                  priorityAvailableAccountCap:
+                    body.maintenance.priorityAvailableAccountCap ??
+                    store.routing.maintenance?.priorityAvailableAccountCap ??
+                    defaultRoutingMaintenance.priorityAvailableAccountCap,
+                },
+              }
+            : {}),
         }
         return jsonResponse(clone(store.routing))
       }

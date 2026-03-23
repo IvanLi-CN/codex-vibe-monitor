@@ -100,24 +100,54 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.limitLegendTitle": "Quota legend",
     "accountPool.upstreamAccounts.limitLegendDescription":
       "OAuth accounts show normalized upstream usage snapshots. API key accounts show local placeholder limits until routing metrics are wired in.",
-    "accountPool.upstreamAccounts.routing.title": "Pool routing settings",
+    "accountPool.upstreamAccounts.routing.title":
+      "Advanced routing & sync settings",
     "accountPool.upstreamAccounts.routing.description":
-      "Set the single downstream API key that routes /v1 traffic into the internal account pool.",
+      "Edit the downstream pool API key and the tiered maintenance sync cadence for the account pool.",
     "accountPool.upstreamAccounts.routing.currentKey": "Current pool API key",
-    "accountPool.upstreamAccounts.routing.edit": "Edit pool key",
+    "accountPool.upstreamAccounts.routing.edit": "Edit routing settings",
     "accountPool.upstreamAccounts.routing.close": "Close dialog",
     "accountPool.upstreamAccounts.routing.configured": "Configured",
     "accountPool.upstreamAccounts.routing.notConfigured": "Not configured",
+    "accountPool.upstreamAccounts.routing.apiKeySectionTitle":
+      "Pool route key",
+    "accountPool.upstreamAccounts.routing.apiKeySectionDescription":
+      "Optional. Leave blank to keep the current downstream pool API key unchanged.",
     "accountPool.upstreamAccounts.routing.apiKeyLabel":
       "Downstream pool API key",
     "accountPool.upstreamAccounts.routing.generate": "Generate key",
     "accountPool.upstreamAccounts.routing.apiKeyPlaceholder":
       "Paste a new pool API key to rotate the route target",
+    "accountPool.upstreamAccounts.routing.maintenanceSectionTitle":
+      "Tiered maintenance sync",
+    "accountPool.upstreamAccounts.routing.maintenanceSectionDescription":
+      "Healthy OAuth accounts with both windows available stay in the priority queue until the cap is reached; overflow accounts fall back to the secondary sync interval.",
+    "accountPool.upstreamAccounts.routing.primarySyncIntervalLabel":
+      "Priority sync interval",
+    "accountPool.upstreamAccounts.routing.secondarySyncIntervalLabel":
+      "Secondary sync interval",
+    "accountPool.upstreamAccounts.routing.priorityCapLabel":
+      "Priority available account cap",
+    "accountPool.upstreamAccounts.routing.priorityCapValue":
+      "Top {{count}} accounts",
+    "accountPool.upstreamAccounts.routing.intervalHours": "{{count}}h",
+    "accountPool.upstreamAccounts.routing.intervalMinutes": "{{count}}m",
+    "accountPool.upstreamAccounts.routing.intervalSeconds": "{{count}}s",
     "accountPool.upstreamAccounts.routing.dialogTitle":
-      "Update pool routing key",
+      "Advanced routing & sync settings",
     "accountPool.upstreamAccounts.routing.dialogDescription":
-      "Replace the downstream API key that routes /v1 traffic into the internal account pool.",
-    "accountPool.upstreamAccounts.routing.save": "Save pool key",
+      "Edit the pool route key and the two-tier maintenance queue without touching environment variables.",
+    "accountPool.upstreamAccounts.routing.save": "Save settings",
+    "accountPool.upstreamAccounts.routing.validation.integerRequired":
+      "Sync fields must be positive integers.",
+    "accountPool.upstreamAccounts.routing.validation.primaryMin":
+      "Priority sync interval must be at least 60 seconds.",
+    "accountPool.upstreamAccounts.routing.validation.secondaryMin":
+      "Secondary sync interval must be at least 60 seconds.",
+    "accountPool.upstreamAccounts.routing.validation.secondaryAtLeastPrimary":
+      "Secondary sync interval must be greater than or equal to the priority sync interval.",
+    "accountPool.upstreamAccounts.routing.validation.priorityCapMin":
+      "Priority available account cap must be at least 1.",
     "accountPool.upstreamAccounts.actions.refresh": "Refresh",
     "accountPool.upstreamAccounts.actions.addAccount": "Add account",
     "accountPool.upstreamAccounts.actions.addOauth": "Add OAuth account",
@@ -743,8 +773,73 @@ const baseTranslations = {
       "Last successful sync",
     "accountPool.upstreamAccounts.fields.credits": "Credits",
     "accountPool.upstreamAccounts.fields.lastError": "Last error",
+    "accountPool.upstreamAccounts.table.latestActionShort": "Latest",
     "accountPool.upstreamAccounts.validation.displayNameDuplicate":
       "Display name must be unique.",
+    "accountPool.upstreamAccounts.latestAction.title": "Latest account action",
+    "accountPool.upstreamAccounts.latestAction.empty":
+      "No account action has been recorded yet.",
+    "accountPool.upstreamAccounts.latestAction.unknown": "Unknown",
+    "accountPool.upstreamAccounts.latestAction.fields.action": "Action",
+    "accountPool.upstreamAccounts.latestAction.fields.source": "Source",
+    "accountPool.upstreamAccounts.latestAction.fields.reason": "Reason",
+    "accountPool.upstreamAccounts.latestAction.fields.httpStatus":
+      "HTTP status",
+    "accountPool.upstreamAccounts.latestAction.fields.occurredAt":
+      "Occurred at",
+    "accountPool.upstreamAccounts.latestAction.fields.invokeId":
+      "Invoke ID",
+    "accountPool.upstreamAccounts.latestAction.fields.message": "Message",
+    "accountPool.upstreamAccounts.latestAction.actions.route_recovered":
+      "Route recovered",
+    "accountPool.upstreamAccounts.latestAction.actions.route_cooldown_started":
+      "Route cooldown",
+    "accountPool.upstreamAccounts.latestAction.actions.route_hard_unavailable":
+      "Hard unavailable",
+    "accountPool.upstreamAccounts.latestAction.actions.sync_succeeded":
+      "Sync succeeded",
+    "accountPool.upstreamAccounts.latestAction.actions.sync_failed":
+      "Sync failed",
+    "accountPool.upstreamAccounts.latestAction.actions.account_updated":
+      "Account updated",
+    "accountPool.upstreamAccounts.latestAction.sources.call": "Call",
+    "accountPool.upstreamAccounts.latestAction.sources.sync_manual":
+      "Manual sync",
+    "accountPool.upstreamAccounts.latestAction.sources.sync_maintenance":
+      "Maintenance sync",
+    "accountPool.upstreamAccounts.latestAction.sources.sync_post_create":
+      "Post-create sync",
+    "accountPool.upstreamAccounts.latestAction.sources.oauth_import":
+      "OAuth import",
+    "accountPool.upstreamAccounts.latestAction.sources.account_update":
+      "Account update",
+    "accountPool.upstreamAccounts.latestAction.reasons.sync_ok":
+      "Sync completed successfully",
+    "accountPool.upstreamAccounts.latestAction.reasons.account_updated":
+      "Account settings were updated",
+    "accountPool.upstreamAccounts.latestAction.reasons.sync_error":
+      "Sync failed",
+    "accountPool.upstreamAccounts.latestAction.reasons.transport_failure":
+      "Transport failure",
+    "accountPool.upstreamAccounts.latestAction.reasons.reauth_required":
+      "Reauthentication required",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_401":
+      "Upstream rejected credentials (401)",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_402":
+      "Plan or billing rejected upstream access (402)",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_403":
+      "Upstream rejected permissions (403)",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_429_rate_limit":
+      "Upstream rate limited the account",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_429_quota_exhausted":
+      "Upstream quota or weekly cap was exhausted",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_5xx":
+      "Upstream service failure",
+    "accountPool.upstreamAccounts.recentActions.title": "Recent account events",
+    "accountPool.upstreamAccounts.recentActions.description":
+      "Latest call and sync actions for this account.",
+    "accountPool.upstreamAccounts.recentActions.empty":
+      "No recent account events yet.",
     "accountPool.upstreamAccounts.duplicate.badge": "Duplicate",
     "accountPool.upstreamAccounts.duplicate.warningTitle":
       "{{name}} was saved, but the upstream identity looks duplicated.",
@@ -1172,6 +1267,7 @@ const baseTranslations = {
     "records.table.network.endpoint": "Endpoint",
     "records.table.network.requesterIp": "Requester IP",
     "records.table.network.ttfb": "TTFB",
+    "records.table.network.firstResponseByteTotal": "System to first byte",
     "records.table.network.totalMs": "Total time",
     "records.table.exception.failureKind": "Failure kind",
     "records.table.exception.failureClass": "Failure class",
@@ -1223,8 +1319,11 @@ const baseTranslations = {
     "table.column.costUsd": "Cost (USD)",
     "table.column.latency": "Elapsed",
     "table.column.firstByteCompression": "First byte / HTTP compression",
+    "table.column.firstResponseByteTotalCompression":
+      "System to first byte / HTTP compression",
     "table.column.totalLatencyShort": "Elapsed",
     "table.column.firstByteLatencyShort": "TTFB",
+    "table.column.firstResponseByteTotalShort": "First byte total",
     "table.column.httpCompressionShort": "HTTP",
     "table.latency.firstByteTotal": "First byte / Elapsed",
     "table.column.error": "Error",
@@ -1250,6 +1349,7 @@ const baseTranslations = {
     "table.details.promptCacheKey": "Prompt Cache Key",
     "table.details.totalLatency": "Elapsed time",
     "table.details.firstByteLatency": "First-byte latency",
+    "table.details.firstResponseByteTotal": "System to first byte",
     "table.details.httpCompression": "HTTP compression",
     "table.details.requestedServiceTier": "Requested service tier",
     "table.details.serviceTier": "Service tier",
@@ -1420,22 +1520,50 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.limitLegendTitle": "额度说明",
     "accountPool.upstreamAccounts.limitLegendDescription":
       "OAuth 账号展示上游归一化后的真实快照；API Key 账号在路由计量接入前，展示本地占位限额。",
-    "accountPool.upstreamAccounts.routing.title": "号池路由设置",
+    "accountPool.upstreamAccounts.routing.title": "高级路由与同步设置",
     "accountPool.upstreamAccounts.routing.description":
-      "填写唯一的下游 API Key；命中它的 /v1 请求会改走内部账号池。",
+      "直接编辑号池下游 API Key，以及分层维护同步频率，不再依赖环境变量。",
     "accountPool.upstreamAccounts.routing.currentKey": "当前号池 API Key",
-    "accountPool.upstreamAccounts.routing.edit": "编辑号池密钥",
+    "accountPool.upstreamAccounts.routing.edit": "编辑路由设置",
     "accountPool.upstreamAccounts.routing.close": "关闭弹窗",
     "accountPool.upstreamAccounts.routing.configured": "已配置",
     "accountPool.upstreamAccounts.routing.notConfigured": "未配置",
+    "accountPool.upstreamAccounts.routing.apiKeySectionTitle": "号池路由密钥",
+    "accountPool.upstreamAccounts.routing.apiKeySectionDescription":
+      "可选。留空即可保留当前下游号池 API Key，不会强制你重新填写。",
     "accountPool.upstreamAccounts.routing.apiKeyLabel": "下游号池 API Key",
     "accountPool.upstreamAccounts.routing.generate": "生成密钥",
     "accountPool.upstreamAccounts.routing.apiKeyPlaceholder":
       "粘贴新的号池 API Key 以切换内部路由入口",
-    "accountPool.upstreamAccounts.routing.dialogTitle": "编辑号池路由密钥",
+    "accountPool.upstreamAccounts.routing.maintenanceSectionTitle":
+      "分层维护同步",
+    "accountPool.upstreamAccounts.routing.maintenanceSectionDescription":
+      "双窗口都有额度的健康 OAuth 账号会先进入优先队列，超过上限的账号自动落到次级同步频率。",
+    "accountPool.upstreamAccounts.routing.primarySyncIntervalLabel":
+      "优先队列同步间隔",
+    "accountPool.upstreamAccounts.routing.secondarySyncIntervalLabel":
+      "次级队列同步间隔",
+    "accountPool.upstreamAccounts.routing.priorityCapLabel":
+      "优先可用账号上限",
+    "accountPool.upstreamAccounts.routing.priorityCapValue":
+      "前 {{count}} 个账号",
+    "accountPool.upstreamAccounts.routing.intervalHours": "{{count}} 小时",
+    "accountPool.upstreamAccounts.routing.intervalMinutes": "{{count}} 分钟",
+    "accountPool.upstreamAccounts.routing.intervalSeconds": "{{count}} 秒",
+    "accountPool.upstreamAccounts.routing.dialogTitle": "高级路由与同步设置",
     "accountPool.upstreamAccounts.routing.dialogDescription":
-      "通过对话框替换当前生效的下游 API Key；保存后新的 /v1 请求会按新 key 命中内部账号池。",
-    "accountPool.upstreamAccounts.routing.save": "保存号池密钥",
+      "在项目界面里直接编辑号池路由密钥和双层 maintenance 队列参数。",
+    "accountPool.upstreamAccounts.routing.save": "保存设置",
+    "accountPool.upstreamAccounts.routing.validation.integerRequired":
+      "同步字段必须填写为正整数。",
+    "accountPool.upstreamAccounts.routing.validation.primaryMin":
+      "优先队列同步间隔不能小于 60 秒。",
+    "accountPool.upstreamAccounts.routing.validation.secondaryMin":
+      "次级队列同步间隔不能小于 60 秒。",
+    "accountPool.upstreamAccounts.routing.validation.secondaryAtLeastPrimary":
+      "次级队列同步间隔必须大于等于优先队列同步间隔。",
+    "accountPool.upstreamAccounts.routing.validation.priorityCapMin":
+      "优先可用账号上限不能小于 1。",
     "accountPool.upstreamAccounts.actions.refresh": "刷新列表",
     "accountPool.upstreamAccounts.actions.addAccount": "新增账号",
     "accountPool.upstreamAccounts.actions.addOauth": "新增 OAuth 账号",
@@ -2006,8 +2134,68 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.fields.lastSuccessSync": "最近成功同步",
     "accountPool.upstreamAccounts.fields.credits": "Credits",
     "accountPool.upstreamAccounts.fields.lastError": "最近错误",
+    "accountPool.upstreamAccounts.table.latestActionShort": "最近动作",
     "accountPool.upstreamAccounts.validation.displayNameDuplicate":
       "显示名称必须唯一。",
+    "accountPool.upstreamAccounts.latestAction.title": "最近账号动作",
+    "accountPool.upstreamAccounts.latestAction.empty":
+      "暂时还没有记录到账号动作。",
+    "accountPool.upstreamAccounts.latestAction.unknown": "未知",
+    "accountPool.upstreamAccounts.latestAction.fields.action": "动作",
+    "accountPool.upstreamAccounts.latestAction.fields.source": "来源",
+    "accountPool.upstreamAccounts.latestAction.fields.reason": "原因",
+    "accountPool.upstreamAccounts.latestAction.fields.httpStatus": "HTTP 状态",
+    "accountPool.upstreamAccounts.latestAction.fields.occurredAt": "发生时间",
+    "accountPool.upstreamAccounts.latestAction.fields.invokeId": "调用 ID",
+    "accountPool.upstreamAccounts.latestAction.fields.message": "消息",
+    "accountPool.upstreamAccounts.latestAction.actions.route_recovered":
+      "路由恢复成功",
+    "accountPool.upstreamAccounts.latestAction.actions.route_cooldown_started":
+      "进入冷却",
+    "accountPool.upstreamAccounts.latestAction.actions.route_hard_unavailable":
+      "标记为硬失效",
+    "accountPool.upstreamAccounts.latestAction.actions.sync_succeeded":
+      "同步成功",
+    "accountPool.upstreamAccounts.latestAction.actions.sync_failed": "同步失败",
+    "accountPool.upstreamAccounts.latestAction.actions.account_updated":
+      "账号已更新",
+    "accountPool.upstreamAccounts.latestAction.sources.call": "调用",
+    "accountPool.upstreamAccounts.latestAction.sources.sync_manual":
+      "手动同步",
+    "accountPool.upstreamAccounts.latestAction.sources.sync_maintenance":
+      "维护同步",
+    "accountPool.upstreamAccounts.latestAction.sources.sync_post_create":
+      "创建后同步",
+    "accountPool.upstreamAccounts.latestAction.sources.oauth_import":
+      "OAuth 导入",
+    "accountPool.upstreamAccounts.latestAction.sources.account_update":
+      "账号修改",
+    "accountPool.upstreamAccounts.latestAction.reasons.sync_ok": "同步完成",
+    "accountPool.upstreamAccounts.latestAction.reasons.account_updated":
+      "账号设置已更新",
+    "accountPool.upstreamAccounts.latestAction.reasons.sync_error":
+      "同步失败",
+    "accountPool.upstreamAccounts.latestAction.reasons.transport_failure":
+      "网络或传输失败",
+    "accountPool.upstreamAccounts.latestAction.reasons.reauth_required":
+      "需要重新登录",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_401":
+      "上游拒绝凭据（401）",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_402":
+      "上游因套餐或计费拒绝访问（402）",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_403":
+      "上游拒绝权限（403）",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_429_rate_limit":
+      "上游对该账号限流",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_429_quota_exhausted":
+      "上游额度或周限已耗尽",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_5xx":
+      "上游服务异常",
+    "accountPool.upstreamAccounts.recentActions.title": "最近账号事件",
+    "accountPool.upstreamAccounts.recentActions.description":
+      "展示这条账号最近的调用与同步动作。",
+    "accountPool.upstreamAccounts.recentActions.empty":
+      "暂时还没有最近事件。",
     "accountPool.upstreamAccounts.duplicate.badge": "重复账号",
     "accountPool.upstreamAccounts.duplicate.warningTitle":
       "{{name}} 已保存，但检测到上游身份重复。",
@@ -2420,6 +2608,7 @@ const baseTranslations = {
     "records.table.network.endpoint": "端点",
     "records.table.network.requesterIp": "请求方 IP",
     "records.table.network.ttfb": "TTFB",
+    "records.table.network.firstResponseByteTotal": "首字总耗时",
     "records.table.network.totalMs": "总耗时",
     "records.table.exception.failureKind": "失败分类",
     "records.table.exception.failureClass": "异常类别",
@@ -2472,8 +2661,10 @@ const baseTranslations = {
     "table.column.costUsd": "成本（美元）",
     "table.column.latency": "用时",
     "table.column.firstByteCompression": "首字耗时 / HTTP 压缩",
+    "table.column.firstResponseByteTotalCompression": "首字总耗时 / HTTP 压缩",
     "table.column.totalLatencyShort": "用时",
     "table.column.firstByteLatencyShort": "首字",
+    "table.column.firstResponseByteTotalShort": "首字总",
     "table.column.httpCompressionShort": "HTTP",
     "table.latency.firstByteTotal": "首字耗时 / 用时",
     "table.column.error": "错误",
@@ -2499,6 +2690,7 @@ const baseTranslations = {
     "table.details.promptCacheKey": "Prompt Cache Key",
     "table.details.totalLatency": "用时",
     "table.details.firstByteLatency": "首字耗时",
+    "table.details.firstResponseByteTotal": "首字总耗时",
     "table.details.httpCompression": "HTTP 压缩算法",
     "table.details.requestedServiceTier": "Requested service tier",
     "table.details.serviceTier": "Service tier",

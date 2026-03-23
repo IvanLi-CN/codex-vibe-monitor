@@ -13,6 +13,7 @@ import {
   isPoolRouteMode,
   formatServiceTier,
   getFastIndicatorState,
+  resolveFirstResponseByteTotalMs,
   resolveInvocationEndpointDisplay,
   resolveInvocationAccountLabel,
   type FastIndicatorState,
@@ -264,7 +265,7 @@ interface InvocationRowViewModel {
   endpointDisplay: InvocationEndpointDisplay
   errorMessage: string
   totalLatencyValue: string
-  firstByteLatencyValue: string
+  firstResponseByteTotalValue: string
   responseContentEncodingValue: string
   detailNotice: string | null
   detailPairs: Array<{ key: string; label: string; value: ReactNode }>
@@ -473,7 +474,10 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
         const totalLatencyValue = isInFlight
           ? formatElapsedSecondsFromTimestamp(record.occurredAt, localeTag, nowMs)
           : formatSecondsFromMilliseconds(record.tTotalMs, localeTag)
-        const firstByteLatencyValue = formatMilliseconds(record.tUpstreamTtfbMs)
+        const firstResponseByteTotalValue = formatSecondsFromMilliseconds(
+          resolveFirstResponseByteTotalMs(record),
+          localeTag,
+        )
         const responseContentEncodingValue = formatResponseContentEncoding(record.responseContentEncoding)
         const occurredValid = !Number.isNaN(occurred.getTime())
         const occurredTime = occurredValid ? timeFormatter.format(occurred) : record.occurredAt
@@ -570,7 +574,11 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
             value: formatOptionalText(record.poolAttemptTerminalReason),
           },
           { key: 'totalLatency', label: t('table.details.totalLatency'), value: totalLatencyValue },
-          { key: 'firstByteLatency', label: t('table.details.firstByteLatency'), value: firstByteLatencyValue },
+          {
+            key: 'firstResponseByteTotal',
+            label: t('table.details.firstResponseByteTotal'),
+            value: firstResponseByteTotalValue,
+          },
           { key: 'responseContentEncoding', label: t('table.details.httpCompression'), value: responseContentEncodingValue },
           { key: 'requestedServiceTier', label: t('table.details.requestedServiceTier'), value: requestedServiceTierValue },
           { key: 'serviceTier', label: t('table.details.serviceTier'), value: serviceTierValue },
@@ -641,7 +649,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
           endpointDisplay,
           errorMessage,
           totalLatencyValue,
-          firstByteLatencyValue,
+          firstResponseByteTotalValue,
           responseContentEncodingValue,
           detailNotice,
           detailPairs,
@@ -985,7 +993,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
 
               <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-mono text-base-content/70">
                 <span title={row.totalLatencyValue}>{`${t('table.column.totalLatencyShort')} ${row.totalLatencyValue}`}</span>
-                <span title={row.firstByteLatencyValue}>{`${t('table.column.firstByteLatencyShort')} ${row.firstByteLatencyValue}`}</span>
+                <span title={row.firstResponseByteTotalValue}>{`${t('table.column.firstResponseByteTotalShort')} ${row.firstResponseByteTotalValue}`}</span>
                 <span title={row.responseContentEncodingValue}>{`${t('table.column.httpCompressionShort')} ${row.responseContentEncodingValue}`}</span>
               </div>
 
@@ -1066,7 +1074,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                   <div className="flex flex-col leading-tight">
                     <span>{t('table.column.latency')}</span>
                     <span className="text-[10px] font-medium normal-case tracking-normal text-base-content/60">
-                      {t('table.column.firstByteCompression')}
+                      {t('table.column.firstResponseByteTotalCompression')}
                     </span>
                   </div>
                 </th>
@@ -1163,9 +1171,9 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                           </span>
                           <span
                             className="truncate whitespace-nowrap text-[11px] text-base-content/70"
-                            title={`${row.firstByteLatencyValue} · ${row.responseContentEncodingValue}`}
+                            title={`${row.firstResponseByteTotalValue} · ${row.responseContentEncodingValue}`}
                           >
-                            {`${row.firstByteLatencyValue} · ${row.responseContentEncodingValue}`}
+                            {`${row.firstResponseByteTotalValue} · ${row.responseContentEncodingValue}`}
                           </span>
                         </div>
                       </td>

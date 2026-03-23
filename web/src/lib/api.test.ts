@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS,
   createOauthMailboxSession,
   fetchInvocationRecords,
   fetchForwardProxyLiveStats,
@@ -585,6 +586,14 @@ describe("account pool frontend API helpers", () => {
     expect(response.routing).toEqual({
       apiKeyConfigured: true,
       maskedApiKey: "pool-live••••••c0de",
+      maintenance: {
+        primarySyncIntervalSecs:
+          DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS.primarySyncIntervalSecs,
+        secondarySyncIntervalSecs:
+          DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS.secondarySyncIntervalSecs,
+        priorityAvailableAccountCap:
+          DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS.priorityAvailableAccountCap,
+      },
     });
   });
 
@@ -725,6 +734,11 @@ describe("account pool frontend API helpers", () => {
           JSON.stringify({
             apiKeyConfigured: true,
             maskedApiKey: "pool-live••••••cret",
+            maintenance: {
+              primarySyncIntervalSecs: 300,
+              secondarySyncIntervalSecs: 1800,
+              priorityAvailableAccountCap: 100,
+            },
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         );
@@ -736,6 +750,11 @@ describe("account pool frontend API helpers", () => {
 
     expect(response.apiKeyConfigured).toBe(true);
     expect(response.maskedApiKey).toBe("pool-live••••••cret");
+    expect(response.maintenance).toEqual({
+      primarySyncIntervalSecs: 300,
+      secondarySyncIntervalSecs: 1800,
+      priorityAvailableAccountCap: 100,
+    });
   });
 
   it("normalizes sticky key conversations for one upstream account", async () => {

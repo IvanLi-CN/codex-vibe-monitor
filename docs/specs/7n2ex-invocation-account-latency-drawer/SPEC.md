@@ -153,6 +153,28 @@
   capture_scope: element
   sensitive_exclusion: N/A
   submission_gate: approved
+  story_id_or_title: Monitoring / InvocationTable / First Response Byte Semantics
+  state: cumulative first-byte total with expanded details
+  evidence_note: 验证主监控表的首行样本在列表中显示 `首字总耗时 9.36 s`，展开详情后同时显示 `首字总耗时 9.36 s` 与阶段项 `上游首字节 0.0 ms`，从而明确区分累计口径与阶段口径。
+  image:
+  ![InvocationTable first response byte semantics](./assets/invocation-table-first-response-byte-semantics.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Records / InvocationRecordsTable / First Response Byte Semantics
+  state: records network focus first-byte-total semantics
+  evidence_note: 验证 Records 网络视图中，新列标题已经切换为 `首字总耗时`，首行样本显示 `9.36 s`，展开详情后继续同时展示累计 `首字总耗时` 与阶段项 `上游首字节 0 ms`。
+  image:
+  ![InvocationRecordsTable first response byte semantics](./assets/invocation-records-first-response-byte-semantics.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: approved
   story_id_or_title: Monitoring / InvocationTable / Default
   state: summary
   evidence_note: 验证列表摘要区已经拆分为“账号 / 代理”与独立“时延”列，并在时延列展示总耗时、首字耗时和 HTTP 压缩算法。

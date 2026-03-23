@@ -2,7 +2,7 @@ use anyhow::{Context, Result, bail};
 use axum::{
     Json,
     body::{Body, Bytes},
-    http::{HeaderMap, Method, StatusCode, Uri, header},
+    http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode, Uri, header},
     response::{IntoResponse, Response},
 };
 use futures_util::TryStreamExt;
@@ -35,6 +35,7 @@ const PROMPT_CACHE_HEADER_NAMES: &[&str] = &[
 ];
 const OAUTH_FINGERPRINT_VERSION: &str = "v1";
 pub(crate) const OAUTH_REQUEST_BODY_PREFIX_FINGERPRINT_MAX_BYTES: usize = 64 * 1024;
+const OAUTH_TRANSPORT_FAILURE_KIND_HEADER: &str = "x-codex-oauth-transport-failure";
 const OAUTH_FINGERPRINTED_HEADER_NAMES: &[&str] = &[
     "session_id",
     "traceparent",
@@ -122,6 +123,25 @@ pub(crate) type OauthResponsesDebugInfo = OauthRequestDebugInfo;
 pub(crate) struct OauthUpstreamResponse {
     pub(crate) response: Response,
     pub(crate) request_debug: Option<OauthRequestDebugInfo>,
+}
+
+pub(crate) fn oauth_transport_failure_kind(headers: &HeaderMap) -> Option<&'static str> {
+    match headers
+        .get(OAUTH_TRANSPORT_FAILURE_KIND_HEADER)
+        .and_then(|value| value.to_str().ok())?
+    {
+        crate::PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT => {
+            Some(crate::PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT)
+        }
+        _ => None,
+    }
+}
+
+fn tag_oauth_transport_failure(response: &mut Response, failure_kind: &'static str) {
+    response.headers_mut().insert(
+        HeaderName::from_static(OAUTH_TRANSPORT_FAILURE_KIND_HEADER),
+        HeaderValue::from_static(failure_kind),
+    );
 }
 
 struct PreparedResponsesRequestBody {
@@ -337,7 +357,7 @@ async fn oauth_models(
 async fn oauth_responses(
     client: &Client,
     headers: &HeaderMap,
-    handshake_timeout: Duration,
+    _handshake_timeout: Duration,
     response_timeout: Duration,
     account_id: Option<i64>,
     access_token: &str,
@@ -408,7 +428,7 @@ async fn oauth_responses(
         "forwarding oauth responses request"
     );
     let request_started = Instant::now();
-    let upstream = match timeout(handshake_timeout, request.send()).await {
+    let upstream = match timeout(response_timeout, request.send()).await {
         Ok(Ok(response)) => response,
         Ok(Err(err)) => {
             return OauthUpstreamResponse {
@@ -421,15 +441,21 @@ async fn oauth_responses(
             };
         }
         Err(_) => {
+            let message = format!(
+                "oauth codex upstream handshake timed out after {}ms",
+                response_timeout.as_millis()
+            );
+            let mut response = error_response(
+                StatusCode::BAD_GATEWAY,
+                &message,
+                "oauth_upstream_handshake_timeout",
+            );
+            tag_oauth_transport_failure(
+                &mut response,
+                crate::PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
+            );
             return OauthUpstreamResponse {
-                response: error_response(
-                    StatusCode::BAD_GATEWAY,
-                    &format!(
-                        "oauth codex upstream handshake timed out after {}ms",
-                        handshake_timeout.as_millis()
-                    ),
-                    "oauth_upstream_handshake_timeout",
-                ),
+                response,
                 request_debug: Some(request_debug),
             };
         }
