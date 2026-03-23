@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode, useEffect, useMemo, useState } from 'react'
+import { Fragment, type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 import { AppIcon } from './AppIcon'
 import type { ApiInvocation } from '../lib/api'
 import {
@@ -120,40 +120,43 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
     setDrawerAccountLabel(null)
   }
 
-  const renderAccountValue = (
-    accountLabel: string,
-    accountId: number | null,
-    accountClickable: boolean,
-    className?: string,
-  ) => {
-    if (!accountClickable || accountId == null) {
+  const renderAccountValue = useCallback(
+    (
+      accountLabel: string,
+      accountId: number | null,
+      accountClickable: boolean,
+      className?: string,
+    ) => {
+      if (!accountClickable || accountId == null) {
+        return (
+          <span
+            className={cn(
+              'inline-flex max-w-full min-w-0 items-center justify-center truncate whitespace-nowrap leading-none',
+              className,
+            )}
+            title={accountLabel}
+          >
+            {accountLabel}
+          </span>
+        )
+      }
+
       return (
-        <span
+        <button
+          type="button"
           className={cn(
-            'inline-flex max-w-full min-w-0 items-center justify-center truncate whitespace-nowrap leading-none',
+            'inline-flex max-w-full min-w-0 items-center justify-center truncate whitespace-nowrap appearance-none border-0 bg-transparent p-0 align-middle font-inherit leading-none text-center text-current no-underline shadow-none transition hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
             className,
           )}
+          onClick={() => openAccountDrawer(accountId, accountLabel)}
           title={accountLabel}
         >
           {accountLabel}
-        </span>
+        </button>
       )
-    }
-
-    return (
-      <button
-        type="button"
-        className={cn(
-          'inline-flex max-w-full min-w-0 items-center justify-center truncate whitespace-nowrap appearance-none border-0 bg-transparent p-0 align-middle font-inherit leading-none text-center text-current no-underline shadow-none transition hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary',
-          className,
-        )}
-        onClick={() => openAccountDrawer(accountId, accountLabel)}
-        title={accountLabel}
-      >
-        {accountLabel}
-      </button>
-    )
-  }
+    },
+    [],
+  )
 
   useEffect(() => {
     setExpandedId((current) => {
@@ -248,7 +251,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
           ...detailView,
         }
       }),
-    [records, currencyFormatter, dateFormatter, locale, localeTag, nowMs, numberFormatter, t, timeFormatter],
+    [records, currencyFormatter, dateFormatter, locale, localeTag, nowMs, numberFormatter, renderAccountValue, t, timeFormatter],
   )
 
   const hasInFlightRows = useMemo(() => rows.some((row) => row.isInFlight), [rows])

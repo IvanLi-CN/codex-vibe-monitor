@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { AppIcon } from './AppIcon'
 import { Badge } from './ui/badge'
