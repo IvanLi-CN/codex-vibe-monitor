@@ -9290,6 +9290,54 @@ async fn send_pool_request_with_failover(
                     return Err(err);
                 }
                 Ok(PoolAccountResolution::NoCandidate) => {
+                    if uses_timeout_route_failover && timeout_route_failover_pending {
+                        let mut err = last_error.unwrap_or(PoolUpstreamError {
+                            account: None,
+                            status: StatusCode::BAD_GATEWAY,
+                            message: "no alternate upstream route is available after timeout"
+                                .to_string(),
+                            failure_kind: PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT,
+                            connect_latency_ms: 0.0,
+                            upstream_error_code: None,
+                            upstream_error_message: None,
+                            upstream_request_id: None,
+                            oauth_responses_debug: None,
+                            attempt_summary: PoolAttemptSummary::default(),
+                        });
+                        err.status = StatusCode::BAD_GATEWAY;
+                        err.message =
+                            "no alternate upstream route is available after timeout".to_string();
+                        err.failure_kind = PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT;
+                        err.upstream_error_code = None;
+                        err.upstream_error_message = None;
+                        err.upstream_request_id = None;
+                        err.attempt_summary = pool_attempt_summary(
+                            attempt_count,
+                            distinct_account_count,
+                            Some(
+                                PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT.to_string(),
+                            ),
+                        );
+                        if let Some(trace) = trace_context.as_ref()
+                            && let Err(record_err) = insert_pool_upstream_terminal_attempt(
+                                &state.pool,
+                                trace,
+                                &err,
+                                (attempt_count + 1) as i64,
+                                distinct_account_count as i64,
+                                PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT,
+                            )
+                            .await
+                        {
+                            warn!(
+                                invoke_id = trace.invoke_id,
+                                error = %record_err,
+                                "failed to persist pool no-candidate no-alternate attempt"
+                            );
+                        }
+                        return Err(err);
+                    }
+
                     return Err(
                         if exhausted_accounts_all_rate_limited && distinct_account_count > 0 {
                             build_pool_rate_limited_error(
