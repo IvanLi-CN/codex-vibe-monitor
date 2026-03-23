@@ -3516,14 +3516,15 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
         .await
         .expect("disable beta account");
     sqlx::query(
-        "UPDATE pool_upstream_accounts SET last_error = ?2, last_error_at = ?3, last_route_failure_at = NULL, last_route_failure_kind = NULL WHERE id = ?1",
+        "UPDATE pool_upstream_accounts SET status = ?2, last_error = ?3, last_error_at = ?4, last_route_failure_at = NULL, last_route_failure_kind = NULL WHERE id = ?1",
     )
     .bind(beta_id)
+    .bind("syncing")
     .bind("Authentication token has been invalidated, please sign in again")
     .bind(format_utc_iso(now))
     .execute(&state.pool)
     .await
-    .expect("seed beta stale disabled error");
+    .expect("seed beta stale disabled syncing state");
     set_test_account_rate_limited_cooldown(&state.pool, gamma_id, 600).await;
 
     let Json(active_page_two) = list_upstream_accounts(
@@ -3601,6 +3602,12 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
             .get("healthStatus")
             .and_then(serde_json::Value::as_str),
         Some("normal")
+    );
+    assert_eq!(
+        disabled_items[0]
+            .get("syncState")
+            .and_then(serde_json::Value::as_str),
+        Some("idle")
     );
     assert_eq!(disabled_only_json["metrics"]["attention"].as_u64(), Some(0));
 

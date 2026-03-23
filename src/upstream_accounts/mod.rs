@@ -7658,7 +7658,7 @@ fn build_summary_from_row(
         row.last_route_failure_at.as_deref(),
         row.last_route_failure_kind.as_deref(),
     );
-    let sync_state = derive_upstream_account_sync_state(&row.status);
+    let sync_state = derive_upstream_account_sync_state(row.enabled != 0, &row.status);
     let work_status = derive_upstream_account_work_status(
         row.enabled != 0,
         health_status,
@@ -9585,7 +9585,10 @@ fn derive_upstream_account_enable_status(enabled: bool) -> &'static str {
     }
 }
 
-fn derive_upstream_account_sync_state(raw_status: &str) -> &'static str {
+fn derive_upstream_account_sync_state(enabled: bool, raw_status: &str) -> &'static str {
+    if !enabled {
+        return UPSTREAM_ACCOUNT_SYNC_STATE_IDLE;
+    }
     if raw_status
         .trim()
         .eq_ignore_ascii_case(UPSTREAM_ACCOUNT_STATUS_SYNCING)
@@ -9716,7 +9719,7 @@ fn classify_upstream_account_display_status(
     if enable_status == UPSTREAM_ACCOUNT_ENABLE_STATUS_DISABLED {
         return UPSTREAM_ACCOUNT_STATUS_DISABLED;
     }
-    let sync_state = derive_upstream_account_sync_state(raw_status);
+    let sync_state = derive_upstream_account_sync_state(enabled, raw_status);
     if sync_state == UPSTREAM_ACCOUNT_SYNC_STATE_SYNCING {
         return UPSTREAM_ACCOUNT_STATUS_SYNCING;
     }
