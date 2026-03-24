@@ -592,6 +592,16 @@ export function useInvocationPoolAttempts(expandedRecord: ApiInvocation | null) 
       expandedRecord.poolAttemptCount ?? '',
       expandedRecord.poolDistinctAccountCount ?? '',
       expandedRecord.poolAttemptTerminalReason ?? '',
+      expandedRecord.failureKind ?? '',
+      expandedRecord.errorMessage ?? '',
+      expandedRecord.upstreamErrorCode ?? '',
+      expandedRecord.upstreamErrorMessage ?? '',
+      expandedRecord.upstreamRequestId ?? '',
+      expandedRecord.upstreamAccountId ?? '',
+      expandedRecord.upstreamAccountName ?? '',
+      expandedRecord.tUpstreamConnectMs ?? '',
+      expandedRecord.tUpstreamTtfbMs ?? '',
+      expandedRecord.tUpstreamStreamMs ?? '',
     ].join('|')
     const isInFlight = normalizedStatus === 'running' || normalizedStatus === 'pending'
     const hasCachedAttempts = attemptsRef.current[invokeId] !== undefined
@@ -642,6 +652,16 @@ export function useInvocationPoolAttempts(expandedRecord: ApiInvocation | null) 
     expandedRecord?.poolAttemptCount,
     expandedRecord?.poolDistinctAccountCount,
     expandedRecord?.poolAttemptTerminalReason,
+    expandedRecord?.failureKind,
+    expandedRecord?.errorMessage,
+    expandedRecord?.upstreamErrorCode,
+    expandedRecord?.upstreamErrorMessage,
+    expandedRecord?.upstreamRequestId,
+    expandedRecord?.upstreamAccountId,
+    expandedRecord?.upstreamAccountName,
+    expandedRecord?.tUpstreamConnectMs,
+    expandedRecord?.tUpstreamTtfbMs,
+    expandedRecord?.tUpstreamStreamMs,
   ])
 
   return {

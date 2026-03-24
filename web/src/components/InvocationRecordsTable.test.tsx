@@ -48,6 +48,7 @@ afterEach(() => {
   host?.remove()
   host = null
   root = null
+  vi.useRealTimers()
   apiMocks.fetchInvocationPoolAttempts.mockReset()
 })
 
@@ -235,6 +236,54 @@ describe('InvocationRecordsTable', () => {
     expect(host?.textContent ?? '').toContain('table.poolAttempts.loadError: boom')
   })
 
+  it('refetches pool attempts when in-flight detail fields change without counter changes', async () => {
+    apiMocks.fetchInvocationPoolAttempts.mockResolvedValue([])
+
+    const initialRecord = createRecord({
+      id: 31,
+      invokeId: 'invoke-pool-poll',
+      routeMode: 'pool',
+      status: 'running',
+      upstreamAccountId: 42,
+      upstreamAccountName: 'pool-account-42',
+      poolAttemptCount: 1,
+      poolDistinctAccountCount: 1,
+      upstreamRequestId: 'req-initial',
+      tUpstreamTtfbMs: 120,
+    })
+
+    render(
+      <InvocationRecordsTable
+        focus="network"
+        isLoading={false}
+        records={[initialRecord]}
+      />,
+    )
+
+    clickFirstToggle()
+    await flushAsyncWork()
+    expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenCalledTimes(1)
+
+    rerender(
+      <InvocationRecordsTable
+        focus="network"
+        isLoading={false}
+        records={[
+          createRecord({
+            ...initialRecord,
+            upstreamRequestId: 'req-updated',
+            tUpstreamTtfbMs: 280,
+          }),
+        ]}
+      />,
+    )
+
+    await waitFor(() => apiMocks.fetchInvocationPoolAttempts.mock.calls.length === 2)
+
+    expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenCalledTimes(2)
+    expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenNthCalledWith(2, 'invoke-pool-poll')
+  })
+
   it('refetches pool attempts when an expanded in-flight record changes attempt counters', async () => {
     apiMocks.fetchInvocationPoolAttempts
       .mockResolvedValueOnce([])
@@ -288,6 +337,30 @@ describe('InvocationRecordsTable', () => {
 
     expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenNthCalledWith(2, 'invoke-pool-refresh')
     await waitFor(() => (host?.textContent ?? '').includes('pool-account-84'))
+  })
+
+  it('renders unknown actionable state as a fallback instead of "no"', () => {
+    render(
+      <InvocationRecordsTable
+        focus="exception"
+        isLoading={false}
+        records={[
+          createRecord({
+            id: 6,
+            status: 'failed',
+            failureClass: 'service_failure',
+            failureKind: 'upstream_timeout',
+            isActionable: undefined,
+            errorMessage: 'upstream timeout',
+          }),
+        ]}
+      />,
+    )
+
+    const text = host?.textContent ?? ''
+    expect(text).toContain('records.table.exception.actionable')
+    expect(text).not.toContain('records.table.exception.actionableNo')
+    expect(text).toContain('—')
   })
 
   it('clears cancelled pool-attempt loading so re-expanding can fetch again', async () => {

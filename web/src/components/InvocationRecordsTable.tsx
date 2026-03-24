@@ -117,6 +117,26 @@ function resolveFailureClassMeta(failureClass?: ApiInvocation['failureClass']) {
   }
 }
 
+function renderActionableBadge(
+  value: ApiInvocation['isActionable'],
+  t: ReturnType<typeof useTranslation>['t'],
+) {
+  if (typeof value !== 'boolean') return FALLBACK_CELL
+  return (
+    <Badge variant={value ? 'warning' : 'secondary'}>
+      {value ? t('records.table.exception.actionableYes') : t('records.table.exception.actionableNo')}
+    </Badge>
+  )
+}
+
+function formatActionableText(
+  value: ApiInvocation['isActionable'],
+  t: ReturnType<typeof useTranslation>['t'],
+) {
+  if (typeof value !== 'boolean') return FALLBACK_CELL
+  return value ? t('records.table.exception.actionableYes') : t('records.table.exception.actionableNo')
+}
+
 function renderFocusSummary(row: InvocationRecordsRowViewModel, focus: InvocationFocus, t: ReturnType<typeof useTranslation>['t']) {
   switch (focus) {
     case 'network':
@@ -143,11 +163,7 @@ function renderFocusSummary(row: InvocationRecordsRowViewModel, focus: Invocatio
             <Badge variant={failureClass.variant}>{failureClass.labelKey ? t(failureClass.labelKey) : FALLBACK_CELL}</Badge>
           </dd>
           <dt className="text-base-content/60">{t('records.table.exception.actionable')}</dt>
-          <dd className="flex justify-end">
-            <Badge variant={row.record.isActionable ? 'warning' : 'secondary'}>
-              {row.record.isActionable ? t('records.table.exception.actionableYes') : t('records.table.exception.actionableNo')}
-            </Badge>
-          </dd>
+          <dd className="flex justify-end">{renderActionableBadge(row.record.isActionable, t)}</dd>
           <dt className="text-base-content/60">{t('records.table.exception.error')}</dt>
           <dd className="truncate text-right font-mono">{formatOptionalText(row.record.errorMessage)}</dd>
         </dl>
@@ -438,9 +454,7 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
               <Badge variant={failureClass.variant}>{failureClass.labelKey ? t(failureClass.labelKey) : FALLBACK_CELL}</Badge>
             </td>
             <td className="px-3 py-3 align-middle text-left text-xs">
-              <Badge variant={row.record.isActionable ? 'warning' : 'secondary'}>
-                {row.record.isActionable ? t('records.table.exception.actionableYes') : t('records.table.exception.actionableNo')}
-              </Badge>
+              {renderActionableBadge(row.record.isActionable, t)}
             </td>
             <td className="max-w-[18rem] truncate px-3 py-3 align-middle text-left text-xs" title={row.errorMessage || undefined}>
               {row.errorMessage || FALLBACK_CELL}
@@ -504,7 +518,7 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
             </div>
             <div className="flex items-center justify-between gap-3">
               <dt>{t('records.table.exception.actionable')}</dt>
-              <dd>{row.record.isActionable ? t('records.table.exception.actionableYes') : t('records.table.exception.actionableNo')}</dd>
+              <dd>{formatActionableText(row.record.isActionable, t)}</dd>
             </div>
             <div className="flex items-center justify-between gap-3">
               <dt>{t('records.table.exception.error')}</dt>
