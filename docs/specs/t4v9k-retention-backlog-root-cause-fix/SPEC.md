@@ -1,5 +1,11 @@
 # Retention backlog root-cause fix（#t4v9k）
 
+## 状态
+
+- Status: 已实现，待 PR / CI 收敛
+- Created: 2026-03-24
+- Last: 2026-03-24
+
 ## Summary
 
 - 将 raw 冷压缩从“靠 `*.gz` 后缀猜状态”改为 `request_raw_codec` / `response_raw_codec` 显式状态，修掉候选查询无法稳定命中索引的问题。
