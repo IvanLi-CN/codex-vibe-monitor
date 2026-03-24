@@ -1320,8 +1320,9 @@ export default function UpstreamAccountsPage() {
     routingDraft.compactStreamTimeoutSecs.trim() !==
       String(resolvedRoutingTimeouts.compactStreamTimeoutSecs)
   const routingCanSave =
+    routingWritesEnabled &&
     !routingDraftValidationError &&
-    (routingHasMaintenanceChange || routingHasTimeoutChange || (routingWritesEnabled && routingHasApiKeyChange))
+    (routingHasMaintenanceChange || routingHasTimeoutChange || routingHasApiKeyChange)
   const selectedRecoveryHint = resolveOauthRecoveryHint(
     selectedDetail?.kind ?? selected?.kind ?? '',
     accountHealthStatus(selectedDetail ?? selected),

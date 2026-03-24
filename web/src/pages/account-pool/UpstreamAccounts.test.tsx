@@ -800,6 +800,44 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect((compactInput as HTMLInputElement).value).toBe("420");
   });
 
+  it("disables routing saves when the dialog becomes read-only during refresh", async () => {
+    mockAccountsPage();
+    render("/account-pool/upstream-accounts");
+
+    clickButton(/Edit routing settings/i);
+    setInputValue('input[name="compactFirstByteTimeoutSecs"]', "420");
+
+    mockAccountsPage({
+      routing: {
+        writesEnabled: false,
+        apiKeyConfigured: false,
+        maskedApiKey: null,
+        timeouts: {
+          responsesFirstByteTimeoutSecs: 120,
+          compactFirstByteTimeoutSecs: 300,
+          responsesStreamTimeoutSecs: 300,
+          compactStreamTimeoutSecs: 300,
+        },
+      },
+    });
+    rerender("/account-pool/upstream-accounts");
+    await flushAsync();
+    await flushTimers();
+
+    const compactInput = document.body.querySelector(
+      'input[name="compactFirstByteTimeoutSecs"]',
+    );
+    expect(compactInput).toBeInstanceOf(HTMLInputElement);
+    expect((compactInput as HTMLInputElement).value).toBe("420");
+    expect((compactInput as HTMLInputElement).disabled).toBe(true);
+
+    const saveButton = findButton(/Save settings/i);
+    if (!(saveButton instanceof HTMLButtonElement)) {
+      throw new Error("missing save button");
+    }
+    expect(saveButton.disabled).toBe(true);
+  });
+
   it("passes all-match tag filters to the roster hook", () => {
     mockAccountsPage();
     render("/account-pool/upstream-accounts");
