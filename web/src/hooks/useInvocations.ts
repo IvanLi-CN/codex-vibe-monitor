@@ -79,6 +79,11 @@ function recordCompletenessScore(record: ApiInvocation) {
   if (typeof record.tTotalMs === 'number' && Number.isFinite(record.tTotalMs) && record.tTotalMs > 0) score += 3
   if (typeof record.totalTokens === 'number' && Number.isFinite(record.totalTokens)) score += 2
   if (typeof record.cost === 'number' && Number.isFinite(record.cost)) score += 2
+  if (record.upstreamRequestId?.trim()) score += 2
+  if (record.failureKind?.trim()) score += 2
+  if (record.poolAttemptTerminalReason?.trim()) score += 2
+  if (record.upstreamErrorCode?.trim()) score += 1
+  if (record.upstreamErrorMessage?.trim()) score += 1
   if (record.errorMessage?.trim()) score += 2
   return score
 }

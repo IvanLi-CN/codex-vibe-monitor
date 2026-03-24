@@ -1595,12 +1595,12 @@ fn app_config_from_sources_reads_database_path_env() {
 }
 
 #[test]
-fn startup_pending_attempt_recovery_runs_for_retention_only_but_skips_dry_run() {
+fn startup_pending_attempt_recovery_skips_all_retention_run_once_modes() {
     let mut cli = CliArgs::default();
     assert!(should_recover_pending_pool_attempts_on_startup(&cli));
 
     cli.retention_run_once = true;
-    assert!(should_recover_pending_pool_attempts_on_startup(&cli));
+    assert!(!should_recover_pending_pool_attempts_on_startup(&cli));
 
     cli.retention_dry_run = true;
     assert!(!should_recover_pending_pool_attempts_on_startup(&cli));

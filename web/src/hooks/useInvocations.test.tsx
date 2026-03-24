@@ -106,6 +106,8 @@ function StreamProbe({ limit = 20 }: { limit?: number }) {
       <div data-testid="count">{records.length}</div>
       <div data-testid="first-status">{records[0]?.status ?? ''}</div>
       <div data-testid="first-key">{records[0] ? `${records[0].invokeId}@${records[0].occurredAt}` : ''}</div>
+      <div data-testid="first-upstream-request-id">{records[0]?.upstreamRequestId ?? ''}</div>
+      <div data-testid="first-terminal-reason">{records[0]?.poolAttemptTerminalReason ?? ''}</div>
       <div data-testid="keys">{records.map((record) => `${record.invokeId}:${record.status}`).join('|')}</div>
     </div>
   )
@@ -390,5 +392,53 @@ describe('useInvocationStream', () => {
     expect(text('first-pool-distinct-account-count')).toBe('2')
     expect(text('first-pool-account-id')).toBe('8')
     expect(text('first-pool-account-name')).toBe('Pool Beta')
+  })
+
+  it('prefers a later same-rank record snapshot when it fills in metadata', async () => {
+    apiMocks.fetchInvocations.mockResolvedValue({ records: [] })
+
+    render(<StreamProbe limit={5} />)
+    await flushAsync()
+
+    act(() => {
+      sseMocks.onMessage?.({
+        type: 'records',
+        records: [
+          {
+            id: -50,
+            invokeId: 'invocation-metadata-refresh',
+            occurredAt: '2026-03-10T00:07:00Z',
+            createdAt: '2026-03-10T00:07:00Z',
+            routeMode: 'pool',
+            status: 'success',
+          },
+        ],
+      })
+    })
+
+    expect(text('first-status')).toBe('success')
+    expect(text('first-upstream-request-id')).toBe('')
+    expect(text('first-terminal-reason')).toBe('')
+
+    act(() => {
+      sseMocks.onMessage?.({
+        type: 'records',
+        records: [
+          {
+            id: -51,
+            invokeId: 'invocation-metadata-refresh',
+            occurredAt: '2026-03-10T00:07:00Z',
+            createdAt: '2026-03-10T00:07:00Z',
+            routeMode: 'pool',
+            status: 'success',
+            upstreamRequestId: 'req_refresh_123',
+            poolAttemptTerminalReason: 'transport_failure',
+          },
+        ],
+      })
+    })
+
+    expect(text('first-upstream-request-id')).toBe('req_refresh_123')
+    expect(text('first-terminal-reason')).toBe('transport_failure')
   })
 })
