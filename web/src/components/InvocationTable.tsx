@@ -1,4 +1,4 @@
-import { Fragment, type ReactNode, useEffect, useMemo, useState } from 'react'
+import { Fragment, type ReactNode, useEffect, useMemo, useRef, useState } from 'react'
 import { AppIcon } from './AppIcon'
 import {
   fetchInvocationPoolAttempts,
@@ -239,6 +239,79 @@ function poolAttemptStatusMeta(
   }
 }
 
+function isPoolAttemptTerminal(attempt: ApiPoolUpstreamRequestAttempt) {
+  if (attempt.finishedAt?.trim()) return true
+  return attempt.status.trim().toLowerCase() !== 'pending'
+}
+
+function isInvocationDisplayTerminal(status: string | null | undefined) {
+  const normalized = status?.trim().toLowerCase()
+  return Boolean(normalized && normalized !== 'running' && normalized !== 'pending')
+}
+
+function poolAttemptCompletenessScore(attempt: ApiPoolUpstreamRequestAttempt) {
+  let score = 0
+  if (attempt.finishedAt?.trim()) score += 8
+  if (attempt.httpStatus != null) score += 2
+  if (attempt.failureKind?.trim()) score += 1
+  if (attempt.errorMessage?.trim()) score += 1
+  if (attempt.connectLatencyMs != null) score += 1
+  if (attempt.firstByteLatencyMs != null) score += 1
+  if (attempt.streamLatencyMs != null) score += 1
+  if (attempt.upstreamRequestId?.trim()) score += 1
+  return score
+}
+
+function comparePoolAttemptRecency(
+  current: ApiPoolUpstreamRequestAttempt | undefined,
+  incoming: ApiPoolUpstreamRequestAttempt | undefined,
+) {
+  if (!current && incoming) return 1
+  if (current && !incoming) return -1
+  if (!current || !incoming) return 0
+
+  const currentTerminal = isPoolAttemptTerminal(current)
+  const incomingTerminal = isPoolAttemptTerminal(incoming)
+  if (currentTerminal !== incomingTerminal) {
+    return incomingTerminal ? 1 : -1
+  }
+
+  const currentFinishedAt = current.finishedAt ? Date.parse(current.finishedAt) : Number.NaN
+  const incomingFinishedAt = incoming.finishedAt ? Date.parse(incoming.finishedAt) : Number.NaN
+  if (Number.isFinite(currentFinishedAt) && Number.isFinite(incomingFinishedAt) && currentFinishedAt !== incomingFinishedAt) {
+    return incomingFinishedAt > currentFinishedAt ? 1 : -1
+  }
+
+  const currentScore = poolAttemptCompletenessScore(current)
+  const incomingScore = poolAttemptCompletenessScore(incoming)
+  if (currentScore !== incomingScore) {
+    return incomingScore > currentScore ? 1 : -1
+  }
+
+  return 0
+}
+
+function shouldReplacePoolAttemptSnapshot(
+  current: ApiPoolUpstreamRequestAttempt[] | undefined,
+  incoming: ApiPoolUpstreamRequestAttempt[],
+) {
+  if (!current) return true
+  if (incoming.length > current.length) return true
+  if (incoming.length < current.length) return false
+
+  let sawNewer = false
+  let sawOlder = false
+  for (let index = 0; index < incoming.length; index += 1) {
+    const comparison = comparePoolAttemptRecency(current[index], incoming[index])
+    if (comparison > 0) sawNewer = true
+    if (comparison < 0) sawOlder = true
+  }
+
+  if (sawOlder && !sawNewer) return false
+  if (sawNewer) return true
+  return true
+}
+
 interface InvocationRowViewModel {
   record: ApiInvocation
   rowKey: string
@@ -294,6 +367,9 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
   const [poolAttemptErrorByInvokeId, setPoolAttemptErrorByInvokeId] = useState<
     Record<string, string | null | undefined>
   >({})
+  const poolAttemptsByInvokeIdRef = useRef<Record<string, ApiPoolUpstreamRequestAttempt[] | undefined>>({})
+  const poolAttemptVersionByInvokeIdRef = useRef<Record<string, number | undefined>>({})
+  const expandedInvokeIdRef = useRef<string | null>(null)
 
   const toggleLabels = useMemo(() => {
     if (locale === 'zh') {
@@ -669,9 +745,30 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
     return () => window.clearInterval(id)
   }, [hasInFlightRows])
 
+  const expandedInvokeId = expandedRecord?.invokeId ?? null
+  const expandedRouteMode = expandedRecord?.routeMode ?? null
+  const expandedPoolAttemptCount = expandedRecord?.poolAttemptCount ?? null
+  const expandedDisplayStatus = expandedRecord ? resolveInvocationDisplayStatus(expandedRecord) : null
+
+  useEffect(() => {
+    expandedInvokeIdRef.current =
+      expandedInvokeId && expandedRouteMode && isPoolRouteMode(expandedRouteMode) ? expandedInvokeId : null
+  }, [expandedInvokeId, expandedRouteMode])
+
   useEffect(() => {
     const unsubscribe = subscribeToSse((payload) => {
       if (payload.type !== 'pool_attempts') return
+      if (payload.invokeId !== expandedInvokeIdRef.current) return
+      const existingAttempts = poolAttemptsByInvokeIdRef.current[payload.invokeId]
+      if (!shouldReplacePoolAttemptSnapshot(existingAttempts, payload.attempts)) return
+      poolAttemptsByInvokeIdRef.current = {
+        ...poolAttemptsByInvokeIdRef.current,
+        [payload.invokeId]: payload.attempts,
+      }
+      poolAttemptVersionByInvokeIdRef.current = {
+        ...poolAttemptVersionByInvokeIdRef.current,
+        [payload.invokeId]: (poolAttemptVersionByInvokeIdRef.current[payload.invokeId] ?? 0) + 1,
+      }
       setPoolAttemptsByInvokeId((current) => ({ ...current, [payload.invokeId]: payload.attempts }))
       setPoolAttemptLoadingByInvokeId((current) => ({ ...current, [payload.invokeId]: false }))
       setPoolAttemptErrorByInvokeId((current) => ({ ...current, [payload.invokeId]: null }))
@@ -680,9 +777,33 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
     return unsubscribe
   }, [])
 
-  const expandedInvokeId = expandedRecord?.invokeId ?? null
-  const expandedRouteMode = expandedRecord?.routeMode ?? null
-  const expandedPoolAttemptCount = expandedRecord?.poolAttemptCount ?? null
+  useEffect(() => {
+    const nextInvokeId =
+      expandedInvokeId && expandedRouteMode && isPoolRouteMode(expandedRouteMode) ? expandedInvokeId : null
+    if (!nextInvokeId) {
+      poolAttemptsByInvokeIdRef.current = {}
+      poolAttemptVersionByInvokeIdRef.current = {}
+      setPoolAttemptsByInvokeId({})
+      setPoolAttemptLoadingByInvokeId({})
+      setPoolAttemptErrorByInvokeId({})
+      return
+    }
+
+    const nextAttempts = poolAttemptsByInvokeIdRef.current[nextInvokeId]
+    poolAttemptsByInvokeIdRef.current = nextAttempts === undefined ? {} : { [nextInvokeId]: nextAttempts }
+    poolAttemptVersionByInvokeIdRef.current = {
+      [nextInvokeId]: poolAttemptVersionByInvokeIdRef.current[nextInvokeId],
+    }
+    setPoolAttemptsByInvokeId((current) =>
+      current[nextInvokeId] === undefined ? current : { [nextInvokeId]: current[nextInvokeId] },
+    )
+    setPoolAttemptLoadingByInvokeId((current) =>
+      current[nextInvokeId] === undefined ? current : { [nextInvokeId]: current[nextInvokeId] },
+    )
+    setPoolAttemptErrorByInvokeId((current) =>
+      current[nextInvokeId] === undefined ? current : { [nextInvokeId]: current[nextInvokeId] },
+    )
+  }, [expandedInvokeId, expandedRouteMode])
 
   useEffect(() => {
     if (!expandedInvokeId || !expandedRouteMode || !isPoolRouteMode(expandedRouteMode)) return
@@ -693,12 +814,17 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
         ? Math.max(Math.trunc(expandedPoolAttemptCount), 0)
         : null
     const cachedAttemptCount = cachedAttempts?.length ?? 0
+    const shouldRefreshPendingTerminalAttempt =
+      isInvocationDisplayTerminal(expandedDisplayStatus) &&
+      (cachedAttempts?.some((attempt) => !isPoolAttemptTerminal(attempt)) ?? false)
     const shouldRefetch =
       cachedAttempts === undefined ||
-      (expectedAttemptCount != null && cachedAttemptCount < expectedAttemptCount)
+      (expectedAttemptCount != null && cachedAttemptCount < expectedAttemptCount) ||
+      shouldRefreshPendingTerminalAttempt
     if (!shouldRefetch || poolAttemptLoadingByInvokeId[invokeId]) return
 
     let cancelled = false
+    const fetchVersion = poolAttemptVersionByInvokeIdRef.current[invokeId] ?? 0
     setPoolAttemptLoadingByInvokeId((current) => ({ ...current, [invokeId]: true }))
     setPoolAttemptErrorByInvokeId((current) => ({ ...current, [invokeId]: null }))
 
@@ -706,9 +832,17 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
       .then((attempts) => {
         if (cancelled) return
         setPoolAttemptsByInvokeId((current) => {
+          const latestVersion = poolAttemptVersionByInvokeIdRef.current[invokeId] ?? 0
           const existingAttempts = current[invokeId]
-          if ((existingAttempts?.length ?? 0) > attempts.length) {
+          if (latestVersion !== fetchVersion && !shouldReplacePoolAttemptSnapshot(existingAttempts, attempts)) {
             return current
+          }
+          if (!shouldReplacePoolAttemptSnapshot(existingAttempts, attempts)) {
+            return current
+          }
+          poolAttemptsByInvokeIdRef.current = {
+            ...poolAttemptsByInvokeIdRef.current,
+            [invokeId]: attempts,
           }
           return { ...current, [invokeId]: attempts }
         })
@@ -726,7 +860,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
     return () => {
       cancelled = true
     }
-  }, [expandedInvokeId, expandedPoolAttemptCount, expandedRouteMode])
+  }, [expandedDisplayStatus, expandedInvokeId, expandedPoolAttemptCount, expandedRouteMode])
 
   const renderPoolAttemptsContent = (record: ApiInvocation) => {
     const invokeId = record.invokeId

@@ -1595,6 +1595,18 @@ fn app_config_from_sources_reads_database_path_env() {
 }
 
 #[test]
+fn startup_pending_attempt_recovery_skips_retention_dry_run() {
+    let mut cli = CliArgs::default();
+    assert!(should_recover_pending_pool_attempts_on_startup(&cli));
+
+    cli.retention_run_once = true;
+    assert!(!should_recover_pending_pool_attempts_on_startup(&cli));
+
+    cli.retention_dry_run = true;
+    assert!(!should_recover_pending_pool_attempts_on_startup(&cli));
+}
+
+#[test]
 fn app_config_from_sources_rejects_legacy_database_path_env() {
     let _guard = APP_CONFIG_ENV_LOCK.blocking_lock();
     let previous_database = env::var_os(ENV_DATABASE_PATH);
@@ -5154,6 +5166,11 @@ async fn test_upstream_responses(uri: Uri) -> Response {
             })),
         )
             .into_response()
+    } else if uri
+        .query()
+        .is_some_and(|query| query.contains("mode=no-content"))
+    {
+        StatusCode::NO_CONTENT.into_response()
     } else {
         test_upstream_stream_mid_error().await.into_response()
     }
@@ -12346,6 +12363,100 @@ async fn capture_target_pool_route_retries_first_chunk_failure_and_persists_sing
         Some(primary_id)
     );
     assert_ne!(primary_id, secondary_id);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn capture_target_pool_route_no_content_success_finalizes_pending_attempt() {
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let request_payload = json!({
+        "model": "gpt-5.4",
+        "stream": false,
+        "input": "hello",
+        "stickyKey": "sticky-cap-204",
+    });
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses?mode=no-content".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            serde_json::to_vec(&request_payload)
+                .expect("serialize capture no-content request body"),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read no-content response body");
+    assert!(body.is_empty(), "204 response body should stay empty");
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    wait_for_pool_upstream_request_attempts(&state.pool, 1).await;
+
+    let mut attempt_row = None;
+    for _ in 0..20 {
+        attempt_row = sqlx::query_as::<
+            _,
+            (
+                String,
+                Option<String>,
+                Option<i64>,
+                Option<f64>,
+                Option<String>,
+                Option<i64>,
+            ),
+        >(
+            r#"
+            SELECT
+                status,
+                finished_at,
+                http_status,
+                stream_latency_ms,
+                failure_kind,
+                upstream_account_id
+            FROM pool_upstream_request_attempts
+            WHERE invoke_id LIKE 'proxy-%'
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .fetch_optional(&state.pool)
+        .await
+        .expect("query pool attempt row");
+        if attempt_row
+            .as_ref()
+            .is_some_and(|row| row.0 == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS)
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    let attempt_row = attempt_row.expect("pool attempt row should be persisted");
+
+    assert_eq!(attempt_row.0, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS);
+    assert!(
+        attempt_row
+            .1
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+    );
+    assert_eq!(attempt_row.2, Some(204));
+    assert_eq!(attempt_row.3, Some(0.0));
+    assert_eq!(attempt_row.4, None);
+    assert_eq!(attempt_row.5, Some(primary_id));
 
     upstream_handle.abort();
 }
@@ -28105,4 +28216,182 @@ async fn broadcast_pool_upstream_attempts_snapshot_emits_pending_attempts() {
         }
         other => panic!("expected pool-attempts payload, got {other:?}"),
     }
+}
+
+#[tokio::test]
+async fn fetch_invocation_pool_attempts_returns_live_pending_attempts_without_parent_invocation() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let trace = PoolUpstreamAttemptTraceContext {
+        invoke_id: "pending-attempt-live-fetch".to_string(),
+        occurred_at: "2026-03-23 20:49:02".to_string(),
+        endpoint: "/v1/responses".to_string(),
+        sticky_key: Some("sticky-live-fetch".to_string()),
+        requester_ip: Some("192.168.31.6".to_string()),
+    };
+    let _pending = begin_pool_upstream_request_attempt(
+        &state.pool,
+        &trace,
+        account_id,
+        "route-primary",
+        1,
+        1,
+        1,
+        "2026-03-23 20:49:02",
+    )
+    .await;
+
+    let Json(attempts) = fetch_invocation_pool_attempts(
+        State(state.clone()),
+        axum::extract::Path("pending-attempt-live-fetch".to_string()),
+    )
+    .await
+    .expect("fetch live pending attempts");
+
+    assert_eq!(attempts.len(), 1);
+    assert_eq!(
+        attempts[0].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING
+    );
+    assert_eq!(attempts[0].finished_at, None);
+    assert_eq!(attempts[0].upstream_account_id, Some(account_id));
+}
+
+#[tokio::test]
+async fn insert_and_broadcast_pool_upstream_terminal_attempt_emits_final_snapshot() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let trace = PoolUpstreamAttemptTraceContext {
+        invoke_id: "terminal-attempt-broadcast".to_string(),
+        occurred_at: "2026-03-23 20:49:03".to_string(),
+        endpoint: "/v1/responses".to_string(),
+        sticky_key: Some("sticky-terminal".to_string()),
+        requester_ip: Some("192.168.31.6".to_string()),
+    };
+    let final_error = PoolUpstreamError {
+        account: None,
+        status: StatusCode::BAD_GATEWAY,
+        message: "pool budget exhausted after failover".to_string(),
+        failure_kind: PROXY_FAILURE_POOL_MAX_DISTINCT_ACCOUNTS_EXHAUSTED,
+        connect_latency_ms: 0.0,
+        upstream_error_code: None,
+        upstream_error_message: None,
+        upstream_request_id: Some("req_terminal_123".to_string()),
+        oauth_responses_debug: None,
+        attempt_summary: pool_attempt_summary(
+            3,
+            3,
+            Some(PROXY_FAILURE_POOL_MAX_DISTINCT_ACCOUNTS_EXHAUSTED.to_string()),
+        ),
+    };
+
+    let mut rx = state.broadcaster.subscribe();
+    insert_and_broadcast_pool_upstream_terminal_attempt(
+        state.as_ref(),
+        &trace,
+        &final_error,
+        4,
+        3,
+        PROXY_FAILURE_POOL_MAX_DISTINCT_ACCOUNTS_EXHAUSTED,
+    )
+    .await
+    .expect("insert and broadcast terminal attempt");
+
+    let payload = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("timed out waiting for terminal pool-attempt snapshot")
+        .expect("broadcast channel should stay open");
+    match payload {
+        BroadcastPayload::PoolAttempts {
+            invoke_id,
+            attempts,
+        } => {
+            assert_eq!(invoke_id, "terminal-attempt-broadcast");
+            assert_eq!(attempts.len(), 1);
+            assert_eq!(
+                attempts[0].status,
+                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL
+            );
+            assert_eq!(attempts[0].attempt_index, 4);
+            assert_eq!(
+                attempts[0].failure_kind.as_deref(),
+                Some(PROXY_FAILURE_POOL_MAX_DISTINCT_ACCOUNTS_EXHAUSTED)
+            );
+            assert_eq!(
+                attempts[0].upstream_request_id.as_deref(),
+                Some("req_terminal_123")
+            );
+        }
+        other => panic!("expected terminal pool-attempt snapshot, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn recover_orphaned_pool_upstream_request_attempts_marks_pending_rows_terminal() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let trace = PoolUpstreamAttemptTraceContext {
+        invoke_id: "pending-attempt-recovery".to_string(),
+        occurred_at: "2026-03-23 20:49:04".to_string(),
+        endpoint: "/v1/responses".to_string(),
+        sticky_key: Some("sticky-recovery".to_string()),
+        requester_ip: Some("192.168.31.6".to_string()),
+    };
+
+    let pending = begin_pool_upstream_request_attempt(
+        &state.pool,
+        &trace,
+        account_id,
+        "route-primary",
+        1,
+        1,
+        1,
+        "2026-03-23 20:49:04",
+    )
+    .await;
+
+    let affected = recover_orphaned_pool_upstream_request_attempts(&state.pool)
+        .await
+        .expect("recover pending attempts");
+    assert_eq!(affected, 1);
+
+    let recovered_row =
+        sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>)>(
+            r#"
+        SELECT status, finished_at, failure_kind, error_message
+        FROM pool_upstream_request_attempts
+        WHERE id = ?1
+        "#,
+        )
+        .bind(pending.attempt_id.expect("pending attempt id"))
+        .fetch_one(&state.pool)
+        .await
+        .expect("load recovered pending attempt");
+
+    assert_eq!(
+        recovered_row.0,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
+    );
+    assert!(
+        recovered_row
+            .1
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+    );
+    assert_eq!(
+        recovered_row.2.as_deref(),
+        Some(PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED)
+    );
+    assert_eq!(
+        recovered_row.3.as_deref(),
+        Some(POOL_ATTEMPT_INTERRUPTED_MESSAGE)
+    );
 }

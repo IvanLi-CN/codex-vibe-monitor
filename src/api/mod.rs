@@ -1145,6 +1145,11 @@ pub(crate) async fn fetch_invocation_pool_attempts(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(invoke_id): axum::extract::Path<String>,
 ) -> Result<Json<Vec<ApiPoolUpstreamRequestAttempt>>, ApiError> {
+    let mut records = query_pool_attempt_records_from_live(&state.pool, &invoke_id).await?;
+    if !records.is_empty() {
+        return Ok(Json(records));
+    }
+
     let Some(invocation) = query_invocation_attempt_lookup(&state.pool, &invoke_id).await? else {
         return Ok(Json(Vec::new()));
     };
@@ -1156,25 +1161,21 @@ pub(crate) async fn fetch_invocation_pool_attempts(
         return Ok(Json(Vec::new()));
     }
 
-    let mut records = query_pool_attempt_records_from_live(&state.pool, &invoke_id).await?;
-    if records.is_empty() {
-        let occurred_at = parse_shanghai_local_naive(&invocation.occurred_at)
-            .with_context(|| {
-                format!(
-                    "failed to parse invocation occurred_at for pool attempts: {}",
-                    invocation.occurred_at
-                )
-            })
-            .map_err(ApiError::bad_request)?;
-        let occurred_at_utc = local_naive_to_utc(occurred_at, Shanghai);
-        let archive_range = ExactUtcRange {
-            start: occurred_at_utc,
-            end: occurred_at_utc + ChronoDuration::seconds(1),
-        };
-        records =
-            query_pool_attempt_records_from_archive_range(&state.pool, &invoke_id, archive_range)
-                .await?;
-    }
+    let occurred_at = parse_shanghai_local_naive(&invocation.occurred_at)
+        .with_context(|| {
+            format!(
+                "failed to parse invocation occurred_at for pool attempts: {}",
+                invocation.occurred_at
+            )
+        })
+        .map_err(ApiError::bad_request)?;
+    let occurred_at_utc = local_naive_to_utc(occurred_at, Shanghai);
+    let archive_range = ExactUtcRange {
+        start: occurred_at_utc,
+        end: occurred_at_utc + ChronoDuration::seconds(1),
+    };
+    records = query_pool_attempt_records_from_archive_range(&state.pool, &invoke_id, archive_range)
+        .await?;
 
     Ok(Json(records))
 }

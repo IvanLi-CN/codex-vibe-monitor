@@ -218,6 +218,7 @@ const PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED: &str =
 const PROXY_FAILURE_FAILED_CONTACT_UPSTREAM: &str = "failed_contact_upstream";
 const PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT: &str = "upstream_handshake_timeout";
 const PROXY_FAILURE_UPSTREAM_STREAM_ERROR: &str = "upstream_stream_error";
+const PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED: &str = "pool_attempt_interrupted";
 const PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED: &str = "upstream_response_failed";
 const PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT: &str = "pool_no_available_account";
 const PROXY_FAILURE_POOL_ALL_ACCOUNTS_RATE_LIMITED: &str = "pool_all_accounts_rate_limited";
@@ -232,6 +233,8 @@ const INVOCATION_UPSTREAM_SCOPE_EXTERNAL: &str = "external";
 const INVOCATION_UPSTREAM_SCOPE_INTERNAL: &str = "internal";
 const INVOCATION_ROUTE_MODE_FORWARD_PROXY: &str = "forward_proxy";
 const INVOCATION_ROUTE_MODE_POOL: &str = "pool";
+const POOL_ATTEMPT_INTERRUPTED_MESSAGE: &str =
+    "pool attempt was interrupted before completion and was recovered on startup";
 const FAILURE_CLASS_NONE: &str = "none";
 const FAILURE_CLASS_SERVICE: &str = "service_failure";
 const FAILURE_CLASS_CLIENT: &str = "client_failure";
@@ -509,6 +512,10 @@ struct CliArgs {
     retention_dry_run: bool,
 }
 
+fn should_recover_pending_pool_attempts_on_startup(cli: &CliArgs) -> bool {
+    !cli.retention_run_once
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenv().ok();
@@ -537,6 +544,16 @@ async fn main() -> Result<()> {
 
     let schema_started_at = Instant::now();
     ensure_schema(&pool).await?;
+    if should_recover_pending_pool_attempts_on_startup(&cli) {
+        let recovered_pending_pool_attempts =
+            recover_orphaned_pool_upstream_request_attempts(&pool).await?;
+        if recovered_pending_pool_attempts > 0 {
+            warn!(
+                recovered_pending_pool_attempts,
+                "recovered orphaned pending pool attempt rows at startup"
+            );
+        }
+    }
     bootstrap_hourly_rollups(&pool).await?;
     log_startup_phase("schema", schema_started_at);
     if cli.retention_run_once {
@@ -9315,9 +9332,9 @@ async fn send_pool_request_with_failover(
                 distinct_account_count,
                 Some(terminal_failure_kind.to_string()),
             );
-            if let Some(trace) = trace_context.as_ref() {
-                if let Err(err) = insert_pool_upstream_terminal_attempt(
-                    &state.pool,
+            if let Some(trace) = trace_context.as_ref()
+                && let Err(err) = insert_and_broadcast_pool_upstream_terminal_attempt(
+                    state.as_ref(),
                     trace,
                     &final_error,
                     (attempt_count + 1) as i64,
@@ -9325,13 +9342,12 @@ async fn send_pool_request_with_failover(
                     terminal_failure_kind,
                 )
                 .await
-                {
-                    warn!(
-                        invoke_id = trace.invoke_id,
-                        error = %err,
-                        "failed to persist pool budget exhaustion attempt"
-                    );
-                }
+            {
+                warn!(
+                    invoke_id = trace.invoke_id,
+                    error = %err,
+                    "failed to persist pool budget exhaustion attempt"
+                );
             }
             return Err(final_error);
         }
@@ -9407,15 +9423,16 @@ async fn send_pool_request_with_failover(
                     if terminal_failure_kind
                         == PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT
                         && let Some(trace) = trace_context.as_ref()
-                        && let Err(record_err) = insert_pool_upstream_terminal_attempt(
-                            &state.pool,
-                            trace,
-                            &err,
-                            (attempt_count + 1) as i64,
-                            distinct_account_count as i64,
-                            terminal_failure_kind,
-                        )
-                        .await
+                        && let Err(record_err) =
+                            insert_and_broadcast_pool_upstream_terminal_attempt(
+                                state.as_ref(),
+                                trace,
+                                &err,
+                                (attempt_count + 1) as i64,
+                                distinct_account_count as i64,
+                                terminal_failure_kind,
+                            )
+                            .await
                     {
                         warn!(
                             invoke_id = trace.invoke_id,
@@ -9455,15 +9472,16 @@ async fn send_pool_request_with_failover(
                             ),
                         );
                         if let Some(trace) = trace_context.as_ref()
-                            && let Err(record_err) = insert_pool_upstream_terminal_attempt(
-                                &state.pool,
-                                trace,
-                                &err,
-                                (attempt_count + 1) as i64,
-                                distinct_account_count as i64,
-                                PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT,
-                            )
-                            .await
+                            && let Err(record_err) =
+                                insert_and_broadcast_pool_upstream_terminal_attempt(
+                                    state.as_ref(),
+                                    trace,
+                                    &err,
+                                    (attempt_count + 1) as i64,
+                                    distinct_account_count as i64,
+                                    PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT,
+                                )
+                                .await
                         {
                             warn!(
                                 invoke_id = trace.invoke_id,
@@ -9523,15 +9541,16 @@ async fn send_pool_request_with_failover(
                     if terminal_failure_kind
                         == PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT
                         && let Some(trace) = trace_context.as_ref()
-                        && let Err(record_err) = insert_pool_upstream_terminal_attempt(
-                            &state.pool,
-                            trace,
-                            &err,
-                            (attempt_count + 1) as i64,
-                            distinct_account_count as i64,
-                            terminal_failure_kind,
-                        )
-                        .await
+                        && let Err(record_err) =
+                            insert_and_broadcast_pool_upstream_terminal_attempt(
+                                state.as_ref(),
+                                trace,
+                                &err,
+                                (attempt_count + 1) as i64,
+                                distinct_account_count as i64,
+                                terminal_failure_kind,
+                            )
+                            .await
                     {
                         warn!(
                             invoke_id = trace.invoke_id,
@@ -14144,6 +14163,31 @@ async fn begin_pool_upstream_request_attempt(
     }
 }
 
+async fn recover_orphaned_pool_upstream_request_attempts(pool: &Pool<Sqlite>) -> Result<u64> {
+    let finished_at = shanghai_now_string();
+    let result = sqlx::query(
+        r#"
+        UPDATE pool_upstream_request_attempts
+        SET
+            finished_at = COALESCE(finished_at, ?1),
+            status = ?2,
+            failure_kind = COALESCE(failure_kind, ?3),
+            error_message = COALESCE(error_message, ?4)
+        WHERE status = ?5
+          AND finished_at IS NULL
+        "#,
+    )
+    .bind(finished_at)
+    .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE)
+    .bind(PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED)
+    .bind(POOL_ATTEMPT_INTERRUPTED_MESSAGE)
+    .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING)
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected())
+}
+
 async fn broadcast_pool_upstream_attempts_snapshot(
     state: &AppState,
     invoke_id: &str,
@@ -14326,6 +14370,27 @@ async fn insert_pool_upstream_terminal_attempt(
     )
     .await
     .map(|_| ())
+}
+
+async fn insert_and_broadcast_pool_upstream_terminal_attempt(
+    state: &AppState,
+    trace: &PoolUpstreamAttemptTraceContext,
+    final_error: &PoolUpstreamError,
+    attempt_index: i64,
+    distinct_account_index: i64,
+    failure_kind: &'static str,
+) -> Result<()> {
+    insert_pool_upstream_terminal_attempt(
+        &state.pool,
+        trace,
+        final_error,
+        attempt_index,
+        distinct_account_index,
+        failure_kind,
+    )
+    .await?;
+    broadcast_pool_upstream_attempts_snapshot(state, &trace.invoke_id).await?;
+    Ok(())
 }
 
 fn prompt_cache_upstream_account_rollup_key(
