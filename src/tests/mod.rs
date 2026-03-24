@@ -13151,9 +13151,15 @@ async fn resolve_pool_account_for_request_defers_sticky_binding_until_success() 
         "sticky binding should not move before request success"
     );
 
-    record_pool_route_success(&state.pool, account.account_id, Some("sticky-001"), None)
-        .await
-        .expect("record route success");
+    record_pool_route_success(
+        &state.pool,
+        account.account_id,
+        Utc::now(),
+        Some("sticky-001"),
+        None,
+    )
+    .await
+    .expect("record route success");
 
     assert_eq!(
         load_test_sticky_route_account_id(&state.pool, "sticky-001").await,
@@ -16431,9 +16437,15 @@ async fn pool_route_marks_oauth_missing_scopes_as_error_and_persists_upstream_de
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let account_id = insert_test_pool_oauth_account(&state, "Scope OAuth", "oauth-scope").await;
-    record_pool_route_success(&state.pool, account_id, Some("sticky-scope-001"), None)
-        .await
-        .expect("seed sticky route");
+    record_pool_route_success(
+        &state.pool,
+        account_id,
+        Utc::now(),
+        Some("sticky-scope-001"),
+        None,
+    )
+    .await
+    .expect("seed sticky route");
 
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -17222,9 +17234,15 @@ async fn pool_route_oauth_body_sticky_binding_applies_before_first_send() {
         insert_test_pool_oauth_account(&state, "Primary OAuth", "oauth-primary").await;
     let secondary_id =
         insert_test_pool_oauth_account(&state, "Secondary OAuth", "oauth-secondary").await;
-    record_pool_route_success(&state.pool, secondary_id, Some("sticky-oauth-body"), None)
-        .await
-        .expect("seed oauth sticky route");
+    record_pool_route_success(
+        &state.pool,
+        secondary_id,
+        Utc::now(),
+        Some("sticky-oauth-body"),
+        None,
+    )
+    .await
+    .expect("seed oauth sticky route");
 
     let request_body = serde_json::to_vec(&json!({
         "messages": [{
@@ -18108,9 +18126,15 @@ async fn pool_route_honors_existing_body_sticky_binding_for_non_capture_requests
     let _primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
     let secondary_id =
         insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
-    record_pool_route_success(&state.pool, secondary_id, Some("sticky-body-001"), None)
-        .await
-        .expect("seed sticky route");
+    record_pool_route_success(
+        &state.pool,
+        secondary_id,
+        Utc::now(),
+        Some("sticky-body-001"),
+        None,
+    )
+    .await
+    .expect("seed sticky route");
     let request_body =
         br#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-body-001"}"#.to_vec();
 
@@ -18189,9 +18213,15 @@ async fn capture_target_pool_route_marks_response_failed_stream_as_route_failure
             .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let account_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
-    record_pool_route_success(&state.pool, account_id, Some("sticky-cap-logical"), None)
-        .await
-        .expect("seed sticky route");
+    record_pool_route_success(
+        &state.pool,
+        account_id,
+        Utc::now(),
+        Some("sticky-cap-logical"),
+        None,
+    )
+    .await
+    .expect("seed sticky route");
 
     let request_body = serde_json::to_vec(&json!({
         "model": "gpt-5.4",

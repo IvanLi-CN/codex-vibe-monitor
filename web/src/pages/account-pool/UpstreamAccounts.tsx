@@ -915,6 +915,7 @@ export default function UpstreamAccountsPage() {
   }))
   const [isDetailDrawerOpen, setIsDetailDrawerOpen] = useState(false)
   const [isRoutingDialogOpen, setIsRoutingDialogOpen] = useState(false)
+  const [isRoutingDialogInspectOnly, setIsRoutingDialogInspectOnly] = useState(false)
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
   const [pageCreatedTagIds, setPageCreatedTagIds] = useState<number[]>([])
   const [stickyConversationLimit, setStickyConversationLimit] = useState<number>(50)
@@ -1010,6 +1011,12 @@ export default function UpstreamAccountsPage() {
     clearBulkSelection()
   }, [clearBulkSelection])
 
+  const handleOpenRoutingDialog = useCallback(() => {
+    setRoutingDraft(buildRoutingDraft(routing))
+    setIsRoutingDialogInspectOnly(!routingWritesEnabled)
+    setIsRoutingDialogOpen(true)
+  }, [routing, routingWritesEnabled])
+
   const closeBulkSyncEventSource = useCallback(() => {
     bulkSyncEventSourceRef.current?.close()
     bulkSyncEventSourceRef.current = null
@@ -1045,10 +1052,30 @@ export default function UpstreamAccountsPage() {
   }, [selectedId, isDetailDrawerOpen])
 
   useEffect(() => {
-    if (isRoutingDialogOpen) return
+    if (isRoutingDialogOpen && !routing) {
+      setRoutingDraft(buildRoutingDraft(null))
+      setIsRoutingDialogInspectOnly(false)
+      setIsRoutingDialogOpen(false)
+      return
+    }
+    if (isRoutingDialogOpen) {
+      if (!routingWritesEnabled) {
+        setRoutingDraft(buildRoutingDraft(routing))
+        setIsRoutingDialogInspectOnly(true)
+        return
+      }
+      if (isRoutingDialogInspectOnly) {
+        setRoutingDraft(buildRoutingDraft(routing))
+        setIsRoutingDialogInspectOnly(false)
+      }
+      return
+    }
     setRoutingDraft(buildRoutingDraft(routing))
   }, [
     isRoutingDialogOpen,
+    isRoutingDialogInspectOnly,
+    routingWritesEnabled,
+    routing,
     routing?.maskedApiKey,
     routing?.writesEnabled,
     routing?.maintenance?.primarySyncIntervalSecs,
@@ -1059,12 +1086,6 @@ export default function UpstreamAccountsPage() {
     routing?.timeouts?.responsesStreamTimeoutSecs,
     routing?.timeouts?.compactStreamTimeoutSecs,
   ])
-
-  useEffect(() => {
-    if (!routingWritesEnabled) {
-      setIsRoutingDialogOpen(false)
-    }
-  }, [routingWritesEnabled])
 
   useEffect(() => {
     if (!writesEnabled) {
@@ -1325,9 +1346,11 @@ export default function UpstreamAccountsPage() {
       String(resolvedRoutingTimeouts.responsesStreamTimeoutSecs) ||
     routingDraft.compactStreamTimeoutSecs.trim() !==
       String(resolvedRoutingTimeouts.compactStreamTimeoutSecs)
+  const routingDialogCanEdit = routingWritesEnabled && !isRoutingDialogInspectOnly
   const routingCanSave =
+    routingDialogCanEdit &&
     !routingDraftValidationError &&
-    (routingHasMaintenanceChange || routingHasTimeoutChange || (writesEnabled && routingHasApiKeyChange))
+    (routingHasMaintenanceChange || routingHasTimeoutChange || routingHasApiKeyChange)
   const selectedRecoveryHint = resolveOauthRecoveryHint(
     selectedDetail?.kind ?? selected?.kind ?? '',
     accountHealthStatus(selectedDetail ?? selected),
@@ -1603,7 +1626,7 @@ export default function UpstreamAccountsPage() {
       maintenance?: PoolRoutingMaintenanceSettings
       timeouts?: PoolRoutingTimeoutSettings
     } = {}
-    if (writesEnabled && trimmedApiKey) {
+    if (routingWritesEnabled && trimmedApiKey) {
       payload.apiKey = trimmedApiKey
     }
     if (routingHasMaintenanceChange && parsedRoutingMaintenance) {
@@ -1613,6 +1636,7 @@ export default function UpstreamAccountsPage() {
       payload.timeouts = parsedTimeouts
     }
     if (!payload.apiKey && !payload.maintenance && !payload.timeouts) {
+      setIsRoutingDialogInspectOnly(false)
       setIsRoutingDialogOpen(false)
       return
     }
@@ -1620,6 +1644,7 @@ export default function UpstreamAccountsPage() {
     try {
       await saveRouting(payload)
       setRoutingDraft((current) => ({ ...current, apiKey: '' }))
+      setIsRoutingDialogInspectOnly(false)
       setIsRoutingDialogOpen(false)
     } catch (err) {
       setActionError((current) => ({
@@ -1963,43 +1988,13 @@ export default function UpstreamAccountsPage() {
                     <p className="mt-2 break-all font-mono text-sm text-base-content">
                       {routing?.apiKeyConfigured ? routing?.maskedApiKey ?? t('accountPool.upstreamAccounts.routing.configured') : t('accountPool.upstreamAccounts.routing.notConfigured')}
                     </p>
-                    <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                      <DetailField
-                        label={t('accountPool.upstreamAccounts.routing.primarySyncIntervalLabel')}
-                        value={`${resolvedRoutingMaintenance.primarySyncIntervalSecs}s`}
-                      />
-                      <DetailField
-                        label={t('accountPool.upstreamAccounts.routing.secondarySyncIntervalLabel')}
-                        value={`${resolvedRoutingMaintenance.secondarySyncIntervalSecs}s`}
-                      />
-                      <DetailField
-                        label={t('accountPool.upstreamAccounts.routing.priorityCapLabel')}
-                        value={String(resolvedRoutingMaintenance.priorityAvailableAccountCap)}
-                      />
-                      <DetailField
-                        label={t('accountPool.upstreamAccounts.routing.timeout.responsesFirstByte')}
-                        value={`${resolvedRoutingTimeouts.responsesFirstByteTimeoutSecs}s`}
-                      />
-                      <DetailField
-                        label={t('accountPool.upstreamAccounts.routing.timeout.compactFirstByte')}
-                        value={`${resolvedRoutingTimeouts.compactFirstByteTimeoutSecs}s`}
-                      />
-                      <DetailField
-                        label={t('accountPool.upstreamAccounts.routing.timeout.responsesStream')}
-                        value={`${resolvedRoutingTimeouts.responsesStreamTimeoutSecs}s`}
-                      />
-                      <DetailField
-                        label={t('accountPool.upstreamAccounts.routing.timeout.compactStream')}
-                        value={`${resolvedRoutingTimeouts.compactStreamTimeoutSecs}s`}
-                      />
-                    </div>
                   </div>
                   <Button
                     type="button"
                     variant="ghost"
                     size="icon"
-                    onClick={() => setIsRoutingDialogOpen(true)}
-                    disabled={!routingWritesEnabled}
+                    onClick={handleOpenRoutingDialog}
+                    disabled={!routing}
                   >
                     <AppIcon name="pencil-outline" className="h-4 w-4" aria-hidden />
                     <span className="sr-only">{t('accountPool.upstreamAccounts.routing.edit')}</span>
@@ -2514,8 +2509,8 @@ export default function UpstreamAccountsPage() {
           },
         ]}
         busy={isBusyAction(busyAction, 'routing')}
-        apiKeyWritesEnabled={writesEnabled}
-        timeoutWritesEnabled={routingWritesEnabled}
+        apiKeyWritesEnabled={routingDialogCanEdit}
+        timeoutWritesEnabled={routingDialogCanEdit}
         canSave={routingCanSave}
         onApiKeyChange={(value) => setRoutingDraft((current) => ({ ...current, apiKey: value }))}
         onGenerate={() => setRoutingDraft((current) => ({ ...current, apiKey: generatePoolRoutingKey() }))}
@@ -2530,6 +2525,7 @@ export default function UpstreamAccountsPage() {
         }
         onClose={() => {
           setRoutingDraft(buildRoutingDraft(routing))
+          setIsRoutingDialogInspectOnly(false)
           setIsRoutingDialogOpen(false)
         }}
         onSave={() => void handleSaveRouting()}
