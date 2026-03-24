@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.22.1",
+  "base_stable_version": "1.22.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-24T08:42:47Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.22.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "09ba332f8ac155a88c98fc36f43867b164324214",
+  "pr_number": 218,
+  "pr_title": "fix: hard-stop usage-limit exhausted pool accounts",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.22.1",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.22.1,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "6c65cddb413d59203fef27630701055870886f20",
+  "type_label": "type:patch"
+}
