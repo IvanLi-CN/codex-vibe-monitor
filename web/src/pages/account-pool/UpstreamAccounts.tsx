@@ -1052,6 +1052,12 @@ export default function UpstreamAccountsPage() {
   }, [selectedId, isDetailDrawerOpen])
 
   useEffect(() => {
+    if (isRoutingDialogOpen && !routing) {
+      setRoutingDraft(buildRoutingDraft(null))
+      setIsRoutingDialogInspectOnly(false)
+      setIsRoutingDialogOpen(false)
+      return
+    }
     if (isRoutingDialogOpen) {
       if (!isRoutingDialogInspectOnly) return
       setRoutingDraft(buildRoutingDraft(routing))
@@ -1065,6 +1071,7 @@ export default function UpstreamAccountsPage() {
     isRoutingDialogOpen,
     isRoutingDialogInspectOnly,
     routingWritesEnabled,
+    routing,
     routing?.maskedApiKey,
     routing?.writesEnabled,
     routing?.maintenance?.primarySyncIntervalSecs,

@@ -889,6 +889,28 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect(saveButton.disabled).toBe(true);
   });
 
+  it("closes the routing dialog when routing settings disappear during refresh", async () => {
+    mockAccountsPage();
+    render("/account-pool/upstream-accounts");
+
+    clickButton(/Edit routing settings/i);
+    await flushAsync();
+    await flushTimers();
+
+    expect(
+      document.body.querySelector('input[name="compactFirstByteTimeoutSecs"]'),
+    ).toBeInstanceOf(HTMLInputElement);
+
+    mockAccountsPage({ routing: null });
+    rerender("/account-pool/upstream-accounts");
+    await flushAsync();
+    await flushTimers();
+
+    expect(
+      document.body.querySelector('input[name="compactFirstByteTimeoutSecs"]'),
+    ).toBeNull();
+  });
+
   it("passes all-match tag filters to the roster hook", () => {
     mockAccountsPage();
     render("/account-pool/upstream-accounts");
