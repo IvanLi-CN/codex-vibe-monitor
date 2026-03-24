@@ -5,10 +5,10 @@ import { useTranslation } from '../i18n'
 import type { TranslationKey } from '../i18n'
 import { formatTokensShort } from '../lib/numberFormatters'
 import { heatmapLevels, metricAccent } from '../lib/chartTheme'
-import { cn } from '../lib/utils'
 import { useTheme } from '../theme'
 import { Alert } from './ui/alert'
 import type { MetricKey } from './Last24hTenMinuteHeatmap'
+import { SegmentedControl, SegmentedControlItem } from './ui/segmented-control'
 
 type Cell = { date: string; hour: number; value: number }
 
@@ -143,25 +143,23 @@ export function WeeklyHourlyHeatmap({
           <div className="section-heading">
             <h2 className="section-title">{t('heatmap.title')}</h2>
           </div>
-          <div className="segment-group" role="tablist" aria-label={t('heatmap.metricsToggleAria')}>
+          <SegmentedControl size="compact" role="tablist" aria-label={t('heatmap.metricsToggleAria')}>
             {metricOptions.map((o) => {
               const active = o.key === metric
               return (
-                <button
+                <SegmentedControlItem
                   key={o.key}
-                  type="button"
+                  active={active}
                   role="tab"
                   aria-selected={active}
-                  className={cn('segment-button px-2 sm:px-3', active && 'font-semibold')}
-                  data-active={active}
                   style={active ? { color: metricAccent(o.key, themeMode) } : undefined}
                   onClick={() => setMetric(o.key)}
                 >
                   {o.label}
-                </button>
+                </SegmentedControlItem>
               )
             })}
-          </div>
+          </SegmentedControl>
         </div>
       )}
 

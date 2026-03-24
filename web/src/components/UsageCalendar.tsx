@@ -11,6 +11,7 @@ import { calendarPalette, metricAccent } from '../lib/chartTheme'
 import { cn } from '../lib/utils'
 import { useTheme } from '../theme'
 import { Alert } from './ui/alert'
+import { SegmentedControl, SegmentedControlItem } from './ui/segmented-control'
 
 type MetricKey = 'totalCount' | 'totalCost' | 'totalTokens'
 
@@ -219,26 +220,24 @@ export function UsageCalendar() {
                 {t('calendar.timeZoneLabel')}{valueSeparator}{timeZone}
               </p>
             </div>
-            <div className="segment-group" role="tablist" aria-label={t('calendar.metricsToggleAria')}>
+            <SegmentedControl size="compact" role="tablist" aria-label={t('calendar.metricsToggleAria')}>
               {metricOptions.map((option) => {
                 const active = metric === option.key
                 return (
-                  <button
+                  <SegmentedControlItem
                     key={option.key}
-                    type="button"
+                    active={active}
                     role="tab"
                     aria-selected={active}
                     aria-current={active ? 'true' : undefined}
-                    className={cn('segment-button px-2 sm:px-3', active && 'font-semibold')}
-                    data-active={active}
                     style={active ? { color: metricAccent(option.key, themeMode) } : undefined}
                     onClick={() => setMetric(option.key)}
                   >
                     {option.label}
-                  </button>
+                  </SegmentedControlItem>
                 )
               })}
-            </div>
+            </SegmentedControl>
           </div>
 
           <div className="panel-divider my-1 opacity-40" />

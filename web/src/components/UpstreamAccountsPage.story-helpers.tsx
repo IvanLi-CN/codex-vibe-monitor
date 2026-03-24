@@ -10,6 +10,7 @@ import type {
   OauthMailboxStatus,
   PoolRoutingMaintenanceSettings,
   PoolRoutingSettings,
+  PoolRoutingTimeoutSettings,
   TagSummary,
   UpdatePoolRoutingSettingsPayload,
   UpdateUpstreamAccountGroupPayload,
@@ -113,6 +114,13 @@ const defaultRoutingMaintenance: PoolRoutingMaintenanceSettings = {
   primarySyncIntervalSecs: 300,
   secondarySyncIntervalSecs: 1800,
   priorityAvailableAccountCap: 100,
+}
+
+const defaultRoutingTimeouts: PoolRoutingTimeoutSettings = {
+  responsesFirstByteTimeoutSecs: 120,
+  compactFirstByteTimeoutSecs: 300,
+  responsesStreamTimeoutSecs: 300,
+  compactStreamTimeoutSecs: 300,
 }
 
 function atMinuteOffset(minutes: number) {
@@ -632,6 +640,11 @@ function createOauthAccount(id: number, overrides?: Partial<UpstreamAccountDetai
       unlimited: false,
       balance: '11.80',
     },
+    compactSupport: {
+      status: 'unsupported',
+      observedAt: '2026-03-17T12:18:00.000Z',
+      reason: 'No available channel for model gpt-5.4-openai-compact under group default.',
+    },
     localLimits: {
       primaryLimit: null,
       secondaryLimit: null,
@@ -687,6 +700,11 @@ function createApiKeyAccount(id: number, overrides?: Partial<UpstreamAccountDeta
       unlimited: false,
       balance: null,
     },
+    compactSupport: {
+      status: 'supported',
+      observedAt: '2026-03-17T12:06:00.000Z',
+      reason: 'Observed success for /v1/responses/compact.',
+    },
     localLimits: {
       primaryLimit,
       secondaryLimit,
@@ -740,6 +758,7 @@ function toSummary(detail: UpstreamAccountDetail): UpstreamAccountSummary {
     secondaryWindow: normalized.secondaryWindow,
     credits: normalized.credits,
     localLimits: normalized.localLimits,
+    compactSupport: normalized.compactSupport,
     duplicateInfo: normalized.duplicateInfo,
     tags: normalized.tags,
     effectiveRoutingRule: normalized.effectiveRoutingRule,
@@ -942,9 +961,11 @@ function createStore(): StoryStore {
   return {
     writesEnabled: true,
     routing: {
+      writesEnabled: true,
       apiKeyConfigured: true,
       maskedApiKey: 'pool-live••••••c0de',
       maintenance: clone(defaultRoutingMaintenance),
+      timeouts: clone(defaultRoutingTimeouts),
     },
     groupNotes: {
       production: 'Premium traffic group note.',
@@ -1260,6 +1281,28 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
                     body.maintenance.priorityAvailableAccountCap ??
                     store.routing.maintenance?.priorityAvailableAccountCap ??
                     defaultRoutingMaintenance.priorityAvailableAccountCap,
+                },
+              }
+            : {}),
+          ...(body.timeouts
+            ? {
+                timeouts: {
+                  responsesFirstByteTimeoutSecs:
+                    body.timeouts.responsesFirstByteTimeoutSecs ??
+                    store.routing.timeouts?.responsesFirstByteTimeoutSecs ??
+                    defaultRoutingTimeouts.responsesFirstByteTimeoutSecs,
+                  compactFirstByteTimeoutSecs:
+                    body.timeouts.compactFirstByteTimeoutSecs ??
+                    store.routing.timeouts?.compactFirstByteTimeoutSecs ??
+                    defaultRoutingTimeouts.compactFirstByteTimeoutSecs,
+                  responsesStreamTimeoutSecs:
+                    body.timeouts.responsesStreamTimeoutSecs ??
+                    store.routing.timeouts?.responsesStreamTimeoutSecs ??
+                    defaultRoutingTimeouts.responsesStreamTimeoutSecs,
+                  compactStreamTimeoutSecs:
+                    body.timeouts.compactStreamTimeoutSecs ??
+                    store.routing.timeouts?.compactStreamTimeoutSecs ??
+                    defaultRoutingTimeouts.compactStreamTimeoutSecs,
                 },
               }
             : {}),

@@ -144,7 +144,7 @@ function createListResponse(): UpstreamAccountListResponse {
     items: [createSummary(1, "Alpha"), createSummary(2, "Beta")],
     groups: [],
     hasUngroupedAccounts: false,
-    routing: { apiKeyConfigured: false, maskedApiKey: null },
+    routing: { writesEnabled: true, apiKeyConfigured: false, maskedApiKey: null },
   };
 }
 
@@ -405,7 +405,7 @@ describe("useUpstreamAccounts", () => {
         items: [createSummary(2, "Beta")],
         groups: [],
         hasUngroupedAccounts: false,
-        routing: { apiKeyConfigured: false, maskedApiKey: null },
+        routing: { writesEnabled: true, apiKeyConfigured: false, maskedApiKey: null },
       });
     apiMocks.fetchUpstreamAccountDetail
       .mockResolvedValueOnce(createDetail(1, "Alpha"))
@@ -565,14 +565,14 @@ describe("useUpstreamAccounts", () => {
         items: [createSummary(1, "Alpha"), createSummary(3, "Gamma"), createSummary(2, "Beta")],
         groups: [],
         hasUngroupedAccounts: false,
-        routing: { apiKeyConfigured: false, maskedApiKey: null },
+        routing: { writesEnabled: true, apiKeyConfigured: false, maskedApiKey: null },
       })
       .mockResolvedValueOnce({
         writesEnabled: true,
         items: [createSummary(2, "Beta"), createSummary(3, "Gamma")],
         groups: [],
         hasUngroupedAccounts: false,
-        routing: { apiKeyConfigured: false, maskedApiKey: null },
+        routing: { writesEnabled: true, apiKeyConfigured: false, maskedApiKey: null },
       });
     apiMocks.deleteUpstreamAccount.mockImplementationOnce(async () => remove.promise);
 
@@ -698,7 +698,7 @@ describe("useUpstreamAccounts", () => {
         items: [createSummary(1, "Alpha Synced"), createSummary(2, "Beta")],
         groups: [],
         hasUngroupedAccounts: false,
-        routing: { apiKeyConfigured: false, maskedApiKey: null },
+        routing: { writesEnabled: true, apiKeyConfigured: false, maskedApiKey: null },
       });
     apiMocks.fetchUpstreamAccountDetail
       .mockResolvedValueOnce(createDetail(1, "Alpha"))
@@ -721,7 +721,7 @@ describe("useUpstreamAccounts", () => {
       items: [createSummary(1, "Alpha Synced"), createSummary(2, "Beta")],
       groups: [],
       hasUngroupedAccounts: false,
-      routing: { apiKeyConfigured: false, maskedApiKey: null },
+      routing: { writesEnabled: true, apiKeyConfigured: false, maskedApiKey: null },
     });
     await flushAsync();
     await flushAsync();
@@ -734,7 +734,7 @@ describe("useUpstreamAccounts", () => {
       items: [createSummary(1, "Alpha Stale"), createSummary(2, "Beta")],
       groups: [],
       hasUngroupedAccounts: false,
-      routing: { apiKeyConfigured: false, maskedApiKey: null },
+      routing: { writesEnabled: true, apiKeyConfigured: false, maskedApiKey: null },
     });
     await flushAsync();
 
