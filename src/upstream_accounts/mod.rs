@@ -5977,6 +5977,7 @@ async fn sync_api_key_account(
             &row.status,
             UPSTREAM_ACCOUNT_ACTION_REASON_RECOVERY_UNCONFIRMED_MANUAL_REQUIRED,
             reason_message,
+            row.last_error.as_deref(),
             row.last_route_failure_kind.as_deref(),
         )
         .await;
@@ -6245,6 +6246,7 @@ async fn sync_oauth_account(
             &row.status,
             UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED,
             "latest usage snapshot still shows an exhausted upstream usage limit window",
+            row.last_error.as_deref(),
             row.last_route_failure_kind.as_deref(),
         )
         .await?;
@@ -10259,6 +10261,7 @@ async fn record_account_sync_recovery_blocked(
     status: &str,
     reason_code: &'static str,
     reason_message: &str,
+    preserved_error: Option<&str>,
     failure_kind: Option<&str>,
 ) -> Result<()> {
     let now_iso = format_utc_iso(Utc::now());
@@ -10267,6 +10270,7 @@ async fn record_account_sync_recovery_blocked(
         UPDATE pool_upstream_accounts
         SET status = ?2,
             last_synced_at = ?3,
+            last_error = COALESCE(?4, last_error),
             updated_at = ?3
         WHERE id = ?1
         "#,
@@ -10274,6 +10278,7 @@ async fn record_account_sync_recovery_blocked(
     .bind(account_id)
     .bind(status)
     .bind(&now_iso)
+    .bind(preserved_error)
     .execute(pool)
     .await?;
     record_upstream_account_action(
@@ -15192,6 +15197,7 @@ mod tests {
         assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
         assert!(after.last_synced_at.is_some());
         assert!(after.last_successful_sync_at.is_none());
+        assert_eq!(after.last_error.as_deref(), Some("seed hard unavailable"));
         assert_eq!(
             after.last_action.as_deref(),
             Some(UPSTREAM_ACCOUNT_ACTION_SYNC_RECOVERY_BLOCKED)
@@ -15313,6 +15319,7 @@ mod tests {
         assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
         assert!(after.last_synced_at.is_some());
         assert!(after.last_successful_sync_at.is_none());
+        assert_eq!(after.last_error.as_deref(), Some("seed hard unavailable"));
         assert_eq!(
             after.last_action.as_deref(),
             Some(UPSTREAM_ACCOUNT_ACTION_SYNC_RECOVERY_BLOCKED)
@@ -15413,6 +15420,7 @@ mod tests {
             UPSTREAM_ACCOUNT_STATUS_ERROR,
             UPSTREAM_ACCOUNT_ACTION_REASON_RECOVERY_UNCONFIRMED_MANUAL_REQUIRED,
             "manual recovery required because API key sync cannot verify whether the upstream usage limit has reset",
+            Some("seed hard unavailable"),
             Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED),
         )
         .await
