@@ -58,6 +58,29 @@ async function choosePageSize(canvasElement: HTMLElement, pageSize: number) {
   )
 }
 
+async function findAccountRow(canvasElement: HTMLElement, matcher: RegExp) {
+  const documentScope = within(canvasElement.ownerDocument.body)
+  return documentScope.findByRole('button', { name: matcher })
+}
+
+function findRowBadge(row: HTMLElement, matcher: RegExp) {
+  const badges = Array.from(
+    row.querySelectorAll<HTMLElement>('div.inline-flex.items-center.rounded-full.border'),
+  )
+  const badge = badges.find((candidate) => matcher.test(candidate.textContent?.trim() ?? ''))
+  if (!badge) {
+    throw new Error(`missing badge: ${matcher}`)
+  }
+  return badge
+}
+
+function expectBadgeAlignment(reference: HTMLElement, candidate: HTMLElement) {
+  const referenceRect = reference.getBoundingClientRect()
+  const candidateRect = candidate.getBoundingClientRect()
+  expect(Math.abs(candidateRect.top - referenceRect.top)).toBeLessThanOrEqual(0.5)
+  expect(Math.abs(candidateRect.height - referenceRect.height)).toBeLessThanOrEqual(0.5)
+}
+
 export const Operational: Story = {
   render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
 }
@@ -73,6 +96,29 @@ export const DenseRoster: Story = {
 
 export const CompactLongLabels: Story = {
   render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
+  play: async ({ canvasElement, step }) => {
+    await step('keeps unsupported compact badges aligned and hides supported markers', async () => {
+      const oauthRow = await findAccountRow(
+        canvasElement,
+        /Codex Pro - Tokyo enterprise rotation account with a deliberately long roster title/i,
+      )
+      const oauthKindBadge = findRowBadge(oauthRow, /^OAuth$/i)
+      const oauthPlanBadge = findRowBadge(oauthRow, /^pro$/i)
+      const compactUnsupportedBadge = findRowBadge(oauthRow, /^Compact (不支持|unsupported)$/i)
+      const oauthOverflowBadge = findRowBadge(oauthRow, /^\+1$/)
+      const oauthVisibleTagBadge = findRowBadge(oauthRow, /^prod-apac$/i)
+
+      expectBadgeAlignment(oauthKindBadge, compactUnsupportedBadge)
+      expectBadgeAlignment(oauthPlanBadge, compactUnsupportedBadge)
+      expectBadgeAlignment(oauthVisibleTagBadge, oauthOverflowBadge)
+
+      const apiKeyRow = await findAccountRow(
+        canvasElement,
+        /Team key - staging/i,
+      )
+      expect(() => findRowBadge(apiKeyRow, /^Compact (可用|available)$/i)).toThrow()
+    })
+  },
 }
 
 export const StatusFilters: Story = {

@@ -390,10 +390,8 @@ function compactSupportLabel(
   support: CompactSupportState | null | undefined,
   t: (key: string) => string,
 ) {
-  if (!support || support.status === 'unknown') return null
-  return support.status === 'unsupported'
-    ? t('accountPool.upstreamAccounts.compactSupport.unsupportedBadge')
-    : t('accountPool.upstreamAccounts.compactSupport.supportedBadge')
+  if (!support || support.status !== 'unsupported') return null
+  return t('accountPool.upstreamAccounts.compactSupport.unsupportedBadge')
 }
 
 function compactSupportHint(
