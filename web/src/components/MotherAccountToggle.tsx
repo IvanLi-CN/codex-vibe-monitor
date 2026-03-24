@@ -4,7 +4,7 @@ import { Badge } from './ui/badge'
 import { cn } from '../lib/utils'
 
 const motherBadgeClassName = cn(
-  'shrink-0 whitespace-nowrap px-2 py-px text-[11px] font-semibold leading-4 text-base-content shadow-none',
+  'shrink-0 whitespace-nowrap px-2 py-px text-[11px] font-semibold leading-4 shadow-none',
   'border-[color:color-mix(in_oklab,oklch(var(--color-warning))_58%,oklch(var(--color-base-300))_42%)]',
   'bg-[color:color-mix(in_oklab,oklch(var(--color-warning))_26%,oklch(var(--color-base-100))_74%)]',
   'shadow-[inset_0_0_0_1px_color-mix(in_oklab,oklch(var(--color-warning))_18%,transparent)]',
@@ -13,10 +13,16 @@ const motherBadgeClassName = cn(
 const motherAccentIconClassName =
   'text-[color:color-mix(in_oklab,oklch(var(--color-warning))_58%,currentColor_42%)]'
 
+const motherToneTextClassName =
+  'text-[color:color-mix(in_oklab,oklch(var(--color-base-content))_74%,oklch(var(--color-warning))_26%)]'
+
+const motherToneDescriptionClassName =
+  'text-[color:color-mix(in_oklab,oklch(var(--color-base-content))_58%,oklch(var(--color-warning))_42%)]'
+
 const motherToggleCheckedClassName = cn(
   'border-[color:color-mix(in_oklab,oklch(var(--color-warning))_60%,oklch(var(--color-base-300))_40%)]',
   'bg-[color:color-mix(in_oklab,oklch(var(--color-warning))_24%,oklch(var(--color-base-100))_76%)]',
-  'text-base-content',
+  motherToneTextClassName,
   'shadow-[inset_0_0_0_1px_color-mix(in_oklab,oklch(var(--color-warning))_18%,transparent),0_12px_28px_color-mix(in_oklab,oklch(var(--color-warning))_14%,transparent)]',
   'hover:border-[color:color-mix(in_oklab,oklch(var(--color-warning))_66%,oklch(var(--color-base-300))_34%)]',
   'hover:bg-[color:color-mix(in_oklab,oklch(var(--color-warning))_29%,oklch(var(--color-base-100))_71%)]',
@@ -25,7 +31,7 @@ const motherToggleCheckedClassName = cn(
 
 export function MotherAccountBadge({ label }: { label: string }) {
   return (
-    <Badge variant="warning" className={motherBadgeClassName}>
+    <Badge variant="warning" className={cn(motherBadgeClassName, motherToneTextClassName)}>
       <span className="inline-flex items-center gap-1 leading-4">
         <AppIcon
           name="crown"
@@ -87,7 +93,7 @@ export function MotherAccountToggle({
       {iconOnly ? null : (
         <span className="min-w-0 space-y-0.5">
           <span className="block text-sm font-semibold text-current">{label}</span>
-          {description ? <span className="block text-xs leading-5 text-current/78">{description}</span> : null}
+          {description ? <span className={cn('block text-xs leading-5', checked ? motherToneDescriptionClassName : 'text-current/78')}>{description}</span> : null}
         </span>
       )}
     </Button>
