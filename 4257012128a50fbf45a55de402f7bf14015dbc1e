@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.23.4",
+  "base_stable_version": "1.23.3",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-24T14:09:27Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.23.4",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "bb2d262d5654ebe0770a1d888c9e48310fc673fc",
+  "pr_number": 222,
+  "pr_title": "fix: repair pool routing schema upgrade order",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.23.4",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.23.4,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "4257012128a50fbf45a55de402f7bf14015dbc1e",
+  "type_label": "type:patch"
+}
