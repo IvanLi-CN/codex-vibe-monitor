@@ -4,7 +4,7 @@
 
 - Status: 已实现
 - Created: 2026-03-11
-- Last: 2026-03-23
+- Last: 2026-03-25
 
 ## 背景 / 问题陈述
 
@@ -258,6 +258,28 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Account Pool / Components / Mother Account Toggle / Overview
+  state: light-dark-gallery
+  evidence_note: 验证母号 badge 与“设为母号”切换卡在 light/dark 两套主题下都保持 amber 语义，但文本、皇冠图标和 icon-only 状态具备足够对比度。
+  image:
+  ![Mother account toggle overview](./assets/mother-account-toggle-overview.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Account Pool / Pages / Upstream Accounts / Overlays / Detail Drawer
+  state: mother-contrast-dark
+  evidence_note: 验证 dark 主题下账号详情抽屉里的母号 badge 与“设为母号”切换卡不再出现深色文字压在深色 amber 底上的低对比问题。
+  image:
+  ![Upstream account detail drawer mother contrast dark](./assets/upstream-account-detail-drawer-mother-contrast-dark.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
   submission_gate: approved
   story_id_or_title: Account Pool / Pages / Upstream Accounts / Tag Filter All Match
   state: group-and-tag-combined-filter
@@ -389,3 +411,4 @@
 - 2026-03-13: 刷新 Storybook 视觉证据，补充路由设置弹窗、Sticky Key 对话与记录页上游筛选展示。
 - 2026-03-14: 调整 OAuth 新建语义为“重复身份仅告警不合并”，并补充 `displayName` 全局唯一约束与 UI warning/inline error 验收口径。
 - 2026-03-18: 账号列表头部改为 `分组 + 多 Tag` 双筛选，Tag 必须全匹配；移除头部 `打开详情` 冗余按钮并保持列表行点击/路由态打开详情抽屉的承接语义。
+- 2026-03-25: 收敛母号 badge 与“设为母号”切换卡的 amber 对比度，补充独立 Storybook 画廊与 dark 详情抽屉证据，避免母号标记继续混入低可读 warning 文本配色。
