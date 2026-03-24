@@ -73,6 +73,7 @@ const UPSTREAM_ACCOUNT_ACTION_ROUTE_RECOVERED: &str = "route_recovered";
 const UPSTREAM_ACCOUNT_ACTION_ROUTE_COOLDOWN_STARTED: &str = "route_cooldown_started";
 const UPSTREAM_ACCOUNT_ACTION_ROUTE_HARD_UNAVAILABLE: &str = "route_hard_unavailable";
 const UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED: &str = "sync_succeeded";
+const UPSTREAM_ACCOUNT_ACTION_SYNC_HARD_UNAVAILABLE: &str = "sync_hard_unavailable";
 const UPSTREAM_ACCOUNT_ACTION_SYNC_RECOVERY_BLOCKED: &str = "sync_recovery_blocked";
 const UPSTREAM_ACCOUNT_ACTION_SYNC_FAILED: &str = "sync_failed";
 const UPSTREAM_ACCOUNT_ACTION_ACCOUNT_UPDATED: &str = "account_updated";
@@ -85,6 +86,7 @@ const UPSTREAM_ACCOUNT_ACTION_SOURCE_ACCOUNT_UPDATE: &str = "account_update";
 const UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_OK: &str = "sync_ok";
 const UPSTREAM_ACCOUNT_ACTION_REASON_ACCOUNT_UPDATED: &str = "account_updated";
 const UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR: &str = "sync_error";
+const UPSTREAM_ACCOUNT_ACTION_REASON_USAGE_SNAPSHOT_EXHAUSTED: &str = "usage_snapshot_exhausted";
 const UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED: &str = "quota_still_exhausted";
 const UPSTREAM_ACCOUNT_ACTION_REASON_RECOVERY_UNCONFIRMED_MANUAL_REQUIRED: &str =
     "recovery_unconfirmed_manual_required";
@@ -1898,11 +1900,14 @@ struct PoolStickyRouteRow {
     last_seen_at: String,
 }
 
-#[derive(Debug, FromRow)]
+#[derive(Debug, Clone, FromRow)]
 struct AccountRoutingCandidateRow {
     id: i64,
     secondary_used_percent: Option<f64>,
     primary_used_percent: Option<f64>,
+    credits_has_credits: Option<i64>,
+    credits_unlimited: Option<i64>,
+    credits_balance: Option<String>,
     last_selected_at: Option<String>,
     has_local_limits: bool,
     active_sticky_conversations: i64,
@@ -6431,7 +6436,10 @@ async fn sync_oauth_account(
         state.config.upstream_accounts_history_retention_days,
     )
     .await?;
-    if route_failure_kind_is_quota_exhausted(row.last_route_failure_kind.as_deref())
+    let latest_row = load_upstream_account_row(&state.pool, row.id)
+        .await?
+        .ok_or_else(|| anyhow!("account disappeared after usage snapshot persisted"))?;
+    if route_failure_kind_is_quota_exhausted(latest_row.last_route_failure_kind.as_deref())
         && imported_snapshot_is_exhausted(&snapshot)
     {
         record_account_sync_recovery_blocked(
@@ -6441,8 +6449,23 @@ async fn sync_oauth_account(
             UPSTREAM_ACCOUNT_STATUS_ERROR,
             UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED,
             "latest usage snapshot still shows an exhausted upstream usage limit window",
-            row.last_error.as_deref(),
-            row.last_route_failure_kind.as_deref(),
+            latest_row
+                .last_error
+                .as_deref()
+                .or(row.last_error.as_deref()),
+            latest_row.last_route_failure_kind.as_deref(),
+        )
+        .await?;
+        return Ok(());
+    }
+    if imported_snapshot_is_exhausted(&snapshot) {
+        record_account_sync_hard_unavailable(
+            &state.pool,
+            row.id,
+            sync_source,
+            UPSTREAM_ACCOUNT_ACTION_REASON_USAGE_SNAPSHOT_EXHAUSTED,
+            "latest usage snapshot already shows an exhausted upstream usage limit window",
+            PROXY_FAILURE_UPSTREAM_USAGE_SNAPSHOT_QUOTA_EXHAUSTED,
         )
         .await?;
         return Ok(());
@@ -6451,7 +6474,7 @@ async fn sync_oauth_account(
         &state.pool,
         row.id,
         sync_source,
-        if should_clear_route_failure_state_after_sync_success(row) {
+        if should_clear_route_failure_state_after_sync_success(&latest_row) {
             SyncSuccessRouteState::ClearFailureState
         } else {
             SyncSuccessRouteState::PreserveFailureState
@@ -7945,10 +7968,12 @@ fn build_summary_from_row(
         row.last_route_failure_kind.as_deref(),
     );
     let sync_state = derive_upstream_account_sync_state(row.enabled != 0, &row.status);
+    let snapshot_exhausted = persisted_usage_sample_is_exhausted(sample);
     let work_status = derive_upstream_account_work_status(
         row.enabled != 0,
         health_status,
         sync_state,
+        snapshot_exhausted,
         row.cooldown_until.as_deref(),
         row.last_route_failure_kind.as_deref(),
         row.last_action_reason_code.as_deref(),
@@ -10020,17 +10045,21 @@ fn derive_upstream_account_work_status(
     enabled: bool,
     health_status: &str,
     sync_state: &str,
+    snapshot_exhausted: bool,
     cooldown_until: Option<&str>,
     last_route_failure_kind: Option<&str>,
     last_action_reason_code: Option<&str>,
     last_selected_at: Option<&str>,
     now: DateTime<Utc>,
 ) -> &'static str {
-    if !enabled
-        || health_status != UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL
-        || sync_state == UPSTREAM_ACCOUNT_SYNC_STATE_SYNCING
-    {
+    if !enabled || sync_state == UPSTREAM_ACCOUNT_SYNC_STATE_SYNCING {
         return UPSTREAM_ACCOUNT_WORK_STATUS_IDLE;
+    }
+    if snapshot_exhausted
+        || route_failure_kind_is_quota_exhausted(last_route_failure_kind)
+        || account_reason_is_rate_limited(last_action_reason_code)
+    {
+        return UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED;
     }
     if cooldown_until
         .and_then(parse_rfc3339_utc)
@@ -10046,6 +10075,9 @@ fn derive_upstream_account_work_status(
         })
     {
         return UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED;
+    }
+    if health_status != UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL {
+        return UPSTREAM_ACCOUNT_WORK_STATUS_IDLE;
     }
     let active_cutoff = now - ChronoDuration::minutes(POOL_ROUTE_ACTIVE_STICKY_WINDOW_MINUTES);
     if last_selected_at
@@ -10376,6 +10408,8 @@ fn account_reason_is_rate_limited(reason_code: Option<&str>) -> bool {
         Some(
             UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_RATE_LIMIT
                 | UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
+                | UPSTREAM_ACCOUNT_ACTION_REASON_USAGE_SNAPSHOT_EXHAUSTED
+                | UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED
         )
     )
 }
@@ -10385,7 +10419,10 @@ fn route_failure_kind_is_quota_exhausted(failure_kind: Option<&str>) -> bool {
         failure_kind
             .map(str::trim)
             .filter(|value| !value.is_empty()),
-        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+        Some(
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
+                | PROXY_FAILURE_UPSTREAM_USAGE_SNAPSHOT_QUOTA_EXHAUSTED
+        )
     )
 }
 
@@ -10428,8 +10465,15 @@ async fn set_account_status(
         r#"
         UPDATE pool_upstream_accounts
         SET status = ?2,
-            last_error = ?3,
-            last_error_at = CASE WHEN ?3 IS NULL THEN last_error_at ELSE ?4 END,
+            last_error = CASE
+                WHEN ?2 = ?6 AND ?3 IS NULL THEN last_error
+                ELSE ?3
+            END,
+            last_error_at = CASE
+                WHEN ?2 = ?6 AND ?3 IS NULL THEN last_error_at
+                WHEN ?3 IS NULL THEN last_error_at
+                ELSE ?4
+            END,
             last_route_failure_at = CASE
                 WHEN ?2 = ?5 AND ?3 IS NULL THEN NULL
                 ELSE last_route_failure_at
@@ -10455,6 +10499,7 @@ async fn set_account_status(
     .bind(last_error)
     .bind(&now_iso)
     .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+    .bind(UPSTREAM_ACCOUNT_STATUS_SYNCING)
     .execute(pool)
     .await?;
     Ok(())
@@ -10567,6 +10612,55 @@ async fn record_account_sync_recovery_blocked(
             reason_message: Some(reason_message),
             http_status: None,
             failure_kind,
+            invoke_id: None,
+            sticky_key: None,
+            occurred_at: &now_iso,
+        },
+    )
+    .await?;
+    Ok(())
+}
+
+async fn record_account_sync_hard_unavailable(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    source: &str,
+    reason_code: &'static str,
+    reason_message: &str,
+    failure_kind: &'static str,
+) -> Result<()> {
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET status = ?2,
+            last_synced_at = ?3,
+            last_error = ?4,
+            last_error_at = ?3,
+            last_route_failure_at = ?3,
+            last_route_failure_kind = ?5,
+            cooldown_until = NULL,
+            updated_at = ?3
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .bind(UPSTREAM_ACCOUNT_STATUS_ERROR)
+    .bind(&now_iso)
+    .bind(reason_message)
+    .bind(failure_kind)
+    .execute(pool)
+    .await?;
+    record_upstream_account_action(
+        pool,
+        account_id,
+        UpstreamAccountActionPayload {
+            action: UPSTREAM_ACCOUNT_ACTION_SYNC_HARD_UNAVAILABLE,
+            source,
+            reason_code: Some(reason_code),
+            reason_message: Some(reason_message),
+            http_status: None,
+            failure_kind: Some(failure_kind),
             invoke_id: None,
             sticky_key: None,
             occurred_at: &now_iso,
@@ -11274,25 +11368,59 @@ fn is_import_invalid_error_message(message: &str) -> bool {
         || normalized.contains("returned 403")
 }
 
-fn imported_snapshot_is_exhausted(snapshot: &NormalizedUsageSnapshot) -> bool {
-    let primary_exhausted = snapshot
-        .primary
-        .as_ref()
-        .is_some_and(|window| window.used_percent >= 100.0);
-    let secondary_exhausted = snapshot
-        .secondary
-        .as_ref()
-        .is_some_and(|window| window.used_percent >= 100.0);
-    let credits_exhausted = snapshot.credits.as_ref().is_some_and(|credits| {
-        credits.has_credits
-            && !credits.unlimited
-            && credits
-                .balance
-                .as_deref()
-                .and_then(|value| value.parse::<f64>().ok())
-                .is_some_and(|value| value <= 0.0)
-    });
+fn persisted_usage_snapshot_is_exhausted(
+    primary_used_percent: Option<f64>,
+    secondary_used_percent: Option<f64>,
+    credits_has_credits: Option<bool>,
+    credits_unlimited: Option<bool>,
+    credits_balance: Option<&str>,
+) -> bool {
+    let primary_exhausted = primary_used_percent.is_some_and(|value| value >= 100.0);
+    let secondary_exhausted = secondary_used_percent.is_some_and(|value| value >= 100.0);
+    let credits_exhausted = credits_has_credits.is_some_and(|has_credits| has_credits)
+        && !credits_unlimited.unwrap_or(false)
+        && credits_balance
+            .and_then(|value| value.parse::<f64>().ok())
+            .is_some_and(|value| value <= 0.0);
     primary_exhausted || secondary_exhausted || credits_exhausted
+}
+
+fn imported_snapshot_is_exhausted(snapshot: &NormalizedUsageSnapshot) -> bool {
+    persisted_usage_snapshot_is_exhausted(
+        snapshot.primary.as_ref().map(|window| window.used_percent),
+        snapshot
+            .secondary
+            .as_ref()
+            .map(|window| window.used_percent),
+        snapshot.credits.as_ref().map(|credits| credits.has_credits),
+        snapshot.credits.as_ref().map(|credits| credits.unlimited),
+        snapshot
+            .credits
+            .as_ref()
+            .and_then(|credits| credits.balance.as_deref()),
+    )
+}
+
+fn persisted_usage_sample_is_exhausted(sample: Option<&UpstreamAccountSampleRow>) -> bool {
+    sample.is_some_and(|sample| {
+        persisted_usage_snapshot_is_exhausted(
+            sample.primary_used_percent,
+            sample.secondary_used_percent,
+            sample.credits_has_credits.map(|value| value != 0),
+            sample.credits_unlimited.map(|value| value != 0),
+            sample.credits_balance.as_deref(),
+        )
+    })
+}
+
+fn routing_candidate_snapshot_is_exhausted(candidate: &AccountRoutingCandidateRow) -> bool {
+    persisted_usage_snapshot_is_exhausted(
+        candidate.primary_used_percent,
+        candidate.secondary_used_percent,
+        candidate.credits_has_credits.map(|value| value != 0),
+        candidate.credits_unlimited.map(|value| value != 0),
+        candidate.credits_balance.as_deref(),
+    )
 }
 
 fn imported_match_key(email: &str, account_id: &str) -> String {
@@ -12188,7 +12316,12 @@ pub(crate) async fn resolve_pool_account_for_request(
             && let Some(row) = load_upstream_account_row(&state.pool, route.account_id).await?
         {
             tried.insert(route.account_id);
-            if is_account_selectable_for_routing(&row) {
+            let sticky_candidate =
+                load_account_routing_candidate(&state.pool, route.account_id).await?;
+            let sticky_snapshot_exhausted = sticky_candidate
+                .as_ref()
+                .is_some_and(routing_candidate_snapshot_is_exhausted);
+            if is_account_selectable_for_routing(&row, sticky_snapshot_exhausted) {
                 let mut sticky_route_was_excluded = false;
                 if let Some(account) = prepare_pool_account(state, &row).await? {
                     if !excluded_upstream_route_keys.contains(&account.upstream_route_key()) {
@@ -12200,7 +12333,7 @@ pub(crate) async fn resolve_pool_account_for_request(
                 if !sticky_route_was_excluded {
                     saw_non_rate_limited_routing_candidate = true;
                 }
-            } else if is_account_rate_limited_for_routing(&row) {
+            } else if is_account_rate_limited_for_routing(&row, sticky_snapshot_exhausted) {
                 saw_rate_limited_candidate = true;
             } else if is_routing_eligible_account(&row) {
                 saw_non_rate_limited_routing_candidate = true;
@@ -12228,8 +12361,9 @@ pub(crate) async fn resolve_pool_account_for_request(
         let Some(row) = load_upstream_account_row(&state.pool, candidate.id).await? else {
             continue;
         };
-        if !is_account_selectable_for_routing(&row) {
-            if is_account_rate_limited_for_routing(&row) {
+        let snapshot_exhausted = routing_candidate_snapshot_is_exhausted(&candidate);
+        if !is_account_selectable_for_routing(&row, snapshot_exhausted) {
+            if is_account_rate_limited_for_routing(&row, snapshot_exhausted) {
                 saw_rate_limited_candidate = true;
             } else if is_routing_eligible_account(&row) {
                 saw_non_rate_limited_routing_candidate = true;
@@ -12275,11 +12409,13 @@ pub(crate) async fn resolve_pool_account_for_request(
 pub(crate) async fn record_pool_route_success(
     pool: &Pool<Sqlite>,
     account_id: i64,
+    request_started_at_utc: DateTime<Utc>,
     sticky_key: Option<&str>,
     invoke_id: Option<&str>,
 ) -> Result<()> {
     let now_iso = format_utc_iso(Utc::now());
-    sqlx::query(
+    let request_started_at_iso = format_utc_iso(request_started_at_utc);
+    let update_result = sqlx::query(
         r#"
         UPDATE pool_upstream_accounts
         SET status = ?2,
@@ -12292,13 +12428,21 @@ pub(crate) async fn record_pool_route_success(
             consecutive_route_failures = 0,
             updated_at = ?3
         WHERE id = ?1
+          AND (
+                last_route_failure_at IS NULL
+                OR last_route_failure_at <= ?4
+            )
         "#,
     )
     .bind(account_id)
     .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
     .bind(&now_iso)
+    .bind(&request_started_at_iso)
     .execute(pool)
     .await?;
+    if update_result.rows_affected() == 0 {
+        return Ok(());
+    }
     if let Some(sticky_key) = sticky_key {
         upsert_sticky_route(pool, sticky_key, account_id, &now_iso).await?;
     }
@@ -12803,8 +12947,8 @@ async fn prepare_pool_account(
     }
 }
 
-fn is_account_selectable_for_routing(row: &UpstreamAccountRow) -> bool {
-    if !is_routing_eligible_account(row) {
+fn is_account_selectable_for_routing(row: &UpstreamAccountRow, snapshot_exhausted: bool) -> bool {
+    if !is_routing_eligible_account(row) || snapshot_exhausted {
         return false;
     }
     let Some(cooldown_until) = row.cooldown_until.as_deref() else {
@@ -12825,7 +12969,7 @@ fn is_routing_eligible_account(row: &UpstreamAccountRow) -> bool {
     is_pool_account_routing_candidate(row) && row.encrypted_credentials.is_some()
 }
 
-fn is_account_rate_limited_for_routing(row: &UpstreamAccountRow) -> bool {
+fn is_account_rate_limited_for_routing(row: &UpstreamAccountRow, snapshot_exhausted: bool) -> bool {
     if row.provider != UPSTREAM_ACCOUNT_PROVIDER_CODEX
         || row.enabled == 0
         || row.encrypted_credentials.is_none()
@@ -12847,7 +12991,8 @@ fn is_account_rate_limited_for_routing(row: &UpstreamAccountRow) -> bool {
                     | FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
             )
         );
-    quota_exhausted_hard_stop
+    snapshot_exhausted
+        || quota_exhausted_hard_stop
         || in_429_cooldown
         || account_reason_is_rate_limited(row.last_action_reason_code.as_deref())
 }
@@ -12877,6 +13022,27 @@ async fn load_account_routing_candidates(
                 ORDER BY sample.captured_at DESC
                 LIMIT 1
             ) AS primary_used_percent,
+            (
+                SELECT sample.credits_has_credits
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS credits_has_credits,
+            (
+                SELECT sample.credits_unlimited
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS credits_unlimited,
+            (
+                SELECT sample.credits_balance
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS credits_balance,
             account.last_selected_at,
             CASE
                 WHEN account.local_primary_limit IS NOT NULL
@@ -12918,6 +13084,75 @@ async fn load_account_routing_candidates(
         .fetch_all(pool)
         .await
         .map_err(Into::into)
+}
+
+async fn load_account_routing_candidate(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+) -> Result<Option<AccountRoutingCandidateRow>> {
+    sqlx::query_as::<_, AccountRoutingCandidateRow>(
+        r#"
+        SELECT
+            account.id,
+            (
+                SELECT sample.secondary_used_percent
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS secondary_used_percent,
+            (
+                SELECT sample.primary_used_percent
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS primary_used_percent,
+            (
+                SELECT sample.credits_has_credits
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS credits_has_credits,
+            (
+                SELECT sample.credits_unlimited
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS credits_unlimited,
+            (
+                SELECT sample.credits_balance
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS credits_balance,
+            account.last_selected_at,
+            CASE
+                WHEN account.local_primary_limit IS NOT NULL
+                  OR account.local_secondary_limit IS NOT NULL
+                THEN 1
+                ELSE 0
+            END AS has_local_limits,
+            (
+                SELECT COUNT(*)
+                FROM pool_sticky_routes route
+                WHERE route.account_id = account.id
+                  AND route.last_seen_at >= ?2
+            ) AS active_sticky_conversations
+        FROM pool_upstream_accounts account
+        WHERE account.id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .bind(format_utc_iso(
+        Utc::now() - ChronoDuration::minutes(POOL_ROUTE_ACTIVE_STICKY_WINDOW_MINUTES),
+    ))
+    .fetch_optional(pool)
+    .await
+    .map_err(Into::into)
 }
 
 fn compare_routing_candidates(
@@ -15721,6 +15956,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn record_pool_route_success_does_not_clear_newer_route_failure_state() {
+        let pool = test_pool().await;
+        let account_id = insert_api_key_account(&pool, "Stale Success Guard").await;
+        seed_hard_unavailable_route_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+
+        record_pool_route_success(
+            &pool,
+            account_id,
+            Utc::now() - ChronoDuration::minutes(5),
+            Some("sticky-stale-success"),
+            Some("invk_stale_success"),
+        )
+        .await
+        .expect("record stale route success");
+
+        let after = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load row after stale success")
+            .expect("row exists after stale success");
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
+        assert_eq!(
+            after.last_route_failure_kind.as_deref(),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+        );
+        assert_eq!(
+            after.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_ROUTE_HARD_UNAVAILABLE)
+        );
+        assert!(
+            load_sticky_route(&pool, "sticky-stale-success")
+                .await
+                .expect("load sticky route after stale success")
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
     async fn mark_account_sync_success_preserves_route_cooldown_state() {
         let pool = test_pool().await;
         let account_id = insert_oauth_account(&pool, "Cooldown OAuth").await;
@@ -16049,6 +16329,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn oauth_sync_ignores_stale_input_row_after_newer_quota_hard_stop() {
+        let (base_url, server) = spawn_usage_snapshot_server(
+            StatusCode::OK,
+            json!({
+                "planType": "team",
+                "rateLimit": {
+                    "primaryWindow": {
+                        "usedPercent": 100,
+                        "windowDurationMins": 300,
+                        "resetsAt": 1771322400
+                    }
+                }
+            }),
+        )
+        .await;
+        let state = test_app_state_with_usage_base(&base_url).await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Stale OAuth Input Row",
+            "stale-input@example.com",
+            "org_stale_input",
+            "user_stale_input",
+        )
+        .await;
+        let stale_row = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth row")
+            .expect("oauth row exists");
+        seed_hard_unavailable_route_failure(
+            &state.pool,
+            account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+
+        sync_oauth_account(&state, &stale_row, SyncCause::Maintenance)
+            .await
+            .expect("sync oauth account");
+
+        let after = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth row after stale sync")
+            .expect("oauth row exists after stale sync");
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
+        assert_eq!(
+            after.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_SYNC_RECOVERY_BLOCKED)
+        );
+        assert_eq!(
+            after.last_action_reason_code.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED)
+        );
+        assert_eq!(
+            after.last_route_failure_kind.as_deref(),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn oauth_sync_demotes_active_stale_quota_marker_when_snapshot_is_still_exhausted() {
         let (base_url, server) = spawn_usage_snapshot_server(
             StatusCode::OK,
@@ -16188,6 +16537,133 @@ mod tests {
             Some(UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED)
         );
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn oauth_sync_proactively_quarantines_snapshot_exhausted_account_without_prior_route_failure()
+     {
+        let (base_url, server) = spawn_usage_snapshot_server(
+            StatusCode::OK,
+            json!({
+                "planType": "team",
+                "rateLimit": {
+                    "primaryWindow": {
+                        "usedPercent": 100,
+                        "windowDurationMins": 300,
+                        "resetsAt": 1771322400
+                    }
+                }
+            }),
+        )
+        .await;
+        let state = test_app_state_with_usage_base(&base_url).await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Sync Snapshot Exhausted",
+            "snapshot-exhausted@example.com",
+            "org_snapshot_exhausted",
+            "user_snapshot_exhausted",
+        )
+        .await;
+        let row = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth row")
+            .expect("oauth row exists");
+
+        sync_oauth_account(&state, &row, SyncCause::Maintenance)
+            .await
+            .expect("sync oauth account");
+
+        let after = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth row after proactive quarantine")
+            .expect("oauth row exists after proactive quarantine");
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
+        assert!(after.last_successful_sync_at.is_none());
+        assert_eq!(
+            after.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_SYNC_HARD_UNAVAILABLE)
+        );
+        assert_eq!(
+            after.last_action_reason_code.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_USAGE_SNAPSHOT_EXHAUSTED)
+        );
+        assert_eq!(
+            after.last_route_failure_kind.as_deref(),
+            Some(PROXY_FAILURE_UPSTREAM_USAGE_SNAPSHOT_QUOTA_EXHAUSTED)
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn resolver_short_circuits_when_only_persisted_snapshot_exhausted_accounts_remain() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let first = insert_api_key_account(&state.pool, "Exhausted A").await;
+        let second = insert_api_key_account(&state.pool, "Exhausted B").await;
+        let third = insert_api_key_account(&state.pool, "Exhausted C").await;
+        let now_iso = format_utc_iso(Utc::now());
+        for account_id in [first, second, third] {
+            insert_limit_sample_with_usage(
+                &state.pool,
+                account_id,
+                &now_iso,
+                Some(100.0),
+                Some(40.0),
+            )
+            .await;
+        }
+
+        let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
+            .await
+            .expect("resolve pool account");
+        assert!(matches!(resolution, PoolAccountResolution::RateLimited));
+    }
+
+    #[tokio::test]
+    async fn resolver_skips_persisted_snapshot_exhausted_account_before_routing() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let exhausted = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Exhausted Candidate",
+            "exhausted-candidate@example.com",
+            "org_exhausted_candidate",
+            "user_exhausted_candidate",
+        )
+        .await;
+        let available = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Available Candidate",
+            "available-candidate@example.com",
+            "org_available_candidate",
+            "user_available_candidate",
+        )
+        .await;
+        let now_iso = format_utc_iso(Utc::now());
+        insert_limit_sample_with_usage(&state.pool, exhausted, &now_iso, Some(100.0), Some(20.0))
+            .await;
+        insert_limit_sample_with_usage(&state.pool, available, &now_iso, Some(42.0), Some(10.0))
+            .await;
+
+        let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
+            .await
+            .expect("resolve pool account");
+        let PoolAccountResolution::Resolved(account) = resolution else {
+            panic!("expected resolver to pick an available account");
+        };
+        assert_eq!(account.account_id, available);
     }
 
     #[tokio::test]

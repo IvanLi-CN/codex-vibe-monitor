@@ -641,6 +641,61 @@ describe("UpstreamAccountsPage duplicates", () => {
     );
   });
 
+  it("renders proactive sync hard-unavailable actions with translated reason labels", async () => {
+    mockAccountsPage({
+      selectedSummary: {
+        status: "error",
+        displayStatus: "error_other",
+        healthStatus: "error_other",
+        workStatus: "rate_limited",
+        lastAction: "sync_hard_unavailable",
+        lastActionSource: "sync_maintenance",
+        lastActionReasonCode: "usage_snapshot_exhausted",
+        lastActionReasonMessage:
+          "latest usage snapshot already shows an exhausted upstream usage limit window",
+        lastActionHttpStatus: null,
+      },
+      detail: {
+        status: "error",
+        displayStatus: "error_other",
+        healthStatus: "error_other",
+        workStatus: "rate_limited",
+        lastAction: "sync_hard_unavailable",
+        lastActionSource: "sync_maintenance",
+        lastActionReasonCode: "usage_snapshot_exhausted",
+        lastActionReasonMessage:
+          "latest usage snapshot already shows an exhausted upstream usage limit window",
+        lastActionHttpStatus: null,
+        recentActions: [
+          {
+            id: 91,
+            occurredAt: "2026-03-25T00:12:00.000Z",
+            action: "sync_hard_unavailable",
+            source: "sync_maintenance",
+            reasonCode: "usage_snapshot_exhausted",
+            reasonMessage:
+              "latest usage snapshot already shows an exhausted upstream usage limit window",
+            httpStatus: null,
+            failureKind: "upstream_usage_snapshot_quota_exhausted",
+            invokeId: null,
+            stickyKey: null,
+            createdAt: "2026-03-25T00:12:00.000Z",
+          },
+        ],
+      },
+    });
+    render("/account-pool/upstream-accounts");
+
+    clickFirstRosterRow();
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Sync marked unavailable");
+    expect(document.body.textContent).toContain("Maintenance sync");
+    expect(document.body.textContent).toContain(
+      "Latest usage snapshot already shows an exhausted limit window",
+    );
+  });
+
   it("shows compact support state and saves routing timeouts", async () => {
     const saveRouting = vi.fn().mockResolvedValue(undefined);
     const { compactSupport, routingTimeouts } = mockAccountsPage({ saveRouting });
