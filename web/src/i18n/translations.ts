@@ -150,16 +150,14 @@ const baseTranslations = {
       "Priority available account cap must be at least 1.",
     "accountPool.upstreamAccounts.routing.timeout.sectionTitle":
       "Request path timeouts (seconds)",
-    "accountPool.upstreamAccounts.routing.timeout.defaultFirstByte":
-      "Default first byte",
     "accountPool.upstreamAccounts.routing.timeout.responsesFirstByte":
-      "/v1/responses first byte",
-    "accountPool.upstreamAccounts.routing.timeout.upstreamHandshake":
-      "Upstream handshake",
-    "accountPool.upstreamAccounts.routing.timeout.compactHandshake":
-      "Compact handshake",
-    "accountPool.upstreamAccounts.routing.timeout.requestRead":
-      "Request body read",
+      "Standard response first byte timeout",
+    "accountPool.upstreamAccounts.routing.timeout.compactFirstByte":
+      "Compact response first byte timeout",
+    "accountPool.upstreamAccounts.routing.timeout.responsesStream":
+      "Standard stream completion timeout",
+    "accountPool.upstreamAccounts.routing.timeout.compactStream":
+      "Compact stream completion timeout",
     "accountPool.upstreamAccounts.actions.refresh": "Refresh",
     "accountPool.upstreamAccounts.actions.addAccount": "Add account",
     "accountPool.upstreamAccounts.actions.addOauth": "Add OAuth account",
@@ -1598,16 +1596,14 @@ const baseTranslations = {
       "优先可用账号上限不能小于 1。",
     "accountPool.upstreamAccounts.routing.timeout.sectionTitle":
       "请求链路超时（秒）",
-    "accountPool.upstreamAccounts.routing.timeout.defaultFirstByte":
-      "默认首字节",
     "accountPool.upstreamAccounts.routing.timeout.responsesFirstByte":
-      "/v1/responses 首字节",
-    "accountPool.upstreamAccounts.routing.timeout.upstreamHandshake":
-      "上游握手",
-    "accountPool.upstreamAccounts.routing.timeout.compactHandshake":
-      "Compact 握手",
-    "accountPool.upstreamAccounts.routing.timeout.requestRead":
-      "请求体读取",
+      "一般请求响应体首字超时",
+    "accountPool.upstreamAccounts.routing.timeout.compactFirstByte":
+      "压缩请求响应体首字超时",
+    "accountPool.upstreamAccounts.routing.timeout.responsesStream":
+      "一般请求流结束超时",
+    "accountPool.upstreamAccounts.routing.timeout.compactStream":
+      "压缩请求流结束超时",
     "accountPool.upstreamAccounts.actions.refresh": "刷新列表",
     "accountPool.upstreamAccounts.actions.addAccount": "新增账号",
     "accountPool.upstreamAccounts.actions.addOauth": "新增 OAuth 账号",

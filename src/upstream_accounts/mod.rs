@@ -979,20 +979,21 @@ pub(crate) struct CompactSupportState {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PoolRoutingTimeoutSettingsResponse {
-    pub(crate) default_first_byte_timeout_secs: u64,
     pub(crate) responses_first_byte_timeout_secs: u64,
-    pub(crate) upstream_handshake_timeout_secs: u64,
-    pub(crate) compact_upstream_handshake_timeout_secs: u64,
-    pub(crate) request_read_timeout_secs: u64,
+    pub(crate) compact_first_byte_timeout_secs: u64,
+    pub(crate) responses_stream_timeout_secs: u64,
+    pub(crate) compact_stream_timeout_secs: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct PoolRoutingTimeoutSettingsResolved {
     pub(crate) default_first_byte_timeout: Duration,
-    pub(crate) responses_first_byte_timeout: Duration,
-    pub(crate) upstream_handshake_timeout: Duration,
-    pub(crate) compact_upstream_handshake_timeout: Duration,
+    pub(crate) default_send_timeout: Duration,
     pub(crate) request_read_timeout: Duration,
+    pub(crate) responses_first_byte_timeout: Duration,
+    pub(crate) compact_first_byte_timeout: Duration,
+    pub(crate) responses_stream_timeout: Duration,
+    pub(crate) compact_stream_timeout: Duration,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1039,15 +1040,14 @@ pub(crate) struct UpdatePoolRoutingMaintenanceSettingsRequest {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpdatePoolRoutingTimeoutSettingsRequest {
     #[serde(default)]
-    pub(crate) default_first_byte_timeout_secs: Option<u64>,
-    #[serde(default)]
     pub(crate) responses_first_byte_timeout_secs: Option<u64>,
     #[serde(default)]
-    pub(crate) upstream_handshake_timeout_secs: Option<u64>,
+    #[serde(alias = "compactUpstreamHandshakeTimeoutSecs")]
+    pub(crate) compact_first_byte_timeout_secs: Option<u64>,
     #[serde(default)]
-    pub(crate) compact_upstream_handshake_timeout_secs: Option<u64>,
+    pub(crate) responses_stream_timeout_secs: Option<u64>,
     #[serde(default)]
-    pub(crate) request_read_timeout_secs: Option<u64>,
+    pub(crate) compact_stream_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1814,10 +1814,12 @@ struct PoolRoutingSettingsRow {
     primary_sync_interval_secs: Option<i64>,
     secondary_sync_interval_secs: Option<i64>,
     priority_available_account_cap: Option<i64>,
-    default_first_byte_timeout_secs: Option<i64>,
     responses_first_byte_timeout_secs: Option<i64>,
+    compact_first_byte_timeout_secs: Option<i64>,
+    responses_stream_timeout_secs: Option<i64>,
+    compact_stream_timeout_secs: Option<i64>,
+    default_first_byte_timeout_secs: Option<i64>,
     upstream_handshake_timeout_secs: Option<i64>,
-    compact_upstream_handshake_timeout_secs: Option<i64>,
     request_read_timeout_secs: Option<i64>,
 }
 
@@ -2476,10 +2478,12 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             primary_sync_interval_secs INTEGER,
             secondary_sync_interval_secs INTEGER,
             priority_available_account_cap INTEGER,
-            default_first_byte_timeout_secs INTEGER,
             responses_first_byte_timeout_secs INTEGER,
+            compact_first_byte_timeout_secs INTEGER,
+            responses_stream_timeout_secs INTEGER,
+            compact_stream_timeout_secs INTEGER,
+            default_first_byte_timeout_secs INTEGER,
             upstream_handshake_timeout_secs INTEGER,
-            compact_upstream_handshake_timeout_secs INTEGER,
             request_read_timeout_secs INTEGER,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
@@ -2512,12 +2516,14 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             id,
             encrypted_api_key,
             masked_api_key,
-            default_first_byte_timeout_secs,
             responses_first_byte_timeout_secs,
+            compact_first_byte_timeout_secs,
+            responses_stream_timeout_secs,
+            compact_stream_timeout_secs,
+            default_first_byte_timeout_secs,
             upstream_handshake_timeout_secs,
-            compact_upstream_handshake_timeout_secs,
             request_read_timeout_secs
-        ) VALUES (?1, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
+        ) VALUES (?1, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
         "#,
     )
     .bind(POOL_SETTINGS_SINGLETON_ID)
@@ -2528,13 +2534,6 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_integer_column(
         pool,
         "pool_routing_settings",
-        "default_first_byte_timeout_secs",
-    )
-    .await
-    .context("failed to ensure pool_routing_settings.default_first_byte_timeout_secs")?;
-    ensure_nullable_integer_column(
-        pool,
-        "pool_routing_settings",
         "responses_first_byte_timeout_secs",
     )
     .await
@@ -2542,17 +2541,34 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_integer_column(
         pool,
         "pool_routing_settings",
+        "compact_first_byte_timeout_secs",
+    )
+    .await
+    .context("failed to ensure pool_routing_settings.compact_first_byte_timeout_secs")?;
+    ensure_nullable_integer_column(
+        pool,
+        "pool_routing_settings",
+        "responses_stream_timeout_secs",
+    )
+    .await
+    .context("failed to ensure pool_routing_settings.responses_stream_timeout_secs")?;
+    ensure_nullable_integer_column(pool, "pool_routing_settings", "compact_stream_timeout_secs")
+        .await
+        .context("failed to ensure pool_routing_settings.compact_stream_timeout_secs")?;
+    ensure_nullable_integer_column(
+        pool,
+        "pool_routing_settings",
+        "default_first_byte_timeout_secs",
+    )
+    .await
+    .context("failed to ensure pool_routing_settings.default_first_byte_timeout_secs")?;
+    ensure_nullable_integer_column(
+        pool,
+        "pool_routing_settings",
         "upstream_handshake_timeout_secs",
     )
     .await
     .context("failed to ensure pool_routing_settings.upstream_handshake_timeout_secs")?;
-    ensure_nullable_integer_column(
-        pool,
-        "pool_routing_settings",
-        "compact_upstream_handshake_timeout_secs",
-    )
-    .await
-    .context("failed to ensure pool_routing_settings.compact_upstream_handshake_timeout_secs")?;
     ensure_nullable_integer_column(pool, "pool_routing_settings", "request_read_timeout_secs")
         .await
         .context("failed to ensure pool_routing_settings.request_read_timeout_secs")?;
@@ -4219,25 +4235,21 @@ pub(crate) async fn update_pool_routing_settings(
         .timeouts
         .map(|timeouts| {
             Ok(UpdatePoolRoutingTimeoutSettingsRequest {
-                default_first_byte_timeout_secs: normalize_pool_routing_timeout_secs(
-                    timeouts.default_first_byte_timeout_secs,
-                    "defaultFirstByteTimeoutSecs",
-                )?,
                 responses_first_byte_timeout_secs: normalize_pool_routing_timeout_secs(
                     timeouts.responses_first_byte_timeout_secs,
                     "responsesFirstByteTimeoutSecs",
                 )?,
-                upstream_handshake_timeout_secs: normalize_pool_routing_timeout_secs(
-                    timeouts.upstream_handshake_timeout_secs,
-                    "upstreamHandshakeTimeoutSecs",
+                compact_first_byte_timeout_secs: normalize_pool_routing_timeout_secs(
+                    timeouts.compact_first_byte_timeout_secs,
+                    "compactFirstByteTimeoutSecs",
                 )?,
-                compact_upstream_handshake_timeout_secs: normalize_pool_routing_timeout_secs(
-                    timeouts.compact_upstream_handshake_timeout_secs,
-                    "compactUpstreamHandshakeTimeoutSecs",
+                responses_stream_timeout_secs: normalize_pool_routing_timeout_secs(
+                    timeouts.responses_stream_timeout_secs,
+                    "responsesStreamTimeoutSecs",
                 )?,
-                request_read_timeout_secs: normalize_pool_routing_timeout_secs(
-                    timeouts.request_read_timeout_secs,
-                    "requestReadTimeoutSecs",
+                compact_stream_timeout_secs: normalize_pool_routing_timeout_secs(
+                    timeouts.compact_stream_timeout_secs,
+                    "compactStreamTimeoutSecs",
                 )?,
             })
         })
@@ -11601,10 +11613,12 @@ pub(crate) fn pool_routing_timeouts_from_config(
 ) -> PoolRoutingTimeoutSettingsResolved {
     PoolRoutingTimeoutSettingsResolved {
         default_first_byte_timeout: config.request_timeout,
-        responses_first_byte_timeout: config.pool_upstream_responses_attempt_timeout,
-        upstream_handshake_timeout: config.openai_proxy_handshake_timeout,
-        compact_upstream_handshake_timeout: config.openai_proxy_compact_handshake_timeout,
+        default_send_timeout: config.openai_proxy_handshake_timeout,
         request_read_timeout: config.openai_proxy_request_read_timeout,
+        responses_first_byte_timeout: config.pool_upstream_responses_attempt_timeout,
+        compact_first_byte_timeout: config.openai_proxy_compact_handshake_timeout,
+        responses_stream_timeout: config.pool_upstream_responses_total_timeout,
+        compact_stream_timeout: config.pool_upstream_responses_total_timeout,
     }
 }
 
@@ -11632,30 +11646,42 @@ fn resolve_pool_routing_timeouts_from_row(
 ) -> PoolRoutingTimeoutSettingsResolved {
     let defaults = pool_routing_timeouts_from_config(config);
     PoolRoutingTimeoutSettingsResolved {
-        default_first_byte_timeout: row
-            .default_first_byte_timeout_secs
-            .and_then(|value| u64::try_from(value).ok())
-            .filter(|value| *value > 0)
-            .map(Duration::from_secs)
-            .unwrap_or(defaults.default_first_byte_timeout),
         responses_first_byte_timeout: row
             .responses_first_byte_timeout_secs
             .and_then(|value| u64::try_from(value).ok())
             .filter(|value| *value > 0)
             .map(Duration::from_secs)
             .unwrap_or(defaults.responses_first_byte_timeout),
-        upstream_handshake_timeout: row
+        compact_first_byte_timeout: row
+            .compact_first_byte_timeout_secs
+            .and_then(|value| u64::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .map(Duration::from_secs)
+            .unwrap_or(defaults.compact_first_byte_timeout),
+        responses_stream_timeout: row
+            .responses_stream_timeout_secs
+            .and_then(|value| u64::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .map(Duration::from_secs)
+            .unwrap_or(defaults.responses_stream_timeout),
+        compact_stream_timeout: row
+            .compact_stream_timeout_secs
+            .and_then(|value| u64::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .map(Duration::from_secs)
+            .unwrap_or(defaults.compact_stream_timeout),
+        default_first_byte_timeout: row
+            .default_first_byte_timeout_secs
+            .and_then(|value| u64::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .map(Duration::from_secs)
+            .unwrap_or(defaults.default_first_byte_timeout),
+        default_send_timeout: row
             .upstream_handshake_timeout_secs
             .and_then(|value| u64::try_from(value).ok())
             .filter(|value| *value > 0)
             .map(Duration::from_secs)
-            .unwrap_or(defaults.upstream_handshake_timeout),
-        compact_upstream_handshake_timeout: row
-            .compact_upstream_handshake_timeout_secs
-            .and_then(|value| u64::try_from(value).ok())
-            .filter(|value| *value > 0)
-            .map(Duration::from_secs)
-            .unwrap_or(defaults.compact_upstream_handshake_timeout),
+            .unwrap_or(defaults.default_send_timeout),
         request_read_timeout: row
             .request_read_timeout_secs
             .and_then(|value| u64::try_from(value).ok())
@@ -11669,13 +11695,10 @@ fn pool_routing_timeouts_response(
     resolved: PoolRoutingTimeoutSettingsResolved,
 ) -> PoolRoutingTimeoutSettingsResponse {
     PoolRoutingTimeoutSettingsResponse {
-        default_first_byte_timeout_secs: resolved.default_first_byte_timeout.as_secs(),
         responses_first_byte_timeout_secs: resolved.responses_first_byte_timeout.as_secs(),
-        upstream_handshake_timeout_secs: resolved.upstream_handshake_timeout.as_secs(),
-        compact_upstream_handshake_timeout_secs: resolved
-            .compact_upstream_handshake_timeout
-            .as_secs(),
-        request_read_timeout_secs: resolved.request_read_timeout.as_secs(),
+        compact_first_byte_timeout_secs: resolved.compact_first_byte_timeout.as_secs(),
+        responses_stream_timeout_secs: resolved.responses_stream_timeout.as_secs(),
+        compact_stream_timeout_secs: resolved.compact_stream_timeout.as_secs(),
     }
 }
 
@@ -11688,10 +11711,12 @@ async fn load_pool_routing_settings(pool: &Pool<Sqlite>) -> Result<PoolRoutingSe
             primary_sync_interval_secs,
             secondary_sync_interval_secs,
             priority_available_account_cap,
-            default_first_byte_timeout_secs,
             responses_first_byte_timeout_secs,
+            compact_first_byte_timeout_secs,
+            responses_stream_timeout_secs,
+            compact_stream_timeout_secs,
+            default_first_byte_timeout_secs,
             upstream_handshake_timeout_secs,
-            compact_upstream_handshake_timeout_secs,
             request_read_timeout_secs
         FROM pool_routing_settings
         WHERE id = ?1
@@ -11850,26 +11875,25 @@ async fn save_pool_routing_settings(
     let primary_sync_interval_secs = current.primary_sync_interval_secs;
     let secondary_sync_interval_secs = current.secondary_sync_interval_secs;
     let priority_available_account_cap = current.priority_available_account_cap;
-    let default_first_byte_timeout_secs = timeout_updates
-        .and_then(|value| value.default_first_byte_timeout_secs)
-        .map(|value| value as i64)
-        .or(current.default_first_byte_timeout_secs);
     let responses_first_byte_timeout_secs = timeout_updates
         .and_then(|value| value.responses_first_byte_timeout_secs)
         .map(|value| value as i64)
         .or(current.responses_first_byte_timeout_secs);
-    let upstream_handshake_timeout_secs = timeout_updates
-        .and_then(|value| value.upstream_handshake_timeout_secs)
+    let compact_first_byte_timeout_secs = timeout_updates
+        .and_then(|value| value.compact_first_byte_timeout_secs)
         .map(|value| value as i64)
-        .or(current.upstream_handshake_timeout_secs);
-    let compact_upstream_handshake_timeout_secs = timeout_updates
-        .and_then(|value| value.compact_upstream_handshake_timeout_secs)
+        .or(current.compact_first_byte_timeout_secs);
+    let responses_stream_timeout_secs = timeout_updates
+        .and_then(|value| value.responses_stream_timeout_secs)
         .map(|value| value as i64)
-        .or(current.compact_upstream_handshake_timeout_secs);
-    let request_read_timeout_secs = timeout_updates
-        .and_then(|value| value.request_read_timeout_secs)
+        .or(current.responses_stream_timeout_secs);
+    let compact_stream_timeout_secs = timeout_updates
+        .and_then(|value| value.compact_stream_timeout_secs)
         .map(|value| value as i64)
-        .or(current.request_read_timeout_secs);
+        .or(current.compact_stream_timeout_secs);
+    let default_first_byte_timeout_secs = current.default_first_byte_timeout_secs;
+    let upstream_handshake_timeout_secs = current.upstream_handshake_timeout_secs;
+    let request_read_timeout_secs = current.request_read_timeout_secs;
     let now_iso = format_utc_iso(Utc::now());
 
     sqlx::query(
@@ -11880,12 +11904,14 @@ async fn save_pool_routing_settings(
             primary_sync_interval_secs = ?4,
             secondary_sync_interval_secs = ?5,
             priority_available_account_cap = ?6,
-            default_first_byte_timeout_secs = ?7,
-            responses_first_byte_timeout_secs = ?8,
-            upstream_handshake_timeout_secs = ?9,
-            compact_upstream_handshake_timeout_secs = ?10,
-            request_read_timeout_secs = ?11,
-            updated_at = ?12
+            responses_first_byte_timeout_secs = ?7,
+            compact_first_byte_timeout_secs = ?8,
+            responses_stream_timeout_secs = ?9,
+            compact_stream_timeout_secs = ?10,
+            default_first_byte_timeout_secs = ?11,
+            upstream_handshake_timeout_secs = ?12,
+            request_read_timeout_secs = ?13,
+            updated_at = ?14
         WHERE id = ?1
         "#,
     )
@@ -11895,10 +11921,12 @@ async fn save_pool_routing_settings(
     .bind(primary_sync_interval_secs)
     .bind(secondary_sync_interval_secs)
     .bind(priority_available_account_cap)
-    .bind(default_first_byte_timeout_secs)
     .bind(responses_first_byte_timeout_secs)
+    .bind(compact_first_byte_timeout_secs)
+    .bind(responses_stream_timeout_secs)
+    .bind(compact_stream_timeout_secs)
+    .bind(default_first_byte_timeout_secs)
     .bind(upstream_handshake_timeout_secs)
-    .bind(compact_upstream_handshake_timeout_secs)
     .bind(request_read_timeout_secs)
     .bind(now_iso)
     .execute(pool)

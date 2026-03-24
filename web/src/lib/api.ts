@@ -1397,16 +1397,16 @@ function normalizePoolRoutingTimeoutSettings(
 ): PoolRoutingTimeoutSettings {
   const payload = (raw ?? {}) as Record<string, unknown>;
   return {
-    defaultFirstByteTimeoutSecs:
-      normalizeFiniteNumber(payload.defaultFirstByteTimeoutSecs) ?? 60,
     responsesFirstByteTimeoutSecs:
       normalizeFiniteNumber(payload.responsesFirstByteTimeoutSecs) ?? 120,
-    upstreamHandshakeTimeoutSecs:
-      normalizeFiniteNumber(payload.upstreamHandshakeTimeoutSecs) ?? 60,
-    compactUpstreamHandshakeTimeoutSecs:
-      normalizeFiniteNumber(payload.compactUpstreamHandshakeTimeoutSecs) ?? 300,
-    requestReadTimeoutSecs:
-      normalizeFiniteNumber(payload.requestReadTimeoutSecs) ?? 180,
+    compactFirstByteTimeoutSecs:
+      normalizeFiniteNumber(payload.compactFirstByteTimeoutSecs) ??
+      normalizeFiniteNumber(payload.compactUpstreamHandshakeTimeoutSecs) ??
+      300,
+    responsesStreamTimeoutSecs:
+      normalizeFiniteNumber(payload.responsesStreamTimeoutSecs) ?? 300,
+    compactStreamTimeoutSecs:
+      normalizeFiniteNumber(payload.compactStreamTimeoutSecs) ?? 300,
   };
 }
 
@@ -1684,11 +1684,10 @@ export interface UpdatePoolRoutingMaintenanceSettingsPayload {
 }
 
 export interface PoolRoutingTimeoutSettings {
-  defaultFirstByteTimeoutSecs: number;
   responsesFirstByteTimeoutSecs: number;
-  upstreamHandshakeTimeoutSecs: number;
-  compactUpstreamHandshakeTimeoutSecs: number;
-  requestReadTimeoutSecs: number;
+  compactFirstByteTimeoutSecs: number;
+  responsesStreamTimeoutSecs: number;
+  compactStreamTimeoutSecs: number;
 }
 
 export interface UpdatePoolRoutingSettingsPayload {

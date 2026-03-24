@@ -86,19 +86,17 @@ type RoutingDraft = {
   primarySyncIntervalSecs: string
   secondarySyncIntervalSecs: string
   priorityAvailableAccountCap: string
-  defaultFirstByteTimeoutSecs: string
   responsesFirstByteTimeoutSecs: string
-  upstreamHandshakeTimeoutSecs: string
-  compactUpstreamHandshakeTimeoutSecs: string
-  requestReadTimeoutSecs: string
+  compactFirstByteTimeoutSecs: string
+  responsesStreamTimeoutSecs: string
+  compactStreamTimeoutSecs: string
 }
 
 const DEFAULT_ROUTING_TIMEOUTS: PoolRoutingTimeoutSettings = {
-  defaultFirstByteTimeoutSecs: 60,
   responsesFirstByteTimeoutSecs: 120,
-  upstreamHandshakeTimeoutSecs: 60,
-  compactUpstreamHandshakeTimeoutSecs: 300,
-  requestReadTimeoutSecs: 180,
+  compactFirstByteTimeoutSecs: 300,
+  responsesStreamTimeoutSecs: 300,
+  compactStreamTimeoutSecs: 300,
 }
 const POSITIVE_INTEGER_PATTERN = /^[1-9]\d*$/
 
@@ -254,11 +252,10 @@ function buildRoutingDraft(
     primarySyncIntervalSecs: String(maintenance.primarySyncIntervalSecs),
     secondarySyncIntervalSecs: String(maintenance.secondarySyncIntervalSecs),
     priorityAvailableAccountCap: String(maintenance.priorityAvailableAccountCap),
-    defaultFirstByteTimeoutSecs: String(timeouts.defaultFirstByteTimeoutSecs),
     responsesFirstByteTimeoutSecs: String(timeouts.responsesFirstByteTimeoutSecs),
-    upstreamHandshakeTimeoutSecs: String(timeouts.upstreamHandshakeTimeoutSecs),
-    compactUpstreamHandshakeTimeoutSecs: String(timeouts.compactUpstreamHandshakeTimeoutSecs),
-    requestReadTimeoutSecs: String(timeouts.requestReadTimeoutSecs),
+    compactFirstByteTimeoutSecs: String(timeouts.compactFirstByteTimeoutSecs),
+    responsesStreamTimeoutSecs: String(timeouts.responsesStreamTimeoutSecs),
+    compactStreamTimeoutSecs: String(timeouts.compactStreamTimeoutSecs),
   }
 }
 
@@ -631,7 +628,7 @@ function RoutingSettingsDialog({
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => (!busy ? (nextOpen ? undefined : onClose()) : undefined)}>
       <DialogContent
-        className="p-0"
+        className="flex max-h-[calc(100dvh-2rem)] flex-col overflow-hidden p-0 sm:max-h-[calc(100dvh-4rem)]"
         onOpenAutoFocus={(event) => {
           event.preventDefault()
           if (apiKeyWritesEnabled) {
@@ -654,139 +651,141 @@ function RoutingSettingsDialog({
           </DialogHeader>
           <DialogCloseIcon aria-label={closeLabel} disabled={busy} />
         </div>
-        <div className="space-y-4 px-6 py-6">
-          <div className="space-y-3 rounded-2xl border border-base-300/80 bg-base-100/70 p-4">
-            <div className="space-y-1">
-              <p className="text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
-                {t('accountPool.upstreamAccounts.routing.apiKeySectionTitle')}
-              </p>
-              <p className="text-sm text-base-content/68">
-                {t('accountPool.upstreamAccounts.routing.apiKeySectionDescription')}
-              </p>
-            </div>
-            <div className="field">
-              <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
-                <label htmlFor={apiKeyInputId} className="text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
-                  {t('accountPool.upstreamAccounts.routing.apiKeyLabel')}
-                </label>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={onGenerate}
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
+          <div className="space-y-4">
+            <div className="space-y-3 rounded-2xl border border-base-300/80 bg-base-100/70 p-4">
+              <div className="space-y-1">
+                <p className="text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
+                  {t('accountPool.upstreamAccounts.routing.apiKeySectionTitle')}
+                </p>
+                <p className="text-sm text-base-content/68">
+                  {t('accountPool.upstreamAccounts.routing.apiKeySectionDescription')}
+                </p>
+              </div>
+              <div className="field">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
+                  <label htmlFor={apiKeyInputId} className="text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
+                    {t('accountPool.upstreamAccounts.routing.apiKeyLabel')}
+                  </label>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={onGenerate}
+                    disabled={busy || !apiKeyWritesEnabled}
+                  >
+                    <AppIcon name="auto-fix" className="mr-2 h-4 w-4" aria-hidden />
+                    {t('accountPool.upstreamAccounts.routing.generate')}
+                  </Button>
+                </div>
+                <Input
+                  id={apiKeyInputId}
+                  ref={apiKeyInputRef}
+                  name="poolRoutingSecret"
+                  type="text"
+                  value={apiKey}
+                  onChange={(event) => onApiKeyChange(event.target.value)}
+                  placeholder={t('accountPool.upstreamAccounts.routing.apiKeyPlaceholder')}
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="none"
+                  spellCheck={false}
+                  data-1p-ignore="true"
+                  data-lpignore="true"
                   disabled={busy || !apiKeyWritesEnabled}
-                >
-                  <AppIcon name="auto-fix" className="mr-2 h-4 w-4" aria-hidden />
-                  {t('accountPool.upstreamAccounts.routing.generate')}
-                </Button>
+                  className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4 text-[15px] font-mono placeholder:text-base-content/58"
+                />
               </div>
-              <Input
-                id={apiKeyInputId}
-                ref={apiKeyInputRef}
-                name="poolRoutingSecret"
-                type="text"
-                value={apiKey}
-                onChange={(event) => onApiKeyChange(event.target.value)}
-                placeholder={t('accountPool.upstreamAccounts.routing.apiKeyPlaceholder')}
-                autoComplete="off"
-                autoCorrect="off"
-                autoCapitalize="none"
-                spellCheck={false}
-                data-1p-ignore="true"
-                data-lpignore="true"
-                disabled={busy || !apiKeyWritesEnabled}
-                className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4 text-[15px] font-mono placeholder:text-base-content/58"
-              />
             </div>
-          </div>
 
-          <div className="space-y-4 rounded-2xl border border-base-300/80 bg-base-100/70 p-4">
-            <div className="space-y-1">
-              <p className="text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
-                {t('accountPool.upstreamAccounts.routing.maintenanceSectionTitle')}
-              </p>
-              <p className="text-sm text-base-content/68">
-                {t('accountPool.upstreamAccounts.routing.maintenanceSectionDescription')}
-              </p>
-            </div>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="field">
-                <label htmlFor={primaryInputId} className="mb-2 text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
-                  {t('accountPool.upstreamAccounts.routing.primarySyncIntervalLabel')}
-                </label>
-                <Input
-                  id={primaryInputId}
-                  ref={primaryInputRef}
-                  name="primarySyncIntervalSecs"
-                  type="number"
-                  min={60}
-                  step={60}
-                  inputMode="numeric"
-                  value={primarySyncIntervalSecs}
-                  onChange={(event) => onPrimarySyncIntervalChange(event.target.value)}
-                  placeholder="300"
-                  disabled={busy || !timeoutWritesEnabled}
-                  className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4"
-                />
+            <div className="space-y-4 rounded-2xl border border-base-300/80 bg-base-100/70 p-4">
+              <div className="space-y-1">
+                <p className="text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
+                  {t('accountPool.upstreamAccounts.routing.maintenanceSectionTitle')}
+                </p>
+                <p className="text-sm text-base-content/68">
+                  {t('accountPool.upstreamAccounts.routing.maintenanceSectionDescription')}
+                </p>
               </div>
-              <div className="field">
-                <label htmlFor={secondaryInputId} className="mb-2 text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
-                  {t('accountPool.upstreamAccounts.routing.secondarySyncIntervalLabel')}
-                </label>
-                <Input
-                  id={secondaryInputId}
-                  name="secondarySyncIntervalSecs"
-                  type="number"
-                  min={60}
-                  step={60}
-                  inputMode="numeric"
-                  value={secondarySyncIntervalSecs}
-                  onChange={(event) => onSecondarySyncIntervalChange(event.target.value)}
-                  placeholder="1800"
-                  disabled={busy || !timeoutWritesEnabled}
-                  className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4"
-                />
-              </div>
-            </div>
-            <div className="field">
-              <label htmlFor={capInputId} className="mb-2 text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
-                {t('accountPool.upstreamAccounts.routing.priorityCapLabel')}
-              </label>
-              <Input
-                id={capInputId}
-                name="priorityAvailableAccountCap"
-                type="number"
-                min={1}
-                step={1}
-                inputMode="numeric"
-                value={priorityAvailableAccountCap}
-                onChange={(event) => onPriorityAvailableAccountCapChange(event.target.value)}
-                placeholder="100"
-                disabled={busy || !timeoutWritesEnabled}
-                className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4"
-              />
-            </div>
-          </div>
-          <div className="space-y-3">
-            <p className="text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
-              {timeoutSectionTitle}
-            </p>
-            <div className="grid gap-3 md:grid-cols-2">
-              {timeoutFields.map((field) => (
-                <label key={field.key} className="field">
-                  <span className="field-label">{field.label}</span>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="field">
+                  <label htmlFor={primaryInputId} className="mb-2 text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
+                    {t('accountPool.upstreamAccounts.routing.primarySyncIntervalLabel')}
+                  </label>
                   <Input
-                    name={field.key}
+                    id={primaryInputId}
+                    ref={primaryInputRef}
+                    name="primarySyncIntervalSecs"
                     type="number"
-                    min="1"
-                    step="1"
-                    value={field.value}
-                    onChange={(event) => field.onChange(event.target.value)}
+                    min={60}
+                    step={60}
+                    inputMode="numeric"
+                    value={primarySyncIntervalSecs}
+                    onChange={(event) => onPrimarySyncIntervalChange(event.target.value)}
+                    placeholder="300"
                     disabled={busy || !timeoutWritesEnabled}
-                    className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4 text-[15px] font-mono"
+                    className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4"
                   />
+                </div>
+                <div className="field">
+                  <label htmlFor={secondaryInputId} className="mb-2 text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
+                    {t('accountPool.upstreamAccounts.routing.secondarySyncIntervalLabel')}
+                  </label>
+                  <Input
+                    id={secondaryInputId}
+                    name="secondarySyncIntervalSecs"
+                    type="number"
+                    min={60}
+                    step={60}
+                    inputMode="numeric"
+                    value={secondarySyncIntervalSecs}
+                    onChange={(event) => onSecondarySyncIntervalChange(event.target.value)}
+                    placeholder="1800"
+                    disabled={busy || !timeoutWritesEnabled}
+                    className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4"
+                  />
+                </div>
+              </div>
+              <div className="field">
+                <label htmlFor={capInputId} className="mb-2 text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
+                  {t('accountPool.upstreamAccounts.routing.priorityCapLabel')}
                 </label>
-              ))}
+                <Input
+                  id={capInputId}
+                  name="priorityAvailableAccountCap"
+                  type="number"
+                  min={1}
+                  step={1}
+                  inputMode="numeric"
+                  value={priorityAvailableAccountCap}
+                  onChange={(event) => onPriorityAvailableAccountCapChange(event.target.value)}
+                  placeholder="100"
+                  disabled={busy || !timeoutWritesEnabled}
+                  className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4"
+                />
+              </div>
+            </div>
+            <div className="space-y-3">
+              <p className="text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
+                {timeoutSectionTitle}
+              </p>
+              <div className="grid gap-3 md:grid-cols-2">
+                {timeoutFields.map((field) => (
+                  <label key={field.key} className="field">
+                    <span className="field-label">{field.label}</span>
+                    <Input
+                      name={field.key}
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={field.value}
+                      onChange={(event) => field.onChange(event.target.value)}
+                      disabled={busy || !timeoutWritesEnabled}
+                      className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4 text-[15px] font-mono"
+                    />
+                  </label>
+                ))}
+              </div>
             </div>
           </div>
         </div>
@@ -1056,11 +1055,10 @@ export default function UpstreamAccountsPage() {
     routing?.maintenance?.primarySyncIntervalSecs,
     routing?.maintenance?.secondarySyncIntervalSecs,
     routing?.maintenance?.priorityAvailableAccountCap,
-    routing?.timeouts?.defaultFirstByteTimeoutSecs,
     routing?.timeouts?.responsesFirstByteTimeoutSecs,
-    routing?.timeouts?.upstreamHandshakeTimeoutSecs,
-    routing?.timeouts?.compactUpstreamHandshakeTimeoutSecs,
-    routing?.timeouts?.requestReadTimeoutSecs,
+    routing?.timeouts?.compactFirstByteTimeoutSecs,
+    routing?.timeouts?.responsesStreamTimeoutSecs,
+    routing?.timeouts?.compactStreamTimeoutSecs,
   ])
 
   useEffect(() => {
@@ -1319,16 +1317,14 @@ export default function UpstreamAccountsPage() {
     )
   const resolvedRoutingTimeouts = routing?.timeouts ?? DEFAULT_ROUTING_TIMEOUTS
   const routingHasTimeoutChange =
-    routingDraft.defaultFirstByteTimeoutSecs.trim() !==
-      String(resolvedRoutingTimeouts.defaultFirstByteTimeoutSecs) ||
     routingDraft.responsesFirstByteTimeoutSecs.trim() !==
       String(resolvedRoutingTimeouts.responsesFirstByteTimeoutSecs) ||
-    routingDraft.upstreamHandshakeTimeoutSecs.trim() !==
-      String(resolvedRoutingTimeouts.upstreamHandshakeTimeoutSecs) ||
-    routingDraft.compactUpstreamHandshakeTimeoutSecs.trim() !==
-      String(resolvedRoutingTimeouts.compactUpstreamHandshakeTimeoutSecs) ||
-    routingDraft.requestReadTimeoutSecs.trim() !==
-      String(resolvedRoutingTimeouts.requestReadTimeoutSecs)
+    routingDraft.compactFirstByteTimeoutSecs.trim() !==
+      String(resolvedRoutingTimeouts.compactFirstByteTimeoutSecs) ||
+    routingDraft.responsesStreamTimeoutSecs.trim() !==
+      String(resolvedRoutingTimeouts.responsesStreamTimeoutSecs) ||
+    routingDraft.compactStreamTimeoutSecs.trim() !==
+      String(resolvedRoutingTimeouts.compactStreamTimeoutSecs)
   const routingCanSave =
     !routingDraftValidationError &&
     (routingHasMaintenanceChange || routingHasTimeoutChange || (writesEnabled && routingHasApiKeyChange))
@@ -1584,11 +1580,10 @@ export default function UpstreamAccountsPage() {
       return
     }
     const timeoutEntries: Array<[keyof PoolRoutingTimeoutSettings, string, string]> = [
-      ['defaultFirstByteTimeoutSecs', t('accountPool.upstreamAccounts.routing.timeout.defaultFirstByte'), routingDraft.defaultFirstByteTimeoutSecs],
       ['responsesFirstByteTimeoutSecs', t('accountPool.upstreamAccounts.routing.timeout.responsesFirstByte'), routingDraft.responsesFirstByteTimeoutSecs],
-      ['upstreamHandshakeTimeoutSecs', t('accountPool.upstreamAccounts.routing.timeout.upstreamHandshake'), routingDraft.upstreamHandshakeTimeoutSecs],
-      ['compactUpstreamHandshakeTimeoutSecs', t('accountPool.upstreamAccounts.routing.timeout.compactHandshake'), routingDraft.compactUpstreamHandshakeTimeoutSecs],
-      ['requestReadTimeoutSecs', t('accountPool.upstreamAccounts.routing.timeout.requestRead'), routingDraft.requestReadTimeoutSecs],
+      ['compactFirstByteTimeoutSecs', t('accountPool.upstreamAccounts.routing.timeout.compactFirstByte'), routingDraft.compactFirstByteTimeoutSecs],
+      ['responsesStreamTimeoutSecs', t('accountPool.upstreamAccounts.routing.timeout.responsesStream'), routingDraft.responsesStreamTimeoutSecs],
+      ['compactStreamTimeoutSecs', t('accountPool.upstreamAccounts.routing.timeout.compactStream'), routingDraft.compactStreamTimeoutSecs],
     ]
     const parsedTimeouts = {} as PoolRoutingTimeoutSettings
     for (const [key, label, raw] of timeoutEntries) {
@@ -1980,24 +1975,20 @@ export default function UpstreamAccountsPage() {
                         value={String(resolvedRoutingMaintenance.priorityAvailableAccountCap)}
                       />
                       <DetailField
-                        label={t('accountPool.upstreamAccounts.routing.timeout.defaultFirstByte')}
-                        value={`${resolvedRoutingTimeouts.defaultFirstByteTimeoutSecs}s`}
-                      />
-                      <DetailField
                         label={t('accountPool.upstreamAccounts.routing.timeout.responsesFirstByte')}
                         value={`${resolvedRoutingTimeouts.responsesFirstByteTimeoutSecs}s`}
                       />
                       <DetailField
-                        label={t('accountPool.upstreamAccounts.routing.timeout.upstreamHandshake')}
-                        value={`${resolvedRoutingTimeouts.upstreamHandshakeTimeoutSecs}s`}
+                        label={t('accountPool.upstreamAccounts.routing.timeout.compactFirstByte')}
+                        value={`${resolvedRoutingTimeouts.compactFirstByteTimeoutSecs}s`}
                       />
                       <DetailField
-                        label={t('accountPool.upstreamAccounts.routing.timeout.compactHandshake')}
-                        value={`${resolvedRoutingTimeouts.compactUpstreamHandshakeTimeoutSecs}s`}
+                        label={t('accountPool.upstreamAccounts.routing.timeout.responsesStream')}
+                        value={`${resolvedRoutingTimeouts.responsesStreamTimeoutSecs}s`}
                       />
                       <DetailField
-                        label={t('accountPool.upstreamAccounts.routing.timeout.requestRead')}
-                        value={`${resolvedRoutingTimeouts.requestReadTimeoutSecs}s`}
+                        label={t('accountPool.upstreamAccounts.routing.timeout.compactStream')}
+                        value={`${resolvedRoutingTimeouts.compactStreamTimeoutSecs}s`}
                       />
                     </div>
                   </div>
@@ -2480,34 +2471,28 @@ export default function UpstreamAccountsPage() {
         timeoutSectionTitle={t('accountPool.upstreamAccounts.routing.timeout.sectionTitle')}
         timeoutFields={[
           {
-            key: 'defaultFirstByteTimeoutSecs',
-            label: t('accountPool.upstreamAccounts.routing.timeout.defaultFirstByte'),
-            value: routingDraft.defaultFirstByteTimeoutSecs,
-            onChange: (value) => setRoutingDraft((current) => ({ ...current, defaultFirstByteTimeoutSecs: value })),
-          },
-          {
             key: 'responsesFirstByteTimeoutSecs',
             label: t('accountPool.upstreamAccounts.routing.timeout.responsesFirstByte'),
             value: routingDraft.responsesFirstByteTimeoutSecs,
             onChange: (value) => setRoutingDraft((current) => ({ ...current, responsesFirstByteTimeoutSecs: value })),
           },
           {
-            key: 'upstreamHandshakeTimeoutSecs',
-            label: t('accountPool.upstreamAccounts.routing.timeout.upstreamHandshake'),
-            value: routingDraft.upstreamHandshakeTimeoutSecs,
-            onChange: (value) => setRoutingDraft((current) => ({ ...current, upstreamHandshakeTimeoutSecs: value })),
+            key: 'compactFirstByteTimeoutSecs',
+            label: t('accountPool.upstreamAccounts.routing.timeout.compactFirstByte'),
+            value: routingDraft.compactFirstByteTimeoutSecs,
+            onChange: (value) => setRoutingDraft((current) => ({ ...current, compactFirstByteTimeoutSecs: value })),
           },
           {
-            key: 'compactUpstreamHandshakeTimeoutSecs',
-            label: t('accountPool.upstreamAccounts.routing.timeout.compactHandshake'),
-            value: routingDraft.compactUpstreamHandshakeTimeoutSecs,
-            onChange: (value) => setRoutingDraft((current) => ({ ...current, compactUpstreamHandshakeTimeoutSecs: value })),
+            key: 'responsesStreamTimeoutSecs',
+            label: t('accountPool.upstreamAccounts.routing.timeout.responsesStream'),
+            value: routingDraft.responsesStreamTimeoutSecs,
+            onChange: (value) => setRoutingDraft((current) => ({ ...current, responsesStreamTimeoutSecs: value })),
           },
           {
-            key: 'requestReadTimeoutSecs',
-            label: t('accountPool.upstreamAccounts.routing.timeout.requestRead'),
-            value: routingDraft.requestReadTimeoutSecs,
-            onChange: (value) => setRoutingDraft((current) => ({ ...current, requestReadTimeoutSecs: value })),
+            key: 'compactStreamTimeoutSecs',
+            label: t('accountPool.upstreamAccounts.routing.timeout.compactStream'),
+            value: routingDraft.compactStreamTimeoutSecs,
+            onChange: (value) => setRoutingDraft((current) => ({ ...current, compactStreamTimeoutSecs: value })),
           },
         ]}
         busy={isBusyAction(busyAction, 'routing')}

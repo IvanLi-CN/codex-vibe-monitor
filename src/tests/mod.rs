@@ -5709,6 +5709,15 @@ async fn test_upstream_capture_target_echo(
             Duration::from_millis(250),
         );
     }
+    if uri
+        .query()
+        .is_some_and(|query| query.contains("mode=slow-stream-end"))
+    {
+        return chunked_json_response_with_delayed_final_chunk(
+            response_payload,
+            Duration::from_millis(400),
+        );
+    }
 
     (StatusCode::OK, Json(response_payload)).into_response()
 }
@@ -5760,6 +5769,15 @@ async fn test_upstream_capture_target_compact_echo(
             Duration::from_millis(250),
         );
     }
+    if uri
+        .query()
+        .is_some_and(|query| query.contains("mode=slow-stream-end"))
+    {
+        return chunked_json_response_with_delayed_final_chunk(
+            response_payload,
+            Duration::from_millis(400),
+        );
+    }
 
     (StatusCode::OK, Json(response_payload)).into_response()
 }
@@ -5782,6 +5800,40 @@ fn chunked_json_response_with_delayed_first_chunk(payload: Value, delay: Duratio
                     Some((Ok::<Bytes, Infallible>(first_chunk), 1))
                 }
                 1 => Some((Ok::<Bytes, Infallible>(second_chunk), 2)),
+                _ => None,
+            }
+        }
+    });
+
+    (
+        StatusCode::OK,
+        [(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )],
+        Body::from_stream(chunked),
+    )
+        .into_response()
+}
+
+fn chunked_json_response_with_delayed_final_chunk(payload: Value, delay: Duration) -> Response {
+    let response_bytes = serde_json::to_vec(&payload).expect("serialize streamed json response");
+    let split_at = response_bytes
+        .len()
+        .saturating_div(2)
+        .clamp(1, response_bytes.len() - 1);
+    let first_chunk = Bytes::copy_from_slice(&response_bytes[..split_at]);
+    let second_chunk = Bytes::copy_from_slice(&response_bytes[split_at..]);
+    let chunked = stream::unfold(0u8, move |state| {
+        let first_chunk = first_chunk.clone();
+        let second_chunk = second_chunk.clone();
+        async move {
+            match state {
+                0 => Some((Ok::<Bytes, Infallible>(first_chunk), 1)),
+                1 => {
+                    tokio::time::sleep(delay).await;
+                    Some((Ok::<Bytes, Infallible>(second_chunk), 2))
+                }
                 _ => None,
             }
         }
@@ -10614,7 +10666,6 @@ fn pool_upstream_first_chunk_timeout_uses_compact_budget_for_compact_route() {
         &timeouts,
         &"/v1/responses/compact".parse().expect("valid uri"),
         &Method::POST,
-        config.proxy_upstream_handshake_timeout(Some(ProxyCaptureTarget::ResponsesCompact)),
     );
 
     assert_eq!(timeout, Duration::from_millis(400));
@@ -10632,7 +10683,6 @@ fn pool_upstream_first_chunk_timeout_uses_responses_budget_for_responses_route()
         &timeouts,
         &"/v1/responses".parse().expect("valid uri"),
         &Method::POST,
-        config.proxy_upstream_handshake_timeout(Some(ProxyCaptureTarget::Responses)),
     );
 
     assert_eq!(timeout, Duration::from_millis(1200));
@@ -10664,7 +10714,6 @@ fn pool_upstream_first_chunk_timeout_keeps_default_budget_for_non_responses_rout
         &timeouts,
         &"/v1/chat/completions".parse().expect("valid uri"),
         &Method::POST,
-        config.proxy_upstream_handshake_timeout(Some(ProxyCaptureTarget::ChatCompletions)),
     );
 
     assert_eq!(timeout, Duration::from_millis(200));
@@ -10724,6 +10773,7 @@ async fn pool_routing_settings_backfill_defaults_and_persist_timeout_updates() {
     let mut config = test_config();
     config.request_timeout = Duration::from_secs(61);
     config.pool_upstream_responses_attempt_timeout = Duration::from_secs(121);
+    config.pool_upstream_responses_total_timeout = Duration::from_secs(301);
     config.openai_proxy_handshake_timeout = Duration::from_secs(71);
     config.openai_proxy_compact_handshake_timeout = Duration::from_secs(305);
     config.openai_proxy_request_read_timeout = Duration::from_secs(181);
@@ -10732,32 +10782,18 @@ async fn pool_routing_settings_backfill_defaults_and_persist_timeout_updates() {
     let Json(initial) = get_pool_routing_settings(State(state.clone()))
         .await
         .expect("load initial pool routing settings");
-    assert_eq!(initial.timeouts.default_first_byte_timeout_secs, 61);
     assert_eq!(initial.timeouts.responses_first_byte_timeout_secs, 121);
-    assert_eq!(initial.timeouts.upstream_handshake_timeout_secs, 71);
-    assert_eq!(
-        initial.timeouts.compact_upstream_handshake_timeout_secs,
-        305
-    );
-    assert_eq!(initial.timeouts.request_read_timeout_secs, 181);
+    assert_eq!(initial.timeouts.compact_first_byte_timeout_secs, 305);
+    assert_eq!(initial.timeouts.responses_stream_timeout_secs, 301);
+    assert_eq!(initial.timeouts.compact_stream_timeout_secs, 301);
 
-    let persisted = sqlx::query_as::<
-        _,
-        (
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-            Option<i64>,
-        ),
-    >(
+    let persisted = sqlx::query_as::<_, (Option<i64>, Option<i64>, Option<i64>, Option<i64>)>(
         r#"
         SELECT
-            default_first_byte_timeout_secs,
             responses_first_byte_timeout_secs,
-            upstream_handshake_timeout_secs,
-            compact_upstream_handshake_timeout_secs,
-            request_read_timeout_secs
+            compact_first_byte_timeout_secs,
+            responses_stream_timeout_secs,
+            compact_stream_timeout_secs
         FROM pool_routing_settings
         WHERE id = 1
         "#,
@@ -10769,46 +10805,42 @@ async fn pool_routing_settings_backfill_defaults_and_persist_timeout_updates() {
     assert_eq!(persisted.1, None);
     assert_eq!(persisted.2, None);
     assert_eq!(persisted.3, None);
-    assert_eq!(persisted.4, None);
 
     let payload = UpdatePoolRoutingSettingsRequest {
         api_key: None,
         maintenance: None,
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
-            default_first_byte_timeout_secs: Some(75),
             responses_first_byte_timeout_secs: Some(135),
-            upstream_handshake_timeout_secs: Some(85),
-            compact_upstream_handshake_timeout_secs: Some(325),
-            request_read_timeout_secs: Some(205),
+            compact_first_byte_timeout_secs: Some(325),
+            responses_stream_timeout_secs: Some(405),
+            compact_stream_timeout_secs: Some(505),
         }),
     };
     let Json(updated) =
         update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(payload))
             .await
             .expect("update pool routing timeouts");
-    assert_eq!(updated.timeouts.default_first_byte_timeout_secs, 75);
     assert_eq!(updated.timeouts.responses_first_byte_timeout_secs, 135);
-    assert_eq!(updated.timeouts.upstream_handshake_timeout_secs, 85);
-    assert_eq!(
-        updated.timeouts.compact_upstream_handshake_timeout_secs,
-        325
-    );
-    assert_eq!(updated.timeouts.request_read_timeout_secs, 205);
+    assert_eq!(updated.timeouts.compact_first_byte_timeout_secs, 325);
+    assert_eq!(updated.timeouts.responses_stream_timeout_secs, 405);
+    assert_eq!(updated.timeouts.compact_stream_timeout_secs, 505);
 
     let resolved = resolve_pool_routing_timeouts(&state.pool, &state.config)
         .await
         .expect("resolve updated pool routing timeouts");
-    assert_eq!(resolved.default_first_byte_timeout, Duration::from_secs(75));
+    assert_eq!(resolved.default_first_byte_timeout, Duration::from_secs(61));
     assert_eq!(
         resolved.responses_first_byte_timeout,
         Duration::from_secs(135)
     );
-    assert_eq!(resolved.upstream_handshake_timeout, Duration::from_secs(85));
     assert_eq!(
-        resolved.compact_upstream_handshake_timeout,
-        Duration::from_secs(325),
+        resolved.compact_first_byte_timeout,
+        Duration::from_secs(325)
     );
-    assert_eq!(resolved.request_read_timeout, Duration::from_secs(205));
+    assert_eq!(resolved.responses_stream_timeout, Duration::from_secs(405));
+    assert_eq!(resolved.compact_stream_timeout, Duration::from_secs(505));
+    assert_eq!(resolved.default_send_timeout, Duration::from_secs(71));
+    assert_eq!(resolved.request_read_timeout, Duration::from_secs(181));
 }
 
 #[tokio::test]
@@ -10825,18 +10857,17 @@ async fn pool_routing_settings_timeout_updates_succeed_without_crypto_key() {
         api_key: None,
         maintenance: None,
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
-            default_first_byte_timeout_secs: Some(75),
             responses_first_byte_timeout_secs: None,
-            upstream_handshake_timeout_secs: None,
-            compact_upstream_handshake_timeout_secs: None,
-            request_read_timeout_secs: None,
+            compact_first_byte_timeout_secs: None,
+            responses_stream_timeout_secs: Some(375),
+            compact_stream_timeout_secs: None,
         }),
     };
     let Json(response) =
         update_pool_routing_settings(State(state), HeaderMap::new(), Json(payload))
             .await
             .expect("timeout-only routing update should succeed without crypto key");
-    assert_eq!(response.timeouts.default_first_byte_timeout_secs, 75);
+    assert_eq!(response.timeouts.responses_stream_timeout_secs, 375);
 }
 
 #[tokio::test]
@@ -10869,18 +10900,17 @@ async fn pool_routing_settings_reject_timeouts_above_i64_max() {
         api_key: None,
         maintenance: None,
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
-            default_first_byte_timeout_secs: Some(i64::MAX as u64 + 1),
             responses_first_byte_timeout_secs: None,
-            upstream_handshake_timeout_secs: None,
-            compact_upstream_handshake_timeout_secs: None,
-            request_read_timeout_secs: None,
+            compact_first_byte_timeout_secs: None,
+            responses_stream_timeout_secs: Some(i64::MAX as u64 + 1),
+            compact_stream_timeout_secs: None,
         }),
     };
     let err = update_pool_routing_settings(State(state), HeaderMap::new(), Json(payload))
         .await
         .expect_err("timeouts above i64::MAX should be rejected");
     assert_eq!(err.0, StatusCode::BAD_REQUEST);
-    assert!(err.1.contains("defaultFirstByteTimeoutSecs"));
+    assert!(err.1.contains("responsesStreamTimeoutSecs"));
     assert!(err.1.contains(&i64::MAX.to_string()));
 }
 
@@ -10889,6 +10919,7 @@ async fn proxy_request_timeouts_only_apply_pool_overrides_to_pool_routes() {
     let mut config = test_config();
     config.request_timeout = Duration::from_secs(61);
     config.pool_upstream_responses_attempt_timeout = Duration::from_secs(121);
+    config.pool_upstream_responses_total_timeout = Duration::from_secs(301);
     config.openai_proxy_handshake_timeout = Duration::from_secs(71);
     config.openai_proxy_compact_handshake_timeout = Duration::from_secs(305);
     config.openai_proxy_request_read_timeout = Duration::from_secs(181);
@@ -10898,11 +10929,10 @@ async fn proxy_request_timeouts_only_apply_pool_overrides_to_pool_routes() {
         api_key: None,
         maintenance: None,
         timeouts: Some(UpdatePoolRoutingTimeoutSettingsRequest {
-            default_first_byte_timeout_secs: Some(75),
             responses_first_byte_timeout_secs: Some(135),
-            upstream_handshake_timeout_secs: Some(85),
-            compact_upstream_handshake_timeout_secs: Some(325),
-            request_read_timeout_secs: Some(205),
+            compact_first_byte_timeout_secs: Some(325),
+            responses_stream_timeout_secs: Some(405),
+            compact_stream_timeout_secs: Some(505),
         }),
     };
     let _ = update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(payload))
@@ -10921,12 +10951,20 @@ async fn proxy_request_timeouts_only_apply_pool_overrides_to_pool_routes() {
         Duration::from_secs(121)
     );
     assert_eq!(
-        direct_timeouts.upstream_handshake_timeout,
+        direct_timeouts.default_send_timeout,
         Duration::from_secs(71)
     );
     assert_eq!(
-        direct_timeouts.compact_upstream_handshake_timeout,
+        direct_timeouts.compact_first_byte_timeout,
         Duration::from_secs(305)
+    );
+    assert_eq!(
+        direct_timeouts.responses_stream_timeout,
+        Duration::from_secs(301)
+    );
+    assert_eq!(
+        direct_timeouts.compact_stream_timeout,
+        Duration::from_secs(301)
     );
     assert_eq!(
         direct_timeouts.request_read_timeout,
@@ -10938,21 +10976,26 @@ async fn proxy_request_timeouts_only_apply_pool_overrides_to_pool_routes() {
         .expect("resolve pool request timeouts");
     assert_eq!(
         pool_timeouts.default_first_byte_timeout,
-        Duration::from_secs(75)
+        Duration::from_secs(61)
     );
     assert_eq!(
         pool_timeouts.responses_first_byte_timeout,
         Duration::from_secs(135)
     );
+    assert_eq!(pool_timeouts.default_send_timeout, Duration::from_secs(71));
     assert_eq!(
-        pool_timeouts.upstream_handshake_timeout,
-        Duration::from_secs(85)
-    );
-    assert_eq!(
-        pool_timeouts.compact_upstream_handshake_timeout,
+        pool_timeouts.compact_first_byte_timeout,
         Duration::from_secs(325)
     );
-    assert_eq!(pool_timeouts.request_read_timeout, Duration::from_secs(205));
+    assert_eq!(
+        pool_timeouts.responses_stream_timeout,
+        Duration::from_secs(405)
+    );
+    assert_eq!(
+        pool_timeouts.compact_stream_timeout,
+        Duration::from_secs(505)
+    );
+    assert_eq!(pool_timeouts.request_read_timeout, Duration::from_secs(181));
 }
 
 #[test]
@@ -18047,6 +18090,92 @@ async fn pool_openai_v1_responses_still_times_out_before_first_chunk() {
         .expect("read responses pool error body");
     let payload = String::from_utf8_lossy(&body);
     assert!(payload.contains("no alternate upstream route is available after timeout"));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_capture_target_responses_stream_timeout_applies_after_first_byte() {
+    let (upstream_base, _captured_requests, upstream_handle) =
+        spawn_capture_target_body_upstream().await;
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.pool_upstream_responses_total_timeout = Duration::from_millis(200);
+    let state = test_state_from_config(config, true).await;
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "stream": false,
+        "input": "hello",
+    }))
+    .expect("serialize responses request body");
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri(
+            "/v1/responses?mode=slow-stream-end"
+                .parse()
+                .expect("valid uri"),
+        ),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )]),
+        Body::from(request_body),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let err = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect_err("responses stream should time out after first byte");
+    assert!(
+        err.to_string()
+            .contains("request timed out after 200ms while waiting for upstream stream completion")
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_capture_target_compact_stream_timeout_applies_after_first_byte() {
+    let (upstream_base, _captured_requests, upstream_handle) =
+        spawn_capture_target_body_upstream().await;
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.pool_upstream_responses_total_timeout = Duration::from_millis(200);
+    let state = test_state_from_config(config, true).await;
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "previous_response_id": "resp_prev_001",
+        "input": [{"role": "user", "content": "compact this thread"}],
+    }))
+    .expect("serialize compact request body");
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri(
+            "/v1/responses/compact?mode=slow-stream-end"
+                .parse()
+                .expect("valid compact uri"),
+        ),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )]),
+        Body::from(request_body),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let err = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect_err("compact stream should time out after first byte");
+    assert!(
+        err.to_string()
+            .contains("request timed out after 200ms while waiting for upstream stream completion")
+    );
 
     upstream_handle.abort();
 }

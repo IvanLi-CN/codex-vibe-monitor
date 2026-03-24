@@ -596,11 +596,10 @@ describe("account pool frontend API helpers", () => {
           DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS.priorityAvailableAccountCap,
       },
       timeouts: {
-        defaultFirstByteTimeoutSecs: 60,
         responsesFirstByteTimeoutSecs: 120,
-        upstreamHandshakeTimeoutSecs: 60,
-        compactUpstreamHandshakeTimeoutSecs: 300,
-        requestReadTimeoutSecs: 180,
+        compactFirstByteTimeoutSecs: 300,
+        responsesStreamTimeoutSecs: 300,
+        compactStreamTimeoutSecs: 300,
       },
     });
   });
@@ -618,11 +617,10 @@ describe("account pool frontend API helpers", () => {
               apiKeyConfigured: true,
               maskedApiKey: "pool-live••••••c0de",
               timeouts: {
-                defaultFirstByteTimeoutSecs: 75,
                 responsesFirstByteTimeoutSecs: 180,
-                upstreamHandshakeTimeoutSecs: 90,
-                compactUpstreamHandshakeTimeoutSecs: 420,
-                requestReadTimeoutSecs: 240,
+                compactFirstByteTimeoutSecs: 420,
+                responsesStreamTimeoutSecs: 360,
+                compactStreamTimeoutSecs: 540,
               },
             },
             items: [],
@@ -635,11 +633,10 @@ describe("account pool frontend API helpers", () => {
     const response = await fetchUpstreamAccounts();
 
     expect(response.routing?.timeouts).toEqual({
-      defaultFirstByteTimeoutSecs: 75,
       responsesFirstByteTimeoutSecs: 180,
-      upstreamHandshakeTimeoutSecs: 90,
-      compactUpstreamHandshakeTimeoutSecs: 420,
-      requestReadTimeoutSecs: 240,
+      compactFirstByteTimeoutSecs: 420,
+      responsesStreamTimeoutSecs: 360,
+      compactStreamTimeoutSecs: 540,
     });
   });
 
@@ -817,11 +814,10 @@ describe("account pool frontend API helpers", () => {
         expect(JSON.parse(String(init?.body))).toEqual({
           apiKey: "pool-secret",
           timeouts: {
-            defaultFirstByteTimeoutSecs: 75,
             responsesFirstByteTimeoutSecs: 180,
-            upstreamHandshakeTimeoutSecs: 90,
-            compactUpstreamHandshakeTimeoutSecs: 420,
-            requestReadTimeoutSecs: 240,
+            compactFirstByteTimeoutSecs: 420,
+            responsesStreamTimeoutSecs: 360,
+            compactStreamTimeoutSecs: 540,
           },
         });
         return new Response(
@@ -834,11 +830,10 @@ describe("account pool frontend API helpers", () => {
               priorityAvailableAccountCap: 100,
             },
             timeouts: {
-              defaultFirstByteTimeoutSecs: 75,
               responsesFirstByteTimeoutSecs: 180,
-              upstreamHandshakeTimeoutSecs: 90,
-              compactUpstreamHandshakeTimeoutSecs: 420,
-              requestReadTimeoutSecs: 240,
+              compactFirstByteTimeoutSecs: 420,
+              responsesStreamTimeoutSecs: 360,
+              compactStreamTimeoutSecs: 540,
             },
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
@@ -850,11 +845,10 @@ describe("account pool frontend API helpers", () => {
     const response = await updatePoolRoutingSettings({
       apiKey: "pool-secret",
       timeouts: {
-        defaultFirstByteTimeoutSecs: 75,
         responsesFirstByteTimeoutSecs: 180,
-        upstreamHandshakeTimeoutSecs: 90,
-        compactUpstreamHandshakeTimeoutSecs: 420,
-        requestReadTimeoutSecs: 240,
+        compactFirstByteTimeoutSecs: 420,
+        responsesStreamTimeoutSecs: 360,
+        compactStreamTimeoutSecs: 540,
       },
     });
 
@@ -867,11 +861,10 @@ describe("account pool frontend API helpers", () => {
       priorityAvailableAccountCap: 100,
     });
     expect(response.timeouts).toEqual({
-      defaultFirstByteTimeoutSecs: 75,
       responsesFirstByteTimeoutSecs: 180,
-      upstreamHandshakeTimeoutSecs: 90,
-      compactUpstreamHandshakeTimeoutSecs: 420,
-      requestReadTimeoutSecs: 240,
+      compactFirstByteTimeoutSecs: 420,
+      responsesStreamTimeoutSecs: 360,
+      compactStreamTimeoutSecs: 540,
     });
   });
 

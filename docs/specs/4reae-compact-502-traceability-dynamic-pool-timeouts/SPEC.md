@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 进行中（1/5）
+- Status: 已完成（5/5）
 - Created: 2026-03-24
 - Last: 2026-03-24
 
@@ -17,7 +17,7 @@
 ### Goals
 
 - 所有代理错误响应都带上可查询的 `cvmId`，直接复用当前请求的 `invoke_id`，并保持现有 `error` 字段兼容。
-- 将请求链路使用的关键超时迁移到号池模块动态维护，默认 compact handshake timeout 提升到 `300s`，更新后无需重启即可生效。
+- 将请求链路使用的 4 个关键响应超时迁移到号池模块动态维护，默认 compact 响应体首字超时提升到 `300s`，更新后无需重启即可生效。
 - 为 compact 请求引入账号级被动观测：成功标记 `supported`，明确能力负信号标记 `unsupported`，超时/transport/泛化 5xx 只记录本次观测事实，不参与路由限制。
 - 在账号池列表、详情和路由设置弹窗里展示 compact 观测与超时设置。
 
@@ -49,12 +49,11 @@
 
 - 代理错误响应保持扁平 JSON：至少包含现有 `error` 字段，并新增 `cvmId`；同时响应头必须带 `X-CVM-Invoke-Id`。
 - `/api/pool/routing-settings` 的 GET/PUT 必须返回和保存一组动态超时：
-  - `defaultFirstByteTimeoutSecs`
   - `responsesFirstByteTimeoutSecs`
-  - `upstreamHandshakeTimeoutSecs`
-  - `compactUpstreamHandshakeTimeoutSecs`
-  - `requestReadTimeoutSecs`
-- compact handshake timeout 默认值必须从 `180` 提升到 `300` 秒；其他默认值沿用当前配置。
+  - `compactFirstByteTimeoutSecs`
+  - `responsesStreamTimeoutSecs`
+  - `compactStreamTimeoutSecs`
+- compact 响应体首字超时默认值必须从 `180` 提升到 `300` 秒；其余默认值沿用当前配置。
 - 对 `/v1/responses/compact`：
   - 成功请求必须把账号观测为 `supported`
   - 明确能力负信号必须把账号观测为 `unsupported`
@@ -81,12 +80,11 @@
 
 - 号池路由设置表新增 timeout 字段；读取时若发现为空，使用当前 `AppConfig` 的运行时值补齐并持久化。
 - 请求链路在每次处理时都从持久化设置解析 timeout，并应用到：
-  - request body read timeout
-  - 通用 upstream handshake timeout
-  - compact upstream handshake timeout
-  - 通用 first-byte timeout
-  - `/v1/responses` first-byte timeout
-- 其余不在请求链路内的超时继续使用原有配置，不接入本次动态设置。
+  - 一般请求响应体首字超时
+  - 压缩请求响应体首字超时
+  - 一般请求首字后到流结束超时
+  - 压缩请求首字后到流结束超时
+- 请求体读取、非 responses 类请求的发送等待等内部超时继续使用原有配置回退，不接入本次在线动态设置。
 
 ### compact 支持观测
 
@@ -104,7 +102,7 @@
 - 任意 pool routing 触发的代理 `502` 都返回相同的 `invoke_id` 到 `X-CVM-Invoke-Id` 与 JSON `cvmId`，且可用该 ID 查询 invocation detail 与 pool attempts。
 - 客户端若仅依赖 `error` 字段，行为保持兼容，不需要升级。
 - 在账号池路由设置里修改 timeout 后，后续请求立即使用新值，无需重启服务。
-- 新装/升级环境在未显式保存 timeout 前，`compactUpstreamHandshakeTimeoutSecs` 默认按 `300` 生效。
+- 新装/升级环境在未显式保存 timeout 前，`compactFirstByteTimeoutSecs` 默认按 `300` 生效。
 - compact 成功会把账号状态标记为 `supported`；显式 unsupported/no-channel-for-compact 类错误会标记为 `unsupported`；timeout/transport/泛化 5xx 不会把账号能力改成 `unsupported`。
 - 账号池列表与详情页能看到 compact 支持状态、最近观测时间与原因；pool attempts API 能看到每次尝试的 compact 观测结果。
 
@@ -112,6 +110,10 @@
 
 ### Testing
 
+- `cargo test --quiet pool_routing_settings_backfill_defaults_and_persist_timeout_updates`
+- `cargo test --quiet proxy_request_timeouts_only_apply_pool_overrides_to_pool_routes`
+- `cargo test --quiet proxy_capture_target_responses_stream_timeout_applies_after_first_byte`
+- `cargo test --quiet proxy_capture_target_compact_stream_timeout_applies_after_first_byte`
 - `cargo test pool_routing_settings_`
 - `cargo test pool_route_compact_`
 - `cargo test proxy_openai_v1_`
@@ -133,10 +135,10 @@
 ## 实现里程碑（Milestones / Delivery checklist）
 
 - [x] M1: 冻结错误契约、compact 观测规则、动态 timeout schema 与 UI 入口。
-- [ ] M2: 完成后端 schema、动态 timeout、生效路径与 `cvmId` 透传。
-- [ ] M3: 完成 compact 观测落库、API 输出与记录页关联字段。
-- [ ] M4: 完成账号池 UI 展示与路由设置弹窗编辑。
-- [ ] M5: 完成 fast-track 收口到 merge-ready（验证、review-loop、PR）。
+- [x] M2: 完成后端 schema、动态 timeout、生效路径与 `cvmId` 透传。
+- [x] M3: 完成 compact 观测落库、API 输出与记录页关联字段。
+- [x] M4: 完成账号池 UI 展示与路由设置弹窗编辑。
+- [x] M5: 完成 fast-track 收口到 merge-ready（验证、review-loop、PR）。
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
@@ -144,6 +146,18 @@
 - 风险：compact 能力负信号判断过宽会把暂时性 `503` 误标为 `unsupported`；判定必须保守。
 - 假设：既有 invocation detail / pool attempts 查询路径已经足够满足 `cvmId` 排查，不需要额外新建查询接口。
 
+## Visual Evidence (PR)
+
+![高级路由与同步设置中的四项请求链路超时](./assets/routing-dialog-timeout-settings.png)
+
+- `source_type=storybook_canvas`
+- `target_program=mock-only`
+- `capture_scope=element`
+- `story_id_or_title=account-pool-pages-upstream-accounts-overlays--routing-dialog-timeout-settings`
+- `state=timeout-settings`
+- `evidence_note=验证号池路由设置弹窗已收口为 4 项超时：一般请求响应体首字超时、压缩请求响应体首字超时、一般请求流结束超时、压缩请求流结束超时，且弹窗在视口内完整展示。`
+
 ## 变更记录（Change log）
 
 - 2026-03-24: 创建 spec，冻结 `cvmId` 错误契约、compact 被动观测与号池动态 timeout 的范围和验收。
+- 2026-03-24: 收口公开超时语义为 4 项请求链路超时，补齐 Storybook 视觉证据，并完成本地验证。
