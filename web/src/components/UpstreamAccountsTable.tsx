@@ -40,6 +40,8 @@ interface UpstreamAccountsTableProps {
     enableStatus: (status: string) => string
     healthStatus: (status: string) => string
     syncState: (status: string) => string
+    compactSupport?: (item: UpstreamAccountSummary) => string | null
+    compactSupportHint?: (item: UpstreamAccountSummary) => string | null
     actionSource: (item: UpstreamAccountSummary) => string | null
     actionReason: (item: UpstreamAccountSummary) => string | null
   }
@@ -446,6 +448,14 @@ export function UpstreamAccountsTable({
                           ? compactBadge(labels.healthStatus(healthStatus), healthBadgeVariant(healthStatus))
                           : null}
                         {compactBadge(kindLabel(item, labels), 'secondary')}
+                        {labels.compactSupport?.(item) ? (
+                          <span title={labels.compactSupportHint?.(item) ?? undefined}>
+                            {compactBadge(
+                              labels.compactSupport(item) ?? '',
+                              item.compactSupport?.status === 'unsupported' ? 'warning' : 'info',
+                            )}
+                          </span>
+                        ) : null}
                         {item.planType
                           ? compactBadge(item.planType, 'accent')
                           : null}

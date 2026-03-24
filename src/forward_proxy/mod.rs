@@ -1937,6 +1937,7 @@ pub(crate) async fn fetch_upstream_models_payload(
         headers,
         None,
         handshake_timeout,
+        None,
         upstream_429_max_retries,
     )
     .await
