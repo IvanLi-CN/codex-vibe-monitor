@@ -798,6 +798,8 @@ const baseTranslations = {
       "Hard unavailable",
     "accountPool.upstreamAccounts.latestAction.actions.sync_succeeded":
       "Sync succeeded",
+    "accountPool.upstreamAccounts.latestAction.actions.sync_recovery_blocked":
+      "Recovery still blocked",
     "accountPool.upstreamAccounts.latestAction.actions.sync_failed":
       "Sync failed",
     "accountPool.upstreamAccounts.latestAction.actions.account_updated":
@@ -819,6 +821,10 @@ const baseTranslations = {
       "Account settings were updated",
     "accountPool.upstreamAccounts.latestAction.reasons.sync_error":
       "Sync failed",
+    "accountPool.upstreamAccounts.latestAction.reasons.quota_still_exhausted":
+      "Fresh usage snapshot still shows an exhausted limit window",
+    "accountPool.upstreamAccounts.latestAction.reasons.recovery_unconfirmed_manual_required":
+      "Manual recovery is required before the account can return to routing",
     "accountPool.upstreamAccounts.latestAction.reasons.transport_failure":
       "Transport failure",
     "accountPool.upstreamAccounts.latestAction.reasons.reauth_required":
@@ -2156,6 +2162,8 @@ const baseTranslations = {
       "标记为硬失效",
     "accountPool.upstreamAccounts.latestAction.actions.sync_succeeded":
       "同步成功",
+    "accountPool.upstreamAccounts.latestAction.actions.sync_recovery_blocked":
+      "恢复仍被阻止",
     "accountPool.upstreamAccounts.latestAction.actions.sync_failed": "同步失败",
     "accountPool.upstreamAccounts.latestAction.actions.account_updated":
       "账号已更新",
@@ -2175,6 +2183,10 @@ const baseTranslations = {
       "账号设置已更新",
     "accountPool.upstreamAccounts.latestAction.reasons.sync_error":
       "同步失败",
+    "accountPool.upstreamAccounts.latestAction.reasons.quota_still_exhausted":
+      "最新额度快照仍显示限制窗口已耗尽",
+    "accountPool.upstreamAccounts.latestAction.reasons.recovery_unconfirmed_manual_required":
+      "账号返回路由前仍需要人工恢复",
     "accountPool.upstreamAccounts.latestAction.reasons.transport_failure":
       "网络或传输失败",
     "accountPool.upstreamAccounts.latestAction.reasons.reauth_required":

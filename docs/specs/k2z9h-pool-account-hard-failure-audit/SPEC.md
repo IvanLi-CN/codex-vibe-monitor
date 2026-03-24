@@ -81,3 +81,7 @@
 - 用统一的 HTTP failure classifier 收敛 route / sync 两条链路，区分 `HardUnavailable / RateLimited / Retryable`。
 - 新增账号动作事件表与主表 latest action 摘要列，让数据库和 UI 都直接读结构化动作，而不是继续解析 `last_error`。
 - 将 quota-exhausted `429` 视为硬失效，但 resolver 仍需识别其 rate-limited 语义，避免后续请求退化成 generic unavailable。
+
+## 后续补洞
+
+- 线上真实样本 `"The usage limit has been reached"` 暴露了 quota matcher 与 sync 恢复门控仍有漏口；后续补洞已由 `docs/specs/ppt8w-pool-usage-limit-hard-stop-recovery-gate/SPEC.md` 承接。
