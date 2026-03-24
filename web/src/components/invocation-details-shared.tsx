@@ -23,6 +23,7 @@ import {
 import type { TranslationKey } from '../i18n'
 import { cn } from '../lib/utils'
 import { getReasoningEffortTone, REASONING_EFFORT_TONE_CLASSNAMES } from './invocation-table-reasoning'
+import { subscribeToSse } from '../lib/sse'
 
 export const FALLBACK_CELL = '—'
 
@@ -454,13 +455,6 @@ export function buildInvocationDetailViewModel({
       label: t('table.details.poolAttemptTerminalReason'),
       value: formatOptionalText(record.poolAttemptTerminalReason),
     },
-    { key: 'totalLatency', label: t('table.details.totalLatency'), value: totalLatencyValue },
-    {
-      key: 'firstResponseByteTotal',
-      label: t('table.details.firstResponseByteTotal'),
-      value: firstResponseByteTotalValue,
-    },
-    { key: 'firstByteLatency', label: t('table.details.firstByteLatency'), value: firstByteLatencyValue },
     { key: 'responseContentEncoding', label: t('table.details.httpCompression'), value: responseContentEncodingValue },
     { key: 'requestedServiceTier', label: t('table.details.requestedServiceTier'), value: requestedServiceTierValue },
     { key: 'serviceTier', label: t('table.details.serviceTier'), value: serviceTierValue },
@@ -549,6 +543,8 @@ function poolAttemptStatusMeta(
   status: string | null | undefined,
 ): { variant: 'success' | 'warning' | 'error' | 'secondary'; key: TranslationKey } {
   switch (status?.trim().toLowerCase()) {
+    case 'pending':
+      return { variant: 'warning', key: 'table.poolAttempts.status.pending' }
     case 'success':
       return { variant: 'success', key: 'table.poolAttempts.status.success' }
     case 'http_failure':
@@ -562,6 +558,139 @@ function poolAttemptStatusMeta(
   }
 }
 
+function resolvePoolAttemptPhase(attempt: ApiPoolUpstreamRequestAttempt) {
+  const explicitPhase = attempt.phase?.trim().toLowerCase()
+  if (explicitPhase) return explicitPhase
+
+  const normalizedStatus = attempt.status?.trim().toLowerCase()
+  if (normalizedStatus === 'pending') return 'sending_request'
+  if (normalizedStatus === 'success') return 'completed'
+  return 'failed'
+}
+
+function poolAttemptPhaseMeta(
+  phase: string | null | undefined,
+): { variant: 'default' | 'secondary' | 'warning' | 'info'; key: TranslationKey } {
+  switch (phase?.trim().toLowerCase()) {
+    case 'connecting':
+      return { variant: 'secondary', key: 'table.poolAttempts.phase.connecting' }
+    case 'sending_request':
+      return { variant: 'default', key: 'table.poolAttempts.phase.sendingRequest' }
+    case 'waiting_first_byte':
+      return { variant: 'warning', key: 'table.poolAttempts.phase.waitingFirstByte' }
+    case 'streaming_response':
+      return { variant: 'info', key: 'table.poolAttempts.phase.streamingResponse' }
+    case 'completed':
+      return { variant: 'secondary', key: 'table.poolAttempts.phase.completed' }
+    case 'failed':
+      return { variant: 'secondary', key: 'table.poolAttempts.phase.failed' }
+    default:
+      return { variant: 'secondary', key: 'table.poolAttempts.phase.unknown' }
+  }
+}
+
+function isPoolAttemptTerminal(attempt: ApiPoolUpstreamRequestAttempt) {
+  if (attempt.finishedAt?.trim()) return true
+  return attempt.status.trim().toLowerCase() !== 'pending'
+}
+
+function isInvocationDisplayTerminal(status: string | null | undefined) {
+  const normalized = status?.trim().toLowerCase()
+  return Boolean(normalized && normalized !== 'running' && normalized !== 'pending')
+}
+
+function poolAttemptCompletenessScore(attempt: ApiPoolUpstreamRequestAttempt) {
+  let score = 0
+  if (attempt.finishedAt?.trim()) score += 8
+  if (attempt.httpStatus != null) score += 2
+  if (attempt.failureKind?.trim()) score += 1
+  if (attempt.errorMessage?.trim()) score += 1
+  if (attempt.connectLatencyMs != null) score += 1
+  if (attempt.firstByteLatencyMs != null) score += 1
+  if (attempt.streamLatencyMs != null) score += 1
+  if (attempt.upstreamRequestId?.trim()) score += 1
+  return score
+}
+
+function poolAttemptPhaseRank(attempt: ApiPoolUpstreamRequestAttempt) {
+  switch (resolvePoolAttemptPhase(attempt)) {
+    case 'connecting':
+      return 0
+    case 'sending_request':
+      return 1
+    case 'waiting_first_byte':
+      return 2
+    case 'streaming_response':
+      return 3
+    case 'completed':
+    case 'failed':
+      return 4
+    default:
+      return -1
+  }
+}
+
+function comparePoolAttemptRecency(
+  current: ApiPoolUpstreamRequestAttempt | undefined,
+  incoming: ApiPoolUpstreamRequestAttempt | undefined,
+) {
+  if (!current && incoming) return 1
+  if (current && !incoming) return -1
+  if (!current || !incoming) return 0
+
+  const currentTerminal = isPoolAttemptTerminal(current)
+  const incomingTerminal = isPoolAttemptTerminal(incoming)
+  if (currentTerminal !== incomingTerminal) {
+    return incomingTerminal ? 1 : -1
+  }
+
+  const currentPhaseRank = poolAttemptPhaseRank(current)
+  const incomingPhaseRank = poolAttemptPhaseRank(incoming)
+  if (currentPhaseRank !== incomingPhaseRank) {
+    return incomingPhaseRank > currentPhaseRank ? 1 : -1
+  }
+
+  const currentFinishedAt = current.finishedAt ? Date.parse(current.finishedAt) : Number.NaN
+  const incomingFinishedAt = incoming.finishedAt ? Date.parse(incoming.finishedAt) : Number.NaN
+  if (
+    Number.isFinite(currentFinishedAt) &&
+    Number.isFinite(incomingFinishedAt) &&
+    currentFinishedAt !== incomingFinishedAt
+  ) {
+    return incomingFinishedAt > currentFinishedAt ? 1 : -1
+  }
+
+  const currentScore = poolAttemptCompletenessScore(current)
+  const incomingScore = poolAttemptCompletenessScore(incoming)
+  if (currentScore !== incomingScore) {
+    return incomingScore > currentScore ? 1 : -1
+  }
+
+  return 0
+}
+
+function shouldReplacePoolAttemptSnapshot(
+  current: ApiPoolUpstreamRequestAttempt[] | undefined,
+  incoming: ApiPoolUpstreamRequestAttempt[],
+) {
+  if (!current) return true
+  if (incoming.length > current.length) return true
+  if (incoming.length < current.length) return false
+
+  let sawNewer = false
+  let sawOlder = false
+  for (let index = 0; index < incoming.length; index += 1) {
+    const comparison = comparePoolAttemptRecency(current[index], incoming[index])
+    if (comparison > 0) sawNewer = true
+    if (comparison < 0) sawOlder = true
+  }
+
+  if (sawOlder && !sawNewer) return false
+  return true
+}
+
+const MAX_BUFFERED_POOL_ATTEMPT_SNAPSHOTS = 12
+
 export function useInvocationPoolAttempts(expandedRecord: ApiInvocation | null) {
   const [attemptsByInvokeId, setPoolAttemptsByInvokeId] = useState<
     Record<string, ApiPoolUpstreamRequestAttempt[] | undefined>
@@ -570,9 +699,13 @@ export function useInvocationPoolAttempts(expandedRecord: ApiInvocation | null) 
   const [errorByInvokeId, setPoolAttemptErrorByInvokeId] = useState<Record<string, string | null | undefined>>({})
   const attemptsRef = useRef(attemptsByInvokeId)
   const loadingRef = useRef(loadingByInvokeId)
+  const activeExpandedInvokeIdRef = useRef<string | null>(null)
+  const versionRef = useRef<Record<string, number | undefined>>({})
   const loadedKeyRef = useRef<Record<string, string | undefined>>({})
   const loadingKeyRef = useRef<Record<string, string | undefined>>({})
   const activeRequestIdRef = useRef<Record<string, number | undefined>>({})
+  const bufferedSnapshotsRef = useRef<Record<string, ApiPoolUpstreamRequestAttempt[] | undefined>>({})
+  const bufferedSnapshotOrderRef = useRef<string[]>([])
   const nextRequestIdRef = useRef(0)
 
   useEffect(() => {
@@ -582,6 +715,53 @@ export function useInvocationPoolAttempts(expandedRecord: ApiInvocation | null) 
   useEffect(() => {
     loadingRef.current = loadingByInvokeId
   }, [loadingByInvokeId])
+
+  useEffect(() => {
+    activeExpandedInvokeIdRef.current =
+      expandedRecord && isPoolRouteMode(expandedRecord.routeMode) ? expandedRecord.invokeId : null
+  }, [expandedRecord])
+
+  useEffect(() => {
+    const unsubscribe = subscribeToSse((payload) => {
+      if (payload.type !== 'pool_attempts') return
+      const activeInvokeId = activeExpandedInvokeIdRef.current
+      const currentBuffered = bufferedSnapshotsRef.current[payload.invokeId]
+      const currentVisible =
+        payload.invokeId === activeInvokeId ? attemptsRef.current[payload.invokeId] : currentBuffered
+      if (!shouldReplacePoolAttemptSnapshot(currentVisible, payload.attempts)) return
+
+      const nextBuffered = { ...bufferedSnapshotsRef.current, [payload.invokeId]: payload.attempts }
+      const nextOrder = [
+        payload.invokeId,
+        ...bufferedSnapshotOrderRef.current.filter((invokeId) => invokeId !== payload.invokeId),
+      ]
+      while (nextOrder.length > MAX_BUFFERED_POOL_ATTEMPT_SNAPSHOTS) {
+        const evictedInvokeId = nextOrder.pop()
+        if (!evictedInvokeId) break
+        delete nextBuffered[evictedInvokeId]
+      }
+      bufferedSnapshotsRef.current = nextBuffered
+      bufferedSnapshotOrderRef.current = nextOrder
+      versionRef.current = {
+        ...versionRef.current,
+        [payload.invokeId]: (versionRef.current[payload.invokeId] ?? 0) + 1,
+      }
+      if (payload.invokeId !== activeInvokeId) {
+        return
+      }
+
+      const nextAttempts = {
+        ...attemptsRef.current,
+        [payload.invokeId]: payload.attempts,
+      }
+      attemptsRef.current = nextAttempts
+      setPoolAttemptsByInvokeId(nextAttempts)
+      setPoolAttemptLoadingByInvokeId((current) => ({ ...current, [payload.invokeId]: false }))
+      setPoolAttemptErrorByInvokeId((current) => ({ ...current, [payload.invokeId]: null }))
+    })
+
+    return unsubscribe
+  }, [])
 
   useEffect(() => {
     if (!expandedRecord || !isPoolRouteMode(expandedRecord.routeMode)) return
@@ -604,15 +784,48 @@ export function useInvocationPoolAttempts(expandedRecord: ApiInvocation | null) 
       expandedRecord.tUpstreamStreamMs ?? '',
     ].join('|')
     const isInFlight = normalizedStatus === 'running' || normalizedStatus === 'pending'
-    const hasCachedAttempts = attemptsRef.current[invokeId] !== undefined
+    const bufferedAttempts = bufferedSnapshotsRef.current[invokeId]
+    const stateAttempts = attemptsRef.current[invokeId]
+    const cachedAttempts =
+      shouldReplacePoolAttemptSnapshot(stateAttempts, bufferedAttempts ?? []) && bufferedAttempts
+        ? bufferedAttempts
+        : stateAttempts
+    if (cachedAttempts !== stateAttempts) {
+      const nextAttempts = { ...attemptsRef.current, [invokeId]: cachedAttempts }
+      attemptsRef.current = nextAttempts
+      setPoolAttemptsByInvokeId(nextAttempts)
+      setPoolAttemptErrorByInvokeId((current) => ({ ...current, [invokeId]: null }))
+    }
+    const hasCachedAttempts = cachedAttempts !== undefined
+    const expectedAttemptCount =
+      typeof expandedRecord.poolAttemptCount === 'number' && Number.isFinite(expandedRecord.poolAttemptCount)
+        ? Math.max(Math.trunc(expandedRecord.poolAttemptCount), 0)
+        : null
+    const cachedAttemptCount = cachedAttempts?.length ?? 0
     const loadedKey = loadedKeyRef.current[invokeId]
     const loadingKey = loadingKeyRef.current[invokeId]
+    const shouldRefreshPendingTerminalAttempt =
+      isInvocationDisplayTerminal(expandedRecord.status) &&
+      (cachedAttempts?.some((attempt) => !isPoolAttemptTerminal(attempt)) ?? false)
+    const shouldRefreshInFlightKeyMismatch =
+      isInFlight &&
+      hasCachedAttempts &&
+      loadedKey !== undefined &&
+      loadedKey !== requestKey &&
+      (cachedAttempts?.some((attempt) => !isPoolAttemptTerminal(attempt)) ?? false)
+    const shouldRefetch =
+      cachedAttempts === undefined ||
+      (expectedAttemptCount != null && cachedAttemptCount < expectedAttemptCount) ||
+      shouldRefreshPendingTerminalAttempt ||
+      shouldRefreshInFlightKeyMismatch ||
+      (hasCachedAttempts && loadedKey !== requestKey && !isInFlight)
 
     if (loadingRef.current[invokeId] && loadingKey === requestKey) return
-    if (hasCachedAttempts && loadedKey === requestKey && !isInFlight) return
+    if (!shouldRefetch) return
 
     let cancelled = false
     const requestId = ++nextRequestIdRef.current
+    const fetchVersion = versionRef.current[invokeId] ?? 0
     loadingKeyRef.current[invokeId] = requestKey
     activeRequestIdRef.current[invokeId] = requestId
     setPoolAttemptLoadingByInvokeId((current) => ({ ...current, [invokeId]: true }))
@@ -622,10 +835,27 @@ export function useInvocationPoolAttempts(expandedRecord: ApiInvocation | null) 
       .then((attempts) => {
         if (cancelled) return
         loadedKeyRef.current[invokeId] = requestKey
-        setPoolAttemptsByInvokeId((current) => ({ ...current, [invokeId]: attempts }))
+        setPoolAttemptsByInvokeId((current) => {
+          const latestVersion = versionRef.current[invokeId] ?? 0
+          const existingAttempts = current[invokeId]
+          if (latestVersion !== fetchVersion && !shouldReplacePoolAttemptSnapshot(existingAttempts, attempts)) {
+            return current
+          }
+          if (!shouldReplacePoolAttemptSnapshot(existingAttempts, attempts)) {
+            return current
+          }
+          const nextAttempts = { ...current, [invokeId]: attempts }
+          attemptsRef.current = nextAttempts
+          return nextAttempts
+        })
       })
       .catch((error) => {
         if (cancelled) return
+        const latestVersion = versionRef.current[invokeId] ?? 0
+        const existingAttempts = attemptsRef.current[invokeId]
+        if (latestVersion !== fetchVersion || (existingAttempts?.length ?? 0) > 0) {
+          return
+        }
         const message = error instanceof Error ? error.message : String(error)
         setPoolAttemptErrorByInvokeId((current) => ({ ...current, [invokeId]: message }))
       })
@@ -722,6 +952,8 @@ function renderPoolAttemptsContent(
         <div className="space-y-2" data-testid="pool-attempts-list">
           {attempts.map((attempt) => {
             const statusMeta = poolAttemptStatusMeta(attempt.status)
+            const phase = resolvePoolAttemptPhase(attempt)
+            const phaseMeta = poolAttemptPhaseMeta(phase)
             const accountLabel = formatPoolAttemptAccountLabel(attempt)
             const httpStatusValue =
               typeof attempt.httpStatus === 'number' && Number.isFinite(attempt.httpStatus)
@@ -736,6 +968,11 @@ function renderPoolAttemptsContent(
               >
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge variant={statusMeta.variant}>{t(statusMeta.key)}</Badge>
+                  {!isPoolAttemptTerminal(attempt) ? (
+                    <Badge variant={phaseMeta.variant} data-testid="pool-attempt-phase-badge">
+                      {t(phaseMeta.key)}
+                    </Badge>
+                  ) : null}
                   <span className="font-mono text-xs text-base-content/70">#{attempt.attemptIndex}</span>
                   <span className="text-sm font-medium">{accountLabel}</span>
                 </div>

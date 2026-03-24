@@ -1145,6 +1145,11 @@ pub(crate) async fn fetch_invocation_pool_attempts(
     State(state): State<Arc<AppState>>,
     axum::extract::Path(invoke_id): axum::extract::Path<String>,
 ) -> Result<Json<Vec<ApiPoolUpstreamRequestAttempt>>, ApiError> {
+    let mut records = query_pool_attempt_records_from_live(&state.pool, &invoke_id).await?;
+    if !records.is_empty() {
+        return Ok(Json(records));
+    }
+
     let Some(invocation) = query_invocation_attempt_lookup(&state.pool, &invoke_id).await? else {
         return Ok(Json(Vec::new()));
     };
@@ -1156,25 +1161,21 @@ pub(crate) async fn fetch_invocation_pool_attempts(
         return Ok(Json(Vec::new()));
     }
 
-    let mut records = query_pool_attempt_records_from_live(&state.pool, &invoke_id).await?;
-    if records.is_empty() {
-        let occurred_at = parse_shanghai_local_naive(&invocation.occurred_at)
-            .with_context(|| {
-                format!(
-                    "failed to parse invocation occurred_at for pool attempts: {}",
-                    invocation.occurred_at
-                )
-            })
-            .map_err(ApiError::bad_request)?;
-        let occurred_at_utc = local_naive_to_utc(occurred_at, Shanghai);
-        let archive_range = ExactUtcRange {
-            start: occurred_at_utc,
-            end: occurred_at_utc + ChronoDuration::seconds(1),
-        };
-        records =
-            query_pool_attempt_records_from_archive_range(&state.pool, &invoke_id, archive_range)
-                .await?;
-    }
+    let occurred_at = parse_shanghai_local_naive(&invocation.occurred_at)
+        .with_context(|| {
+            format!(
+                "failed to parse invocation occurred_at for pool attempts: {}",
+                invocation.occurred_at
+            )
+        })
+        .map_err(ApiError::bad_request)?;
+    let occurred_at_utc = local_naive_to_utc(occurred_at, Shanghai);
+    let archive_range = ExactUtcRange {
+        start: occurred_at_utc,
+        end: occurred_at_utc + ChronoDuration::seconds(1),
+    };
+    records = query_pool_attempt_records_from_archive_range(&state.pool, &invoke_id, archive_range)
+        .await?;
 
     Ok(Json(records))
 }
@@ -1786,6 +1787,11 @@ async fn query_pool_attempt_records_from_archive_range(
         } else {
             "NULL AS upstream_route_key"
         };
+        let phase_projection = if archive_columns.contains("phase") {
+            "COALESCE(phase, CASE WHEN status = 'pending' THEN 'sending_request' WHEN status = 'success' THEN 'completed' ELSE 'failed' END) AS phase"
+        } else {
+            "CASE WHEN status = 'pending' THEN 'sending_request' WHEN status = 'success' THEN 'completed' ELSE 'failed' END AS phase"
+        };
         let compact_support_status_projection =
             if archive_columns.contains("compact_support_status") {
                 "compact_support_status"
@@ -1816,6 +1822,7 @@ async fn query_pool_attempt_records_from_archive_range(
                 started_at,
                 finished_at,
                 status,
+                {phase_projection},
                 http_status,
                 failure_kind,
                 error_message,
@@ -1830,6 +1837,9 @@ async fn query_pool_attempt_records_from_archive_range(
             WHERE invoke_id = ?1
             ORDER BY attempt_index ASC, id ASC
             "#,
+            phase_projection = phase_projection,
+            compact_support_status_projection = compact_support_status_projection,
+            compact_support_reason_projection = compact_support_reason_projection,
         );
         let archived_records =
             sqlx::query_as::<_, ApiPoolUpstreamRequestAttempt>(&archived_records_query)
@@ -1854,7 +1864,7 @@ async fn query_pool_attempt_records_from_archive_range(
     Ok(records)
 }
 
-async fn query_pool_attempt_records_from_live(
+pub(crate) async fn query_pool_attempt_records_from_live(
     pool: &Pool<Sqlite>,
     invoke_id: &str,
 ) -> Result<Vec<ApiPoolUpstreamRequestAttempt>, ApiError> {
@@ -1876,6 +1886,14 @@ async fn query_pool_attempt_records_from_live(
             attempts.started_at,
             attempts.finished_at,
             attempts.status,
+            COALESCE(
+                attempts.phase,
+                CASE
+                    WHEN attempts.status = 'pending' THEN 'sending_request'
+                    WHEN attempts.status = 'success' THEN 'completed'
+                    ELSE 'failed'
+                END
+            ) AS phase,
             attempts.http_status,
             attempts.failure_kind,
             attempts.error_message,
@@ -4627,6 +4645,11 @@ pub(crate) enum BroadcastPayload {
     Records {
         records: Vec<ApiInvocation>,
     },
+    #[serde(rename = "pool_attempts")]
+    PoolAttempts {
+        invoke_id: String,
+        attempts: Vec<ApiPoolUpstreamRequestAttempt>,
+    },
     Summary {
         window: String,
         summary: StatsResponse,
@@ -4781,6 +4804,7 @@ pub(crate) struct ApiPoolUpstreamRequestAttempt {
     #[serde(serialize_with = "serialize_opt_local_or_utc_to_utc_iso")]
     pub(crate) finished_at: Option<String>,
     pub(crate) status: String,
+    pub(crate) phase: String,
     #[sqlx(default)]
     pub(crate) http_status: Option<i64>,
     #[sqlx(default)]

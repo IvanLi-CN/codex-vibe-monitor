@@ -367,6 +367,7 @@ export interface ApiPoolUpstreamRequestAttempt {
   startedAt?: string | null;
   finishedAt?: string | null;
   status: string;
+  phase?: string | null;
   httpStatus?: number | null;
   failureKind?: string | null;
   errorMessage?: string | null;
@@ -609,6 +610,11 @@ export type BroadcastPayload =
   | {
       type: "records";
       records: ApiInvocation[];
+    }
+  | {
+      type: "pool_attempts";
+      invokeId: string;
+      attempts: ApiPoolUpstreamRequestAttempt[];
     }
   | {
       type: "summary";

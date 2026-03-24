@@ -4,7 +4,12 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { I18nProvider } from '../i18n'
 import { InvocationTable } from './InvocationTable'
-import type { ApiInvocation, UpstreamAccountDetail, UpstreamAccountSummary } from '../lib/api'
+import type {
+  ApiInvocation,
+  ApiPoolUpstreamRequestAttempt,
+  UpstreamAccountDetail,
+  UpstreamAccountSummary,
+} from '../lib/api'
 import { invocationStableKey } from '../lib/invocation'
 import { STORYBOOK_FIRST_RESPONSE_BYTE_SEMANTICS_RECORDS } from './invocationRecordsStoryFixtures'
 import AccountPoolLayout from '../pages/account-pool/AccountPoolLayout'
@@ -907,6 +912,11 @@ function StorybookInvocationTableMock({ children }: { children: ReactNode }) {
         if (stickyMatch) {
           return jsonResponse(buildStickyConversations(Number(stickyMatch[1])))
         }
+        const poolAttemptMatch = url.pathname.match(/^\/api\/invocations\/([^/]+)\/pool-attempts$/)
+        if (poolAttemptMatch) {
+          const resolver = storybookPoolAttemptResponses.get(decodeURIComponent(poolAttemptMatch[1]))
+          return jsonResponse(resolver ? resolver() : [])
+        }
       }
 
       return originalFetchRef.current
@@ -917,6 +927,7 @@ function StorybookInvocationTableMock({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     return () => {
+      storybookPoolAttemptResponses.clear()
       if (originalFetchRef.current) {
         window.fetch = originalFetchRef.current
       }
@@ -1006,6 +1017,172 @@ function RunningInvocationLifecyclePreview() {
   return <InvocationTable records={[lifecycleRecord]} isLoading={false} error={null} />
 }
 
+function buildPoolAttemptLifecycleRecord(
+  phase: 'running' | 'success',
+  occurredAt: string,
+): ApiInvocation {
+  if (phase === 'success') {
+    return {
+      id: 1401,
+      invokeId: 'inv_storybook_pool_attempt_detail_lifecycle',
+      occurredAt,
+      createdAt: occurredAt,
+      source: 'proxy',
+      routeMode: 'pool',
+      upstreamAccountId: 21,
+      upstreamAccountName: 'Codex Team Alpha',
+      proxyDisplayName: 'Storybook Pool Attempt Lifecycle',
+      endpoint: '/v1/responses',
+      model: 'gpt-5.4',
+      status: 'success',
+      poolAttemptCount: 1,
+      poolDistinctAccountCount: 1,
+      inputTokens: 2048,
+      outputTokens: 188,
+      cacheInputTokens: 1536,
+      totalTokens: 2236,
+      cost: 0.0046,
+      requestedServiceTier: 'priority',
+      serviceTier: 'priority',
+      responseContentEncoding: 'gzip',
+      tUpstreamConnectMs: 26.4,
+      tUpstreamTtfbMs: 148.2,
+      tUpstreamStreamMs: 612.8,
+      tTotalMs: 804.7,
+    }
+  }
+
+  return {
+    id: -1401,
+    invokeId: 'inv_storybook_pool_attempt_detail_lifecycle',
+    occurredAt,
+    createdAt: occurredAt,
+    source: 'proxy',
+    routeMode: 'pool',
+    upstreamAccountId: 21,
+    upstreamAccountName: 'Codex Team Alpha',
+    proxyDisplayName: 'Storybook Pool Attempt Lifecycle',
+    endpoint: '/v1/responses',
+    model: 'gpt-5.4',
+    status: 'running',
+    poolAttemptCount: 1,
+    poolDistinctAccountCount: 1,
+    inputTokens: 2048,
+    cacheInputTokens: 1536,
+    totalTokens: 2048,
+    requestedServiceTier: 'priority',
+  }
+}
+
+function buildPoolAttemptLifecycleAttempts(
+  phase:
+    | 'connecting'
+    | 'sending_request'
+    | 'waiting_first_byte'
+    | 'streaming_response'
+    | 'success',
+  occurredAt: string,
+): ApiPoolUpstreamRequestAttempt[] {
+  if (phase === 'success') {
+    return [
+      {
+        id: 4101,
+        invokeId: 'inv_storybook_pool_attempt_detail_lifecycle',
+        occurredAt,
+        endpoint: '/v1/responses',
+        stickyKey: 'story-pool-attempt-lifecycle',
+        upstreamAccountId: 21,
+        upstreamAccountName: 'Codex Team Alpha',
+        upstreamRouteKey: 'route-primary',
+        attemptIndex: 1,
+        distinctAccountIndex: 1,
+        sameAccountRetryIndex: 1,
+        requesterIp: '203.0.113.42',
+        startedAt: occurredAt,
+        finishedAt: new Date(Date.parse(occurredAt) + 900).toISOString(),
+        status: 'success',
+        phase: 'completed',
+        httpStatus: 200,
+        connectLatencyMs: 26.4,
+        firstByteLatencyMs: 148.2,
+        streamLatencyMs: 612.8,
+        upstreamRequestId: 'req_storybook_pool_attempt_final',
+        createdAt: occurredAt,
+      },
+    ]
+  }
+
+  return [
+    {
+      id: 4101,
+      invokeId: 'inv_storybook_pool_attempt_detail_lifecycle',
+      occurredAt,
+      endpoint: '/v1/responses',
+      stickyKey: 'story-pool-attempt-lifecycle',
+      upstreamAccountId: 21,
+      upstreamAccountName: 'Codex Team Alpha',
+      upstreamRouteKey: 'route-primary',
+      attemptIndex: 1,
+      distinctAccountIndex: 1,
+      sameAccountRetryIndex: 1,
+      requesterIp: '203.0.113.42',
+      startedAt: occurredAt,
+      finishedAt: null,
+      status: 'pending',
+      phase,
+      httpStatus: null,
+      connectLatencyMs:
+        phase === 'waiting_first_byte' || phase === 'streaming_response' ? 26.4 : null,
+      firstByteLatencyMs: phase === 'streaming_response' ? 148.2 : null,
+      streamLatencyMs: null,
+      upstreamRequestId: null,
+      createdAt: occurredAt,
+    },
+  ]
+}
+
+function PoolAttemptDetailLifecyclePreview() {
+  const occurredAtRef = useRef<string>(new Date(Date.now() - 1200).toISOString())
+  const [phase, setPhase] = useState<
+    'connecting' | 'sending_request' | 'waiting_first_byte' | 'streaming_response' | 'success'
+  >('connecting')
+
+  useEffect(() => {
+    const invokeId = 'inv_storybook_pool_attempt_detail_lifecycle'
+    storybookPoolAttemptResponses.set(invokeId, () =>
+      buildPoolAttemptLifecycleAttempts(phase, occurredAtRef.current),
+    )
+    return () => {
+      storybookPoolAttemptResponses.delete(invokeId)
+    }
+  }, [phase])
+
+  useEffect(() => {
+    const timers = [
+      window.setTimeout(() => setPhase('sending_request'), 400),
+      window.setTimeout(() => setPhase('waiting_first_byte'), 950),
+      window.setTimeout(() => setPhase('streaming_response'), 1500),
+      window.setTimeout(() => setPhase('success'), 2300),
+    ]
+    return () => {
+      timers.forEach((timer) => window.clearTimeout(timer))
+    }
+  }, [])
+
+  return (
+    <InvocationTable
+      records={[
+        buildPoolAttemptLifecycleRecord(
+          phase === 'success' ? 'success' : 'running',
+          occurredAtRef.current,
+        ),
+      ]}
+      isLoading={false}
+      error={null}
+    />
+  )
+}
+
 const STREAM_VISIBLE_LIMIT = 20
 const STREAM_PROXY_NAMES = [
   'Tokyo-Edge-1',
@@ -1024,6 +1201,7 @@ const STREAM_FAILURE_TOTAL_MS = [6120, 8450, 7310, 9280]
 const STREAM_TTFB_MS = [118, 166, 241, 384, 92, 211]
 const STREAM_MIN_SPAWN_DELAY_MS = 3_000
 const STREAM_MAX_SPAWN_DELAY_MS = 10_000
+const storybookPoolAttemptResponses = new Map<string, () => ApiPoolUpstreamRequestAttempt[]>()
 
 function randomStreamingSpawnDelayMs() {
   return Math.round(
@@ -1345,6 +1523,42 @@ export const RunningLifecycleSimulation: Story = {
         await expect(canvas.getByText(/成功|success/i)).toBeInTheDocument()
       },
       { timeout: 5000 },
+    )
+  },
+}
+
+export const PoolAttemptDetailLifecycle: Story = {
+  args: defaultArgs,
+  render: () => <PoolAttemptDetailLifecyclePreview />,
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Demonstrates the pool-attempt detail lifecycle from this task: opening the expanded panel immediately shows the started `pending` attempt, then the same row refreshes in place to `success` once the terminal snapshot lands. Use it to verify there is no empty-state gap, no duplicate attempt row, and no regression back to stale pending data.',
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByText(/Storybook Pool Attempt Lifecycle/i)).toBeInTheDocument()
+
+    const toggleButtons = await canvas.findAllByRole('button', { name: /展开详情|show details/i })
+    await userEvent.click(toggleButtons[0])
+
+    await waitFor(
+      async () => {
+        await expect(canvas.getByText(/号池尝试明细|pool attempt details/i)).toBeInTheDocument()
+        await expect(canvas.getByText(/进行中|pending|running/i)).toBeInTheDocument()
+      },
+      { timeout: 3000 },
+    )
+
+    await waitFor(
+      async () => {
+        await expect(canvas.getByText(/成功|success/i)).toBeInTheDocument()
+        await expect(canvas.getByText(/req_storybook_pool_attempt_final/i)).toBeInTheDocument()
+      },
+      { timeout: 4000 },
     )
   },
 }

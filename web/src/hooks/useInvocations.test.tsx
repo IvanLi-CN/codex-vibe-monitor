@@ -106,6 +106,8 @@ function StreamProbe({ limit = 20 }: { limit?: number }) {
       <div data-testid="count">{records.length}</div>
       <div data-testid="first-status">{records[0]?.status ?? ''}</div>
       <div data-testid="first-key">{records[0] ? `${records[0].invokeId}@${records[0].occurredAt}` : ''}</div>
+      <div data-testid="first-upstream-request-id">{records[0]?.upstreamRequestId ?? ''}</div>
+      <div data-testid="first-terminal-reason">{records[0]?.poolAttemptTerminalReason ?? ''}</div>
       <div data-testid="keys">{records.map((record) => `${record.invokeId}:${record.status}`).join('|')}</div>
     </div>
   )
@@ -126,6 +128,20 @@ function AccountLabelProbe() {
     : ''
 
   return <div data-testid="first-account-label">{label}</div>
+}
+
+function PoolFailoverProbe() {
+  const { records } = useInvocationStream(5, undefined, undefined, { enableStream: true })
+  const first = records[0]
+
+  return (
+    <div>
+      <div data-testid="first-pool-attempt-count">{first?.poolAttemptCount ?? ''}</div>
+      <div data-testid="first-pool-distinct-account-count">{first?.poolDistinctAccountCount ?? ''}</div>
+      <div data-testid="first-pool-account-id">{first?.upstreamAccountId ?? ''}</div>
+      <div data-testid="first-pool-account-name">{first?.upstreamAccountName ?? ''}</div>
+    </div>
+  )
 }
 
 describe('useInvocationStream', () => {
@@ -319,5 +335,110 @@ describe('useInvocationStream', () => {
     })
 
     expect(text('first-account-label')).toBe('Pool Alpha')
+  })
+
+  it('advances running pool snapshots when failover moves to a later attempt', async () => {
+    apiMocks.fetchInvocations.mockResolvedValue({ records: [] })
+
+    render(<PoolFailoverProbe />)
+    await flushAsync()
+
+    act(() => {
+      sseMocks.onMessage?.({
+        type: 'records',
+        records: [
+          {
+            id: -40,
+            invokeId: 'invocation-pool-failover',
+            occurredAt: '2026-03-10T00:06:00Z',
+            createdAt: '2026-03-10T00:06:00Z',
+            routeMode: 'pool',
+            status: 'running',
+            upstreamAccountId: 7,
+            upstreamAccountName: 'Pool Alpha',
+            poolAttemptCount: 1,
+            poolDistinctAccountCount: 1,
+          },
+        ],
+      })
+    })
+
+    expect(text('first-pool-attempt-count')).toBe('1')
+    expect(text('first-pool-distinct-account-count')).toBe('1')
+    expect(text('first-pool-account-id')).toBe('7')
+    expect(text('first-pool-account-name')).toBe('Pool Alpha')
+
+    act(() => {
+      sseMocks.onMessage?.({
+        type: 'records',
+        records: [
+          {
+            id: -41,
+            invokeId: 'invocation-pool-failover',
+            occurredAt: '2026-03-10T00:06:00Z',
+            createdAt: '2026-03-10T00:06:00Z',
+            routeMode: 'pool',
+            status: 'running',
+            upstreamAccountId: 8,
+            upstreamAccountName: 'Pool Beta',
+            poolAttemptCount: 2,
+            poolDistinctAccountCount: 2,
+          },
+        ],
+      })
+    })
+
+    expect(text('first-pool-attempt-count')).toBe('2')
+    expect(text('first-pool-distinct-account-count')).toBe('2')
+    expect(text('first-pool-account-id')).toBe('8')
+    expect(text('first-pool-account-name')).toBe('Pool Beta')
+  })
+
+  it('prefers a later same-rank record snapshot when it fills in metadata', async () => {
+    apiMocks.fetchInvocations.mockResolvedValue({ records: [] })
+
+    render(<StreamProbe limit={5} />)
+    await flushAsync()
+
+    act(() => {
+      sseMocks.onMessage?.({
+        type: 'records',
+        records: [
+          {
+            id: -50,
+            invokeId: 'invocation-metadata-refresh',
+            occurredAt: '2026-03-10T00:07:00Z',
+            createdAt: '2026-03-10T00:07:00Z',
+            routeMode: 'pool',
+            status: 'success',
+          },
+        ],
+      })
+    })
+
+    expect(text('first-status')).toBe('success')
+    expect(text('first-upstream-request-id')).toBe('')
+    expect(text('first-terminal-reason')).toBe('')
+
+    act(() => {
+      sseMocks.onMessage?.({
+        type: 'records',
+        records: [
+          {
+            id: -51,
+            invokeId: 'invocation-metadata-refresh',
+            occurredAt: '2026-03-10T00:07:00Z',
+            createdAt: '2026-03-10T00:07:00Z',
+            routeMode: 'pool',
+            status: 'success',
+            upstreamRequestId: 'req_refresh_123',
+            poolAttemptTerminalReason: 'transport_failure',
+          },
+        ],
+      })
+    })
+
+    expect(text('first-upstream-request-id')).toBe('req_refresh_123')
+    expect(text('first-terminal-reason')).toBe('transport_failure')
   })
 })

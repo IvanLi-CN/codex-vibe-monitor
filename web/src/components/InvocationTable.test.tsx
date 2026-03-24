@@ -4,9 +4,10 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { I18nProvider } from '../i18n'
+import { I18nProvider, useTranslation } from '../i18n'
 import type { ApiInvocation } from '../lib/api'
 import type { UpstreamAccountDetail } from '../lib/api'
+import type { BroadcastPayload } from '../lib/api'
 import {
   formatProxyWeightDelta,
   formatServiceTier,
@@ -16,10 +17,18 @@ import {
 } from '../lib/invocation'
 import { InvocationTable } from './InvocationTable'
 import { getReasoningEffortTone } from './invocation-table-reasoning'
+import {
+  buildInvocationDetailViewModel,
+  InvocationExpandedDetails,
+} from './invocation-details-shared'
 
 const apiMocks = vi.hoisted(() => ({
   fetchUpstreamAccountDetail: vi.fn<(accountId: number) => Promise<UpstreamAccountDetail>>(),
   fetchInvocationPoolAttempts: vi.fn(),
+}))
+
+const sseMocks = vi.hoisted(() => ({
+  onMessage: null as null | ((payload: BroadcastPayload) => void),
 }))
 
 vi.mock('../lib/api', async () => {
@@ -30,6 +39,15 @@ vi.mock('../lib/api', async () => {
     fetchInvocationPoolAttempts: apiMocks.fetchInvocationPoolAttempts,
   }
 })
+
+vi.mock('../lib/sse', () => ({
+  subscribeToSse: (handler: (payload: BroadcastPayload) => void) => {
+    sseMocks.onMessage = handler
+    return () => {
+      sseMocks.onMessage = null
+    }
+  },
+}))
 
 const LONG_PROXY_NAME = 'ivan-hkl-vless-vision-01KFXRNYWYXKN4JHCF3CCV78GD'
 let host: HTMLDivElement | null = null
@@ -61,6 +79,7 @@ beforeEach(() => {
   apiMocks.fetchUpstreamAccountDetail.mockReset()
   apiMocks.fetchInvocationPoolAttempts.mockReset()
   apiMocks.fetchInvocationPoolAttempts.mockResolvedValue([])
+  sseMocks.onMessage = null
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
@@ -71,6 +90,7 @@ afterEach(async () => {
   await act(async () => {
     root?.unmount()
   })
+  sseMocks.onMessage = null
   host?.remove()
   host = null
   root = null
@@ -95,6 +115,68 @@ async function renderInteractiveTable(records: ApiInvocation[]) {
       </MemoryRouter>,
     )
   })
+}
+
+function InvocationDetailProbe({ record }: { record: ApiInvocation }) {
+  const { t, locale } = useTranslation()
+  const localeTag = locale === 'zh' ? 'zh-CN' : 'en-US'
+  const detailView = buildInvocationDetailViewModel({
+    record,
+    normalizedStatus: (record.status ?? 'unknown').toLowerCase(),
+    t,
+    locale,
+    localeTag,
+    nowMs: Date.now(),
+    numberFormatter: new Intl.NumberFormat(localeTag),
+    currencyFormatter: new Intl.NumberFormat(localeTag, {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 4,
+      maximumFractionDigits: 4,
+    }),
+    renderAccountValue: (accountLabel) => <span>{accountLabel}</span>,
+  })
+
+  return (
+    <InvocationExpandedDetails
+      record={record}
+      detailId="invocation-detail-probe"
+      detailPairs={detailView.detailPairs}
+      timingPairs={detailView.timingPairs}
+      errorMessage={detailView.errorMessage}
+      detailNotice={detailView.detailNotice}
+      size="default"
+      poolAttemptsState={{ attemptsByInvokeId: {}, loadingByInvokeId: {}, errorByInvokeId: {} }}
+      t={t}
+    />
+  )
+}
+
+async function waitForCondition(
+  predicate: () => boolean,
+  options?: { attempts?: number; delayMs?: number },
+) {
+  const attempts = options?.attempts ?? 25
+  const delayMs = options?.delayMs ?? 0
+
+  for (let index = 0; index < attempts; index += 1) {
+    if (predicate()) return
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, delayMs))
+    })
+  }
+
+  throw new Error('Condition was not met before timeout')
+}
+
+function createDeferredPromise<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void
+  let reject!: (reason?: unknown) => void
+  const promise = new Promise<T>((innerResolve, innerReject) => {
+    resolve = innerResolve
+    reject = innerReject
+  })
+  return { promise, resolve, reject }
 }
 
 describe('formatProxyWeightDelta', () => {
@@ -451,13 +533,13 @@ describe('InvocationTable', () => {
     const beforeExpandMatches = document.body.textContent?.match(/codex-relay-01/g) ?? []
     expect(beforeExpandMatches.length).toBeGreaterThanOrEqual(1)
 
-    const toggle = Array.from(document.querySelectorAll('button')).find(
-      (button) => button.getAttribute('aria-expanded') === 'false',
-    )
+    const toggle = document.querySelector(
+      '[data-testid="invocation-table-scroll"] button[aria-expanded="false"]',
+    ) as HTMLButtonElement | null
     expect(toggle).toBeTruthy()
 
     await act(async () => {
-      toggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      toggle?.click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -465,6 +547,44 @@ describe('InvocationTable', () => {
     expect(document.body.textContent).toContain('请求详情')
     const afterExpandMatches = document.body.textContent?.match(/codex-relay-01/g) ?? []
     expect(afterExpandMatches.length).toBeGreaterThanOrEqual(2)
+  })
+
+  it('keeps latency summary fields out of request details while preserving stage timings', async () => {
+    const record: ApiInvocation = {
+      id: 34,
+      invokeId: 'invocation-detail-deduped-latency',
+      occurredAt: '2026-03-24T06:48:52Z',
+      createdAt: '2026-03-24T06:48:52Z',
+      source: 'proxy',
+      routeMode: 'pool',
+      upstreamAccountId: 7,
+      upstreamAccountName: 'pool-account-a',
+      proxyDisplayName: 'storybook-proxy',
+      responseContentEncoding: 'gzip',
+      endpoint: '/v1/responses',
+      model: 'gpt-5.4',
+      status: 'success',
+      totalTokens: 2236,
+      cost: 0.0046,
+      tUpstreamConnectMs: 26,
+      tUpstreamTtfbMs: 148.2,
+      tUpstreamStreamMs: 613,
+      tTotalMs: 805,
+    }
+
+    const html = renderToStaticMarkup(
+      <I18nProvider>
+        <InvocationDetailProbe record={record} />
+      </I18nProvider>,
+    )
+
+    expect(html).toContain('请求详情')
+    expect(html).toContain('HTTP 压缩算法')
+    expect(html).not.toContain('>用时<')
+    expect(html).not.toContain('>首字耗时<')
+    expect(html).toContain('阶段耗时')
+    expect(html).toContain('上游首字节')
+    expect(html).toContain('总耗时')
   })
 
   it('lazy-loads pool attempts inside expanded details', async () => {
@@ -526,14 +646,919 @@ describe('InvocationTable', () => {
       'invocation-pool-attempts-visible',
     )
 
+    await waitForCondition(
+      () => document.querySelector('[data-testid="pool-attempt-item"]') !== null,
+    )
+
+    expect(document.body.textContent).toContain('号池尝试明细')
+    expect(document.body.textContent).toContain('pool-account-a')
+    expect(document.body.textContent).toContain('成功')
+  })
+
+  it('replaces an empty cached pool-attempt detail with live SSE attempts', async () => {
+    apiMocks.fetchInvocationPoolAttempts.mockResolvedValue([])
+
+    await renderInteractiveTable([
+      {
+        id: 42,
+        invokeId: 'invocation-pool-attempts-live-sse',
+        occurredAt: '2026-03-07T03:13:51Z',
+        createdAt: '2026-03-07T03:13:51Z',
+        source: 'proxy',
+        routeMode: 'pool',
+        upstreamAccountId: 7,
+        upstreamAccountName: 'pool-account-a',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'running',
+        poolAttemptCount: 0,
+      },
+    ])
+
+    const toggle = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.getAttribute('aria-expanded') === 'false',
+    )
+    expect(toggle).toBeTruthy()
+
     await act(async () => {
+      toggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenCalledWith(
+      'invocation-pool-attempts-live-sse',
+    )
+    expect(sseMocks.onMessage).toBeTruthy()
+
+    await act(async () => {
+      sseMocks.onMessage?.({
+        type: 'pool_attempts',
+        invokeId: 'invocation-pool-attempts-live-sse',
+        attempts: [
+          {
+            id: 9,
+            invokeId: 'invocation-pool-attempts-live-sse',
+            occurredAt: '2026-03-07T03:13:51Z',
+            endpoint: '/v1/responses',
+            upstreamAccountId: 7,
+            upstreamAccountName: 'pool-account-a',
+            attemptIndex: 1,
+            distinctAccountIndex: 1,
+            sameAccountRetryIndex: 1,
+            startedAt: '2026-03-07T03:13:51Z',
+            finishedAt: null,
+            status: 'pending',
+            phase: 'sending_request',
+            httpStatus: null,
+            connectLatencyMs: null,
+            firstByteLatencyMs: null,
+            streamLatencyMs: null,
+            upstreamRequestId: null,
+            createdAt: '2026-03-07T03:13:51Z',
+          },
+        ],
+      })
+      await Promise.resolve()
+    })
+
+    await waitForCondition(() => document.body.textContent?.includes('进行中') === true)
+
+    expect(document.body.textContent).toContain('pool-account-a')
+    expect(document.body.textContent).toContain('进行中')
+    expect(document.body.textContent).toContain('发送请求中')
+  })
+
+  it('shows newer pending attempt phases without letting older pending snapshots roll them back', async () => {
+    apiMocks.fetchInvocationPoolAttempts.mockResolvedValue([])
+
+    await renderInteractiveTable([
+      {
+        id: 420,
+        invokeId: 'invocation-pool-attempts-phase-ordering',
+        occurredAt: '2026-03-07T03:13:51Z',
+        createdAt: '2026-03-07T03:13:51Z',
+        source: 'proxy',
+        routeMode: 'pool',
+        upstreamAccountId: 7,
+        upstreamAccountName: 'pool-account-a',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'running',
+        poolAttemptCount: 1,
+      },
+    ])
+
+    const toggle = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.getAttribute('aria-expanded') === 'false',
+    )
+    expect(toggle).toBeTruthy()
+
+    await act(async () => {
+      toggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    await act(async () => {
+      sseMocks.onMessage?.({
+        type: 'pool_attempts',
+        invokeId: 'invocation-pool-attempts-phase-ordering',
+        attempts: [
+          {
+            id: 90,
+            invokeId: 'invocation-pool-attempts-phase-ordering',
+            occurredAt: '2026-03-07T03:13:51Z',
+            endpoint: '/v1/responses',
+            upstreamAccountId: 7,
+            upstreamAccountName: 'pool-account-a',
+            attemptIndex: 1,
+            distinctAccountIndex: 1,
+            sameAccountRetryIndex: 1,
+            startedAt: '2026-03-07T03:13:51Z',
+            finishedAt: null,
+            status: 'pending',
+            phase: 'streaming_response',
+            httpStatus: null,
+            connectLatencyMs: 26,
+            firstByteLatencyMs: 148,
+            streamLatencyMs: null,
+            upstreamRequestId: null,
+            createdAt: '2026-03-07T03:13:51Z',
+          },
+        ],
+      })
+      await Promise.resolve()
+    })
+
+    await waitForCondition(() => document.body.textContent?.includes('接收中') === true)
+
+    await act(async () => {
+      sseMocks.onMessage?.({
+        type: 'pool_attempts',
+        invokeId: 'invocation-pool-attempts-phase-ordering',
+        attempts: [
+          {
+            id: 90,
+            invokeId: 'invocation-pool-attempts-phase-ordering',
+            occurredAt: '2026-03-07T03:13:51Z',
+            endpoint: '/v1/responses',
+            upstreamAccountId: 7,
+            upstreamAccountName: 'pool-account-a',
+            attemptIndex: 1,
+            distinctAccountIndex: 1,
+            sameAccountRetryIndex: 1,
+            startedAt: '2026-03-07T03:13:51Z',
+            finishedAt: null,
+            status: 'pending',
+            phase: 'sending_request',
+            httpStatus: null,
+            connectLatencyMs: null,
+            firstByteLatencyMs: null,
+            streamLatencyMs: null,
+            upstreamRequestId: null,
+            createdAt: '2026-03-07T03:13:51Z',
+          },
+        ],
+      })
+      await Promise.resolve()
+    })
+
+    expect(document.body.textContent).toContain('接收中')
+    expect(document.body.textContent).not.toContain('发送请求中')
+  })
+
+  it('keeps newer SSE pool attempts when an older fetch resolves later', async () => {
+    const deferred = createDeferredPromise<
+      Array<{
+        id: number
+        invokeId: string
+        occurredAt: string
+        endpoint: string
+        upstreamAccountId: number
+        upstreamAccountName: string
+        attemptIndex: number
+        distinctAccountIndex: number
+        sameAccountRetryIndex: number
+        startedAt: string
+        finishedAt: string | null
+        status: string
+        httpStatus: number | null
+        connectLatencyMs: number | null
+        firstByteLatencyMs: number | null
+        streamLatencyMs: number | null
+        upstreamRequestId: string | null
+        createdAt: string
+      }>
+    >()
+    apiMocks.fetchInvocationPoolAttempts.mockReturnValue(deferred.promise)
+
+    await renderInteractiveTable([
+      {
+        id: 43,
+        invokeId: 'invocation-pool-attempts-stale-fetch',
+        occurredAt: '2026-03-07T03:13:51Z',
+        createdAt: '2026-03-07T03:13:51Z',
+        source: 'proxy',
+        routeMode: 'pool',
+        upstreamAccountId: 7,
+        upstreamAccountName: 'pool-account-a',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'running',
+        poolAttemptCount: 1,
+      },
+    ])
+
+    const toggle = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.getAttribute('aria-expanded') === 'false',
+    )
+    expect(toggle).toBeTruthy()
+
+    await act(async () => {
+      toggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    expect(sseMocks.onMessage).toBeTruthy()
+
+    await act(async () => {
+      sseMocks.onMessage?.({
+        type: 'pool_attempts',
+        invokeId: 'invocation-pool-attempts-stale-fetch',
+        attempts: [
+          {
+            id: 10,
+            invokeId: 'invocation-pool-attempts-stale-fetch',
+            occurredAt: '2026-03-07T03:13:51Z',
+            endpoint: '/v1/responses',
+            upstreamAccountId: 7,
+            upstreamAccountName: 'pool-account-a',
+            attemptIndex: 1,
+            distinctAccountIndex: 1,
+            sameAccountRetryIndex: 1,
+            startedAt: '2026-03-07T03:13:51Z',
+            finishedAt: '2026-03-07T03:13:52Z',
+            status: 'success',
+            httpStatus: 200,
+            connectLatencyMs: 30,
+            firstByteLatencyMs: 12,
+            streamLatencyMs: 80,
+            upstreamRequestId: 'req_live_newer',
+            createdAt: '2026-03-07T03:13:52Z',
+          },
+        ],
+      })
+      await Promise.resolve()
+    })
+
+    await waitForCondition(() => document.body.textContent?.includes('req_live_newer') === true)
+
+    await act(async () => {
+      deferred.resolve([
+        {
+          id: 10,
+          invokeId: 'invocation-pool-attempts-stale-fetch',
+          occurredAt: '2026-03-07T03:13:51Z',
+          endpoint: '/v1/responses',
+          upstreamAccountId: 7,
+          upstreamAccountName: 'pool-account-a',
+          attemptIndex: 1,
+          distinctAccountIndex: 1,
+          sameAccountRetryIndex: 1,
+          startedAt: '2026-03-07T03:13:51Z',
+          finishedAt: null,
+          status: 'pending',
+          httpStatus: null,
+          connectLatencyMs: null,
+          firstByteLatencyMs: null,
+          streamLatencyMs: null,
+          upstreamRequestId: null,
+          createdAt: '2026-03-07T03:13:51Z',
+        },
+      ])
+      await Promise.resolve()
+    })
+
+    expect(document.body.textContent).toContain('成功')
+    expect(document.body.textContent).toContain('req_live_newer')
+    expect(document.body.textContent).not.toContain('进行中')
+  })
+
+  it('accepts a newer fetch result after an earlier pending SSE snapshot', async () => {
+    const deferred = createDeferredPromise<
+      Array<{
+        id: number
+        invokeId: string
+        occurredAt: string
+        endpoint: string
+        upstreamAccountId: number
+        upstreamAccountName: string
+        attemptIndex: number
+        distinctAccountIndex: number
+        sameAccountRetryIndex: number
+        startedAt: string
+        finishedAt: string | null
+        status: string
+        httpStatus: number | null
+        connectLatencyMs: number | null
+        firstByteLatencyMs: number | null
+        streamLatencyMs: number | null
+        upstreamRequestId: string | null
+        createdAt: string
+      }>
+    >()
+    apiMocks.fetchInvocationPoolAttempts.mockReturnValue(deferred.promise)
+
+    await renderInteractiveTable([
+      {
+        id: 44,
+        invokeId: 'invocation-pool-attempts-newer-fetch',
+        occurredAt: '2026-03-07T03:13:51Z',
+        createdAt: '2026-03-07T03:13:51Z',
+        source: 'proxy',
+        routeMode: 'pool',
+        upstreamAccountId: 7,
+        upstreamAccountName: 'pool-account-a',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'running',
+        poolAttemptCount: 1,
+      },
+    ])
+
+    const toggle = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.getAttribute('aria-expanded') === 'false',
+    )
+    expect(toggle).toBeTruthy()
+
+    await act(async () => {
+      toggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    await act(async () => {
+      sseMocks.onMessage?.({
+        type: 'pool_attempts',
+        invokeId: 'invocation-pool-attempts-newer-fetch',
+        attempts: [
+          {
+            id: 13,
+            invokeId: 'invocation-pool-attempts-newer-fetch',
+            occurredAt: '2026-03-07T03:13:51Z',
+            endpoint: '/v1/responses',
+            upstreamAccountId: 7,
+            upstreamAccountName: 'pool-account-a',
+            attemptIndex: 1,
+            distinctAccountIndex: 1,
+            sameAccountRetryIndex: 1,
+            startedAt: '2026-03-07T03:13:51Z',
+            finishedAt: null,
+            status: 'pending',
+            httpStatus: null,
+            connectLatencyMs: null,
+            firstByteLatencyMs: null,
+            streamLatencyMs: null,
+            upstreamRequestId: null,
+            createdAt: '2026-03-07T03:13:51Z',
+          },
+        ],
+      })
+      await Promise.resolve()
+    })
+
+    await waitForCondition(() => document.body.textContent?.includes('进行中') === true)
+
+    await act(async () => {
+      deferred.resolve([
+        {
+          id: 13,
+          invokeId: 'invocation-pool-attempts-newer-fetch',
+          occurredAt: '2026-03-07T03:13:51Z',
+          endpoint: '/v1/responses',
+          upstreamAccountId: 7,
+          upstreamAccountName: 'pool-account-a',
+          attemptIndex: 1,
+          distinctAccountIndex: 1,
+          sameAccountRetryIndex: 1,
+          startedAt: '2026-03-07T03:13:51Z',
+          finishedAt: '2026-03-07T03:13:52Z',
+          status: 'success',
+          httpStatus: 200,
+          connectLatencyMs: 31,
+          firstByteLatencyMs: 10,
+          streamLatencyMs: 55,
+          upstreamRequestId: 'req_fetch_newer',
+          createdAt: '2026-03-07T03:13:52Z',
+        },
+      ])
+      await Promise.resolve()
+    })
+
+    await waitForCondition(() => document.body.textContent?.includes('req_fetch_newer') === true)
+    expect(document.body.textContent).toContain('成功')
+    expect(document.body.textContent).not.toContain('进行中')
+  })
+
+  it('refetches expanded pool attempts when the invocation turns terminal with pending cached attempts', async () => {
+    apiMocks.fetchInvocationPoolAttempts
+      .mockResolvedValueOnce([
+        {
+          id: 14,
+          invokeId: 'invocation-pool-attempts-terminal-refresh',
+          occurredAt: '2026-03-07T03:13:51Z',
+          endpoint: '/v1/responses',
+          upstreamAccountId: 7,
+          upstreamAccountName: 'pool-account-a',
+          attemptIndex: 1,
+          distinctAccountIndex: 1,
+          sameAccountRetryIndex: 1,
+          startedAt: '2026-03-07T03:13:51Z',
+          finishedAt: null,
+          status: 'pending',
+          httpStatus: null,
+          connectLatencyMs: null,
+          firstByteLatencyMs: null,
+          streamLatencyMs: null,
+          upstreamRequestId: null,
+          createdAt: '2026-03-07T03:13:51Z',
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: 14,
+          invokeId: 'invocation-pool-attempts-terminal-refresh',
+          occurredAt: '2026-03-07T03:13:51Z',
+          endpoint: '/v1/responses',
+          upstreamAccountId: 7,
+          upstreamAccountName: 'pool-account-a',
+          attemptIndex: 1,
+          distinctAccountIndex: 1,
+          sameAccountRetryIndex: 1,
+          startedAt: '2026-03-07T03:13:51Z',
+          finishedAt: '2026-03-07T03:13:52Z',
+          status: 'success',
+          httpStatus: 200,
+          connectLatencyMs: 28,
+          firstByteLatencyMs: 9,
+          streamLatencyMs: 61,
+          upstreamRequestId: 'req_terminal_refresh',
+          createdAt: '2026-03-07T03:13:52Z',
+        },
+      ])
+
+    await renderInteractiveTable([
+      {
+        id: 45,
+        invokeId: 'invocation-pool-attempts-terminal-refresh',
+        occurredAt: '2026-03-07T03:13:51Z',
+        createdAt: '2026-03-07T03:13:51Z',
+        source: 'proxy',
+        routeMode: 'pool',
+        upstreamAccountId: 7,
+        upstreamAccountName: 'pool-account-a',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'running',
+        poolAttemptCount: 1,
+      },
+    ])
+
+    const toggle = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.getAttribute('aria-expanded') === 'false',
+    )
+    expect(toggle).toBeTruthy()
+
+    await act(async () => {
+      toggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    await waitForCondition(() => document.body.textContent?.includes('进行中') === true)
+    expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenNthCalledWith(
+      1,
+      'invocation-pool-attempts-terminal-refresh',
+    )
+
+    await renderInteractiveTable([
+      {
+        id: 45,
+        invokeId: 'invocation-pool-attempts-terminal-refresh',
+        occurredAt: '2026-03-07T03:13:51Z',
+        createdAt: '2026-03-07T03:13:51Z',
+        source: 'proxy',
+        routeMode: 'pool',
+        upstreamAccountId: 7,
+        upstreamAccountName: 'pool-account-a',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'success',
+        poolAttemptCount: 1,
+      },
+    ])
+
+    await waitForCondition(
+      () => apiMocks.fetchInvocationPoolAttempts.mock.calls.length >= 2,
+    )
+    expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenNthCalledWith(
+      2,
+      'invocation-pool-attempts-terminal-refresh',
+    )
+    await waitForCondition(() => document.body.textContent?.includes('req_terminal_refresh') === true)
+    expect(document.body.textContent).toContain('成功')
+    expect(document.body.textContent).not.toContain('进行中')
+  })
+
+  it('ignores an older pending pool-attempt SSE snapshot after a newer terminal snapshot', async () => {
+    apiMocks.fetchInvocationPoolAttempts.mockResolvedValue([])
+
+    await renderInteractiveTable([
+      {
+        id: 46,
+        invokeId: 'invocation-pool-attempts-sse-ordering',
+        occurredAt: '2026-03-07T03:13:51Z',
+        createdAt: '2026-03-07T03:13:51Z',
+        source: 'proxy',
+        routeMode: 'pool',
+        upstreamAccountId: 7,
+        upstreamAccountName: 'pool-account-a',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'running',
+        poolAttemptCount: 1,
+      },
+    ])
+
+    const toggle = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.getAttribute('aria-expanded') === 'false',
+    )
+    expect(toggle).toBeTruthy()
+
+    await act(async () => {
+      toggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    await act(async () => {
+      sseMocks.onMessage?.({
+        type: 'pool_attempts',
+        invokeId: 'invocation-pool-attempts-sse-ordering',
+        attempts: [
+          {
+            id: 15,
+            invokeId: 'invocation-pool-attempts-sse-ordering',
+            occurredAt: '2026-03-07T03:13:51Z',
+            endpoint: '/v1/responses',
+            upstreamAccountId: 7,
+            upstreamAccountName: 'pool-account-a',
+            attemptIndex: 1,
+            distinctAccountIndex: 1,
+            sameAccountRetryIndex: 1,
+            startedAt: '2026-03-07T03:13:51Z',
+            finishedAt: '2026-03-07T03:13:52Z',
+            status: 'success',
+            httpStatus: 200,
+            connectLatencyMs: 28,
+            firstByteLatencyMs: 9,
+            streamLatencyMs: 61,
+            upstreamRequestId: 'req_sse_terminal',
+            createdAt: '2026-03-07T03:13:52Z',
+          },
+        ],
+      })
+      await Promise.resolve()
+    })
+
+    await waitForCondition(() => document.body.textContent?.includes('req_sse_terminal') === true)
+
+    await act(async () => {
+      sseMocks.onMessage?.({
+        type: 'pool_attempts',
+        invokeId: 'invocation-pool-attempts-sse-ordering',
+        attempts: [
+          {
+            id: 15,
+            invokeId: 'invocation-pool-attempts-sse-ordering',
+            occurredAt: '2026-03-07T03:13:51Z',
+            endpoint: '/v1/responses',
+            upstreamAccountId: 7,
+            upstreamAccountName: 'pool-account-a',
+            attemptIndex: 1,
+            distinctAccountIndex: 1,
+            sameAccountRetryIndex: 1,
+            startedAt: '2026-03-07T03:13:51Z',
+            finishedAt: null,
+            status: 'pending',
+            httpStatus: null,
+            connectLatencyMs: null,
+            firstByteLatencyMs: null,
+            streamLatencyMs: null,
+            upstreamRequestId: null,
+            createdAt: '2026-03-07T03:13:51Z',
+          },
+        ],
+      })
+      await Promise.resolve()
+    })
+
+    expect(document.body.textContent).toContain('成功')
+    expect(document.body.textContent).toContain('req_sse_terminal')
+    expect(document.body.textContent).not.toContain('进行中')
+  })
+
+  it('keeps pool-attempt SSE payloads fresh for invocations that are not expanded', async () => {
+    apiMocks.fetchInvocationPoolAttempts
+      .mockResolvedValueOnce([
+        {
+          id: 11,
+          invokeId: 'invocation-expanded-a',
+          occurredAt: '2026-03-07T03:13:51Z',
+          endpoint: '/v1/responses',
+          upstreamAccountId: 7,
+          upstreamAccountName: 'pool-account-a',
+          attemptIndex: 1,
+          distinctAccountIndex: 1,
+          sameAccountRetryIndex: 1,
+          startedAt: '2026-03-07T03:13:51Z',
+          finishedAt: null,
+          status: 'pending',
+          httpStatus: null,
+          connectLatencyMs: null,
+          firstByteLatencyMs: null,
+          streamLatencyMs: null,
+          upstreamRequestId: null,
+          createdAt: '2026-03-07T03:13:51Z',
+        },
+      ])
+      .mockResolvedValueOnce([])
+
+    await renderInteractiveTable([
+      {
+        id: 50,
+        invokeId: 'invocation-expanded-a',
+        occurredAt: '2026-03-07T03:13:51Z',
+        createdAt: '2026-03-07T03:13:51Z',
+        source: 'proxy',
+        routeMode: 'pool',
+        upstreamAccountId: 7,
+        upstreamAccountName: 'pool-account-a',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'running',
+        poolAttemptCount: 1,
+      },
+      {
+        id: 51,
+        invokeId: 'invocation-collapsed-b',
+        occurredAt: '2026-03-07T03:13:52Z',
+        createdAt: '2026-03-07T03:13:52Z',
+        source: 'proxy',
+        routeMode: 'pool',
+        upstreamAccountId: 8,
+        upstreamAccountName: 'pool-account-b',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'running',
+        poolAttemptCount: 1,
+      },
+    ])
+
+    const toggles = Array.from(document.querySelectorAll('button')).filter(
+      (button) => button.getAttribute('aria-expanded') === 'false',
+    )
+    expect(toggles.length).toBeGreaterThanOrEqual(2)
+
+    await act(async () => {
+      toggles[0]?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    await waitForCondition(() => document.body.textContent?.includes('pool-account-a') === true)
+
+    await act(async () => {
+      sseMocks.onMessage?.({
+        type: 'pool_attempts',
+        invokeId: 'invocation-collapsed-b',
+        attempts: [
+          {
+            id: 12,
+            invokeId: 'invocation-collapsed-b',
+            occurredAt: '2026-03-07T03:13:52Z',
+            endpoint: '/v1/responses',
+            upstreamAccountId: 8,
+            upstreamAccountName: 'pool-account-b',
+            attemptIndex: 1,
+            distinctAccountIndex: 1,
+            sameAccountRetryIndex: 1,
+            startedAt: '2026-03-07T03:13:52Z',
+            finishedAt: '2026-03-07T03:13:53Z',
+            status: 'success',
+            httpStatus: 200,
+            connectLatencyMs: 25,
+            firstByteLatencyMs: 11,
+            streamLatencyMs: 40,
+            upstreamRequestId: 'req_ignored',
+            createdAt: '2026-03-07T03:13:53Z',
+          },
+        ],
+      })
+      await Promise.resolve()
+    })
+
+    await act(async () => {
+      toggles[1]?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenCalledTimes(1)
+    await waitForCondition(() => document.body.textContent?.includes('req_ignored') === true)
+    expect(document.body.textContent).toContain('req_ignored')
+    expect(document.body.textContent).not.toContain('未找到号池尝试记录')
+  })
+
+  it('does not replace live pool attempts with a stale REST load error', async () => {
+    let rejectFetch: ((error: Error) => void) | null = null
+    apiMocks.fetchInvocationPoolAttempts.mockImplementationOnce(
+      () =>
+        new Promise((_, reject) => {
+          rejectFetch = (error: Error) => reject(error)
+        }),
+    )
+
+    await renderInteractiveTable([
+      {
+        id: 60,
+        invokeId: 'invocation-fetch-error-after-sse',
+        occurredAt: '2026-03-07T03:13:51Z',
+        createdAt: '2026-03-07T03:13:51Z',
+        source: 'proxy',
+        routeMode: 'pool',
+        upstreamAccountId: 7,
+        upstreamAccountName: 'pool-account-a',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'running',
+        poolAttemptCount: 1,
+      },
+    ])
+
+    const toggle = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.getAttribute('aria-expanded') === 'false',
+    )
+    expect(toggle).toBeTruthy()
+
+    await act(async () => {
+      toggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    await act(async () => {
+      sseMocks.onMessage?.({
+        type: 'pool_attempts',
+        invokeId: 'invocation-fetch-error-after-sse',
+        attempts: [
+          {
+            id: 21,
+            invokeId: 'invocation-fetch-error-after-sse',
+            occurredAt: '2026-03-07T03:13:51Z',
+            endpoint: '/v1/responses',
+            upstreamAccountId: 7,
+            upstreamAccountName: 'pool-account-a',
+            attemptIndex: 1,
+            distinctAccountIndex: 1,
+            sameAccountRetryIndex: 1,
+            startedAt: '2026-03-07T03:13:51Z',
+            finishedAt: null,
+            status: 'pending',
+            phase: 'waiting_first_byte',
+            httpStatus: null,
+            connectLatencyMs: 18,
+            firstByteLatencyMs: null,
+            streamLatencyMs: null,
+            upstreamRequestId: null,
+            createdAt: '2026-03-07T03:13:51Z',
+          },
+        ],
+      })
+      await Promise.resolve()
+    })
+
+    await waitForCondition(() => document.body.textContent?.includes('等待首字节') === true)
+
+    await act(async () => {
+      rejectFetch?.(new Error('network down'))
       await Promise.resolve()
       await Promise.resolve()
     })
 
-    expect(document.body.textContent).toContain('号池尝试明细')
-    expect(document.body.textContent).toContain('pool-account-a')
-    expect(document.body.textContent).toContain('req_pool_123')
+    expect(document.body.textContent).toContain('等待首字节')
+    expect(document.querySelector('[data-testid="pool-attempts-error"]')).toBeNull()
+  })
+
+  it('re-fetches running pool attempts when the parent invocation summary changes', async () => {
+    apiMocks.fetchInvocationPoolAttempts
+      .mockResolvedValueOnce([
+        {
+          id: 31,
+          invokeId: 'invocation-refetch-running-attempts',
+          occurredAt: '2026-03-07T03:13:51Z',
+          endpoint: '/v1/responses',
+          upstreamAccountId: 7,
+          upstreamAccountName: 'pool-account-a',
+          attemptIndex: 1,
+          distinctAccountIndex: 1,
+          sameAccountRetryIndex: 1,
+          startedAt: '2026-03-07T03:13:51Z',
+          finishedAt: null,
+          status: 'pending',
+          phase: 'connecting',
+          httpStatus: null,
+          connectLatencyMs: null,
+          firstByteLatencyMs: null,
+          streamLatencyMs: null,
+          upstreamRequestId: null,
+          createdAt: '2026-03-07T03:13:51Z',
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: 31,
+          invokeId: 'invocation-refetch-running-attempts',
+          occurredAt: '2026-03-07T03:13:51Z',
+          endpoint: '/v1/responses',
+          upstreamAccountId: 7,
+          upstreamAccountName: 'pool-account-a',
+          attemptIndex: 1,
+          distinctAccountIndex: 1,
+          sameAccountRetryIndex: 1,
+          startedAt: '2026-03-07T03:13:51Z',
+          finishedAt: null,
+          status: 'pending',
+          phase: 'waiting_first_byte',
+          httpStatus: null,
+          connectLatencyMs: 22,
+          firstByteLatencyMs: null,
+          streamLatencyMs: null,
+          upstreamRequestId: null,
+          createdAt: '2026-03-07T03:13:52Z',
+        },
+      ])
+
+    await renderInteractiveTable([
+      {
+        id: 70,
+        invokeId: 'invocation-refetch-running-attempts',
+        occurredAt: '2026-03-07T03:13:51Z',
+        createdAt: '2026-03-07T03:13:51Z',
+        source: 'proxy',
+        routeMode: 'pool',
+        upstreamAccountId: 7,
+        upstreamAccountName: 'pool-account-a',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'running',
+        poolAttemptCount: 1,
+      },
+    ])
+
+    const toggle = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.getAttribute('aria-expanded') === 'false',
+    )
+    expect(toggle).toBeTruthy()
+
+    await act(async () => {
+      toggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenNthCalledWith(
+      1,
+      'invocation-refetch-running-attempts',
+    )
+    await waitForCondition(() => document.body.textContent?.includes('连接中') === true)
+
+    await renderInteractiveTable([
+      {
+        id: 70,
+        invokeId: 'invocation-refetch-running-attempts',
+        occurredAt: '2026-03-07T03:13:51Z',
+        createdAt: '2026-03-07T03:13:51Z',
+        source: 'proxy',
+        routeMode: 'pool',
+        upstreamAccountId: 7,
+        upstreamAccountName: 'pool-account-a',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'running',
+        poolAttemptCount: 1,
+        tUpstreamConnectMs: 22,
+      },
+    ])
+
+    await waitForCondition(() => apiMocks.fetchInvocationPoolAttempts.mock.calls.length >= 2)
+    expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenNthCalledWith(
+      2,
+      'invocation-refetch-running-attempts',
+    )
+    await waitForCondition(() => document.body.textContent?.includes('等待首字节') === true)
   })
 
   it('shows a clear non-pool empty state without fetching attempts', async () => {

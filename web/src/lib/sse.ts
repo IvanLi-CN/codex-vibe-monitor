@@ -43,6 +43,10 @@ let lastStatus: SseStatus = {
   autoReconnect: true,
 }
 
+function isEventSourceSupported() {
+  return typeof EventSource !== 'undefined'
+}
+
 function hasActiveSubscribers() {
   return listeners.size + openListeners.size + statusListeners.size > 0
 }
@@ -161,6 +165,12 @@ function handleOpen() {
 
 function ensureEventSource() {
   if (sseDisabled) return eventSource
+  if (!isEventSourceSupported()) {
+    sseDisabled = true
+    clearReconnectTimer()
+    setConnectionPhase('disabled')
+    return null
+  }
   if (eventSource) return eventSource
   connectingSince = Date.now()
   setConnectionPhase(hasConnectedOnce ? 'reconnecting' : 'connecting')
@@ -301,6 +311,7 @@ export function getCurrentSseStatus() {
 
 export function requestImmediateReconnect() {
   if (!hasActiveSubscribers()) return
+  if (!isEventSourceSupported()) return
   if (sseDisabled) {
     sseDisabled = false
   }
@@ -317,4 +328,3 @@ if (typeof document !== 'undefined') {
     requestImmediateReconnect()
   })
 }
-
