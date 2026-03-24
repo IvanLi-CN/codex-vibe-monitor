@@ -250,7 +250,7 @@ body {
   [data-theme='vibe-dark'] .segmented-control-item[data-active='true'],
   [data-theme='vibe-dark'] .segmented-control-item--active {
     background: oklch(var(--color-primary) / 0.3);
-    color: oklch(var(--color-primary-content));
+    color: oklch(var(--color-primary));
   }
 
   .invocation-endpoint-badge {
