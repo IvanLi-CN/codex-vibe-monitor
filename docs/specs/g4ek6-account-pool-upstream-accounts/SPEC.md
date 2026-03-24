@@ -280,6 +280,17 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Account Pool / Components / Upstream Accounts Table / Mother Badge Contrast Dark
+  state: list-row-mother-badge-dark
+  evidence_note: 验证 dark 主题的账号列表行里，母号 badge 在与启用、工作状态、账号类型等紧邻标签并排时，仍保持清晰可辨且与同排 badge 的节奏一致。
+  image:
+  ![Upstream accounts table mother badge dark](./assets/upstream-accounts-table-mother-badge-dark.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
   submission_gate: approved
   story_id_or_title: Account Pool / Pages / Upstream Accounts / Tag Filter All Match
   state: group-and-tag-combined-filter

@@ -4,7 +4,7 @@ import { Badge } from './ui/badge'
 import { cn } from '../lib/utils'
 
 const motherBadgeClassName = cn(
-  'shrink-0 whitespace-nowrap px-2 py-px text-[11px] font-semibold leading-4 shadow-none',
+  'shrink-0 whitespace-nowrap leading-4 shadow-none',
   'border-[color:color-mix(in_oklab,oklch(var(--color-warning))_58%,oklch(var(--color-base-300))_42%)]',
   'bg-[color:color-mix(in_oklab,oklch(var(--color-warning))_26%,oklch(var(--color-base-100))_74%)]',
   'shadow-[inset_0_0_0_1px_color-mix(in_oklab,oklch(var(--color-warning))_18%,transparent)]',
@@ -35,7 +35,7 @@ export function MotherAccountBadge({ label }: { label: string }) {
       <span className="inline-flex items-center gap-1 leading-4">
         <AppIcon
           name="crown"
-          className={cn('h-2.5 w-2.5 shrink-0', motherAccentIconClassName)}
+          className={cn('h-3 w-3 shrink-0', motherAccentIconClassName)}
           aria-hidden
         />
         <span className="leading-4">{label}</span>
