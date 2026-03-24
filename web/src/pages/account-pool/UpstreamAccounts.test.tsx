@@ -647,7 +647,6 @@ describe("UpstreamAccountsPage duplicates", () => {
     render("/account-pool/upstream-accounts");
 
     expect(document.body.textContent).toContain("Compact unsupported");
-    expect(document.body.textContent).toContain("300s");
 
     clickFirstRosterRow();
     await flushAsync();
@@ -674,6 +673,44 @@ describe("UpstreamAccountsPage duplicates", () => {
         compactFirstByteTimeoutSecs: 420,
       },
     });
+  });
+
+  it("keeps the routing card summary-only while the dialog still exposes advanced fields", async () => {
+    mockAccountsPage({
+      routing: {
+        writesEnabled: true,
+        apiKeyConfigured: true,
+        maskedApiKey: "pool-live••••",
+        timeouts: {
+          responsesFirstByteTimeoutSecs: 120,
+          compactFirstByteTimeoutSecs: 300,
+          responsesStreamTimeoutSecs: 300,
+          compactStreamTimeoutSecs: 300,
+        },
+      },
+    });
+    render("/account-pool/upstream-accounts");
+
+    expect(document.body.textContent).toContain("Current pool API key");
+    expect(document.body.textContent).toContain("pool-live••••");
+    expect(document.body.textContent).not.toContain("Priority sync interval");
+    expect(document.body.textContent).not.toContain("Secondary sync interval");
+    expect(document.body.textContent).not.toContain("Priority available account cap");
+    expect(document.body.textContent).not.toContain("Standard response first byte timeout");
+    expect(document.body.textContent).not.toContain("Compact response first byte timeout");
+    expect(document.body.textContent).not.toContain("Standard stream completion timeout");
+    expect(document.body.textContent).not.toContain("Compact stream completion timeout");
+
+    clickButton(/Edit routing settings/i);
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Priority sync interval");
+    expect(document.body.textContent).toContain("Secondary sync interval");
+    expect(document.body.textContent).toContain("Priority available account cap");
+    expect(document.body.textContent).toContain("Standard response first byte timeout");
+    expect(document.body.textContent).toContain("Compact response first byte timeout");
+    expect(document.body.textContent).toContain("Standard stream completion timeout");
+    expect(document.body.textContent).toContain("Compact stream completion timeout");
   });
 
   it("rejects non-integer routing timeout edits before saving", async () => {

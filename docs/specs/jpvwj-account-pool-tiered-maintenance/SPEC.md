@@ -169,12 +169,12 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
-  submission_gate: approved
+  submission_gate: pending-owner-approval
   story_id_or_title: `Account Pool/Pages/Upstream Accounts/Operational`
-  state: routing settings summary card
-  evidence_note: 验证列表页右侧 routing 卡片仅保留当前号池 API Key 与编辑入口，不再展示 maintenance 摘要字段。
+  state: routing settings summary card without advanced parameter tiles
+  evidence_note: 验证列表页右侧 routing 卡片仅保留当前号池 API Key 与编辑入口，不再展示 maintenance 摘要字段，也不再只读展开 4 项请求路径 timeout。
   image:
-  ![Routing settings summary card without maintenance metrics](./assets/routing-settings-card.png)
+  ![Routing settings summary card without advanced parameter tiles](./assets/routing-settings-card-summary-only.png)
 
 ## 变更记录（Change log）
 
@@ -183,3 +183,4 @@
 - 2026-03-23: 本地验证已通过 `cargo check`、3 个定向 Rust 测试、`cd web && bun x vitest run src/lib/api.test.ts src/hooks/useUpstreamAccounts.test.tsx src/pages/account-pool/UpstreamAccounts.test.tsx`、`cd web && bun run build`。
 - 2026-03-23: 已补上 review-loop 修复：`refresh-due` 账号继续遵守主频节奏，queued maintenance 在执行前会重验计划是否仍然到期；新增 Rust 回归覆盖这两类场景。
 - 2026-03-23: PR #211 当前已对齐最新 `origin/main`，GitHub PR checks 全绿、`mergeable_state=clean`；fresh `codex review --base origin/main` 未再产出新的代码 finding，期间暴露的一次前端测试超时已本地复跑 `cd web && bun x vitest run src/lib/api.test.ts src/pages/account-pool/UpstreamAccounts.test.tsx` 通过。
+- 2026-03-24: 回滚 routing 卡片里误加的 3 项 maintenance 与 4 项 timeout 只读摘要 tiles，恢复为仅显示当前号池 API Key 与编辑入口；同步补上列表页 Storybook 回归与 summary-only 视觉证据。

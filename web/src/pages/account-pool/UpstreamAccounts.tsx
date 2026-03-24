@@ -1963,36 +1963,6 @@ export default function UpstreamAccountsPage() {
                     <p className="mt-2 break-all font-mono text-sm text-base-content">
                       {routing?.apiKeyConfigured ? routing?.maskedApiKey ?? t('accountPool.upstreamAccounts.routing.configured') : t('accountPool.upstreamAccounts.routing.notConfigured')}
                     </p>
-                    <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
-                      <DetailField
-                        label={t('accountPool.upstreamAccounts.routing.primarySyncIntervalLabel')}
-                        value={`${resolvedRoutingMaintenance.primarySyncIntervalSecs}s`}
-                      />
-                      <DetailField
-                        label={t('accountPool.upstreamAccounts.routing.secondarySyncIntervalLabel')}
-                        value={`${resolvedRoutingMaintenance.secondarySyncIntervalSecs}s`}
-                      />
-                      <DetailField
-                        label={t('accountPool.upstreamAccounts.routing.priorityCapLabel')}
-                        value={String(resolvedRoutingMaintenance.priorityAvailableAccountCap)}
-                      />
-                      <DetailField
-                        label={t('accountPool.upstreamAccounts.routing.timeout.responsesFirstByte')}
-                        value={`${resolvedRoutingTimeouts.responsesFirstByteTimeoutSecs}s`}
-                      />
-                      <DetailField
-                        label={t('accountPool.upstreamAccounts.routing.timeout.compactFirstByte')}
-                        value={`${resolvedRoutingTimeouts.compactFirstByteTimeoutSecs}s`}
-                      />
-                      <DetailField
-                        label={t('accountPool.upstreamAccounts.routing.timeout.responsesStream')}
-                        value={`${resolvedRoutingTimeouts.responsesStreamTimeoutSecs}s`}
-                      />
-                      <DetailField
-                        label={t('accountPool.upstreamAccounts.routing.timeout.compactStream')}
-                        value={`${resolvedRoutingTimeouts.compactStreamTimeoutSecs}s`}
-                      />
-                    </div>
                   </div>
                   <Button
                     type="button"
