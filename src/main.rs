@@ -513,7 +513,7 @@ struct CliArgs {
 }
 
 fn should_recover_pending_pool_attempts_on_startup(cli: &CliArgs) -> bool {
-    !cli.retention_run_once
+    !(cli.retention_run_once && cli.retention_dry_run)
 }
 
 #[tokio::main]
