@@ -362,6 +362,7 @@ export interface ApiPoolUpstreamRequestAttempt {
   startedAt?: string | null;
   finishedAt?: string | null;
   status: string;
+  phase?: string | null;
   httpStatus?: number | null;
   failureKind?: string | null;
   errorMessage?: string | null;

@@ -28091,9 +28091,9 @@ async fn finalize_pool_upstream_request_attempt_updates_pending_row_in_place() {
         .attempt_id
         .expect("pending attempt should be inserted immediately");
 
-    let pending_row = sqlx::query_as::<_, (i64, String, Option<String>)>(
+    let pending_row = sqlx::query_as::<_, (i64, String, Option<String>, Option<String>)>(
         r#"
-        SELECT id, status, finished_at
+        SELECT id, status, phase, finished_at
         FROM pool_upstream_request_attempts
         WHERE id = ?1
         "#,
@@ -28104,7 +28104,11 @@ async fn finalize_pool_upstream_request_attempt_updates_pending_row_in_place() {
     .expect("load pending attempt row");
     assert_eq!(pending_row.0, attempt_id);
     assert_eq!(pending_row.1, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING);
-    assert_eq!(pending_row.2, None);
+    assert_eq!(
+        pending_row.2.as_deref(),
+        Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_CONNECTING)
+    );
+    assert_eq!(pending_row.3, None);
 
     finalize_pool_upstream_request_attempt(
         &state.pool,
@@ -28127,6 +28131,7 @@ async fn finalize_pool_upstream_request_attempt_updates_pending_row_in_place() {
         (
             i64,
             String,
+            Option<String>,
             Option<i64>,
             Option<String>,
             Option<f64>,
@@ -28139,6 +28144,7 @@ async fn finalize_pool_upstream_request_attempt_updates_pending_row_in_place() {
         SELECT
             id,
             status,
+            phase,
             http_status,
             finished_at,
             connect_latency_ms,
@@ -28157,12 +28163,16 @@ async fn finalize_pool_upstream_request_attempt_updates_pending_row_in_place() {
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].0, attempt_id);
     assert_eq!(rows[0].1, POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS);
-    assert_eq!(rows[0].2, Some(200));
-    assert_eq!(rows[0].3.as_deref(), Some("2026-03-23 20:49:05"));
-    assert_eq!(rows[0].4, Some(42.5));
-    assert_eq!(rows[0].5, Some(15.0));
-    assert_eq!(rows[0].6, Some(188.4));
-    assert_eq!(rows[0].7.as_deref(), Some("req_pool_123"));
+    assert_eq!(
+        rows[0].2.as_deref(),
+        Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_COMPLETED)
+    );
+    assert_eq!(rows[0].3, Some(200));
+    assert_eq!(rows[0].4.as_deref(), Some("2026-03-23 20:49:05"));
+    assert_eq!(rows[0].5, Some(42.5));
+    assert_eq!(rows[0].6, Some(15.0));
+    assert_eq!(rows[0].7, Some(188.4));
+    assert_eq!(rows[0].8.as_deref(), Some("req_pool_123"));
 }
 
 #[tokio::test]
@@ -28211,10 +28221,73 @@ async fn broadcast_pool_upstream_attempts_snapshot_emits_pending_attempts() {
                 attempts[0].status,
                 POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING
             );
+            assert_eq!(
+                attempts[0].phase,
+                POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_CONNECTING
+            );
             assert_eq!(attempts[0].finished_at, None);
             assert_eq!(attempts[0].upstream_account_id, Some(account_id));
         }
         other => panic!("expected pool-attempts payload, got {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn advance_pool_upstream_request_attempt_phase_updates_and_broadcasts_snapshot() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let trace = PoolUpstreamAttemptTraceContext {
+        invoke_id: "pending-attempt-phase-advance".to_string(),
+        occurred_at: "2026-03-23 20:49:06".to_string(),
+        endpoint: "/v1/responses".to_string(),
+        sticky_key: Some("sticky-phase-advance".to_string()),
+        requester_ip: Some("192.168.31.6".to_string()),
+    };
+    let pending = begin_pool_upstream_request_attempt(
+        &state.pool,
+        &trace,
+        account_id,
+        "route-primary",
+        1,
+        1,
+        1,
+        "2026-03-23 20:49:06",
+    )
+    .await;
+
+    let mut rx = state.broadcaster.subscribe();
+    advance_pool_upstream_request_attempt_phase(
+        state.as_ref(),
+        &pending,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_SENDING_REQUEST,
+    )
+    .await
+    .expect("advance phase and broadcast snapshot");
+
+    let payload = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+        .await
+        .expect("timed out waiting for advanced phase snapshot")
+        .expect("broadcast channel should stay open");
+    match payload {
+        BroadcastPayload::PoolAttempts {
+            invoke_id,
+            attempts,
+        } => {
+            assert_eq!(invoke_id, "pending-attempt-phase-advance");
+            assert_eq!(attempts.len(), 1);
+            assert_eq!(
+                attempts[0].phase,
+                POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_SENDING_REQUEST
+            );
+            assert_eq!(
+                attempts[0].status,
+                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING
+            );
+        }
+        other => panic!("expected phase-advance pool-attempt snapshot, got {other:?}"),
     }
 }
 
@@ -28255,6 +28328,10 @@ async fn fetch_invocation_pool_attempts_returns_live_pending_attempts_without_pa
     assert_eq!(
         attempts[0].status,
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING
+    );
+    assert_eq!(
+        attempts[0].phase,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_CONNECTING
     );
     assert_eq!(attempts[0].finished_at, None);
     assert_eq!(attempts[0].upstream_account_id, Some(account_id));
@@ -28317,6 +28394,10 @@ async fn insert_and_broadcast_pool_upstream_terminal_attempt_emits_final_snapsho
                 attempts[0].status,
                 POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL
             );
+            assert_eq!(
+                attempts[0].phase,
+                POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED
+            );
             assert_eq!(attempts[0].attempt_index, 4);
             assert_eq!(
                 attempts[0].failure_kind.as_deref(),
@@ -28363,35 +28444,47 @@ async fn recover_orphaned_pool_upstream_request_attempts_marks_pending_rows_term
         .expect("recover pending attempts");
     assert_eq!(affected, 1);
 
-    let recovered_row =
-        sqlx::query_as::<_, (String, Option<String>, Option<String>, Option<String>)>(
-            r#"
-        SELECT status, finished_at, failure_kind, error_message
+    let recovered_row = sqlx::query_as::<
+        _,
+        (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+        ),
+    >(
+        r#"
+        SELECT status, phase, finished_at, failure_kind, error_message
         FROM pool_upstream_request_attempts
         WHERE id = ?1
         "#,
-        )
-        .bind(pending.attempt_id.expect("pending attempt id"))
-        .fetch_one(&state.pool)
-        .await
-        .expect("load recovered pending attempt");
+    )
+    .bind(pending.attempt_id.expect("pending attempt id"))
+    .fetch_one(&state.pool)
+    .await
+    .expect("load recovered pending attempt");
 
     assert_eq!(
         recovered_row.0,
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
     );
+    assert_eq!(
+        recovered_row.1.as_deref(),
+        Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED)
+    );
     assert!(
         recovered_row
-            .1
+            .2
             .as_deref()
             .is_some_and(|value| !value.is_empty())
     );
     assert_eq!(
-        recovered_row.2.as_deref(),
+        recovered_row.3.as_deref(),
         Some(PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED)
     );
     assert_eq!(
-        recovered_row.3.as_deref(),
+        recovered_row.4.as_deref(),
         Some(POOL_ATTEMPT_INTERRUPTED_MESSAGE)
     );
 }

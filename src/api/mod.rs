@@ -1745,6 +1745,11 @@ async fn query_pool_attempt_records_from_archive_range(
         } else {
             "NULL AS upstream_route_key"
         };
+        let phase_projection = if archive_columns.contains("phase") {
+            "COALESCE(phase, CASE WHEN status = 'pending' THEN 'sending_request' WHEN status = 'success' THEN 'completed' ELSE 'failed' END) AS phase"
+        } else {
+            "CASE WHEN status = 'pending' THEN 'sending_request' WHEN status = 'success' THEN 'completed' ELSE 'failed' END AS phase"
+        };
         let archived_records_query = format!(
             r#"
             SELECT
@@ -1763,6 +1768,7 @@ async fn query_pool_attempt_records_from_archive_range(
                 started_at,
                 finished_at,
                 status,
+                {phase_projection},
                 http_status,
                 failure_kind,
                 error_message,
@@ -1775,6 +1781,7 @@ async fn query_pool_attempt_records_from_archive_range(
             WHERE invoke_id = ?1
             ORDER BY attempt_index ASC, id ASC
             "#,
+            phase_projection = phase_projection,
         );
         let archived_records =
             sqlx::query_as::<_, ApiPoolUpstreamRequestAttempt>(&archived_records_query)
@@ -1821,6 +1828,14 @@ pub(crate) async fn query_pool_attempt_records_from_live(
             attempts.started_at,
             attempts.finished_at,
             attempts.status,
+            COALESCE(
+                attempts.phase,
+                CASE
+                    WHEN attempts.status = 'pending' THEN 'sending_request'
+                    WHEN attempts.status = 'success' THEN 'completed'
+                    ELSE 'failed'
+                END
+            ) AS phase,
             attempts.http_status,
             attempts.failure_kind,
             attempts.error_message,
@@ -4729,6 +4744,7 @@ pub(crate) struct ApiPoolUpstreamRequestAttempt {
     #[serde(serialize_with = "serialize_opt_local_or_utc_to_utc_iso")]
     pub(crate) finished_at: Option<String>,
     pub(crate) status: String,
+    pub(crate) phase: String,
     #[sqlx(default)]
     pub(crate) http_status: Option<i64>,
     #[sqlx(default)]

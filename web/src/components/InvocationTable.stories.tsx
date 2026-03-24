@@ -1074,7 +1074,12 @@ function buildPoolAttemptLifecycleRecord(
 }
 
 function buildPoolAttemptLifecycleAttempts(
-  phase: 'running' | 'success',
+  phase:
+    | 'connecting'
+    | 'sending_request'
+    | 'waiting_first_byte'
+    | 'streaming_response'
+    | 'success',
   occurredAt: string,
 ): ApiPoolUpstreamRequestAttempt[] {
   if (phase === 'success') {
@@ -1095,6 +1100,7 @@ function buildPoolAttemptLifecycleAttempts(
         startedAt: occurredAt,
         finishedAt: new Date(Date.parse(occurredAt) + 900).toISOString(),
         status: 'success',
+        phase: 'completed',
         httpStatus: 200,
         connectLatencyMs: 26.4,
         firstByteLatencyMs: 148.2,
@@ -1122,9 +1128,11 @@ function buildPoolAttemptLifecycleAttempts(
       startedAt: occurredAt,
       finishedAt: null,
       status: 'pending',
+      phase,
       httpStatus: null,
-      connectLatencyMs: null,
-      firstByteLatencyMs: null,
+      connectLatencyMs:
+        phase === 'waiting_first_byte' || phase === 'streaming_response' ? 26.4 : null,
+      firstByteLatencyMs: phase === 'streaming_response' ? 148.2 : null,
       streamLatencyMs: null,
       upstreamRequestId: null,
       createdAt: occurredAt,
@@ -1134,7 +1142,9 @@ function buildPoolAttemptLifecycleAttempts(
 
 function PoolAttemptDetailLifecyclePreview() {
   const occurredAtRef = useRef<string>(new Date(Date.now() - 1200).toISOString())
-  const [phase, setPhase] = useState<'running' | 'success'>('running')
+  const [phase, setPhase] = useState<
+    'connecting' | 'sending_request' | 'waiting_first_byte' | 'streaming_response' | 'success'
+  >('connecting')
 
   useEffect(() => {
     const invokeId = 'inv_storybook_pool_attempt_detail_lifecycle'
@@ -1147,15 +1157,25 @@ function PoolAttemptDetailLifecyclePreview() {
   }, [phase])
 
   useEffect(() => {
-    const timer = window.setTimeout(() => setPhase('success'), 1800)
+    const timers = [
+      window.setTimeout(() => setPhase('sending_request'), 400),
+      window.setTimeout(() => setPhase('waiting_first_byte'), 950),
+      window.setTimeout(() => setPhase('streaming_response'), 1500),
+      window.setTimeout(() => setPhase('success'), 2300),
+    ]
     return () => {
-      window.clearTimeout(timer)
+      timers.forEach((timer) => window.clearTimeout(timer))
     }
   }, [])
 
   return (
     <InvocationTable
-      records={[buildPoolAttemptLifecycleRecord(phase, occurredAtRef.current)]}
+      records={[
+        buildPoolAttemptLifecycleRecord(
+          phase === 'success' ? 'success' : 'running',
+          occurredAtRef.current,
+        ),
+      ]}
       isLoading={false}
       error={null}
     />

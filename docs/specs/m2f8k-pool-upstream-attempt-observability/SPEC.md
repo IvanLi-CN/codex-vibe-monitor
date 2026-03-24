@@ -49,8 +49,9 @@
 
 ### MUST
 
-- `pool_upstream_request_attempts` 至少记录：`invoke_id`、`occurred_at`、`endpoint`、`route_mode`、`sticky_key`、`upstream_account_id`、`attempt_index`、`distinct_account_index`、`same_account_retry_index`、`requester_ip`、`started_at`、`finished_at`、`status`、`http_status`、`failure_kind`、`error_message`、`connect_latency_ms`、`first_byte_latency_ms`、`stream_latency_ms`、`upstream_request_id`。
+- `pool_upstream_request_attempts` 至少记录：`invoke_id`、`occurred_at`、`endpoint`、`route_mode`、`sticky_key`、`upstream_account_id`、`attempt_index`、`distinct_account_index`、`same_account_retry_index`、`requester_ip`、`started_at`、`finished_at`、`status`、`phase`、`http_status`、`failure_kind`、`error_message`、`connect_latency_ms`、`first_byte_latency_ms`、`stream_latency_ms`、`upstream_request_id`。
 - attempt `status` 必须收敛到有限集合：`pending`、`success`、`http_failure`、`transport_failure`、`budget_exhausted_final`。
+- attempt `phase` 必须表达过程态推进；当前契约至少包含 `connecting`、`sending_request`、`waiting_first_byte`、`streaming_response`、`completed`、`failed`。其中 `completed` / `failed` 只表示过程收口，最终业务结果仍以 `status` 为准。
 - pool failover 最多尝试 `3` 个不同账号；若即将进入第 `4` 个不同账号，必须停止继续 failover，并写一条 `budget_exhausted_final` attempt，`failure_kind=max_distinct_accounts_exhausted`。
 - 同账号内的 retry 仍可发生，但只能增加 `same_account_retry_index`，不得额外占用新的 `distinct_account_index`。
 - `codex_invocations.payload.upstreamAccountId` 继续表示最终落定账号；新增 `poolAttemptCount`、`poolDistinctAccountCount`、`poolAttemptTerminalReason` 作为汇总字段。
@@ -72,7 +73,9 @@
 
 - 一次 `routeMode=pool` 请求开始后，主 invocation 仍只落一条 `codex_invocations` 记录；所有内部 failover 细节进入 `pool_upstream_request_attempts`。
 - 每次真正发往上游账号的请求，在开始尝试时就要先插入一条 `pending` attempt；后续成功或失败必须原地补全同一行，而不是再插入第二条终态行。
+- attempt 在生命周期内必须按阶段推进：开始登记后先进入 `connecting`，随后推进到 `sending_request`；拿到响应头后再进入 `waiting_first_byte`；首个响应 chunk 到达后进入 `streaming_response`；最终统一收口到 `completed` 或 `failed`。
 - 每次 `pending` attempt 创建后，都要立即推送 `pool_attempts` SSE；主 invocation 的 running snapshot 也要同步补上最新 `poolAttemptCount`、`poolDistinctAccountCount` 与当前尝试账号。
+- process phase 只能在阶段切换时更新数据库和 SSE，不得按上传/下载 chunk 高频写库。
 - 当同一个账号返回 `5xx` 且仍有同账号 retry 预算时，先记录这次失败 attempt，再按现有策略 sleep 后重试同一账号。
 - 当同一个账号返回 `429` 时，必须先记录这次失败 attempt，并立即切到下一个不同账号；若没有可切账号，则对调用方返回 `429` 终态。
 - 当一个账号的 retry 预算耗尽且需要换号时，递增 `distinct_account_index` 并继续 `continue 'account_loop`；一旦即将超过 3 个不同账号，终止 failover 并写 `budget_exhausted_final`。

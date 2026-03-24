@@ -239,6 +239,37 @@ function poolAttemptStatusMeta(
   }
 }
 
+function resolvePoolAttemptPhase(attempt: ApiPoolUpstreamRequestAttempt) {
+  const explicitPhase = attempt.phase?.trim().toLowerCase()
+  if (explicitPhase) return explicitPhase
+
+  const normalizedStatus = attempt.status?.trim().toLowerCase()
+  if (normalizedStatus === 'pending') return 'sending_request'
+  if (normalizedStatus === 'success') return 'completed'
+  return 'failed'
+}
+
+function poolAttemptPhaseMeta(
+  phase: string | null | undefined,
+): { variant: 'default' | 'secondary' | 'warning' | 'info'; key: TranslationKey } {
+  switch (phase?.trim().toLowerCase()) {
+    case 'connecting':
+      return { variant: 'secondary', key: 'table.poolAttempts.phase.connecting' }
+    case 'sending_request':
+      return { variant: 'default', key: 'table.poolAttempts.phase.sendingRequest' }
+    case 'waiting_first_byte':
+      return { variant: 'warning', key: 'table.poolAttempts.phase.waitingFirstByte' }
+    case 'streaming_response':
+      return { variant: 'info', key: 'table.poolAttempts.phase.streamingResponse' }
+    case 'completed':
+      return { variant: 'secondary', key: 'table.poolAttempts.phase.completed' }
+    case 'failed':
+      return { variant: 'secondary', key: 'table.poolAttempts.phase.failed' }
+    default:
+      return { variant: 'secondary', key: 'table.poolAttempts.phase.unknown' }
+  }
+}
+
 function isPoolAttemptTerminal(attempt: ApiPoolUpstreamRequestAttempt) {
   if (attempt.finishedAt?.trim()) return true
   return attempt.status.trim().toLowerCase() !== 'pending'
@@ -262,6 +293,24 @@ function poolAttemptCompletenessScore(attempt: ApiPoolUpstreamRequestAttempt) {
   return score
 }
 
+function poolAttemptPhaseRank(attempt: ApiPoolUpstreamRequestAttempt) {
+  switch (resolvePoolAttemptPhase(attempt)) {
+    case 'connecting':
+      return 0
+    case 'sending_request':
+      return 1
+    case 'waiting_first_byte':
+      return 2
+    case 'streaming_response':
+      return 3
+    case 'completed':
+    case 'failed':
+      return 4
+    default:
+      return -1
+  }
+}
+
 function comparePoolAttemptRecency(
   current: ApiPoolUpstreamRequestAttempt | undefined,
   incoming: ApiPoolUpstreamRequestAttempt | undefined,
@@ -274,6 +323,12 @@ function comparePoolAttemptRecency(
   const incomingTerminal = isPoolAttemptTerminal(incoming)
   if (currentTerminal !== incomingTerminal) {
     return incomingTerminal ? 1 : -1
+  }
+
+  const currentPhaseRank = poolAttemptPhaseRank(current)
+  const incomingPhaseRank = poolAttemptPhaseRank(incoming)
+  if (currentPhaseRank !== incomingPhaseRank) {
+    return incomingPhaseRank > currentPhaseRank ? 1 : -1
   }
 
   const currentFinishedAt = current.finishedAt ? Date.parse(current.finishedAt) : Number.NaN
@@ -924,6 +979,8 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
           <div className="space-y-2" data-testid="pool-attempts-list">
             {attempts.map((attempt) => {
               const statusMeta = poolAttemptStatusMeta(attempt.status)
+              const phase = resolvePoolAttemptPhase(attempt)
+              const phaseMeta = poolAttemptPhaseMeta(phase)
               const accountLabel = formatPoolAttemptAccountLabel(attempt)
               const httpStatusValue =
                 typeof attempt.httpStatus === 'number' && Number.isFinite(attempt.httpStatus)
@@ -938,6 +995,11 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                 >
                   <div className="flex flex-wrap items-center gap-2">
                     <Badge variant={statusMeta.variant}>{t(statusMeta.key)}</Badge>
+                    {!isPoolAttemptTerminal(attempt) ? (
+                      <Badge variant={phaseMeta.variant} data-testid="pool-attempt-phase-badge">
+                        {t(phaseMeta.key)}
+                      </Badge>
+                    ) : null}
                     <span className="font-mono text-xs text-base-content/70">
                       #{attempt.attemptIndex}
                     </span>

@@ -2288,7 +2288,7 @@ struct DryRunBatchCount {
 const CODEX_INVOCATIONS_ARCHIVE_COLUMNS: &str = "id, invoke_id, occurred_at, source, model, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens, cost, status, error_message, failure_kind, failure_class, is_actionable, payload, raw_response, cost_estimated, price_version, request_raw_path, request_raw_size, request_raw_truncated, request_raw_truncated_reason, response_raw_path, response_raw_size, response_raw_truncated, response_raw_truncated_reason, detail_level, detail_pruned_at, detail_prune_reason, t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, created_at";
 const FORWARD_PROXY_ATTEMPTS_ARCHIVE_COLUMNS: &str =
     "id, proxy_key, occurred_at, is_success, latency_ms, failure_kind, is_probe";
-const POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_COLUMNS: &str = "id, invoke_id, occurred_at, endpoint, route_mode, sticky_key, upstream_account_id, upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index, requester_ip, started_at, finished_at, status, http_status, failure_kind, error_message, connect_latency_ms, first_byte_latency_ms, stream_latency_ms, upstream_request_id, created_at";
+const POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_COLUMNS: &str = "id, invoke_id, occurred_at, endpoint, route_mode, sticky_key, upstream_account_id, upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index, requester_ip, started_at, finished_at, status, phase, http_status, failure_kind, error_message, connect_latency_ms, first_byte_latency_ms, stream_latency_ms, upstream_request_id, created_at";
 const STATS_SOURCE_SNAPSHOTS_ARCHIVE_COLUMNS: &str = "id, source, period, stats_date, model, requests, input_tokens, output_tokens, cache_create_tokens, cache_read_tokens, all_tokens, cost_input, cost_output, cost_cache_write, cost_cache_read, cost_total, raw_response, captured_at, captured_at_epoch, created_at";
 const CODEX_QUOTA_SNAPSHOTS_ARCHIVE_COLUMNS: &str = "id, captured_at, amount_limit, used_amount, remaining_amount, period, period_reset_time, expire_time, is_active, total_cost, total_requests, total_tokens, last_request_time, billing_type, remaining_count, used_count, sub_type_name";
 
@@ -2367,6 +2367,7 @@ CREATE TABLE IF NOT EXISTS archive_db.pool_upstream_request_attempts (
     started_at TEXT,
     finished_at TEXT,
     status TEXT NOT NULL,
+    phase TEXT,
     http_status INTEGER,
     failure_kind TEXT,
     error_message TEXT,
@@ -6511,7 +6512,7 @@ async fn ensure_pool_upstream_request_attempts_archive_schema(
         "pool_upstream_request_attempts",
     )
     .await?;
-    for (column, ty) in [("upstream_route_key", "TEXT")] {
+    for (column, ty) in [("upstream_route_key", "TEXT"), ("phase", "TEXT")] {
         if !archive_columns.contains(column) {
             let statement = format!(
                 "ALTER TABLE archive_db.pool_upstream_request_attempts ADD COLUMN {column} {ty}"
@@ -7517,6 +7518,7 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             started_at TEXT,
             finished_at TEXT,
             status TEXT NOT NULL,
+            phase TEXT,
             http_status INTEGER,
             failure_kind TEXT,
             error_message TEXT,
@@ -7534,7 +7536,7 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     let existing_pool_attempt_columns =
         load_sqlite_table_columns(pool, "pool_upstream_request_attempts").await?;
-    for (column, ty) in [("upstream_route_key", "TEXT")] {
+    for (column, ty) in [("upstream_route_key", "TEXT"), ("phase", "TEXT")] {
         if !existing_pool_attempt_columns.contains(column) {
             let statement =
                 format!("ALTER TABLE pool_upstream_request_attempts ADD COLUMN {column} {ty}");
@@ -8787,6 +8789,12 @@ const POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS: &str = "success";
 const POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE: &str = "http_failure";
 const POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE: &str = "transport_failure";
 const POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL: &str = "budget_exhausted_final";
+const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_CONNECTING: &str = "connecting";
+const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_SENDING_REQUEST: &str = "sending_request";
+const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_WAITING_FIRST_BYTE: &str = "waiting_first_byte";
+const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE: &str = "streaming_response";
+const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_COMPLETED: &str = "completed";
+const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED: &str = "failed";
 const POOL_UPSTREAM_MAX_DISTINCT_ACCOUNTS: usize = 3;
 const POOL_UPSTREAM_RESPONSES_MAX_TIMEOUT_ROUTE_KEYS: usize = 3;
 
@@ -9682,6 +9690,20 @@ async fn send_pool_request_with_failover(
                         )
                         .await;
                     }
+                    if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                        && let Err(err) = advance_pool_upstream_request_attempt_phase(
+                            state.as_ref(),
+                            pending_attempt_record,
+                            POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_SENDING_REQUEST,
+                        )
+                        .await
+                    {
+                        warn!(
+                            invoke_id = %pending_attempt_record.invoke_id,
+                            error = %err,
+                            "failed to advance pool attempt into sending-request phase"
+                        );
+                    }
 
                     match timeout(send_timeout, request.send()).await {
                         Ok(Ok(response)) => (ProxyUpstreamResponseBody::Reqwest(response), None),
@@ -9985,6 +10007,20 @@ async fn send_pool_request_with_failover(
                         )
                         .await;
                     }
+                    if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                        && let Err(err) = advance_pool_upstream_request_attempt_phase(
+                            state.as_ref(),
+                            pending_attempt_record,
+                            POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_SENDING_REQUEST,
+                        )
+                        .await
+                    {
+                        warn!(
+                            invoke_id = %pending_attempt_record.invoke_id,
+                            error = %err,
+                            "failed to advance pool oauth attempt into sending-request phase"
+                        );
+                    }
                     {
                         let oauth_response = oauth_bridge::send_oauth_upstream_request(
                             &client,
@@ -10155,6 +10191,20 @@ async fn send_pool_request_with_failover(
                 continue 'account_loop;
             }
 
+            if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                && let Err(err) = advance_pool_upstream_request_attempt_phase(
+                    state.as_ref(),
+                    pending_attempt_record,
+                    POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_WAITING_FIRST_BYTE,
+                )
+                .await
+            {
+                warn!(
+                    invoke_id = %pending_attempt_record.invoke_id,
+                    error = %err,
+                    "failed to advance pool attempt into wait-first-byte phase"
+                );
+            }
             let first_byte_started = Instant::now();
             let (response, first_chunk) = match read_pool_upstream_first_chunk_with_timeout(
                 response,
@@ -10252,6 +10302,21 @@ async fn send_pool_request_with_failover(
                     continue 'account_loop;
                 }
             };
+
+            if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                && let Err(err) = advance_pool_upstream_request_attempt_phase(
+                    state.as_ref(),
+                    pending_attempt_record,
+                    POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE,
+                )
+                .await
+            {
+                warn!(
+                    invoke_id = %pending_attempt_record.invoke_id,
+                    error = %err,
+                    "failed to advance pool attempt into streaming phase"
+                );
+            }
 
             return Ok(PoolUpstreamResponse {
                 account: account.clone(),
@@ -14030,6 +14095,14 @@ fn shanghai_now_string() -> String {
     format_naive(Utc::now().with_timezone(&Shanghai).naive_local())
 }
 
+fn terminal_pool_upstream_request_attempt_phase(status: &str) -> &'static str {
+    if status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS {
+        POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_COMPLETED
+    } else {
+        POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED
+    }
+}
+
 async fn insert_pool_upstream_request_attempt(
     pool: &Pool<Sqlite>,
     trace: &PoolUpstreamAttemptTraceContext,
@@ -14041,6 +14114,7 @@ async fn insert_pool_upstream_request_attempt(
     started_at: Option<&str>,
     finished_at: Option<&str>,
     status: &str,
+    phase: Option<&str>,
     http_status: Option<StatusCode>,
     failure_kind: Option<&str>,
     error_message: Option<&str>,
@@ -14066,6 +14140,7 @@ async fn insert_pool_upstream_request_attempt(
             started_at,
             finished_at,
             status,
+            phase,
             http_status,
             failure_kind,
             error_message,
@@ -14075,7 +14150,7 @@ async fn insert_pool_upstream_request_attempt(
             upstream_request_id
         )
         VALUES (
-            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22
         )
         "#,
     )
@@ -14093,6 +14168,7 @@ async fn insert_pool_upstream_request_attempt(
     .bind(started_at)
     .bind(finished_at)
     .bind(status)
+    .bind(phase)
     .bind(http_status.map(|value| i64::from(value.as_u16())))
     .bind(failure_kind)
     .bind(error_message)
@@ -14126,6 +14202,7 @@ async fn begin_pool_upstream_request_attempt(
         Some(started_at),
         None,
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING,
+        Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_CONNECTING),
         None,
         None,
         None,
@@ -14163,6 +14240,43 @@ async fn begin_pool_upstream_request_attempt(
     }
 }
 
+async fn update_pool_upstream_request_attempt_phase(
+    pool: &Pool<Sqlite>,
+    pending: &PendingPoolAttemptRecord,
+    phase: &str,
+) -> Result<bool> {
+    let Some(attempt_id) = pending.attempt_id else {
+        return Ok(false);
+    };
+
+    let result = sqlx::query(
+        r#"
+        UPDATE pool_upstream_request_attempts
+        SET phase = ?2
+        WHERE id = ?1
+          AND COALESCE(phase, '') <> ?2
+        "#,
+    )
+    .bind(attempt_id)
+    .bind(phase)
+    .execute(pool)
+    .await?;
+
+    Ok(result.rows_affected() > 0)
+}
+
+async fn advance_pool_upstream_request_attempt_phase(
+    state: &AppState,
+    pending: &PendingPoolAttemptRecord,
+    phase: &str,
+) -> Result<()> {
+    if !update_pool_upstream_request_attempt_phase(&state.pool, pending, phase).await? {
+        return Ok(());
+    }
+
+    broadcast_pool_upstream_attempts_snapshot(state, &pending.invoke_id).await
+}
+
 async fn recover_orphaned_pool_upstream_request_attempts(pool: &Pool<Sqlite>) -> Result<u64> {
     let finished_at = shanghai_now_string();
     let result = sqlx::query(
@@ -14171,14 +14285,16 @@ async fn recover_orphaned_pool_upstream_request_attempts(pool: &Pool<Sqlite>) ->
         SET
             finished_at = COALESCE(finished_at, ?1),
             status = ?2,
-            failure_kind = COALESCE(failure_kind, ?3),
-            error_message = COALESCE(error_message, ?4)
-        WHERE status = ?5
+            phase = ?3,
+            failure_kind = COALESCE(failure_kind, ?4),
+            error_message = COALESCE(error_message, ?5)
+        WHERE status = ?6
           AND finished_at IS NULL
         "#,
     )
     .bind(finished_at)
     .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE)
+    .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED)
     .bind(PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED)
     .bind(POOL_ATTEMPT_INTERRUPTED_MESSAGE)
     .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING)
@@ -14268,6 +14384,7 @@ async fn finalize_pool_upstream_request_attempt(
     stream_latency_ms: Option<f64>,
     upstream_request_id: Option<&str>,
 ) -> Result<()> {
+    let terminal_phase = terminal_pool_upstream_request_attempt_phase(status);
     let trace = PoolUpstreamAttemptTraceContext {
         invoke_id: pending.invoke_id.clone(),
         occurred_at: pending.occurred_at.clone(),
@@ -14282,19 +14399,21 @@ async fn finalize_pool_upstream_request_attempt(
             SET
                 finished_at = ?2,
                 status = ?3,
-                http_status = ?4,
-                failure_kind = ?5,
-                error_message = ?6,
-                connect_latency_ms = ?7,
-                first_byte_latency_ms = ?8,
-                stream_latency_ms = ?9,
-                upstream_request_id = ?10
+                phase = ?4,
+                http_status = ?5,
+                failure_kind = ?6,
+                error_message = ?7,
+                connect_latency_ms = ?8,
+                first_byte_latency_ms = ?9,
+                stream_latency_ms = ?10,
+                upstream_request_id = ?11
             WHERE id = ?1
             "#,
         )
         .bind(attempt_id)
         .bind(finished_at)
         .bind(status)
+        .bind(terminal_phase)
         .bind(http_status.map(|value| i64::from(value.as_u16())))
         .bind(failure_kind)
         .bind(error_message)
@@ -14321,6 +14440,7 @@ async fn finalize_pool_upstream_request_attempt(
         Some(pending.started_at.as_str()),
         Some(finished_at),
         status,
+        Some(terminal_phase),
         http_status,
         failure_kind,
         error_message,
@@ -14360,6 +14480,7 @@ async fn insert_pool_upstream_terminal_attempt(
         Some(finished_at.as_str()),
         Some(finished_at.as_str()),
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL,
+        Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED),
         Some(final_error.status),
         Some(failure_kind),
         Some(final_error.message.as_str()),

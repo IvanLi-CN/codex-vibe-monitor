@@ -670,6 +670,7 @@ describe('InvocationTable', () => {
             startedAt: '2026-03-07T03:13:51Z',
             finishedAt: null,
             status: 'pending',
+            phase: 'sending_request',
             httpStatus: null,
             connectLatencyMs: null,
             firstByteLatencyMs: null,
@@ -686,6 +687,105 @@ describe('InvocationTable', () => {
 
     expect(document.body.textContent).toContain('pool-account-a')
     expect(document.body.textContent).toContain('进行中')
+    expect(document.body.textContent).toContain('发送请求中')
+  })
+
+  it('shows newer pending attempt phases without letting older pending snapshots roll them back', async () => {
+    apiMocks.fetchInvocationPoolAttempts.mockResolvedValue([])
+
+    await renderInteractiveTable([
+      {
+        id: 420,
+        invokeId: 'invocation-pool-attempts-phase-ordering',
+        occurredAt: '2026-03-07T03:13:51Z',
+        createdAt: '2026-03-07T03:13:51Z',
+        source: 'proxy',
+        routeMode: 'pool',
+        upstreamAccountId: 7,
+        upstreamAccountName: 'pool-account-a',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'running',
+        poolAttemptCount: 1,
+      },
+    ])
+
+    const toggle = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.getAttribute('aria-expanded') === 'false',
+    )
+    expect(toggle).toBeTruthy()
+
+    await act(async () => {
+      toggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    await act(async () => {
+      sseMocks.onMessage?.({
+        type: 'pool_attempts',
+        invokeId: 'invocation-pool-attempts-phase-ordering',
+        attempts: [
+          {
+            id: 90,
+            invokeId: 'invocation-pool-attempts-phase-ordering',
+            occurredAt: '2026-03-07T03:13:51Z',
+            endpoint: '/v1/responses',
+            upstreamAccountId: 7,
+            upstreamAccountName: 'pool-account-a',
+            attemptIndex: 1,
+            distinctAccountIndex: 1,
+            sameAccountRetryIndex: 1,
+            startedAt: '2026-03-07T03:13:51Z',
+            finishedAt: null,
+            status: 'pending',
+            phase: 'streaming_response',
+            httpStatus: null,
+            connectLatencyMs: 26,
+            firstByteLatencyMs: 148,
+            streamLatencyMs: null,
+            upstreamRequestId: null,
+            createdAt: '2026-03-07T03:13:51Z',
+          },
+        ],
+      })
+      await Promise.resolve()
+    })
+
+    await waitForCondition(() => document.body.textContent?.includes('接收中') === true)
+
+    await act(async () => {
+      sseMocks.onMessage?.({
+        type: 'pool_attempts',
+        invokeId: 'invocation-pool-attempts-phase-ordering',
+        attempts: [
+          {
+            id: 90,
+            invokeId: 'invocation-pool-attempts-phase-ordering',
+            occurredAt: '2026-03-07T03:13:51Z',
+            endpoint: '/v1/responses',
+            upstreamAccountId: 7,
+            upstreamAccountName: 'pool-account-a',
+            attemptIndex: 1,
+            distinctAccountIndex: 1,
+            sameAccountRetryIndex: 1,
+            startedAt: '2026-03-07T03:13:51Z',
+            finishedAt: null,
+            status: 'pending',
+            phase: 'sending_request',
+            httpStatus: null,
+            connectLatencyMs: null,
+            firstByteLatencyMs: null,
+            streamLatencyMs: null,
+            upstreamRequestId: null,
+            createdAt: '2026-03-07T03:13:51Z',
+          },
+        ],
+      })
+      await Promise.resolve()
+    })
+
+    expect(document.body.textContent).toContain('接收中')
+    expect(document.body.textContent).not.toContain('发送请求中')
   })
 
   it('keeps newer SSE pool attempts when an older fetch resolves later', async () => {
