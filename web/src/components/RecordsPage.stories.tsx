@@ -211,11 +211,20 @@ function StorybookRecordsPageMock({
   const originalSetIntervalRef = useRef<typeof window.setInterval | null>(null)
   const invocationSearchCountRef = useRef(0)
   const poolAttemptsByInvokeId = useMemo(() => createStoryPoolAttemptsByInvokeId(records), [records])
+  const recordsRef = useRef(records)
+  const newRecordsCountRef = useRef(newRecordsCount)
+  const refreshDelayMsRef = useRef(refreshDelayMs)
+  const poolAttemptsByInvokeIdRef = useRef(poolAttemptsByInvokeId)
+
+  recordsRef.current = records
+  newRecordsCountRef.current = newRecordsCount
+  refreshDelayMsRef.current = refreshDelayMs
+  poolAttemptsByInvokeIdRef.current = poolAttemptsByInvokeId
 
   const maybeDelayRefresh = async () => {
-    if (refreshDelayMs <= 0) return
+    if (refreshDelayMsRef.current <= 0) return
     await new Promise<void>((resolve) => {
-      window.setTimeout(resolve, refreshDelayMs)
+      window.setTimeout(resolve, refreshDelayMsRef.current)
     })
   }
 
@@ -237,7 +246,7 @@ function StorybookRecordsPageMock({
       const params = url.searchParams
       const sortBy = (params.get('sortBy') as InvocationSortBy | null) ?? 'occurredAt'
       const sortOrder = (params.get('sortOrder') as InvocationSortOrder | null) ?? 'desc'
-      const filtered = filterRecords(records, params)
+      const filtered = filterRecords(recordsRef.current, params)
       const sorted = sortRecords(filtered, sortBy, sortOrder)
 
       if (path === '/api/invocations') {
@@ -283,14 +292,14 @@ function StorybookRecordsPageMock({
       if (path === '/api/invocations/new-count') {
         return jsonResponse({
           snapshotId: Number(params.get('snapshotId') ?? SNAPSHOT_ID),
-          newRecordsCount,
+          newRecordsCount: newRecordsCountRef.current,
         })
       }
 
       const poolAttemptsMatch = path.match(/^\/api\/invocations\/([^/]+)\/pool-attempts$/)
       if (poolAttemptsMatch) {
         const invokeId = decodeURIComponent(poolAttemptsMatch[1] ?? '')
-        return jsonResponse(poolAttemptsByInvokeId[invokeId] ?? [])
+        return jsonResponse(poolAttemptsByInvokeIdRef.current[invokeId] ?? [])
       }
 
       return (originalFetchRef.current as typeof window.fetch)(input, init)

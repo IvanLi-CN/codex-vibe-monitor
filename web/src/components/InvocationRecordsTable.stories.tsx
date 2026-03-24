@@ -28,6 +28,9 @@ function jsonResponse(payload: unknown) {
 function StorybookPoolAttemptsMock({ children, records }: { children: ReactNode; records: typeof STORYBOOK_INVOCATION_RECORDS }) {
   const originalFetchRef = useRef<typeof window.fetch | null>(null)
   const poolAttemptsByInvokeId = useMemo(() => createStoryPoolAttemptsByInvokeId(records), [records])
+  const poolAttemptsByInvokeIdRef = useRef(poolAttemptsByInvokeId)
+
+  poolAttemptsByInvokeIdRef.current = poolAttemptsByInvokeId
 
   if (typeof window !== 'undefined' && !originalFetchRef.current) {
     originalFetchRef.current = window.fetch.bind(window)
@@ -39,7 +42,7 @@ function StorybookPoolAttemptsMock({ children, records }: { children: ReactNode;
 
       if (poolAttemptsMatch) {
         const invokeId = decodeURIComponent(poolAttemptsMatch[1] ?? '')
-        return jsonResponse(poolAttemptsByInvokeId[invokeId] ?? [])
+        return jsonResponse(poolAttemptsByInvokeIdRef.current[invokeId] ?? [])
       }
 
       return (originalFetchRef.current as typeof window.fetch)(input, init)
@@ -67,9 +70,11 @@ const meta = {
     layout: 'fullscreen',
   },
   decorators: [
-    (Story) => (
+    (Story, context) => (
       <I18nProvider>
-        <StorybookPoolAttemptsMock records={STORYBOOK_INVOCATION_RECORDS}>
+        <StorybookPoolAttemptsMock
+          records={(context.args.records as typeof STORYBOOK_INVOCATION_RECORDS | undefined) ?? STORYBOOK_INVOCATION_RECORDS}
+        >
           <StorySurface>
             <Story />
           </StorySurface>
