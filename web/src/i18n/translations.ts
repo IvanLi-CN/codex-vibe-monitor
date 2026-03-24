@@ -511,6 +511,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.kind.oauth": "OAuth",
     "accountPool.upstreamAccounts.kind.apiKey": "API key",
     "accountPool.upstreamAccounts.workStatus.working": "Working",
+    "accountPool.upstreamAccounts.workStatus.workingWithCount":
+      "Working {{count}}",
     "accountPool.upstreamAccounts.workStatus.idle": "Idle",
     "accountPool.upstreamAccounts.workStatus.rate_limited": "Rate limited",
     "accountPool.upstreamAccounts.enableStatus.enabled": "Enabled",
@@ -1926,6 +1928,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.kind.oauth": "OAuth",
     "accountPool.upstreamAccounts.kind.apiKey": "API Key",
     "accountPool.upstreamAccounts.workStatus.working": "工作",
+    "accountPool.upstreamAccounts.workStatus.workingWithCount": "工作 {{count}}",
     "accountPool.upstreamAccounts.workStatus.idle": "空闲",
     "accountPool.upstreamAccounts.workStatus.rate_limited": "限流",
     "accountPool.upstreamAccounts.enableStatus.enabled": "启用",

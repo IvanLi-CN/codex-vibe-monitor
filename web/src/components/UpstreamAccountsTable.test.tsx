@@ -53,6 +53,7 @@ const labels = {
       idle: 'Idle',
       rate_limited: 'Rate limited',
     })[status] ?? status,
+  workStatusCount: (count: number) => `Working ${count}`,
   enableStatus: (status: string) =>
     ({
       enabled: 'Enabled',
@@ -166,6 +167,7 @@ describe('UpstreamAccountsTable', () => {
         planType: 'team',
         lastSuccessfulSyncAt: '2026-03-16T01:55:00.000Z',
         lastActivityAt: '2026-03-16T02:05:00.000Z',
+        activeConversationCount: 3,
         lastAction: 'route_hard_unavailable',
         lastActionSource: 'call',
         lastActionReasonCode: 'upstream_http_429_quota_exhausted',
@@ -300,27 +302,80 @@ describe('UpstreamAccountsTable', () => {
 
     expect(html).toContain('Fallback API key')
     expect(html).toContain('Disabled')
-    expect(html).toContain('Idle')
+    expect(html).not.toContain('>Idle<')
     expect(html).toContain('Never')
     expect(html).toContain('truncate whitespace-nowrap')
   })
 
-  it('suppresses stale work badges when the account is syncing or unhealthy', () => {
+  it('renders counted working badges and keeps the rate-limited exception visible', () => {
     const html = renderTable([
+      {
+        id: 12,
+        kind: 'oauth_codex',
+        provider: 'codex',
+        displayName: 'Working account',
+        groupName: null,
+        isMother: false,
+        status: 'active',
+        displayStatus: 'active',
+        enabled: true,
+        enableStatus: 'enabled',
+        workStatus: 'working',
+        healthStatus: 'normal',
+        syncState: 'idle',
+        activeConversationCount: 3,
+        planType: null,
+        lastSuccessfulSyncAt: null,
+        lastActivityAt: null,
+        primaryWindow: null,
+        secondaryWindow: null,
+        credits: null,
+        localLimits: null,
+        duplicateInfo: null,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
       {
         id: 13,
         kind: 'api_key_codex',
         provider: 'codex',
-        displayName: 'Needs Reauth Key',
+        displayName: 'Idle account',
         groupName: null,
         isMother: false,
-        status: 'needs_reauth',
-        displayStatus: 'needs_reauth',
+        status: 'active',
+        displayStatus: 'active',
+        enabled: true,
+        enableStatus: 'enabled',
+        workStatus: 'idle',
+        healthStatus: 'normal',
+        syncState: 'idle',
+        activeConversationCount: 0,
+        planType: null,
+        lastSuccessfulSyncAt: null,
+        lastActivityAt: null,
+        primaryWindow: null,
+        secondaryWindow: null,
+        credits: null,
+        localLimits: null,
+        duplicateInfo: null,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
+      {
+        id: 16,
+        kind: 'api_key_codex',
+        provider: 'codex',
+        displayName: 'Rate-limited account',
+        groupName: null,
+        isMother: false,
+        status: 'active',
+        displayStatus: 'active',
         enabled: true,
         enableStatus: 'enabled',
         workStatus: 'rate_limited',
-        healthStatus: 'needs_reauth',
+        healthStatus: 'normal',
         syncState: 'idle',
+        activeConversationCount: 5,
         planType: null,
         lastSuccessfulSyncAt: null,
         lastActivityAt: null,
@@ -334,6 +389,32 @@ describe('UpstreamAccountsTable', () => {
       },
       {
         id: 14,
+        kind: 'api_key_codex',
+        provider: 'codex',
+        displayName: 'Needs Reauth Key',
+        groupName: null,
+        isMother: false,
+        status: 'needs_reauth',
+        displayStatus: 'needs_reauth',
+        enabled: true,
+        enableStatus: 'enabled',
+        workStatus: 'rate_limited',
+        healthStatus: 'needs_reauth',
+        syncState: 'idle',
+        activeConversationCount: 2,
+        planType: null,
+        lastSuccessfulSyncAt: null,
+        lastActivityAt: null,
+        primaryWindow: null,
+        secondaryWindow: null,
+        credits: null,
+        localLimits: null,
+        duplicateInfo: null,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
+      {
+        id: 15,
         kind: 'oauth_codex',
         provider: 'codex',
         displayName: 'Syncing OAuth',
@@ -346,6 +427,7 @@ describe('UpstreamAccountsTable', () => {
         workStatus: 'rate_limited',
         healthStatus: 'normal',
         syncState: 'syncing',
+        activeConversationCount: 1,
         planType: null,
         lastSuccessfulSyncAt: null,
         lastActivityAt: null,
@@ -359,10 +441,46 @@ describe('UpstreamAccountsTable', () => {
       },
     ])
 
+    expect(html).toContain('Working 3')
+    expect(html).toContain('>Idle<')
+    expect((html.match(/>Rate limited</g) ?? []).length).toBe(1)
     expect(html).toContain('Needs reauth')
     expect(html).toContain('Syncing')
-    expect(html).not.toContain('Rate limited')
-    expect((html.match(/>Idle</g) ?? []).length).toBeGreaterThanOrEqual(2)
+    expect((html.match(/>Idle</g) ?? []).length).toBe(1)
+  })
+
+  it('falls back to the plain working label when the active conversation count is missing', () => {
+    const html = renderTable([
+      {
+        id: 17,
+        kind: 'oauth_codex',
+        provider: 'codex',
+        displayName: 'Working fallback account',
+        groupName: null,
+        isMother: false,
+        status: 'active',
+        displayStatus: 'active',
+        enabled: true,
+        enableStatus: 'enabled',
+        workStatus: 'working',
+        healthStatus: 'normal',
+        syncState: 'idle',
+        activeConversationCount: 0,
+        planType: null,
+        lastSuccessfulSyncAt: null,
+        lastActivityAt: null,
+        primaryWindow: null,
+        secondaryWindow: null,
+        credits: null,
+        localLimits: null,
+        duplicateInfo: null,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
+    ])
+
+    expect(html).toContain('>Working<')
+    expect(html).not.toContain('Working 0')
   })
 
   it('keeps the folded tags trigger inside the row click target', () => {

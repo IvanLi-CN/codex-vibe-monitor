@@ -1634,6 +1634,7 @@ export interface UpstreamAccountSummary {
   lastSyncedAt?: string | null;
   lastSuccessfulSyncAt?: string | null;
   lastActivityAt?: string | null;
+  activeConversationCount?: number;
   lastError?: string | null;
   lastErrorAt?: string | null;
   lastAction?: string | null;
@@ -2269,6 +2270,8 @@ function normalizeUpstreamAccountSummary(
       typeof payload.lastActivityAt === "string"
         ? payload.lastActivityAt
         : null,
+    activeConversationCount:
+      normalizeFiniteNumber(payload.activeConversationCount) ?? 0,
     lastError: typeof payload.lastError === "string" ? payload.lastError : null,
     lastErrorAt:
       typeof payload.lastErrorAt === "string" ? payload.lastErrorAt : null,

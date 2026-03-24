@@ -115,3 +115,30 @@ export const TagFilterAllMatch: Story = {
     await expect(canvas.queryByText(/Team key - staging/i)).not.toBeInTheDocument()
   },
 }
+
+export const AvailabilityBadges: Story = {
+  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await choosePageSize(canvasElement, 50)
+
+    const workingCell = await canvas.findByText(/Availability working badge/i)
+    const workingRow = workingCell.closest('tr')
+    await expect(workingRow).toHaveTextContent(/工作 3|Working 3/i)
+
+    const idleCell = await canvas.findByText(/Availability idle badge/i)
+    const idleRow = idleCell.closest('tr')
+    await expect(idleRow).toHaveTextContent(/空闲|Idle/i)
+
+    const rateLimitedCell = await canvas.findByText(/Availability rate limited visible/i)
+    const rateLimitedRow = rateLimitedCell.closest('tr')
+    await expect(rateLimitedRow).toHaveTextContent(/限流|Rate limited/i)
+    await expect(rateLimitedRow).not.toHaveTextContent(/工作 \d+|Working \d+/i)
+    await expect(rateLimitedRow).not.toHaveTextContent(/空闲|Idle/i)
+
+    const unavailableCell = await canvas.findByText(/Availability unavailable hidden/i)
+    const unavailableRow = unavailableCell.closest('tr')
+    await expect(unavailableRow).not.toHaveTextContent(/工作|Working/i)
+    await expect(unavailableRow).not.toHaveTextContent(/空闲|Idle/i)
+  },
+}

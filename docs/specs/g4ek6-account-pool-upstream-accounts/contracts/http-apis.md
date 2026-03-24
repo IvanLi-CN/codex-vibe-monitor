@@ -14,6 +14,8 @@
 
 上述筛选均由后端执行；前端只负责透传当前筛选状态。`syncState` 不提供主筛选参数，只作为响应里的次级过程状态返回。
 
+列表与详情共享 `activeConversationCount` 字段：表示最近 `30` 分钟内仍活跃的 sticky route 数量；缺省返回 `0`。
+
 返回账号列表：
 
 ```json
@@ -42,6 +44,7 @@
       "planType": "pro",
       "lastSyncedAt": "2026-03-11T12:00:00Z",
       "lastSuccessfulSyncAt": "2026-03-11T12:00:00Z",
+      "activeConversationCount": 3,
       "lastError": null,
       "primaryWindow": {
         "usedPercent": 42,
@@ -73,6 +76,7 @@
 在 summary 基础上补充：
 
 - 保留 `workStatus`、`enableStatus`、`healthStatus`、`syncState` 四个读模型状态字段
+- `activeConversationCount`（最近 `30` 分钟活跃 sticky route 数量，缺省为 `0`）
 - `note`
 - `chatgptUserId`
 - `tokenExpiresAt`
