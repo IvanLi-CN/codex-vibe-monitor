@@ -3,11 +3,8 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { MemoryRouter, NavLink } from 'react-router-dom'
-import {
-  SegmentedControl,
-  SegmentedControlItem,
-  segmentedControlItemVariants,
-} from './segmented-control'
+import { SegmentedControl, SegmentedControlItem } from './segmented-control'
+import { segmentedControlItemVariants } from './segmented-control.variants'
 
 let host: HTMLDivElement | null = null
 let root: Root | null = null

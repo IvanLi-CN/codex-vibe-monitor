@@ -1,27 +1,7 @@
 import * as React from 'react'
 import { Slot } from '@radix-ui/react-slot'
-import { cva, type VariantProps } from 'class-variance-authority'
 import { cn } from '../../lib/utils'
-
-const segmentedControlItemVariants = cva('segmented-control-item', {
-  variants: {
-    size: {
-      compact: 'h-8 px-2 text-sm sm:px-3',
-      default: 'h-8 px-3 text-sm',
-      nav: 'h-8 px-3.5 text-sm',
-    },
-    active: {
-      true: 'segmented-control-item--active font-semibold',
-      false: '',
-    },
-  },
-  defaultVariants: {
-    size: 'default',
-    active: false,
-  },
-})
-
-type SegmentedControlItemSize = NonNullable<VariantProps<typeof segmentedControlItemVariants>['size']>
+import { segmentedControlItemVariants, type SegmentedControlItemSize } from './segmented-control.variants'
 
 const SegmentedControlSizeContext = React.createContext<SegmentedControlItemSize>('default')
 
@@ -40,8 +20,9 @@ SegmentedControl.displayName = 'SegmentedControl'
 
 export interface SegmentedControlItemProps
   extends React.ButtonHTMLAttributes<HTMLButtonElement>,
-    Omit<VariantProps<typeof segmentedControlItemVariants>, 'active'> {
+    Omit<React.ButtonHTMLAttributes<HTMLButtonElement>, 'size'> {
   active?: boolean
+  size?: SegmentedControlItemSize
   asChild?: boolean
 }
 
@@ -64,4 +45,4 @@ const SegmentedControlItem = React.forwardRef<HTMLButtonElement, SegmentedContro
 )
 SegmentedControlItem.displayName = 'SegmentedControlItem'
 
-export { SegmentedControl, SegmentedControlItem, segmentedControlItemVariants }
+export { SegmentedControl, SegmentedControlItem }

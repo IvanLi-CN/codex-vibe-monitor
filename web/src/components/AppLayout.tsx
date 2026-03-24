@@ -11,7 +11,8 @@ import { useTranslation } from '../i18n'
 import { supportedLocales, type Locale } from '../i18n'
 import { useTheme } from '../theme'
 import { Button } from './ui/button'
-import { SegmentedControl, segmentedControlItemVariants } from './ui/segmented-control'
+import { SegmentedControl } from './ui/segmented-control'
+import { segmentedControlItemVariants } from './ui/segmented-control.variants'
 import { UpdateAvailableBanner } from './UpdateAvailableBanner'
 
 const navItems = [

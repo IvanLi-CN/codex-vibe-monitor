@@ -1,6 +1,7 @@
 import { NavLink, Navigate, Outlet, useLocation } from 'react-router-dom'
 import { useTranslation } from '../../i18n'
-import { SegmentedControl, segmentedControlItemVariants } from '../../components/ui/segmented-control'
+import { SegmentedControl } from '../../components/ui/segmented-control'
+import { segmentedControlItemVariants } from '../../components/ui/segmented-control.variants'
 
 const items = [
   { to: '/account-pool/upstream-accounts', key: 'accountPool.nav.upstreamAccounts' },

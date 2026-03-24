@@ -1,10 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { MemoryRouter, NavLink } from 'react-router-dom'
-import {
-  SegmentedControl,
-  SegmentedControlItem,
-  segmentedControlItemVariants,
-} from './segmented-control'
+import { SegmentedControl, SegmentedControlItem } from './segmented-control'
+import { segmentedControlItemVariants } from './segmented-control.variants'
 
 const meta = {
   title: 'UI/SegmentedControl',
