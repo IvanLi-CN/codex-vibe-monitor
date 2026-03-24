@@ -492,6 +492,25 @@ export interface StatsResponse {
   failureCount: number;
   totalCost: number;
   totalTokens: number;
+  maintenance?: StatsMaintenanceResponse;
+}
+
+export interface StatsMaintenanceResponse {
+  rawCompressionBacklog?: RawCompressionBacklogResponse;
+  startupBackfill?: StartupBackfillResponse;
+}
+
+export interface RawCompressionBacklogResponse {
+  oldestUncompressedAgeSecs: number;
+  uncompressedCount: number;
+  uncompressedBytes: number;
+  alertLevel: "ok" | "warn" | "critical";
+}
+
+export interface StartupBackfillResponse {
+  upstreamActivityArchivePendingAccounts: number;
+  zeroUpdateStreak: number;
+  nextRunAfter?: string | null;
 }
 
 export interface TimeseriesPoint {

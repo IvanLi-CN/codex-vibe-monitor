@@ -1599,6 +1599,12 @@ fn startup_pending_attempt_recovery_skips_all_retention_run_once_modes() {
     let mut cli = CliArgs::default();
     assert!(should_recover_pending_pool_attempts_on_startup(&cli));
 
+    cli.command = Some(CliCommand::Maintenance(MaintenanceCliArgs {
+        command: MaintenanceCommand::RawCompression(MaintenanceDryRunArgs { dry_run: false }),
+    }));
+    assert!(!should_recover_pending_pool_attempts_on_startup(&cli));
+
+    cli.command = None;
     cli.retention_run_once = true;
     assert!(!should_recover_pending_pool_attempts_on_startup(&cli));
 
@@ -1922,9 +1928,11 @@ fn test_config() -> AppConfig {
         retention_dry_run: DEFAULT_RETENTION_DRY_RUN,
         retention_interval: Duration::from_secs(DEFAULT_RETENTION_INTERVAL_SECS),
         retention_batch_rows: DEFAULT_RETENTION_BATCH_ROWS,
+        retention_catchup_budget: Duration::from_secs(DEFAULT_RETENTION_CATCHUP_BUDGET_SECS),
         archive_dir: PathBuf::from("target/archive-tests"),
         invocation_success_full_days: DEFAULT_INVOCATION_SUCCESS_FULL_DAYS,
         invocation_max_days: DEFAULT_INVOCATION_MAX_DAYS,
+        invocation_archive_ttl_days: DEFAULT_INVOCATION_ARCHIVE_TTL_DAYS,
         forward_proxy_attempts_retention_days: DEFAULT_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS,
         pool_upstream_request_attempts_retention_days:
             DEFAULT_POOL_UPSTREAM_REQUEST_ATTEMPTS_RETENTION_DAYS,
@@ -2349,6 +2357,7 @@ async fn retention_test_pool_and_config(prefix: &str) -> (SqlitePool, AppConfig,
     config.proxy_raw_dir = temp_dir.join("proxy_raw_payloads");
     config.archive_dir = temp_dir.join("archives");
     config.retention_batch_rows = 2;
+    config.invocation_archive_ttl_days = 365;
     fs::create_dir_all(&config.proxy_raw_dir).expect("create retention raw dir");
     fs::create_dir_all(&config.archive_dir).expect("create retention archive dir");
     (pool, config, temp_dir)
@@ -2364,6 +2373,11 @@ fn shanghai_local_days_ago(days: i64, hour: u32, minute: u32, second: u32) -> St
         .and_hms_opt(hour, minute, second)
         .expect("valid shanghai local time");
     format_naive(naive)
+}
+
+fn shanghai_local_now_minus_secs(secs: i64) -> String {
+    let now_local = Utc::now().with_timezone(&Shanghai).naive_local();
+    format_naive(now_local - ChronoDuration::seconds(secs))
 }
 
 fn utc_naive_from_shanghai_local_days_ago(
@@ -2408,11 +2422,13 @@ async fn insert_retention_invocation(
             payload,
             raw_response,
             request_raw_path,
+            request_raw_codec,
             request_raw_size,
             response_raw_path,
+            response_raw_codec,
             response_raw_size
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)
         "#,
     )
     .bind(invoke_id)
@@ -2427,12 +2443,22 @@ async fn insert_retention_invocation(
     .bind(payload)
     .bind(raw_response)
     .bind(request_raw_path.map(|path| path.to_string_lossy().to_string()))
+    .bind(raw_codec_from_path(
+        request_raw_path
+            .map(|path| path.to_string_lossy().to_string())
+            .as_deref(),
+    ))
     .bind(
         request_raw_path
             .and_then(|path| fs::metadata(path).ok())
             .map(|meta| meta.len() as i64),
     )
     .bind(response_raw_path.map(|path| path.to_string_lossy().to_string()))
+    .bind(raw_codec_from_path(
+        response_raw_path
+            .map(|path| path.to_string_lossy().to_string())
+            .as_deref(),
+    ))
     .bind(
         response_raw_path
             .and_then(|path| fs::metadata(path).ok())
@@ -2566,6 +2592,364 @@ async fn insert_stats_source_snapshot_row(pool: &SqlitePool, captured_at: &str, 
     .execute(pool)
     .await
     .expect("insert stats source snapshot row");
+}
+
+#[tokio::test]
+async fn ensure_schema_backfills_raw_codecs_and_manifest_tables() {
+    let temp_dir = make_temp_test_dir("ensure-schema-raw-codecs");
+    let db_path = temp_dir.join("codex-vibe-monitor.db");
+    fs::File::create(&db_path).expect("create schema sqlite file");
+    let pool = SqlitePool::connect(&sqlite_url_for_path(&db_path))
+        .await
+        .expect("connect schema sqlite");
+
+    sqlx::query(
+        r#"
+        CREATE TABLE codex_invocations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            invoke_id TEXT NOT NULL,
+            occurred_at TEXT NOT NULL,
+            raw_response TEXT NOT NULL,
+            request_raw_path TEXT,
+            response_raw_path TEXT,
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            UNIQUE(invoke_id, occurred_at)
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy codex_invocations");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            raw_response,
+            request_raw_path,
+            response_raw_path
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        "#,
+    )
+    .bind("legacy-codec-row")
+    .bind("2026-03-01 08:00:00")
+    .bind("{}")
+    .bind("proxy_raw_payloads/request.bin")
+    .bind("proxy_raw_payloads/response.bin.gz")
+    .execute(&pool)
+    .await
+    .expect("insert legacy codec row");
+
+    ensure_schema(&pool).await.expect("ensure schema migration");
+
+    let row = sqlx::query(
+        "SELECT request_raw_codec, response_raw_codec FROM codex_invocations WHERE invoke_id = ?1",
+    )
+    .bind("legacy-codec-row")
+    .fetch_one(&pool)
+    .await
+    .expect("load migrated codec row");
+    assert_eq!(
+        row.get::<String, _>("request_raw_codec"),
+        RAW_CODEC_IDENTITY
+    );
+    assert_eq!(row.get::<String, _>("response_raw_codec"), RAW_CODEC_GZIP);
+
+    let archive_batch_columns = load_sqlite_table_columns(&pool, "archive_batches")
+        .await
+        .expect("load archive batch columns");
+    assert!(archive_batch_columns.contains("upstream_activity_manifest_refreshed_at"));
+    let manifest_columns = load_sqlite_table_columns(&pool, "archive_batch_upstream_activity")
+        .await
+        .expect("load manifest columns");
+    assert!(manifest_columns.contains("archive_batch_id"));
+    assert!(manifest_columns.contains("account_id"));
+    assert!(manifest_columns.contains("last_activity_at"));
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn raw_compression_budget_stops_after_first_batch_when_budget_is_exhausted() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("retention-catchup-budget").await;
+    config.proxy_raw_hot_secs = 60;
+    config.proxy_raw_compression = RawCompressionCodec::Gzip;
+    config.retention_batch_rows = 1;
+
+    for (invoke_id, hour, file_name) in [
+        ("budget-oldest", 8, "budget-oldest.bin"),
+        ("budget-middle", 9, "budget-middle.bin"),
+        ("budget-newest", 10, "budget-newest.bin"),
+    ] {
+        let raw_path = config.proxy_raw_dir.join(file_name);
+        fs::write(&raw_path, invoke_id.as_bytes()).expect("write budget raw file");
+        insert_retention_invocation(
+            &pool,
+            invoke_id,
+            &shanghai_local_days_ago(2, hour, 0, 0),
+            SOURCE_PROXY,
+            "failed",
+            Some("{\"endpoint\":\"/v1/responses\"}"),
+            "{\"ok\":false}",
+            Some(&raw_path),
+            None,
+            Some(10),
+            Some(0.01),
+        )
+        .await;
+    }
+
+    let first_pass = compress_cold_proxy_raw_payloads_with_budget(
+        &pool,
+        &config,
+        config.database_path.parent(),
+        false,
+        Some(Duration::ZERO),
+    )
+    .await
+    .expect("run raw compression with zero catchup budget");
+    assert_eq!(first_pass.files_considered, 1);
+    assert_eq!(first_pass.files_compressed, 1);
+
+    let remaining_after_first: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM codex_invocations WHERE request_raw_codec = 'identity'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count remaining raw backlog after first pass");
+    assert_eq!(remaining_after_first, 2);
+
+    let catchup = compress_cold_proxy_raw_payloads_with_budget(
+        &pool,
+        &config,
+        config.database_path.parent(),
+        false,
+        None,
+    )
+    .await
+    .expect("run unrestricted raw compression catchup");
+    assert_eq!(catchup.files_considered, 2);
+    assert_eq!(catchup.files_compressed, 2);
+
+    let remaining_after_catchup: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM codex_invocations WHERE request_raw_codec = 'identity'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count remaining raw backlog after catchup");
+    assert_eq!(remaining_after_catchup, 0);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn fetch_stats_exposes_maintenance_observability_fields() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let created_at = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind(812_i64)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Stats maintenance account")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&state.pool)
+    .await
+    .expect("insert stats maintenance account");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            total_tokens,
+            cost,
+            status,
+            raw_response,
+            request_raw_path,
+            request_raw_codec,
+            request_raw_size
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "#,
+    )
+    .bind("stats-maintenance-row")
+    .bind(shanghai_local_days_ago(3, 8, 0, 0))
+    .bind(SOURCE_PROXY)
+    .bind(12_i64)
+    .bind(0.1_f64)
+    .bind("success")
+    .bind("{}")
+    .bind("proxy_raw_payloads/stats-maintenance.bin")
+    .bind(RAW_CODEC_IDENTITY)
+    .bind(2048_i64)
+    .execute(&state.pool)
+    .await
+    .expect("insert stats maintenance invocation");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            total_tokens,
+            cost,
+            status,
+            raw_response,
+            request_raw_path,
+            request_raw_codec,
+            request_raw_size
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "#,
+    )
+    .bind("stats-maintenance-hot-row")
+    .bind(shanghai_local_now_minus_secs(20 * 60))
+    .bind(SOURCE_PROXY)
+    .bind(6_i64)
+    .bind(0.05_f64)
+    .bind("success")
+    .bind("{}")
+    .bind("proxy_raw_payloads/stats-maintenance-hot.bin")
+    .bind(RAW_CODEC_IDENTITY)
+    .bind(4096_i64)
+    .execute(&state.pool)
+    .await
+    .expect("insert hot raw invocation that should not count as backlog");
+
+    let Json(stats) = fetch_stats(State(state))
+        .await
+        .expect("fetch stats with maintenance payload");
+    let maintenance = stats.maintenance.expect("stats maintenance payload");
+    let raw_backlog = maintenance
+        .raw_compression_backlog
+        .expect("raw backlog maintenance payload");
+    assert_eq!(raw_backlog.uncompressed_count, 1);
+    assert_eq!(raw_backlog.uncompressed_bytes, 2048);
+    assert_eq!(raw_backlog.alert_level, RawCompressionAlertLevel::Critical);
+    let startup_backfill = maintenance
+        .startup_backfill
+        .expect("startup backfill maintenance payload");
+    assert_eq!(
+        startup_backfill.upstream_activity_archive_pending_accounts,
+        1
+    );
+    assert_eq!(startup_backfill.zero_update_streak, 0);
+    assert!(startup_backfill.next_run_after.is_none());
+}
+
+#[tokio::test]
+async fn fetch_stats_reuses_cached_maintenance_snapshot_within_ttl() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let created_at = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind(813_i64)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Cached maintenance account")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&state.pool)
+    .await
+    .expect("insert cached maintenance account");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            total_tokens,
+            cost,
+            status,
+            raw_response,
+            request_raw_path,
+            request_raw_codec,
+            request_raw_size
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "#,
+    )
+    .bind("cached-maintenance-row")
+    .bind(shanghai_local_days_ago(3, 9, 30, 0))
+    .bind(SOURCE_PROXY)
+    .bind(10_i64)
+    .bind(0.2_f64)
+    .bind("success")
+    .bind("{}")
+    .bind("proxy_raw_payloads/cached-maintenance.bin")
+    .bind(RAW_CODEC_IDENTITY)
+    .bind(4096_i64)
+    .execute(&state.pool)
+    .await
+    .expect("insert cached maintenance invocation");
+
+    let Json(first_stats) = fetch_stats(State(state.clone()))
+        .await
+        .expect("fetch first stats maintenance snapshot");
+
+    sqlx::query("UPDATE codex_invocations SET request_raw_codec = ?1 WHERE invoke_id = ?2")
+        .bind(RAW_CODEC_GZIP)
+        .bind("cached-maintenance-row")
+        .execute(&state.pool)
+        .await
+        .expect("mark cached maintenance invocation compressed");
+    sqlx::query(
+        r#"
+        INSERT INTO startup_backfill_progress (
+            task_name,
+            cursor_id,
+            next_run_after,
+            zero_update_streak,
+            last_started_at,
+            last_finished_at,
+            last_scanned,
+            last_updated,
+            last_status
+        )
+        VALUES (?1, 0, ?2, 4, NULL, NULL, 0, 0, ?3)
+        ON CONFLICT(task_name) DO UPDATE SET
+            next_run_after = excluded.next_run_after,
+            zero_update_streak = excluded.zero_update_streak,
+            last_status = excluded.last_status
+        "#,
+    )
+    .bind(STARTUP_BACKFILL_TASK_UPSTREAM_ACTIVITY_ARCHIVES)
+    .bind(format_utc_iso(Utc::now() + ChronoDuration::hours(1)))
+    .bind(STARTUP_BACKFILL_STATUS_OK)
+    .execute(&state.pool)
+    .await
+    .expect("update cached startup progress");
+
+    let Json(second_stats) = fetch_stats(State(state))
+        .await
+        .expect("fetch cached stats maintenance snapshot");
+    assert_eq!(second_stats.maintenance, first_stats.maintenance);
 }
 
 #[derive(Debug)]
@@ -2899,6 +3283,7 @@ async fn test_state_from_config(config: AppConfig, startup_ready: bool) -> Arc<A
         prompt_cache_conversation_cache: Arc::new(Mutex::new(
             PromptCacheConversationsCacheState::default(),
         )),
+        maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     })
@@ -2932,6 +3317,7 @@ fn clone_state_with_upstream_accounts(
         pricing_settings_update_lock: state.pricing_settings_update_lock.clone(),
         pricing_catalog: state.pricing_catalog.clone(),
         prompt_cache_conversation_cache: state.prompt_cache_conversation_cache.clone(),
+        maintenance_stats_cache: state.maintenance_stats_cache.clone(),
         upstream_accounts,
     })
 }
@@ -2981,6 +3367,7 @@ async fn test_state_from_existing_pool(
         prompt_cache_conversation_cache: Arc::new(Mutex::new(
             PromptCacheConversationsCacheState::default(),
         )),
+        maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     })
@@ -7644,7 +8031,7 @@ async fn forward_proxy_live_stats_returns_fixed_24_hour_buckets_with_zero_fill()
     seed_forward_proxy_attempt_at(
         &state.pool,
         &manual_key,
-        now - ChronoDuration::minutes(12),
+        now - ChronoDuration::hours(2) - ChronoDuration::minutes(12),
         true,
     )
     .await;
@@ -7665,7 +8052,7 @@ async fn forward_proxy_live_stats_returns_fixed_24_hour_buckets_with_zero_fill()
     seed_forward_proxy_attempt_at(
         &state.pool,
         &direct_key,
-        now - ChronoDuration::minutes(40),
+        now - ChronoDuration::hours(3) - ChronoDuration::minutes(40),
         true,
     )
     .await;
@@ -9322,6 +9709,7 @@ async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
         prompt_cache_conversation_cache: Arc::new(Mutex::new(
             PromptCacheConversationsCacheState::default(),
         )),
+        maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
@@ -9736,6 +10124,7 @@ async fn broadcast_summary_if_changed_skips_duplicate_payloads() {
         failure_count: 0,
         total_cost: 0.5,
         total_tokens: 42,
+        maintenance: None,
     };
 
     assert!(
@@ -11173,6 +11562,7 @@ async fn proxy_openai_v1_allows_slow_upload_with_short_timeout() {
         prompt_cache_conversation_cache: Arc::new(Mutex::new(
             PromptCacheConversationsCacheState::default(),
         )),
+        maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
@@ -17841,6 +18231,7 @@ async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
         prompt_cache_conversation_cache: Arc::new(Mutex::new(
             PromptCacheConversationsCacheState::default(),
         )),
+        maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
@@ -18646,6 +19037,7 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout() {
         prompt_cache_conversation_cache: Arc::new(Mutex::new(
             PromptCacheConversationsCacheState::default(),
         )),
+        maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
@@ -18719,6 +19111,7 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout_with_
         prompt_cache_conversation_cache: Arc::new(Mutex::new(
             PromptCacheConversationsCacheState::default(),
         )),
+        maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
@@ -24479,6 +24872,7 @@ async fn quota_latest_returns_degraded_when_empty() {
         prompt_cache_conversation_cache: Arc::new(Mutex::new(
             PromptCacheConversationsCacheState::default(),
         )),
+        maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
@@ -27317,6 +27711,12 @@ async fn upstream_last_activity_backfill_reads_archived_batches() {
     .await
     .expect("insert archive batch manifest");
 
+    let refresh = refresh_archive_upstream_activity_manifest(&pool, false)
+        .await
+        .expect("rebuild archive upstream activity manifest");
+    assert_eq!(refresh.refreshed_batches, 1);
+    assert_eq!(refresh.account_rows_written, 1);
+
     backfill_upstream_account_last_activity_from_archives(&pool, None, None)
         .await
         .expect("backfill upstream last activity from archives");
@@ -27801,6 +28201,773 @@ async fn upstream_last_activity_archive_backfill_refreshes_existing_activity_whe
         Some(second_activity_at.as_str())
     );
     assert_eq!(refreshed_row.1, 0);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn archive_backfill_waits_for_manifest_until_rebuilt() {
+    let (pool, config, temp_dir) = retention_test_pool_and_config("archive-manifest-rebuild").await;
+    let account_id = 991_i64;
+    let created_at = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind(account_id)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Manifest backlog account")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&pool)
+    .await
+    .expect("insert manifest backlog account");
+
+    let occurred_at = shanghai_local_days_ago(120, 9, 45, 0);
+    let month_key = occurred_at[..7].to_string();
+    let archive_path = archive_batch_file_path(&config, "codex_invocations", &month_key)
+        .expect("resolve manifest backlog archive path");
+    fs::create_dir_all(archive_path.parent().expect("archive parent"))
+        .expect("create manifest backlog archive parent");
+    let archive_db_path = temp_dir.join("manifest-backlog.sqlite");
+    fs::File::create(&archive_db_path).expect("create manifest backlog archive sqlite file");
+    let archive_pool = SqlitePool::connect(&sqlite_url_for_path(&archive_db_path))
+        .await
+        .expect("open manifest backlog archive sqlite");
+    let create_sql = CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL.replace("archive_db.", "");
+    sqlx::query(&create_sql)
+        .execute(&archive_pool)
+        .await
+        .expect("create manifest backlog archive schema");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id, invoke_id, occurred_at, raw_response, created_at, payload
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "#,
+    )
+    .bind(1_i64)
+    .bind("manifest-backlog-row")
+    .bind(&occurred_at)
+    .bind("{}")
+    .bind(&occurred_at)
+    .bind(json!({ "upstreamAccountId": account_id }).to_string())
+    .execute(&archive_pool)
+    .await
+    .expect("insert manifest backlog archive row");
+    archive_pool.close().await;
+    deflate_sqlite_file_to_gzip(&archive_db_path, &archive_path)
+        .expect("compress manifest backlog archive");
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))
+        "#,
+    )
+    .bind("codex_invocations")
+    .bind(&month_key)
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind(sha256_hex_file(&archive_path).expect("manifest backlog archive sha"))
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&occurred_at)
+    .bind(&occurred_at)
+    .execute(&pool)
+    .await
+    .expect("insert manifest backlog batch");
+
+    let waiting = backfill_upstream_account_last_activity_from_archives(&pool, None, None)
+        .await
+        .expect("run archive backfill before manifest rebuild");
+    assert!(waiting.waiting_for_manifest_backfill);
+    assert_eq!(waiting.updated_accounts, 0);
+
+    let dry_run = refresh_archive_upstream_activity_manifest(&pool, true)
+        .await
+        .expect("dry-run manifest rebuild");
+    assert_eq!(dry_run.pending_batches, 1);
+    assert_eq!(dry_run.refreshed_batches, 1);
+    assert_eq!(dry_run.account_rows_written, 1);
+
+    let rebuild = refresh_archive_upstream_activity_manifest(&pool, false)
+        .await
+        .expect("live manifest rebuild");
+    assert_eq!(rebuild.pending_batches, 1);
+    assert_eq!(rebuild.refreshed_batches, 1);
+    assert_eq!(rebuild.account_rows_written, 1);
+
+    let summary = backfill_upstream_account_last_activity_from_archives(&pool, None, None)
+        .await
+        .expect("run archive backfill after manifest rebuild");
+    assert!(!summary.waiting_for_manifest_backfill);
+    assert_eq!(summary.updated_accounts, 1);
+
+    let row = sqlx::query_as::<_, (Option<String>, i64)>(
+        r#"
+        SELECT last_activity_at, last_activity_archive_backfill_completed
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .fetch_one(&pool)
+    .await
+    .expect("load manifest backlog account row");
+    assert_eq!(row.0.as_deref(), Some(occurred_at.as_str()));
+    assert_eq!(row.1, 1);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn archive_manifest_refresh_leaves_missing_batches_pending_for_retry() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("manifest-missing-terminal").await;
+    let account_id = 993_i64;
+    let created_at = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind(account_id)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Missing manifest archive account")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&pool)
+    .await
+    .expect("insert missing manifest account");
+
+    let occurred_at = shanghai_local_days_ago(90, 10, 15, 0);
+    let month_key = occurred_at[..7].to_string();
+    let missing_path = archive_batch_file_path(&config, "codex_invocations", &month_key)
+        .expect("resolve missing archive batch path");
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))
+        "#,
+    )
+    .bind("codex_invocations")
+    .bind(&month_key)
+    .bind(missing_path.to_string_lossy().to_string())
+    .bind("deadbeef")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&occurred_at)
+    .bind(&occurred_at)
+    .execute(&pool)
+    .await
+    .expect("insert missing manifest batch");
+
+    let refresh = refresh_archive_upstream_activity_manifest(&pool, false)
+        .await
+        .expect("refresh manifest with missing archive file");
+    assert_eq!(refresh.pending_batches, 1);
+    assert_eq!(refresh.refreshed_batches, 0);
+    assert_eq!(refresh.missing_files, 1);
+
+    let refreshed_at: Option<String> = sqlx::query_scalar(
+        "SELECT upstream_activity_manifest_refreshed_at FROM archive_batches WHERE dataset = 'codex_invocations'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load missing batch retry marker");
+    assert!(refreshed_at.is_none());
+
+    let summary = backfill_upstream_account_last_activity_from_archives(&pool, None, None)
+        .await
+        .expect("backfill upstream activity while waiting for missing batch retry");
+    assert!(summary.waiting_for_manifest_backfill);
+    assert_eq!(summary.updated_accounts, 0);
+
+    let row = sqlx::query_as::<_, (Option<String>, i64)>(
+        r#"
+        SELECT last_activity_at, last_activity_archive_backfill_completed
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .fetch_one(&pool)
+    .await
+    .expect("load missing manifest account row");
+    assert!(row.0.is_none());
+    assert_eq!(row.1, 0);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn startup_persistent_prep_skips_mutations_for_dry_run_commands() {
+    let (pool, config, temp_dir) = retention_test_pool_and_config("startup-prep-dry-run").await;
+    let occurred_at = shanghai_local_days_ago(45, 9, 0, 0);
+    let month_key = occurred_at[..7].to_string();
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))
+        "#,
+    )
+    .bind("codex_invocations")
+    .bind(&month_key)
+    .bind(
+        temp_dir
+            .join("pending-manifest.sqlite.gz")
+            .to_string_lossy()
+            .to_string(),
+    )
+    .bind("deadbeef")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&occurred_at)
+    .bind(&occurred_at)
+    .execute(&pool)
+    .await
+    .expect("insert pending manifest batch");
+
+    let mut cli = CliArgs::default();
+    cli.command = Some(CliCommand::Maintenance(MaintenanceCliArgs {
+        command: MaintenanceCommand::RawCompression(MaintenanceDryRunArgs { dry_run: true }),
+    }));
+
+    let summary = run_startup_persistent_prep(&pool, &config, &cli)
+        .await
+        .expect("run startup prep for dry-run maintenance command");
+    assert_eq!(summary.refreshed_manifest_batches, 0);
+    assert_eq!(summary.backfilled_archive_expiries, 0);
+    assert!(!summary.bootstrapped_hourly_rollups);
+
+    let refreshed_at: Option<String> = sqlx::query_scalar(
+        "SELECT upstream_activity_manifest_refreshed_at FROM archive_batches WHERE dataset = 'codex_invocations'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load manifest refreshed flag");
+    assert!(refreshed_at.is_none());
+
+    let archive_expires_at: Option<String> = sqlx::query_scalar(
+        "SELECT archive_expires_at FROM archive_batches WHERE dataset = 'codex_invocations'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load archive expiry");
+    assert!(archive_expires_at.is_none());
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[test]
+fn startup_rollup_bootstrap_stays_blocking_for_normal_server_start() {
+    let default_cli = CliArgs::default();
+    assert!(should_run_blocking_startup_hourly_rollup_bootstrap(
+        &default_cli
+    ));
+    assert!(!should_run_blocking_startup_persistent_prep(&default_cli));
+
+    let retention_cli = CliArgs {
+        retention_run_once: true,
+        ..CliArgs::default()
+    };
+    assert!(!should_run_blocking_startup_hourly_rollup_bootstrap(
+        &retention_cli
+    ));
+    assert!(should_run_blocking_startup_persistent_prep(&retention_cli));
+
+    let maintenance_cli = CliArgs {
+        command: Some(CliCommand::Maintenance(MaintenanceCliArgs {
+            command: MaintenanceCommand::RawCompression(MaintenanceDryRunArgs { dry_run: false }),
+        })),
+        ..CliArgs::default()
+    };
+    assert!(!should_run_blocking_startup_hourly_rollup_bootstrap(
+        &maintenance_cli
+    ));
+    assert!(!should_run_blocking_startup_persistent_prep(
+        &maintenance_cli
+    ));
+}
+
+#[tokio::test]
+async fn startup_persistent_prep_rebuilds_manifest_before_archive_backfill() {
+    let (pool, config, temp_dir) = retention_test_pool_and_config("startup-prep-manifest").await;
+    let account_id = 992_i64;
+    let created_at = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind(account_id)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Startup prep manifest account")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&pool)
+    .await
+    .expect("insert startup prep manifest account");
+
+    let occurred_at = shanghai_local_days_ago(90, 10, 15, 0);
+    let month_key = occurred_at[..7].to_string();
+    let archive_path = archive_batch_file_path(&config, "codex_invocations", &month_key)
+        .expect("resolve startup prep archive path");
+    fs::create_dir_all(archive_path.parent().expect("archive parent"))
+        .expect("create startup prep archive parent");
+    let archive_db_path = temp_dir.join("startup-prep-manifest.sqlite");
+    fs::File::create(&archive_db_path).expect("create startup prep sqlite file");
+    let archive_pool = SqlitePool::connect(&sqlite_url_for_path(&archive_db_path))
+        .await
+        .expect("open startup prep sqlite");
+    let create_sql = CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL.replace("archive_db.", "");
+    sqlx::query(&create_sql)
+        .execute(&archive_pool)
+        .await
+        .expect("create startup prep archive schema");
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            id, invoke_id, occurred_at, raw_response, created_at, payload
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "#,
+    )
+    .bind(1_i64)
+    .bind("startup-prep-manifest-row")
+    .bind(&occurred_at)
+    .bind("{}")
+    .bind(&occurred_at)
+    .bind(json!({ "upstreamAccountId": account_id }).to_string())
+    .execute(&archive_pool)
+    .await
+    .expect("insert startup prep archive row");
+    archive_pool.close().await;
+    deflate_sqlite_file_to_gzip(&archive_db_path, &archive_path)
+        .expect("compress startup prep archive");
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))
+        "#,
+    )
+    .bind("codex_invocations")
+    .bind(&month_key)
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind(sha256_hex_file(&archive_path).expect("startup prep archive sha"))
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&occurred_at)
+    .bind(&occurred_at)
+    .execute(&pool)
+    .await
+    .expect("insert startup prep batch");
+
+    let summary = run_startup_persistent_prep(&pool, &config, &CliArgs::default())
+        .await
+        .expect("run startup persistent prep");
+    assert_eq!(summary.refreshed_manifest_batches, 1);
+    assert_eq!(summary.refreshed_manifest_account_rows, 1);
+    assert_eq!(summary.missing_manifest_files, 0);
+    assert!(summary.bootstrapped_hourly_rollups);
+
+    let backfill = backfill_upstream_account_last_activity_from_archives(&pool, None, None)
+        .await
+        .expect("backfill upstream activity after startup prep");
+    assert!(!backfill.waiting_for_manifest_backfill);
+    assert_eq!(backfill.updated_accounts, 1);
+
+    let row = sqlx::query_as::<_, (Option<String>, i64)>(
+        r#"
+        SELECT last_activity_at, last_activity_archive_backfill_completed
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .fetch_one(&pool)
+    .await
+    .expect("load startup prep account row");
+    assert_eq!(row.0.as_deref(), Some(occurred_at.as_str()));
+    assert_eq!(row.1, 1);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn archive_backfill_respects_scan_limit_budget() {
+    let (pool, _config, temp_dir) = retention_test_pool_and_config("archive-backfill-budget").await;
+    let created_at = format_utc_iso(Utc::now());
+    for account_id in [993_i64, 994_i64] {
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_accounts (
+                id, kind, provider, display_name, status, enabled, created_at, updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(account_id)
+        .bind("api_key_codex")
+        .bind("codex")
+        .bind(format!("Archive budget account {account_id}"))
+        .bind("active")
+        .bind(1_i64)
+        .bind(&created_at)
+        .bind(&created_at)
+        .execute(&pool)
+        .await
+        .expect("insert archive budget account");
+    }
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            id,
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            upstream_activity_manifest_refreshed_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, datetime('now'), datetime('now'))
+        "#,
+    )
+    .bind(1_i64)
+    .bind("codex_invocations")
+    .bind("2025-01")
+    .bind(
+        temp_dir
+            .join("budget.sqlite.gz")
+            .to_string_lossy()
+            .to_string(),
+    )
+    .bind("deadbeef")
+    .bind(2_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .execute(&pool)
+    .await
+    .expect("insert archive budget batch");
+
+    let first_activity_at = shanghai_local_days_ago(20, 8, 0, 0);
+    let second_activity_at = shanghai_local_days_ago(19, 9, 0, 0);
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batch_upstream_activity (archive_batch_id, account_id, last_activity_at)
+        VALUES (?1, ?2, ?3), (?4, ?5, ?6)
+        "#,
+    )
+    .bind(1_i64)
+    .bind(993_i64)
+    .bind(&first_activity_at)
+    .bind(1_i64)
+    .bind(994_i64)
+    .bind(&second_activity_at)
+    .execute(&pool)
+    .await
+    .expect("insert archive budget manifest rows");
+
+    let first_pass = backfill_upstream_account_last_activity_from_archives(
+        &pool,
+        Some(1),
+        Some(Duration::from_secs(60)),
+    )
+    .await
+    .expect("run first archive budget pass");
+    assert_eq!(first_pass.updated_accounts, 1);
+    assert!(first_pass.hit_budget);
+
+    let remaining_pending: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM pool_upstream_accounts
+        WHERE last_activity_at IS NULL
+          AND last_activity_archive_backfill_completed = 0
+        "#,
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count remaining archive backfill accounts");
+    assert_eq!(remaining_pending, 1);
+
+    let second_pass = backfill_upstream_account_last_activity_from_archives(
+        &pool,
+        Some(1),
+        Some(Duration::from_secs(60)),
+    )
+    .await
+    .expect("run second archive budget pass");
+    assert_eq!(second_pass.updated_accounts, 1);
+    assert!(!second_pass.hit_budget);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn cleanup_expired_invocation_archive_batches_removes_manifest_rows() {
+    let (pool, mut config, temp_dir) = retention_test_pool_and_config("archive-ttl-cleanup").await;
+    config.invocation_archive_ttl_days = 0;
+
+    let archive_path = temp_dir.join("expired-archive.sqlite.gz");
+    write_gzip_test_file(&archive_path, b"expired");
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            id,
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "#,
+    )
+    .bind(1_i64)
+    .bind("codex_invocations")
+    .bind("2025-01")
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind("expired-sha")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind("2025-01-01 00:00:00")
+    .bind("2025-01-01 00:00:00")
+    .bind("2025-01-01 00:00:00")
+    .execute(&pool)
+    .await
+    .expect("insert expired invocation archive batch");
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batch_upstream_activity (archive_batch_id, account_id, last_activity_at)
+        VALUES (?1, ?2, ?3)
+        "#,
+    )
+    .bind(1_i64)
+    .bind(7_i64)
+    .bind("2025-01-01 00:00:00")
+    .execute(&pool)
+    .await
+    .expect("insert expired invocation archive manifest row");
+
+    let deleted = cleanup_expired_archive_batches(&pool, &config, false)
+        .await
+        .expect("cleanup expired invocation archive batches");
+    assert_eq!(deleted, 1);
+    assert!(!archive_path.exists());
+
+    let remaining_batches: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM archive_batches")
+        .fetch_one(&pool)
+        .await
+        .expect("count remaining archive batches");
+    assert_eq!(remaining_batches, 0);
+    let remaining_manifest_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM archive_batch_upstream_activity")
+            .fetch_one(&pool)
+            .await
+            .expect("count remaining archive manifest rows");
+    assert_eq!(remaining_manifest_rows, 0);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn backfill_invocation_archive_expiries_uses_coverage_end_at() {
+    let (pool, config, temp_dir) = retention_test_pool_and_config("archive-expiry-backfill").await;
+    let coverage_end_at = shanghai_local_days_ago(45, 18, 30, 0);
+    let created_at = format_utc_iso(Utc::now());
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            id,
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "#,
+    )
+    .bind(1_i64)
+    .bind("codex_invocations")
+    .bind(&coverage_end_at[..7])
+    .bind(
+        temp_dir
+            .join("expiry.sqlite.gz")
+            .to_string_lossy()
+            .to_string(),
+    )
+    .bind("deadbeef")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&coverage_end_at)
+    .bind(&coverage_end_at)
+    .bind(&created_at)
+    .execute(&pool)
+    .await
+    .expect("insert archive batch for expiry backfill");
+
+    let updated = backfill_invocation_archive_expiries(&pool, &config)
+        .await
+        .expect("backfill archive expiry");
+    assert_eq!(updated, 1);
+
+    let expected = shanghai_archive_expiry_from_reference_timestamp(
+        &coverage_end_at,
+        config.invocation_archive_ttl_days,
+    )
+    .expect("compute expected archive expiry");
+    let actual: Option<String> =
+        sqlx::query_scalar("SELECT archive_expires_at FROM archive_batches WHERE id = 1")
+            .fetch_one(&pool)
+            .await
+            .expect("load archive expiry");
+    assert_eq!(actual.as_deref(), Some(expected.as_str()));
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_prune_preserves_upstream_account_id_for_archive_manifest() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("prune-preserve-upstream-account").await;
+    config.invocation_archive_ttl_days = 365;
+    let occurred_at = shanghai_local_days_ago(31, 14, 0, 0);
+
+    insert_retention_invocation(
+        &pool,
+        "prune-preserve-upstream-account",
+        &occurred_at,
+        SOURCE_XY,
+        "success",
+        Some("{\"endpoint\":\"/v1/responses\",\"upstreamAccountId\":771}"),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(111),
+        Some(0.5),
+    )
+    .await;
+
+    run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("prune invocation details while preserving upstream account id");
+
+    let pruned_payload: Option<String> =
+        sqlx::query_scalar("SELECT payload FROM codex_invocations WHERE invoke_id = ?1")
+            .bind("prune-preserve-upstream-account")
+            .fetch_one(&pool)
+            .await
+            .expect("load pruned payload");
+    let pruned_payload = serde_json::from_str::<Value>(
+        pruned_payload
+            .as_deref()
+            .expect("payload should keep upstream account id"),
+    )
+    .expect("parse pruned payload");
+    assert_eq!(pruned_payload, json!({ "upstreamAccountId": 771 }));
+
+    let archived_occurred_at = shanghai_local_days_ago(91, 14, 0, 0);
+    sqlx::query("UPDATE codex_invocations SET occurred_at = ?1 WHERE invoke_id = ?2")
+        .bind(&archived_occurred_at)
+        .bind("prune-preserve-upstream-account")
+        .execute(&pool)
+        .await
+        .expect("age pruned invocation into archive window");
+
+    run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("archive pruned invocation");
+
+    let manifest_row = sqlx::query_as::<_, (i64, String)>(
+        r#"
+        SELECT account_id, last_activity_at
+        FROM archive_batch_upstream_activity
+        WHERE account_id = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(771_i64)
+    .fetch_one(&pool)
+    .await
+    .expect("load archive upstream activity manifest row");
+    assert_eq!(manifest_row.0, 771);
+    assert_eq!(manifest_row.1, archived_occurred_at);
 
     cleanup_temp_test_dir(&temp_dir);
 }
@@ -28854,6 +30021,66 @@ async fn retention_cold_compression_scans_batches_in_occurred_at_order() {
     .await
     .expect("count compressed ordered rows");
     assert_eq!(compressed_count, 3);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn maintenance_raw_compression_cli_supports_dry_run_and_live_modes() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("maintenance-raw-compression-cli").await;
+    config.proxy_raw_hot_secs = 60;
+    config.proxy_raw_compression = RawCompressionCodec::Gzip;
+
+    let request_raw = config.proxy_raw_dir.join("maintenance-cli-request.bin");
+    fs::write(&request_raw, b"{\"cli\":true}").expect("write maintenance cli raw");
+    let occurred_at = shanghai_local_days_ago(2, 9, 15, 0);
+    insert_retention_invocation(
+        &pool,
+        "maintenance-cli-row",
+        &occurred_at,
+        SOURCE_PROXY,
+        "failed",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":false}",
+        Some(&request_raw),
+        None,
+        Some(9),
+        Some(0.02),
+    )
+    .await;
+
+    run_cli_command(
+        &pool,
+        &config,
+        &CliCommand::Maintenance(MaintenanceCliArgs {
+            command: MaintenanceCommand::RawCompression(MaintenanceDryRunArgs { dry_run: true }),
+        }),
+    )
+    .await
+    .expect("run maintenance raw compression dry-run");
+    assert!(request_raw.exists());
+    assert!(!PathBuf::from(format!("{}.gz", request_raw.display())).exists());
+
+    run_cli_command(
+        &pool,
+        &config,
+        &CliCommand::Maintenance(MaintenanceCliArgs {
+            command: MaintenanceCommand::RawCompression(MaintenanceDryRunArgs { dry_run: false }),
+        }),
+    )
+    .await
+    .expect("run maintenance raw compression live");
+    let compressed = PathBuf::from(format!("{}.gz", request_raw.display()));
+    assert!(compressed.exists());
+    assert!(!request_raw.exists());
+    let codec: String =
+        sqlx::query_scalar("SELECT request_raw_codec FROM codex_invocations WHERE invoke_id = ?1")
+            .bind("maintenance-cli-row")
+            .fetch_one(&pool)
+            .await
+            .expect("load maintenance cli codec");
+    assert_eq!(codec, RAW_CODEC_GZIP);
 
     cleanup_temp_test_dir(&temp_dir);
 }
