@@ -381,6 +381,53 @@ describe("fetchSummary", () => {
     const init = firstCall?.[1] as RequestInit | undefined;
     expect(init?.signal).toBe(controller.signal);
   });
+
+  it("preserves optional maintenance stats fields", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(
+          JSON.stringify({
+            totalCount: 5,
+            successCount: 4,
+            failureCount: 1,
+            totalCost: 0.25,
+            totalTokens: 128,
+            maintenance: {
+              rawCompressionBacklog: {
+                oldestUncompressedAgeSecs: 90061,
+                uncompressedCount: 3,
+                uncompressedBytes: 2048,
+                alertLevel: "warn",
+              },
+              startupBackfill: {
+                upstreamActivityArchivePendingAccounts: 2,
+                zeroUpdateStreak: 1,
+                nextRunAfter: "2026-03-24T12:00:00Z",
+              },
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch,
+    );
+
+    const response = await fetchSummary("1d", { timeZone: "UTC" });
+
+    expect(response.maintenance).toEqual({
+      rawCompressionBacklog: {
+        oldestUncompressedAgeSecs: 90061,
+        uncompressedCount: 3,
+        uncompressedBytes: 2048,
+        alertLevel: "warn",
+      },
+      startupBackfill: {
+        upstreamActivityArchivePendingAccounts: 2,
+        zeroUpdateStreak: 1,
+        nextRunAfter: "2026-03-24T12:00:00Z",
+      },
+    });
+  });
 });
 
 describe("createOauthMailboxSession", () => {

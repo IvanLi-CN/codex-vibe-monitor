@@ -1409,7 +1409,9 @@ pub(crate) async fn fetch_stats(
         source_scope,
     )
     .await?;
-    Ok(Json(totals.into_response()))
+    let mut response = totals.into_response();
+    response.maintenance = Some(load_stats_maintenance_response(state.as_ref()).await?);
+    Ok(Json(response))
 }
 
 pub(crate) async fn fetch_summary(
@@ -1454,7 +1456,47 @@ pub(crate) async fn fetch_summary(
         }
     };
 
-    Ok(Json(totals.into_response()))
+    let mut response = totals.into_response();
+    response.maintenance = Some(load_stats_maintenance_response(state.as_ref()).await?);
+    Ok(Json(response))
+}
+
+async fn load_stats_maintenance_response(
+    state: &AppState,
+) -> Result<StatsMaintenanceResponse, ApiError> {
+    {
+        let cache = state.maintenance_stats_cache.lock().await;
+        if let Some(response) = cache.fresh_response() {
+            return Ok(response);
+        }
+    }
+
+    let raw_backlog = load_raw_compression_backlog_snapshot(&state.pool, &state.config).await?;
+    let startup_progress = load_startup_backfill_progress(
+        &state.pool,
+        StartupBackfillTask::UpstreamActivityArchives.name(),
+    )
+    .await?;
+    let pending_accounts = count_upstream_accounts_missing_last_activity(&state.pool).await?;
+    let response = StatsMaintenanceResponse {
+        raw_compression_backlog: Some(RawCompressionBacklogResponse {
+            oldest_uncompressed_age_secs: raw_backlog.oldest_uncompressed_age_secs,
+            uncompressed_count: raw_backlog.uncompressed_count,
+            uncompressed_bytes: raw_backlog.uncompressed_bytes,
+            alert_level: raw_backlog.alert_level,
+        }),
+        startup_backfill: Some(StartupBackfillMaintenanceResponse {
+            upstream_activity_archive_pending_accounts: pending_accounts,
+            zero_update_streak: startup_progress.zero_update_streak,
+            next_run_after: startup_progress.next_run_after,
+        }),
+    };
+    let mut cache = state.maintenance_stats_cache.lock().await;
+    if let Some(cached) = cache.fresh_response() {
+        return Ok(cached);
+    }
+    cache.store(response.clone());
+    Ok(response)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -4755,6 +4797,35 @@ pub(crate) struct StatsResponse {
     pub(crate) failure_count: i64,
     pub(crate) total_cost: f64,
     pub(crate) total_tokens: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) maintenance: Option<StatsMaintenanceResponse>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StatsMaintenanceResponse {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) raw_compression_backlog: Option<RawCompressionBacklogResponse>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) startup_backfill: Option<StartupBackfillMaintenanceResponse>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RawCompressionBacklogResponse {
+    pub(crate) oldest_uncompressed_age_secs: u64,
+    pub(crate) uncompressed_count: u64,
+    pub(crate) uncompressed_bytes: u64,
+    pub(crate) alert_level: RawCompressionAlertLevel,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct StartupBackfillMaintenanceResponse {
+    pub(crate) upstream_activity_archive_pending_accounts: u64,
+    pub(crate) zero_update_streak: u32,
+    #[serde(serialize_with = "serialize_opt_local_or_utc_to_utc_iso")]
+    pub(crate) next_run_after: Option<String>,
 }
 
 #[derive(Debug, FromRow)]
@@ -4793,6 +4864,7 @@ impl StatsTotals {
             failure_count: self.failure_count,
             total_cost: self.total_cost,
             total_tokens: self.total_tokens,
+            maintenance: None,
         }
     }
 }

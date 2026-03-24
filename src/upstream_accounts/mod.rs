@@ -13258,9 +13258,11 @@ mod tests {
             retention_dry_run: DEFAULT_RETENTION_DRY_RUN,
             retention_interval: Duration::from_secs(DEFAULT_RETENTION_INTERVAL_SECS),
             retention_batch_rows: DEFAULT_RETENTION_BATCH_ROWS,
+            retention_catchup_budget: Duration::from_secs(DEFAULT_RETENTION_CATCHUP_BUDGET_SECS),
             archive_dir: PathBuf::from("target/archive-tests"),
             invocation_success_full_days: DEFAULT_INVOCATION_SUCCESS_FULL_DAYS,
             invocation_max_days: DEFAULT_INVOCATION_MAX_DAYS,
+            invocation_archive_ttl_days: DEFAULT_INVOCATION_ARCHIVE_TTL_DAYS,
             forward_proxy_attempts_retention_days: DEFAULT_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS,
             pool_upstream_request_attempts_retention_days:
                 DEFAULT_POOL_UPSTREAM_REQUEST_ATTEMPTS_RETENTION_DAYS,
@@ -13493,6 +13495,7 @@ mod tests {
                     in_flight: HashMap::new(),
                 },
             )),
+            maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
             hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
             upstream_accounts: Arc::new(
                 UpstreamAccountsRuntime::test_instance_with_maintenance_parallelism(
