@@ -13046,7 +13046,7 @@ async fn resolve_pool_account_for_request_allows_timeout_failover_past_cut_out_r
 }
 
 #[tokio::test]
-async fn resolve_pool_account_for_request_exempts_accounts_without_local_limits_from_soft_sticky_deprioritization()
+async fn resolve_pool_account_for_request_soft_deprioritizes_accounts_with_only_remote_limit_signals()
  {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -13080,12 +13080,12 @@ async fn resolve_pool_account_for_request_exempts_accounts_without_local_limits_
         other => panic!("pool account should resolve, got {other:?}"),
     };
 
-    assert_eq!(account.account_id, exempt_id);
-    assert_ne!(account.account_id, limited_id);
+    assert_eq!(account.account_id, limited_id);
+    assert_ne!(account.account_id, exempt_id);
 }
 
 #[tokio::test]
-async fn resolve_pool_account_for_request_keeps_existing_sort_order_when_exempt_accounts_mix_with_limited_candidates()
+async fn resolve_pool_account_for_request_keeps_existing_sort_order_when_truly_unlimited_accounts_mix_with_limited_candidates()
  {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -13096,7 +13096,6 @@ async fn resolve_pool_account_for_request_keeps_existing_sort_order_when_exempt_
     let recent_seen_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(5));
 
     set_test_account_local_limits(&state.pool, limited_id, Some(100.0), Some(100.0)).await;
-    insert_test_pool_limit_sample(&state, exempt_id, Some(15.0), Some(15.0)).await;
     insert_test_pool_limit_sample(&state, limited_id, Some(15.0), Some(15.0)).await;
     for sticky_key in [
         "sticky-mixed-order-001",

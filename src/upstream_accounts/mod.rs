@@ -1913,6 +1913,14 @@ struct AccountRoutingCandidateRow {
     active_sticky_conversations: i64,
 }
 
+impl AccountRoutingCandidateRow {
+    fn has_any_limits(&self) -> bool {
+        self.has_local_limits
+            || self.primary_used_percent.is_some()
+            || self.secondary_used_percent.is_some()
+    }
+}
+
 #[derive(Debug, FromRow)]
 struct AccountActiveConversationCountRow {
     account_id: i64,
@@ -13159,9 +13167,9 @@ fn compare_routing_candidates(
     lhs: &AccountRoutingCandidateRow,
     rhs: &AccountRoutingCandidateRow,
 ) -> std::cmp::Ordering {
-    let lhs_over_soft_limit = lhs.has_local_limits
+    let lhs_over_soft_limit = lhs.has_any_limits()
         && lhs.active_sticky_conversations > POOL_ROUTE_ACTIVE_STICKY_SOFT_LIMIT;
-    let rhs_over_soft_limit = rhs.has_local_limits
+    let rhs_over_soft_limit = rhs.has_any_limits()
         && rhs.active_sticky_conversations > POOL_ROUTE_ACTIVE_STICKY_SOFT_LIMIT;
     let lhs_secondary = lhs.secondary_used_percent.unwrap_or(0.0);
     let rhs_secondary = rhs.secondary_used_percent.unwrap_or(0.0);
@@ -15477,6 +15485,102 @@ mod tests {
         assert!(
             plans.is_empty(),
             "refresh-due accounts should stay on the configured primary cadence until the interval elapses"
+        );
+    }
+
+    #[test]
+    fn compare_routing_candidates_soft_deprioritizes_remote_window_accounts_over_limit() {
+        let limited_remote = AccountRoutingCandidateRow {
+            id: 1,
+            secondary_used_percent: Some(8.0),
+            primary_used_percent: Some(8.0),
+            credits_has_credits: None,
+            credits_unlimited: None,
+            credits_balance: None,
+            last_selected_at: Some("2026-03-23T11:00:00Z".to_string()),
+            has_local_limits: false,
+            active_sticky_conversations: POOL_ROUTE_ACTIVE_STICKY_SOFT_LIMIT + 1,
+        };
+        let unlimited = AccountRoutingCandidateRow {
+            id: 2,
+            secondary_used_percent: Some(18.0),
+            primary_used_percent: Some(18.0),
+            credits_has_credits: None,
+            credits_unlimited: None,
+            credits_balance: None,
+            last_selected_at: Some("2026-03-23T11:05:00Z".to_string()),
+            has_local_limits: false,
+            active_sticky_conversations: 0,
+        };
+
+        assert_eq!(
+            compare_routing_candidates(&limited_remote, &unlimited),
+            std::cmp::Ordering::Greater,
+            "accounts with only remote window limits should still be soft-deprioritized once they exceed the active sticky threshold"
+        );
+    }
+
+    #[test]
+    fn compare_routing_candidates_treats_single_remote_window_as_limited() {
+        let single_remote_window = AccountRoutingCandidateRow {
+            id: 1,
+            secondary_used_percent: None,
+            primary_used_percent: Some(0.0),
+            credits_has_credits: None,
+            credits_unlimited: None,
+            credits_balance: None,
+            last_selected_at: Some("2026-03-23T11:00:00Z".to_string()),
+            has_local_limits: false,
+            active_sticky_conversations: POOL_ROUTE_ACTIVE_STICKY_SOFT_LIMIT + 1,
+        };
+        let unlimited = AccountRoutingCandidateRow {
+            id: 2,
+            secondary_used_percent: None,
+            primary_used_percent: None,
+            credits_has_credits: None,
+            credits_unlimited: None,
+            credits_balance: None,
+            last_selected_at: Some("2026-03-23T11:05:00Z".to_string()),
+            has_local_limits: false,
+            active_sticky_conversations: 0,
+        };
+
+        assert_eq!(
+            compare_routing_candidates(&single_remote_window, &unlimited),
+            std::cmp::Ordering::Greater,
+            "a single remote window sample, even at 0%, should mark the account as limited for soft deprioritization"
+        );
+    }
+
+    #[test]
+    fn compare_routing_candidates_keeps_unlimited_accounts_on_existing_ordering() {
+        let busier_unlimited = AccountRoutingCandidateRow {
+            id: 1,
+            secondary_used_percent: None,
+            primary_used_percent: None,
+            credits_has_credits: None,
+            credits_unlimited: None,
+            credits_balance: None,
+            last_selected_at: Some("2026-03-23T11:00:00Z".to_string()),
+            has_local_limits: false,
+            active_sticky_conversations: POOL_ROUTE_ACTIVE_STICKY_SOFT_LIMIT + 3,
+        };
+        let quieter_unlimited = AccountRoutingCandidateRow {
+            id: 2,
+            secondary_used_percent: Some(10.0),
+            primary_used_percent: Some(10.0),
+            credits_has_credits: None,
+            credits_unlimited: None,
+            credits_balance: None,
+            last_selected_at: Some("2026-03-23T11:05:00Z".to_string()),
+            has_local_limits: false,
+            active_sticky_conversations: 0,
+        };
+
+        assert_eq!(
+            compare_routing_candidates(&busier_unlimited, &quieter_unlimited),
+            std::cmp::Ordering::Less,
+            "accounts without any local or remote limit signal should not be soft-deprioritized by active sticky count alone"
         );
     }
 
