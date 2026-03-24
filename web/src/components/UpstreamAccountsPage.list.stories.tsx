@@ -83,6 +83,40 @@ function expectBadgeAlignment(reference: HTMLElement, candidate: HTMLElement) {
 
 export const Operational: Story = {
   render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
+  play: async ({ canvasElement, step }) => {
+    const canvasScope = within(canvasElement)
+    await step('keep the routing summary card free of advanced setting tiles', async () => {
+      await expect(
+        await canvasScope.findByText(/current pool api key|当前号池 API Key/i),
+      ).toBeInTheDocument()
+      await expect(
+        await canvasScope.findByRole('button', {
+          name: /edit routing settings|编辑路由设置/i,
+        }),
+      ).toBeInTheDocument()
+      await expect(
+        canvasScope.queryByText(/priority sync interval|优先队列同步间隔/i),
+      ).not.toBeInTheDocument()
+      await expect(
+        canvasScope.queryByText(/secondary sync interval|次级队列同步间隔/i),
+      ).not.toBeInTheDocument()
+      await expect(
+        canvasScope.queryByText(/priority available account cap|优先可用账号上限/i),
+      ).not.toBeInTheDocument()
+      await expect(
+        canvasScope.queryByText(/standard response first byte timeout|一般请求响应体首字超时/i),
+      ).not.toBeInTheDocument()
+      await expect(
+        canvasScope.queryByText(/compact response first byte timeout|压缩请求响应体首字超时/i),
+      ).not.toBeInTheDocument()
+      await expect(
+        canvasScope.queryByText(/standard stream completion timeout|一般请求流结束超时/i),
+      ).not.toBeInTheDocument()
+      await expect(
+        canvasScope.queryByText(/compact stream completion timeout|压缩请求流结束超时/i),
+      ).not.toBeInTheDocument()
+    })
+  },
 }
 
 export const DenseRoster: Story = {
