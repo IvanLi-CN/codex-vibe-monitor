@@ -915,6 +915,7 @@ export default function UpstreamAccountsPage() {
   }))
   const [isDetailDrawerOpen, setIsDetailDrawerOpen] = useState(false)
   const [isRoutingDialogOpen, setIsRoutingDialogOpen] = useState(false)
+  const [isRoutingDialogInspectOnly, setIsRoutingDialogInspectOnly] = useState(false)
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
   const [pageCreatedTagIds, setPageCreatedTagIds] = useState<number[]>([])
   const [stickyConversationLimit, setStickyConversationLimit] = useState<number>(50)
@@ -1010,6 +1011,12 @@ export default function UpstreamAccountsPage() {
     clearBulkSelection()
   }, [clearBulkSelection])
 
+  const handleOpenRoutingDialog = useCallback(() => {
+    setRoutingDraft(buildRoutingDraft(routing))
+    setIsRoutingDialogInspectOnly(!routingWritesEnabled)
+    setIsRoutingDialogOpen(true)
+  }, [routing, routingWritesEnabled])
+
   const closeBulkSyncEventSource = useCallback(() => {
     bulkSyncEventSourceRef.current?.close()
     bulkSyncEventSourceRef.current = null
@@ -1045,10 +1052,19 @@ export default function UpstreamAccountsPage() {
   }, [selectedId, isDetailDrawerOpen])
 
   useEffect(() => {
-    if (isRoutingDialogOpen) return
+    if (isRoutingDialogOpen) {
+      if (!isRoutingDialogInspectOnly) return
+      setRoutingDraft(buildRoutingDraft(routing))
+      if (routingWritesEnabled) {
+        setIsRoutingDialogInspectOnly(false)
+      }
+      return
+    }
     setRoutingDraft(buildRoutingDraft(routing))
   }, [
     isRoutingDialogOpen,
+    isRoutingDialogInspectOnly,
+    routingWritesEnabled,
     routing?.maskedApiKey,
     routing?.writesEnabled,
     routing?.maintenance?.primarySyncIntervalSecs,
@@ -1608,6 +1624,7 @@ export default function UpstreamAccountsPage() {
       payload.timeouts = parsedTimeouts
     }
     if (!payload.apiKey && !payload.maintenance && !payload.timeouts) {
+      setIsRoutingDialogInspectOnly(false)
       setIsRoutingDialogOpen(false)
       return
     }
@@ -1615,6 +1632,7 @@ export default function UpstreamAccountsPage() {
     try {
       await saveRouting(payload)
       setRoutingDraft((current) => ({ ...current, apiKey: '' }))
+      setIsRoutingDialogInspectOnly(false)
       setIsRoutingDialogOpen(false)
     } catch (err) {
       setActionError((current) => ({
@@ -1963,7 +1981,7 @@ export default function UpstreamAccountsPage() {
                     type="button"
                     variant="ghost"
                     size="icon"
-                    onClick={() => setIsRoutingDialogOpen(true)}
+                    onClick={handleOpenRoutingDialog}
                     disabled={!routing}
                   >
                     <AppIcon name="pencil-outline" className="h-4 w-4" aria-hidden />
@@ -2495,6 +2513,7 @@ export default function UpstreamAccountsPage() {
         }
         onClose={() => {
           setRoutingDraft(buildRoutingDraft(routing))
+          setIsRoutingDialogInspectOnly(false)
           setIsRoutingDialogOpen(false)
         }}
         onSave={() => void handleSaveRouting()}

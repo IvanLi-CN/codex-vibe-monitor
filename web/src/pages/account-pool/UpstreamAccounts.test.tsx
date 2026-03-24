@@ -838,6 +838,57 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect(saveButton.disabled).toBe(true);
   });
 
+  it("resyncs inspect-only routing drafts before writes are re-enabled", async () => {
+    mockAccountsPage({
+      routing: {
+        writesEnabled: false,
+        apiKeyConfigured: true,
+        maskedApiKey: "pool-live••••",
+        timeouts: {
+          responsesFirstByteTimeoutSecs: 120,
+          compactFirstByteTimeoutSecs: 300,
+          responsesStreamTimeoutSecs: 300,
+          compactStreamTimeoutSecs: 300,
+        },
+      },
+    });
+    render("/account-pool/upstream-accounts");
+
+    clickButton(/Edit routing settings/i);
+    await flushAsync();
+    await flushTimers();
+
+    mockAccountsPage({
+      routing: {
+        writesEnabled: true,
+        apiKeyConfigured: true,
+        maskedApiKey: "pool-next••••",
+        timeouts: {
+          responsesFirstByteTimeoutSecs: 150,
+          compactFirstByteTimeoutSecs: 360,
+          responsesStreamTimeoutSecs: 330,
+          compactStreamTimeoutSecs: 360,
+        },
+      },
+    });
+    rerender("/account-pool/upstream-accounts");
+    await flushAsync();
+    await flushTimers();
+
+    const compactInput = document.body.querySelector(
+      'input[name="compactFirstByteTimeoutSecs"]',
+    );
+    expect(compactInput).toBeInstanceOf(HTMLInputElement);
+    expect((compactInput as HTMLInputElement).value).toBe("360");
+    expect((compactInput as HTMLInputElement).disabled).toBe(false);
+
+    const saveButton = findButton(/Save settings/i);
+    if (!(saveButton instanceof HTMLButtonElement)) {
+      throw new Error("missing save button");
+    }
+    expect(saveButton.disabled).toBe(true);
+  });
+
   it("passes all-match tag filters to the roster hook", () => {
     mockAccountsPage();
     render("/account-pool/upstream-accounts");
