@@ -35,7 +35,7 @@ use chrono::{
     SecondsFormat, TimeZone, Utc,
 };
 use chrono_tz::{Asia::Shanghai, Tz};
-use clap::Parser;
+use clap::{Args, Parser, Subcommand};
 use dotenvy::dotenv;
 use flate2::read::{DeflateDecoder, GzDecoder, ZlibDecoder};
 use flate2::{Compression, write::GzEncoder};
@@ -101,6 +101,7 @@ const STARTUP_BACKFILL_RUN_BUDGET_SECS: u64 = 3;
 const STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS: u64 = 15;
 const STARTUP_BACKFILL_IDLE_INTERVAL_SECS: u64 = 6 * 60 * 60;
 const STARTUP_BACKFILL_LOG_SAMPLE_LIMIT: usize = 5;
+const STATS_MAINTENANCE_CACHE_TTL_SECS: u64 = 15;
 #[cfg(test)]
 const BACKFILL_LOCK_RETRY_MAX_ATTEMPTS: u32 = 2;
 #[cfg(test)]
@@ -125,6 +126,8 @@ const DEFAULT_PROXY_PRICING_CATALOG_PATH: &str = "config/model-pricing.json";
 const DEFAULT_PROXY_RAW_DIR: &str = "proxy_raw_payloads";
 const DEFAULT_PROXY_RAW_COMPRESSION: RawCompressionCodec = RawCompressionCodec::Gzip;
 const DEFAULT_PROXY_RAW_HOT_SECS: u64 = 24 * 60 * 60;
+const RAW_CODEC_IDENTITY: &str = "identity";
+const RAW_CODEC_GZIP: &str = "gzip";
 const POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES: usize = 1024 * 1024;
 const ENV_DATABASE_PATH: &str = "DATABASE_PATH";
 const LEGACY_ENV_DATABASE_PATH: &str = "XY_DATABASE_PATH";
@@ -160,12 +163,14 @@ const ENV_RETENTION_INTERVAL_SECS: &str = "RETENTION_INTERVAL_SECS";
 const LEGACY_ENV_RETENTION_INTERVAL_SECS: &str = "XY_RETENTION_INTERVAL_SECS";
 const ENV_RETENTION_BATCH_ROWS: &str = "RETENTION_BATCH_ROWS";
 const LEGACY_ENV_RETENTION_BATCH_ROWS: &str = "XY_RETENTION_BATCH_ROWS";
+const ENV_RETENTION_CATCHUP_BUDGET_SECS: &str = "RETENTION_CATCHUP_BUDGET_SECS";
 const ENV_ARCHIVE_DIR: &str = "ARCHIVE_DIR";
 const LEGACY_ENV_ARCHIVE_DIR: &str = "XY_ARCHIVE_DIR";
 const ENV_INVOCATION_SUCCESS_FULL_DAYS: &str = "INVOCATION_SUCCESS_FULL_DAYS";
 const LEGACY_ENV_INVOCATION_SUCCESS_FULL_DAYS: &str = "XY_INVOCATION_SUCCESS_FULL_DAYS";
 const ENV_INVOCATION_MAX_DAYS: &str = "INVOCATION_MAX_DAYS";
 const LEGACY_ENV_INVOCATION_MAX_DAYS: &str = "XY_INVOCATION_MAX_DAYS";
+const ENV_INVOCATION_ARCHIVE_TTL_DAYS: &str = "INVOCATION_ARCHIVE_TTL_DAYS";
 const ENV_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS: &str = "FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS";
 const LEGACY_ENV_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS: &str =
     "XY_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS";
@@ -196,10 +201,12 @@ const DEFAULT_RETENTION_ENABLED: bool = false;
 const DEFAULT_RETENTION_DRY_RUN: bool = false;
 const DEFAULT_RETENTION_INTERVAL_SECS: u64 = 60 * 60;
 const DEFAULT_RETENTION_BATCH_ROWS: usize = 1000;
+const DEFAULT_RETENTION_CATCHUP_BUDGET_SECS: u64 = 5 * 60;
 const DEFAULT_ARCHIVE_DIR: &str = "archives";
 const DEFAULT_ORPHAN_SWEEP_MIN_AGE_SECS: u64 = 24 * 60 * 60;
 const DEFAULT_INVOCATION_SUCCESS_FULL_DAYS: u64 = 30;
 const DEFAULT_INVOCATION_MAX_DAYS: u64 = 90;
+const DEFAULT_INVOCATION_ARCHIVE_TTL_DAYS: u64 = 30;
 const DEFAULT_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS: u64 = 30;
 const DEFAULT_POOL_UPSTREAM_REQUEST_ATTEMPTS_RETENTION_DAYS: u64 = 7;
 const DEFAULT_POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_TTL_DAYS: u64 = 30;
@@ -479,6 +486,8 @@ fn reject_legacy_env_vars(renames: &[(&str, &str)]) -> Result<()> {
     disable_help_subcommand = true
 )]
 struct CliArgs {
+    #[command(subcommand)]
+    command: Option<CliCommand>,
     /// Override the SQLite database path; falls back to DATABASE_PATH or default.
     #[arg(long, value_name = "PATH")]
     database_path: Option<PathBuf>,
@@ -514,6 +523,112 @@ struct CliArgs {
     retention_dry_run: bool,
 }
 
+#[derive(Subcommand, Debug)]
+enum CliCommand {
+    Maintenance(MaintenanceCliArgs),
+}
+
+#[derive(Args, Debug)]
+struct MaintenanceCliArgs {
+    #[command(subcommand)]
+    command: MaintenanceCommand,
+}
+
+#[derive(Subcommand, Debug)]
+enum MaintenanceCommand {
+    /// Compress cold raw payload backlog without running the full retention pipeline.
+    RawCompression(MaintenanceDryRunArgs),
+    /// Rebuild codex_invocations archive upstream-activity manifests.
+    ArchiveUpstreamActivityManifest(MaintenanceDryRunArgs),
+}
+
+#[derive(Args, Debug, Default)]
+struct MaintenanceDryRunArgs {
+    #[arg(long, default_value_t = false)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Default)]
+struct StartupPersistentPrepSummary {
+    refreshed_manifest_batches: usize,
+    refreshed_manifest_account_rows: usize,
+    missing_manifest_files: usize,
+    backfilled_archive_expiries: usize,
+    bootstrapped_hourly_rollups: bool,
+}
+
+#[derive(Debug, Default)]
+struct StatsMaintenanceCacheState {
+    cached_at: Option<Instant>,
+    response: Option<StatsMaintenanceResponse>,
+}
+
+impl StatsMaintenanceCacheState {
+    fn fresh_response(&self) -> Option<StatsMaintenanceResponse> {
+        let cached_at = self.cached_at?;
+        if cached_at.elapsed() > Duration::from_secs(STATS_MAINTENANCE_CACHE_TTL_SECS) {
+            return None;
+        }
+        self.response.clone()
+    }
+
+    fn store(&mut self, response: StatsMaintenanceResponse) {
+        self.cached_at = Some(Instant::now());
+        self.response = Some(response);
+    }
+}
+
+fn should_run_startup_persistent_prep(cli: &CliArgs) -> bool {
+    if cli.command.is_some() {
+        return false;
+    }
+    if cli.retention_run_once {
+        return !cli.retention_dry_run;
+    }
+    true
+}
+
+fn should_run_blocking_startup_persistent_prep(cli: &CliArgs) -> bool {
+    cli.command.is_none() && cli.retention_run_once && !cli.retention_dry_run
+}
+
+fn should_run_blocking_startup_hourly_rollup_bootstrap(cli: &CliArgs) -> bool {
+    cli.command.is_none() && !cli.retention_run_once && !cli.retention_dry_run
+}
+
+async fn run_startup_persistent_prep_inner(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    cli: &CliArgs,
+    include_hourly_rollup_bootstrap: bool,
+) -> Result<StartupPersistentPrepSummary> {
+    if !should_run_startup_persistent_prep(cli) {
+        return Ok(StartupPersistentPrepSummary::default());
+    }
+
+    let manifest_refresh = refresh_archive_upstream_activity_manifest(pool, false).await?;
+    let archive_expiry_backfill_count = backfill_invocation_archive_expiries(pool, config).await?;
+    if include_hourly_rollup_bootstrap {
+        bootstrap_hourly_rollups(pool).await?;
+    }
+
+    Ok(StartupPersistentPrepSummary {
+        refreshed_manifest_batches: manifest_refresh.refreshed_batches,
+        refreshed_manifest_account_rows: manifest_refresh.account_rows_written,
+        missing_manifest_files: manifest_refresh.missing_files,
+        backfilled_archive_expiries: archive_expiry_backfill_count,
+        bootstrapped_hourly_rollups: include_hourly_rollup_bootstrap,
+    })
+}
+
+async fn run_startup_persistent_prep(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    cli: &CliArgs,
+) -> Result<StartupPersistentPrepSummary> {
+    run_startup_persistent_prep_inner(pool, config, cli, true).await
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenv().ok();
@@ -542,8 +657,30 @@ async fn main() -> Result<()> {
 
     let schema_started_at = Instant::now();
     ensure_schema(&pool).await?;
-    bootstrap_hourly_rollups(&pool).await?;
     log_startup_phase("schema", schema_started_at);
+    if should_run_blocking_startup_hourly_rollup_bootstrap(&cli) {
+        let rollup_bootstrap_started_at = Instant::now();
+        bootstrap_hourly_rollups(&pool).await?;
+        log_startup_phase("hourly_rollup_bootstrap", rollup_bootstrap_started_at);
+    }
+    if should_run_blocking_startup_persistent_prep(&cli) {
+        let prep_summary = run_startup_persistent_prep(&pool, &config, &cli).await?;
+        info!(
+            refreshed_manifest_batches = prep_summary.refreshed_manifest_batches,
+            refreshed_manifest_account_rows = prep_summary.refreshed_manifest_account_rows,
+            missing_manifest_files = prep_summary.missing_manifest_files,
+            backfilled_archive_expiries = prep_summary.backfilled_archive_expiries,
+            bootstrapped_hourly_rollups = prep_summary.bootstrapped_hourly_rollups,
+            "startup persistent prep finished"
+        );
+    }
+    if cli.retention_run_once && cli.command.is_some() {
+        bail!("--retention-run-once cannot be combined with maintenance subcommands");
+    }
+    if let Some(command) = &cli.command {
+        run_cli_command(&pool, &config, command).await?;
+        return Ok(());
+    }
     if cli.retention_run_once {
         let summary =
             run_data_retention_maintenance(&pool, &config, Some(cli.retention_dry_run), None)
@@ -603,6 +740,7 @@ async fn main() -> Result<()> {
         prompt_cache_conversation_cache: Arc::new(Mutex::new(
             PromptCacheConversationsCacheState::default(),
         )),
+        maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         upstream_accounts,
     });
 
@@ -612,6 +750,45 @@ async fn main() -> Result<()> {
         let _ = signal_listener.await;
     })
     .await
+}
+
+async fn run_cli_command(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    command: &CliCommand,
+) -> Result<()> {
+    let raw_path_fallback_root = config.database_path.parent();
+    match command {
+        CliCommand::Maintenance(args) => match &args.command {
+            MaintenanceCommand::RawCompression(opts) => {
+                let summary = compress_cold_proxy_raw_payloads_with_budget(
+                    pool,
+                    config,
+                    raw_path_fallback_root,
+                    opts.dry_run,
+                    None,
+                )
+                .await?;
+                let backlog = load_raw_compression_backlog_snapshot(pool, config).await?;
+                info!(
+                    dry_run = opts.dry_run,
+                    ?summary,
+                    ?backlog,
+                    "maintenance raw compression finished"
+                );
+            }
+            MaintenanceCommand::ArchiveUpstreamActivityManifest(opts) => {
+                let summary =
+                    refresh_archive_upstream_activity_manifest(pool, opts.dry_run).await?;
+                info!(
+                    dry_run = opts.dry_run,
+                    ?summary,
+                    "maintenance archive upstream activity manifest finished"
+                );
+            }
+        },
+    }
+    Ok(())
 }
 
 fn begin_runtime_shutdown_if_requested<F>(
@@ -1345,11 +1522,14 @@ struct StartupBackfillRunState {
     scanned: u64,
     updated: u64,
     hit_scan_limit: bool,
+    force_idle: bool,
     samples: Vec<String>,
 }
 
 fn startup_backfill_next_delay(run: &StartupBackfillRunState, zero_update_streak: u32) -> Duration {
-    if run.hit_scan_limit || run.updated > 0 {
+    if run.force_idle {
+        Duration::from_secs(STARTUP_BACKFILL_IDLE_INTERVAL_SECS)
+    } else if run.hit_scan_limit || run.updated > 0 {
         Duration::from_secs(STARTUP_BACKFILL_ACTIVE_INTERVAL_SECS)
     } else if run.scanned == 0 || zero_update_streak > 0 {
         Duration::from_secs(STARTUP_BACKFILL_IDLE_INTERVAL_SECS)
@@ -1713,6 +1893,7 @@ async fn run_startup_backfill_task(
                     scanned: outcome.summary.scanned,
                     updated: outcome.summary.updated,
                     hit_scan_limit: outcome.hit_budget,
+                    force_idle: false,
                     samples: outcome.samples,
                 },
                 detail,
@@ -1743,6 +1924,7 @@ async fn run_startup_backfill_task(
                     scanned: outcome.summary.scanned,
                     updated: outcome.summary.updated,
                     hit_scan_limit: outcome.hit_budget,
+                    force_idle: false,
                     samples: outcome.samples,
                 },
                 detail,
@@ -1769,6 +1951,7 @@ async fn run_startup_backfill_task(
                     scanned: outcome.summary.scanned,
                     updated: outcome.summary.updated,
                     hit_scan_limit: outcome.hit_budget,
+                    force_idle: false,
                     samples: outcome.samples,
                 },
                 detail,
@@ -1795,6 +1978,7 @@ async fn run_startup_backfill_task(
                     scanned: outcome.summary.scanned,
                     updated: outcome.summary.updated,
                     hit_scan_limit: outcome.hit_budget,
+                    force_idle: false,
                     samples: outcome.samples,
                 },
                 detail,
@@ -1819,6 +2003,7 @@ async fn run_startup_backfill_task(
                     scanned: outcome.summary.scanned,
                     updated: outcome.summary.updated,
                     hit_scan_limit: outcome.hit_budget,
+                    force_idle: false,
                     samples: outcome.samples,
                 },
                 detail,
@@ -1845,6 +2030,7 @@ async fn run_startup_backfill_task(
                     scanned: outcome.summary.scanned,
                     updated: outcome.summary.updated,
                     hit_scan_limit: outcome.hit_budget,
+                    force_idle: false,
                     samples: outcome.samples,
                 },
                 detail,
@@ -1865,6 +2051,7 @@ async fn run_startup_backfill_task(
                     scanned: outcome.summary.scanned,
                     updated: outcome.summary.updated,
                     hit_scan_limit: outcome.hit_budget,
+                    force_idle: false,
                     samples: outcome.samples,
                 },
                 "failure classification recalculated".to_string(),
@@ -1881,6 +2068,7 @@ async fn run_startup_backfill_task(
                     scanned: 0,
                     updated: updated_accounts,
                     hit_scan_limit: false,
+                    force_idle: false,
                     samples: Vec::new(),
                 },
                 format!("pending_accounts={pending_accounts}"),
@@ -1895,15 +2083,21 @@ async fn run_startup_backfill_task(
             .await?;
             let pending_accounts =
                 count_upstream_accounts_missing_last_activity(&state.pool).await?;
+            let force_idle = summary.waiting_for_manifest_backfill
+                || (pending_accounts > 0 && !summary.hit_budget && summary.updated_accounts == 0);
             Ok((
                 StartupBackfillRunState {
                     next_cursor_id: cursor_id,
                     scanned: summary.scanned_batches,
                     updated: summary.updated_accounts,
                     hit_scan_limit: pending_accounts > 0 && summary.hit_budget,
+                    force_idle,
                     samples: Vec::new(),
                 },
-                format!("pending_accounts={pending_accounts}"),
+                format!(
+                    "pending_accounts={pending_accounts} waiting_for_manifest_backfill={}",
+                    summary.waiting_for_manifest_backfill
+                ),
             ))
         }
     }
@@ -1917,6 +2111,24 @@ fn spawn_startup_backfill_maintenance(
         if cancel.is_cancelled() {
             info!("startup backfill maintenance skipped because shutdown is already in progress");
             return;
+        }
+        let prep_cli = CliArgs::default();
+        if should_run_startup_persistent_prep(&prep_cli) {
+            match run_startup_persistent_prep_inner(&state.pool, &state.config, &prep_cli, false)
+                .await
+            {
+                Ok(summary) => {
+                    info!(
+                        refreshed_manifest_batches = summary.refreshed_manifest_batches,
+                        refreshed_manifest_account_rows = summary.refreshed_manifest_account_rows,
+                        missing_manifest_files = summary.missing_manifest_files,
+                        backfilled_archive_expiries = summary.backfilled_archive_expiries,
+                        bootstrapped_hourly_rollups = summary.bootstrapped_hourly_rollups,
+                        "startup background prep finished"
+                    );
+                }
+                Err(err) => warn!(error = %err, "startup background prep failed"),
+            }
         }
         run_startup_backfill_maintenance_pass(state.clone(), &cancel).await;
 
@@ -2112,17 +2324,29 @@ struct InvocationArchiveCandidate {
 }
 
 #[derive(Debug, FromRow, Clone)]
-struct InvocationRawCompressionCandidate {
+struct InvocationRawCompressionFieldCandidate {
     id: i64,
     occurred_at: String,
-    request_raw_path: Option<String>,
-    response_raw_path: Option<String>,
+    raw_path: String,
 }
 
 #[derive(Debug, FromRow)]
 struct ArchiveBatchFileRow {
     _id: i64,
     file_path: String,
+}
+
+#[derive(Debug, FromRow)]
+struct ArchiveManifestBatchRow {
+    id: i64,
+    file_path: String,
+}
+
+#[derive(Debug, FromRow)]
+struct RawCompressionBacklogAggRow {
+    uncompressed_count: i64,
+    uncompressed_bytes: Option<i64>,
+    oldest_occurred_at: Option<String>,
 }
 
 #[derive(Debug, FromRow)]
@@ -2136,6 +2360,7 @@ struct ArchiveBackfillSummary {
     scanned_batches: u64,
     updated_accounts: u64,
     hit_budget: bool,
+    waiting_for_manifest_backfill: bool,
 }
 
 const HOURLY_ROLLUP_DATASET_INVOCATIONS: &str = "codex_invocations";
@@ -2220,6 +2445,32 @@ struct RawCompressionPassSummary {
     estimated_bytes_after: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RawPayloadField {
+    Request,
+    Response,
+}
+
+impl RawPayloadField {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Request => "request_raw_path",
+            Self::Response => "response_raw_path",
+        }
+    }
+
+    fn path_column(self) -> &'static str {
+        self.label()
+    }
+
+    fn codec_column(self) -> &'static str {
+        match self {
+            Self::Request => "request_raw_codec",
+            Self::Response => "response_raw_codec",
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct RawCompressionFileOutcome {
     candidate_counted: bool,
@@ -2228,7 +2479,33 @@ struct RawCompressionFileOutcome {
     bytes_after: u64,
     estimated_bytes_after: u64,
     new_db_path: Option<String>,
+    new_codec: Option<String>,
     old_exact_path: Option<PathBuf>,
+}
+
+#[derive(Debug, Default)]
+struct RawCompressionBacklogSnapshot {
+    oldest_uncompressed_age_secs: u64,
+    uncompressed_count: u64,
+    uncompressed_bytes: u64,
+    alert_level: RawCompressionAlertLevel,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+enum RawCompressionAlertLevel {
+    #[default]
+    Ok,
+    Warn,
+    Critical,
+}
+
+#[derive(Debug, Default)]
+struct ArchiveManifestRefreshSummary {
+    pending_batches: usize,
+    refreshed_batches: usize,
+    account_rows_written: usize,
+    missing_files: usize,
 }
 
 struct CountingWriter<W> {
@@ -2273,7 +2550,7 @@ struct DryRunBatchCount {
     row_count: i64,
 }
 
-const CODEX_INVOCATIONS_ARCHIVE_COLUMNS: &str = "id, invoke_id, occurred_at, source, model, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens, cost, status, error_message, failure_kind, failure_class, is_actionable, payload, raw_response, cost_estimated, price_version, request_raw_path, request_raw_size, request_raw_truncated, request_raw_truncated_reason, response_raw_path, response_raw_size, response_raw_truncated, response_raw_truncated_reason, detail_level, detail_pruned_at, detail_prune_reason, t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, created_at";
+const CODEX_INVOCATIONS_ARCHIVE_COLUMNS: &str = "id, invoke_id, occurred_at, source, model, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens, cost, status, error_message, failure_kind, failure_class, is_actionable, payload, raw_response, cost_estimated, price_version, request_raw_path, request_raw_codec, request_raw_size, request_raw_truncated, request_raw_truncated_reason, response_raw_path, response_raw_codec, response_raw_size, response_raw_truncated, response_raw_truncated_reason, detail_level, detail_pruned_at, detail_prune_reason, t_total_ms, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, created_at";
 const FORWARD_PROXY_ATTEMPTS_ARCHIVE_COLUMNS: &str =
     "id, proxy_key, occurred_at, is_success, latency_ms, failure_kind, is_probe";
 const POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_COLUMNS: &str = "id, invoke_id, occurred_at, endpoint, route_mode, sticky_key, upstream_account_id, upstream_route_key, attempt_index, distinct_account_index, same_account_retry_index, requester_ip, started_at, finished_at, status, http_status, failure_kind, error_message, connect_latency_ms, first_byte_latency_ms, stream_latency_ms, upstream_request_id, compact_support_status, compact_support_reason, created_at";
@@ -2303,10 +2580,12 @@ CREATE TABLE IF NOT EXISTS archive_db.codex_invocations (
     cost_estimated INTEGER NOT NULL DEFAULT 0,
     price_version TEXT,
     request_raw_path TEXT,
+    request_raw_codec TEXT NOT NULL DEFAULT 'identity',
     request_raw_size INTEGER,
     request_raw_truncated INTEGER NOT NULL DEFAULT 0,
     request_raw_truncated_reason TEXT,
     response_raw_path TEXT,
+    response_raw_codec TEXT NOT NULL DEFAULT 'identity',
     response_raw_size INTEGER,
     response_raw_truncated INTEGER NOT NULL DEFAULT 0,
     response_raw_truncated_reason TEXT,
@@ -2530,6 +2809,9 @@ async fn run_data_retention_maintenance(
     summary.raw_bytes_before += raw_compression.bytes_before;
     summary.raw_bytes_after += raw_compression.bytes_after;
     summary.raw_bytes_after_estimated += raw_compression.estimated_bytes_after;
+    if !dry_run {
+        log_raw_compression_backlog_if_needed(pool, config).await?;
+    }
 
     if should_stop_data_retention_maintenance(shutdown) {
         return Ok(summary);
@@ -2669,52 +2951,140 @@ async fn compress_cold_proxy_raw_payloads(
     raw_path_fallback_root: Option<&Path>,
     dry_run: bool,
 ) -> Result<RawCompressionPassSummary> {
+    compress_cold_proxy_raw_payloads_with_budget(
+        pool,
+        config,
+        raw_path_fallback_root,
+        dry_run,
+        Some(config.retention_catchup_budget),
+    )
+    .await
+}
+
+async fn compress_cold_proxy_raw_payloads_with_budget(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    raw_path_fallback_root: Option<&Path>,
+    dry_run: bool,
+    catchup_budget: Option<Duration>,
+) -> Result<RawCompressionPassSummary> {
     if config.proxy_raw_compression == RawCompressionCodec::None {
         return Ok(RawCompressionPassSummary::default());
     }
 
+    let mut summary = RawCompressionPassSummary::default();
+    let started_at = Instant::now();
+    let batch_limit = if dry_run {
+        i64::MAX as usize
+    } else {
+        config.retention_batch_rows
+    };
+
+    loop {
+        let (request_summary, request_rows) = compress_cold_proxy_raw_payload_lane(
+            pool,
+            config,
+            raw_path_fallback_root,
+            dry_run,
+            RawPayloadField::Request,
+            batch_limit,
+        )
+        .await?;
+        accumulate_raw_compression_summary(&mut summary, request_summary);
+
+        let (response_summary, response_rows) = compress_cold_proxy_raw_payload_lane(
+            pool,
+            config,
+            raw_path_fallback_root,
+            dry_run,
+            RawPayloadField::Response,
+            batch_limit,
+        )
+        .await?;
+        accumulate_raw_compression_summary(&mut summary, response_summary);
+
+        if request_rows == 0 && response_rows == 0 {
+            break;
+        }
+        if dry_run {
+            break;
+        }
+        if let Some(limit) = catchup_budget
+            && started_at.elapsed() >= limit
+        {
+            break;
+        }
+    }
+
+    Ok(summary)
+}
+
+fn accumulate_raw_compression_summary(
+    target: &mut RawCompressionPassSummary,
+    next: RawCompressionPassSummary,
+) {
+    target.files_considered += next.files_considered;
+    target.files_compressed += next.files_compressed;
+    target.bytes_before += next.bytes_before;
+    target.bytes_after += next.bytes_after;
+    target.estimated_bytes_after += next.estimated_bytes_after;
+}
+
+async fn compress_cold_proxy_raw_payload_lane(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    raw_path_fallback_root: Option<&Path>,
+    dry_run: bool,
+    field: RawPayloadField,
+    batch_limit: usize,
+) -> Result<(RawCompressionPassSummary, usize)> {
     let cutoff = shanghai_local_cutoff_for_age_secs_string(config.proxy_raw_hot_secs);
     let prune_cutoff = shanghai_local_cutoff_string(config.invocation_success_full_days);
     let archive_cutoff = shanghai_local_cutoff_string(config.invocation_max_days);
+    let sql = format!(
+        r#"
+        SELECT id, occurred_at, {path_column} AS raw_path
+        FROM codex_invocations
+        WHERE occurred_at < ?1
+          AND occurred_at >= ?2
+          AND (
+            status != 'success'
+            OR detail_level IS NULL
+            OR detail_level != ?3
+            OR occurred_at >= ?4
+          )
+          AND {path_column} IS NOT NULL
+          AND {codec_column} = ?5
+          AND (
+            ?6 IS NULL
+            OR occurred_at > ?6
+            OR (occurred_at = ?6 AND id > ?7)
+          )
+        ORDER BY occurred_at ASC, id ASC
+        LIMIT ?8
+        "#,
+        path_column = field.path_column(),
+        codec_column = field.codec_column(),
+    );
+
     let mut summary = RawCompressionPassSummary::default();
+    let mut rows_processed = 0usize;
     let mut last_seen_occurred_at: Option<String> = None;
     let mut last_seen_id = 0_i64;
 
-    loop {
-        let candidates = sqlx::query_as::<_, InvocationRawCompressionCandidate>(
-            r#"
-            SELECT id, occurred_at, request_raw_path, response_raw_path
-            FROM codex_invocations
-            WHERE occurred_at < ?1
-              AND occurred_at >= ?2
-              AND (
-                status != 'success'
-                OR detail_level IS NULL
-                OR detail_level != ?3
-                OR occurred_at >= ?4
-              )
-              AND (
-                (request_raw_path IS NOT NULL AND request_raw_path NOT LIKE '%.gz')
-                OR (response_raw_path IS NOT NULL AND response_raw_path NOT LIKE '%.gz')
-              )
-              AND (
-                ?5 IS NULL
-                OR occurred_at > ?5
-                OR (occurred_at = ?5 AND id > ?6)
-              )
-            ORDER BY occurred_at ASC, id ASC
-            LIMIT ?7
-            "#,
-        )
-        .bind(&cutoff)
-        .bind(&archive_cutoff)
-        .bind(DETAIL_LEVEL_FULL)
-        .bind(&prune_cutoff)
-        .bind(last_seen_occurred_at.as_deref())
-        .bind(last_seen_id)
-        .bind(config.retention_batch_rows as i64)
-        .fetch_all(pool)
-        .await?;
+    while summary.files_considered < batch_limit {
+        let remaining = (batch_limit - summary.files_considered) as i64;
+        let candidates = sqlx::query_as::<_, InvocationRawCompressionFieldCandidate>(&sql)
+            .bind(&cutoff)
+            .bind(&archive_cutoff)
+            .bind(DETAIL_LEVEL_FULL)
+            .bind(&prune_cutoff)
+            .bind(RAW_CODEC_IDENTITY)
+            .bind(last_seen_occurred_at.as_deref())
+            .bind(last_seen_id)
+            .bind(remaining.max(1))
+            .fetch_all(pool)
+            .await?;
 
         if candidates.is_empty() {
             break;
@@ -2723,119 +3093,79 @@ async fn compress_cold_proxy_raw_payloads(
         for candidate in candidates {
             last_seen_occurred_at = Some(candidate.occurred_at.clone());
             last_seen_id = candidate.id;
-            let request_outcome = match maybe_compress_proxy_raw_path(
+            rows_processed += 1;
+
+            let outcome = match maybe_compress_proxy_raw_path(
                 pool,
                 candidate.id,
-                "request_raw_path",
-                candidate.request_raw_path.as_deref(),
+                field.label(),
+                Some(candidate.raw_path.as_str()),
                 config.proxy_raw_compression,
                 raw_path_fallback_root,
                 dry_run,
             )
             .await
             {
-                Ok(outcome) => Some(outcome),
+                Ok(outcome) => outcome,
                 Err(err) => {
                     warn!(
                         invocation_id = candidate.id,
-                        field = "request_raw_path",
+                        field = field.label(),
                         error = %err,
                         "failed to cold-compress raw payload file; continuing retention"
                     );
-                    None
+                    continue;
                 }
             };
-            let response_outcome = match maybe_compress_proxy_raw_path(
-                pool,
-                candidate.id,
-                "response_raw_path",
-                candidate.response_raw_path.as_deref(),
-                config.proxy_raw_compression,
-                raw_path_fallback_root,
-                dry_run,
-            )
-            .await
+
+            let next_path = outcome
+                .new_db_path
+                .clone()
+                .unwrap_or_else(|| candidate.raw_path.clone());
+            let next_codec = outcome
+                .new_codec
+                .clone()
+                .unwrap_or_else(|| raw_codec_from_path(Some(next_path.as_str())));
+
+            if !dry_run
+                && (next_path != candidate.raw_path || !raw_codec_is_identity(Some(&next_codec)))
             {
-                Ok(outcome) => Some(outcome),
-                Err(err) => {
-                    warn!(
-                        invocation_id = candidate.id,
-                        field = "response_raw_path",
-                        error = %err,
-                        "failed to cold-compress raw payload file; continuing retention"
-                    );
-                    None
-                }
-            };
-
-            let request_db_path = request_outcome
-                .as_ref()
-                .and_then(|outcome| outcome.new_db_path.clone())
-                .or_else(|| candidate.request_raw_path.clone());
-            let response_db_path = response_outcome
-                .as_ref()
-                .and_then(|outcome| outcome.new_db_path.clone())
-                .or_else(|| candidate.response_raw_path.clone());
-
-            if !dry_run {
-                let request_path_changed = request_db_path != candidate.request_raw_path;
-                let response_path_changed = response_db_path != candidate.response_raw_path;
-                if request_path_changed || response_path_changed {
-                    let mut tx = pool.begin().await?;
-                    sqlx::query(
-                        r#"
-                        UPDATE codex_invocations
-                        SET request_raw_path = ?1,
-                            response_raw_path = ?2
-                        WHERE id = ?3
-                        "#,
-                    )
-                    .bind(request_db_path.as_deref())
-                    .bind(response_db_path.as_deref())
+                let update_sql = format!(
+                    "UPDATE codex_invocations SET {path_column} = ?1, {codec_column} = ?2 WHERE id = ?3",
+                    path_column = field.path_column(),
+                    codec_column = field.codec_column(),
+                );
+                sqlx::query(&update_sql)
+                    .bind(&next_path)
+                    .bind(&next_codec)
                     .bind(candidate.id)
-                    .execute(tx.as_mut())
+                    .execute(pool)
                     .await?;
-                    tx.commit().await?;
-                }
 
-                if let Some(outcome) = request_outcome
-                    .as_ref()
-                    .filter(|outcome| outcome.compressed)
+                if let Some(path) = outcome.old_exact_path.as_deref()
+                    && next_path != candidate.raw_path
                 {
-                    delete_exact_proxy_raw_path(
-                        outcome.old_exact_path.as_deref(),
-                        raw_path_fallback_root,
-                    )?;
-                }
-                if let Some(outcome) = response_outcome
-                    .as_ref()
-                    .filter(|outcome| outcome.compressed)
-                {
-                    delete_exact_proxy_raw_path(
-                        outcome.old_exact_path.as_deref(),
-                        raw_path_fallback_root,
-                    )?;
+                    delete_exact_proxy_raw_path(Some(path), raw_path_fallback_root)?;
                 }
             }
 
-            for outcome in [request_outcome.as_ref(), response_outcome.as_ref()]
-                .into_iter()
-                .flatten()
-            {
-                if outcome.candidate_counted {
-                    summary.files_considered += 1;
-                }
-                if outcome.compressed {
-                    summary.files_compressed += 1;
-                }
-                summary.bytes_before += outcome.bytes_before;
-                summary.bytes_after += outcome.bytes_after;
-                summary.estimated_bytes_after += outcome.estimated_bytes_after;
+            if outcome.candidate_counted {
+                summary.files_considered += 1;
+            }
+            if outcome.compressed {
+                summary.files_compressed += 1;
+            }
+            summary.bytes_before += outcome.bytes_before;
+            summary.bytes_after += outcome.bytes_after;
+            summary.estimated_bytes_after += outcome.estimated_bytes_after;
+
+            if summary.files_considered >= batch_limit {
+                break;
             }
         }
     }
 
-    Ok(summary)
+    Ok((summary, rows_processed))
 }
 
 async fn maybe_compress_proxy_raw_path(
@@ -2853,6 +3183,7 @@ async fn maybe_compress_proxy_raw_path(
     if codec == RawCompressionCodec::None || raw_path.ends_with(".gz") {
         return Ok(RawCompressionFileOutcome {
             new_db_path: Some(raw_path.to_string()),
+            new_codec: Some(RAW_CODEC_GZIP.to_string()),
             ..RawCompressionFileOutcome::default()
         });
     }
@@ -2863,6 +3194,7 @@ async fn maybe_compress_proxy_raw_path(
         if existing_compressed.is_some() {
             return Ok(RawCompressionFileOutcome {
                 new_db_path: Some(raw_payload_compressed_db_path(raw_path)),
+                new_codec: Some(RAW_CODEC_GZIP.to_string()),
                 ..RawCompressionFileOutcome::default()
             });
         }
@@ -2874,6 +3206,7 @@ async fn maybe_compress_proxy_raw_path(
         );
         return Ok(RawCompressionFileOutcome {
             new_db_path: Some(raw_path.to_string()),
+            new_codec: Some(raw_codec_from_path(Some(raw_path))),
             ..RawCompressionFileOutcome::default()
         });
     };
@@ -2887,6 +3220,7 @@ async fn maybe_compress_proxy_raw_path(
     if !source_meta.is_file() {
         return Ok(RawCompressionFileOutcome {
             new_db_path: Some(raw_path.to_string()),
+            new_codec: Some(raw_codec_from_path(Some(raw_path))),
             ..RawCompressionFileOutcome::default()
         });
     }
@@ -2901,6 +3235,7 @@ async fn maybe_compress_proxy_raw_path(
             bytes_before,
             estimated_bytes_after,
             new_db_path: Some(target_db_path),
+            new_codec: Some(RAW_CODEC_GZIP.to_string()),
             old_exact_path: Some(source_path),
             ..RawCompressionFileOutcome::default()
         });
@@ -2913,6 +3248,7 @@ async fn maybe_compress_proxy_raw_path(
         bytes_before,
         bytes_after,
         new_db_path: Some(target_db_path),
+        new_codec: Some(RAW_CODEC_GZIP.to_string()),
         old_exact_path: Some(source_path),
         ..RawCompressionFileOutcome::default()
     })
@@ -3005,6 +3341,17 @@ fn raw_payload_compressed_db_path(raw_path: &str) -> String {
     } else {
         format!("{raw_path}.gz")
     }
+}
+
+fn raw_codec_from_path(raw_path: Option<&str>) -> String {
+    match raw_path {
+        Some(path) if path.ends_with(".gz") => RAW_CODEC_GZIP.to_string(),
+        _ => RAW_CODEC_IDENTITY.to_string(),
+    }
+}
+
+fn raw_codec_is_identity(raw_codec: Option<&str>) -> bool {
+    matches!(raw_codec, Some(RAW_CODEC_IDENTITY) | None)
 }
 
 fn raw_payload_compressed_file_path(path: &Path) -> PathBuf {
@@ -3163,13 +3510,13 @@ async fn prune_old_invocation_details(
             set_archive_batch_coverage_from_local_rows(
                 &mut archive_outcome,
                 group.iter().map(|candidate| candidate.occurred_at.as_str()),
-                None,
+                Some(config.invocation_archive_ttl_days),
             )?;
             let pruned_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
             let mut tx = pool.begin().await?;
             upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
             let mut query = QueryBuilder::<Sqlite>::new(
-                "UPDATE codex_invocations SET payload = NULL, raw_response = '', request_raw_path = NULL, request_raw_size = NULL, request_raw_truncated = 0, request_raw_truncated_reason = NULL, response_raw_path = NULL, response_raw_size = NULL, response_raw_truncated = 0, response_raw_truncated_reason = NULL, detail_level = ",
+                "UPDATE codex_invocations SET payload = CASE WHEN json_valid(payload) AND json_extract(payload, '$.upstreamAccountId') IS NOT NULL THEN json_object('upstreamAccountId', json_extract(payload, '$.upstreamAccountId')) ELSE NULL END, raw_response = '', request_raw_path = NULL, request_raw_codec = 'identity', request_raw_size = NULL, request_raw_truncated = 0, request_raw_truncated_reason = NULL, response_raw_path = NULL, response_raw_codec = 'identity', response_raw_size = NULL, response_raw_truncated = 0, response_raw_truncated_reason = NULL, detail_level = ",
             );
             query
                 .push_bind(DETAIL_LEVEL_STRUCTURED_ONLY)
@@ -3316,6 +3663,11 @@ async fn archive_old_invocations(
                 group.iter().map(|candidate| candidate.occurred_at.as_str()),
                 None,
             )?;
+            archive_outcome.archive_expires_at =
+                Some(shanghai_archive_expiry_from_reference_timestamp(
+                    &format_utc_iso(Utc::now()),
+                    config.invocation_archive_ttl_days,
+                )?);
             let mut tx = pool.begin().await?;
             upsert_invocation_rollups(tx.as_mut(), &group).await?;
             upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
@@ -3509,9 +3861,181 @@ fn shanghai_archive_expiry_from_local_timestamp(
     archive_ttl_days: u64,
 ) -> Result<String> {
     let local = parse_shanghai_local_naive(value)?;
+    shanghai_archive_expiry_from_local_naive(local, archive_ttl_days)
+}
+
+fn shanghai_archive_expiry_from_reference_timestamp(
+    value: &str,
+    archive_ttl_days: u64,
+) -> Result<String> {
+    let local = match parse_to_utc_datetime(value) {
+        Some(value) => value.with_timezone(&Shanghai).naive_local(),
+        None => parse_shanghai_local_naive(value)?,
+    };
+    shanghai_archive_expiry_from_local_naive(local, archive_ttl_days)
+}
+
+fn shanghai_archive_expiry_from_local_naive(
+    local: NaiveDateTime,
+    archive_ttl_days: u64,
+) -> Result<String> {
     let expiry = start_of_local_day(local_naive_to_utc(local, Shanghai), Shanghai)
         + ChronoDuration::days(archive_ttl_days as i64 + 1);
     Ok(format_naive(expiry.with_timezone(&Shanghai).naive_local()))
+}
+
+#[derive(Debug, FromRow)]
+struct ArchiveExpiryBackfillCandidate {
+    id: i64,
+    coverage_end_at: String,
+}
+
+async fn backfill_invocation_archive_expiries(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+) -> Result<usize> {
+    let candidates = sqlx::query_as::<_, ArchiveExpiryBackfillCandidate>(
+        r#"
+        SELECT id, coverage_end_at
+        FROM archive_batches
+        WHERE dataset = 'codex_invocations'
+          AND status = ?1
+          AND coverage_end_at IS NOT NULL
+          AND archive_expires_at IS NULL
+        "#,
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .fetch_all(pool)
+    .await?;
+
+    let mut updated = 0usize;
+    for candidate in candidates {
+        let archive_expires_at = shanghai_archive_expiry_from_reference_timestamp(
+            &candidate.coverage_end_at,
+            config.invocation_archive_ttl_days,
+        )?;
+        sqlx::query("UPDATE archive_batches SET archive_expires_at = ?1 WHERE id = ?2")
+            .bind(archive_expires_at)
+            .bind(candidate.id)
+            .execute(pool)
+            .await?;
+        updated += 1;
+    }
+    Ok(updated)
+}
+
+fn classify_raw_compression_alert(
+    oldest_uncompressed_age_secs: u64,
+    uncompressed_bytes: u64,
+) -> RawCompressionAlertLevel {
+    const GIB: u64 = 1024 * 1024 * 1024;
+    if oldest_uncompressed_age_secs >= 48 * 3600 || uncompressed_bytes >= 20 * GIB {
+        RawCompressionAlertLevel::Critical
+    } else if oldest_uncompressed_age_secs >= 24 * 3600 || uncompressed_bytes >= 10 * GIB {
+        RawCompressionAlertLevel::Warn
+    } else {
+        RawCompressionAlertLevel::Ok
+    }
+}
+
+async fn load_raw_compression_backlog_snapshot(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+) -> Result<RawCompressionBacklogSnapshot> {
+    let cutoff = shanghai_local_cutoff_for_age_secs_string(config.proxy_raw_hot_secs);
+    let prune_cutoff = shanghai_local_cutoff_string(config.invocation_success_full_days);
+    let archive_cutoff = shanghai_local_cutoff_string(config.invocation_max_days);
+    let row = sqlx::query_as::<_, RawCompressionBacklogAggRow>(
+        r#"
+        SELECT
+            COUNT(*) AS uncompressed_count,
+            COALESCE(SUM(raw_size), 0) AS uncompressed_bytes,
+            MIN(occurred_at) AS oldest_occurred_at
+        FROM (
+            SELECT occurred_at, COALESCE(request_raw_size, 0) AS raw_size
+            FROM codex_invocations
+            WHERE occurred_at < ?1
+              AND occurred_at >= ?2
+              AND (
+                status != 'success'
+                OR detail_level IS NULL
+                OR detail_level != ?3
+                OR occurred_at >= ?4
+              )
+              AND request_raw_path IS NOT NULL
+              AND request_raw_codec = 'identity'
+            UNION ALL
+            SELECT occurred_at, COALESCE(response_raw_size, 0) AS raw_size
+            FROM codex_invocations
+            WHERE occurred_at < ?1
+              AND occurred_at >= ?2
+              AND (
+                status != 'success'
+                OR detail_level IS NULL
+                OR detail_level != ?3
+                OR occurred_at >= ?4
+              )
+              AND response_raw_path IS NOT NULL
+              AND response_raw_codec = 'identity'
+        )
+        "#,
+    )
+    .bind(&cutoff)
+    .bind(&archive_cutoff)
+    .bind(DETAIL_LEVEL_FULL)
+    .bind(&prune_cutoff)
+    .fetch_one(pool)
+    .await?;
+
+    let oldest_uncompressed_age_secs = row
+        .oldest_occurred_at
+        .as_deref()
+        .map(parse_shanghai_local_naive)
+        .transpose()?
+        .map(|oldest| {
+            let now = Utc::now().with_timezone(&Shanghai).naive_local();
+            now.signed_duration_since(oldest).num_seconds().max(0) as u64
+        })
+        .unwrap_or_default();
+    let uncompressed_count = row.uncompressed_count.max(0) as u64;
+    let uncompressed_bytes = row.uncompressed_bytes.unwrap_or_default().max(0) as u64;
+    let alert_level =
+        classify_raw_compression_alert(oldest_uncompressed_age_secs, uncompressed_bytes);
+    Ok(RawCompressionBacklogSnapshot {
+        oldest_uncompressed_age_secs,
+        uncompressed_count,
+        uncompressed_bytes,
+        alert_level,
+    })
+}
+
+async fn log_raw_compression_backlog_if_needed(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+) -> Result<()> {
+    let snapshot = load_raw_compression_backlog_snapshot(pool, config).await?;
+    match snapshot.alert_level {
+        RawCompressionAlertLevel::Ok => {}
+        RawCompressionAlertLevel::Warn => {
+            warn!(
+                oldest_uncompressed_age_secs = snapshot.oldest_uncompressed_age_secs,
+                uncompressed_count = snapshot.uncompressed_count,
+                uncompressed_bytes = snapshot.uncompressed_bytes,
+                alert_level = "warn",
+                "raw compression backlog is above warning threshold"
+            );
+        }
+        RawCompressionAlertLevel::Critical => {
+            error!(
+                oldest_uncompressed_age_secs = snapshot.oldest_uncompressed_age_secs,
+                uncompressed_count = snapshot.uncompressed_count,
+                uncompressed_bytes = snapshot.uncompressed_bytes,
+                alert_level = "critical",
+                "raw compression backlog is above critical threshold"
+            );
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, FromRow)]
@@ -3523,9 +4047,12 @@ struct ArchiveBatchCleanupCandidate {
 
 async fn cleanup_expired_archive_batches(
     pool: &Pool<Sqlite>,
-    _config: &AppConfig,
+    config: &AppConfig,
     dry_run: bool,
 ) -> Result<usize> {
+    if !dry_run {
+        backfill_invocation_archive_expiries(pool, config).await?;
+    }
     let cutoff = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
     let candidates = sqlx::query_as::<_, ArchiveBatchCleanupCandidate>(
         r#"
@@ -3570,6 +4097,10 @@ async fn cleanup_expired_archive_batches(
         }
 
         let mut tx = pool.begin().await?;
+        sqlx::query("DELETE FROM archive_batch_upstream_activity WHERE archive_batch_id = ?1")
+            .bind(candidate.id)
+            .execute(tx.as_mut())
+            .await?;
         sqlx::query("DELETE FROM archive_batches WHERE id = ?1")
             .bind(candidate.id)
             .execute(tx.as_mut())
@@ -3701,126 +4232,234 @@ async fn compact_old_quota_snapshots(
     Ok((rows_archived, archive_batches))
 }
 
-async fn backfill_upstream_account_last_activity_from_archives(
+async fn refresh_archive_upstream_activity_manifest(
     pool: &Pool<Sqlite>,
-    scan_limit: Option<u64>,
-    max_elapsed: Option<Duration>,
-) -> Result<ArchiveBackfillSummary> {
-    let started_at = Instant::now();
-    let pending_account_ids = sqlx::query_scalar::<_, i64>(
+    dry_run: bool,
+) -> Result<ArchiveManifestRefreshSummary> {
+    let batches = sqlx::query_as::<_, ArchiveManifestBatchRow>(
         r#"
-        SELECT id
-        FROM pool_upstream_accounts
-        WHERE last_activity_at IS NULL
-          AND last_activity_archive_backfill_completed = 0
-        "#,
-    )
-    .fetch_all(pool)
-    .await?;
-    if pending_account_ids.is_empty() {
-        return Ok(ArchiveBackfillSummary::default());
-    }
-
-    let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
-        r#"
-        SELECT id AS _id, file_path
+        SELECT id, file_path
         FROM archive_batches
-        WHERE dataset = 'codex_invocations' AND status = ?1
+        WHERE dataset = 'codex_invocations'
+          AND status = ?1
+          AND upstream_activity_manifest_refreshed_at IS NULL
         ORDER BY month_key DESC, created_at DESC, id DESC
         "#,
     )
     .bind(ARCHIVE_STATUS_COMPLETED)
     .fetch_all(pool)
     .await?;
-    if archive_files.is_empty() {
-        mark_archive_backfill_completed_for_accounts(pool, &pending_account_ids).await?;
+
+    let mut summary = ArchiveManifestRefreshSummary {
+        pending_batches: batches.len(),
+        ..ArchiveManifestRefreshSummary::default()
+    };
+
+    for batch in batches {
+        let archive_path = PathBuf::from(&batch.file_path);
+        if !archive_path.exists() {
+            summary.missing_files += 1;
+            warn!(
+                archive_batch_id = batch.id,
+                file_path = %archive_path.display(),
+                "archive upstream activity manifest rebuild skipped missing archive file and will retry later"
+            );
+            continue;
+        }
+
+        let values = match load_archive_upstream_activity_from_file(&archive_path).await {
+            Ok(values) => values,
+            Err(err) => {
+                warn!(
+                    archive_batch_id = batch.id,
+                    file_path = %archive_path.display(),
+                    error = %err,
+                    "archive upstream activity manifest rebuild failed and will retry later"
+                );
+                continue;
+            }
+        };
+        summary.refreshed_batches += 1;
+        summary.account_rows_written += values.len();
+        if dry_run {
+            continue;
+        }
+
+        let mut tx = pool.begin().await?;
+        write_archive_batch_upstream_activity(tx.as_mut(), batch.id, &values).await?;
+        tx.commit().await?;
+    }
+
+    Ok(summary)
+}
+
+async fn load_archive_upstream_activity_from_file(
+    archive_path: &Path,
+) -> Result<Vec<(i64, String)>> {
+    let temp_path = PathBuf::from(format!(
+        "{}.{}.sqlite",
+        archive_path.display(),
+        retention_temp_suffix()
+    ));
+    if temp_path.exists() {
+        let _ = fs::remove_file(&temp_path);
+    }
+    let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+    inflate_gzip_sqlite_file(archive_path, &temp_path)?;
+
+    let database_url = format!("sqlite://{}", temp_path.to_string_lossy());
+    let connect_opts = build_sqlite_connect_options(
+        &database_url,
+        Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
+    )?;
+    let archive_pool = SqlitePoolOptions::new()
+        .max_connections(1)
+        .connect_with(connect_opts)
+        .await
+        .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
+
+    let rows = sqlx::query_as::<_, ArchivedAccountLastActivityRow>(
+        r#"
+        SELECT account_id, MAX(occurred_at) AS last_activity_at
+        FROM (
+            SELECT
+                CASE
+                    WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER)
+                END AS account_id,
+                occurred_at
+            FROM codex_invocations
+        )
+        WHERE account_id IS NOT NULL
+        GROUP BY account_id
+        "#,
+    )
+    .fetch_all(&archive_pool)
+    .await?;
+
+    archive_pool.close().await;
+    drop(temp_cleanup);
+
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.account_id, row.last_activity_at))
+        .collect())
+}
+
+async fn backfill_upstream_account_last_activity_from_archives(
+    pool: &Pool<Sqlite>,
+    scan_limit: Option<u64>,
+    max_elapsed: Option<Duration>,
+) -> Result<ArchiveBackfillSummary> {
+    let total_pending_accounts = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM pool_upstream_accounts
+        WHERE last_activity_at IS NULL
+          AND last_activity_archive_backfill_completed = 0
+        "#,
+    )
+    .fetch_one(pool)
+    .await?
+    .max(0) as u64;
+    if total_pending_accounts == 0 {
+        return Ok(ArchiveBackfillSummary::default());
+    }
+
+    let pending_fetch_limit = scan_limit.unwrap_or(total_pending_accounts).max(1) as i64;
+    let pending_account_ids = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT id
+        FROM pool_upstream_accounts
+        WHERE last_activity_at IS NULL
+          AND last_activity_archive_backfill_completed = 0
+        ORDER BY id ASC
+        LIMIT ?1
+        "#,
+    )
+    .bind(pending_fetch_limit)
+    .fetch_all(pool)
+    .await?;
+
+    let pending_manifest_batches = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM archive_batches
+        WHERE dataset = 'codex_invocations'
+          AND status = ?1
+          AND upstream_activity_manifest_refreshed_at IS NULL
+        "#,
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .fetch_one(pool)
+    .await?;
+    if pending_manifest_batches > 0 {
+        return Ok(ArchiveBackfillSummary {
+            waiting_for_manifest_backfill: true,
+            ..ArchiveBackfillSummary::default()
+        });
+    }
+
+    let scanned_batches = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM archive_batches
+        WHERE dataset = 'codex_invocations'
+          AND status = ?1
+        "#,
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .fetch_one(pool)
+    .await?
+    .max(0) as u64;
+    if scanned_batches == 0 {
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET last_activity_archive_backfill_completed = 1
+            WHERE last_activity_at IS NULL
+              AND last_activity_archive_backfill_completed = 0
+            "#,
+        )
+        .execute(pool)
+        .await?;
         return Ok(ArchiveBackfillSummary::default());
     }
 
     let pending = pending_account_ids.into_iter().collect::<HashSet<_>>();
     let mut recovered = HashMap::<i64, String>::new();
-    let mut scanned_batches = 0_u64;
-    let mut exhausted_archives = true;
-    let mut hit_budget = false;
+    let pending_chunks = pending_account_ids_chunks(&pending);
+    let started_at = Instant::now();
+    let mut processed_account_ids = HashSet::new();
+    let mut hit_budget = total_pending_accounts > pending.len() as u64;
 
-    for archive_file in archive_files {
-        if startup_backfill_budget_reached(started_at, scanned_batches, scan_limit, max_elapsed) {
-            exhausted_archives = false;
+    for (chunk_idx, account_ids) in pending_chunks.iter().enumerate() {
+        if startup_backfill_budget_reached(
+            started_at,
+            processed_account_ids.len() as u64,
+            None,
+            max_elapsed,
+        ) {
             hit_budget = true;
             break;
         }
-        if recovered.len() == pending.len() {
-            exhausted_archives = false;
-            break;
+        for account_id in account_ids {
+            processed_account_ids.insert(*account_id);
         }
-
-        let archive_path = PathBuf::from(archive_file.file_path);
-        if !archive_path.exists() {
-            exhausted_archives = false;
-            continue;
-        }
-        scanned_batches += 1;
-
-        let temp_path = PathBuf::from(format!(
-            "{}.{}.sqlite",
-            archive_path.display(),
-            retention_temp_suffix()
-        ));
-        if temp_path.exists() {
-            let _ = fs::remove_file(&temp_path);
-        }
-        let temp_cleanup = TempSqliteCleanup(temp_path.clone());
-
-        inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
-        let database_url = format!("sqlite://{}", temp_path.to_string_lossy());
-        let connect_opts = build_sqlite_connect_options(
-            &database_url,
-            Duration::from_secs(DEFAULT_SQLITE_BUSY_TIMEOUT_SECS),
-        )?;
-        let archive_pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect_with(connect_opts)
-            .await
-            .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
-
-        let rows = {
-            const ACCOUNT_EXPR: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
-            let mut rows = Vec::new();
-            let remaining_account_ids = pending
-                .iter()
-                .copied()
-                .filter(|account_id| !recovered.contains_key(account_id))
-                .collect::<Vec<_>>();
-            for account_ids in remaining_account_ids.chunks(BACKFILL_ACCOUNT_BIND_BATCH_SIZE) {
-                let mut query = QueryBuilder::<Sqlite>::new(
-                    "SELECT account_id, MAX(occurred_at) AS last_activity_at FROM (SELECT ",
-                );
-                query
-                    .push(ACCOUNT_EXPR)
-                    .push(" AS account_id, occurred_at FROM codex_invocations WHERE ")
-                    .push(ACCOUNT_EXPR)
-                    .push(" IN (");
-                {
-                    let mut separated = query.separated(", ");
-                    for account_id in account_ids {
-                        separated.push_bind(account_id);
-                    }
-                }
-                query.push(")) WHERE account_id IS NOT NULL GROUP BY account_id");
-                rows.extend(
-                    query
-                        .build_query_as::<ArchivedAccountLastActivityRow>()
-                        .fetch_all(&archive_pool)
-                        .await?,
-                );
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT account_id, MAX(last_activity_at) AS last_activity_at FROM archive_batch_upstream_activity WHERE account_id IN (",
+        );
+        {
+            let mut separated = query.separated(", ");
+            for account_id in account_ids {
+                separated.push_bind(account_id);
             }
-            rows
-        };
-
-        archive_pool.close().await;
-        drop(temp_cleanup);
-
-        for row in rows {
+        }
+        query.push(") GROUP BY account_id");
+        for row in query
+            .build_query_as::<ArchivedAccountLastActivityRow>()
+            .fetch_all(pool)
+            .await?
+        {
             recovered
                 .entry(row.account_id)
                 .and_modify(|current| {
@@ -3830,21 +4469,34 @@ async fn backfill_upstream_account_last_activity_from_archives(
                 })
                 .or_insert(row.last_activity_at);
         }
+
+        if chunk_idx + 1 < pending_chunks.len()
+            && startup_backfill_budget_reached(
+                started_at,
+                processed_account_ids.len() as u64,
+                None,
+                max_elapsed,
+            )
+        {
+            hit_budget = true;
+            break;
+        }
     }
 
     if recovered.is_empty() {
-        if exhausted_archives {
-            let pending_account_ids = pending.iter().copied().collect::<Vec<_>>();
-            mark_archive_backfill_completed_for_accounts(pool, &pending_account_ids).await?;
+        let processed = processed_account_ids.iter().copied().collect::<Vec<_>>();
+        if !processed.is_empty() {
+            mark_archive_backfill_completed_for_accounts(pool, &processed).await?;
         }
         return Ok(ArchiveBackfillSummary {
-            scanned_batches,
+            scanned_batches: processed_account_ids.len() as u64,
             updated_accounts: 0,
             hit_budget,
+            waiting_for_manifest_backfill: false,
         });
     }
 
-    let unresolved: Vec<i64> = pending
+    let unresolved: Vec<i64> = processed_account_ids
         .iter()
         .copied()
         .filter(|account_id| !recovered.contains_key(account_id))
@@ -3868,16 +4520,27 @@ async fn backfill_upstream_account_last_activity_from_archives(
         .execute(tx.as_mut())
         .await?;
     }
-    if exhausted_archives && !unresolved.is_empty() {
+    if !unresolved.is_empty() {
         mark_archive_backfill_completed_for_accounts_tx(tx.as_mut(), &unresolved).await?;
     }
     tx.commit().await?;
 
     Ok(ArchiveBackfillSummary {
-        scanned_batches,
+        scanned_batches: processed_account_ids.len() as u64,
         updated_accounts,
         hit_budget,
+        waiting_for_manifest_backfill: false,
     })
+}
+
+fn pending_account_ids_chunks(pending: &HashSet<i64>) -> Vec<Vec<i64>> {
+    pending
+        .iter()
+        .copied()
+        .collect::<Vec<_>>()
+        .chunks(BACKFILL_ACCOUNT_BIND_BATCH_SIZE)
+        .map(|chunk| chunk.to_vec())
+        .collect()
 }
 
 async fn mark_archive_backfill_completed_for_accounts(
@@ -4015,7 +4678,9 @@ async fn archive_rows_into_month_batch(
             .execute(&mut *conn)
             .await
             .with_context(|| format!("failed to ensure archive schema for {}", spec.dataset))?;
-        if spec.dataset == "pool_upstream_request_attempts" {
+        if spec.dataset == "codex_invocations" {
+            ensure_codex_invocations_archive_schema(&mut conn).await?;
+        } else if spec.dataset == "pool_upstream_request_attempts" {
             ensure_pool_upstream_request_attempts_archive_schema(&mut conn).await?;
         }
 
@@ -4173,9 +4838,57 @@ async fn upsert_archive_batch_manifest(
     .bind(batch.archive_expires_at.as_deref())
     .execute(&mut *tx)
     .await?;
+    let archive_batch_id = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT id
+        FROM archive_batches
+        WHERE dataset = ?1
+          AND month_key = ?2
+          AND file_path = ?3
+        LIMIT 1
+        "#,
+    )
+    .bind(batch.dataset)
+    .bind(&batch.month_key)
+    .bind(&batch.file_path)
+    .fetch_one(&mut *tx)
+    .await?;
+    if batch.dataset == "codex_invocations" {
+        write_archive_batch_upstream_activity(tx, archive_batch_id, &batch.upstream_last_activity)
+            .await?;
+    }
     if batch.dataset == "codex_invocations" && !batch.upstream_last_activity.is_empty() {
         upsert_archived_upstream_last_activity(tx, &batch.upstream_last_activity).await?;
     }
+    Ok(())
+}
+
+async fn write_archive_batch_upstream_activity(
+    tx: &mut sqlx::SqliteConnection,
+    archive_batch_id: i64,
+    values: &[(i64, String)],
+) -> Result<()> {
+    sqlx::query("DELETE FROM archive_batch_upstream_activity WHERE archive_batch_id = ?1")
+        .bind(archive_batch_id)
+        .execute(&mut *tx)
+        .await?;
+    for chunk in values.chunks(BACKFILL_ACCOUNT_BIND_BATCH_SIZE) {
+        let mut insert = QueryBuilder::<Sqlite>::new(
+            "INSERT INTO archive_batch_upstream_activity (archive_batch_id, account_id, last_activity_at) ",
+        );
+        insert.push_values(chunk, |mut row, (account_id, last_activity_at)| {
+            row.push_bind(archive_batch_id)
+                .push_bind(account_id)
+                .push_bind(last_activity_at);
+        });
+        insert.build().execute(&mut *tx).await?;
+    }
+    sqlx::query(
+        "UPDATE archive_batches SET upstream_activity_manifest_refreshed_at = datetime('now') WHERE id = ?1",
+    )
+    .bind(archive_batch_id)
+    .execute(&mut *tx)
+    .await?;
     Ok(())
 }
 
@@ -6432,10 +7145,12 @@ fn codex_invocations_create_sql(table_name: &str) -> String {
             cost_estimated INTEGER NOT NULL DEFAULT 0,
             price_version TEXT,
             request_raw_path TEXT,
+            request_raw_codec TEXT NOT NULL DEFAULT 'identity',
             request_raw_size INTEGER,
             request_raw_truncated INTEGER NOT NULL DEFAULT 0,
             request_raw_truncated_reason TEXT,
             response_raw_path TEXT,
+            response_raw_codec TEXT NOT NULL DEFAULT 'identity',
             response_raw_size INTEGER,
             response_raw_truncated INTEGER NOT NULL DEFAULT 0,
             response_raw_truncated_reason TEXT,
@@ -6520,6 +7235,56 @@ async fn ensure_pool_upstream_request_attempts_archive_schema(
                 })?;
         }
     }
+    Ok(())
+}
+
+async fn ensure_codex_invocations_archive_schema(conn: &mut SqliteConnection) -> Result<()> {
+    let archive_columns =
+        load_sqlite_table_columns_from_connection(conn, Some("archive_db"), "codex_invocations")
+            .await?;
+    for (column, ty) in [
+        ("request_raw_codec", "TEXT NOT NULL DEFAULT 'identity'"),
+        ("response_raw_codec", "TEXT NOT NULL DEFAULT 'identity'"),
+    ] {
+        if !archive_columns.contains(column) {
+            let statement =
+                format!("ALTER TABLE archive_db.codex_invocations ADD COLUMN {column} {ty}");
+            sqlx::query(&statement)
+                .execute(&mut *conn)
+                .await
+                .with_context(|| {
+                    format!("failed to add archive_db.codex_invocations column {column}")
+                })?;
+        }
+    }
+    sqlx::query(
+        r#"
+        UPDATE archive_db.codex_invocations
+        SET request_raw_codec = CASE
+                WHEN request_raw_path IS NOT NULL AND request_raw_path LIKE '%.gz' THEN 'gzip'
+                ELSE 'identity'
+            END
+        WHERE COALESCE(TRIM(request_raw_codec), '') = ''
+           OR (request_raw_codec = 'identity' AND request_raw_path LIKE '%.gz')
+        "#,
+    )
+    .execute(&mut *conn)
+    .await
+    .context("failed to backfill archive_db.codex_invocations request_raw_codec")?;
+    sqlx::query(
+        r#"
+        UPDATE archive_db.codex_invocations
+        SET response_raw_codec = CASE
+                WHEN response_raw_path IS NOT NULL AND response_raw_path LIKE '%.gz' THEN 'gzip'
+                ELSE 'identity'
+            END
+        WHERE COALESCE(TRIM(response_raw_codec), '') = ''
+           OR (response_raw_codec = 'identity' AND response_raw_path LIKE '%.gz')
+        "#,
+    )
+    .execute(&mut *conn)
+    .await
+    .context("failed to backfill archive_db.codex_invocations response_raw_codec")?;
     Ok(())
 }
 
@@ -6609,10 +7374,12 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("cost_estimated", "INTEGER NOT NULL DEFAULT 0"),
         ("price_version", "TEXT"),
         ("request_raw_path", "TEXT"),
+        ("request_raw_codec", "TEXT NOT NULL DEFAULT 'identity'"),
         ("request_raw_size", "INTEGER"),
         ("request_raw_truncated", "INTEGER NOT NULL DEFAULT 0"),
         ("request_raw_truncated_reason", "TEXT"),
         ("response_raw_path", "TEXT"),
+        ("response_raw_codec", "TEXT NOT NULL DEFAULT 'identity'"),
         ("response_raw_size", "INTEGER"),
         ("response_raw_truncated", "INTEGER NOT NULL DEFAULT 0"),
         ("response_raw_truncated_reason", "TEXT"),
@@ -6636,6 +7403,36 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
                 .with_context(|| format!("failed to add column {column}"))?;
         }
     }
+
+    sqlx::query(
+        r#"
+        UPDATE codex_invocations
+        SET request_raw_codec = CASE
+                WHEN request_raw_path IS NOT NULL AND request_raw_path LIKE '%.gz' THEN 'gzip'
+                ELSE 'identity'
+            END
+        WHERE COALESCE(TRIM(request_raw_codec), '') = ''
+           OR (request_raw_codec = 'identity' AND request_raw_path LIKE '%.gz')
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to backfill codex_invocations request_raw_codec")?;
+
+    sqlx::query(
+        r#"
+        UPDATE codex_invocations
+        SET response_raw_codec = CASE
+                WHEN response_raw_path IS NOT NULL AND response_raw_path LIKE '%.gz' THEN 'gzip'
+                ELSE 'identity'
+            END
+        WHERE COALESCE(TRIM(response_raw_codec), '') = ''
+           OR (response_raw_codec = 'identity' AND response_raw_path LIKE '%.gz')
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to backfill codex_invocations response_raw_codec")?;
 
     // Speed up time-range scans and ordering on the stats endpoints
     sqlx::query(
@@ -6863,6 +7660,30 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     sqlx::query(
         r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_request_raw_pending
+        ON codex_invocations (occurred_at, id)
+        WHERE request_raw_path IS NOT NULL
+          AND request_raw_codec = 'identity'
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_request_raw_pending")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_codex_invocations_response_raw_pending
+        ON codex_invocations (occurred_at, id)
+        WHERE response_raw_path IS NOT NULL
+          AND response_raw_codec = 'identity'
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_codex_invocations_response_raw_pending")?;
+
+    sqlx::query(
+        r#"
         CREATE TABLE IF NOT EXISTS codex_quota_snapshots (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             captured_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -7000,6 +7821,7 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("coverage_start_at", "TEXT"),
         ("coverage_end_at", "TEXT"),
         ("archive_expires_at", "TEXT"),
+        ("upstream_activity_manifest_refreshed_at", "TEXT"),
     ] {
         if !archive_batch_columns.contains(column) {
             let statement = format!("ALTER TABLE archive_batches ADD COLUMN {column} {ty}");
@@ -7019,6 +7841,50 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_archive_batches_dataset_month")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_archive_batches_invocation_manifest_pending
+        ON archive_batches (dataset, status, upstream_activity_manifest_refreshed_at, month_key, id)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_archive_batches_invocation_manifest_pending")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS archive_batch_upstream_activity (
+            archive_batch_id INTEGER NOT NULL,
+            account_id INTEGER NOT NULL,
+            last_activity_at TEXT NOT NULL,
+            PRIMARY KEY (archive_batch_id, account_id)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure archive_batch_upstream_activity table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_archive_batch_upstream_activity_account_last_activity
+        ON archive_batch_upstream_activity (account_id, last_activity_at)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_archive_batch_upstream_activity_account_last_activity")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_archive_batch_upstream_activity_batch
+        ON archive_batch_upstream_activity (archive_batch_id)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_archive_batch_upstream_activity_batch")?;
 
     sqlx::query(
         r#"
@@ -18564,6 +19430,7 @@ struct AppState {
     pricing_settings_update_lock: Arc<Mutex<()>>,
     pricing_catalog: Arc<RwLock<PricingCatalog>>,
     prompt_cache_conversation_cache: Arc<Mutex<PromptCacheConversationsCacheState>>,
+    maintenance_stats_cache: Arc<Mutex<StatsMaintenanceCacheState>>,
     upstream_accounts: Arc<UpstreamAccountsRuntime>,
 }
 
@@ -19552,9 +20419,11 @@ struct AppConfig {
     retention_dry_run: bool,
     retention_interval: Duration,
     retention_batch_rows: usize,
+    retention_catchup_budget: Duration,
     archive_dir: PathBuf,
     invocation_success_full_days: u64,
     invocation_max_days: u64,
+    invocation_archive_ttl_days: u64,
     forward_proxy_attempts_retention_days: u64,
     pool_upstream_request_attempts_retention_days: u64,
     pool_upstream_request_attempts_archive_ttl_days: u64,
@@ -19758,6 +20627,10 @@ impl AppConfig {
         )?);
         let retention_batch_rows =
             parse_usize_env_var(ENV_RETENTION_BATCH_ROWS, DEFAULT_RETENTION_BATCH_ROWS)?.max(1);
+        let retention_catchup_budget = Duration::from_secs(parse_u64_env_var(
+            ENV_RETENTION_CATCHUP_BUDGET_SECS,
+            DEFAULT_RETENTION_CATCHUP_BUDGET_SECS,
+        )?);
         let archive_dir = env::var(ENV_ARCHIVE_DIR)
             .ok()
             .map(PathBuf::from)
@@ -19768,6 +20641,10 @@ impl AppConfig {
         )?;
         let invocation_max_days =
             parse_u64_env_var(ENV_INVOCATION_MAX_DAYS, DEFAULT_INVOCATION_MAX_DAYS)?;
+        let invocation_archive_ttl_days = parse_u64_env_var(
+            ENV_INVOCATION_ARCHIVE_TTL_DAYS,
+            DEFAULT_INVOCATION_ARCHIVE_TTL_DAYS,
+        )?;
         let forward_proxy_attempts_retention_days = parse_u64_env_var(
             ENV_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS,
             DEFAULT_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS,
@@ -19920,9 +20797,11 @@ impl AppConfig {
             retention_dry_run,
             retention_interval,
             retention_batch_rows,
+            retention_catchup_budget,
             archive_dir,
             invocation_success_full_days,
             invocation_max_days,
+            invocation_archive_ttl_days,
             forward_proxy_attempts_retention_days,
             pool_upstream_request_attempts_retention_days,
             pool_upstream_request_attempts_archive_ttl_days,
