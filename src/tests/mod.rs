@@ -3299,6 +3299,7 @@ fn clone_state_with_upstream_accounts(
         pricing_settings_update_lock: state.pricing_settings_update_lock.clone(),
         pricing_catalog: state.pricing_catalog.clone(),
         prompt_cache_conversation_cache: state.prompt_cache_conversation_cache.clone(),
+        maintenance_stats_cache: state.maintenance_stats_cache.clone(),
         upstream_accounts,
     })
 }
