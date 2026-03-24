@@ -1321,7 +1321,7 @@ export default function UpstreamAccountsPage() {
       String(resolvedRoutingTimeouts.compactStreamTimeoutSecs)
   const routingCanSave =
     !routingDraftValidationError &&
-    (routingHasMaintenanceChange || routingHasTimeoutChange || (writesEnabled && routingHasApiKeyChange))
+    (routingHasMaintenanceChange || routingHasTimeoutChange || (routingWritesEnabled && routingHasApiKeyChange))
   const selectedRecoveryHint = resolveOauthRecoveryHint(
     selectedDetail?.kind ?? selected?.kind ?? '',
     accountHealthStatus(selectedDetail ?? selected),
@@ -1597,7 +1597,7 @@ export default function UpstreamAccountsPage() {
       maintenance?: PoolRoutingMaintenanceSettings
       timeouts?: PoolRoutingTimeoutSettings
     } = {}
-    if (writesEnabled && trimmedApiKey) {
+    if (routingWritesEnabled && trimmedApiKey) {
       payload.apiKey = trimmedApiKey
     }
     if (routingHasMaintenanceChange && parsedRoutingMaintenance) {
@@ -2478,7 +2478,7 @@ export default function UpstreamAccountsPage() {
           },
         ]}
         busy={isBusyAction(busyAction, 'routing')}
-        apiKeyWritesEnabled={writesEnabled}
+        apiKeyWritesEnabled={routingWritesEnabled}
         timeoutWritesEnabled={routingWritesEnabled}
         canSave={routingCanSave}
         onApiKeyChange={(value) => setRoutingDraft((current) => ({ ...current, apiKey: value }))}

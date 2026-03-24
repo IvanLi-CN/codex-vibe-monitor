@@ -765,6 +765,16 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect(compactInput).toBeInstanceOf(HTMLInputElement);
     expect((compactInput as HTMLInputElement).disabled).toBe(true);
 
+    const apiKeyInput = document.body.querySelector('input[name="poolRoutingSecret"]');
+    expect(apiKeyInput).toBeInstanceOf(HTMLInputElement);
+    expect((apiKeyInput as HTMLInputElement).disabled).toBe(true);
+
+    const generateButton = findButton(/Generate/i);
+    if (!(generateButton instanceof HTMLButtonElement)) {
+      throw new Error("missing generate button");
+    }
+    expect(generateButton.disabled).toBe(true);
+
     const saveButton = findButton(/Save settings/i);
     if (!(saveButton instanceof HTMLButtonElement)) {
       throw new Error("missing save button");
