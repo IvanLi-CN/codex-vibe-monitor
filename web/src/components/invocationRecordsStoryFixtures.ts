@@ -1,5 +1,6 @@
 import type {
   ApiInvocation,
+  ApiPoolUpstreamRequestAttempt,
   InvocationExceptionSummary,
   InvocationNetworkSummary,
   InvocationRecordsResponse,
@@ -202,6 +203,88 @@ export const STORYBOOK_INVOCATION_RECORDS: ApiInvocation[] = [
     tTotalMs: 1450,
   },
 ]
+
+function resolveStoryPoolAttemptStatus(record: ApiInvocation): ApiPoolUpstreamRequestAttempt['status'] {
+  if (record.status === 'success') return 'success'
+  if (record.poolAttemptTerminalReason === 'budget_exhausted_final') return 'budget_exhausted_final'
+  if (record.failureClass === 'client_failure') return 'http_failure'
+  return 'transport_failure'
+}
+
+export function createStoryPoolAttemptsByInvokeId(records: ApiInvocation[]) {
+  const attemptsByInvokeId: Record<string, ApiPoolUpstreamRequestAttempt[]> = {}
+
+  records.forEach((record, recordIndex) => {
+    if (record.routeMode !== 'pool') return
+
+    const attemptTotal = Math.max(1, record.poolAttemptCount ?? 1)
+    const distinctTotal = Math.max(1, Math.min(attemptTotal, record.poolDistinctAccountCount ?? attemptTotal))
+    const finalAccountId =
+      typeof record.upstreamAccountId === 'number' && Number.isFinite(record.upstreamAccountId)
+        ? Math.trunc(record.upstreamAccountId)
+        : 100 + recordIndex * 10 + distinctTotal
+    const baseAccountId = finalAccountId - (distinctTotal - 1)
+    const finalStatus = resolveStoryPoolAttemptStatus(record)
+
+    attemptsByInvokeId[record.invokeId] = Array.from({ length: attemptTotal }, (_, attemptIndex) => {
+      const isLastAttempt = attemptIndex === attemptTotal - 1
+      const distinctAccountIndex = Math.min(distinctTotal, attemptIndex + 1)
+      const sameAccountRetryIndex = attemptIndex < distinctTotal ? 1 : attemptIndex - distinctTotal + 2
+      const upstreamAccountId = isLastAttempt ? finalAccountId : baseAccountId + distinctAccountIndex - 1
+      const upstreamAccountName =
+        isLastAttempt && record.upstreamAccountName?.trim()
+          ? record.upstreamAccountName
+          : `Pool Candidate ${upstreamAccountId}`
+      const status = isLastAttempt ? finalStatus : attemptIndex % 2 === 0 ? 'transport_failure' : 'http_failure'
+      const startedAtMs = Date.parse(record.occurredAt) - (attemptTotal - attemptIndex) * 900
+      const finishedAtMs = startedAtMs + 240 + attemptIndex * 90
+
+      return {
+        id: record.id * 100 + attemptIndex + 1,
+        invokeId: record.invokeId,
+        occurredAt: record.occurredAt,
+        endpoint: record.endpoint ?? '/v1/responses',
+        attemptIndex: attemptIndex + 1,
+        distinctAccountIndex,
+        sameAccountRetryIndex,
+        status,
+        httpStatus:
+          status === 'success' ? 200 : status === 'http_failure' ? (isLastAttempt ? 400 : 429) : null,
+        failureKind:
+          status === 'success'
+            ? null
+            : status === 'http_failure'
+              ? isLastAttempt
+                ? record.failureKind ?? 'invalid_request'
+                : 'rate_limit'
+              : 'connect_timeout',
+        errorMessage:
+          status === 'success'
+            ? null
+            : status === 'http_failure'
+              ? isLastAttempt
+                ? record.errorMessage ?? 'upstream rejected request'
+                : 'upstream returned 429'
+              : 'forward proxy connect timeout',
+        connectLatencyMs: status === 'transport_failure' ? 160 + attemptIndex * 20 : 55 + attemptIndex * 12,
+        firstByteLatencyMs:
+          status === 'success' ? (record.tUpstreamTtfbMs ?? 180) : status === 'http_failure' ? 210 + attemptIndex * 18 : null,
+        streamLatencyMs:
+          status === 'success' && typeof record.tTotalMs === 'number' && Number.isFinite(record.tTotalMs)
+            ? Math.max(80, record.tTotalMs - (record.tUpstreamTtfbMs ?? 180))
+            : null,
+        upstreamRequestId: `${record.invokeId}-attempt-${attemptIndex + 1}`,
+        startedAt: new Date(startedAtMs).toISOString(),
+        finishedAt: new Date(finishedAtMs).toISOString(),
+        createdAt: new Date(finishedAtMs).toISOString(),
+        upstreamAccountId,
+        upstreamAccountName,
+      }
+    })
+  })
+
+  return attemptsByInvokeId
+}
 
 function sum(values: number[]) {
   return values.reduce((total, value) => total + value, 0)
