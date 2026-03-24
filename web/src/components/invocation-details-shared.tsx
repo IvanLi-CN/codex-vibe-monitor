@@ -570,6 +570,8 @@ export function useInvocationPoolAttempts(expandedRecord: ApiInvocation | null) 
   const [errorByInvokeId, setPoolAttemptErrorByInvokeId] = useState<Record<string, string | null | undefined>>({})
   const attemptsRef = useRef(attemptsByInvokeId)
   const loadingRef = useRef(loadingByInvokeId)
+  const loadedKeyRef = useRef<Record<string, string | undefined>>({})
+  const loadingKeyRef = useRef<Record<string, string | undefined>>({})
 
   useEffect(() => {
     attemptsRef.current = attemptsByInvokeId
@@ -582,15 +584,30 @@ export function useInvocationPoolAttempts(expandedRecord: ApiInvocation | null) 
   useEffect(() => {
     if (!expandedRecord || !isPoolRouteMode(expandedRecord.routeMode)) return
     const invokeId = expandedRecord.invokeId
-    if (attemptsRef.current[invokeId] || loadingRef.current[invokeId]) return
+    const normalizedStatus = expandedRecord.status?.trim().toLowerCase() ?? ''
+    const requestKey = [
+      normalizedStatus,
+      expandedRecord.poolAttemptCount ?? '',
+      expandedRecord.poolDistinctAccountCount ?? '',
+      expandedRecord.poolAttemptTerminalReason ?? '',
+    ].join('|')
+    const isInFlight = normalizedStatus === 'running' || normalizedStatus === 'pending'
+    const hasCachedAttempts = attemptsRef.current[invokeId] !== undefined
+    const loadedKey = loadedKeyRef.current[invokeId]
+    const loadingKey = loadingKeyRef.current[invokeId]
+
+    if (loadingRef.current[invokeId] && loadingKey === requestKey) return
+    if (hasCachedAttempts && loadedKey === requestKey && !isInFlight) return
 
     let cancelled = false
+    loadingKeyRef.current[invokeId] = requestKey
     setPoolAttemptLoadingByInvokeId((current) => ({ ...current, [invokeId]: true }))
     setPoolAttemptErrorByInvokeId((current) => ({ ...current, [invokeId]: null }))
 
     fetchInvocationPoolAttempts(invokeId)
       .then((attempts) => {
         if (cancelled) return
+        loadedKeyRef.current[invokeId] = requestKey
         setPoolAttemptsByInvokeId((current) => ({ ...current, [invokeId]: attempts }))
       })
       .catch((error) => {
@@ -599,14 +616,27 @@ export function useInvocationPoolAttempts(expandedRecord: ApiInvocation | null) 
         setPoolAttemptErrorByInvokeId((current) => ({ ...current, [invokeId]: message }))
       })
       .finally(() => {
-        if (cancelled) return
-        setPoolAttemptLoadingByInvokeId((current) => ({ ...current, [invokeId]: false }))
+        if (loadingKeyRef.current[invokeId] === requestKey) {
+          delete loadingKeyRef.current[invokeId]
+          setPoolAttemptLoadingByInvokeId((current) => ({ ...current, [invokeId]: false }))
+        }
       })
 
     return () => {
       cancelled = true
+      if (loadingKeyRef.current[invokeId] === requestKey) {
+        delete loadingKeyRef.current[invokeId]
+        setPoolAttemptLoadingByInvokeId((current) => ({ ...current, [invokeId]: false }))
+      }
     }
-  }, [expandedRecord])
+  }, [
+    expandedRecord?.invokeId,
+    expandedRecord?.routeMode,
+    expandedRecord?.status,
+    expandedRecord?.poolAttemptCount,
+    expandedRecord?.poolDistinctAccountCount,
+    expandedRecord?.poolAttemptTerminalReason,
+  ])
 
   return {
     attemptsByInvokeId,

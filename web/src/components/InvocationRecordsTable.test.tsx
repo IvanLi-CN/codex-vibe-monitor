@@ -3,7 +3,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { InvocationRecordsTable } from './InvocationRecordsTable'
-import type { ApiInvocation } from '../lib/api'
+import type { ApiInvocation, ApiPoolUpstreamRequestAttempt } from '../lib/api'
 
 const { apiMocks } = vi.hoisted(() => ({
   apiMocks: {
@@ -55,6 +55,12 @@ function render(ui: React.ReactNode) {
   host = document.createElement('div')
   document.body.appendChild(host)
   root = createRoot(host)
+  act(() => {
+    root?.render(ui)
+  })
+}
+
+function rerender(ui: React.ReactNode) {
   act(() => {
     root?.render(ui)
   })
@@ -227,5 +233,120 @@ describe('InvocationRecordsTable', () => {
 
     expect(host?.querySelector('[data-testid="pool-attempts-error"]')).not.toBeNull()
     expect(host?.textContent ?? '').toContain('table.poolAttempts.loadError: boom')
+  })
+
+  it('refetches pool attempts when an expanded in-flight record changes attempt counters', async () => {
+    apiMocks.fetchInvocationPoolAttempts
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: 10,
+          invokeId: 'invoke-pool-refresh',
+          occurredAt: '2026-03-10T00:00:00Z',
+          endpoint: '/v1/responses',
+          attemptIndex: 2,
+          distinctAccountIndex: 2,
+          sameAccountRetryIndex: 1,
+          status: 'transport_failure',
+          createdAt: '2026-03-10T00:00:02Z',
+          upstreamAccountId: 84,
+          upstreamAccountName: 'pool-account-84',
+        },
+      ])
+
+    const initialRecord = createRecord({
+      id: 4,
+      invokeId: 'invoke-pool-refresh',
+      routeMode: 'pool',
+      status: 'running',
+      upstreamAccountId: 42,
+      upstreamAccountName: 'pool-account-42',
+      poolAttemptCount: 1,
+      poolDistinctAccountCount: 1,
+    })
+
+    render(<InvocationRecordsTable focus="network" isLoading={false} records={[initialRecord]} />)
+
+    clickFirstToggle()
+    await waitFor(() => apiMocks.fetchInvocationPoolAttempts.mock.calls.length === 1)
+
+    rerender(
+      <InvocationRecordsTable
+        focus="network"
+        isLoading={false}
+        records={[
+          createRecord({
+            ...initialRecord,
+            poolAttemptCount: 2,
+            poolDistinctAccountCount: 2,
+          }),
+        ]}
+      />,
+    )
+
+    await waitFor(() => apiMocks.fetchInvocationPoolAttempts.mock.calls.length === 2)
+
+    expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenNthCalledWith(2, 'invoke-pool-refresh')
+    await waitFor(() => (host?.textContent ?? '').includes('pool-account-84'))
+  })
+
+  it('clears cancelled pool-attempt loading so re-expanding can fetch again', async () => {
+    let resolveFirstRequest!: (value: ApiPoolUpstreamRequestAttempt[]) => void
+
+    apiMocks.fetchInvocationPoolAttempts
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveFirstRequest = resolve
+          }),
+      )
+      .mockResolvedValueOnce([
+        {
+          id: 11,
+          invokeId: 'invoke-pool-cancel',
+          occurredAt: '2026-03-10T00:00:00Z',
+          endpoint: '/v1/responses',
+          attemptIndex: 1,
+          distinctAccountIndex: 1,
+          sameAccountRetryIndex: 1,
+          status: 'success',
+          createdAt: '2026-03-10T00:00:03Z',
+          upstreamAccountId: 52,
+          upstreamAccountName: 'pool-account-52',
+        },
+      ])
+
+    render(
+      <InvocationRecordsTable
+        focus="network"
+        isLoading={false}
+        records={[
+          createRecord({
+            id: 5,
+            invokeId: 'invoke-pool-cancel',
+            routeMode: 'pool',
+            upstreamAccountId: 52,
+            upstreamAccountName: 'pool-account-52',
+            poolAttemptCount: 1,
+            poolDistinctAccountCount: 1,
+          }),
+        ]}
+      />,
+    )
+
+    clickFirstToggle()
+    await waitFor(() => apiMocks.fetchInvocationPoolAttempts.mock.calls.length === 1)
+
+    const collapseButton = host?.querySelector('button[aria-label="records.table.hideDetails"]') as HTMLButtonElement | null
+    expect(collapseButton).not.toBeNull()
+    act(() => {
+      collapseButton?.click()
+    })
+
+    clickFirstToggle()
+    await waitFor(() => apiMocks.fetchInvocationPoolAttempts.mock.calls.length === 2)
+
+    resolveFirstRequest([])
+    await waitFor(() => (host?.textContent ?? '').includes('pool-account-52'))
   })
 })
