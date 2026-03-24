@@ -1453,6 +1453,114 @@ describe('InvocationTable', () => {
     expect(document.querySelector('[data-testid="pool-attempts-error"]')).toBeNull()
   })
 
+  it('re-fetches running pool attempts when the parent invocation summary changes', async () => {
+    apiMocks.fetchInvocationPoolAttempts
+      .mockResolvedValueOnce([
+        {
+          id: 31,
+          invokeId: 'invocation-refetch-running-attempts',
+          occurredAt: '2026-03-07T03:13:51Z',
+          endpoint: '/v1/responses',
+          upstreamAccountId: 7,
+          upstreamAccountName: 'pool-account-a',
+          attemptIndex: 1,
+          distinctAccountIndex: 1,
+          sameAccountRetryIndex: 1,
+          startedAt: '2026-03-07T03:13:51Z',
+          finishedAt: null,
+          status: 'pending',
+          phase: 'connecting',
+          httpStatus: null,
+          connectLatencyMs: null,
+          firstByteLatencyMs: null,
+          streamLatencyMs: null,
+          upstreamRequestId: null,
+          createdAt: '2026-03-07T03:13:51Z',
+        },
+      ])
+      .mockResolvedValueOnce([
+        {
+          id: 31,
+          invokeId: 'invocation-refetch-running-attempts',
+          occurredAt: '2026-03-07T03:13:51Z',
+          endpoint: '/v1/responses',
+          upstreamAccountId: 7,
+          upstreamAccountName: 'pool-account-a',
+          attemptIndex: 1,
+          distinctAccountIndex: 1,
+          sameAccountRetryIndex: 1,
+          startedAt: '2026-03-07T03:13:51Z',
+          finishedAt: null,
+          status: 'pending',
+          phase: 'waiting_first_byte',
+          httpStatus: null,
+          connectLatencyMs: 22,
+          firstByteLatencyMs: null,
+          streamLatencyMs: null,
+          upstreamRequestId: null,
+          createdAt: '2026-03-07T03:13:52Z',
+        },
+      ])
+
+    await renderInteractiveTable([
+      {
+        id: 70,
+        invokeId: 'invocation-refetch-running-attempts',
+        occurredAt: '2026-03-07T03:13:51Z',
+        createdAt: '2026-03-07T03:13:51Z',
+        source: 'proxy',
+        routeMode: 'pool',
+        upstreamAccountId: 7,
+        upstreamAccountName: 'pool-account-a',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'running',
+        poolAttemptCount: 1,
+      },
+    ])
+
+    const toggle = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.getAttribute('aria-expanded') === 'false',
+    )
+    expect(toggle).toBeTruthy()
+
+    await act(async () => {
+      toggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenNthCalledWith(
+      1,
+      'invocation-refetch-running-attempts',
+    )
+    await waitForCondition(() => document.body.textContent?.includes('连接中') === true)
+
+    await renderInteractiveTable([
+      {
+        id: 70,
+        invokeId: 'invocation-refetch-running-attempts',
+        occurredAt: '2026-03-07T03:13:51Z',
+        createdAt: '2026-03-07T03:13:51Z',
+        source: 'proxy',
+        routeMode: 'pool',
+        upstreamAccountId: 7,
+        upstreamAccountName: 'pool-account-a',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'running',
+        poolAttemptCount: 1,
+        tUpstreamConnectMs: 22,
+      },
+    ])
+
+    await waitForCondition(() => apiMocks.fetchInvocationPoolAttempts.mock.calls.length >= 2)
+    expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenNthCalledWith(
+      2,
+      'invocation-refetch-running-attempts',
+    )
+    await waitForCondition(() => document.body.textContent?.includes('等待首字节') === true)
+  })
+
   it('shows a clear non-pool empty state without fetching attempts', async () => {
     await renderInteractiveTable([
       {

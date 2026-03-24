@@ -689,6 +689,8 @@ function shouldReplacePoolAttemptSnapshot(
   return true
 }
 
+const MAX_BUFFERED_POOL_ATTEMPT_SNAPSHOTS = 12
+
 export function useInvocationPoolAttempts(expandedRecord: ApiInvocation | null) {
   const [attemptsByInvokeId, setPoolAttemptsByInvokeId] = useState<
     Record<string, ApiPoolUpstreamRequestAttempt[] | undefined>
@@ -697,10 +699,13 @@ export function useInvocationPoolAttempts(expandedRecord: ApiInvocation | null) 
   const [errorByInvokeId, setPoolAttemptErrorByInvokeId] = useState<Record<string, string | null | undefined>>({})
   const attemptsRef = useRef(attemptsByInvokeId)
   const loadingRef = useRef(loadingByInvokeId)
+  const activeExpandedInvokeIdRef = useRef<string | null>(null)
   const versionRef = useRef<Record<string, number | undefined>>({})
   const loadedKeyRef = useRef<Record<string, string | undefined>>({})
   const loadingKeyRef = useRef<Record<string, string | undefined>>({})
   const activeRequestIdRef = useRef<Record<string, number | undefined>>({})
+  const bufferedSnapshotsRef = useRef<Record<string, ApiPoolUpstreamRequestAttempt[] | undefined>>({})
+  const bufferedSnapshotOrderRef = useRef<string[]>([])
   const nextRequestIdRef = useRef(0)
 
   useEffect(() => {
@@ -712,20 +717,44 @@ export function useInvocationPoolAttempts(expandedRecord: ApiInvocation | null) 
   }, [loadingByInvokeId])
 
   useEffect(() => {
+    activeExpandedInvokeIdRef.current =
+      expandedRecord && isPoolRouteMode(expandedRecord.routeMode) ? expandedRecord.invokeId : null
+  }, [expandedRecord])
+
+  useEffect(() => {
     const unsubscribe = subscribeToSse((payload) => {
       if (payload.type !== 'pool_attempts') return
-      const existingAttempts = attemptsRef.current[payload.invokeId]
-      if (!shouldReplacePoolAttemptSnapshot(existingAttempts, payload.attempts)) return
+      const activeInvokeId = activeExpandedInvokeIdRef.current
+      const currentBuffered = bufferedSnapshotsRef.current[payload.invokeId]
+      const currentVisible =
+        payload.invokeId === activeInvokeId ? attemptsRef.current[payload.invokeId] : currentBuffered
+      if (!shouldReplacePoolAttemptSnapshot(currentVisible, payload.attempts)) return
+
+      const nextBuffered = { ...bufferedSnapshotsRef.current, [payload.invokeId]: payload.attempts }
+      const nextOrder = [
+        payload.invokeId,
+        ...bufferedSnapshotOrderRef.current.filter((invokeId) => invokeId !== payload.invokeId),
+      ]
+      while (nextOrder.length > MAX_BUFFERED_POOL_ATTEMPT_SNAPSHOTS) {
+        const evictedInvokeId = nextOrder.pop()
+        if (!evictedInvokeId) break
+        delete nextBuffered[evictedInvokeId]
+      }
+      bufferedSnapshotsRef.current = nextBuffered
+      bufferedSnapshotOrderRef.current = nextOrder
+      versionRef.current = {
+        ...versionRef.current,
+        [payload.invokeId]: (versionRef.current[payload.invokeId] ?? 0) + 1,
+      }
+      if (payload.invokeId !== activeInvokeId) {
+        return
+      }
 
       const nextAttempts = {
         ...attemptsRef.current,
         [payload.invokeId]: payload.attempts,
       }
       attemptsRef.current = nextAttempts
-      versionRef.current = {
-        ...versionRef.current,
-        [payload.invokeId]: (versionRef.current[payload.invokeId] ?? 0) + 1,
-      }
       setPoolAttemptsByInvokeId(nextAttempts)
       setPoolAttemptLoadingByInvokeId((current) => ({ ...current, [payload.invokeId]: false }))
       setPoolAttemptErrorByInvokeId((current) => ({ ...current, [payload.invokeId]: null }))
@@ -755,7 +784,18 @@ export function useInvocationPoolAttempts(expandedRecord: ApiInvocation | null) 
       expandedRecord.tUpstreamStreamMs ?? '',
     ].join('|')
     const isInFlight = normalizedStatus === 'running' || normalizedStatus === 'pending'
-    const cachedAttempts = attemptsRef.current[invokeId]
+    const bufferedAttempts = bufferedSnapshotsRef.current[invokeId]
+    const stateAttempts = attemptsRef.current[invokeId]
+    const cachedAttempts =
+      shouldReplacePoolAttemptSnapshot(stateAttempts, bufferedAttempts ?? []) && bufferedAttempts
+        ? bufferedAttempts
+        : stateAttempts
+    if (cachedAttempts !== stateAttempts) {
+      const nextAttempts = { ...attemptsRef.current, [invokeId]: cachedAttempts }
+      attemptsRef.current = nextAttempts
+      setPoolAttemptsByInvokeId(nextAttempts)
+      setPoolAttemptErrorByInvokeId((current) => ({ ...current, [invokeId]: null }))
+    }
     const hasCachedAttempts = cachedAttempts !== undefined
     const expectedAttemptCount =
       typeof expandedRecord.poolAttemptCount === 'number' && Number.isFinite(expandedRecord.poolAttemptCount)
@@ -767,10 +807,17 @@ export function useInvocationPoolAttempts(expandedRecord: ApiInvocation | null) 
     const shouldRefreshPendingTerminalAttempt =
       isInvocationDisplayTerminal(expandedRecord.status) &&
       (cachedAttempts?.some((attempt) => !isPoolAttemptTerminal(attempt)) ?? false)
+    const shouldRefreshInFlightKeyMismatch =
+      isInFlight &&
+      hasCachedAttempts &&
+      loadedKey !== undefined &&
+      loadedKey !== requestKey &&
+      (cachedAttempts?.some((attempt) => !isPoolAttemptTerminal(attempt)) ?? false)
     const shouldRefetch =
       cachedAttempts === undefined ||
       (expectedAttemptCount != null && cachedAttemptCount < expectedAttemptCount) ||
       shouldRefreshPendingTerminalAttempt ||
+      shouldRefreshInFlightKeyMismatch ||
       (hasCachedAttempts && loadedKey !== requestKey && !isInFlight)
 
     if (loadingRef.current[invokeId] && loadingKey === requestKey) return
