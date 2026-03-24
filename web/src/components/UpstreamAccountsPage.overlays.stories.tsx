@@ -212,6 +212,94 @@ export const RoutingDialogMaintenanceOnlySave: Story = {
   },
 }
 
+export const RoutingDialogTimeoutSettings: Story = {
+  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const documentScope = within(canvasElement.ownerDocument.body)
+
+    await userEvent.click(
+      await canvas.findByRole('button', { name: /编辑路由设置|edit routing settings/i }),
+    )
+    const dialog = await documentScope.findByRole('dialog', {
+      name: /高级路由与同步设置|advanced routing & sync settings/i,
+    })
+    const responsesFirstByteInput = within(dialog).getByLabelText(
+      /一般请求响应体首字超时|standard response first byte timeout/i,
+    ) as HTMLInputElement
+    const compactFirstByteInput = within(dialog).getByLabelText(
+      /压缩请求响应体首字超时|compact response first byte timeout/i,
+    ) as HTMLInputElement
+    const responsesStreamInput = within(dialog).getByLabelText(
+      /一般请求流结束超时|standard stream completion timeout/i,
+    ) as HTMLInputElement
+    const compactStreamInput = within(dialog).getByLabelText(
+      /压缩请求流结束超时|compact stream completion timeout/i,
+    ) as HTMLInputElement
+    const saveButton = within(dialog).getByRole('button', { name: /保存设置|save settings/i })
+
+    await expect(responsesFirstByteInput.value).toBe('120')
+    await expect(compactFirstByteInput.value).toBe('300')
+    await expect(responsesStreamInput.value).toBe('300')
+    await expect(compactStreamInput.value).toBe('300')
+
+    await userEvent.clear(responsesFirstByteInput)
+    await userEvent.type(responsesFirstByteInput, '180')
+    await userEvent.clear(compactFirstByteInput)
+    await userEvent.type(compactFirstByteInput, '420')
+    await userEvent.clear(responsesStreamInput)
+    await userEvent.type(responsesStreamInput, '360')
+    await userEvent.clear(compactStreamInput)
+    await userEvent.type(compactStreamInput, '540')
+
+    await expect(saveButton).toBeEnabled()
+    await userEvent.click(saveButton)
+
+    await waitFor(() => {
+      expect(
+        documentScope.queryByRole('dialog', {
+          name: /高级路由与同步设置|advanced routing & sync settings/i,
+        }),
+      ).not.toBeInTheDocument()
+    })
+
+    await userEvent.click(
+      await canvas.findByRole('button', { name: /编辑路由设置|edit routing settings/i }),
+    )
+    const reopenedDialog = await documentScope.findByRole('dialog', {
+      name: /高级路由与同步设置|advanced routing & sync settings/i,
+    })
+    await expect(
+      (
+        within(reopenedDialog).getByLabelText(
+          /一般请求响应体首字超时|standard response first byte timeout/i,
+        ) as HTMLInputElement
+      ).value,
+    ).toBe('180')
+    await expect(
+      (
+        within(reopenedDialog).getByLabelText(
+          /压缩请求响应体首字超时|compact response first byte timeout/i,
+        ) as HTMLInputElement
+      ).value,
+    ).toBe('420')
+    await expect(
+      (
+        within(reopenedDialog).getByLabelText(
+          /一般请求流结束超时|standard stream completion timeout/i,
+        ) as HTMLInputElement
+      ).value,
+    ).toBe('360')
+    await expect(
+      (
+        within(reopenedDialog).getByLabelText(
+          /压缩请求流结束超时|compact stream completion timeout/i,
+        ) as HTMLInputElement
+      ).value,
+    ).toBe('540')
+  },
+}
+
 export const RoutingDialogValidation: Story = {
   render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
   play: async ({ canvasElement }) => {
@@ -243,6 +331,32 @@ export const RoutingDialogValidation: Story = {
       ),
     ).toBeInTheDocument()
     await expect(saveButton).toBeDisabled()
+  },
+}
+
+export const CompactSupportDetailDrawer: Story = {
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts',
+        state: {
+          selectedAccountId: 101,
+          openDetail: true,
+        },
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const documentScope = within(canvasElement.ownerDocument.body)
+
+    await expect(await canvas.findByText(/Compact 不支持|Compact unsupported/i)).toBeInTheDocument()
+    const dialog = await documentScope.findByRole('dialog', { name: /Codex Pro - Tokyo/i })
+    await expect(within(dialog).getByText(/Compact 支持|Compact support/i)).toBeInTheDocument()
+    await expect(within(dialog).getByText(/不支持|unsupported/i)).toBeInTheDocument()
+    await expect(
+      within(dialog).getByText(/No available channel for model gpt-5\.4-openai-compact/i),
+    ).toBeInTheDocument()
   },
 }
 export const DetailDrawerGroupNotes: Story = {
