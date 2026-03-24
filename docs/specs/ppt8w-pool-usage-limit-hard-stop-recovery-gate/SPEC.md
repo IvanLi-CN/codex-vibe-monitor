@@ -78,3 +78,7 @@
 - 在共享 `429` 分类器里补齐 usage-limit 文案，复用既有 hard-unavailable 行为，不新开分支体系。
 - 将 sync 成功拆成“真正恢复成功”和“恢复仍被阻断”两种收口路径，前者清掉 hard stop，后者只记 action/timestamp，不改 last_error 上下文。
 - 让 resolver 评估候选时包含 `enabled=1` 的全部 Codex 账号，再用现有分类逻辑区分 active / rate-limited / unavailable，确保 hard-stop quota 账号不会从汇总里消失。
+
+## 后续补洞
+
+- persisted usage snapshot exhausted 仍可能在 route 前被当成可选候选，且 stale success / stale sync 仍会覆盖更新更晚的 quota hard-stop；对应 follow-up 由 `docs/specs/v8y2p-prevent-routing-exhausted-accounts-race/SPEC.md` 承接。
