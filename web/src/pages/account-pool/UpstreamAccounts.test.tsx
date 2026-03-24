@@ -471,7 +471,7 @@ function mockAccountsPage(options?: {
   };
   hookMocks.useUpstreamAccounts.mockReturnValue({
     items: [
-      primaryItem,
+      selectedSummary,
       {
         id: 9,
         kind: "oauth_codex",
@@ -557,6 +557,21 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect(document.body.textContent).toContain("vip");
     expect(document.body.textContent).toContain("+1");
     expect(document.body.textContent).toContain("team");
+  });
+
+  it("shows action-first roster summaries and keeps the concrete failure message in hover text", () => {
+    mockAccountsPage();
+    render("/account-pool/upstream-accounts");
+
+    const firstRow = document.body.querySelector('tbody tr[role="button"]');
+    if (!(firstRow instanceof HTMLTableRowElement)) {
+      throw new Error("missing roster row");
+    }
+
+    expect(firstRow.textContent).toContain("Hard unavailable");
+    expect(firstRow.textContent).toContain("Upstream quota or weekly cap was exhausted");
+    expect(firstRow.textContent).toContain("HTTP 429");
+    expect(document.body.querySelector('[title*="Weekly cap exhausted for this account"]')).not.toBeNull();
   });
 
   it("shows latest account action details and recent events in the drawer", async () => {

@@ -64,6 +64,7 @@ import {
 import { validateUpstreamBaseUrl } from '../../lib/upstreamBaseUrl'
 import { generatePoolRoutingKey } from '../../lib/poolRouting'
 import { applyMotherUpdateToItems } from '../../lib/upstreamMother'
+import { upstreamPlanBadgeRecipe } from '../../lib/upstreamAccountBadges'
 import { cn } from '../../lib/utils'
 import { useTranslation, type TranslationValues } from '../../i18n'
 
@@ -1258,6 +1259,7 @@ export default function UpstreamAccountsPage() {
 
   const selectedDetail = detail?.id === selectedId ? detail : null
   const selected = selectedDetail ?? selectedSummary
+  const selectedPlanBadge = upstreamPlanBadgeRecipe(selected?.planType)
   const visibleAccountActionError =
     typeof selectedId === 'number' ? actionError.accountMessages[selectedId] ?? null : null
   const visibleRoutingError = actionError.routing
@@ -1362,7 +1364,7 @@ export default function UpstreamAccountsPage() {
   const accountSyncStateLabel = (status: string) =>
     t(`accountPool.upstreamAccounts.syncState.${status}`)
   const accountActionLabel = (action?: string | null) => {
-    if (!action) return t('accountPool.upstreamAccounts.latestAction.empty')
+    if (!action) return null
     const key = `accountPool.upstreamAccounts.latestAction.actions.${action}`
     const translated = t(key)
     return translated === key ? action : translated
@@ -2267,6 +2269,8 @@ export default function UpstreamAccountsPage() {
                 secondaryShort: t('accountPool.upstreamAccounts.secondaryWindowShortLabel'),
                 nextReset: t('accountPool.upstreamAccounts.table.nextReset'),
                 nextResetCompact: t('accountPool.upstreamAccounts.table.nextResetCompact'),
+                unknown: t('accountPool.upstreamAccounts.latestAction.unknown'),
+                unavailable: t('accountPool.upstreamAccounts.unavailable'),
                 oauth: t('accountPool.upstreamAccounts.kind.oauth'),
                 apiKey: t('accountPool.upstreamAccounts.kind.apiKey'),
                 mother: t('accountPool.upstreamAccounts.mother.badge'),
@@ -2277,10 +2281,23 @@ export default function UpstreamAccountsPage() {
                 enableStatus: accountEnableStatusLabel,
                 healthStatus: accountHealthStatusLabel,
                 syncState: accountSyncStateLabel,
+                action: accountActionLabel,
                 compactSupport: (item) => compactSupportLabel(item.compactSupport, t),
                 compactSupportHint: (item) => compactSupportHint(item.compactSupport, t),
-                actionSource: (item) => accountActionSourceLabel(item.lastActionSource),
-                actionReason: (item) => accountActionReasonLabel(item.lastActionReasonCode),
+                actionSource: (value: UpstreamAccountSummary | string | null | undefined) =>
+                  accountActionSourceLabel(
+                    typeof value === 'string' || value == null ? value : value.lastActionSource,
+                  ),
+                actionReason: (value: UpstreamAccountSummary | string | null | undefined) =>
+                  accountActionReasonLabel(
+                    typeof value === 'string' || value == null ? value : value.lastActionReasonCode,
+                  ),
+                latestActionFieldAction: t('accountPool.upstreamAccounts.latestAction.fields.action'),
+                latestActionFieldSource: t('accountPool.upstreamAccounts.latestAction.fields.source'),
+                latestActionFieldReason: t('accountPool.upstreamAccounts.latestAction.fields.reason'),
+                latestActionFieldHttpStatus: t('accountPool.upstreamAccounts.latestAction.fields.httpStatus'),
+                latestActionFieldOccurredAt: t('accountPool.upstreamAccounts.latestAction.fields.occurredAt'),
+                latestActionFieldMessage: t('accountPool.upstreamAccounts.latestAction.fields.message'),
               }}
             />
 
@@ -2557,7 +2574,15 @@ export default function UpstreamAccountsPage() {
                     {accountHealthStatusLabel(accountHealthStatus(selected))}
                   </Badge>
                   <Badge variant={kindVariant(selected.kind)}>{accountKindLabel(selected.kind)}</Badge>
-                  {selected.planType ? <Badge variant="secondary">{selected.planType}</Badge> : null}
+                  {selected.planType && selectedPlanBadge ? (
+                    <Badge
+                      variant={selectedPlanBadge.variant}
+                      className={selectedPlanBadge.className}
+                      data-plan={selectedPlanBadge.dataPlan}
+                    >
+                      {selected.planType}
+                    </Badge>
+                  ) : null}
                   {selected.duplicateInfo ? (
                     <Badge variant="warning">
                       {t('accountPool.upstreamAccounts.duplicate.badge')}
@@ -3009,7 +3034,7 @@ export default function UpstreamAccountsPage() {
                         <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                           <DetailField
                             label={t('accountPool.upstreamAccounts.latestAction.fields.action')}
-                            value={accountActionLabel(selectedDetail.lastAction)}
+                            value={accountActionLabel(selectedDetail.lastAction) ?? t('accountPool.upstreamAccounts.latestAction.empty')}
                           />
                           <DetailField
                             label={t('accountPool.upstreamAccounts.latestAction.fields.source')}
@@ -3075,7 +3100,9 @@ export default function UpstreamAccountsPage() {
                             className="rounded-[1rem] border border-base-300/70 bg-base-100/70 p-3"
                           >
                             <div className="flex flex-wrap items-center gap-2">
-                              <Badge variant="secondary">{accountActionLabel(actionEvent.action)}</Badge>
+                              <Badge variant="secondary">
+                                {accountActionLabel(actionEvent.action) ?? t('accountPool.upstreamAccounts.latestAction.unknown')}
+                              </Badge>
                               <Badge variant="secondary">
                                 {accountActionSourceLabel(actionEvent.source) ?? t('accountPool.upstreamAccounts.latestAction.unknown')}
                               </Badge>
