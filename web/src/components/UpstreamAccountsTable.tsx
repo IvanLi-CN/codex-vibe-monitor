@@ -7,6 +7,10 @@ import type { AccountTagSummary, UpstreamAccountSummary } from '../lib/api'
 import { upstreamPlanBadgeRecipe } from '../lib/upstreamAccountBadges'
 import { cn } from '../lib/utils'
 
+type ActionDetailLabelResolver =
+  | ((item: UpstreamAccountSummary) => string | null)
+  | ((value?: string | null) => string | null)
+
 interface UpstreamAccountsTableProps {
   items: UpstreamAccountSummary[]
   selectedId: number | null
@@ -44,8 +48,10 @@ interface UpstreamAccountsTableProps {
     healthStatus: (status: string) => string
     syncState: (status: string) => string
     action: (action?: string | null) => string | null
-    actionSource: (source?: string | null) => string | null
-    actionReason: (reason?: string | null) => string | null
+    compactSupport?: (item: UpstreamAccountSummary) => string | null
+    compactSupportHint?: (item: UpstreamAccountSummary) => string | null
+    actionSource: ActionDetailLabelResolver
+    actionReason: ActionDetailLabelResolver
     latestActionFieldAction: string
     latestActionFieldSource: string
     latestActionFieldReason: string
@@ -330,6 +336,35 @@ function formatWindowShortLabel(windowDurationMins?: number | null) {
   return `${minutes}M`
 }
 
+function normalizeLabelResult(value: unknown) {
+  return typeof value === 'string' || value == null ? value : null
+}
+
+function runActionDetailResolver(
+  resolver: ActionDetailLabelResolver,
+  value: UpstreamAccountSummary | string | null | undefined,
+) {
+  return normalizeLabelResult((resolver as (value: UpstreamAccountSummary | string | null | undefined) => unknown)(value))
+}
+
+function resolveActionSourceLabel(
+  item: UpstreamAccountSummary,
+  labels: UpstreamAccountsTableProps['labels'],
+) {
+  const fromItem = runActionDetailResolver(labels.actionSource, item)
+  if (fromItem) return fromItem
+  return runActionDetailResolver(labels.actionSource, item.lastActionSource)
+}
+
+function resolveActionReasonLabel(
+  item: UpstreamAccountSummary,
+  labels: UpstreamAccountsTableProps['labels'],
+) {
+  const fromItem = runActionDetailResolver(labels.actionReason, item)
+  if (fromItem) return fromItem
+  return runActionDetailResolver(labels.actionReason, item.lastActionReasonCode)
+}
+
 function buildLatestActionTitle(
   item: UpstreamAccountSummary,
   labels: UpstreamAccountsTableProps['labels'],
@@ -341,8 +376,8 @@ function buildLatestActionTitle(
   if (!hasActionDetails) return null
 
   const action = labels.action(item.lastAction) ?? labels.unknown
-  const source = labels.actionSource(item.lastActionSource) ?? labels.unknown
-  const reason = labels.actionReason(item.lastActionReasonCode) ?? labels.unknown
+  const source = resolveActionSourceLabel(item, labels) ?? labels.unknown
+  const reason = resolveActionReasonLabel(item, labels) ?? labels.unknown
   const httpStatus = Number.isFinite(item.lastActionHttpStatus ?? NaN)
     ? `HTTP ${item.lastActionHttpStatus}`
     : labels.unavailable
@@ -365,8 +400,9 @@ function buildLatestActionSummary(
   labels: UpstreamAccountsTableProps['labels'],
 ) {
   const action = labels.action(item.lastAction)
-  const reason = labels.actionReason(item.lastActionReasonCode)
-  const parts = [action, reason]
+  const source = resolveActionSourceLabel(item, labels)
+  const reason = resolveActionReasonLabel(item, labels)
+  const parts = [action ?? source, reason]
   if (Number.isFinite(item.lastActionHttpStatus ?? NaN)) {
     parts.push(`HTTP ${item.lastActionHttpStatus}`)
   }
@@ -543,12 +579,22 @@ export function UpstreamAccountsTable({
                           })
                           : null}
                         {compactBadge(kindLabel(item, labels), 'secondary')}
+                        {labels.compactSupport?.(item) ? (
+                          <span title={labels.compactSupportHint?.(item) ?? undefined}>
+                            {compactBadge(
+                              labels.compactSupport(item) ?? '',
+                              item.compactSupport?.status === 'unsupported' ? 'warning' : 'info',
+                            )}
+                          </span>
+                        ) : null}
                         {item.planType && planBadge
                           ? compactBadge(item.planType, planBadge.variant, {
                             className: planBadge.className,
                             dataPlan: planBadge.dataPlan,
                             title: item.planType,
                           })
+                          : item.planType
+                            ? compactBadge(item.planType, 'accent', { title: item.planType })
                           : null}
                       </div>
                       <div className="flex min-w-0 flex-wrap items-center gap-1">

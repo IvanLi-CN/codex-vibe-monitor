@@ -73,6 +73,7 @@ const UPSTREAM_ACCOUNT_ACTION_ROUTE_RECOVERED: &str = "route_recovered";
 const UPSTREAM_ACCOUNT_ACTION_ROUTE_COOLDOWN_STARTED: &str = "route_cooldown_started";
 const UPSTREAM_ACCOUNT_ACTION_ROUTE_HARD_UNAVAILABLE: &str = "route_hard_unavailable";
 const UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED: &str = "sync_succeeded";
+const UPSTREAM_ACCOUNT_ACTION_SYNC_RECOVERY_BLOCKED: &str = "sync_recovery_blocked";
 const UPSTREAM_ACCOUNT_ACTION_SYNC_FAILED: &str = "sync_failed";
 const UPSTREAM_ACCOUNT_ACTION_ACCOUNT_UPDATED: &str = "account_updated";
 const UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL: &str = "call";
@@ -84,6 +85,9 @@ const UPSTREAM_ACCOUNT_ACTION_SOURCE_ACCOUNT_UPDATE: &str = "account_update";
 const UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_OK: &str = "sync_ok";
 const UPSTREAM_ACCOUNT_ACTION_REASON_ACCOUNT_UPDATED: &str = "account_updated";
 const UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR: &str = "sync_error";
+const UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED: &str = "quota_still_exhausted";
+const UPSTREAM_ACCOUNT_ACTION_REASON_RECOVERY_UNCONFIRMED_MANUAL_REQUIRED: &str =
+    "recovery_unconfirmed_manual_required";
 const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_RATE_LIMIT: &str =
     "upstream_http_429_rate_limit";
 const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED: &str =
@@ -128,6 +132,9 @@ const DEFAULT_UPSTREAM_ACCOUNT_LIST_PAGE_SIZE: usize = 20;
 const UPSTREAM_ACCOUNT_LIST_PAGE_SIZE_OPTIONS: [usize; 3] = [20, 50, 100];
 const POOL_ROUTE_ACTIVE_STICKY_WINDOW_MINUTES: i64 = 30;
 const POOL_ROUTE_ACTIVE_STICKY_SOFT_LIMIT: i64 = 2;
+pub(crate) const COMPACT_SUPPORT_STATUS_UNKNOWN: &str = "unknown";
+pub(crate) const COMPACT_SUPPORT_STATUS_SUPPORTED: &str = "supported";
+pub(crate) const COMPACT_SUPPORT_STATUS_UNSUPPORTED: &str = "unsupported";
 const USAGE_PATH_STYLE_CHATGPT: &str = "/wham/usage";
 const USAGE_PATH_STYLE_CODEX_API: &str = "/api/codex/usage";
 const UPSTREAM_USAGE_BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36";
@@ -157,6 +164,12 @@ enum SyncCause {
     Manual,
     Maintenance,
     PostCreate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SyncSuccessRouteState {
+    PreserveFailureState,
+    ClearFailureState,
 }
 
 #[cfg(test)]
@@ -920,6 +933,7 @@ pub(crate) struct UpstreamAccountSummary {
     secondary_window: Option<RateWindowSnapshot>,
     credits: Option<CreditsSnapshot>,
     local_limits: Option<LocalLimitSnapshot>,
+    compact_support: CompactSupportState,
     duplicate_info: Option<DuplicateInfo>,
     tags: Vec<AccountTagSummary>,
     effective_routing_rule: EffectiveRoutingRule,
@@ -956,36 +970,84 @@ pub(crate) struct UpstreamAccountActionEvent {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct CompactSupportState {
+    status: String,
+    observed_at: Option<String>,
+    reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PoolRoutingTimeoutSettingsResponse {
+    pub(crate) responses_first_byte_timeout_secs: u64,
+    pub(crate) compact_first_byte_timeout_secs: u64,
+    pub(crate) responses_stream_timeout_secs: u64,
+    pub(crate) compact_stream_timeout_secs: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PoolRoutingTimeoutSettingsResolved {
+    pub(crate) default_first_byte_timeout: Duration,
+    pub(crate) default_send_timeout: Duration,
+    pub(crate) request_read_timeout: Duration,
+    pub(crate) responses_first_byte_timeout: Duration,
+    pub(crate) compact_first_byte_timeout: Duration,
+    pub(crate) responses_stream_timeout: Duration,
+    pub(crate) compact_stream_timeout: Duration,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct PoolRoutingSettingsResponse {
-    writes_enabled: bool,
-    api_key_configured: bool,
-    masked_api_key: Option<String>,
-    maintenance: PoolRoutingMaintenanceSettingsResponse,
+    pub(crate) writes_enabled: bool,
+    pub(crate) api_key_configured: bool,
+    pub(crate) masked_api_key: Option<String>,
+    pub(crate) maintenance: PoolRoutingMaintenanceSettingsResponse,
+    pub(crate) timeouts: PoolRoutingTimeoutSettingsResponse,
 }
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PoolRoutingMaintenanceSettingsResponse {
-    primary_sync_interval_secs: u64,
-    secondary_sync_interval_secs: u64,
-    priority_available_account_cap: usize,
+    pub(crate) primary_sync_interval_secs: u64,
+    pub(crate) secondary_sync_interval_secs: u64,
+    pub(crate) priority_available_account_cap: usize,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpdatePoolRoutingSettingsRequest {
     #[serde(default)]
-    api_key: Option<String>,
+    pub(crate) api_key: Option<String>,
     #[serde(default)]
-    maintenance: Option<UpdatePoolRoutingMaintenanceSettingsRequest>,
+    pub(crate) maintenance: Option<UpdatePoolRoutingMaintenanceSettingsRequest>,
+    #[serde(default)]
+    pub(crate) timeouts: Option<UpdatePoolRoutingTimeoutSettingsRequest>,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpdatePoolRoutingMaintenanceSettingsRequest {
-    primary_sync_interval_secs: Option<u64>,
-    secondary_sync_interval_secs: Option<u64>,
-    priority_available_account_cap: Option<usize>,
+    #[serde(default)]
+    pub(crate) primary_sync_interval_secs: Option<u64>,
+    #[serde(default)]
+    pub(crate) secondary_sync_interval_secs: Option<u64>,
+    #[serde(default)]
+    pub(crate) priority_available_account_cap: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpdatePoolRoutingTimeoutSettingsRequest {
+    #[serde(default)]
+    pub(crate) responses_first_byte_timeout_secs: Option<u64>,
+    #[serde(default)]
+    #[serde(alias = "compactUpstreamHandshakeTimeoutSecs")]
+    pub(crate) compact_first_byte_timeout_secs: Option<u64>,
+    #[serde(default)]
+    pub(crate) responses_stream_timeout_secs: Option<u64>,
+    #[serde(default)]
+    pub(crate) compact_stream_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1734,6 +1796,9 @@ struct UpstreamAccountRow {
     last_route_failure_kind: Option<String>,
     cooldown_until: Option<String>,
     consecutive_route_failures: i64,
+    compact_support_status: Option<String>,
+    compact_support_observed_at: Option<String>,
+    compact_support_reason: Option<String>,
     local_primary_limit: Option<f64>,
     local_secondary_limit: Option<f64>,
     local_limit_unit: Option<String>,
@@ -1749,6 +1814,13 @@ struct PoolRoutingSettingsRow {
     primary_sync_interval_secs: Option<i64>,
     secondary_sync_interval_secs: Option<i64>,
     priority_available_account_cap: Option<i64>,
+    responses_first_byte_timeout_secs: Option<i64>,
+    compact_first_byte_timeout_secs: Option<i64>,
+    responses_stream_timeout_secs: Option<i64>,
+    compact_stream_timeout_secs: Option<i64>,
+    default_first_byte_timeout_secs: Option<i64>,
+    upstream_handshake_timeout_secs: Option<i64>,
+    request_read_timeout_secs: Option<i64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2014,6 +2086,9 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             last_route_failure_kind TEXT,
             cooldown_until TEXT,
             consecutive_route_failures INTEGER NOT NULL DEFAULT 0,
+            compact_support_status TEXT,
+            compact_support_observed_at TEXT,
+            compact_support_reason TEXT,
             local_primary_limit REAL,
             local_secondary_limit REAL,
             local_limit_unit TEXT,
@@ -2042,6 +2117,19 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "cooldown_until")
         .await
         .context("failed to ensure pool_upstream_accounts.cooldown_until")?;
+    ensure_nullable_text_column(pool, "pool_upstream_accounts", "compact_support_status")
+        .await
+        .context("failed to ensure pool_upstream_accounts.compact_support_status")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_accounts",
+        "compact_support_observed_at",
+    )
+    .await
+    .context("failed to ensure pool_upstream_accounts.compact_support_observed_at")?;
+    ensure_nullable_text_column(pool, "pool_upstream_accounts", "compact_support_reason")
+        .await
+        .context("failed to ensure pool_upstream_accounts.compact_support_reason")?;
     ensure_integer_column_with_default(pool, "pool_upstream_accounts", "is_mother", "0")
         .await
         .context("failed to ensure pool_upstream_accounts.is_mother")?;
@@ -2390,6 +2478,13 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             primary_sync_interval_secs INTEGER,
             secondary_sync_interval_secs INTEGER,
             priority_available_account_cap INTEGER,
+            responses_first_byte_timeout_secs INTEGER,
+            compact_first_byte_timeout_secs INTEGER,
+            responses_stream_timeout_secs INTEGER,
+            compact_stream_timeout_secs INTEGER,
+            default_first_byte_timeout_secs INTEGER,
+            upstream_handshake_timeout_secs INTEGER,
+            request_read_timeout_secs INTEGER,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
         "#,
@@ -2420,14 +2515,63 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
         INSERT OR IGNORE INTO pool_routing_settings (
             id,
             encrypted_api_key,
-            masked_api_key
-        ) VALUES (?1, NULL, NULL)
+            masked_api_key,
+            responses_first_byte_timeout_secs,
+            compact_first_byte_timeout_secs,
+            responses_stream_timeout_secs,
+            compact_stream_timeout_secs,
+            default_first_byte_timeout_secs,
+            upstream_handshake_timeout_secs,
+            request_read_timeout_secs
+        ) VALUES (?1, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
         "#,
     )
     .bind(POOL_SETTINGS_SINGLETON_ID)
     .execute(pool)
     .await
     .context("failed to ensure default pool_routing_settings row")?;
+
+    ensure_nullable_integer_column(
+        pool,
+        "pool_routing_settings",
+        "responses_first_byte_timeout_secs",
+    )
+    .await
+    .context("failed to ensure pool_routing_settings.responses_first_byte_timeout_secs")?;
+    ensure_nullable_integer_column(
+        pool,
+        "pool_routing_settings",
+        "compact_first_byte_timeout_secs",
+    )
+    .await
+    .context("failed to ensure pool_routing_settings.compact_first_byte_timeout_secs")?;
+    ensure_nullable_integer_column(
+        pool,
+        "pool_routing_settings",
+        "responses_stream_timeout_secs",
+    )
+    .await
+    .context("failed to ensure pool_routing_settings.responses_stream_timeout_secs")?;
+    ensure_nullable_integer_column(pool, "pool_routing_settings", "compact_stream_timeout_secs")
+        .await
+        .context("failed to ensure pool_routing_settings.compact_stream_timeout_secs")?;
+    ensure_nullable_integer_column(
+        pool,
+        "pool_routing_settings",
+        "default_first_byte_timeout_secs",
+    )
+    .await
+    .context("failed to ensure pool_routing_settings.default_first_byte_timeout_secs")?;
+    ensure_nullable_integer_column(
+        pool,
+        "pool_routing_settings",
+        "upstream_handshake_timeout_secs",
+    )
+    .await
+    .context("failed to ensure pool_routing_settings.upstream_handshake_timeout_secs")?;
+    ensure_nullable_integer_column(pool, "pool_routing_settings", "request_read_timeout_secs")
+        .await
+        .context("failed to ensure pool_routing_settings.request_read_timeout_secs")?;
 
     Ok(())
 }
@@ -2539,7 +2683,7 @@ pub(crate) async fn list_upstream_accounts(
     let has_ungrouped_accounts = has_ungrouped_upstream_accounts(&state.pool)
         .await
         .map_err(internal_error_tuple)?;
-    let routing = load_pool_routing_settings(&state.pool)
+    let routing = load_pool_routing_settings_seeded(&state.pool, &state.config)
         .await
         .map_err(internal_error_tuple)?;
     Ok(Json(UpstreamAccountListResponse {
@@ -4051,7 +4195,7 @@ pub(crate) async fn import_validated_oauth_accounts(
 pub(crate) async fn get_pool_routing_settings(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<PoolRoutingSettingsResponse>, (StatusCode, String)> {
-    let row = load_pool_routing_settings(&state.pool)
+    let row = load_pool_routing_settings_seeded(&state.pool, &state.config)
         .await
         .map_err(internal_error_tuple)?;
     Ok(Json(build_pool_routing_settings_response(
@@ -4071,7 +4215,7 @@ pub(crate) async fn update_pool_routing_settings(
             "cross-origin account writes are forbidden".to_string(),
         ));
     }
-    let current = load_pool_routing_settings(&state.pool)
+    let current = load_pool_routing_settings_seeded(&state.pool, &state.config)
         .await
         .map_err(internal_error_tuple)?;
     let merged_maintenance = merge_pool_routing_maintenance_settings(
@@ -4080,20 +4224,57 @@ pub(crate) async fn update_pool_routing_settings(
     );
     validate_pool_routing_maintenance_settings(merged_maintenance)?;
 
-    if let Some(api_key) = payload.api_key.as_deref() {
-        let crypto_key = state.upstream_accounts.require_crypto_key()?;
-        let normalized_api_key = normalize_required_secret(api_key, "apiKey")?;
-        save_pool_routing_api_key(&state.pool, crypto_key, &normalized_api_key)
-            .await
-            .map_err(internal_error_tuple)?;
+    let api_key = payload
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| normalize_required_secret(value, "apiKey"))
+        .transpose()?;
+    let timeout_updates = payload
+        .timeouts
+        .map(|timeouts| {
+            Ok(UpdatePoolRoutingTimeoutSettingsRequest {
+                responses_first_byte_timeout_secs: normalize_pool_routing_timeout_secs(
+                    timeouts.responses_first_byte_timeout_secs,
+                    "responsesFirstByteTimeoutSecs",
+                )?,
+                compact_first_byte_timeout_secs: normalize_pool_routing_timeout_secs(
+                    timeouts.compact_first_byte_timeout_secs,
+                    "compactFirstByteTimeoutSecs",
+                )?,
+                responses_stream_timeout_secs: normalize_pool_routing_timeout_secs(
+                    timeouts.responses_stream_timeout_secs,
+                    "responsesStreamTimeoutSecs",
+                )?,
+                compact_stream_timeout_secs: normalize_pool_routing_timeout_secs(
+                    timeouts.compact_stream_timeout_secs,
+                    "compactStreamTimeoutSecs",
+                )?,
+            })
+        })
+        .transpose()?;
+    let crypto_key = if api_key.is_some() {
+        Some(state.upstream_accounts.require_crypto_key()?)
+    } else {
+        None
+    };
+    if api_key.is_some() || timeout_updates.is_some() {
+        save_pool_routing_settings(
+            &state.pool,
+            &state.config,
+            crypto_key,
+            api_key.as_deref(),
+            timeout_updates.as_ref(),
+        )
+        .await?;
     }
     if payload.maintenance.is_some() {
         save_pool_routing_maintenance_settings(&state.pool, merged_maintenance)
             .await
             .map_err(internal_error_tuple)?;
     }
-
-    let updated = load_pool_routing_settings(&state.pool)
+    let updated = load_pool_routing_settings_seeded(&state.pool, &state.config)
         .await
         .map_err(internal_error_tuple)?;
     Ok(Json(build_pool_routing_settings_response(
@@ -4809,6 +4990,11 @@ async fn update_upstream_account_inner(
         .await
         .map_err(internal_error_tuple)?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
+    let clear_hard_failure_after_update = row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
+        && account_update_requests_manual_recovery(&payload)
+        && route_failure_kind_requires_manual_api_key_recovery(
+            row.last_route_failure_kind.as_deref(),
+        );
     let tag_ids = match payload.tag_ids.as_ref() {
         Some(values) => Some(validate_tag_ids(&state.pool, values).await?),
         None => None,
@@ -4934,6 +5120,11 @@ async fn update_upstream_account_inner(
     tx.commit().await.map_err(internal_error_tuple)?;
     if let Some(tag_ids) = tag_ids {
         sync_account_tag_links(&state.pool, id, &tag_ids)
+            .await
+            .map_err(internal_error_tuple)?;
+    }
+    if clear_hard_failure_after_update {
+        set_account_status(&state.pool, id, UPSTREAM_ACCOUNT_STATUS_ACTIVE, None)
             .await
             .map_err(internal_error_tuple)?;
     }
@@ -5941,7 +6132,42 @@ async fn sync_api_key_account(
     row: &UpstreamAccountRow,
     cause: SyncCause,
 ) -> Result<()> {
-    mark_account_sync_success(pool, row.id, sync_cause_action_source(cause)).await
+    let sync_source = sync_cause_action_source(cause);
+    if row.status != UPSTREAM_ACCOUNT_STATUS_ACTIVE
+        && route_failure_kind_requires_manual_api_key_recovery(
+            row.last_route_failure_kind.as_deref(),
+        )
+    {
+        let reason_message = if route_failure_kind_is_quota_exhausted(
+            row.last_route_failure_kind.as_deref(),
+        ) {
+            "manual recovery required because API key sync cannot verify whether the upstream usage limit has reset"
+        } else {
+            "manual recovery required because API key sync cannot verify whether upstream credentials or entitlements have recovered"
+        };
+        return record_account_sync_recovery_blocked(
+            pool,
+            row.id,
+            sync_source,
+            &row.status,
+            UPSTREAM_ACCOUNT_ACTION_REASON_RECOVERY_UNCONFIRMED_MANUAL_REQUIRED,
+            reason_message,
+            row.last_error.as_deref(),
+            row.last_route_failure_kind.as_deref(),
+        )
+        .await;
+    }
+    mark_account_sync_success(
+        pool,
+        row.id,
+        sync_source,
+        if should_clear_route_failure_state_after_sync_success(row) {
+            SyncSuccessRouteState::ClearFailureState
+        } else {
+            SyncSuccessRouteState::PreserveFailureState
+        },
+    )
+    .await
 }
 
 async fn sync_oauth_account(
@@ -6189,7 +6415,33 @@ async fn sync_oauth_account(
         state.config.upstream_accounts_history_retention_days,
     )
     .await?;
-    mark_account_sync_success(&state.pool, row.id, sync_source).await?;
+    if route_failure_kind_is_quota_exhausted(row.last_route_failure_kind.as_deref())
+        && imported_snapshot_is_exhausted(&snapshot)
+    {
+        record_account_sync_recovery_blocked(
+            &state.pool,
+            row.id,
+            sync_source,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED,
+            "latest usage snapshot still shows an exhausted upstream usage limit window",
+            row.last_error.as_deref(),
+            row.last_route_failure_kind.as_deref(),
+        )
+        .await?;
+        return Ok(());
+    }
+    mark_account_sync_success(
+        &state.pool,
+        row.id,
+        sync_source,
+        if should_clear_route_failure_state_after_sync_success(row) {
+            SyncSuccessRouteState::ClearFailureState
+        } else {
+            SyncSuccessRouteState::PreserveFailureState
+        },
+    )
+    .await?;
     Ok(())
 }
 
@@ -6342,6 +6594,7 @@ async fn apply_imported_oauth_probe_result(
             &state.pool,
             account_id,
             UPSTREAM_ACCOUNT_ACTION_SOURCE_OAUTH_IMPORT,
+            SyncSuccessRouteState::ClearFailureState,
         )
         .await?;
     }
@@ -7213,7 +7466,8 @@ async fn load_upstream_account_summaries_filtered(
             last_action, last_action_source, last_action_reason_code, last_action_reason_message,
             last_action_http_status, last_action_invoke_id, last_action_at,
             last_selected_at, last_route_failure_at, last_route_failure_kind, cooldown_until,
-            consecutive_route_failures, local_primary_limit, local_secondary_limit,
+            consecutive_route_failures, compact_support_status, compact_support_observed_at,
+            compact_support_reason, local_primary_limit, local_secondary_limit,
             local_limit_unit, upstream_base_url, created_at, updated_at
         FROM pool_upstream_accounts
         "#,
@@ -7523,7 +7777,8 @@ async fn load_upstream_account_row_conn(
             last_action, last_action_source, last_action_reason_code, last_action_reason_message,
             last_action_http_status, last_action_invoke_id, last_action_at,
             last_selected_at, last_route_failure_at, last_route_failure_kind, cooldown_until,
-            consecutive_route_failures, local_primary_limit, local_secondary_limit,
+            consecutive_route_failures, compact_support_status, compact_support_observed_at,
+            compact_support_reason, local_primary_limit, local_secondary_limit,
             local_limit_unit, upstream_base_url, created_at, updated_at
         FROM pool_upstream_accounts
         WHERE id = ?1
@@ -7678,6 +7933,7 @@ fn build_summary_from_row(
         row.last_route_failure_kind.as_deref(),
     )
     .to_string();
+    let compact_support = build_compact_support_state(row);
 
     UpstreamAccountSummary {
         id: row.id,
@@ -7723,9 +7979,32 @@ fn build_summary_from_row(
         secondary_window,
         credits,
         local_limits,
+        compact_support,
         duplicate_info,
         tags,
         effective_routing_rule,
+    }
+}
+
+fn build_compact_support_state(row: &UpstreamAccountRow) -> CompactSupportState {
+    let status = row
+        .compact_support_status
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| {
+            matches!(
+                *value,
+                COMPACT_SUPPORT_STATUS_UNKNOWN
+                    | COMPACT_SUPPORT_STATUS_SUPPORTED
+                    | COMPACT_SUPPORT_STATUS_UNSUPPORTED
+            )
+        })
+        .unwrap_or(COMPACT_SUPPORT_STATUS_UNKNOWN)
+        .to_string();
+    CompactSupportState {
+        status,
+        observed_at: row.compact_support_observed_at.clone(),
+        reason: row.compact_support_reason.clone(),
     }
 }
 
@@ -10030,6 +10309,43 @@ fn account_reason_is_rate_limited(reason_code: Option<&str>) -> bool {
     )
 }
 
+fn route_failure_kind_is_quota_exhausted(failure_kind: Option<&str>) -> bool {
+    matches!(
+        failure_kind
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+    )
+}
+
+fn route_failure_kind_requires_manual_api_key_recovery(failure_kind: Option<&str>) -> bool {
+    matches!(
+        failure_kind
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+        Some(
+            PROXY_FAILURE_UPSTREAM_HTTP_AUTH
+                | PROXY_FAILURE_UPSTREAM_HTTP_402
+                | FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
+        )
+    )
+}
+
+fn should_clear_route_failure_state_after_sync_success(row: &UpstreamAccountRow) -> bool {
+    row.status != UPSTREAM_ACCOUNT_STATUS_ACTIVE
+        || route_failure_kind_requires_manual_api_key_recovery(
+            row.last_route_failure_kind.as_deref(),
+        )
+}
+
+fn account_update_requests_manual_recovery(payload: &UpdateUpstreamAccountRequest) -> bool {
+    payload.enabled == Some(true)
+        || payload
+            .api_key
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+}
+
 async fn set_account_status(
     pool: &Pool<Sqlite>,
     account_id: i64,
@@ -10077,25 +10393,53 @@ async fn mark_account_sync_success(
     pool: &Pool<Sqlite>,
     account_id: i64,
     source: &str,
+    route_state: SyncSuccessRouteState,
 ) -> Result<()> {
     let now_iso = format_utc_iso(Utc::now());
-    sqlx::query(
-        r#"
-        UPDATE pool_upstream_accounts
-        SET status = ?2,
-            last_synced_at = ?3,
-            last_successful_sync_at = ?3,
-            last_error = NULL,
-            last_error_at = NULL,
-            updated_at = ?3
-        WHERE id = ?1
-        "#,
-    )
-    .bind(account_id)
-    .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
-    .bind(&now_iso)
-    .execute(pool)
-    .await?;
+    match route_state {
+        SyncSuccessRouteState::PreserveFailureState => {
+            sqlx::query(
+                r#"
+                UPDATE pool_upstream_accounts
+                SET status = ?2,
+                    last_synced_at = ?3,
+                    last_successful_sync_at = ?3,
+                    last_error = NULL,
+                    last_error_at = NULL,
+                    updated_at = ?3
+                WHERE id = ?1
+                "#,
+            )
+            .bind(account_id)
+            .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+            .bind(&now_iso)
+            .execute(pool)
+            .await?;
+        }
+        SyncSuccessRouteState::ClearFailureState => {
+            sqlx::query(
+                r#"
+                UPDATE pool_upstream_accounts
+                SET status = ?2,
+                    last_synced_at = ?3,
+                    last_successful_sync_at = ?3,
+                    last_error = NULL,
+                    last_error_at = NULL,
+                    last_route_failure_at = NULL,
+                    last_route_failure_kind = NULL,
+                    cooldown_until = NULL,
+                    consecutive_route_failures = 0,
+                    updated_at = ?3
+                WHERE id = ?1
+                "#,
+            )
+            .bind(account_id)
+            .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+            .bind(&now_iso)
+            .execute(pool)
+            .await?;
+        }
+    }
     record_upstream_account_action(
         pool,
         account_id,
@@ -10106,6 +10450,52 @@ async fn mark_account_sync_success(
             reason_message: None,
             http_status: None,
             failure_kind: None,
+            invoke_id: None,
+            sticky_key: None,
+            occurred_at: &now_iso,
+        },
+    )
+    .await?;
+    Ok(())
+}
+
+async fn record_account_sync_recovery_blocked(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    source: &str,
+    status: &str,
+    reason_code: &'static str,
+    reason_message: &str,
+    preserved_error: Option<&str>,
+    failure_kind: Option<&str>,
+) -> Result<()> {
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET status = ?2,
+            last_synced_at = ?3,
+            last_error = COALESCE(?4, last_error),
+            updated_at = ?3
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .bind(status)
+    .bind(&now_iso)
+    .bind(preserved_error)
+    .execute(pool)
+    .await?;
+    record_upstream_account_action(
+        pool,
+        account_id,
+        UpstreamAccountActionPayload {
+            action: UPSTREAM_ACCOUNT_ACTION_SYNC_RECOVERY_BLOCKED,
+            source,
+            reason_code: Some(reason_code),
+            reason_message: Some(reason_message),
+            http_status: None,
+            failure_kind,
             invoke_id: None,
             sticky_key: None,
             occurred_at: &now_iso,
@@ -11218,6 +11608,100 @@ fn internal_error_html(err: impl ToString) -> (StatusCode, String) {
     )
 }
 
+pub(crate) fn pool_routing_timeouts_from_config(
+    config: &AppConfig,
+) -> PoolRoutingTimeoutSettingsResolved {
+    PoolRoutingTimeoutSettingsResolved {
+        default_first_byte_timeout: config.request_timeout,
+        default_send_timeout: config.openai_proxy_handshake_timeout,
+        request_read_timeout: config.openai_proxy_request_read_timeout,
+        responses_first_byte_timeout: config.pool_upstream_responses_attempt_timeout,
+        compact_first_byte_timeout: config.openai_proxy_compact_handshake_timeout,
+        responses_stream_timeout: config.pool_upstream_responses_total_timeout,
+        compact_stream_timeout: config.pool_upstream_responses_total_timeout,
+    }
+}
+
+fn normalize_pool_routing_timeout_secs(
+    value: Option<u64>,
+    field_name: &str,
+) -> Result<Option<u64>, (StatusCode, String)> {
+    match value {
+        None => Ok(None),
+        Some(0) => Err((
+            StatusCode::BAD_REQUEST,
+            format!("{field_name} must be greater than zero"),
+        )),
+        Some(value) if value > i64::MAX as u64 => Err((
+            StatusCode::BAD_REQUEST,
+            format!("{field_name} must be less than or equal to {}", i64::MAX),
+        )),
+        Some(value) => Ok(Some(value)),
+    }
+}
+
+fn resolve_pool_routing_timeouts_from_row(
+    row: &PoolRoutingSettingsRow,
+    config: &AppConfig,
+) -> PoolRoutingTimeoutSettingsResolved {
+    let defaults = pool_routing_timeouts_from_config(config);
+    PoolRoutingTimeoutSettingsResolved {
+        responses_first_byte_timeout: row
+            .responses_first_byte_timeout_secs
+            .and_then(|value| u64::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .map(Duration::from_secs)
+            .unwrap_or(defaults.responses_first_byte_timeout),
+        compact_first_byte_timeout: row
+            .compact_first_byte_timeout_secs
+            .and_then(|value| u64::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .map(Duration::from_secs)
+            .unwrap_or(defaults.compact_first_byte_timeout),
+        responses_stream_timeout: row
+            .responses_stream_timeout_secs
+            .and_then(|value| u64::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .map(Duration::from_secs)
+            .unwrap_or(defaults.responses_stream_timeout),
+        compact_stream_timeout: row
+            .compact_stream_timeout_secs
+            .and_then(|value| u64::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .map(Duration::from_secs)
+            .unwrap_or(defaults.compact_stream_timeout),
+        default_first_byte_timeout: row
+            .default_first_byte_timeout_secs
+            .and_then(|value| u64::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .map(Duration::from_secs)
+            .unwrap_or(defaults.default_first_byte_timeout),
+        default_send_timeout: row
+            .upstream_handshake_timeout_secs
+            .and_then(|value| u64::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .map(Duration::from_secs)
+            .unwrap_or(defaults.default_send_timeout),
+        request_read_timeout: row
+            .request_read_timeout_secs
+            .and_then(|value| u64::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .map(Duration::from_secs)
+            .unwrap_or(defaults.request_read_timeout),
+    }
+}
+
+fn pool_routing_timeouts_response(
+    resolved: PoolRoutingTimeoutSettingsResolved,
+) -> PoolRoutingTimeoutSettingsResponse {
+    PoolRoutingTimeoutSettingsResponse {
+        responses_first_byte_timeout_secs: resolved.responses_first_byte_timeout.as_secs(),
+        compact_first_byte_timeout_secs: resolved.compact_first_byte_timeout.as_secs(),
+        responses_stream_timeout_secs: resolved.responses_stream_timeout.as_secs(),
+        compact_stream_timeout_secs: resolved.compact_stream_timeout.as_secs(),
+    }
+}
+
 async fn load_pool_routing_settings(pool: &Pool<Sqlite>) -> Result<PoolRoutingSettingsRow> {
     sqlx::query_as::<_, PoolRoutingSettingsRow>(
         r#"
@@ -11226,7 +11710,14 @@ async fn load_pool_routing_settings(pool: &Pool<Sqlite>) -> Result<PoolRoutingSe
             masked_api_key,
             primary_sync_interval_secs,
             secondary_sync_interval_secs,
-            priority_available_account_cap
+            priority_available_account_cap,
+            responses_first_byte_timeout_secs,
+            compact_first_byte_timeout_secs,
+            responses_stream_timeout_secs,
+            compact_stream_timeout_secs,
+            default_first_byte_timeout_secs,
+            upstream_handshake_timeout_secs,
+            request_read_timeout_secs
         FROM pool_routing_settings
         WHERE id = ?1
         LIMIT 1
@@ -11272,14 +11763,16 @@ fn build_pool_routing_settings_response(
     state: &AppState,
     row: &PoolRoutingSettingsRow,
 ) -> PoolRoutingSettingsResponse {
+    let timeouts = resolve_pool_routing_timeouts_from_row(row, &state.config);
     PoolRoutingSettingsResponse {
-        writes_enabled: state.upstream_accounts.writes_enabled(),
+        writes_enabled: true,
         api_key_configured: row
             .encrypted_api_key
             .as_deref()
             .is_some_and(|value| !value.trim().is_empty()),
         masked_api_key: row.masked_api_key.clone(),
         maintenance: resolve_pool_routing_maintenance_settings(row, &state.config).into_response(),
+        timeouts: pool_routing_timeouts_response(timeouts),
     }
 }
 
@@ -11336,6 +11829,113 @@ fn merge_pool_routing_maintenance_settings(
             .priority_available_account_cap
             .unwrap_or(current.priority_available_account_cap),
     }
+}
+
+async fn load_pool_routing_settings_seeded(
+    pool: &Pool<Sqlite>,
+    _config: &AppConfig,
+) -> Result<PoolRoutingSettingsRow> {
+    load_pool_routing_settings(pool).await
+}
+
+pub(crate) async fn resolve_pool_routing_timeouts(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+) -> Result<PoolRoutingTimeoutSettingsResolved> {
+    let row = load_pool_routing_settings_seeded(pool, config).await?;
+    Ok(resolve_pool_routing_timeouts_from_row(&row, config))
+}
+
+async fn save_pool_routing_settings(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    crypto_key: Option<&[u8; 32]>,
+    api_key: Option<&str>,
+    timeout_updates: Option<&UpdatePoolRoutingTimeoutSettingsRequest>,
+) -> Result<PoolRoutingSettingsRow, (StatusCode, String)> {
+    let current = load_pool_routing_settings_seeded(pool, config)
+        .await
+        .map_err(internal_error_tuple)?;
+    let encrypted_api_key = match api_key {
+        Some(api_key) => {
+            let crypto_key = crypto_key.ok_or_else(|| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "pool routing secret storage is unavailable".to_string(),
+                )
+            })?;
+            Some(encrypt_secret_value(crypto_key, api_key).map_err(internal_error_tuple)?)
+        }
+        None => current.encrypted_api_key.clone(),
+    };
+    let masked_api_key = match api_key {
+        Some(api_key) => Some(mask_api_key(api_key)),
+        None => current.masked_api_key.clone(),
+    };
+    let primary_sync_interval_secs = current.primary_sync_interval_secs;
+    let secondary_sync_interval_secs = current.secondary_sync_interval_secs;
+    let priority_available_account_cap = current.priority_available_account_cap;
+    let responses_first_byte_timeout_secs = timeout_updates
+        .and_then(|value| value.responses_first_byte_timeout_secs)
+        .map(|value| value as i64)
+        .or(current.responses_first_byte_timeout_secs);
+    let compact_first_byte_timeout_secs = timeout_updates
+        .and_then(|value| value.compact_first_byte_timeout_secs)
+        .map(|value| value as i64)
+        .or(current.compact_first_byte_timeout_secs);
+    let responses_stream_timeout_secs = timeout_updates
+        .and_then(|value| value.responses_stream_timeout_secs)
+        .map(|value| value as i64)
+        .or(current.responses_stream_timeout_secs);
+    let compact_stream_timeout_secs = timeout_updates
+        .and_then(|value| value.compact_stream_timeout_secs)
+        .map(|value| value as i64)
+        .or(current.compact_stream_timeout_secs);
+    let default_first_byte_timeout_secs = current.default_first_byte_timeout_secs;
+    let upstream_handshake_timeout_secs = current.upstream_handshake_timeout_secs;
+    let request_read_timeout_secs = current.request_read_timeout_secs;
+    let now_iso = format_utc_iso(Utc::now());
+
+    sqlx::query(
+        r#"
+        UPDATE pool_routing_settings
+        SET encrypted_api_key = ?2,
+            masked_api_key = ?3,
+            primary_sync_interval_secs = ?4,
+            secondary_sync_interval_secs = ?5,
+            priority_available_account_cap = ?6,
+            responses_first_byte_timeout_secs = ?7,
+            compact_first_byte_timeout_secs = ?8,
+            responses_stream_timeout_secs = ?9,
+            compact_stream_timeout_secs = ?10,
+            default_first_byte_timeout_secs = ?11,
+            upstream_handshake_timeout_secs = ?12,
+            request_read_timeout_secs = ?13,
+            updated_at = ?14
+        WHERE id = ?1
+        "#,
+    )
+    .bind(POOL_SETTINGS_SINGLETON_ID)
+    .bind(encrypted_api_key)
+    .bind(masked_api_key)
+    .bind(primary_sync_interval_secs)
+    .bind(secondary_sync_interval_secs)
+    .bind(priority_available_account_cap)
+    .bind(responses_first_byte_timeout_secs)
+    .bind(compact_first_byte_timeout_secs)
+    .bind(responses_stream_timeout_secs)
+    .bind(compact_stream_timeout_secs)
+    .bind(default_first_byte_timeout_secs)
+    .bind(upstream_handshake_timeout_secs)
+    .bind(request_read_timeout_secs)
+    .bind(now_iso)
+    .execute(pool)
+    .await
+    .map_err(internal_error_tuple)?;
+
+    load_pool_routing_settings(pool)
+        .await
+        .map_err(internal_error_tuple)
 }
 
 async fn save_pool_routing_api_key(
@@ -12161,6 +12761,8 @@ fn is_account_rate_limited_for_routing(row: &UpstreamAccountRow) -> bool {
     {
         return false;
     }
+    let quota_exhausted_hard_stop =
+        route_failure_kind_is_quota_exhausted(row.last_route_failure_kind.as_deref());
     let in_429_cooldown = row
         .cooldown_until
         .as_deref()
@@ -12174,7 +12776,9 @@ fn is_account_rate_limited_for_routing(row: &UpstreamAccountRow) -> bool {
                     | FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
             )
         );
-    in_429_cooldown || account_reason_is_rate_limited(row.last_action_reason_code.as_deref())
+    quota_exhausted_hard_stop
+        || in_429_cooldown
+        || account_reason_is_rate_limited(row.last_action_reason_code.as_deref())
 }
 
 async fn load_account_routing_candidates(
@@ -12225,9 +12829,7 @@ async fn load_account_routing_candidates(
     );
     query
         .push_bind(UPSTREAM_ACCOUNT_PROVIDER_CODEX)
-        .push(" AND account.enabled = 1")
-        .push(" AND account.status = ")
-        .push_bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        .push(" AND account.enabled = 1");
     if !excluded_ids.is_empty() {
         query.push(" AND account.id NOT IN (");
         {
@@ -12286,6 +12888,37 @@ pub(crate) async fn record_account_selected(pool: &Pool<Sqlite>, account_id: i64
     )
     .bind(account_id)
     .bind(&now_iso)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn record_compact_support_observation(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    status: &str,
+    reason: Option<&str>,
+) -> Result<()> {
+    if !matches!(
+        status,
+        COMPACT_SUPPORT_STATUS_SUPPORTED | COMPACT_SUPPORT_STATUS_UNSUPPORTED
+    ) {
+        return Ok(());
+    }
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET compact_support_status = ?2,
+            compact_support_observed_at = ?3,
+            compact_support_reason = ?4
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .bind(status)
+    .bind(now_iso)
+    .bind(reason)
     .execute(pool)
     .await?;
     Ok(())
@@ -12907,6 +13540,9 @@ mod tests {
                 last_route_failure_kind: None,
                 cooldown_until: None,
                 consecutive_route_failures: 0,
+                compact_support_status: None,
+                compact_support_observed_at: None,
+                compact_support_reason: None,
                 local_primary_limit: None,
                 local_secondary_limit: None,
                 local_limit_unit: None,
@@ -13463,6 +14099,32 @@ mod tests {
         .fetch_one(pool)
         .await
         .expect("insert syncable oauth account")
+    }
+
+    async fn spawn_usage_snapshot_server(
+        status: StatusCode,
+        body: serde_json::Value,
+    ) -> (String, JoinHandle<()>) {
+        async fn handler(
+            State((status, body)): State<(StatusCode, Arc<String>)>,
+        ) -> (StatusCode, String) {
+            (status, (*body).clone())
+        }
+
+        let app = Router::new()
+            .route("/backend-api/wham/usage", get(handler))
+            .with_state((status, Arc::new(body.to_string())));
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind usage snapshot server");
+        let addr = listener.local_addr().expect("usage snapshot server addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve usage snapshot server");
+        });
+
+        (format!("http://{addr}/backend-api"), server)
     }
 
     #[derive(Clone)]
@@ -14683,6 +15345,28 @@ mod tests {
         assert!(row.cooldown_until.is_none());
     }
 
+    #[test]
+    fn classify_pool_account_http_failure_treats_usage_limit_reached_as_quota_exhausted() {
+        let classification = classify_pool_account_http_failure(
+            UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            StatusCode::TOO_MANY_REQUESTS,
+            "pool upstream responded with 429: The usage limit has been reached",
+        );
+
+        assert_eq!(
+            classification.disposition,
+            UpstreamAccountFailureDisposition::HardUnavailable
+        );
+        assert_eq!(
+            classification.reason_code,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
+        );
+        assert_eq!(
+            classification.failure_kind,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
+        );
+    }
+
     async fn insert_limit_sample(
         pool: &SqlitePool,
         account_id: i64,
@@ -14777,6 +15461,49 @@ mod tests {
         .expect("seed route cooldown");
     }
 
+    async fn seed_hard_unavailable_route_failure(
+        pool: &SqlitePool,
+        account_id: i64,
+        status: &str,
+        failure_kind: &str,
+        reason_code: &str,
+        http_status: Option<i64>,
+    ) {
+        let now_iso = format_utc_iso(Utc::now());
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET status = ?2,
+                last_error = ?3,
+                last_error_at = ?4,
+                last_route_failure_at = ?4,
+                last_route_failure_kind = ?5,
+                cooldown_until = NULL,
+                consecutive_route_failures = 1,
+                last_action = ?6,
+                last_action_source = ?7,
+                last_action_reason_code = ?8,
+                last_action_reason_message = ?3,
+                last_action_http_status = ?9,
+                last_action_at = ?4,
+                updated_at = ?4
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .bind(status)
+        .bind("seed hard unavailable")
+        .bind(&now_iso)
+        .bind(failure_kind)
+        .bind(UPSTREAM_ACCOUNT_ACTION_ROUTE_HARD_UNAVAILABLE)
+        .bind(UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL)
+        .bind(reason_code)
+        .bind(http_status)
+        .execute(pool)
+        .await
+        .expect("seed hard unavailable");
+    }
+
     #[tokio::test]
     async fn mark_account_sync_success_preserves_route_cooldown_state() {
         let pool = test_pool().await;
@@ -14797,6 +15524,7 @@ mod tests {
             &pool,
             account_id,
             UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MANUAL,
+            SyncSuccessRouteState::PreserveFailureState,
         )
         .await
         .expect("mark sync success");
@@ -14817,6 +15545,43 @@ mod tests {
         assert_eq!(
             after.consecutive_route_failures,
             before.consecutive_route_failures
+        );
+    }
+
+    #[tokio::test]
+    async fn mark_account_sync_success_clears_hard_unavailable_state_when_requested() {
+        let pool = test_pool().await;
+        let account_id = insert_oauth_account(&pool, "Recovered OAuth").await;
+        seed_hard_unavailable_route_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+
+        mark_account_sync_success(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MANUAL,
+            SyncSuccessRouteState::ClearFailureState,
+        )
+        .await
+        .expect("mark sync success");
+
+        let after = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load row after sync success")
+            .expect("row exists after sync success");
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert!(after.last_error.is_none());
+        assert!(after.last_route_failure_kind.is_none());
+        assert!(after.cooldown_until.is_none());
+        assert_eq!(
+            after.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED)
         );
     }
 
@@ -14850,6 +15615,396 @@ mod tests {
         );
         assert!(after.cooldown_until.is_some());
         assert_eq!(after.consecutive_route_failures, 1);
+    }
+
+    #[tokio::test]
+    async fn sync_api_key_account_keeps_hard_unavailable_accounts_blocked() {
+        let pool = test_pool().await;
+        let account_id = insert_api_key_account(&pool, "Blocked API Key").await;
+        seed_hard_unavailable_route_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load api key row")
+            .expect("api key row exists");
+
+        sync_api_key_account(&pool, &row, SyncCause::Manual)
+            .await
+            .expect("sync api key account");
+        let after = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load row after api key sync")
+            .expect("row exists after api key sync");
+
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
+        assert!(after.last_synced_at.is_some());
+        assert!(after.last_successful_sync_at.is_none());
+        assert_eq!(after.last_error.as_deref(), Some("seed hard unavailable"));
+        assert_eq!(
+            after.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_SYNC_RECOVERY_BLOCKED)
+        );
+        assert_eq!(
+            after.last_action_reason_code.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_RECOVERY_UNCONFIRMED_MANUAL_REQUIRED)
+        );
+        assert_eq!(
+            after.last_route_failure_kind.as_deref(),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_api_key_account_clears_stale_manual_recovery_marker_on_active_rows() {
+        let pool = test_pool().await;
+        let account_id = insert_api_key_account(&pool, "Active API Key With Stale Marker").await;
+        seed_hard_unavailable_route_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+        mark_account_sync_success(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
+            SyncSuccessRouteState::PreserveFailureState,
+        )
+        .await
+        .expect("mark legacy sync success");
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load api key row")
+            .expect("api key row exists");
+        assert_eq!(row.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert_eq!(
+            row.last_route_failure_kind.as_deref(),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+        );
+
+        sync_api_key_account(&pool, &row, SyncCause::Maintenance)
+            .await
+            .expect("sync api key account");
+        let after = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load row after api key sync")
+            .expect("row exists after api key sync");
+
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert!(after.last_route_failure_kind.is_none());
+        assert!(after.cooldown_until.is_none());
+        assert_eq!(
+            after.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED)
+        );
+    }
+
+    #[tokio::test]
+    async fn updating_api_key_reactivates_manually_recoverable_account() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let account_id = insert_api_key_account(&state.pool, "Recoverable API Key").await;
+        seed_hard_unavailable_route_failure(
+            &state.pool,
+            account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+
+        state
+            .upstream_accounts
+            .account_ops
+            .run_update_account(
+                state.clone(),
+                account_id,
+                UpdateUpstreamAccountRequest {
+                    display_name: None,
+                    group_name: None,
+                    note: None,
+                    group_note: None,
+                    upstream_base_url: OptionalField::Missing,
+                    enabled: None,
+                    is_mother: None,
+                    api_key: Some("sk-live-new".to_string()),
+                    local_primary_limit: None,
+                    local_secondary_limit: None,
+                    local_limit_unit: None,
+                    tag_ids: None,
+                },
+            )
+            .await
+            .expect("update api key account");
+
+        let after = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load row after api key update")
+            .expect("row exists after api key update");
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert!(after.last_error.is_none());
+        assert!(after.last_route_failure_kind.is_none());
+        assert_eq!(
+            after.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_ACCOUNT_UPDATED)
+        );
+    }
+
+    #[tokio::test]
+    async fn oauth_sync_keeps_quota_exhausted_accounts_blocked_until_snapshot_recovers() {
+        let (base_url, server) = spawn_usage_snapshot_server(
+            StatusCode::OK,
+            json!({
+                "planType": "team",
+                "rateLimit": {
+                    "primaryWindow": {
+                        "usedPercent": 100,
+                        "windowDurationMins": 300,
+                        "resetsAt": 1771322400
+                    }
+                }
+            }),
+        )
+        .await;
+        let state = test_app_state_with_usage_base(&base_url).await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Exhausted OAuth",
+            "exhausted@example.com",
+            "org_exhausted",
+            "user_exhausted",
+        )
+        .await;
+        seed_hard_unavailable_route_failure(
+            &state.pool,
+            account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+        let row = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth row")
+            .expect("oauth row exists");
+
+        sync_oauth_account(&state, &row, SyncCause::Manual)
+            .await
+            .expect("sync oauth account");
+
+        let after = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth row after sync")
+            .expect("oauth row exists after sync");
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
+        assert!(after.last_synced_at.is_some());
+        assert!(after.last_successful_sync_at.is_none());
+        assert_eq!(after.last_error.as_deref(), Some("seed hard unavailable"));
+        assert_eq!(
+            after.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_SYNC_RECOVERY_BLOCKED)
+        );
+        assert_eq!(
+            after.last_action_reason_code.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED)
+        );
+        assert_eq!(
+            after.last_route_failure_kind.as_deref(),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn oauth_sync_demotes_active_stale_quota_marker_when_snapshot_is_still_exhausted() {
+        let (base_url, server) = spawn_usage_snapshot_server(
+            StatusCode::OK,
+            json!({
+                "planType": "team",
+                "rateLimit": {
+                    "primaryWindow": {
+                        "usedPercent": 100,
+                        "windowDurationMins": 300,
+                        "resetsAt": 1771322400
+                    }
+                }
+            }),
+        )
+        .await;
+        let state = test_app_state_with_usage_base(&base_url).await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Legacy Active Exhausted OAuth",
+            "legacy-exhausted@example.com",
+            "org_legacy_exhausted",
+            "user_legacy_exhausted",
+        )
+        .await;
+        seed_hard_unavailable_route_failure(
+            &state.pool,
+            account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+        mark_account_sync_success(
+            &state.pool,
+            account_id,
+            UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
+            SyncSuccessRouteState::PreserveFailureState,
+        )
+        .await
+        .expect("mark legacy sync success");
+        let row = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth row")
+            .expect("oauth row exists");
+        assert_eq!(row.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert_eq!(
+            row.last_route_failure_kind.as_deref(),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+        );
+
+        sync_oauth_account(&state, &row, SyncCause::Maintenance)
+            .await
+            .expect("sync oauth account");
+
+        let after = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth row after sync")
+            .expect("oauth row exists after sync");
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
+        assert_eq!(
+            after.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_SYNC_RECOVERY_BLOCKED)
+        );
+        assert_eq!(
+            after.last_route_failure_kind.as_deref(),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn oauth_sync_reactivates_quota_exhausted_account_once_snapshot_recovers() {
+        let (base_url, server) = spawn_usage_snapshot_server(
+            StatusCode::OK,
+            json!({
+                "planType": "team",
+                "rateLimit": {
+                    "primaryWindow": {
+                        "usedPercent": 42,
+                        "windowDurationMins": 300,
+                        "resetsAt": 1771322400
+                    }
+                }
+            }),
+        )
+        .await;
+        let state = test_app_state_with_usage_base(&base_url).await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Recovered OAuth Sync",
+            "recovered@example.com",
+            "org_recovered",
+            "user_recovered",
+        )
+        .await;
+        seed_hard_unavailable_route_failure(
+            &state.pool,
+            account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+        let row = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth row")
+            .expect("oauth row exists");
+
+        sync_oauth_account(&state, &row, SyncCause::Manual)
+            .await
+            .expect("sync oauth account");
+
+        let after = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth row after recovery")
+            .expect("oauth row exists after recovery");
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert!(after.last_error.is_none());
+        assert!(after.last_route_failure_kind.is_none());
+        assert!(after.last_successful_sync_at.is_some());
+        assert_eq!(
+            after.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED)
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn resolver_keeps_quota_exhausted_accounts_in_rate_limited_terminal_state_after_sync_block()
+     {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let account_id = insert_api_key_account(&state.pool, "Quota Exhausted Resolver").await;
+        seed_hard_unavailable_route_failure(
+            &state.pool,
+            account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+        record_account_sync_recovery_blocked(
+            &state.pool,
+            account_id,
+            UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            UPSTREAM_ACCOUNT_ACTION_REASON_RECOVERY_UNCONFIRMED_MANUAL_REQUIRED,
+            "manual recovery required because API key sync cannot verify whether the upstream usage limit has reset",
+            Some("seed hard unavailable"),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED),
+        )
+        .await
+        .expect("record blocked recovery");
+
+        let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
+            .await
+            .expect("resolve pool account");
+        assert!(matches!(resolution, PoolAccountResolution::RateLimited));
     }
 
     #[tokio::test]
