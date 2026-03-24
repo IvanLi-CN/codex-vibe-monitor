@@ -11,8 +11,9 @@ import { useTranslation } from '../i18n'
 import { supportedLocales, type Locale } from '../i18n'
 import { useTheme } from '../theme'
 import { Button } from './ui/button'
+import { SegmentedControl } from './ui/segmented-control'
+import { segmentedControlItemVariants } from './ui/segmented-control.variants'
 import { UpdateAvailableBanner } from './UpdateAvailableBanner'
-import { cn } from '../lib/utils'
 
 const navItems = [
   { to: '/dashboard', labelKey: 'app.nav.dashboard' },
@@ -210,20 +211,17 @@ export function AppLayout() {
 
           <nav className="flex shrink-0 items-center gap-2 sm:gap-3">
             <div className="max-w-[40vw] overflow-x-auto no-scrollbar sm:max-w-none">
-              <ul className="segment-group">
+              <SegmentedControl size="nav" className="min-w-max" aria-label={t('app.brand')}>
                 {navItems.map((item) => (
-                  <li key={item.to}>
-                    <NavLink
-                      to={item.to}
-                      className={({ isActive }) =>
-                        cn('app-nav-item', isActive && 'app-nav-item-active')
-                      }
-                    >
-                      {t(item.labelKey)}
-                    </NavLink>
-                  </li>
+                  <NavLink
+                    key={item.to}
+                    to={item.to}
+                    className={({ isActive }) => segmentedControlItemVariants({ size: 'nav', active: isActive })}
+                  >
+                    {t(item.labelKey)}
+                  </NavLink>
                 ))}
-              </ul>
+              </SegmentedControl>
             </div>
 
             <button

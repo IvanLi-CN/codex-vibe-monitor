@@ -12,7 +12,7 @@ import { useTranslation } from "../i18n";
 import type { TranslationKey } from "../i18n";
 import type { PromptCacheConversationSelection } from "../lib/api";
 import { resolveInvocationDisplayStatus } from "../lib/invocationStatus";
-import { cn } from "../lib/utils";
+import { SegmentedControl, SegmentedControlItem } from "../components/ui/segmented-control";
 import { SelectField } from "../components/ui/select-field";
 
 const LIMIT_OPTIONS = [20, 50, 100];
@@ -196,29 +196,23 @@ export default function LivePage() {
             <div className="section-heading">
               <h2 className="section-title">{t("live.summary.title")}</h2>
             </div>
-            <div
-              className="segment-group"
+            <SegmentedControl
               role="tablist"
               aria-label={t("live.summary.title")}
             >
               {summaryWindows.map((option) => (
-                <button
+                <SegmentedControlItem
                   key={option.value}
-                  type="button"
+                  active={summaryWindow === option.value}
                   role="tab"
                   aria-selected={summaryWindow === option.value}
                   aria-pressed={summaryWindow === option.value}
                   onClick={() => setSummaryWindow(option.value)}
-                  className={cn(
-                    "segment-button px-3",
-                    summaryWindow === option.value && "font-semibold",
-                  )}
-                  data-active={summaryWindow === option.value}
                 >
                   {option.label}
-                </button>
+                </SegmentedControlItem>
               ))}
-            </div>
+            </SegmentedControl>
           </div>
           <StatsCards
             stats={summary}

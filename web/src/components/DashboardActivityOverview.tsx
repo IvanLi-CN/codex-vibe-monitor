@@ -6,6 +6,7 @@ import { cn } from '../lib/utils'
 import { useTheme } from '../theme'
 import { Last24hTenMinuteHeatmap, type MetricKey } from './Last24hTenMinuteHeatmap'
 import { StatsCards } from './StatsCards'
+import { SegmentedControl, SegmentedControlItem } from './ui/segmented-control'
 import { WeeklyHourlyHeatmap } from './WeeklyHourlyHeatmap'
 
 type RangeKey = '1d' | '7d'
@@ -68,48 +69,40 @@ export function DashboardActivityOverview() {
             <div className="section-heading">
               <h2 className="section-title">{t('dashboard.activityOverview.title')}</h2>
             </div>
-            <div
-              className="segment-group"
-              role="tablist"
-              aria-label={t('dashboard.activityOverview.rangeToggleAria')}
-            >
+            <SegmentedControl role="tablist" aria-label={t('dashboard.activityOverview.rangeToggleAria')}>
               {rangeOptions.map((option) => {
                 const active = option.key === activeRange
                 return (
-                  <button
+                  <SegmentedControlItem
                     key={option.key}
-                    type="button"
+                    active={active}
                     role="tab"
                     aria-selected={active}
-                    className={cn('segment-button px-2 sm:px-3', active && 'font-semibold')}
-                    data-active={active}
                     onClick={() => setActiveRange(option.key)}
                   >
                     {option.label}
-                  </button>
+                  </SegmentedControlItem>
                 )
               })}
-            </div>
+            </SegmentedControl>
           </div>
-          <div className="segment-group" role="tablist" aria-label={t('heatmap.metricsToggleAria')}>
+          <SegmentedControl size="compact" role="tablist" aria-label={t('heatmap.metricsToggleAria')}>
             {metricOptions.map((option) => {
               const active = option.key === activeMetric
               return (
-                <button
+                <SegmentedControlItem
                   key={option.key}
-                  type="button"
+                  active={active}
                   role="tab"
                   aria-selected={active}
-                  className={cn('segment-button px-2 sm:px-3', active && 'font-semibold')}
-                  data-active={active}
                   style={active ? { color: metricAccent(option.key, themeMode) } : undefined}
                   onClick={() => setActiveMetric(option.key)}
                 >
                   {option.label}
-                </button>
+                </SegmentedControlItem>
               )
             })}
-          </div>
+          </SegmentedControl>
         </div>
 
         <StatsCards stats={activeSummary} loading={activeSummaryLoading} error={activeSummaryError} />

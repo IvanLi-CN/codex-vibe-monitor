@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { RecordsNewDataButton } from '../components/RecordsNewDataButton'
 import { Button } from '../components/ui/button'
 import { FilterableCombobox } from '../components/ui/filterable-combobox'
+import { SegmentedControl, SegmentedControlItem } from '../components/ui/segmented-control'
 import { SelectField } from '../components/ui/select-field'
 import { InvocationRecordsSummaryCards } from '../components/InvocationRecordsSummaryCards'
 import { InvocationRecordsTable } from '../components/InvocationRecordsTable'
@@ -528,22 +529,20 @@ export default function RecordsPage() {
                   onRefresh={handleRefreshNewData}
                 />
               ) : null}
-              <div className="segment-group" role="tablist" aria-label={t('records.focus.label')}>
+              <SegmentedControl role="tablist" aria-label={t('records.focus.label')}>
                 {focusOptions.map((option) => (
-                  <button
+                  <SegmentedControlItem
                     key={option.value}
-                    type="button"
+                    active={focus === option.value}
                     role="tab"
                     aria-selected={focus === option.value}
                     aria-pressed={focus === option.value}
                     onClick={() => setFocus(option.value)}
-                    className={cn('segment-button px-3', focus === option.value && 'font-semibold')}
-                    data-active={focus === option.value}
                   >
                     {option.label}
-                  </button>
+                  </SegmentedControlItem>
                 ))}
-              </div>
+              </SegmentedControl>
             </div>
           </div>
 
