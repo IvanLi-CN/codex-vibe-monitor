@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.23.0",
+  "base_stable_version": "1.22.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-24T10:51:17Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.23.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "d6d0a0020a7f7af43c4fa86869ec01c7904965e4",
+  "pr_number": 217,
+  "pr_title": "feat: trace compact pool failures and add dynamic routing timeouts",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.23.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.23.0,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "501f4cfaed79557624d8b353fce04a411aadc6eb",
+  "type_label": "type:minor"
+}
