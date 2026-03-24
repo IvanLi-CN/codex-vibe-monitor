@@ -242,6 +242,7 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
   const [expandedId, setExpandedId] = useState<string | null>(null)
   const [drawerAccountId, setDrawerAccountId] = useState<number | null>(null)
   const [drawerAccountLabel, setDrawerAccountLabel] = useState<string | null>(null)
+  const [nowMs, setNowMs] = useState(() => Date.now())
   const localeTag = locale === 'zh' ? 'zh-CN' : 'en-US'
   const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag])
   const costFormatter = useMemo(
@@ -317,7 +318,7 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
           t,
           locale,
           localeTag,
-          nowMs: Date.now(),
+          nowMs,
           numberFormatter,
           currencyFormatter: costFormatter,
           renderAccountValue,
@@ -332,7 +333,16 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
           ...detailView,
         }
       }),
-    [records, t, locale, localeTag, numberFormatter, costFormatter, dateTimeFormatter],
+    [records, t, locale, localeTag, nowMs, numberFormatter, costFormatter, dateTimeFormatter],
+  )
+
+  const hasInFlightRows = useMemo(
+    () =>
+      rows.some((row) => {
+        const normalizedStatus = (resolveInvocationDisplayStatus(row.record) || 'unknown').toLowerCase()
+        return normalizedStatus === 'running' || normalizedStatus === 'pending'
+      }),
+    [rows],
   )
 
   useEffect(() => {
@@ -341,6 +351,15 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
       return rows.some((row) => row.rowKey === current) ? current : null
     })
   }, [rows])
+
+  useEffect(() => {
+    if (!hasInFlightRows) return
+    setNowMs(Date.now())
+    const id = window.setInterval(() => {
+      setNowMs(Date.now())
+    }, 1000)
+    return () => window.clearInterval(id)
+  }, [hasInFlightRows])
 
   const expandedRecord = useMemo(
     () => rows.find((row) => row.rowKey === expandedId)?.record ?? null,
