@@ -738,6 +738,40 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect((editButton as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it("keeps routing settings inspectable in read-only mode", async () => {
+    mockAccountsPage({
+      routing: {
+        writesEnabled: false,
+        apiKeyConfigured: true,
+        maskedApiKey: "pool-live••••",
+        timeouts: {
+          responsesFirstByteTimeoutSecs: 120,
+          compactFirstByteTimeoutSecs: 300,
+          responsesStreamTimeoutSecs: 300,
+          compactStreamTimeoutSecs: 300,
+        },
+      },
+    });
+    render("/account-pool/upstream-accounts");
+
+    const editButton = clickButton(/Edit routing settings/i);
+    expect(editButton.disabled).toBe(false);
+    await flushAsync();
+    await flushTimers();
+
+    const compactInput = document.body.querySelector(
+      'input[name="compactFirstByteTimeoutSecs"]',
+    );
+    expect(compactInput).toBeInstanceOf(HTMLInputElement);
+    expect((compactInput as HTMLInputElement).disabled).toBe(true);
+
+    const saveButton = findButton(/Save settings/i);
+    if (!(saveButton instanceof HTMLButtonElement)) {
+      throw new Error("missing save button");
+    }
+    expect(saveButton.disabled).toBe(true);
+  });
+
   it("preserves unsaved routing edits while the dialog is open during refresh", async () => {
     mockAccountsPage();
     render("/account-pool/upstream-accounts");

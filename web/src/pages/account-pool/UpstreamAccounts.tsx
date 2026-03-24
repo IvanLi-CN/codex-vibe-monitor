@@ -1061,12 +1061,6 @@ export default function UpstreamAccountsPage() {
   ])
 
   useEffect(() => {
-    if (!routingWritesEnabled) {
-      setIsRoutingDialogOpen(false)
-    }
-  }, [routingWritesEnabled])
-
-  useEffect(() => {
     if (!writesEnabled) {
       setIsDeleteConfirmOpen(false)
     }
@@ -1969,7 +1963,7 @@ export default function UpstreamAccountsPage() {
                     variant="ghost"
                     size="icon"
                     onClick={() => setIsRoutingDialogOpen(true)}
-                    disabled={!routingWritesEnabled}
+                    disabled={!routing}
                   >
                     <AppIcon name="pencil-outline" className="h-4 w-4" aria-hidden />
                     <span className="sr-only">{t('accountPool.upstreamAccounts.routing.edit')}</span>
