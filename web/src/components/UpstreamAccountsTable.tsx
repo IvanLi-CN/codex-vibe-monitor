@@ -618,10 +618,10 @@ export function UpstreamAccountsTable({
                           })
                           : null}
                         {compactBadge(kindLabel(item, labels), 'secondary')}
-                        {labels.compactSupport?.(item)
+                        {item.compactSupport?.status === 'unsupported' && labels.compactSupport?.(item)
                           ? compactBadge(
                             labels.compactSupport(item) ?? '',
-                            item.compactSupport?.status === 'unsupported' ? 'warning' : 'info',
+                            'warning',
                             {
                               title: labels.compactSupportHint?.(item) ?? undefined,
                             },

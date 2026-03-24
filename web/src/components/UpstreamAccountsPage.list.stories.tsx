@@ -97,7 +97,7 @@ export const DenseRoster: Story = {
 export const CompactLongLabels: Story = {
   render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
   play: async ({ canvasElement, step }) => {
-    await step('keeps compact-support badges aligned with adjacent badges', async () => {
+    await step('keeps unsupported compact badges aligned and hides supported markers', async () => {
       const oauthRow = await findAccountRow(
         canvasElement,
         /Codex Pro - Tokyo enterprise rotation account with a deliberately long roster title/i,
@@ -116,12 +116,7 @@ export const CompactLongLabels: Story = {
         canvasElement,
         /Team key - staging/i,
       )
-      const apiKeyKindBadge = findRowBadge(apiKeyRow, /^API Key$/i)
-      const apiKeyPlanBadge = findRowBadge(apiKeyRow, /^local$/i)
-      const compactSupportedBadge = findRowBadge(apiKeyRow, /^Compact (可用|available)$/i)
-
-      expectBadgeAlignment(apiKeyKindBadge, compactSupportedBadge)
-      expectBadgeAlignment(apiKeyPlanBadge, compactSupportedBadge)
+      expect(() => findRowBadge(apiKeyRow, /^Compact (可用|available)$/i)).toThrow()
     })
   },
 }
