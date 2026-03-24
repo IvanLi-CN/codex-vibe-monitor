@@ -5,7 +5,8 @@
 ### App shell 与导航
 
 - 站点骨架由 `AppLayout` 代表，参考 `web/src/components/AppLayout.stories.tsx`。
-- 顶部导航和分段控件使用统一的 active/inactive 语言：圆角胶囊、轻边框、选中态背景抬升、文字权重提升。
+- 顶部导航和分段控件使用统一的 active/inactive 语言：圆角胶囊、轻边框、选中态背景抬升、文字权重提升；当前共享真相源是 `web/src/components/ui/segmented-control.tsx`。
+- 路由导航虽然视觉上属于 segmented control family，但必须保留导航语义；`AppLayout` 通过共享 helper 驱动 `NavLink`，不把导航伪装成 tablist。
 - 页面内容默认放在带 breathing room 的容器中，避免贴边或全宽压迫布局。
 
 ### 面板、卡片与详情区
