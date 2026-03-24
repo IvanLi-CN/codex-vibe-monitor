@@ -2526,28 +2526,6 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     )
     .await
     .context("failed to ensure pool_routing_settings.priority_available_account_cap")?;
-
-    sqlx::query(
-        r#"
-        INSERT OR IGNORE INTO pool_routing_settings (
-            id,
-            encrypted_api_key,
-            masked_api_key,
-            responses_first_byte_timeout_secs,
-            compact_first_byte_timeout_secs,
-            responses_stream_timeout_secs,
-            compact_stream_timeout_secs,
-            default_first_byte_timeout_secs,
-            upstream_handshake_timeout_secs,
-            request_read_timeout_secs
-        ) VALUES (?1, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
-        "#,
-    )
-    .bind(POOL_SETTINGS_SINGLETON_ID)
-    .execute(pool)
-    .await
-    .context("failed to ensure default pool_routing_settings row")?;
-
     ensure_nullable_integer_column(
         pool,
         "pool_routing_settings",
@@ -2589,6 +2567,27 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_integer_column(pool, "pool_routing_settings", "request_read_timeout_secs")
         .await
         .context("failed to ensure pool_routing_settings.request_read_timeout_secs")?;
+
+    sqlx::query(
+        r#"
+        INSERT OR IGNORE INTO pool_routing_settings (
+            id,
+            encrypted_api_key,
+            masked_api_key,
+            responses_first_byte_timeout_secs,
+            compact_first_byte_timeout_secs,
+            responses_stream_timeout_secs,
+            compact_stream_timeout_secs,
+            default_first_byte_timeout_secs,
+            upstream_handshake_timeout_secs,
+            request_read_timeout_secs
+        ) VALUES (?1, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
+        "#,
+    )
+    .bind(POOL_SETTINGS_SINGLETON_ID)
+    .execute(pool)
+    .await
+    .context("failed to ensure default pool_routing_settings row")?;
 
     Ok(())
 }
@@ -13771,9 +13770,11 @@ mod tests {
             retention_dry_run: DEFAULT_RETENTION_DRY_RUN,
             retention_interval: Duration::from_secs(DEFAULT_RETENTION_INTERVAL_SECS),
             retention_batch_rows: DEFAULT_RETENTION_BATCH_ROWS,
+            retention_catchup_budget: Duration::from_secs(DEFAULT_RETENTION_CATCHUP_BUDGET_SECS),
             archive_dir: PathBuf::from("target/archive-tests"),
             invocation_success_full_days: DEFAULT_INVOCATION_SUCCESS_FULL_DAYS,
             invocation_max_days: DEFAULT_INVOCATION_MAX_DAYS,
+            invocation_archive_ttl_days: DEFAULT_INVOCATION_ARCHIVE_TTL_DAYS,
             forward_proxy_attempts_retention_days: DEFAULT_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS,
             pool_upstream_request_attempts_retention_days:
                 DEFAULT_POOL_UPSTREAM_REQUEST_ATTEMPTS_RETENTION_DAYS,
@@ -14006,6 +14007,7 @@ mod tests {
                     in_flight: HashMap::new(),
                 },
             )),
+            maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
             hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
             upstream_accounts: Arc::new(
                 UpstreamAccountsRuntime::test_instance_with_maintenance_parallelism(
@@ -14939,6 +14941,148 @@ mod tests {
             .expect("second maintenance command should be accepted");
         assert!(matches!(second, AccountSubmitOutcome::Completed(())));
         assert_eq!(state.upstream_accounts.account_ops.actor_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn ensure_upstream_accounts_schema_seeds_pool_routing_settings_for_new_database() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect sqlite");
+        ensure_upstream_accounts_schema(&pool)
+            .await
+            .expect("ensure schema");
+
+        let config = usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test");
+        let row = load_pool_routing_settings_seeded(&pool, &config)
+            .await
+            .expect("load seeded routing settings");
+
+        assert_eq!(row.masked_api_key, None);
+        assert_eq!(row.primary_sync_interval_secs, None);
+        assert_eq!(row.secondary_sync_interval_secs, None);
+        assert_eq!(row.priority_available_account_cap, None);
+        assert_eq!(row.responses_first_byte_timeout_secs, None);
+        assert_eq!(row.compact_first_byte_timeout_secs, None);
+        assert_eq!(row.responses_stream_timeout_secs, None);
+        assert_eq!(row.compact_stream_timeout_secs, None);
+        assert_eq!(row.default_first_byte_timeout_secs, None);
+        assert_eq!(row.upstream_handshake_timeout_secs, None);
+        assert_eq!(row.request_read_timeout_secs, None);
+    }
+
+    #[tokio::test]
+    async fn ensure_upstream_accounts_schema_upgrades_legacy_pool_routing_settings_before_seed() {
+        let pool = SqlitePool::connect("sqlite::memory:")
+            .await
+            .expect("connect sqlite");
+        sqlx::query(
+            r#"
+            CREATE TABLE pool_routing_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                encrypted_api_key TEXT,
+                masked_api_key TEXT,
+                primary_sync_interval_secs INTEGER,
+                secondary_sync_interval_secs INTEGER,
+                priority_available_account_cap INTEGER,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )
+            "#,
+        )
+        .execute(&pool)
+        .await
+        .expect("create legacy pool_routing_settings");
+        sqlx::query(
+            r#"
+            INSERT INTO pool_routing_settings (
+                id,
+                encrypted_api_key,
+                masked_api_key,
+                primary_sync_interval_secs,
+                secondary_sync_interval_secs,
+                priority_available_account_cap,
+                updated_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'))
+            "#,
+        )
+        .bind(POOL_SETTINGS_SINGLETON_ID)
+        .bind("legacy-ciphertext")
+        .bind("sk-legacy")
+        .bind(300_i64)
+        .bind(2400_i64)
+        .bind(99_i64)
+        .execute(&pool)
+        .await
+        .expect("insert legacy pool routing row");
+
+        ensure_upstream_accounts_schema(&pool)
+            .await
+            .expect("upgrade schema");
+
+        let columns = sqlx::query("PRAGMA table_info('pool_routing_settings')")
+            .fetch_all(&pool)
+            .await
+            .expect("load table info")
+            .into_iter()
+            .filter_map(|row| row.try_get::<String, _>("name").ok())
+            .collect::<std::collections::HashSet<_>>();
+        for column in [
+            "responses_first_byte_timeout_secs",
+            "compact_first_byte_timeout_secs",
+            "responses_stream_timeout_secs",
+            "compact_stream_timeout_secs",
+            "default_first_byte_timeout_secs",
+            "upstream_handshake_timeout_secs",
+            "request_read_timeout_secs",
+        ] {
+            assert!(
+                columns.contains(column),
+                "expected upgraded schema to contain {column}"
+            );
+        }
+
+        let config = usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test");
+        let row = load_pool_routing_settings_seeded(&pool, &config)
+            .await
+            .expect("load upgraded routing settings");
+        assert_eq!(row.encrypted_api_key.as_deref(), Some("legacy-ciphertext"));
+        assert_eq!(row.masked_api_key.as_deref(), Some("sk-legacy"));
+        assert_eq!(row.primary_sync_interval_secs, Some(300));
+        assert_eq!(row.secondary_sync_interval_secs, Some(2400));
+        assert_eq!(row.priority_available_account_cap, Some(99));
+        assert_eq!(row.responses_first_byte_timeout_secs, None);
+        assert_eq!(row.compact_first_byte_timeout_secs, None);
+        assert_eq!(row.responses_stream_timeout_secs, None);
+        assert_eq!(row.compact_stream_timeout_secs, None);
+        assert_eq!(row.default_first_byte_timeout_secs, None);
+        assert_eq!(row.upstream_handshake_timeout_secs, None);
+        assert_eq!(row.request_read_timeout_secs, None);
+
+        let resolved = resolve_pool_routing_timeouts(&pool, &config)
+            .await
+            .expect("resolve routing timeouts");
+        let defaults = pool_routing_timeouts_from_config(&config);
+        assert_eq!(
+            resolved.responses_first_byte_timeout,
+            defaults.responses_first_byte_timeout
+        );
+        assert_eq!(
+            resolved.compact_first_byte_timeout,
+            defaults.compact_first_byte_timeout
+        );
+        assert_eq!(
+            resolved.responses_stream_timeout,
+            defaults.responses_stream_timeout
+        );
+        assert_eq!(
+            resolved.compact_stream_timeout,
+            defaults.compact_stream_timeout
+        );
+        assert_eq!(
+            resolved.default_first_byte_timeout,
+            defaults.default_first_byte_timeout
+        );
+        assert_eq!(resolved.default_send_timeout, defaults.default_send_timeout);
+        assert_eq!(resolved.request_read_timeout, defaults.request_read_timeout);
     }
 
     #[tokio::test]
