@@ -169,7 +169,7 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: `Account Pool/Pages/Upstream Accounts/Operational`
   state: routing settings summary card without advanced parameter tiles
   evidence_note: 验证列表页右侧 routing 卡片仅保留当前号池 API Key 与编辑入口，不再展示 maintenance 摘要字段，也不再只读展开 4 项请求路径 timeout。
