@@ -697,7 +697,6 @@ export function useInvocationPoolAttempts(expandedRecord: ApiInvocation | null) 
   const [errorByInvokeId, setPoolAttemptErrorByInvokeId] = useState<Record<string, string | null | undefined>>({})
   const attemptsRef = useRef(attemptsByInvokeId)
   const loadingRef = useRef(loadingByInvokeId)
-  const activeExpandedInvokeIdRef = useRef<string | null>(null)
   const versionRef = useRef<Record<string, number | undefined>>({})
   const loadedKeyRef = useRef<Record<string, string | undefined>>({})
   const loadingKeyRef = useRef<Record<string, string | undefined>>({})
@@ -713,14 +712,8 @@ export function useInvocationPoolAttempts(expandedRecord: ApiInvocation | null) 
   }, [loadingByInvokeId])
 
   useEffect(() => {
-    activeExpandedInvokeIdRef.current =
-      expandedRecord && isPoolRouteMode(expandedRecord.routeMode) ? expandedRecord.invokeId : null
-  }, [expandedRecord])
-
-  useEffect(() => {
     const unsubscribe = subscribeToSse((payload) => {
       if (payload.type !== 'pool_attempts') return
-      if (payload.invokeId !== activeExpandedInvokeIdRef.current) return
       const existingAttempts = attemptsRef.current[payload.invokeId]
       if (!shouldReplacePoolAttemptSnapshot(existingAttempts, payload.attempts)) return
 
@@ -811,6 +804,11 @@ export function useInvocationPoolAttempts(expandedRecord: ApiInvocation | null) 
       })
       .catch((error) => {
         if (cancelled) return
+        const latestVersion = versionRef.current[invokeId] ?? 0
+        const existingAttempts = attemptsRef.current[invokeId]
+        if (latestVersion !== fetchVersion || (existingAttempts?.length ?? 0) > 0) {
+          return
+        }
         const message = error instanceof Error ? error.message : String(error)
         setPoolAttemptErrorByInvokeId((current) => ({ ...current, [invokeId]: message }))
       })

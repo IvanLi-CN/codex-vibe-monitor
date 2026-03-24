@@ -1264,7 +1264,7 @@ describe('InvocationTable', () => {
     expect(document.body.textContent).not.toContain('进行中')
   })
 
-  it('ignores pool-attempt SSE payloads for invocations that are not expanded', async () => {
+  it('keeps pool-attempt SSE payloads fresh for invocations that are not expanded', async () => {
     apiMocks.fetchInvocationPoolAttempts
       .mockResolvedValueOnce([
         {
@@ -1368,9 +1368,89 @@ describe('InvocationTable', () => {
       await Promise.resolve()
     })
 
-    expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenNthCalledWith(2, 'invocation-collapsed-b')
-    await waitForCondition(() => document.body.textContent?.includes('未找到号池尝试记录') === true)
-    expect(document.body.textContent).not.toContain('req_ignored')
+    expect(apiMocks.fetchInvocationPoolAttempts).toHaveBeenCalledTimes(1)
+    await waitForCondition(() => document.body.textContent?.includes('req_ignored') === true)
+    expect(document.body.textContent).toContain('req_ignored')
+    expect(document.body.textContent).not.toContain('未找到号池尝试记录')
+  })
+
+  it('does not replace live pool attempts with a stale REST load error', async () => {
+    let rejectFetch: ((error: Error) => void) | null = null
+    apiMocks.fetchInvocationPoolAttempts.mockImplementationOnce(
+      () =>
+        new Promise((_, reject) => {
+          rejectFetch = (error: Error) => reject(error)
+        }),
+    )
+
+    await renderInteractiveTable([
+      {
+        id: 60,
+        invokeId: 'invocation-fetch-error-after-sse',
+        occurredAt: '2026-03-07T03:13:51Z',
+        createdAt: '2026-03-07T03:13:51Z',
+        source: 'proxy',
+        routeMode: 'pool',
+        upstreamAccountId: 7,
+        upstreamAccountName: 'pool-account-a',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'running',
+        poolAttemptCount: 1,
+      },
+    ])
+
+    const toggle = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.getAttribute('aria-expanded') === 'false',
+    )
+    expect(toggle).toBeTruthy()
+
+    await act(async () => {
+      toggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    await act(async () => {
+      sseMocks.onMessage?.({
+        type: 'pool_attempts',
+        invokeId: 'invocation-fetch-error-after-sse',
+        attempts: [
+          {
+            id: 21,
+            invokeId: 'invocation-fetch-error-after-sse',
+            occurredAt: '2026-03-07T03:13:51Z',
+            endpoint: '/v1/responses',
+            upstreamAccountId: 7,
+            upstreamAccountName: 'pool-account-a',
+            attemptIndex: 1,
+            distinctAccountIndex: 1,
+            sameAccountRetryIndex: 1,
+            startedAt: '2026-03-07T03:13:51Z',
+            finishedAt: null,
+            status: 'pending',
+            phase: 'waiting_first_byte',
+            httpStatus: null,
+            connectLatencyMs: 18,
+            firstByteLatencyMs: null,
+            streamLatencyMs: null,
+            upstreamRequestId: null,
+            createdAt: '2026-03-07T03:13:51Z',
+          },
+        ],
+      })
+      await Promise.resolve()
+    })
+
+    await waitForCondition(() => document.body.textContent?.includes('等待首字节') === true)
+
+    await act(async () => {
+      rejectFetch?.(new Error('network down'))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(document.body.textContent).toContain('等待首字节')
+    expect(document.querySelector('[data-testid="pool-attempts-error"]')).toBeNull()
   })
 
   it('shows a clear non-pool empty state without fetching attempts', async () => {
