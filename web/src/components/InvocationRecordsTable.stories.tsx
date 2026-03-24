@@ -1,12 +1,26 @@
 import { useEffect, useMemo, useRef, type ReactNode } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { I18nProvider } from '../i18n'
+import type { ApiPoolUpstreamRequestAttempt } from '../lib/api'
 import { InvocationRecordsTable } from './InvocationRecordsTable'
 import {
   createStoryPoolAttemptsByInvokeId,
   STORYBOOK_FIRST_RESPONSE_BYTE_SEMANTICS_RECORDS,
   STORYBOOK_INVOCATION_RECORDS,
 } from './invocationRecordsStoryFixtures'
+
+type PoolAttemptsByInvokeId = Record<string, ApiPoolUpstreamRequestAttempt[]>
+
+type StorybookPoolAttemptsRegistry = {
+  originalFetch: typeof window.fetch
+  providers: Map<symbol, () => PoolAttemptsByInvokeId>
+}
+
+declare global {
+  interface Window {
+    __storybookPoolAttemptsRegistry__?: StorybookPoolAttemptsRegistry
+  }
+}
 
 function StorySurface({ children }: { children: React.ReactNode }) {
   return (
@@ -25,37 +39,67 @@ function jsonResponse(payload: unknown) {
   })
 }
 
+function ensureStorybookPoolAttemptsRegistry() {
+  if (typeof window === 'undefined') return null
+
+  const existingRegistry = window.__storybookPoolAttemptsRegistry__
+  if (existingRegistry) return existingRegistry
+
+  const originalFetch = window.fetch.bind(window)
+  const providers = new Map<symbol, () => PoolAttemptsByInvokeId>()
+
+  const mockedFetch: typeof window.fetch = async (input, init) => {
+    const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+    const url = new URL(requestUrl, window.location.origin)
+    const poolAttemptsMatch = url.pathname.match(/^\/api\/invocations\/([^/]+)\/pool-attempts$/)
+
+    if (poolAttemptsMatch) {
+      const invokeId = decodeURIComponent(poolAttemptsMatch[1] ?? '')
+      const providerGetters = Array.from(providers.values()).reverse()
+
+      for (const getAttemptsByInvokeId of providerGetters) {
+        const attempts = getAttemptsByInvokeId()[invokeId]
+        if (attempts) {
+          return jsonResponse(attempts)
+        }
+      }
+
+      return jsonResponse([])
+    }
+
+    return originalFetch(input, init)
+  }
+
+  window.fetch = mockedFetch
+  window.__storybookPoolAttemptsRegistry__ = {
+    originalFetch,
+    providers,
+  }
+
+  return window.__storybookPoolAttemptsRegistry__
+}
+
 function StorybookPoolAttemptsMock({ children, records }: { children: ReactNode; records: typeof STORYBOOK_INVOCATION_RECORDS }) {
-  const originalFetchRef = useRef<typeof window.fetch | null>(null)
   const poolAttemptsByInvokeId = useMemo(() => createStoryPoolAttemptsByInvokeId(records), [records])
   const poolAttemptsByInvokeIdRef = useRef(poolAttemptsByInvokeId)
+  const providerIdRef = useRef<symbol>(Symbol('storybook-pool-attempts'))
 
   poolAttemptsByInvokeIdRef.current = poolAttemptsByInvokeId
 
-  if (typeof window !== 'undefined' && !originalFetchRef.current) {
-    originalFetchRef.current = window.fetch.bind(window)
-
-    const mockedFetch: typeof window.fetch = async (input, init) => {
-      const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
-      const url = new URL(requestUrl, window.location.origin)
-      const poolAttemptsMatch = url.pathname.match(/^\/api\/invocations\/([^/]+)\/pool-attempts$/)
-
-      if (poolAttemptsMatch) {
-        const invokeId = decodeURIComponent(poolAttemptsMatch[1] ?? '')
-        return jsonResponse(poolAttemptsByInvokeIdRef.current[invokeId] ?? [])
-      }
-
-      return (originalFetchRef.current as typeof window.fetch)(input, init)
-    }
-
-    window.fetch = mockedFetch
-  }
-
   useEffect(() => {
+    const registry = ensureStorybookPoolAttemptsRegistry()
+    if (!registry) return
+
+    registry.providers.set(providerIdRef.current, () => poolAttemptsByInvokeIdRef.current)
+
     return () => {
-      if (typeof window !== 'undefined' && originalFetchRef.current) {
-        window.fetch = originalFetchRef.current
-        originalFetchRef.current = null
+      const activeRegistry = window.__storybookPoolAttemptsRegistry__
+      if (!activeRegistry) return
+
+      activeRegistry.providers.delete(providerIdRef.current)
+      if (activeRegistry.providers.size === 0) {
+        window.fetch = activeRegistry.originalFetch
+        delete window.__storybookPoolAttemptsRegistry__
       }
     }
   }, [])

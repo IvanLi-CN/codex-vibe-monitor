@@ -572,6 +572,8 @@ export function useInvocationPoolAttempts(expandedRecord: ApiInvocation | null) 
   const loadingRef = useRef(loadingByInvokeId)
   const loadedKeyRef = useRef<Record<string, string | undefined>>({})
   const loadingKeyRef = useRef<Record<string, string | undefined>>({})
+  const activeRequestIdRef = useRef<Record<string, number | undefined>>({})
+  const nextRequestIdRef = useRef(0)
 
   useEffect(() => {
     attemptsRef.current = attemptsByInvokeId
@@ -600,7 +602,9 @@ export function useInvocationPoolAttempts(expandedRecord: ApiInvocation | null) 
     if (hasCachedAttempts && loadedKey === requestKey && !isInFlight) return
 
     let cancelled = false
+    const requestId = ++nextRequestIdRef.current
     loadingKeyRef.current[invokeId] = requestKey
+    activeRequestIdRef.current[invokeId] = requestId
     setPoolAttemptLoadingByInvokeId((current) => ({ ...current, [invokeId]: true }))
     setPoolAttemptErrorByInvokeId((current) => ({ ...current, [invokeId]: null }))
 
@@ -616,7 +620,8 @@ export function useInvocationPoolAttempts(expandedRecord: ApiInvocation | null) 
         setPoolAttemptErrorByInvokeId((current) => ({ ...current, [invokeId]: message }))
       })
       .finally(() => {
-        if (loadingKeyRef.current[invokeId] === requestKey) {
+        if (activeRequestIdRef.current[invokeId] === requestId) {
+          delete activeRequestIdRef.current[invokeId]
           delete loadingKeyRef.current[invokeId]
           setPoolAttemptLoadingByInvokeId((current) => ({ ...current, [invokeId]: false }))
         }
@@ -624,7 +629,8 @@ export function useInvocationPoolAttempts(expandedRecord: ApiInvocation | null) 
 
     return () => {
       cancelled = true
-      if (loadingKeyRef.current[invokeId] === requestKey) {
+      if (activeRequestIdRef.current[invokeId] === requestId) {
+        delete activeRequestIdRef.current[invokeId]
         delete loadingKeyRef.current[invokeId]
         setPoolAttemptLoadingByInvokeId((current) => ({ ...current, [invokeId]: false }))
       }
