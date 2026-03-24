@@ -629,6 +629,7 @@ function createOauthAccount(id: number, overrides?: Partial<UpstreamAccountDetai
     lastSyncedAt: now,
     lastSuccessfulSyncAt: now,
     lastActivityAt: '2026-03-11T12:12:00.000Z',
+    activeConversationCount: 3,
     lastRefreshedAt: now,
     tokenExpiresAt: '2026-03-12T12:30:00.000Z',
     lastError: null,
@@ -689,6 +690,7 @@ function createApiKeyAccount(id: number, overrides?: Partial<UpstreamAccountDeta
     lastSyncedAt: now,
     lastSuccessfulSyncAt: now,
     lastActivityAt: '2026-03-11T12:24:00.000Z',
+    activeConversationCount: 0,
     lastRefreshedAt: null,
     tokenExpiresAt: null,
     lastError: null,
@@ -751,6 +753,7 @@ function toSummary(detail: UpstreamAccountDetail): UpstreamAccountSummary {
     lastSyncedAt: normalized.lastSyncedAt,
     lastSuccessfulSyncAt: normalized.lastSuccessfulSyncAt,
     lastActivityAt: normalized.lastActivityAt,
+    activeConversationCount: normalized.activeConversationCount ?? 0,
     lastError: normalized.lastError,
     lastErrorAt: normalized.lastErrorAt,
     tokenExpiresAt: normalized.tokenExpiresAt,
@@ -778,6 +781,7 @@ function createStore(): StoryStore {
     storyId?.endsWith('--duplicate-oauth-detail') === true
   const compactStory = storyId?.endsWith('--compact-long-labels') === true
   const tagFilterStory = storyId?.endsWith('--tag-filter-all-match') === true
+  const availabilityBadgeStory = storyId?.endsWith('--availability-badges') === true
   const denseRosterStory =
     storyId?.endsWith('--dense-roster') === true ||
     storyId?.endsWith('--operational') === true ||
@@ -943,21 +947,57 @@ function createStore(): StoryStore {
         }),
       ]
     : []
+  const availabilityBadgeAccounts = availabilityBadgeStory
+    ? [
+        createOauthAccount(201, {
+          displayName: 'Availability working badge',
+          groupName: 'production',
+          isMother: false,
+          workStatus: 'working',
+          activeConversationCount: 3,
+          tags: pickStoryTags('vip', 'priority'),
+        }),
+        createApiKeyAccount(202, {
+          displayName: 'Availability idle badge',
+          groupName: 'staging',
+          workStatus: 'idle',
+          activeConversationCount: 0,
+          tags: pickStoryTags('fallback'),
+        }),
+        createApiKeyAccount(203, {
+          displayName: 'Availability rate limited visible',
+          groupName: 'overflow',
+          workStatus: 'rate_limited',
+          activeConversationCount: 6,
+          tags: pickStoryTags('overflow'),
+        }),
+        createOauthAccount(204, {
+          displayName: 'Availability unavailable hidden',
+          groupName: 'rescue',
+          isMother: false,
+          status: 'active',
+          displayStatus: 'upstream_unavailable',
+          enableStatus: 'enabled',
+          workStatus: 'working',
+          healthStatus: 'upstream_unavailable',
+          syncState: 'idle',
+          activeConversationCount: 2,
+          tags: pickStoryTags('rescue'),
+        }),
+      ]
+    : []
   const operationalRosterAccounts = compactStory ? [] : buildOperationalRosterAccounts(denseRosterStory ? 3 : 1)
-  const accounts = [
-    toSummary(oauth),
-    ...(duplicateOauth ? [toSummary(duplicateOauth)] : []),
-    toSummary(apiKey),
-    ...compactExtraAccounts.map(toSummary),
-    ...operationalRosterAccounts.map(toSummary),
-  ]
-  const details = {
-    [oauth.id]: oauth,
-    ...(duplicateOauth ? { [duplicateOauth.id]: duplicateOauth } : {}),
-    [apiKey.id]: apiKey,
-    ...Object.fromEntries(compactExtraAccounts.map((account) => [account.id, account])),
-    ...Object.fromEntries(operationalRosterAccounts.map((account) => [account.id, account])),
-  }
+  const storyAccounts = availabilityBadgeStory
+    ? availabilityBadgeAccounts
+    : [
+        oauth,
+        ...(duplicateOauth ? [duplicateOauth] : []),
+        apiKey,
+        ...compactExtraAccounts,
+        ...operationalRosterAccounts,
+      ]
+  const accounts = storyAccounts.map(toSummary)
+  const details = Object.fromEntries(storyAccounts.map((account) => [account.id, account]))
   return {
     writesEnabled: true,
     routing: {

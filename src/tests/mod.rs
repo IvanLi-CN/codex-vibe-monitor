@@ -3821,6 +3821,73 @@ async fn list_upstream_accounts_clamps_work_status_for_abnormal_or_syncing_accou
 }
 
 #[tokio::test]
+async fn upstream_account_summary_and_detail_include_active_conversation_count() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_api_key_account(&state, "Sticky conversations", "upstream-sticky").await;
+
+    let now = Utc::now();
+    let created_at = format_utc_iso(now - ChronoDuration::minutes(20));
+    let recent_seen_at = format_utc_iso(now - ChronoDuration::minutes(5));
+    let second_recent_seen_at = format_utc_iso(now - ChronoDuration::minutes(12));
+    let stale_seen_at = format_utc_iso(now - ChronoDuration::minutes(45));
+
+    for (sticky_key, last_seen_at) in [
+        ("sticky-recent-1", recent_seen_at.as_str()),
+        ("sticky-recent-2", second_recent_seen_at.as_str()),
+        ("sticky-stale", stale_seen_at.as_str()),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO pool_sticky_routes (
+                sticky_key, account_id, created_at, updated_at, last_seen_at
+            ) VALUES (?1, ?2, ?3, ?3, ?4)
+            "#,
+        )
+        .bind(sticky_key)
+        .bind(account_id)
+        .bind(&created_at)
+        .bind(last_seen_at)
+        .execute(&state.pool)
+        .await
+        .expect("insert sticky route");
+    }
+
+    let Json(list_response) = list_upstream_accounts(
+        State(state.clone()),
+        Query(ListUpstreamAccountsQuery::default()),
+    )
+    .await
+    .expect("list upstream accounts");
+    let list_json = serde_json::to_value(list_response).expect("serialize upstream account list");
+    let list_item = list_json["items"]
+        .as_array()
+        .and_then(|items| items.first())
+        .expect("list item present");
+    assert_eq!(
+        list_item
+            .get("activeConversationCount")
+            .and_then(serde_json::Value::as_i64),
+        Some(2)
+    );
+
+    let Json(detail_response) = get_upstream_account(State(state), axum::extract::Path(account_id))
+        .await
+        .expect("load upstream account detail");
+    let detail_json =
+        serde_json::to_value(detail_response).expect("serialize upstream account detail");
+    assert_eq!(
+        detail_json
+            .get("activeConversationCount")
+            .and_then(serde_json::Value::as_i64),
+        Some(2)
+    );
+}
+
+#[tokio::test]
 async fn list_upstream_accounts_keeps_generic_retry_cooldown_idle() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

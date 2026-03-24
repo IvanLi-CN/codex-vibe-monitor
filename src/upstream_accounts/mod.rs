@@ -919,6 +919,7 @@ pub(crate) struct UpstreamAccountSummary {
     last_synced_at: Option<String>,
     last_successful_sync_at: Option<String>,
     last_activity_at: Option<String>,
+    active_conversation_count: i64,
     last_error: Option<String>,
     last_error_at: Option<String>,
     last_action: Option<String>,
@@ -1907,6 +1908,12 @@ struct AccountRoutingCandidateRow {
     active_sticky_conversations: i64,
 }
 
+#[derive(Debug, FromRow)]
+struct AccountActiveConversationCountRow {
+    account_id: i64,
+    active_conversation_count: i64,
+}
+
 #[derive(Debug, Clone, FromRow)]
 struct TagRow {
     name: String,
@@ -2468,6 +2475,16 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to ensure idx_pool_sticky_routes_account_updated")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_pool_sticky_routes_account_last_seen
+        ON pool_sticky_routes (account_id, last_seen_at)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure idx_pool_sticky_routes_account_last_seen")?;
 
     sqlx::query(
         r#"
@@ -7509,6 +7526,8 @@ async fn load_upstream_account_summaries_filtered(
     let now = Utc::now();
     let account_ids = rows.iter().map(|row| row.id).collect::<Vec<_>>();
     let tag_map = load_account_tag_map(pool, &account_ids).await?;
+    let active_conversation_count_map =
+        load_account_active_conversation_count_map(pool, &account_ids, now.clone()).await?;
 
     let mut items = Vec::with_capacity(rows.len());
     for row in rows {
@@ -7520,6 +7539,10 @@ async fn load_upstream_account_summaries_filtered(
             row.last_activity_at.clone(),
             tags,
             duplicate_info_map.get(&row.id).cloned(),
+            active_conversation_count_map
+                .get(&row.id)
+                .copied()
+                .unwrap_or_default(),
             now.clone(),
         ));
     }
@@ -7734,6 +7757,13 @@ async fn load_upstream_account_detail(
     .await?;
 
     let duplicate_info_map = load_duplicate_info_map(pool).await?;
+    let now = Utc::now();
+    let active_conversation_count =
+        load_account_active_conversation_count_map(pool, &[row.id], now.clone())
+            .await?
+            .get(&row.id)
+            .copied()
+            .unwrap_or_default();
     Ok(Some(UpstreamAccountDetail {
         summary: build_summary_from_row(
             &row,
@@ -7741,7 +7771,8 @@ async fn load_upstream_account_detail(
             row.last_activity_at.clone(),
             tags,
             duplicate_info_map.get(&row.id).cloned(),
-            Utc::now(),
+            active_conversation_count,
+            now,
         ),
         note: row.note,
         upstream_base_url: row.upstream_base_url,
@@ -7849,6 +7880,7 @@ fn build_summary_from_row(
     last_activity_at: Option<String>,
     tags: Vec<AccountTagSummary>,
     duplicate_info: Option<DuplicateInfo>,
+    active_conversation_count: i64,
     now: DateTime<Utc>,
 ) -> UpstreamAccountSummary {
     let local_limits = if row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
@@ -7963,6 +7995,7 @@ fn build_summary_from_row(
             .and_then(parse_to_utc_datetime)
             .map(format_utc_iso)
             .or(last_activity_at),
+        active_conversation_count,
         last_error: row.last_error.clone(),
         last_error_at: row.last_error_at.clone(),
         last_action: row.last_action.clone(),
@@ -7984,6 +8017,45 @@ fn build_summary_from_row(
         tags,
         effective_routing_rule,
     }
+}
+
+async fn load_account_active_conversation_count_map(
+    pool: &Pool<Sqlite>,
+    account_ids: &[i64],
+    now: DateTime<Utc>,
+) -> Result<HashMap<i64, i64>> {
+    if account_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let active_cutoff =
+        format_utc_iso(now - ChronoDuration::minutes(POOL_ROUTE_ACTIVE_STICKY_WINDOW_MINUTES));
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            account_id,
+            COUNT(*) AS active_conversation_count
+        FROM pool_sticky_routes
+        WHERE last_seen_at >=
+        "#,
+    );
+    query.push_bind(&active_cutoff).push(" AND account_id IN (");
+    {
+        let mut separated = query.separated(", ");
+        for account_id in account_ids {
+            separated.push_bind(account_id);
+        }
+    }
+    let rows = query
+        .push(") GROUP BY account_id")
+        .build_query_as::<AccountActiveConversationCountRow>()
+        .fetch_all(pool)
+        .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.account_id, row.active_conversation_count))
+        .collect())
 }
 
 fn build_compact_support_state(row: &UpstreamAccountRow) -> CompactSupportState {
