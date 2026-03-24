@@ -58,6 +58,12 @@ const items: UpstreamAccountSummary[] = [
     lastSyncedAt: now,
     lastSuccessfulSyncAt: now,
     lastActivityAt: '2026-03-11T12:12:00.000Z',
+    lastAction: 'route_hard_unavailable',
+    lastActionSource: 'call',
+    lastActionReasonCode: 'upstream_http_429_quota_exhausted',
+    lastActionReasonMessage: 'Weekly cap exhausted for this account',
+    lastActionHttpStatus: 429,
+    lastActionAt: '2026-03-11T12:14:00.000Z',
     primaryWindow: {
       usedPercent: 42,
       usedText: '42% used',
@@ -154,6 +160,8 @@ const labels = {
   secondary: '7d',
   secondaryShort: '7d',
   nextReset: 'Reset',
+  unknown: 'Unknown',
+  unavailable: 'Unavailable',
   oauth: 'OAuth',
   apiKey: 'API key',
   duplicate: 'Duplicate',
@@ -184,9 +192,28 @@ const labels = {
       idle: 'Sync idle',
       syncing: 'Syncing',
     })[status] ?? status,
-  actionSource: () => 'Call',
-  actionReason: (item: { lastActionReasonCode?: string | null }) =>
-    item.lastActionReasonCode ?? null,
+  action: (action?: string | null) =>
+    ({
+      route_hard_unavailable: 'Hard unavailable',
+      route_cooldown_started: 'Route cooldown',
+      sync_failed: 'Sync failed',
+    })[action ?? ''] ?? action ?? null,
+  actionSource: (source?: string | null) =>
+    ({
+      call: 'Call',
+      sync_maintenance: 'Maintenance sync',
+    })[source ?? ''] ?? source ?? null,
+  actionReason: (reason?: string | null) =>
+    ({
+      upstream_http_429_quota_exhausted: 'Weekly cap exhausted',
+      reauth_required: 'Needs reauth',
+    })[reason ?? ''] ?? reason ?? null,
+  latestActionFieldAction: 'Action',
+  latestActionFieldSource: 'Source',
+  latestActionFieldReason: 'Reason',
+  latestActionFieldHttpStatus: 'HTTP',
+  latestActionFieldOccurredAt: 'Occurred',
+  latestActionFieldMessage: 'Message',
 }
 
 const meta = {

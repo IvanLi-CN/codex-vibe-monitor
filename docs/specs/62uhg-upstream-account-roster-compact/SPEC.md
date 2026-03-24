@@ -95,14 +95,25 @@
 
 - source_type: storybook_canvas
   target_program: mock-only
-  capture_scope: element
+  capture_scope: browser-viewport
   sensitive_exclusion: N/A
   submission_gate: approved
-  story_id_or_title: Account Pool/Pages/Upstream Accounts — CompactLongLabels
-  state: compact-long-labels-focused
-  evidence_note: 验证账号列表卡片内的等宽数值、对齐后的同步/调用与窗口列，以及 5 小时 / 7 天限额边界状态。
+  story_id_or_title: Account Pool/Pages/Upstream Accounts/List — DenseRoster
+  state: light-theme
+  evidence_note: 验证亮色主题下账号列表的紧凑布局、计划类型 badge 语义分层，以及状态/额度信息在高密度行内的可读性。
   image:
-  ![上游账号列表卡片细节](./assets/upstream-roster-card.png)
+  ![上游账号列表亮色主题](./assets/upstream-accounts-list-light.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Account Pool/Pages/Upstream Accounts/List — DenseRoster
+  state: dark-theme
+  evidence_note: 验证暗色主题下账号列表的紧凑布局、计划类型 badge 语义分层，以及状态/额度信息在高密度行内的可读性。
+  image:
+  ![上游账号列表暗色主题](./assets/upstream-accounts-list-dark.png)
 
 ## 风险 / 假设
 
