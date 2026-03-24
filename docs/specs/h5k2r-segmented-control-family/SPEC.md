@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 部分完成（4/5）
+- Status: 已完成（5/5）
 - Created: 2026-03-24
 - Last: 2026-03-24
 
@@ -93,7 +93,7 @@
 - [x] M2: 新增 `SegmentedControl` primitive family，并把共享视觉 token 收敛到统一真相源。
 - [x] M3: 完成顶部导航、Dashboard、UsageCalendar、Live、Records、Account Pool、UpstreamAccountCreate 的 segmented control 迁移。
 - [x] M4: 新增 Storybook 与 Vitest 回归，并完成本地验证。
-- [ ] M5: 完成快车道提交、push、PR、review-loop 与远端 checks 收敛到 merge-ready。
+- [x] M5: 完成快车道提交、push、PR、review-loop 与远端 checks 收敛到 merge-ready。
 
 ## 方案概述（Approach, high-level）
 
@@ -114,6 +114,7 @@
 
 - 2026-03-24: 创建 spec，冻结 segmented control family 的范围、接口与 merge-ready 收口目标。
 - 2026-03-24: 完成共享 primitive、现存调用点迁移、Storybook 新 story、Vitest 回归与本地 `bun run test` / `bun run build` / `bun run build-storybook` 验证。
+- 2026-03-24: PR #220 完成 labels、远端 checks 与 `codex review --base origin/main` 收敛，快车道终态更新为 merge-ready。
 
 ## 参考（References）
 
