@@ -16,12 +16,14 @@
 ### 推荐作为真相源的 stories
 
 - Shell / Layout：`web/src/components/AppLayout.stories.tsx`
+- Segmented control family：`web/src/components/ui/segmented-control.stories.tsx`
 - Settings：`web/src/components/SettingsPage.stories.tsx`
 - Records：`web/src/components/RecordsPage.stories.tsx`
 - Invocation list：`web/src/components/InvocationTable.stories.tsx`
 - Dashboard KPI：`web/src/components/TodayStatsOverview.stories.tsx`
 - Tags / account-pool 页面：`web/src/components/TagsPage.stories.tsx`
 - 基础输入组件：`web/src/components/ui/select-field.stories.tsx`、`web/src/components/ui/filterable-combobox.stories.tsx`、`web/src/components/ui/form-field-feedback.stories.tsx`、`web/src/components/ui/info-tooltip.stories.tsx`
+- 基础导航/切换组件：`web/src/components/ui/segmented-control.stories.tsx`
 
 这些 story 不只是演示，它们也是当前页面结构、状态语义与视觉证据的重要事实来源。
 

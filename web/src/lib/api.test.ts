@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS,
   createOauthMailboxSession,
   fetchInvocationRecords,
   fetchForwardProxyLiveStats,
@@ -583,8 +584,59 @@ describe("account pool frontend API helpers", () => {
     const response = await fetchUpstreamAccounts();
 
     expect(response.routing).toEqual({
+      writesEnabled: true,
       apiKeyConfigured: true,
       maskedApiKey: "pool-live••••••c0de",
+      maintenance: {
+        primarySyncIntervalSecs:
+          DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS.primarySyncIntervalSecs,
+        secondarySyncIntervalSecs:
+          DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS.secondarySyncIntervalSecs,
+        priorityAvailableAccountCap:
+          DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS.priorityAvailableAccountCap,
+      },
+      timeouts: {
+        responsesFirstByteTimeoutSecs: 120,
+        compactFirstByteTimeoutSecs: 300,
+        responsesStreamTimeoutSecs: 300,
+        compactStreamTimeoutSecs: 300,
+      },
+    });
+  });
+
+  it("normalizes explicit routing timeouts from the upstream account list payload", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(
+          JSON.stringify({
+            writesEnabled: true,
+            groups: [],
+            hasUngroupedAccounts: false,
+            routing: {
+              apiKeyConfigured: true,
+              maskedApiKey: "pool-live••••••c0de",
+              timeouts: {
+                responsesFirstByteTimeoutSecs: 180,
+                compactFirstByteTimeoutSecs: 420,
+                responsesStreamTimeoutSecs: 360,
+                compactStreamTimeoutSecs: 540,
+              },
+            },
+            items: [],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch,
+    );
+
+    const response = await fetchUpstreamAccounts();
+
+    expect(response.routing?.timeouts).toEqual({
+      responsesFirstByteTimeoutSecs: 180,
+      compactFirstByteTimeoutSecs: 420,
+      responsesStreamTimeoutSecs: 360,
+      compactStreamTimeoutSecs: 540,
     });
   });
 
@@ -626,10 +678,51 @@ describe("account pool frontend API helpers", () => {
     });
   });
 
+  it("normalizes compact support state from upstream account payloads", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(
+          JSON.stringify({
+            writesEnabled: true,
+            groups: [],
+            hasUngroupedAccounts: false,
+            items: [
+              {
+                id: 1,
+                kind: "oauth_codex",
+                provider: "codex",
+                displayName: "Compact Probe",
+                isMother: false,
+                status: "active",
+                enabled: true,
+                compactSupport: {
+                  status: "unsupported",
+                  observedAt: "2026-03-16T02:08:00.000Z",
+                  reason:
+                    "No available channel for compact model gpt-5.4-openai-compact",
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch,
+    );
+
+    const response = await fetchUpstreamAccounts();
+
+    expect(response.items[0]?.compactSupport).toEqual({
+      status: "unsupported",
+      observedAt: "2026-03-16T02:08:00.000Z",
+      reason: "No available channel for compact model gpt-5.4-openai-compact",
+    });
+  });
+
   it("serializes upstream account roster filters into the query string", async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL) => {
       expect(String(_input)).toContain(
-        "/api/pool/upstream-accounts?groupSearch=prod&groupUngrouped=false&tagIds=1&tagIds=2",
+        "/api/pool/upstream-accounts?groupSearch=prod&groupUngrouped=false&workStatus=rate_limited&enableStatus=enabled&healthStatus=normal&tagIds=1&tagIds=2",
       );
       return new Response(
         JSON.stringify({
@@ -650,11 +743,67 @@ describe("account pool frontend API helpers", () => {
     const response = await fetchUpstreamAccounts({
       groupSearch: "prod",
       groupUngrouped: false,
+      workStatus: "rate_limited",
+      enableStatus: "enabled",
+      healthStatus: "normal",
       tagIds: [1, 2],
     });
 
     expect(response.hasUngroupedAccounts).toBe(true);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("normalizes split status dimensions from legacy upstream account payloads", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(
+          JSON.stringify({
+            writesEnabled: true,
+            groups: [],
+            hasUngroupedAccounts: false,
+            items: [
+              {
+                id: 9,
+                kind: "oauth_codex",
+                provider: "codex",
+                displayName: "Legacy OAuth",
+                isMother: false,
+                status: "syncing",
+                displayStatus: "needs_reauth",
+                enabled: true,
+              },
+              {
+                id: 10,
+                kind: "api_key_codex",
+                provider: "codex",
+                displayName: "Legacy API key",
+                isMother: false,
+                status: "disabled",
+                displayStatus: "disabled",
+                enabled: false,
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch,
+    );
+
+    const response = await fetchUpstreamAccounts();
+
+    expect(response.items[0]).toMatchObject({
+      enableStatus: "enabled",
+      workStatus: "idle",
+      healthStatus: "needs_reauth",
+      syncState: "syncing",
+    });
+    expect(response.items[1]).toMatchObject({
+      enableStatus: "disabled",
+      workStatus: "idle",
+      healthStatus: "normal",
+      syncState: "idle",
+    });
   });
 
   it("saves pool routing settings through the dedicated endpoint", async () => {
@@ -664,11 +813,28 @@ describe("account pool frontend API helpers", () => {
         expect(init?.method).toBe("PUT");
         expect(JSON.parse(String(init?.body))).toEqual({
           apiKey: "pool-secret",
+          timeouts: {
+            responsesFirstByteTimeoutSecs: 180,
+            compactFirstByteTimeoutSecs: 420,
+            responsesStreamTimeoutSecs: 360,
+            compactStreamTimeoutSecs: 540,
+          },
         });
         return new Response(
           JSON.stringify({
             apiKeyConfigured: true,
             maskedApiKey: "pool-live••••••cret",
+            maintenance: {
+              primarySyncIntervalSecs: 300,
+              secondarySyncIntervalSecs: 1800,
+              priorityAvailableAccountCap: 100,
+            },
+            timeouts: {
+              responsesFirstByteTimeoutSecs: 180,
+              compactFirstByteTimeoutSecs: 420,
+              responsesStreamTimeoutSecs: 360,
+              compactStreamTimeoutSecs: 540,
+            },
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         );
@@ -676,10 +842,30 @@ describe("account pool frontend API helpers", () => {
     );
     vi.stubGlobal("fetch", fetchMock as typeof fetch);
 
-    const response = await updatePoolRoutingSettings({ apiKey: "pool-secret" });
+    const response = await updatePoolRoutingSettings({
+      apiKey: "pool-secret",
+      timeouts: {
+        responsesFirstByteTimeoutSecs: 180,
+        compactFirstByteTimeoutSecs: 420,
+        responsesStreamTimeoutSecs: 360,
+        compactStreamTimeoutSecs: 540,
+      },
+    });
 
     expect(response.apiKeyConfigured).toBe(true);
+    expect(response.writesEnabled).toBe(true);
     expect(response.maskedApiKey).toBe("pool-live••••••cret");
+    expect(response.maintenance).toEqual({
+      primarySyncIntervalSecs: 300,
+      secondarySyncIntervalSecs: 1800,
+      priorityAvailableAccountCap: 100,
+    });
+    expect(response.timeouts).toEqual({
+      responsesFirstByteTimeoutSecs: 180,
+      compactFirstByteTimeoutSecs: 420,
+      responsesStreamTimeoutSecs: 360,
+      compactStreamTimeoutSecs: 540,
+    });
   });
 
   it("normalizes sticky key conversations for one upstream account", async () => {

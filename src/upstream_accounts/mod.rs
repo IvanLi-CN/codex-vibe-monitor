@@ -40,9 +40,13 @@ pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_LOGIN_SESSION_TTL_SECS: u64 = 10 * 60
 pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS: u64 = 5 * 60;
 pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_REFRESH_LEAD_TIME_SECS: u64 = 15 * 60;
 pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_HISTORY_RETENTION_DAYS: u64 = 30;
+pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_SECONDARY_SYNC_INTERVAL_SECS: u64 = 30 * 60;
+pub(crate) const DEFAULT_UPSTREAM_ACCOUNTS_PRIORITY_AVAILABLE_ACCOUNT_CAP: usize = 100;
 const DEFAULT_UPSTREAM_ACCOUNTS_MAINTENANCE_PARALLELISM: usize = 4;
 const DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_SESSION_TTL_SECS: u64 = 60 * 60;
 const DEFAULT_MANUAL_OAUTH_CALLBACK_PORT: u16 = 1455;
+const MIN_UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS: u64 = 60;
+const UPSTREAM_ACCOUNT_MAINTENANCE_TICK_SECS: u64 = 60;
 const OAUTH_MAILBOX_SOURCE_GENERATED: &str = "generated";
 const OAUTH_MAILBOX_SOURCE_ATTACHED: &str = "attached";
 
@@ -54,13 +58,22 @@ const UPSTREAM_ACCOUNT_STATUS_SYNCING: &str = "syncing";
 const UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH: &str = "needs_reauth";
 const UPSTREAM_ACCOUNT_STATUS_ERROR: &str = "error";
 const UPSTREAM_ACCOUNT_STATUS_DISABLED: &str = "disabled";
+const UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED: &str = "enabled";
+const UPSTREAM_ACCOUNT_ENABLE_STATUS_DISABLED: &str = "disabled";
+const UPSTREAM_ACCOUNT_WORK_STATUS_WORKING: &str = "working";
+const UPSTREAM_ACCOUNT_WORK_STATUS_IDLE: &str = "idle";
+const UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED: &str = "rate_limited";
+const UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL: &str = "normal";
 const UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE: &str = "upstream_unavailable";
 const UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED: &str = "upstream_rejected";
 const UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER: &str = "error_other";
+const UPSTREAM_ACCOUNT_SYNC_STATE_IDLE: &str = "idle";
+const UPSTREAM_ACCOUNT_SYNC_STATE_SYNCING: &str = "syncing";
 const UPSTREAM_ACCOUNT_ACTION_ROUTE_RECOVERED: &str = "route_recovered";
 const UPSTREAM_ACCOUNT_ACTION_ROUTE_COOLDOWN_STARTED: &str = "route_cooldown_started";
 const UPSTREAM_ACCOUNT_ACTION_ROUTE_HARD_UNAVAILABLE: &str = "route_hard_unavailable";
 const UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED: &str = "sync_succeeded";
+const UPSTREAM_ACCOUNT_ACTION_SYNC_RECOVERY_BLOCKED: &str = "sync_recovery_blocked";
 const UPSTREAM_ACCOUNT_ACTION_SYNC_FAILED: &str = "sync_failed";
 const UPSTREAM_ACCOUNT_ACTION_ACCOUNT_UPDATED: &str = "account_updated";
 const UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL: &str = "call";
@@ -72,6 +85,9 @@ const UPSTREAM_ACCOUNT_ACTION_SOURCE_ACCOUNT_UPDATE: &str = "account_update";
 const UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_OK: &str = "sync_ok";
 const UPSTREAM_ACCOUNT_ACTION_REASON_ACCOUNT_UPDATED: &str = "account_updated";
 const UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR: &str = "sync_error";
+const UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED: &str = "quota_still_exhausted";
+const UPSTREAM_ACCOUNT_ACTION_REASON_RECOVERY_UNCONFIRMED_MANUAL_REQUIRED: &str =
+    "recovery_unconfirmed_manual_required";
 const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_RATE_LIMIT: &str =
     "upstream_http_429_rate_limit";
 const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED: &str =
@@ -116,6 +132,9 @@ const DEFAULT_UPSTREAM_ACCOUNT_LIST_PAGE_SIZE: usize = 20;
 const UPSTREAM_ACCOUNT_LIST_PAGE_SIZE_OPTIONS: [usize; 3] = [20, 50, 100];
 const POOL_ROUTE_ACTIVE_STICKY_WINDOW_MINUTES: i64 = 30;
 const POOL_ROUTE_ACTIVE_STICKY_SOFT_LIMIT: i64 = 2;
+pub(crate) const COMPACT_SUPPORT_STATUS_UNKNOWN: &str = "unknown";
+pub(crate) const COMPACT_SUPPORT_STATUS_SUPPORTED: &str = "supported";
+pub(crate) const COMPACT_SUPPORT_STATUS_UNSUPPORTED: &str = "unsupported";
 const USAGE_PATH_STYLE_CHATGPT: &str = "/wham/usage";
 const USAGE_PATH_STYLE_CODEX_API: &str = "/api/codex/usage";
 const UPSTREAM_USAGE_BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36";
@@ -145,6 +164,12 @@ enum SyncCause {
     Manual,
     Maintenance,
     PostCreate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SyncSuccessRouteState {
+    PreserveFailureState,
+    ClearFailureState,
 }
 
 #[cfg(test)]
@@ -644,8 +669,9 @@ impl AccountOpCoordinator {
     fn dispatch_maintenance_sync(
         &self,
         state: Arc<AppState>,
-        id: i64,
+        plan: MaintenanceDispatchPlan,
     ) -> Result<MaintenanceQueueOutcome, anyhow::Error> {
+        let id = plan.account_id;
         let handle = self.actor_handle(id);
         if handle.maintenance_pending.swap(true, Ordering::AcqRel) {
             return Ok(MaintenanceQueueOutcome::Deduped);
@@ -673,8 +699,7 @@ impl AccountOpCoordinator {
                     AccountCommand::MaintenanceSync,
                     handle,
                     move |state, id| async move {
-                        sync_upstream_account_by_id(state.as_ref(), id, SyncCause::Maintenance)
-                            .await
+                        execute_queued_maintenance_sync(state.as_ref(), plan, id).await
                     },
                 )
                 .await
@@ -776,6 +801,9 @@ pub(crate) struct ListUpstreamAccountsQuery {
     pub(crate) group_search: Option<String>,
     pub(crate) group_ungrouped: Option<bool>,
     pub(crate) status: Option<String>,
+    pub(crate) work_status: Option<String>,
+    pub(crate) enable_status: Option<String>,
+    pub(crate) health_status: Option<String>,
     pub(crate) page: Option<usize>,
     pub(crate) page_size: Option<usize>,
     #[serde(default)]
@@ -880,6 +908,10 @@ pub(crate) struct UpstreamAccountSummary {
     status: String,
     display_status: String,
     enabled: bool,
+    work_status: String,
+    enable_status: String,
+    health_status: String,
+    sync_state: String,
     email: Option<String>,
     chatgpt_account_id: Option<String>,
     plan_type: Option<String>,
@@ -901,6 +933,7 @@ pub(crate) struct UpstreamAccountSummary {
     secondary_window: Option<RateWindowSnapshot>,
     credits: Option<CreditsSnapshot>,
     local_limits: Option<LocalLimitSnapshot>,
+    compact_support: CompactSupportState,
     duplicate_info: Option<DuplicateInfo>,
     tags: Vec<AccountTagSummary>,
     effective_routing_rule: EffectiveRoutingRule,
@@ -937,16 +970,84 @@ pub(crate) struct UpstreamAccountActionEvent {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct CompactSupportState {
+    status: String,
+    observed_at: Option<String>,
+    reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PoolRoutingTimeoutSettingsResponse {
+    pub(crate) responses_first_byte_timeout_secs: u64,
+    pub(crate) compact_first_byte_timeout_secs: u64,
+    pub(crate) responses_stream_timeout_secs: u64,
+    pub(crate) compact_stream_timeout_secs: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PoolRoutingTimeoutSettingsResolved {
+    pub(crate) default_first_byte_timeout: Duration,
+    pub(crate) default_send_timeout: Duration,
+    pub(crate) request_read_timeout: Duration,
+    pub(crate) responses_first_byte_timeout: Duration,
+    pub(crate) compact_first_byte_timeout: Duration,
+    pub(crate) responses_stream_timeout: Duration,
+    pub(crate) compact_stream_timeout: Duration,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct PoolRoutingSettingsResponse {
-    writes_enabled: bool,
-    api_key_configured: bool,
-    masked_api_key: Option<String>,
+    pub(crate) writes_enabled: bool,
+    pub(crate) api_key_configured: bool,
+    pub(crate) masked_api_key: Option<String>,
+    pub(crate) maintenance: PoolRoutingMaintenanceSettingsResponse,
+    pub(crate) timeouts: PoolRoutingTimeoutSettingsResponse,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PoolRoutingMaintenanceSettingsResponse {
+    pub(crate) primary_sync_interval_secs: u64,
+    pub(crate) secondary_sync_interval_secs: u64,
+    pub(crate) priority_available_account_cap: usize,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpdatePoolRoutingSettingsRequest {
-    api_key: String,
+    #[serde(default)]
+    pub(crate) api_key: Option<String>,
+    #[serde(default)]
+    pub(crate) maintenance: Option<UpdatePoolRoutingMaintenanceSettingsRequest>,
+    #[serde(default)]
+    pub(crate) timeouts: Option<UpdatePoolRoutingTimeoutSettingsRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpdatePoolRoutingMaintenanceSettingsRequest {
+    #[serde(default)]
+    pub(crate) primary_sync_interval_secs: Option<u64>,
+    #[serde(default)]
+    pub(crate) secondary_sync_interval_secs: Option<u64>,
+    #[serde(default)]
+    pub(crate) priority_available_account_cap: Option<usize>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpdatePoolRoutingTimeoutSettingsRequest {
+    #[serde(default)]
+    pub(crate) responses_first_byte_timeout_secs: Option<u64>,
+    #[serde(default)]
+    #[serde(alias = "compactUpstreamHandshakeTimeoutSecs")]
+    pub(crate) compact_first_byte_timeout_secs: Option<u64>,
+    #[serde(default)]
+    pub(crate) responses_stream_timeout_secs: Option<u64>,
+    #[serde(default)]
+    pub(crate) compact_stream_timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1695,6 +1796,9 @@ struct UpstreamAccountRow {
     last_route_failure_kind: Option<String>,
     cooldown_until: Option<String>,
     consecutive_route_failures: i64,
+    compact_support_status: Option<String>,
+    compact_support_observed_at: Option<String>,
+    compact_support_reason: Option<String>,
     local_primary_limit: Option<f64>,
     local_secondary_limit: Option<f64>,
     local_limit_unit: Option<String>,
@@ -1707,6 +1811,57 @@ struct UpstreamAccountRow {
 struct PoolRoutingSettingsRow {
     encrypted_api_key: Option<String>,
     masked_api_key: Option<String>,
+    primary_sync_interval_secs: Option<i64>,
+    secondary_sync_interval_secs: Option<i64>,
+    priority_available_account_cap: Option<i64>,
+    responses_first_byte_timeout_secs: Option<i64>,
+    compact_first_byte_timeout_secs: Option<i64>,
+    responses_stream_timeout_secs: Option<i64>,
+    compact_stream_timeout_secs: Option<i64>,
+    default_first_byte_timeout_secs: Option<i64>,
+    upstream_handshake_timeout_secs: Option<i64>,
+    request_read_timeout_secs: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PoolRoutingMaintenanceSettings {
+    primary_sync_interval_secs: u64,
+    secondary_sync_interval_secs: u64,
+    priority_available_account_cap: usize,
+}
+
+impl PoolRoutingMaintenanceSettings {
+    fn into_response(self) -> PoolRoutingMaintenanceSettingsResponse {
+        PoolRoutingMaintenanceSettingsResponse {
+            primary_sync_interval_secs: self.primary_sync_interval_secs,
+            secondary_sync_interval_secs: self.secondary_sync_interval_secs,
+            priority_available_account_cap: self.priority_available_account_cap,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MaintenanceTier {
+    Priority,
+    Secondary,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct MaintenanceCandidateRow {
+    id: i64,
+    status: String,
+    last_synced_at: Option<String>,
+    last_error_at: Option<String>,
+    token_expires_at: Option<String>,
+    primary_used_percent: Option<f64>,
+    secondary_used_percent: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MaintenanceDispatchPlan {
+    account_id: i64,
+    tier: MaintenanceTier,
+    sync_interval_secs: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -1931,6 +2086,9 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             last_route_failure_kind TEXT,
             cooldown_until TEXT,
             consecutive_route_failures INTEGER NOT NULL DEFAULT 0,
+            compact_support_status TEXT,
+            compact_support_observed_at TEXT,
+            compact_support_reason TEXT,
             local_primary_limit REAL,
             local_secondary_limit REAL,
             local_limit_unit TEXT,
@@ -1959,6 +2117,19 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_upstream_accounts", "cooldown_until")
         .await
         .context("failed to ensure pool_upstream_accounts.cooldown_until")?;
+    ensure_nullable_text_column(pool, "pool_upstream_accounts", "compact_support_status")
+        .await
+        .context("failed to ensure pool_upstream_accounts.compact_support_status")?;
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_accounts",
+        "compact_support_observed_at",
+    )
+    .await
+    .context("failed to ensure pool_upstream_accounts.compact_support_observed_at")?;
+    ensure_nullable_text_column(pool, "pool_upstream_accounts", "compact_support_reason")
+        .await
+        .context("failed to ensure pool_upstream_accounts.compact_support_reason")?;
     ensure_integer_column_with_default(pool, "pool_upstream_accounts", "is_mother", "0")
         .await
         .context("failed to ensure pool_upstream_accounts.is_mother")?;
@@ -2304,6 +2475,16 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             id INTEGER PRIMARY KEY CHECK (id = 1),
             encrypted_api_key TEXT,
             masked_api_key TEXT,
+            primary_sync_interval_secs INTEGER,
+            secondary_sync_interval_secs INTEGER,
+            priority_available_account_cap INTEGER,
+            responses_first_byte_timeout_secs INTEGER,
+            compact_first_byte_timeout_secs INTEGER,
+            responses_stream_timeout_secs INTEGER,
+            compact_stream_timeout_secs INTEGER,
+            default_first_byte_timeout_secs INTEGER,
+            upstream_handshake_timeout_secs INTEGER,
+            request_read_timeout_secs INTEGER,
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
         "#,
@@ -2311,20 +2492,86 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to ensure pool_routing_settings table existence")?;
+    ensure_nullable_integer_column(pool, "pool_routing_settings", "primary_sync_interval_secs")
+        .await
+        .context("failed to ensure pool_routing_settings.primary_sync_interval_secs")?;
+    ensure_nullable_integer_column(
+        pool,
+        "pool_routing_settings",
+        "secondary_sync_interval_secs",
+    )
+    .await
+    .context("failed to ensure pool_routing_settings.secondary_sync_interval_secs")?;
+    ensure_nullable_integer_column(
+        pool,
+        "pool_routing_settings",
+        "priority_available_account_cap",
+    )
+    .await
+    .context("failed to ensure pool_routing_settings.priority_available_account_cap")?;
 
     sqlx::query(
         r#"
         INSERT OR IGNORE INTO pool_routing_settings (
             id,
             encrypted_api_key,
-            masked_api_key
-        ) VALUES (?1, NULL, NULL)
+            masked_api_key,
+            responses_first_byte_timeout_secs,
+            compact_first_byte_timeout_secs,
+            responses_stream_timeout_secs,
+            compact_stream_timeout_secs,
+            default_first_byte_timeout_secs,
+            upstream_handshake_timeout_secs,
+            request_read_timeout_secs
+        ) VALUES (?1, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL)
         "#,
     )
     .bind(POOL_SETTINGS_SINGLETON_ID)
     .execute(pool)
     .await
     .context("failed to ensure default pool_routing_settings row")?;
+
+    ensure_nullable_integer_column(
+        pool,
+        "pool_routing_settings",
+        "responses_first_byte_timeout_secs",
+    )
+    .await
+    .context("failed to ensure pool_routing_settings.responses_first_byte_timeout_secs")?;
+    ensure_nullable_integer_column(
+        pool,
+        "pool_routing_settings",
+        "compact_first_byte_timeout_secs",
+    )
+    .await
+    .context("failed to ensure pool_routing_settings.compact_first_byte_timeout_secs")?;
+    ensure_nullable_integer_column(
+        pool,
+        "pool_routing_settings",
+        "responses_stream_timeout_secs",
+    )
+    .await
+    .context("failed to ensure pool_routing_settings.responses_stream_timeout_secs")?;
+    ensure_nullable_integer_column(pool, "pool_routing_settings", "compact_stream_timeout_secs")
+        .await
+        .context("failed to ensure pool_routing_settings.compact_stream_timeout_secs")?;
+    ensure_nullable_integer_column(
+        pool,
+        "pool_routing_settings",
+        "default_first_byte_timeout_secs",
+    )
+    .await
+    .context("failed to ensure pool_routing_settings.default_first_byte_timeout_secs")?;
+    ensure_nullable_integer_column(
+        pool,
+        "pool_routing_settings",
+        "upstream_handshake_timeout_secs",
+    )
+    .await
+    .context("failed to ensure pool_routing_settings.upstream_handshake_timeout_secs")?;
+    ensure_nullable_integer_column(pool, "pool_routing_settings", "request_read_timeout_secs")
+        .await
+        .context("failed to ensure pool_routing_settings.request_read_timeout_secs")?;
 
     Ok(())
 }
@@ -2334,7 +2581,7 @@ pub(crate) fn spawn_upstream_account_maintenance(
     cancel: CancellationToken,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let mut ticker = interval(state.config.upstream_accounts_sync_interval);
+        let mut ticker = interval(Duration::from_secs(UPSTREAM_ACCOUNT_MAINTENANCE_TICK_SECS));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
         loop {
             tokio::select! {
@@ -2436,7 +2683,7 @@ pub(crate) async fn list_upstream_accounts(
     let has_ungrouped_accounts = has_ungrouped_upstream_accounts(&state.pool)
         .await
         .map_err(internal_error_tuple)?;
-    let routing = load_pool_routing_settings(&state.pool)
+    let routing = load_pool_routing_settings_seeded(&state.pool, &state.config)
         .await
         .map_err(internal_error_tuple)?;
     Ok(Json(UpstreamAccountListResponse {
@@ -2448,14 +2695,7 @@ pub(crate) async fn list_upstream_accounts(
         metrics,
         groups,
         has_ungrouped_accounts,
-        routing: PoolRoutingSettingsResponse {
-            writes_enabled: state.upstream_accounts.writes_enabled(),
-            api_key_configured: routing
-                .encrypted_api_key
-                .as_deref()
-                .is_some_and(|value| !value.trim().is_empty()),
-            masked_api_key: routing.masked_api_key,
-        },
+        routing: build_pool_routing_settings_response(state.as_ref(), &routing),
     }))
 }
 
@@ -3955,17 +4195,13 @@ pub(crate) async fn import_validated_oauth_accounts(
 pub(crate) async fn get_pool_routing_settings(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<PoolRoutingSettingsResponse>, (StatusCode, String)> {
-    let row = load_pool_routing_settings(&state.pool)
+    let row = load_pool_routing_settings_seeded(&state.pool, &state.config)
         .await
         .map_err(internal_error_tuple)?;
-    Ok(Json(PoolRoutingSettingsResponse {
-        writes_enabled: state.upstream_accounts.writes_enabled(),
-        api_key_configured: row
-            .encrypted_api_key
-            .as_deref()
-            .is_some_and(|value| !value.trim().is_empty()),
-        masked_api_key: row.masked_api_key,
-    }))
+    Ok(Json(build_pool_routing_settings_response(
+        state.as_ref(),
+        &row,
+    )))
 }
 
 pub(crate) async fn update_pool_routing_settings(
@@ -3979,16 +4215,72 @@ pub(crate) async fn update_pool_routing_settings(
             "cross-origin account writes are forbidden".to_string(),
         ));
     }
-    let crypto_key = state.upstream_accounts.require_crypto_key()?;
-    let api_key = normalize_required_secret(&payload.api_key, "apiKey")?;
-    save_pool_routing_api_key(&state.pool, crypto_key, &api_key)
+    let current = load_pool_routing_settings_seeded(&state.pool, &state.config)
         .await
         .map_err(internal_error_tuple)?;
-    Ok(Json(PoolRoutingSettingsResponse {
-        writes_enabled: true,
-        api_key_configured: true,
-        masked_api_key: Some(mask_api_key(&api_key)),
-    }))
+    let merged_maintenance = merge_pool_routing_maintenance_settings(
+        resolve_pool_routing_maintenance_settings(&current, &state.config),
+        payload.maintenance.as_ref(),
+    );
+    validate_pool_routing_maintenance_settings(merged_maintenance)?;
+
+    let api_key = payload
+        .api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| normalize_required_secret(value, "apiKey"))
+        .transpose()?;
+    let timeout_updates = payload
+        .timeouts
+        .map(|timeouts| {
+            Ok(UpdatePoolRoutingTimeoutSettingsRequest {
+                responses_first_byte_timeout_secs: normalize_pool_routing_timeout_secs(
+                    timeouts.responses_first_byte_timeout_secs,
+                    "responsesFirstByteTimeoutSecs",
+                )?,
+                compact_first_byte_timeout_secs: normalize_pool_routing_timeout_secs(
+                    timeouts.compact_first_byte_timeout_secs,
+                    "compactFirstByteTimeoutSecs",
+                )?,
+                responses_stream_timeout_secs: normalize_pool_routing_timeout_secs(
+                    timeouts.responses_stream_timeout_secs,
+                    "responsesStreamTimeoutSecs",
+                )?,
+                compact_stream_timeout_secs: normalize_pool_routing_timeout_secs(
+                    timeouts.compact_stream_timeout_secs,
+                    "compactStreamTimeoutSecs",
+                )?,
+            })
+        })
+        .transpose()?;
+    let crypto_key = if api_key.is_some() {
+        Some(state.upstream_accounts.require_crypto_key()?)
+    } else {
+        None
+    };
+    if api_key.is_some() || timeout_updates.is_some() {
+        save_pool_routing_settings(
+            &state.pool,
+            &state.config,
+            crypto_key,
+            api_key.as_deref(),
+            timeout_updates.as_ref(),
+        )
+        .await?;
+    }
+    if payload.maintenance.is_some() {
+        save_pool_routing_maintenance_settings(&state.pool, merged_maintenance)
+            .await
+            .map_err(internal_error_tuple)?;
+    }
+    let updated = load_pool_routing_settings_seeded(&state.pool, &state.config)
+        .await
+        .map_err(internal_error_tuple)?;
+    Ok(Json(build_pool_routing_settings_response(
+        state.as_ref(),
+        &updated,
+    )))
 }
 
 pub(crate) async fn get_upstream_account_sticky_keys(
@@ -4698,6 +4990,11 @@ async fn update_upstream_account_inner(
         .await
         .map_err(internal_error_tuple)?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
+    let clear_hard_failure_after_update = row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
+        && account_update_requests_manual_recovery(&payload)
+        && route_failure_kind_requires_manual_api_key_recovery(
+            row.last_route_failure_kind.as_deref(),
+        );
     let tag_ids = match payload.tag_ids.as_ref() {
         Some(values) => Some(validate_tag_ids(&state.pool, values).await?),
         None => None,
@@ -4823,6 +5120,11 @@ async fn update_upstream_account_inner(
     tx.commit().await.map_err(internal_error_tuple)?;
     if let Some(tag_ids) = tag_ids {
         sync_account_tag_links(&state.pool, id, &tag_ids)
+            .await
+            .map_err(internal_error_tuple)?;
+    }
+    if clear_hard_failure_after_update {
+        set_account_status(&state.pool, id, UPSTREAM_ACCOUNT_STATUS_ACTIVE, None)
             .await
             .map_err(internal_error_tuple)?;
     }
@@ -5262,40 +5564,53 @@ async fn run_upstream_account_maintenance_once(state: Arc<AppState>) -> Result<(
     let Some(_) = state.upstream_accounts.crypto_key else {
         return Ok(());
     };
-
-    let account_ids = sqlx::query_scalar::<_, i64>(
-        r#"
-        SELECT id
-        FROM pool_upstream_accounts
-        WHERE kind = ?1 AND enabled = 1
-        ORDER BY updated_at ASC, id ASC
-        "#,
-    )
-    .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
-    .fetch_all(&state.pool)
-    .await?;
+    let routing = load_pool_routing_settings(&state.pool).await?;
+    let maintenance = resolve_pool_routing_maintenance_settings(&routing, &state.config);
+    let candidates = load_maintenance_candidates(&state.pool).await?;
+    let dispatch_plans = resolve_due_maintenance_dispatch_plans(
+        candidates,
+        maintenance,
+        state.config.upstream_accounts_refresh_lead_time,
+        Utc::now(),
+    );
 
     let mut queued = 0usize;
     let mut deduped = 0usize;
     let mut failed = 0usize;
-    for account_id in account_ids {
+    let mut priority_due = 0usize;
+    let mut secondary_due = 0usize;
+    for plan in dispatch_plans {
+        match plan.tier {
+            MaintenanceTier::Priority => priority_due += 1,
+            MaintenanceTier::Secondary => secondary_due += 1,
+        }
         match state
             .upstream_accounts
             .account_ops
-            .dispatch_maintenance_sync(state.clone(), account_id)
+            .dispatch_maintenance_sync(state.clone(), plan)
         {
             Ok(MaintenanceQueueOutcome::Queued) => queued += 1,
             Ok(MaintenanceQueueOutcome::Deduped) => deduped += 1,
             Err(err) => {
                 failed += 1;
-                warn!(account_id, error = %err, "failed to dispatch upstream OAuth maintenance");
+                warn!(
+                    account_id = plan.account_id,
+                    tier = ?plan.tier,
+                    error = %err,
+                    "failed to dispatch upstream OAuth maintenance"
+                );
             }
         }
     }
 
     info!(
         candidates = queued + deduped + failed,
-        queued, deduped, failed, "upstream account maintenance pass finished"
+        priority_due,
+        secondary_due,
+        queued,
+        deduped,
+        failed,
+        "upstream account maintenance pass finished"
     );
 
     Ok(())
@@ -5325,36 +5640,269 @@ async fn ensure_integer_column_with_default(
     Ok(())
 }
 
-fn should_maintain_account(row: &UpstreamAccountRow, state: &AppState) -> bool {
-    if row.kind != UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX || row.enabled == 0 {
-        return false;
-    }
-    if row.status == UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH {
-        return false;
-    }
-    let now = Utc::now();
-    let sync_due = row
-        .last_synced_at
-        .as_deref()
-        .and_then(parse_rfc3339_utc)
-        .map(|last| {
-            now.signed_duration_since(last).num_seconds()
-                >= state.config.upstream_accounts_sync_interval.as_secs() as i64
-        })
-        .unwrap_or(true);
-    let refresh_due = row
+async fn load_maintenance_candidates(pool: &Pool<Sqlite>) -> Result<Vec<MaintenanceCandidateRow>> {
+    sqlx::query_as::<_, MaintenanceCandidateRow>(
+        r#"
+        SELECT
+            account.id,
+            account.status,
+            account.last_synced_at,
+            account.last_error_at,
+            account.token_expires_at,
+            (
+                SELECT sample.primary_used_percent
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS primary_used_percent,
+            (
+                SELECT sample.secondary_used_percent
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS secondary_used_percent
+        FROM pool_upstream_accounts account
+        WHERE account.kind = ?1
+          AND account.enabled = 1
+          AND account.status <> ?2
+        ORDER BY account.id ASC
+        "#,
+    )
+    .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
+    .bind(UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH)
+    .fetch_all(pool)
+    .await
+    .map_err(Into::into)
+}
+
+async fn load_maintenance_candidate(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+) -> Result<Option<MaintenanceCandidateRow>> {
+    sqlx::query_as::<_, MaintenanceCandidateRow>(
+        r#"
+        SELECT
+            account.id,
+            account.status,
+            account.last_synced_at,
+            account.last_error_at,
+            account.token_expires_at,
+            (
+                SELECT sample.primary_used_percent
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS primary_used_percent,
+            (
+                SELECT sample.secondary_used_percent
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS secondary_used_percent
+        FROM pool_upstream_accounts account
+        WHERE account.id = ?1
+          AND account.kind = ?2
+          AND account.enabled = 1
+          AND account.status <> ?3
+        "#,
+    )
+    .bind(account_id)
+    .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
+    .bind(UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH)
+    .fetch_optional(pool)
+    .await
+    .map_err(Into::into)
+}
+
+fn maintenance_refresh_due(
+    candidate: &MaintenanceCandidateRow,
+    refresh_lead_time: Duration,
+    now: DateTime<Utc>,
+) -> bool {
+    candidate
         .token_expires_at
         .as_deref()
         .and_then(parse_rfc3339_utc)
-        .map(|expires| {
-            expires
-                <= now
-                    + ChronoDuration::seconds(
-                        state.config.upstream_accounts_refresh_lead_time.as_secs() as i64,
-                    )
+        .map(|expires| expires <= now + ChronoDuration::seconds(refresh_lead_time.as_secs() as i64))
+        .unwrap_or(true)
+}
+
+fn maintenance_candidate_has_complete_usage(candidate: &MaintenanceCandidateRow) -> bool {
+    candidate.primary_used_percent.is_some() && candidate.secondary_used_percent.is_some()
+}
+
+fn maintenance_candidate_is_available(candidate: &MaintenanceCandidateRow) -> bool {
+    maintenance_candidate_has_complete_usage(candidate)
+        && candidate.primary_used_percent.unwrap_or(100.0) < 100.0
+        && candidate.secondary_used_percent.unwrap_or(100.0) < 100.0
+}
+
+fn maintenance_candidate_force_priority(
+    candidate: &MaintenanceCandidateRow,
+    refresh_lead_time: Duration,
+    now: DateTime<Utc>,
+) -> bool {
+    candidate.status == UPSTREAM_ACCOUNT_STATUS_ERROR
+        || maintenance_refresh_due(candidate, refresh_lead_time, now)
+        || !maintenance_candidate_has_complete_usage(candidate)
+}
+
+fn compare_maintenance_candidates(
+    lhs: &MaintenanceCandidateRow,
+    rhs: &MaintenanceCandidateRow,
+) -> std::cmp::Ordering {
+    lhs.secondary_used_percent
+        .unwrap_or(100.0)
+        .partial_cmp(&rhs.secondary_used_percent.unwrap_or(100.0))
+        .unwrap_or(std::cmp::Ordering::Equal)
+        .then_with(|| {
+            lhs.primary_used_percent
+                .unwrap_or(100.0)
+                .partial_cmp(&rhs.primary_used_percent.unwrap_or(100.0))
+                .unwrap_or(std::cmp::Ordering::Equal)
         })
-        .unwrap_or(true);
-    sync_due || refresh_due || row.status == UPSTREAM_ACCOUNT_STATUS_ERROR
+        .then_with(|| {
+            lhs.last_synced_at
+                .as_deref()
+                .cmp(&rhs.last_synced_at.as_deref())
+        })
+        .then_with(|| lhs.id.cmp(&rhs.id))
+}
+
+fn maintenance_last_attempt_at(candidate: &MaintenanceCandidateRow) -> Option<DateTime<Utc>> {
+    let last_synced_at = candidate
+        .last_synced_at
+        .as_deref()
+        .and_then(parse_rfc3339_utc);
+    if candidate.status != UPSTREAM_ACCOUNT_STATUS_ERROR {
+        return last_synced_at;
+    }
+
+    let last_error_at = candidate
+        .last_error_at
+        .as_deref()
+        .and_then(parse_rfc3339_utc);
+    match (last_synced_at, last_error_at) {
+        (Some(lhs), Some(rhs)) => Some(lhs.max(rhs)),
+        (Some(value), None) | (None, Some(value)) => Some(value),
+        (None, None) => None,
+    }
+}
+
+fn maintenance_interval_is_due(
+    candidate: &MaintenanceCandidateRow,
+    interval_secs: u64,
+    now: DateTime<Utc>,
+) -> bool {
+    maintenance_last_attempt_at(candidate)
+        .map(|last| now.signed_duration_since(last).num_seconds() >= interval_secs as i64)
+        .unwrap_or(true)
+}
+
+fn maintenance_interval_for_tier(
+    tier: MaintenanceTier,
+    settings: PoolRoutingMaintenanceSettings,
+) -> u64 {
+    match tier {
+        MaintenanceTier::Priority => settings.primary_sync_interval_secs,
+        MaintenanceTier::Secondary => settings.secondary_sync_interval_secs,
+    }
+}
+
+fn maintenance_plan_is_due(
+    candidate: &MaintenanceCandidateRow,
+    tier: MaintenanceTier,
+    settings: PoolRoutingMaintenanceSettings,
+    now: DateTime<Utc>,
+) -> bool {
+    maintenance_interval_is_due(
+        candidate,
+        maintenance_interval_for_tier(tier, settings),
+        now,
+    )
+}
+
+async fn execute_queued_maintenance_sync(
+    state: &AppState,
+    plan: MaintenanceDispatchPlan,
+    id: i64,
+) -> Result<Option<UpstreamAccountDetail>> {
+    let Some(candidate) = load_maintenance_candidate(&state.pool, id).await? else {
+        return Ok(None);
+    };
+    if !maintenance_interval_is_due(&candidate, plan.sync_interval_secs, Utc::now()) {
+        return Ok(None);
+    }
+
+    sync_upstream_account_by_id(state, id, SyncCause::Maintenance).await
+}
+
+fn resolve_due_maintenance_dispatch_plans(
+    candidates: Vec<MaintenanceCandidateRow>,
+    settings: PoolRoutingMaintenanceSettings,
+    refresh_lead_time: Duration,
+    now: DateTime<Utc>,
+) -> Vec<MaintenanceDispatchPlan> {
+    let mut forced_priority = Vec::new();
+    let mut ranked_available = Vec::new();
+    let mut secondary = Vec::new();
+
+    for candidate in candidates {
+        if maintenance_candidate_force_priority(&candidate, refresh_lead_time, now) {
+            forced_priority.push(candidate);
+        } else if maintenance_candidate_is_available(&candidate) {
+            ranked_available.push(candidate);
+        } else {
+            secondary.push(candidate);
+        }
+    }
+
+    ranked_available.sort_by(compare_maintenance_candidates);
+    forced_priority.sort_by(|lhs, rhs| lhs.id.cmp(&rhs.id));
+    secondary.sort_by(compare_maintenance_candidates);
+
+    let mut plans = Vec::new();
+    for candidate in forced_priority {
+        if maintenance_plan_is_due(&candidate, MaintenanceTier::Priority, settings, now) {
+            plans.push(MaintenanceDispatchPlan {
+                account_id: candidate.id,
+                tier: MaintenanceTier::Priority,
+                sync_interval_secs: settings.primary_sync_interval_secs,
+            });
+        }
+    }
+    for (index, candidate) in ranked_available.into_iter().enumerate() {
+        let tier = if index < settings.priority_available_account_cap {
+            MaintenanceTier::Priority
+        } else {
+            MaintenanceTier::Secondary
+        };
+        if maintenance_plan_is_due(&candidate, tier, settings, now) {
+            plans.push(MaintenanceDispatchPlan {
+                account_id: candidate.id,
+                tier,
+                sync_interval_secs: match tier {
+                    MaintenanceTier::Priority => settings.primary_sync_interval_secs,
+                    MaintenanceTier::Secondary => settings.secondary_sync_interval_secs,
+                },
+            });
+        }
+    }
+    for candidate in secondary {
+        if maintenance_plan_is_due(&candidate, MaintenanceTier::Secondary, settings, now) {
+            plans.push(MaintenanceDispatchPlan {
+                account_id: candidate.id,
+                tier: MaintenanceTier::Secondary,
+                sync_interval_secs: settings.secondary_sync_interval_secs,
+            });
+        }
+    }
+
+    plans
 }
 
 async fn find_existing_import_match(
@@ -5565,10 +6113,6 @@ async fn sync_upstream_account_by_id(
         return Ok(Some(detail));
     }
 
-    if cause == SyncCause::Maintenance && !should_maintain_account(&row, state) {
-        return Ok(None);
-    }
-
     match row.kind.as_str() {
         UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX => sync_oauth_account(state, &row, cause).await?,
         UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX => {
@@ -5588,7 +6132,42 @@ async fn sync_api_key_account(
     row: &UpstreamAccountRow,
     cause: SyncCause,
 ) -> Result<()> {
-    mark_account_sync_success(pool, row.id, sync_cause_action_source(cause)).await
+    let sync_source = sync_cause_action_source(cause);
+    if row.status != UPSTREAM_ACCOUNT_STATUS_ACTIVE
+        && route_failure_kind_requires_manual_api_key_recovery(
+            row.last_route_failure_kind.as_deref(),
+        )
+    {
+        let reason_message = if route_failure_kind_is_quota_exhausted(
+            row.last_route_failure_kind.as_deref(),
+        ) {
+            "manual recovery required because API key sync cannot verify whether the upstream usage limit has reset"
+        } else {
+            "manual recovery required because API key sync cannot verify whether upstream credentials or entitlements have recovered"
+        };
+        return record_account_sync_recovery_blocked(
+            pool,
+            row.id,
+            sync_source,
+            &row.status,
+            UPSTREAM_ACCOUNT_ACTION_REASON_RECOVERY_UNCONFIRMED_MANUAL_REQUIRED,
+            reason_message,
+            row.last_error.as_deref(),
+            row.last_route_failure_kind.as_deref(),
+        )
+        .await;
+    }
+    mark_account_sync_success(
+        pool,
+        row.id,
+        sync_source,
+        if should_clear_route_failure_state_after_sync_success(row) {
+            SyncSuccessRouteState::ClearFailureState
+        } else {
+            SyncSuccessRouteState::PreserveFailureState
+        },
+    )
+    .await
 }
 
 async fn sync_oauth_account(
@@ -5836,7 +6415,33 @@ async fn sync_oauth_account(
         state.config.upstream_accounts_history_retention_days,
     )
     .await?;
-    mark_account_sync_success(&state.pool, row.id, sync_source).await?;
+    if route_failure_kind_is_quota_exhausted(row.last_route_failure_kind.as_deref())
+        && imported_snapshot_is_exhausted(&snapshot)
+    {
+        record_account_sync_recovery_blocked(
+            &state.pool,
+            row.id,
+            sync_source,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED,
+            "latest usage snapshot still shows an exhausted upstream usage limit window",
+            row.last_error.as_deref(),
+            row.last_route_failure_kind.as_deref(),
+        )
+        .await?;
+        return Ok(());
+    }
+    mark_account_sync_success(
+        &state.pool,
+        row.id,
+        sync_source,
+        if should_clear_route_failure_state_after_sync_success(row) {
+            SyncSuccessRouteState::ClearFailureState
+        } else {
+            SyncSuccessRouteState::PreserveFailureState
+        },
+    )
+    .await?;
     Ok(())
 }
 
@@ -5989,6 +6594,7 @@ async fn apply_imported_oauth_probe_result(
             &state.pool,
             account_id,
             UPSTREAM_ACCOUNT_ACTION_SOURCE_OAUTH_IMPORT,
+            SyncSuccessRouteState::ClearFailureState,
         )
         .await?;
     }
@@ -6829,7 +7435,18 @@ async fn load_upstream_account_summaries_filtered(
     pool: &Pool<Sqlite>,
     params: &ListUpstreamAccountsQuery,
 ) -> Result<Vec<UpstreamAccountSummary>> {
-    let status_filter = normalize_upstream_account_display_status_filter(params.status.as_deref());
+    let legacy_status_filter =
+        normalize_legacy_upstream_account_status_filter(params.status.as_deref());
+    let work_status_filter =
+        normalize_upstream_account_work_status_filter(params.work_status.as_deref())
+            .or(legacy_status_filter.work_status);
+    let enable_status_filter =
+        normalize_upstream_account_enable_status_filter(params.enable_status.as_deref())
+            .or(legacy_status_filter.enable_status);
+    let health_status_filter =
+        normalize_upstream_account_health_status_filter(params.health_status.as_deref())
+            .or(legacy_status_filter.health_status);
+    let sync_state_filter = legacy_status_filter.sync_state;
     let duplicate_info_map = load_duplicate_info_map(pool).await?;
     let mut normalized_tag_ids = params
         .tag_ids
@@ -6849,7 +7466,8 @@ async fn load_upstream_account_summaries_filtered(
             last_action, last_action_source, last_action_reason_code, last_action_reason_message,
             last_action_http_status, last_action_invoke_id, last_action_at,
             last_selected_at, last_route_failure_at, last_route_failure_kind, cooldown_until,
-            consecutive_route_failures, local_primary_limit, local_secondary_limit,
+            consecutive_route_failures, compact_support_status, compact_support_observed_at,
+            compact_support_reason, local_primary_limit, local_secondary_limit,
             local_limit_unit, upstream_base_url, created_at, updated_at
         FROM pool_upstream_accounts
         "#,
@@ -6888,6 +7506,7 @@ async fn load_upstream_account_summaries_filtered(
         .build_query_as::<UpstreamAccountRow>()
         .fetch_all(pool)
         .await?;
+    let now = Utc::now();
     let account_ids = rows.iter().map(|row| row.id).collect::<Vec<_>>();
     let tag_map = load_account_tag_map(pool, &account_ids).await?;
 
@@ -6901,16 +7520,21 @@ async fn load_upstream_account_summaries_filtered(
             row.last_activity_at.clone(),
             tags,
             duplicate_info_map.get(&row.id).cloned(),
+            now.clone(),
         ));
     }
-    if let Some(status_filter) = status_filter {
-        Ok(items
-            .into_iter()
-            .filter(|item| item.display_status == status_filter)
-            .collect())
-    } else {
-        Ok(items)
-    }
+    Ok(items
+        .into_iter()
+        .filter(|item| {
+            matches_upstream_account_filters(
+                item,
+                work_status_filter,
+                enable_status_filter,
+                health_status_filter,
+                sync_state_filter,
+            )
+        })
+        .collect())
 }
 
 async fn build_bulk_upstream_account_sync_pending_rows(
@@ -7117,6 +7741,7 @@ async fn load_upstream_account_detail(
             row.last_activity_at.clone(),
             tags,
             duplicate_info_map.get(&row.id).cloned(),
+            Utc::now(),
         ),
         note: row.note,
         upstream_base_url: row.upstream_base_url,
@@ -7152,7 +7777,8 @@ async fn load_upstream_account_row_conn(
             last_action, last_action_source, last_action_reason_code, last_action_reason_message,
             last_action_http_status, last_action_invoke_id, last_action_at,
             last_selected_at, last_route_failure_at, last_route_failure_kind, cooldown_until,
-            consecutive_route_failures, local_primary_limit, local_secondary_limit,
+            consecutive_route_failures, compact_support_status, compact_support_observed_at,
+            compact_support_reason, local_primary_limit, local_secondary_limit,
             local_limit_unit, upstream_base_url, created_at, updated_at
         FROM pool_upstream_accounts
         WHERE id = ?1
@@ -7223,6 +7849,7 @@ fn build_summary_from_row(
     last_activity_at: Option<String>,
     tags: Vec<AccountTagSummary>,
     duplicate_info: Option<DuplicateInfo>,
+    now: DateTime<Utc>,
 ) -> UpstreamAccountSummary {
     let local_limits = if row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
         Some(LocalLimitSnapshot {
@@ -7277,12 +7904,36 @@ fn build_summary_from_row(
     });
     let effective_routing_rule = build_effective_routing_rule(&tags);
     let status = effective_account_status(row);
+    let enable_status = derive_upstream_account_enable_status(row.enabled != 0);
+    let health_status = derive_upstream_account_health_status(
+        row.enabled != 0,
+        &row.status,
+        row.last_error.as_deref(),
+        row.last_error_at.as_deref(),
+        row.last_route_failure_at.as_deref(),
+        row.last_route_failure_kind.as_deref(),
+    );
+    let sync_state = derive_upstream_account_sync_state(row.enabled != 0, &row.status);
+    let work_status = derive_upstream_account_work_status(
+        row.enabled != 0,
+        health_status,
+        sync_state,
+        row.cooldown_until.as_deref(),
+        row.last_route_failure_kind.as_deref(),
+        row.last_action_reason_code.as_deref(),
+        row.last_selected_at.as_deref(),
+        now,
+    );
     let display_status = classify_upstream_account_display_status(
         row.enabled != 0,
-        &status,
+        &row.status,
         row.last_error.as_deref(),
+        row.last_error_at.as_deref(),
+        row.last_route_failure_at.as_deref(),
+        row.last_route_failure_kind.as_deref(),
     )
     .to_string();
+    let compact_support = build_compact_support_state(row);
 
     UpstreamAccountSummary {
         id: row.id,
@@ -7294,6 +7945,10 @@ fn build_summary_from_row(
         status,
         display_status,
         enabled: row.enabled != 0,
+        work_status: work_status.to_string(),
+        enable_status: enable_status.to_string(),
+        health_status: health_status.to_string(),
+        sync_state: sync_state.to_string(),
         email: row.email.clone(),
         chatgpt_account_id: row.chatgpt_account_id.clone(),
         plan_type: resolve_effective_plan_type(
@@ -7324,9 +7979,32 @@ fn build_summary_from_row(
         secondary_window,
         credits,
         local_limits,
+        compact_support,
         duplicate_info,
         tags,
         effective_routing_rule,
+    }
+}
+
+fn build_compact_support_state(row: &UpstreamAccountRow) -> CompactSupportState {
+    let status = row
+        .compact_support_status
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| {
+            matches!(
+                *value,
+                COMPACT_SUPPORT_STATUS_UNKNOWN
+                    | COMPACT_SUPPORT_STATUS_SUPPORTED
+                    | COMPACT_SUPPORT_STATUS_UNSUPPORTED
+            )
+        })
+        .unwrap_or(COMPACT_SUPPORT_STATUS_UNKNOWN)
+        .to_string();
+    CompactSupportState {
+        status,
+        observed_at: row.compact_support_observed_at.clone(),
+        reason: row.compact_support_reason.clone(),
     }
 }
 
@@ -7863,13 +8541,70 @@ struct MoeMailMessageDetail {
     received_at: Option<String>,
 }
 
-static OAUTH_SUBJECT_CODE_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)your\s+(?:chatgpt|openai)\s+code\s+is\s+(\d{4,8})")
-        .expect("valid oauth subject code regex")
-});
-static OAUTH_BODY_CODE_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)(?:verification\s+code|code\s+is)[^0-9]{0,24}(\d{4,8})")
-        .expect("valid oauth body code regex")
+const MAILBOX_CODE_CONTEXT_WINDOW_BYTES: usize = 64;
+const OAUTH_BRAND_MARKERS: &[&str] = &["openai", "chatgpt"];
+const OAUTH_STRONG_CODE_MARKERS: &[&str] = &[
+    "verification code",
+    "temporary verification code",
+    "one-time code",
+    "one time code",
+    "security code",
+    "验证码",
+    "驗證碼",
+    "校验码",
+    "校驗碼",
+    "验证代码",
+    "驗證代碼",
+    "認證碼",
+    "認証コード",
+    "인증 코드",
+    "인증번호",
+];
+const OAUTH_WEAK_CODE_MARKERS: &[&str] = &[
+    "your code",
+    "code is",
+    "code:",
+    "temporary code",
+    "代码为",
+    "代碼為",
+    "代码是",
+    "代碼是",
+    "臨時代碼",
+    "临时代码",
+];
+const OAUTH_INVITE_SUBJECT_MARKERS: &[&str] = &[
+    "has invited you",
+    "invited you to",
+    "invite you to",
+    "邀请你",
+    "邀請你",
+    "邀请您",
+    "邀請您",
+    "招待",
+    "초대",
+];
+const OAUTH_INVITE_BODY_MARKERS: &[&str] = &[
+    "join workspace",
+    "join the workspace",
+    "accept invitation",
+    "accept invite",
+    "workspace invite",
+    "accept the invitation",
+    "加入工作区",
+    "加入工作區",
+    "加入工作空间",
+    "加入工作空間",
+    "接受邀请",
+    "接受邀請",
+    "接受此邀请",
+    "接受此邀請",
+    "ワークスペース",
+    "招待",
+    "워크스페이스",
+    "초대 수락",
+];
+static OAUTH_CODE_CANDIDATE_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?:^|[^0-9])([0-9]{4,8})(?:[^0-9]|$)").expect("valid oauth code candidate regex")
 });
 static URL_REGEX: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"https?://[^\s"'<>)]+"#).expect("valid url regex"));
@@ -8062,31 +8797,238 @@ fn strip_html_tags(raw: &str) -> String {
     HTML_TAG_REGEX.replace_all(raw, " ").into_owned()
 }
 
+fn normalize_mailbox_text(raw: &str) -> String {
+    let mut normalized = String::with_capacity(raw.len());
+    let mut previous_was_space = true;
+
+    for ch in raw.chars() {
+        let mapped = match ch {
+            '\u{00a0}' | '\u{3000}' => ' ',
+            '０'..='９' => {
+                char::from_u32(u32::from(ch) - u32::from('０') + u32::from('0')).unwrap_or(ch)
+            }
+            'Ａ'..='Ｚ' => {
+                char::from_u32(u32::from(ch) - u32::from('Ａ') + u32::from('a')).unwrap_or(ch)
+            }
+            'ａ'..='ｚ' => {
+                char::from_u32(u32::from(ch) - u32::from('ａ') + u32::from('a')).unwrap_or(ch)
+            }
+            '：' => ':',
+            '－' => '-',
+            '／' => '/',
+            '．' => '.',
+            '，' => ',',
+            '（' => '(',
+            '）' => ')',
+            '【' => '[',
+            '】' => ']',
+            _ if ch.is_ascii_uppercase() => ch.to_ascii_lowercase(),
+            _ => ch,
+        };
+
+        if mapped.is_whitespace() {
+            if !previous_was_space && !normalized.is_empty() {
+                normalized.push(' ');
+            }
+            previous_was_space = true;
+        } else {
+            normalized.push(mapped);
+            previous_was_space = false;
+        }
+    }
+
+    normalized.trim().to_string()
+}
+
+fn mailbox_text_contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
+}
+
+fn mailbox_text_has_brand(text: &str) -> bool {
+    mailbox_text_contains_any(text, OAUTH_BRAND_MARKERS)
+}
+
+fn clamp_mailbox_context_start(raw: &str, index: usize) -> usize {
+    let mut candidate = index.min(raw.len());
+    while candidate > 0 && !raw.is_char_boundary(candidate) {
+        candidate -= 1;
+    }
+    candidate
+}
+
+fn clamp_mailbox_context_end(raw: &str, index: usize) -> usize {
+    let mut candidate = index.min(raw.len());
+    while candidate < raw.len() && !raw.is_char_boundary(candidate) {
+        candidate += 1;
+    }
+    candidate
+}
+
+fn mailbox_context_slice(raw: &str, start: usize, end: usize, radius: usize) -> &str {
+    let context_start = clamp_mailbox_context_start(raw, start.saturating_sub(radius));
+    let context_end = clamp_mailbox_context_end(raw, end.saturating_add(radius));
+    &raw[context_start..context_end]
+}
+
+fn mailbox_context_before(raw: &str, index: usize, radius: usize) -> &str {
+    let context_start = clamp_mailbox_context_start(raw, index.saturating_sub(radius));
+    let context_end = clamp_mailbox_context_end(raw, index);
+    &raw[context_start..context_end]
+}
+
+fn extract_mailbox_code_candidate(text: &str, message_has_brand: bool) -> Option<String> {
+    let mut best_match: Option<(u8, usize, String)> = None;
+
+    for captures in OAUTH_CODE_CANDIDATE_REGEX.captures_iter(text) {
+        let whole_match = captures.get(0)?;
+        let digit_match = captures.get(1)?;
+        let context = mailbox_context_slice(
+            text,
+            whole_match.start(),
+            whole_match.end(),
+            MAILBOX_CODE_CONTEXT_WINDOW_BYTES,
+        );
+        let prefix_context =
+            mailbox_context_before(text, digit_match.start(), MAILBOX_CODE_CONTEXT_WINDOW_BYTES);
+        let context_has_strong_code =
+            mailbox_text_contains_any(prefix_context, OAUTH_STRONG_CODE_MARKERS);
+        let context_has_weak_code =
+            mailbox_text_contains_any(prefix_context, OAUTH_WEAK_CODE_MARKERS);
+        let context_has_brand =
+            mailbox_text_has_brand(prefix_context) || mailbox_text_has_brand(context);
+        let score = if context_has_strong_code {
+            3
+        } else if context_has_weak_code && (message_has_brand || context_has_brand) {
+            2
+        } else {
+            0
+        };
+
+        if score == 0 {
+            continue;
+        }
+
+        let candidate = (score, digit_match.start(), digit_match.as_str().to_string());
+        if best_match
+            .as_ref()
+            .map(|existing| {
+                candidate.0 > existing.0 || (candidate.0 == existing.0 && candidate.1 < existing.1)
+            })
+            .unwrap_or(true)
+        {
+            best_match = Some(candidate);
+        }
+    }
+
+    best_match.map(|(_, _, value)| value)
+}
+
+fn mailbox_url_candidate_urls(url: &str) -> Vec<String> {
+    let mut candidates = vec![url.trim_end_matches('.').to_string()];
+    let Ok(parsed) = Url::parse(url) else {
+        return candidates;
+    };
+
+    for value in parsed
+        .query_pairs()
+        .map(|(_, value)| value.into_owned())
+        .chain(parsed.fragment().map(ToOwned::to_owned))
+    {
+        if let Some(nested) = URL_REGEX.find(&value) {
+            let nested = nested.as_str().trim_end_matches('.').to_string();
+            if !candidates.iter().any(|existing| existing == &nested) {
+                candidates.push(nested);
+            }
+        }
+    }
+
+    candidates
+}
+
+fn mailbox_url_looks_like_direct_invite(url: &str) -> bool {
+    let Ok(parsed) = Url::parse(url) else {
+        return false;
+    };
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+
+    let host = host.to_ascii_lowercase();
+    let path = parsed.path().to_ascii_lowercase();
+    let query = parsed.query().unwrap_or_default().to_ascii_lowercase();
+    let combined = if query.is_empty() {
+        format!("{host}{path}")
+    } else {
+        format!("{host}{path}?{query}")
+    };
+    let has_invite_action = combined.contains("invite")
+        || combined.contains("invitation")
+        || combined.contains("accept");
+    let has_workspace_context =
+        combined.contains("workspace") || host.contains("chatgpt") || host.contains("openai");
+    let is_help_like = host.starts_with("help.")
+        || host.starts_with("docs.")
+        || host.contains("support")
+        || path.contains("/articles/")
+        || path.contains("/hc/")
+        || path.contains("/help/")
+        || path.contains("/docs/");
+
+    has_invite_action && has_workspace_context && !is_help_like
+}
+
+fn mailbox_url_resolve_invite_target(url: &str) -> Option<String> {
+    let candidates = mailbox_url_candidate_urls(url);
+    candidates
+        .iter()
+        .skip(1)
+        .find(|candidate| mailbox_url_looks_like_direct_invite(candidate))
+        .cloned()
+        .or_else(|| {
+            candidates
+                .into_iter()
+                .next()
+                .filter(|candidate| mailbox_url_looks_like_direct_invite(candidate))
+        })
+}
+
+fn mailbox_url_has_brand(url: &str) -> bool {
+    mailbox_url_candidate_urls(url)
+        .into_iter()
+        .any(|candidate| {
+            let lower = candidate.to_ascii_lowercase();
+            lower.contains("openai") || lower.contains("chatgpt")
+        })
+}
+
 fn parse_mailbox_code(detail: &MoeMailMessageDetail) -> Option<ParsedMailboxCode> {
     let subject = detail.subject.as_deref().unwrap_or_default();
-    if let Some(captures) = OAUTH_SUBJECT_CODE_REGEX.captures(subject) {
-        let value = captures.get(1)?.as_str().to_string();
-        return Some(ParsedMailboxCode {
-            value,
-            source: "subject".to_string(),
-            updated_at: detail
-                .received_at
-                .clone()
-                .unwrap_or_else(|| format_utc_iso(Utc::now())),
-        });
+    let content = detail.content.as_deref().unwrap_or_default();
+    let html_text = strip_html_tags(detail.html.as_deref().unwrap_or_default());
+    let message_context = normalize_mailbox_text(&format!("{subject}\n{content}\n{html_text}"));
+    let message_has_brand = mailbox_text_has_brand(&message_context);
+
+    let subject_text = normalize_mailbox_text(subject);
+    let subject_has_brand = mailbox_text_has_brand(&subject_text);
+    if subject_has_brand {
+        if let Some(value) = extract_mailbox_code_candidate(&subject_text, subject_has_brand) {
+            return Some(ParsedMailboxCode {
+                value,
+                source: "subject".to_string(),
+                updated_at: detail
+                    .received_at
+                    .clone()
+                    .unwrap_or_else(|| format_utc_iso(Utc::now())),
+            });
+        }
     }
 
     for (source, raw) in [
-        ("content", detail.content.as_deref().unwrap_or_default()),
-        ("html", detail.html.as_deref().unwrap_or_default()),
+        ("content", content.to_string()),
+        ("html", html_text.clone()),
     ] {
-        let normalized = if source == "html" {
-            strip_html_tags(raw)
-        } else {
-            raw.to_string()
-        };
-        if let Some(captures) = OAUTH_BODY_CODE_REGEX.captures(&normalized) {
-            let value = captures.get(1)?.as_str().to_string();
+        let normalized = normalize_mailbox_text(&raw);
+        if let Some(value) = extract_mailbox_code_candidate(&normalized, message_has_brand) {
             return Some(ParsedMailboxCode {
                 value,
                 source: source.to_string(),
@@ -8103,27 +9045,39 @@ fn parse_mailbox_code(detail: &MoeMailMessageDetail) -> Option<ParsedMailboxCode
 
 fn parse_mailbox_invite(detail: &MoeMailMessageDetail) -> Option<ParsedMailboxInvite> {
     let subject = detail.subject.as_deref().unwrap_or_default().trim();
-    if subject.is_empty() || !subject.to_ascii_lowercase().contains("has invited you") {
+    if subject.is_empty() {
         return None;
     }
 
-    let text_candidates = [
-        detail.content.as_deref().unwrap_or_default().to_string(),
-        strip_html_tags(detail.html.as_deref().unwrap_or_default()),
-    ];
-    let body = text_candidates.join("\n");
-    let normalized = body.to_ascii_lowercase();
-    if !normalized.contains("join workspace") && !normalized.contains("accept invitation") {
-        return None;
-    }
+    let stripped_html = strip_html_tags(detail.html.as_deref().unwrap_or_default());
+    let subject_text = normalize_mailbox_text(subject);
+    let body_text = normalize_mailbox_text(&format!(
+        "{}\n{}",
+        detail.content.as_deref().unwrap_or_default(),
+        stripped_html
+    ));
+    let subject_has_invite_semantics =
+        mailbox_text_contains_any(&subject_text, OAUTH_INVITE_SUBJECT_MARKERS);
+    let body_has_invite_semantics =
+        mailbox_text_contains_any(&body_text, OAUTH_INVITE_BODY_MARKERS);
 
+    let body_with_urls = format!(
+        "{}\n{}",
+        detail.content.as_deref().unwrap_or_default(),
+        stripped_html
+    );
     let copy_value = URL_REGEX
-        .find_iter(&body)
-        .map(|value| value.as_str().trim_end_matches('.').to_string())
-        .find(|value| {
-            let lower = value.to_ascii_lowercase();
-            lower.contains("workspace") || lower.contains("invite") || lower.contains("accept")
-        })?;
+        .find_iter(&body_with_urls)
+        .find_map(|value| mailbox_url_resolve_invite_target(value.as_str()))?;
+    let body_can_drive_invite = body_has_invite_semantics;
+    if !subject_has_invite_semantics && !body_can_drive_invite {
+        return None;
+    }
+    if !mailbox_text_has_brand(&format!("{subject_text}\n{body_text}"))
+        && !mailbox_url_has_brand(&copy_value)
+    {
+        return None;
+    }
 
     Some(ParsedMailboxInvite {
         subject: subject.to_string(),
@@ -8641,20 +9595,116 @@ fn normalize_upstream_account_list_page_size(value: Option<usize>) -> usize {
         .unwrap_or(DEFAULT_UPSTREAM_ACCOUNT_LIST_PAGE_SIZE)
 }
 
-fn normalize_upstream_account_display_status_filter(value: Option<&str>) -> Option<String> {
+#[derive(Debug, Default, Clone, Copy)]
+struct LegacyUpstreamAccountStatusFilter {
+    work_status: Option<&'static str>,
+    enable_status: Option<&'static str>,
+    health_status: Option<&'static str>,
+    sync_state: Option<&'static str>,
+}
+
+fn normalize_upstream_account_work_status_filter(value: Option<&str>) -> Option<&'static str> {
     let normalized = value?.trim().to_ascii_lowercase();
     if normalized.is_empty() {
         return None;
     }
     match normalized.as_str() {
-        UPSTREAM_ACCOUNT_STATUS_ACTIVE
-        | UPSTREAM_ACCOUNT_STATUS_SYNCING
-        | UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH
-        | UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE
-        | UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
-        | UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER
-        | UPSTREAM_ACCOUNT_STATUS_DISABLED => Some(normalized),
+        UPSTREAM_ACCOUNT_WORK_STATUS_WORKING => Some(UPSTREAM_ACCOUNT_WORK_STATUS_WORKING),
+        UPSTREAM_ACCOUNT_WORK_STATUS_IDLE => Some(UPSTREAM_ACCOUNT_WORK_STATUS_IDLE),
+        UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED => {
+            Some(UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED)
+        }
         _ => None,
+    }
+}
+
+fn normalize_upstream_account_enable_status_filter(value: Option<&str>) -> Option<&'static str> {
+    let normalized = value?.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+    match normalized.as_str() {
+        UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED => Some(UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED),
+        UPSTREAM_ACCOUNT_ENABLE_STATUS_DISABLED => Some(UPSTREAM_ACCOUNT_ENABLE_STATUS_DISABLED),
+        _ => None,
+    }
+}
+
+fn normalize_upstream_account_health_status_filter(value: Option<&str>) -> Option<&'static str> {
+    let normalized = value?.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+    match normalized.as_str() {
+        UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL => Some(UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL),
+        UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH => Some(UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH),
+        UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE => {
+            Some(UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE)
+        }
+        UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED => {
+            Some(UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED)
+        }
+        UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER | UPSTREAM_ACCOUNT_STATUS_ERROR => {
+            Some(UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER)
+        }
+        _ => None,
+    }
+}
+
+fn normalize_legacy_upstream_account_status_filter(
+    value: Option<&str>,
+) -> LegacyUpstreamAccountStatusFilter {
+    let normalized = value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase());
+    match normalized.as_deref() {
+        Some(UPSTREAM_ACCOUNT_STATUS_ACTIVE) => LegacyUpstreamAccountStatusFilter {
+            enable_status: Some(UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED),
+            health_status: Some(UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL),
+            sync_state: Some(UPSTREAM_ACCOUNT_SYNC_STATE_IDLE),
+            ..LegacyUpstreamAccountStatusFilter::default()
+        },
+        Some(UPSTREAM_ACCOUNT_STATUS_SYNCING) => LegacyUpstreamAccountStatusFilter {
+            enable_status: Some(UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED),
+            sync_state: Some(UPSTREAM_ACCOUNT_SYNC_STATE_SYNCING),
+            ..LegacyUpstreamAccountStatusFilter::default()
+        },
+        Some(UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH) => LegacyUpstreamAccountStatusFilter {
+            enable_status: Some(UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED),
+            health_status: Some(UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH),
+            sync_state: Some(UPSTREAM_ACCOUNT_SYNC_STATE_IDLE),
+            ..LegacyUpstreamAccountStatusFilter::default()
+        },
+        Some(UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE) => {
+            LegacyUpstreamAccountStatusFilter {
+                enable_status: Some(UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED),
+                health_status: Some(UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE),
+                sync_state: Some(UPSTREAM_ACCOUNT_SYNC_STATE_IDLE),
+                ..LegacyUpstreamAccountStatusFilter::default()
+            }
+        }
+        Some(UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED) => {
+            LegacyUpstreamAccountStatusFilter {
+                enable_status: Some(UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED),
+                health_status: Some(UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED),
+                sync_state: Some(UPSTREAM_ACCOUNT_SYNC_STATE_IDLE),
+                ..LegacyUpstreamAccountStatusFilter::default()
+            }
+        }
+        Some(UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER) | Some(UPSTREAM_ACCOUNT_STATUS_ERROR) => {
+            LegacyUpstreamAccountStatusFilter {
+                enable_status: Some(UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED),
+                health_status: Some(UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER),
+                sync_state: Some(UPSTREAM_ACCOUNT_SYNC_STATE_IDLE),
+                ..LegacyUpstreamAccountStatusFilter::default()
+            }
+        }
+        Some(UPSTREAM_ACCOUNT_STATUS_DISABLED) => LegacyUpstreamAccountStatusFilter {
+            enable_status: Some(UPSTREAM_ACCOUNT_ENABLE_STATUS_DISABLED),
+            ..LegacyUpstreamAccountStatusFilter::default()
+        },
+        _ => LegacyUpstreamAccountStatusFilter::default(),
     }
 }
 
@@ -8806,21 +9856,50 @@ fn effective_account_status(row: &UpstreamAccountRow) -> String {
     }
 }
 
-fn classify_upstream_account_display_status(
+fn derive_upstream_account_enable_status(enabled: bool) -> &'static str {
+    if enabled {
+        UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED
+    } else {
+        UPSTREAM_ACCOUNT_ENABLE_STATUS_DISABLED
+    }
+}
+
+fn derive_upstream_account_sync_state(enabled: bool, raw_status: &str) -> &'static str {
+    if !enabled {
+        return UPSTREAM_ACCOUNT_SYNC_STATE_IDLE;
+    }
+    if raw_status
+        .trim()
+        .eq_ignore_ascii_case(UPSTREAM_ACCOUNT_STATUS_SYNCING)
+    {
+        UPSTREAM_ACCOUNT_SYNC_STATE_SYNCING
+    } else {
+        UPSTREAM_ACCOUNT_SYNC_STATE_IDLE
+    }
+}
+
+fn derive_upstream_account_health_status(
     enabled: bool,
     raw_status: &str,
     last_error: Option<&str>,
+    last_error_at: Option<&str>,
+    last_route_failure_at: Option<&str>,
+    last_route_failure_kind: Option<&str>,
 ) -> &'static str {
+    if !enabled {
+        return UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL;
+    }
     let status = raw_status.trim().to_ascii_lowercase();
     let error_message = last_error.unwrap_or_default();
-    if !enabled || status == UPSTREAM_ACCOUNT_STATUS_DISABLED {
-        return UPSTREAM_ACCOUNT_STATUS_DISABLED;
-    }
-    if status == UPSTREAM_ACCOUNT_STATUS_SYNCING {
-        return UPSTREAM_ACCOUNT_STATUS_SYNCING;
-    }
-    if status == UPSTREAM_ACCOUNT_STATUS_ACTIVE {
-        return UPSTREAM_ACCOUNT_STATUS_ACTIVE;
+    if matches!(
+        status.as_str(),
+        UPSTREAM_ACCOUNT_STATUS_ACTIVE | UPSTREAM_ACCOUNT_STATUS_SYNCING
+    ) && is_transient_route_failure_error(
+        last_error_at,
+        last_route_failure_at,
+        last_route_failure_kind,
+    ) {
+        return UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL;
     }
     if is_upstream_unavailable_error_message(error_message) {
         return UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE;
@@ -8839,7 +9918,115 @@ fn classify_upstream_account_display_status(
     {
         return UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER;
     }
-    UPSTREAM_ACCOUNT_STATUS_ACTIVE
+    UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL
+}
+
+fn is_transient_route_failure_error(
+    last_error_at: Option<&str>,
+    last_route_failure_at: Option<&str>,
+    last_route_failure_kind: Option<&str>,
+) -> bool {
+    if last_error_at.is_none() || last_error_at != last_route_failure_at {
+        return false;
+    }
+    matches!(
+        last_route_failure_kind
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+        Some(
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429
+                | FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX
+                | FORWARD_PROXY_FAILURE_SEND_ERROR
+                | FORWARD_PROXY_FAILURE_HANDSHAKE_TIMEOUT
+                | FORWARD_PROXY_FAILURE_STREAM_ERROR
+                | PROXY_FAILURE_FAILED_CONTACT_UPSTREAM
+                | PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT
+        )
+    )
+}
+
+fn derive_upstream_account_work_status(
+    enabled: bool,
+    health_status: &str,
+    sync_state: &str,
+    cooldown_until: Option<&str>,
+    last_route_failure_kind: Option<&str>,
+    last_action_reason_code: Option<&str>,
+    last_selected_at: Option<&str>,
+    now: DateTime<Utc>,
+) -> &'static str {
+    if !enabled
+        || health_status != UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL
+        || sync_state == UPSTREAM_ACCOUNT_SYNC_STATE_SYNCING
+    {
+        return UPSTREAM_ACCOUNT_WORK_STATUS_IDLE;
+    }
+    if cooldown_until
+        .and_then(parse_rfc3339_utc)
+        .is_some_and(|until| {
+            until > now
+                && (matches!(
+                    last_route_failure_kind,
+                    Some(
+                        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429
+                            | FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
+                    )
+                ) || account_reason_is_rate_limited(last_action_reason_code))
+        })
+    {
+        return UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED;
+    }
+    let active_cutoff = now - ChronoDuration::minutes(POOL_ROUTE_ACTIVE_STICKY_WINDOW_MINUTES);
+    if last_selected_at
+        .and_then(parse_rfc3339_utc)
+        .is_some_and(|selected_at| selected_at >= active_cutoff)
+    {
+        return UPSTREAM_ACCOUNT_WORK_STATUS_WORKING;
+    }
+    UPSTREAM_ACCOUNT_WORK_STATUS_IDLE
+}
+
+fn classify_upstream_account_display_status(
+    enabled: bool,
+    raw_status: &str,
+    last_error: Option<&str>,
+    last_error_at: Option<&str>,
+    last_route_failure_at: Option<&str>,
+    last_route_failure_kind: Option<&str>,
+) -> &'static str {
+    let enable_status = derive_upstream_account_enable_status(enabled);
+    if enable_status == UPSTREAM_ACCOUNT_ENABLE_STATUS_DISABLED {
+        return UPSTREAM_ACCOUNT_STATUS_DISABLED;
+    }
+    let sync_state = derive_upstream_account_sync_state(enabled, raw_status);
+    if sync_state == UPSTREAM_ACCOUNT_SYNC_STATE_SYNCING {
+        return UPSTREAM_ACCOUNT_STATUS_SYNCING;
+    }
+    let health_status = derive_upstream_account_health_status(
+        enabled,
+        raw_status,
+        last_error,
+        last_error_at,
+        last_route_failure_at,
+        last_route_failure_kind,
+    );
+    if health_status == UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL {
+        return UPSTREAM_ACCOUNT_STATUS_ACTIVE;
+    }
+    health_status
+}
+
+fn matches_upstream_account_filters(
+    item: &UpstreamAccountSummary,
+    work_status_filter: Option<&str>,
+    enable_status_filter: Option<&str>,
+    health_status_filter: Option<&str>,
+    sync_state_filter: Option<&str>,
+) -> bool {
+    work_status_filter.is_none_or(|value| item.work_status == value)
+        && enable_status_filter.is_none_or(|value| item.enable_status == value)
+        && health_status_filter.is_none_or(|value| item.health_status == value)
+        && sync_state_filter.is_none_or(|value| item.sync_state == value)
 }
 
 fn build_upstream_account_list_metrics(
@@ -8858,11 +10045,8 @@ fn build_upstream_account_list_metrics(
         attention: items
             .iter()
             .filter(|item| {
-                item.display_status == UPSTREAM_ACCOUNT_STATUS_SYNCING
-                    || item.display_status == UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH
-                    || item.display_status == UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE
-                    || item.display_status == UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
-                    || item.display_status == UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER
+                item.health_status != UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL
+                    || item.work_status == UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
             })
             .count(),
     }
@@ -9125,6 +10309,43 @@ fn account_reason_is_rate_limited(reason_code: Option<&str>) -> bool {
     )
 }
 
+fn route_failure_kind_is_quota_exhausted(failure_kind: Option<&str>) -> bool {
+    matches!(
+        failure_kind
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+    )
+}
+
+fn route_failure_kind_requires_manual_api_key_recovery(failure_kind: Option<&str>) -> bool {
+    matches!(
+        failure_kind
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+        Some(
+            PROXY_FAILURE_UPSTREAM_HTTP_AUTH
+                | PROXY_FAILURE_UPSTREAM_HTTP_402
+                | FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
+        )
+    )
+}
+
+fn should_clear_route_failure_state_after_sync_success(row: &UpstreamAccountRow) -> bool {
+    row.status != UPSTREAM_ACCOUNT_STATUS_ACTIVE
+        || route_failure_kind_requires_manual_api_key_recovery(
+            row.last_route_failure_kind.as_deref(),
+        )
+}
+
+fn account_update_requests_manual_recovery(payload: &UpdateUpstreamAccountRequest) -> bool {
+    payload.enabled == Some(true)
+        || payload
+            .api_key
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+}
+
 async fn set_account_status(
     pool: &Pool<Sqlite>,
     account_id: i64,
@@ -9172,25 +10393,53 @@ async fn mark_account_sync_success(
     pool: &Pool<Sqlite>,
     account_id: i64,
     source: &str,
+    route_state: SyncSuccessRouteState,
 ) -> Result<()> {
     let now_iso = format_utc_iso(Utc::now());
-    sqlx::query(
-        r#"
-        UPDATE pool_upstream_accounts
-        SET status = ?2,
-            last_synced_at = ?3,
-            last_successful_sync_at = ?3,
-            last_error = NULL,
-            last_error_at = NULL,
-            updated_at = ?3
-        WHERE id = ?1
-        "#,
-    )
-    .bind(account_id)
-    .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
-    .bind(&now_iso)
-    .execute(pool)
-    .await?;
+    match route_state {
+        SyncSuccessRouteState::PreserveFailureState => {
+            sqlx::query(
+                r#"
+                UPDATE pool_upstream_accounts
+                SET status = ?2,
+                    last_synced_at = ?3,
+                    last_successful_sync_at = ?3,
+                    last_error = NULL,
+                    last_error_at = NULL,
+                    updated_at = ?3
+                WHERE id = ?1
+                "#,
+            )
+            .bind(account_id)
+            .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+            .bind(&now_iso)
+            .execute(pool)
+            .await?;
+        }
+        SyncSuccessRouteState::ClearFailureState => {
+            sqlx::query(
+                r#"
+                UPDATE pool_upstream_accounts
+                SET status = ?2,
+                    last_synced_at = ?3,
+                    last_successful_sync_at = ?3,
+                    last_error = NULL,
+                    last_error_at = NULL,
+                    last_route_failure_at = NULL,
+                    last_route_failure_kind = NULL,
+                    cooldown_until = NULL,
+                    consecutive_route_failures = 0,
+                    updated_at = ?3
+                WHERE id = ?1
+                "#,
+            )
+            .bind(account_id)
+            .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+            .bind(&now_iso)
+            .execute(pool)
+            .await?;
+        }
+    }
     record_upstream_account_action(
         pool,
         account_id,
@@ -9201,6 +10450,52 @@ async fn mark_account_sync_success(
             reason_message: None,
             http_status: None,
             failure_kind: None,
+            invoke_id: None,
+            sticky_key: None,
+            occurred_at: &now_iso,
+        },
+    )
+    .await?;
+    Ok(())
+}
+
+async fn record_account_sync_recovery_blocked(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    source: &str,
+    status: &str,
+    reason_code: &'static str,
+    reason_message: &str,
+    preserved_error: Option<&str>,
+    failure_kind: Option<&str>,
+) -> Result<()> {
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET status = ?2,
+            last_synced_at = ?3,
+            last_error = COALESCE(?4, last_error),
+            updated_at = ?3
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .bind(status)
+    .bind(&now_iso)
+    .bind(preserved_error)
+    .execute(pool)
+    .await?;
+    record_upstream_account_action(
+        pool,
+        account_id,
+        UpstreamAccountActionPayload {
+            action: UPSTREAM_ACCOUNT_ACTION_SYNC_RECOVERY_BLOCKED,
+            source,
+            reason_code: Some(reason_code),
+            reason_message: Some(reason_message),
+            http_status: None,
+            failure_kind,
             invoke_id: None,
             sticky_key: None,
             occurred_at: &now_iso,
@@ -10313,10 +11608,116 @@ fn internal_error_html(err: impl ToString) -> (StatusCode, String) {
     )
 }
 
+pub(crate) fn pool_routing_timeouts_from_config(
+    config: &AppConfig,
+) -> PoolRoutingTimeoutSettingsResolved {
+    PoolRoutingTimeoutSettingsResolved {
+        default_first_byte_timeout: config.request_timeout,
+        default_send_timeout: config.openai_proxy_handshake_timeout,
+        request_read_timeout: config.openai_proxy_request_read_timeout,
+        responses_first_byte_timeout: config.pool_upstream_responses_attempt_timeout,
+        compact_first_byte_timeout: config.openai_proxy_compact_handshake_timeout,
+        responses_stream_timeout: config.pool_upstream_responses_total_timeout,
+        compact_stream_timeout: config.pool_upstream_responses_total_timeout,
+    }
+}
+
+fn normalize_pool_routing_timeout_secs(
+    value: Option<u64>,
+    field_name: &str,
+) -> Result<Option<u64>, (StatusCode, String)> {
+    match value {
+        None => Ok(None),
+        Some(0) => Err((
+            StatusCode::BAD_REQUEST,
+            format!("{field_name} must be greater than zero"),
+        )),
+        Some(value) if value > i64::MAX as u64 => Err((
+            StatusCode::BAD_REQUEST,
+            format!("{field_name} must be less than or equal to {}", i64::MAX),
+        )),
+        Some(value) => Ok(Some(value)),
+    }
+}
+
+fn resolve_pool_routing_timeouts_from_row(
+    row: &PoolRoutingSettingsRow,
+    config: &AppConfig,
+) -> PoolRoutingTimeoutSettingsResolved {
+    let defaults = pool_routing_timeouts_from_config(config);
+    PoolRoutingTimeoutSettingsResolved {
+        responses_first_byte_timeout: row
+            .responses_first_byte_timeout_secs
+            .and_then(|value| u64::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .map(Duration::from_secs)
+            .unwrap_or(defaults.responses_first_byte_timeout),
+        compact_first_byte_timeout: row
+            .compact_first_byte_timeout_secs
+            .and_then(|value| u64::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .map(Duration::from_secs)
+            .unwrap_or(defaults.compact_first_byte_timeout),
+        responses_stream_timeout: row
+            .responses_stream_timeout_secs
+            .and_then(|value| u64::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .map(Duration::from_secs)
+            .unwrap_or(defaults.responses_stream_timeout),
+        compact_stream_timeout: row
+            .compact_stream_timeout_secs
+            .and_then(|value| u64::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .map(Duration::from_secs)
+            .unwrap_or(defaults.compact_stream_timeout),
+        default_first_byte_timeout: row
+            .default_first_byte_timeout_secs
+            .and_then(|value| u64::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .map(Duration::from_secs)
+            .unwrap_or(defaults.default_first_byte_timeout),
+        default_send_timeout: row
+            .upstream_handshake_timeout_secs
+            .and_then(|value| u64::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .map(Duration::from_secs)
+            .unwrap_or(defaults.default_send_timeout),
+        request_read_timeout: row
+            .request_read_timeout_secs
+            .and_then(|value| u64::try_from(value).ok())
+            .filter(|value| *value > 0)
+            .map(Duration::from_secs)
+            .unwrap_or(defaults.request_read_timeout),
+    }
+}
+
+fn pool_routing_timeouts_response(
+    resolved: PoolRoutingTimeoutSettingsResolved,
+) -> PoolRoutingTimeoutSettingsResponse {
+    PoolRoutingTimeoutSettingsResponse {
+        responses_first_byte_timeout_secs: resolved.responses_first_byte_timeout.as_secs(),
+        compact_first_byte_timeout_secs: resolved.compact_first_byte_timeout.as_secs(),
+        responses_stream_timeout_secs: resolved.responses_stream_timeout.as_secs(),
+        compact_stream_timeout_secs: resolved.compact_stream_timeout.as_secs(),
+    }
+}
+
 async fn load_pool_routing_settings(pool: &Pool<Sqlite>) -> Result<PoolRoutingSettingsRow> {
     sqlx::query_as::<_, PoolRoutingSettingsRow>(
         r#"
-        SELECT encrypted_api_key, masked_api_key
+        SELECT
+            encrypted_api_key,
+            masked_api_key,
+            primary_sync_interval_secs,
+            secondary_sync_interval_secs,
+            priority_available_account_cap,
+            responses_first_byte_timeout_secs,
+            compact_first_byte_timeout_secs,
+            responses_stream_timeout_secs,
+            compact_stream_timeout_secs,
+            default_first_byte_timeout_secs,
+            upstream_handshake_timeout_secs,
+            request_read_timeout_secs
         FROM pool_routing_settings
         WHERE id = ?1
         LIMIT 1
@@ -10326,6 +11727,215 @@ async fn load_pool_routing_settings(pool: &Pool<Sqlite>) -> Result<PoolRoutingSe
     .fetch_one(pool)
     .await
     .map_err(Into::into)
+}
+
+fn resolve_pool_routing_maintenance_settings(
+    row: &PoolRoutingSettingsRow,
+    config: &AppConfig,
+) -> PoolRoutingMaintenanceSettings {
+    let primary_sync_interval_secs = row
+        .primary_sync_interval_secs
+        .and_then(|value| u64::try_from(value).ok())
+        .unwrap_or(config.upstream_accounts_sync_interval.as_secs())
+        .max(MIN_UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS);
+    let secondary_default =
+        DEFAULT_UPSTREAM_ACCOUNTS_SECONDARY_SYNC_INTERVAL_SECS.max(primary_sync_interval_secs);
+    let secondary_sync_interval_secs = row
+        .secondary_sync_interval_secs
+        .and_then(|value| u64::try_from(value).ok())
+        .unwrap_or(secondary_default)
+        .max(primary_sync_interval_secs)
+        .max(MIN_UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS);
+    let priority_available_account_cap = row
+        .priority_available_account_cap
+        .and_then(|value| usize::try_from(value).ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_UPSTREAM_ACCOUNTS_PRIORITY_AVAILABLE_ACCOUNT_CAP);
+
+    PoolRoutingMaintenanceSettings {
+        primary_sync_interval_secs,
+        secondary_sync_interval_secs,
+        priority_available_account_cap,
+    }
+}
+
+fn build_pool_routing_settings_response(
+    state: &AppState,
+    row: &PoolRoutingSettingsRow,
+) -> PoolRoutingSettingsResponse {
+    let timeouts = resolve_pool_routing_timeouts_from_row(row, &state.config);
+    PoolRoutingSettingsResponse {
+        writes_enabled: true,
+        api_key_configured: row
+            .encrypted_api_key
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty()),
+        masked_api_key: row.masked_api_key.clone(),
+        maintenance: resolve_pool_routing_maintenance_settings(row, &state.config).into_response(),
+        timeouts: pool_routing_timeouts_response(timeouts),
+    }
+}
+
+fn validate_pool_routing_maintenance_settings(
+    settings: PoolRoutingMaintenanceSettings,
+) -> Result<(), (StatusCode, String)> {
+    if settings.primary_sync_interval_secs < MIN_UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "maintenance.primarySyncIntervalSecs must be >= {MIN_UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS}"
+            ),
+        ));
+    }
+    if settings.secondary_sync_interval_secs < MIN_UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!(
+                "maintenance.secondarySyncIntervalSecs must be >= {MIN_UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS}"
+            ),
+        ));
+    }
+    if settings.secondary_sync_interval_secs < settings.primary_sync_interval_secs {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "maintenance.secondarySyncIntervalSecs must be >= maintenance.primarySyncIntervalSecs"
+                .to_string(),
+        ));
+    }
+    if settings.priority_available_account_cap == 0 {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "maintenance.priorityAvailableAccountCap must be >= 1".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn merge_pool_routing_maintenance_settings(
+    current: PoolRoutingMaintenanceSettings,
+    patch: Option<&UpdatePoolRoutingMaintenanceSettingsRequest>,
+) -> PoolRoutingMaintenanceSettings {
+    let Some(patch) = patch else {
+        return current;
+    };
+    PoolRoutingMaintenanceSettings {
+        primary_sync_interval_secs: patch
+            .primary_sync_interval_secs
+            .unwrap_or(current.primary_sync_interval_secs),
+        secondary_sync_interval_secs: patch
+            .secondary_sync_interval_secs
+            .unwrap_or(current.secondary_sync_interval_secs),
+        priority_available_account_cap: patch
+            .priority_available_account_cap
+            .unwrap_or(current.priority_available_account_cap),
+    }
+}
+
+async fn load_pool_routing_settings_seeded(
+    pool: &Pool<Sqlite>,
+    _config: &AppConfig,
+) -> Result<PoolRoutingSettingsRow> {
+    load_pool_routing_settings(pool).await
+}
+
+pub(crate) async fn resolve_pool_routing_timeouts(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+) -> Result<PoolRoutingTimeoutSettingsResolved> {
+    let row = load_pool_routing_settings_seeded(pool, config).await?;
+    Ok(resolve_pool_routing_timeouts_from_row(&row, config))
+}
+
+async fn save_pool_routing_settings(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    crypto_key: Option<&[u8; 32]>,
+    api_key: Option<&str>,
+    timeout_updates: Option<&UpdatePoolRoutingTimeoutSettingsRequest>,
+) -> Result<PoolRoutingSettingsRow, (StatusCode, String)> {
+    let current = load_pool_routing_settings_seeded(pool, config)
+        .await
+        .map_err(internal_error_tuple)?;
+    let encrypted_api_key = match api_key {
+        Some(api_key) => {
+            let crypto_key = crypto_key.ok_or_else(|| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "pool routing secret storage is unavailable".to_string(),
+                )
+            })?;
+            Some(encrypt_secret_value(crypto_key, api_key).map_err(internal_error_tuple)?)
+        }
+        None => current.encrypted_api_key.clone(),
+    };
+    let masked_api_key = match api_key {
+        Some(api_key) => Some(mask_api_key(api_key)),
+        None => current.masked_api_key.clone(),
+    };
+    let primary_sync_interval_secs = current.primary_sync_interval_secs;
+    let secondary_sync_interval_secs = current.secondary_sync_interval_secs;
+    let priority_available_account_cap = current.priority_available_account_cap;
+    let responses_first_byte_timeout_secs = timeout_updates
+        .and_then(|value| value.responses_first_byte_timeout_secs)
+        .map(|value| value as i64)
+        .or(current.responses_first_byte_timeout_secs);
+    let compact_first_byte_timeout_secs = timeout_updates
+        .and_then(|value| value.compact_first_byte_timeout_secs)
+        .map(|value| value as i64)
+        .or(current.compact_first_byte_timeout_secs);
+    let responses_stream_timeout_secs = timeout_updates
+        .and_then(|value| value.responses_stream_timeout_secs)
+        .map(|value| value as i64)
+        .or(current.responses_stream_timeout_secs);
+    let compact_stream_timeout_secs = timeout_updates
+        .and_then(|value| value.compact_stream_timeout_secs)
+        .map(|value| value as i64)
+        .or(current.compact_stream_timeout_secs);
+    let default_first_byte_timeout_secs = current.default_first_byte_timeout_secs;
+    let upstream_handshake_timeout_secs = current.upstream_handshake_timeout_secs;
+    let request_read_timeout_secs = current.request_read_timeout_secs;
+    let now_iso = format_utc_iso(Utc::now());
+
+    sqlx::query(
+        r#"
+        UPDATE pool_routing_settings
+        SET encrypted_api_key = ?2,
+            masked_api_key = ?3,
+            primary_sync_interval_secs = ?4,
+            secondary_sync_interval_secs = ?5,
+            priority_available_account_cap = ?6,
+            responses_first_byte_timeout_secs = ?7,
+            compact_first_byte_timeout_secs = ?8,
+            responses_stream_timeout_secs = ?9,
+            compact_stream_timeout_secs = ?10,
+            default_first_byte_timeout_secs = ?11,
+            upstream_handshake_timeout_secs = ?12,
+            request_read_timeout_secs = ?13,
+            updated_at = ?14
+        WHERE id = ?1
+        "#,
+    )
+    .bind(POOL_SETTINGS_SINGLETON_ID)
+    .bind(encrypted_api_key)
+    .bind(masked_api_key)
+    .bind(primary_sync_interval_secs)
+    .bind(secondary_sync_interval_secs)
+    .bind(priority_available_account_cap)
+    .bind(responses_first_byte_timeout_secs)
+    .bind(compact_first_byte_timeout_secs)
+    .bind(responses_stream_timeout_secs)
+    .bind(compact_stream_timeout_secs)
+    .bind(default_first_byte_timeout_secs)
+    .bind(upstream_handshake_timeout_secs)
+    .bind(request_read_timeout_secs)
+    .bind(now_iso)
+    .execute(pool)
+    .await
+    .map_err(internal_error_tuple)?;
+
+    load_pool_routing_settings(pool)
+        .await
+        .map_err(internal_error_tuple)
 }
 
 async fn save_pool_routing_api_key(
@@ -10348,6 +11958,31 @@ async fn save_pool_routing_api_key(
     .bind(POOL_SETTINGS_SINGLETON_ID)
     .bind(encrypted_api_key)
     .bind(masked_api_key)
+    .bind(now_iso)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+async fn save_pool_routing_maintenance_settings(
+    pool: &Pool<Sqlite>,
+    settings: PoolRoutingMaintenanceSettings,
+) -> Result<()> {
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        UPDATE pool_routing_settings
+        SET primary_sync_interval_secs = ?2,
+            secondary_sync_interval_secs = ?3,
+            priority_available_account_cap = ?4,
+            updated_at = ?5
+        WHERE id = ?1
+        "#,
+    )
+    .bind(POOL_SETTINGS_SINGLETON_ID)
+    .bind(i64::try_from(settings.primary_sync_interval_secs)?)
+    .bind(i64::try_from(settings.secondary_sync_interval_secs)?)
+    .bind(i64::try_from(settings.priority_available_account_cap)?)
     .bind(now_iso)
     .execute(pool)
     .await?;
@@ -11126,6 +12761,8 @@ fn is_account_rate_limited_for_routing(row: &UpstreamAccountRow) -> bool {
     {
         return false;
     }
+    let quota_exhausted_hard_stop =
+        route_failure_kind_is_quota_exhausted(row.last_route_failure_kind.as_deref());
     let in_429_cooldown = row
         .cooldown_until
         .as_deref()
@@ -11139,7 +12776,9 @@ fn is_account_rate_limited_for_routing(row: &UpstreamAccountRow) -> bool {
                     | FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
             )
         );
-    in_429_cooldown || account_reason_is_rate_limited(row.last_action_reason_code.as_deref())
+    quota_exhausted_hard_stop
+        || in_429_cooldown
+        || account_reason_is_rate_limited(row.last_action_reason_code.as_deref())
 }
 
 async fn load_account_routing_candidates(
@@ -11190,9 +12829,7 @@ async fn load_account_routing_candidates(
     );
     query
         .push_bind(UPSTREAM_ACCOUNT_PROVIDER_CODEX)
-        .push(" AND account.enabled = 1")
-        .push(" AND account.status = ")
-        .push_bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        .push(" AND account.enabled = 1");
     if !excluded_ids.is_empty() {
         query.push(" AND account.id NOT IN (");
         {
@@ -11251,6 +12888,37 @@ pub(crate) async fn record_account_selected(pool: &Pool<Sqlite>, account_id: i64
     )
     .bind(account_id)
     .bind(&now_iso)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+pub(crate) async fn record_compact_support_observation(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    status: &str,
+    reason: Option<&str>,
+) -> Result<()> {
+    if !matches!(
+        status,
+        COMPACT_SUPPORT_STATUS_SUPPORTED | COMPACT_SUPPORT_STATUS_UNSUPPORTED
+    ) {
+        return Ok(());
+    }
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET compact_support_status = ?2,
+            compact_support_observed_at = ?3,
+            compact_support_reason = ?4
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .bind(status)
+    .bind(now_iso)
+    .bind(reason)
     .execute(pool)
     .await?;
     Ok(())
@@ -11872,6 +13540,9 @@ mod tests {
                 last_route_failure_kind: None,
                 cooldown_until: None,
                 consecutive_route_failures: 0,
+                compact_support_status: None,
+                compact_support_observed_at: None,
+                compact_support_reason: None,
                 local_primary_limit: None,
                 local_secondary_limit: None,
                 local_limit_unit: None,
@@ -11994,6 +13665,9 @@ mod tests {
             request_timeout: Duration::from_secs(5),
             pool_upstream_responses_attempt_timeout: Duration::from_secs(
                 DEFAULT_POOL_UPSTREAM_RESPONSES_ATTEMPT_TIMEOUT_SECS,
+            ),
+            pool_upstream_responses_total_timeout: Duration::from_secs(
+                DEFAULT_POOL_UPSTREAM_RESPONSES_TOTAL_TIMEOUT_SECS,
             ),
             openai_proxy_handshake_timeout: Duration::from_secs(
                 DEFAULT_OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS,
@@ -12425,6 +14099,32 @@ mod tests {
         .fetch_one(pool)
         .await
         .expect("insert syncable oauth account")
+    }
+
+    async fn spawn_usage_snapshot_server(
+        status: StatusCode,
+        body: serde_json::Value,
+    ) -> (String, JoinHandle<()>) {
+        async fn handler(
+            State((status, body)): State<(StatusCode, Arc<String>)>,
+        ) -> (StatusCode, String) {
+            (status, (*body).clone())
+        }
+
+        let app = Router::new()
+            .route("/backend-api/wham/usage", get(handler))
+            .with_state((status, Arc::new(body.to_string())));
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind usage snapshot server");
+        let addr = listener.local_addr().expect("usage snapshot server addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve usage snapshot server");
+        });
+
+        (format!("http://{addr}/backend-api"), server)
     }
 
     #[derive(Clone)]
@@ -12995,6 +14695,138 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn queued_maintenance_sync_revalidates_due_window_before_execution() {
+        async fn handler(State(requests): State<Arc<AtomicUsize>>) -> (StatusCode, String) {
+            requests.fetch_add(1, Ordering::SeqCst);
+            (
+                StatusCode::OK,
+                json!({
+                    "planType": "team",
+                    "rateLimit": {
+                        "primaryWindow": {
+                            "usedPercent": 8,
+                            "windowDurationMins": 300,
+                            "resetsAt": 1771322400
+                        },
+                        "secondaryWindow": {
+                            "usedPercent": 8,
+                            "windowDurationMins": 10080,
+                            "resetsAt": 1771927200
+                        }
+                    }
+                })
+                .to_string(),
+            )
+        }
+
+        let requests = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .route("/backend-api/wham/usage", get(handler))
+            .with_state(requests.clone());
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind usage server");
+        let addr = listener.local_addr().expect("usage server addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve usage server");
+        });
+
+        let state = test_app_state_with_usage_base_and_parallelism(
+            &format!("http://{addr}/backend-api"),
+            1,
+        )
+        .await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Queued Revalidation OAuth",
+            "queued-revalidation@example.com",
+            "org_queued_revalidation",
+            "user_queued_revalidation",
+        )
+        .await;
+        insert_limit_sample_with_usage(
+            &state.pool,
+            account_id,
+            "2026-03-23T11:00:00Z",
+            Some(12.0),
+            Some(10.0),
+        )
+        .await;
+
+        let due_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(10));
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET last_synced_at = ?2,
+                last_successful_sync_at = ?2
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .bind(&due_at)
+        .execute(&state.pool)
+        .await
+        .expect("seed due sync time");
+
+        let held_slot = state
+            .upstream_accounts
+            .account_ops
+            .maintenance_slots
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("hold maintenance slot");
+        assert_eq!(
+            state
+                .upstream_accounts
+                .account_ops
+                .dispatch_maintenance_sync(
+                    state.clone(),
+                    MaintenanceDispatchPlan {
+                        account_id,
+                        tier: MaintenanceTier::Priority,
+                        sync_interval_secs: 300,
+                    },
+                )
+                .expect("queue maintenance plan"),
+            MaintenanceQueueOutcome::Queued
+        );
+
+        let fresh_sync_at = format_utc_iso(Utc::now());
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET last_synced_at = ?2,
+                last_successful_sync_at = ?2
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .bind(&fresh_sync_at)
+        .execute(&state.pool)
+        .await
+        .expect("refresh sync time before queued maintenance executes");
+
+        drop(held_slot);
+        state.upstream_accounts.drain_background_tasks().await;
+
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            0,
+            "queued maintenance should skip once a newer sync makes the plan stale"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn maintenance_dedupe_flag_resets_after_panicking_job() {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
         let account_id = 777_i64;
@@ -13035,6 +14867,291 @@ mod tests {
             .expect("second maintenance command should be accepted");
         assert!(matches!(second, AccountSubmitOutcome::Completed(())));
         assert_eq!(state.upstream_accounts.account_ops.actor_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn update_pool_routing_settings_allows_maintenance_only_patch() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        save_pool_routing_api_key(&state.pool, crypto_key, "pool-live-key")
+            .await
+            .expect("seed pool api key");
+
+        let payload: UpdatePoolRoutingSettingsRequest = serde_json::from_value(json!({
+            "maintenance": {
+                "secondarySyncIntervalSecs": 2400
+            }
+        }))
+        .expect("deserialize maintenance patch");
+        let Json(response) =
+            update_pool_routing_settings(State(state.clone()), HeaderMap::new(), Json(payload))
+                .await
+                .expect("update routing settings");
+        let expected_mask = mask_api_key("pool-live-key");
+
+        assert!(response.api_key_configured);
+        assert_eq!(
+            response.masked_api_key.as_deref(),
+            Some(expected_mask.as_str())
+        );
+        assert_eq!(response.maintenance.primary_sync_interval_secs, 300);
+        assert_eq!(response.maintenance.secondary_sync_interval_secs, 2400);
+        assert_eq!(response.maintenance.priority_available_account_cap, 100);
+
+        let stored = load_pool_routing_settings(&state.pool)
+            .await
+            .expect("load routing settings");
+        assert!(stored.encrypted_api_key.is_some());
+        assert_eq!(stored.secondary_sync_interval_secs, Some(2400));
+    }
+
+    #[test]
+    fn resolve_due_maintenance_dispatch_plans_prioritizes_forced_accounts_and_overflow() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 3, 23, 12, 0, 0)
+            .single()
+            .expect("valid time");
+        let settings = PoolRoutingMaintenanceSettings {
+            primary_sync_interval_secs: 300,
+            secondary_sync_interval_secs: 1800,
+            priority_available_account_cap: 1,
+        };
+        let refresh_lead_time = Duration::from_secs(15 * 60);
+
+        let plans = resolve_due_maintenance_dispatch_plans(
+            vec![
+                MaintenanceCandidateRow {
+                    id: 1,
+                    status: UPSTREAM_ACCOUNT_STATUS_ACTIVE.to_string(),
+                    last_synced_at: Some("2026-03-23T11:40:00Z".to_string()),
+                    last_error_at: None,
+                    token_expires_at: Some("2026-04-23T12:00:00Z".to_string()),
+                    primary_used_percent: Some(15.0),
+                    secondary_used_percent: Some(10.0),
+                },
+                MaintenanceCandidateRow {
+                    id: 2,
+                    status: UPSTREAM_ACCOUNT_STATUS_ACTIVE.to_string(),
+                    last_synced_at: Some("2026-03-23T11:20:00Z".to_string()),
+                    last_error_at: None,
+                    token_expires_at: Some("2026-04-23T12:00:00Z".to_string()),
+                    primary_used_percent: Some(12.0),
+                    secondary_used_percent: Some(22.0),
+                },
+                MaintenanceCandidateRow {
+                    id: 3,
+                    status: UPSTREAM_ACCOUNT_STATUS_ERROR.to_string(),
+                    last_synced_at: None,
+                    last_error_at: Some("2026-03-23T11:58:30Z".to_string()),
+                    token_expires_at: Some("2026-04-23T12:00:00Z".to_string()),
+                    primary_used_percent: Some(8.0),
+                    secondary_used_percent: Some(8.0),
+                },
+                MaintenanceCandidateRow {
+                    id: 4,
+                    status: UPSTREAM_ACCOUNT_STATUS_ERROR.to_string(),
+                    last_synced_at: None,
+                    last_error_at: Some("2026-03-23T11:50:00Z".to_string()),
+                    token_expires_at: Some("2026-04-23T12:00:00Z".to_string()),
+                    primary_used_percent: Some(9.0),
+                    secondary_used_percent: Some(9.0),
+                },
+                MaintenanceCandidateRow {
+                    id: 5,
+                    status: UPSTREAM_ACCOUNT_STATUS_ACTIVE.to_string(),
+                    last_synced_at: Some("2026-03-23T11:50:00Z".to_string()),
+                    last_error_at: None,
+                    token_expires_at: Some("2026-04-23T12:00:00Z".to_string()),
+                    primary_used_percent: Some(5.0),
+                    secondary_used_percent: None,
+                },
+                MaintenanceCandidateRow {
+                    id: 6,
+                    status: UPSTREAM_ACCOUNT_STATUS_ACTIVE.to_string(),
+                    last_synced_at: Some("2026-03-23T11:54:00Z".to_string()),
+                    last_error_at: None,
+                    token_expires_at: Some("2026-03-23T12:10:00Z".to_string()),
+                    primary_used_percent: Some(4.0),
+                    secondary_used_percent: Some(4.0),
+                },
+            ],
+            settings,
+            refresh_lead_time,
+            now,
+        );
+
+        let plan_map = plans
+            .into_iter()
+            .map(|plan| (plan.account_id, (plan.tier, plan.sync_interval_secs)))
+            .collect::<HashMap<_, _>>();
+        assert_eq!(plan_map.get(&1), Some(&(MaintenanceTier::Priority, 300)));
+        assert_eq!(plan_map.get(&2), Some(&(MaintenanceTier::Secondary, 1800)));
+        assert_eq!(plan_map.get(&4), Some(&(MaintenanceTier::Priority, 300)));
+        assert_eq!(plan_map.get(&5), Some(&(MaintenanceTier::Priority, 300)));
+        assert_eq!(plan_map.get(&6), Some(&(MaintenanceTier::Priority, 300)));
+        assert!(!plan_map.contains_key(&3));
+    }
+
+    #[test]
+    fn resolve_due_maintenance_dispatch_plans_keeps_refresh_due_accounts_on_primary_cadence() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 3, 23, 12, 0, 0)
+            .single()
+            .expect("valid time");
+        let settings = PoolRoutingMaintenanceSettings {
+            primary_sync_interval_secs: 300,
+            secondary_sync_interval_secs: 1800,
+            priority_available_account_cap: 100,
+        };
+
+        let plans = resolve_due_maintenance_dispatch_plans(
+            vec![MaintenanceCandidateRow {
+                id: 7,
+                status: UPSTREAM_ACCOUNT_STATUS_ACTIVE.to_string(),
+                last_synced_at: Some("2026-03-23T11:59:00Z".to_string()),
+                last_error_at: None,
+                token_expires_at: Some("2026-03-23T12:10:00Z".to_string()),
+                primary_used_percent: Some(6.0),
+                secondary_used_percent: Some(6.0),
+            }],
+            settings,
+            Duration::from_secs(15 * 60),
+            now,
+        );
+
+        assert!(
+            plans.is_empty(),
+            "refresh-due accounts should stay on the configured primary cadence until the interval elapses"
+        );
+    }
+
+    #[tokio::test]
+    async fn maintenance_pass_skips_secondary_overflow_accounts_until_secondary_interval() {
+        async fn handler(State(requests): State<Arc<AtomicUsize>>) -> (StatusCode, String) {
+            requests.fetch_add(1, Ordering::SeqCst);
+            (
+                StatusCode::OK,
+                json!({
+                    "planType": "team",
+                    "rateLimit": {
+                        "primaryWindow": {
+                            "usedPercent": 8,
+                            "windowDurationMins": 300,
+                            "resetsAt": 1771322400
+                        },
+                        "secondaryWindow": {
+                            "usedPercent": 8,
+                            "windowDurationMins": 10080,
+                            "resetsAt": 1771927200
+                        }
+                    }
+                })
+                .to_string(),
+            )
+        }
+
+        let requests = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .route("/backend-api/wham/usage", get(handler))
+            .with_state(requests.clone());
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind usage server");
+        let addr = listener.local_addr().expect("usage server addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve usage server");
+        });
+
+        let state = test_app_state_with_usage_base(&format!("http://{addr}/backend-api")).await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let priority_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Priority OAuth",
+            "priority@example.com",
+            "org_priority",
+            "user_priority",
+        )
+        .await;
+        let secondary_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Secondary OAuth",
+            "secondary@example.com",
+            "org_secondary",
+            "user_secondary",
+        )
+        .await;
+        save_pool_routing_maintenance_settings(
+            &state.pool,
+            PoolRoutingMaintenanceSettings {
+                primary_sync_interval_secs: 300,
+                secondary_sync_interval_secs: 1800,
+                priority_available_account_cap: 1,
+            },
+        )
+        .await
+        .expect("save maintenance settings");
+        insert_limit_sample_with_usage(
+            &state.pool,
+            priority_account_id,
+            "2026-03-23T11:00:00Z",
+            Some(12.0),
+            Some(10.0),
+        )
+        .await;
+        insert_limit_sample_with_usage(
+            &state.pool,
+            secondary_account_id,
+            "2026-03-23T11:00:00Z",
+            Some(14.0),
+            Some(20.0),
+        )
+        .await;
+        let last_synced_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(10));
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET last_synced_at = ?3,
+                last_successful_sync_at = ?3
+            WHERE id IN (?1, ?2)
+            "#,
+        )
+        .bind(priority_account_id)
+        .bind(secondary_account_id)
+        .bind(&last_synced_at)
+        .execute(&state.pool)
+        .await
+        .expect("seed sync times");
+
+        run_upstream_account_maintenance_once(state.clone())
+            .await
+            .expect("run maintenance pass");
+        timeout(Duration::from_secs(1), async {
+            while requests.load(Ordering::SeqCst) < 1 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("priority maintenance request should finish");
+        tokio::time::sleep(Duration::from_millis(150)).await;
+
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            1,
+            "overflow secondary account should not sync on the primary interval"
+        );
+        server.abort();
     }
 
     #[tokio::test]
@@ -13228,6 +15345,28 @@ mod tests {
         assert!(row.cooldown_until.is_none());
     }
 
+    #[test]
+    fn classify_pool_account_http_failure_treats_usage_limit_reached_as_quota_exhausted() {
+        let classification = classify_pool_account_http_failure(
+            UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            StatusCode::TOO_MANY_REQUESTS,
+            "pool upstream responded with 429: The usage limit has been reached",
+        );
+
+        assert_eq!(
+            classification.disposition,
+            UpstreamAccountFailureDisposition::HardUnavailable
+        );
+        assert_eq!(
+            classification.reason_code,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
+        );
+        assert_eq!(
+            classification.failure_kind,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
+        );
+    }
+
     async fn insert_limit_sample(
         pool: &SqlitePool,
         account_id: i64,
@@ -13255,6 +15394,37 @@ mod tests {
         .execute(pool)
         .await
         .expect("insert limit sample");
+    }
+
+    async fn insert_limit_sample_with_usage(
+        pool: &SqlitePool,
+        account_id: i64,
+        captured_at: &str,
+        primary_used_percent: Option<f64>,
+        secondary_used_percent: Option<f64>,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_account_limit_samples (
+                account_id, captured_at, limit_id, limit_name, plan_type,
+                primary_used_percent, primary_window_minutes, primary_resets_at,
+                secondary_used_percent, secondary_window_minutes, secondary_resets_at,
+                credits_has_credits, credits_unlimited, credits_balance
+            ) VALUES (
+                ?1, ?2, NULL, NULL, 'team',
+                ?3, 300, NULL,
+                ?4, 10080, NULL,
+                NULL, NULL, NULL
+            )
+            "#,
+        )
+        .bind(account_id)
+        .bind(captured_at)
+        .bind(primary_used_percent)
+        .bind(secondary_used_percent)
+        .execute(pool)
+        .await
+        .expect("insert limit sample with usage");
     }
 
     async fn seed_route_cooldown(
@@ -13291,6 +15461,49 @@ mod tests {
         .expect("seed route cooldown");
     }
 
+    async fn seed_hard_unavailable_route_failure(
+        pool: &SqlitePool,
+        account_id: i64,
+        status: &str,
+        failure_kind: &str,
+        reason_code: &str,
+        http_status: Option<i64>,
+    ) {
+        let now_iso = format_utc_iso(Utc::now());
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET status = ?2,
+                last_error = ?3,
+                last_error_at = ?4,
+                last_route_failure_at = ?4,
+                last_route_failure_kind = ?5,
+                cooldown_until = NULL,
+                consecutive_route_failures = 1,
+                last_action = ?6,
+                last_action_source = ?7,
+                last_action_reason_code = ?8,
+                last_action_reason_message = ?3,
+                last_action_http_status = ?9,
+                last_action_at = ?4,
+                updated_at = ?4
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .bind(status)
+        .bind("seed hard unavailable")
+        .bind(&now_iso)
+        .bind(failure_kind)
+        .bind(UPSTREAM_ACCOUNT_ACTION_ROUTE_HARD_UNAVAILABLE)
+        .bind(UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL)
+        .bind(reason_code)
+        .bind(http_status)
+        .execute(pool)
+        .await
+        .expect("seed hard unavailable");
+    }
+
     #[tokio::test]
     async fn mark_account_sync_success_preserves_route_cooldown_state() {
         let pool = test_pool().await;
@@ -13311,6 +15524,7 @@ mod tests {
             &pool,
             account_id,
             UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MANUAL,
+            SyncSuccessRouteState::PreserveFailureState,
         )
         .await
         .expect("mark sync success");
@@ -13331,6 +15545,43 @@ mod tests {
         assert_eq!(
             after.consecutive_route_failures,
             before.consecutive_route_failures
+        );
+    }
+
+    #[tokio::test]
+    async fn mark_account_sync_success_clears_hard_unavailable_state_when_requested() {
+        let pool = test_pool().await;
+        let account_id = insert_oauth_account(&pool, "Recovered OAuth").await;
+        seed_hard_unavailable_route_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+
+        mark_account_sync_success(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MANUAL,
+            SyncSuccessRouteState::ClearFailureState,
+        )
+        .await
+        .expect("mark sync success");
+
+        let after = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load row after sync success")
+            .expect("row exists after sync success");
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert!(after.last_error.is_none());
+        assert!(after.last_route_failure_kind.is_none());
+        assert!(after.cooldown_until.is_none());
+        assert_eq!(
+            after.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED)
         );
     }
 
@@ -13364,6 +15615,396 @@ mod tests {
         );
         assert!(after.cooldown_until.is_some());
         assert_eq!(after.consecutive_route_failures, 1);
+    }
+
+    #[tokio::test]
+    async fn sync_api_key_account_keeps_hard_unavailable_accounts_blocked() {
+        let pool = test_pool().await;
+        let account_id = insert_api_key_account(&pool, "Blocked API Key").await;
+        seed_hard_unavailable_route_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load api key row")
+            .expect("api key row exists");
+
+        sync_api_key_account(&pool, &row, SyncCause::Manual)
+            .await
+            .expect("sync api key account");
+        let after = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load row after api key sync")
+            .expect("row exists after api key sync");
+
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
+        assert!(after.last_synced_at.is_some());
+        assert!(after.last_successful_sync_at.is_none());
+        assert_eq!(after.last_error.as_deref(), Some("seed hard unavailable"));
+        assert_eq!(
+            after.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_SYNC_RECOVERY_BLOCKED)
+        );
+        assert_eq!(
+            after.last_action_reason_code.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_RECOVERY_UNCONFIRMED_MANUAL_REQUIRED)
+        );
+        assert_eq!(
+            after.last_route_failure_kind.as_deref(),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_api_key_account_clears_stale_manual_recovery_marker_on_active_rows() {
+        let pool = test_pool().await;
+        let account_id = insert_api_key_account(&pool, "Active API Key With Stale Marker").await;
+        seed_hard_unavailable_route_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+        mark_account_sync_success(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
+            SyncSuccessRouteState::PreserveFailureState,
+        )
+        .await
+        .expect("mark legacy sync success");
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load api key row")
+            .expect("api key row exists");
+        assert_eq!(row.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert_eq!(
+            row.last_route_failure_kind.as_deref(),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+        );
+
+        sync_api_key_account(&pool, &row, SyncCause::Maintenance)
+            .await
+            .expect("sync api key account");
+        let after = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load row after api key sync")
+            .expect("row exists after api key sync");
+
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert!(after.last_route_failure_kind.is_none());
+        assert!(after.cooldown_until.is_none());
+        assert_eq!(
+            after.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED)
+        );
+    }
+
+    #[tokio::test]
+    async fn updating_api_key_reactivates_manually_recoverable_account() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let account_id = insert_api_key_account(&state.pool, "Recoverable API Key").await;
+        seed_hard_unavailable_route_failure(
+            &state.pool,
+            account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+
+        state
+            .upstream_accounts
+            .account_ops
+            .run_update_account(
+                state.clone(),
+                account_id,
+                UpdateUpstreamAccountRequest {
+                    display_name: None,
+                    group_name: None,
+                    note: None,
+                    group_note: None,
+                    upstream_base_url: OptionalField::Missing,
+                    enabled: None,
+                    is_mother: None,
+                    api_key: Some("sk-live-new".to_string()),
+                    local_primary_limit: None,
+                    local_secondary_limit: None,
+                    local_limit_unit: None,
+                    tag_ids: None,
+                },
+            )
+            .await
+            .expect("update api key account");
+
+        let after = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load row after api key update")
+            .expect("row exists after api key update");
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert!(after.last_error.is_none());
+        assert!(after.last_route_failure_kind.is_none());
+        assert_eq!(
+            after.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_ACCOUNT_UPDATED)
+        );
+    }
+
+    #[tokio::test]
+    async fn oauth_sync_keeps_quota_exhausted_accounts_blocked_until_snapshot_recovers() {
+        let (base_url, server) = spawn_usage_snapshot_server(
+            StatusCode::OK,
+            json!({
+                "planType": "team",
+                "rateLimit": {
+                    "primaryWindow": {
+                        "usedPercent": 100,
+                        "windowDurationMins": 300,
+                        "resetsAt": 1771322400
+                    }
+                }
+            }),
+        )
+        .await;
+        let state = test_app_state_with_usage_base(&base_url).await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Exhausted OAuth",
+            "exhausted@example.com",
+            "org_exhausted",
+            "user_exhausted",
+        )
+        .await;
+        seed_hard_unavailable_route_failure(
+            &state.pool,
+            account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+        let row = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth row")
+            .expect("oauth row exists");
+
+        sync_oauth_account(&state, &row, SyncCause::Manual)
+            .await
+            .expect("sync oauth account");
+
+        let after = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth row after sync")
+            .expect("oauth row exists after sync");
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
+        assert!(after.last_synced_at.is_some());
+        assert!(after.last_successful_sync_at.is_none());
+        assert_eq!(after.last_error.as_deref(), Some("seed hard unavailable"));
+        assert_eq!(
+            after.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_SYNC_RECOVERY_BLOCKED)
+        );
+        assert_eq!(
+            after.last_action_reason_code.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED)
+        );
+        assert_eq!(
+            after.last_route_failure_kind.as_deref(),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn oauth_sync_demotes_active_stale_quota_marker_when_snapshot_is_still_exhausted() {
+        let (base_url, server) = spawn_usage_snapshot_server(
+            StatusCode::OK,
+            json!({
+                "planType": "team",
+                "rateLimit": {
+                    "primaryWindow": {
+                        "usedPercent": 100,
+                        "windowDurationMins": 300,
+                        "resetsAt": 1771322400
+                    }
+                }
+            }),
+        )
+        .await;
+        let state = test_app_state_with_usage_base(&base_url).await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Legacy Active Exhausted OAuth",
+            "legacy-exhausted@example.com",
+            "org_legacy_exhausted",
+            "user_legacy_exhausted",
+        )
+        .await;
+        seed_hard_unavailable_route_failure(
+            &state.pool,
+            account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+        mark_account_sync_success(
+            &state.pool,
+            account_id,
+            UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
+            SyncSuccessRouteState::PreserveFailureState,
+        )
+        .await
+        .expect("mark legacy sync success");
+        let row = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth row")
+            .expect("oauth row exists");
+        assert_eq!(row.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert_eq!(
+            row.last_route_failure_kind.as_deref(),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+        );
+
+        sync_oauth_account(&state, &row, SyncCause::Maintenance)
+            .await
+            .expect("sync oauth account");
+
+        let after = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth row after sync")
+            .expect("oauth row exists after sync");
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
+        assert_eq!(
+            after.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_SYNC_RECOVERY_BLOCKED)
+        );
+        assert_eq!(
+            after.last_route_failure_kind.as_deref(),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn oauth_sync_reactivates_quota_exhausted_account_once_snapshot_recovers() {
+        let (base_url, server) = spawn_usage_snapshot_server(
+            StatusCode::OK,
+            json!({
+                "planType": "team",
+                "rateLimit": {
+                    "primaryWindow": {
+                        "usedPercent": 42,
+                        "windowDurationMins": 300,
+                        "resetsAt": 1771322400
+                    }
+                }
+            }),
+        )
+        .await;
+        let state = test_app_state_with_usage_base(&base_url).await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Recovered OAuth Sync",
+            "recovered@example.com",
+            "org_recovered",
+            "user_recovered",
+        )
+        .await;
+        seed_hard_unavailable_route_failure(
+            &state.pool,
+            account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+        let row = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth row")
+            .expect("oauth row exists");
+
+        sync_oauth_account(&state, &row, SyncCause::Manual)
+            .await
+            .expect("sync oauth account");
+
+        let after = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth row after recovery")
+            .expect("oauth row exists after recovery");
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert!(after.last_error.is_none());
+        assert!(after.last_route_failure_kind.is_none());
+        assert!(after.last_successful_sync_at.is_some());
+        assert_eq!(
+            after.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED)
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn resolver_keeps_quota_exhausted_accounts_in_rate_limited_terminal_state_after_sync_block()
+     {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let account_id = insert_api_key_account(&state.pool, "Quota Exhausted Resolver").await;
+        seed_hard_unavailable_route_failure(
+            &state.pool,
+            account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+        record_account_sync_recovery_blocked(
+            &state.pool,
+            account_id,
+            UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            UPSTREAM_ACCOUNT_ACTION_REASON_RECOVERY_UNCONFIRMED_MANUAL_REQUIRED,
+            "manual recovery required because API key sync cannot verify whether the upstream usage limit has reset",
+            Some("seed hard unavailable"),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED),
+        )
+        .await
+        .expect("record blocked recovery");
+
+        let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
+            .await
+            .expect("resolve pool account");
+        assert!(matches!(resolution, PoolAccountResolution::RateLimited));
     }
 
     #[tokio::test]
@@ -14543,6 +17184,93 @@ mod tests {
     }
 
     #[test]
+    fn parse_mailbox_code_supports_localized_subjects() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_zh_subject".to_string(),
+            subject: Some("你的 OpenAI 代码为 438211".to_string()),
+            content: Some("如果这不是你本人操作，请重置密码。".to_string()),
+            html: None,
+            received_at: Some("2026-03-23T23:48:33Z".to_string()),
+        };
+
+        let parsed = parse_mailbox_code(&detail).expect("localized subject code");
+        assert_eq!(parsed.value, "438211");
+        assert_eq!(parsed.source, "subject");
+    }
+
+    #[test]
+    fn parse_mailbox_code_supports_localized_html_and_fullwidth_digits() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_zh_html".to_string(),
+            subject: Some("安全提醒".to_string()),
+            content: None,
+            html: Some(
+                "<div>OpenAI</div><p>输入此临时验证码以继续：</p><strong>４３８２１１</strong>"
+                    .to_string(),
+            ),
+            received_at: Some("2026-03-24T00:00:00Z".to_string()),
+        };
+
+        let parsed = parse_mailbox_code(&detail).expect("localized html code");
+        assert_eq!(parsed.value, "438211");
+        assert_eq!(parsed.source, "html");
+    }
+
+    #[test]
+    fn parse_mailbox_code_prefers_digits_after_marker() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_order_and_code".to_string(),
+            subject: Some("OpenAI order update".to_string()),
+            content: Some("Order 1234. Your verification code is 567890.".to_string()),
+            html: None,
+            received_at: Some("2026-03-24T00:05:30Z".to_string()),
+        };
+
+        let parsed = parse_mailbox_code(&detail).expect("verification code");
+        assert_eq!(parsed.value, "567890");
+        assert_eq!(parsed.source, "content");
+    }
+
+    #[test]
+    fn parse_mailbox_code_rejects_weak_subject_match_without_local_brand() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_weak_subject_without_local_brand".to_string(),
+            subject: Some("Your code is 123456".to_string()),
+            content: Some("OpenAI account activity summary".to_string()),
+            html: None,
+            received_at: Some("2026-03-24T00:05:45Z".to_string()),
+        };
+
+        assert!(parse_mailbox_code(&detail).is_none());
+    }
+
+    #[test]
+    fn parse_mailbox_code_rejects_strong_subject_match_without_brand() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_strong_subject_without_brand".to_string(),
+            subject: Some("验证码 123456".to_string()),
+            content: Some("请在十分钟内完成验证。".to_string()),
+            html: None,
+            received_at: Some("2026-03-24T00:05:50Z".to_string()),
+        };
+
+        assert!(parse_mailbox_code(&detail).is_none());
+    }
+
+    #[test]
+    fn parse_mailbox_code_rejects_unrelated_numbers_without_code_semantics() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_negative_code".to_string(),
+            subject: Some("OpenAI receipt 438211".to_string()),
+            content: Some("Invoice total: 23.00 USD".to_string()),
+            html: None,
+            received_at: Some("2026-03-24T00:05:00Z".to_string()),
+        };
+
+        assert!(parse_mailbox_code(&detail).is_none());
+    }
+
+    #[test]
     fn parse_mailbox_invite_extracts_workspace_link() {
         let detail = MoeMailMessageDetail {
             id: "msg_3".to_string(),
@@ -14561,6 +17289,146 @@ mod tests {
             "https://chatgpt.com/workspace/invite/abc123"
         );
         assert_eq!(parsed.copy_label, "invite-link");
+    }
+
+    #[test]
+    fn parse_mailbox_invite_supports_localized_templates() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_zh_invite".to_string(),
+            subject: Some("Alice 邀请你加入 OpenAI 工作区".to_string()),
+            content: Some("请接受邀请：https://chatgpt.com/workspace/invite/abc123".to_string()),
+            html: None,
+            received_at: Some("2026-03-24T00:06:00Z".to_string()),
+        };
+
+        let parsed = parse_mailbox_invite(&detail).expect("localized invite");
+        assert_eq!(parsed.subject, "Alice 邀请你加入 OpenAI 工作区");
+        assert_eq!(
+            parsed.copy_value,
+            "https://chatgpt.com/workspace/invite/abc123"
+        );
+    }
+
+    #[test]
+    fn parse_mailbox_invite_accepts_body_only_workspace_invites() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_body_only_invite".to_string(),
+            subject: Some("OpenAI workspace update".to_string()),
+            content: Some(
+                "请接受邀请并加入工作区：https://chatgpt.com/workspace/invite/accept?workspace=ws_789"
+                    .to_string(),
+            ),
+            html: None,
+            received_at: Some("2026-03-24T00:06:30Z".to_string()),
+        };
+
+        let parsed = parse_mailbox_invite(&detail).expect("body invite");
+        assert_eq!(
+            parsed.copy_value,
+            "https://chatgpt.com/workspace/invite/accept?workspace=ws_789"
+        );
+    }
+
+    #[test]
+    fn parse_mailbox_invite_accepts_query_driven_cta_links() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_query_invite".to_string(),
+            subject: Some("Alice has invited you to a workspace".to_string()),
+            content: Some(
+                "Open your invite: https://chatgpt.com/workspace?invite=abc123".to_string(),
+            ),
+            html: None,
+            received_at: Some("2026-03-24T00:06:45Z".to_string()),
+        };
+
+        let parsed = parse_mailbox_invite(&detail).expect("query invite");
+        assert_eq!(
+            parsed.copy_value,
+            "https://chatgpt.com/workspace?invite=abc123"
+        );
+    }
+
+    #[test]
+    fn parse_mailbox_invite_accepts_body_only_invites_without_workspace_keyword() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_body_only_plain_invite".to_string(),
+            subject: Some("OpenAI account notice".to_string()),
+            content: Some("Accept invitation: https://chatgpt.com/invite/abc123".to_string()),
+            html: None,
+            received_at: Some("2026-03-24T00:06:50Z".to_string()),
+        };
+
+        let parsed = parse_mailbox_invite(&detail).expect("body invite without workspace");
+        assert_eq!(parsed.copy_value, "https://chatgpt.com/invite/abc123");
+    }
+
+    #[test]
+    fn parse_mailbox_invite_accepts_redirect_wrapped_brand_invites() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_redirect_wrapped_invite".to_string(),
+            subject: Some("Alex has invited you to a workspace".to_string()),
+            content: Some(
+                "Accept invitation: https://click.example.com/track?target=https%3A%2F%2Fchatgpt.com%2Fworkspace%2Finvite%2Fabc123".to_string(),
+            ),
+            html: None,
+            received_at: Some("2026-03-24T00:07:10Z".to_string()),
+        };
+
+        let parsed = parse_mailbox_invite(&detail).expect("redirect wrapped invite");
+        assert_eq!(
+            parsed.copy_value,
+            "https://chatgpt.com/workspace/invite/abc123"
+        );
+    }
+
+    #[test]
+    fn parse_mailbox_invite_rejects_non_invite_workspace_links() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_negative_invite".to_string(),
+            subject: Some("OpenAI workspace digest".to_string()),
+            content: Some("Workspace docs: https://chatgpt.com/workspace".to_string()),
+            html: None,
+            received_at: Some("2026-03-24T00:07:00Z".to_string()),
+        };
+
+        assert!(parse_mailbox_invite(&detail).is_none());
+    }
+
+    #[test]
+    fn parse_mailbox_invite_rejects_help_articles_about_accepting_invites() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_help_article".to_string(),
+            subject: Some("OpenAI workspace help".to_string()),
+            content: Some(
+                "Need help to accept invitation to your workspace? Read https://help.openai.com/en/articles/12345-accept-invitation-to-workspace"
+                    .to_string(),
+            ),
+            html: None,
+            received_at: Some("2026-03-24T00:07:30Z".to_string()),
+        };
+
+        assert!(parse_mailbox_invite(&detail).is_none());
+    }
+
+    #[test]
+    fn parse_mailbox_invite_rejects_generic_workspace_url_even_with_invite_subject() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_negative_workspace_home".to_string(),
+            subject: Some("Alice has invited you to a workspace".to_string()),
+            content: Some("Open workspace: https://chatgpt.com/workspace".to_string()),
+            html: None,
+            received_at: Some("2026-03-24T00:08:00Z".to_string()),
+        };
+
+        assert!(parse_mailbox_invite(&detail).is_none());
+    }
+
+    #[test]
+    fn normalize_mailbox_text_converts_fullwidth_digits_and_collapses_whitespace() {
+        assert_eq!(
+            normalize_mailbox_text("  OpenAI　验证码：４３８２１１ \n 下一步  "),
+            "openai 验证码:438211 下一步"
+        );
     }
 
     #[test]

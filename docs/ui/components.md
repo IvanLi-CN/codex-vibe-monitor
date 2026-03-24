@@ -13,6 +13,7 @@
 - `web/src/components/ui/alert.tsx`：`default / info / success / warning / error` 五类提示面板。
 - `web/src/components/ui/switch.tsx`：布尔开关，`checked` 态使用 `primary`，`unchecked` 态停留在 `base-300`。
 - `web/src/components/ui/dialog.tsx`、`web/src/components/ui/popover.tsx`、`web/src/components/ui/tooltip.tsx`、`web/src/components/ui/info-tooltip.tsx`：浮层与提示类组件。
+- `web/src/components/ui/segmented-control.tsx`：顶部导航与分段切换的共享 primitive family，统一 `compact / default / nav` 三档尺寸与 active helper。
 - `web/src/components/ui/select-field.tsx`：simple dropdown 的唯一公开入口；业务页不得直接组合 `ui/select.tsx` low-level primitives。
 - `web/src/components/ui/filterable-combobox.tsx`：输入+筛选+列表框的组合输入模式。
 - `web/src/components/ui/form-field-feedback.tsx`、`web/src/components/ui/floating-field-error.tsx`：表单标签与错误/说明信息。
@@ -31,6 +32,7 @@
 - `loading`：优先使用 Spinner、占位文案或页面级 skeleton，避免按钮/输入/列表三套不一致的 loading 语义。
 - `error`：优先使用 `Alert`、field-level error 或页面级错误块，不要用纯红字替代完整错误状态。
 - `selected / active`：导航、分段控件、选项列表都通过边框 + 背景 + 文字强调三件套表达，不能只依靠颜色微差。
+- 顶部导航和内容区 segmented control 必须共用 `segmented-control.tsx` family；禁止重新引入页面私有 `segment-group` / `segment-button` / `app-nav-item` 分叉。
 
 ### 可访问性最低线
 
@@ -41,6 +43,7 @@
 ## 后续新增规则
 
 - 新增基础组件前，先确认能否通过现有 `web/src/components/ui/` 目录下的 primitive 组合完成；只有当模式被多处复用且现有组合已经开始重复时，才上升为基础组件。
+- 路由驱动的导航如果与 segmented control 共用视觉语言，必须复用 `segmentedControlItemVariants(...)` 这类共享 helper，而不是复制一套新的 active class。
 - 新增按钮、徽标、提示变体时，必须落在既有语义色集合里；不要为了单个页面新增特例 variant。
 - 新增输入控件时，必须同时定义：默认态、focus 态、disabled 态、error 态、空数据或无匹配文案。
 - 所有可复用组件在进入多页面复用前，应至少具备一个 Storybook story 或可替代的独立验证入口。

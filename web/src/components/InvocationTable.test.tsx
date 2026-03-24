@@ -4,7 +4,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { I18nProvider } from '../i18n'
+import { I18nProvider, useTranslation } from '../i18n'
 import type { ApiInvocation } from '../lib/api'
 import type { UpstreamAccountDetail } from '../lib/api'
 import type { BroadcastPayload } from '../lib/api'
@@ -17,6 +17,10 @@ import {
 } from '../lib/invocation'
 import { InvocationTable } from './InvocationTable'
 import { getReasoningEffortTone } from './invocation-table-reasoning'
+import {
+  buildInvocationDetailViewModel,
+  InvocationExpandedDetails,
+} from './invocation-details-shared'
 
 const apiMocks = vi.hoisted(() => ({
   fetchUpstreamAccountDetail: vi.fn<(accountId: number) => Promise<UpstreamAccountDetail>>(),
@@ -111,6 +115,41 @@ async function renderInteractiveTable(records: ApiInvocation[]) {
       </MemoryRouter>,
     )
   })
+}
+
+function InvocationDetailProbe({ record }: { record: ApiInvocation }) {
+  const { t, locale } = useTranslation()
+  const localeTag = locale === 'zh' ? 'zh-CN' : 'en-US'
+  const detailView = buildInvocationDetailViewModel({
+    record,
+    normalizedStatus: (record.status ?? 'unknown').toLowerCase(),
+    t,
+    locale,
+    localeTag,
+    nowMs: Date.now(),
+    numberFormatter: new Intl.NumberFormat(localeTag),
+    currencyFormatter: new Intl.NumberFormat(localeTag, {
+      style: 'currency',
+      currency: 'USD',
+      minimumFractionDigits: 4,
+      maximumFractionDigits: 4,
+    }),
+    renderAccountValue: (accountLabel) => <span>{accountLabel}</span>,
+  })
+
+  return (
+    <InvocationExpandedDetails
+      record={record}
+      detailId="invocation-detail-probe"
+      detailPairs={detailView.detailPairs}
+      timingPairs={detailView.timingPairs}
+      errorMessage={detailView.errorMessage}
+      detailNotice={detailView.detailNotice}
+      size="default"
+      poolAttemptsState={{ attemptsByInvokeId: {}, loadingByInvokeId: {}, errorByInvokeId: {} }}
+      t={t}
+    />
+  )
 }
 
 async function waitForCondition(
@@ -287,6 +326,9 @@ describe('InvocationTable', () => {
         reasoningEffort: 'high',
         totalTokens: 45642,
         cost: 0.0172,
+        tReqReadMs: 3200,
+        tReqParseMs: 20,
+        tUpstreamConnectMs: 456.7,
         tUpstreamTtfbMs: 149.5,
         tTotalMs: 7794.1,
       },
@@ -318,7 +360,7 @@ describe('InvocationTable', () => {
     expect(html).toContain('推理 41')
     expect(html).toContain('推理 —')
     expect(html).toContain('7.79 s')
-    expect(html).toContain('149.5 ms')
+    expect(html).toContain('3.83 s')
     expect(html).toContain('/v1/responses')
     expect(html).toContain('/v1/chat/completions')
     expect(html).toContain('data-reasoning-effort-tone="high"')
@@ -344,6 +386,9 @@ describe('InvocationTable', () => {
         status: 'success',
         totalTokens: 2048,
         cost: 0.0042,
+        tReqReadMs: 31,
+        tReqParseMs: 1,
+        tUpstreamConnectMs: 9330,
         tUpstreamTtfbMs: 118.2,
         tTotalMs: 910.4,
       },
@@ -360,6 +405,9 @@ describe('InvocationTable', () => {
         status: 'success',
         totalTokens: 1024,
         cost: 0.0021,
+        tReqReadMs: 120,
+        tReqParseMs: 18,
+        tUpstreamConnectMs: 512,
         tUpstreamTtfbMs: 96.5,
         tTotalMs: 804.4,
       },
@@ -368,8 +416,9 @@ describe('InvocationTable', () => {
     expect(html).toContain('账号')
     expect(html).toContain('代理')
     expect(html).toContain('用时')
-    expect(html).toContain('首字耗时')
-    expect(html).toContain('首字耗时 / HTTP 压缩')
+    expect(html).toContain('首字总耗时')
+    expect(html).toContain('首字总耗时 / HTTP 压缩')
+    expect(html).toContain('9.48 s')
     expect(html).toContain('pool-account-a')
     expect(html).toContain('反向代理')
     expect(html).toContain('gzip, br')
@@ -484,13 +533,13 @@ describe('InvocationTable', () => {
     const beforeExpandMatches = document.body.textContent?.match(/codex-relay-01/g) ?? []
     expect(beforeExpandMatches.length).toBeGreaterThanOrEqual(1)
 
-    const toggle = Array.from(document.querySelectorAll('button')).find(
-      (button) => button.getAttribute('aria-expanded') === 'false',
-    )
+    const toggle = document.querySelector(
+      '[data-testid="invocation-table-scroll"] button[aria-expanded="false"]',
+    ) as HTMLButtonElement | null
     expect(toggle).toBeTruthy()
 
     await act(async () => {
-      toggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      toggle?.click()
       await Promise.resolve()
       await Promise.resolve()
     })
@@ -501,52 +550,41 @@ describe('InvocationTable', () => {
   })
 
   it('keeps latency summary fields out of request details while preserving stage timings', async () => {
-    await renderInteractiveTable([
-      {
-        id: 34,
-        invokeId: 'invocation-detail-deduped-latency',
-        occurredAt: '2026-03-24T06:48:52Z',
-        createdAt: '2026-03-24T06:48:52Z',
-        source: 'proxy',
-        routeMode: 'pool',
-        upstreamAccountId: 7,
-        upstreamAccountName: 'pool-account-a',
-        proxyDisplayName: 'storybook-proxy',
-        responseContentEncoding: 'gzip',
-        endpoint: '/v1/responses',
-        model: 'gpt-5.4',
-        status: 'success',
-        totalTokens: 2236,
-        cost: 0.0046,
-        tUpstreamConnectMs: 26,
-        tUpstreamTtfbMs: 148.2,
-        tUpstreamStreamMs: 613,
-        tTotalMs: 805,
-      },
-    ])
+    const record: ApiInvocation = {
+      id: 34,
+      invokeId: 'invocation-detail-deduped-latency',
+      occurredAt: '2026-03-24T06:48:52Z',
+      createdAt: '2026-03-24T06:48:52Z',
+      source: 'proxy',
+      routeMode: 'pool',
+      upstreamAccountId: 7,
+      upstreamAccountName: 'pool-account-a',
+      proxyDisplayName: 'storybook-proxy',
+      responseContentEncoding: 'gzip',
+      endpoint: '/v1/responses',
+      model: 'gpt-5.4',
+      status: 'success',
+      totalTokens: 2236,
+      cost: 0.0046,
+      tUpstreamConnectMs: 26,
+      tUpstreamTtfbMs: 148.2,
+      tUpstreamStreamMs: 613,
+      tTotalMs: 805,
+    }
 
-    const toggle = Array.from(document.querySelectorAll('button')).find(
-      (button) => button.getAttribute('aria-expanded') === 'false',
+    const html = renderToStaticMarkup(
+      <I18nProvider>
+        <InvocationDetailProbe record={record} />
+      </I18nProvider>,
     )
-    expect(toggle).toBeTruthy()
 
-    await act(async () => {
-      toggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      await Promise.resolve()
-      await Promise.resolve()
-    })
-
-    const metaSection = document.querySelector('[data-testid="invocation-details-meta"]')
-    const timingsSection = document.querySelector('[data-testid="invocation-details-timings"]')
-
-    expect(metaSection?.textContent).toContain('请求详情')
-    expect(metaSection?.textContent).toContain('HTTP 压缩算法')
-    expect(metaSection?.textContent).not.toContain('用时')
-    expect(metaSection?.textContent).not.toContain('首字耗时')
-
-    expect(timingsSection?.textContent).toContain('阶段耗时')
-    expect(timingsSection?.textContent).toContain('上游首字节')
-    expect(timingsSection?.textContent).toContain('总耗时')
+    expect(html).toContain('请求详情')
+    expect(html).toContain('HTTP 压缩算法')
+    expect(html).not.toContain('>用时<')
+    expect(html).not.toContain('>首字耗时<')
+    expect(html).toContain('阶段耗时')
+    expect(html).toContain('上游首字节')
+    expect(html).toContain('总耗时')
   })
 
   it('lazy-loads pool attempts inside expanded details', async () => {
@@ -1599,12 +1637,57 @@ describe('InvocationTable', () => {
     })
 
     const text = document.body.textContent ?? ''
+    expect(text).toContain('首字总耗时')
+    expect(text).toContain('4.02 s')
     expect(text).toContain('3.45 s')
     expect(text).toContain('0.02 s')
     expect(text).toContain('0.457 s')
     expect(text).toContain('88.8 ms')
     expect(text).toContain('12 s')
     expect(text).toContain('12.35 s')
+  })
+
+  it('shows a non-zero first-response-byte total when upstream first-byte stage is 0 ms', async () => {
+    await renderInteractiveTable([
+      {
+        id: 92,
+        invokeId: 'invocation-zero-upstream-first-byte',
+        occurredAt: '2026-03-23T12:53:05Z',
+        createdAt: '2026-03-23T12:53:05Z',
+        source: 'proxy',
+        proxyDisplayName: 'relay-zero-ttfb',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'success',
+        tReqReadMs: 31,
+        tReqParseMs: 1,
+        tUpstreamConnectMs: 9330,
+        tUpstreamTtfbMs: 0,
+        tUpstreamStreamMs: 10080,
+        tRespParseMs: 1,
+        tPersistMs: 1,
+        tTotalMs: 19460,
+      },
+    ])
+
+    expect(document.body.textContent).toContain('首字总 9.36 s')
+
+    const trigger = Array.from(document.querySelectorAll('button')).find((button) => {
+      const label = button.getAttribute('aria-label')
+      return label === '展开详情' || label === 'Show details'
+    })
+    expect(trigger).toBeTruthy()
+
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    const text = document.body.textContent ?? ''
+    expect(text).toContain('首字总耗时')
+    expect(text).toContain('9.36 s')
+    expect(text).toContain('上游首字节')
+    expect(text).toContain('0.0 ms')
   })
 
   it('ticks running elapsed time on the client while leaving first-byte data empty', async () => {

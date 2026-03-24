@@ -11,6 +11,7 @@ import type {
   UpstreamAccountSummary,
 } from '../lib/api'
 import { invocationStableKey } from '../lib/invocation'
+import { STORYBOOK_FIRST_RESPONSE_BYTE_SEMANTICS_RECORDS } from './invocationRecordsStoryFixtures'
 import AccountPoolLayout from '../pages/account-pool/AccountPoolLayout'
 import UpstreamAccountsPage from '../pages/account-pool/UpstreamAccounts'
 import { SystemNotificationProvider } from './ui/system-notifications'
@@ -1644,6 +1645,31 @@ export const ExpandedDetails: Story = {
     await userEvent.click(toggleButtons[0])
     await expect(canvas.getByText(/请求详情|request details/i)).toBeInTheDocument()
     await expect(canvas.getByText(/HTTP 压缩算法|http compression/i)).toBeInTheDocument()
+  },
+}
+
+export const FirstResponseByteSemantics: Story = {
+  args: {
+    records: STORYBOOK_FIRST_RESPONSE_BYTE_SEMANTICS_RECORDS,
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Focused verification state for the renamed latency field. The first row should show a non-zero `首字总耗时` in the summary even though the stage-level `上游首字节` remains `0.0 ms` in expanded details.',
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByText(/9\.36 s/)).toBeInTheDocument()
+    const toggleButtons = await canvas.findAllByRole('button', { name: /展开详情|show details/i })
+    await userEvent.click(toggleButtons[0])
+    await expect(canvas.getByText(/首字总耗时|first response byte total/i)).toBeInTheDocument()
+    await expect(canvas.getByText(/上游首字节|upstream first byte/i)).toBeInTheDocument()
+    await expect(canvas.getByText(/0\.0 ms/)).toBeInTheDocument()
   },
 }
 

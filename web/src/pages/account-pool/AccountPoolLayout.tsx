@@ -1,6 +1,7 @@
 import { NavLink, Navigate, Outlet, useLocation } from 'react-router-dom'
-import { cn } from '../../lib/utils'
 import { useTranslation } from '../../i18n'
+import { SegmentedControl } from '../../components/ui/segmented-control'
+import { segmentedControlItemVariants } from '../../components/ui/segmented-control.variants'
 
 const items = [
   { to: '/account-pool/upstream-accounts', key: 'accountPool.nav.upstreamAccounts' },
@@ -27,18 +28,19 @@ export default function AccountPoolLayout() {
               <h1 className="section-title text-2xl sm:text-3xl">{t('accountPool.title')}</h1>
               <p className="section-description max-w-2xl">{t('accountPool.description')}</p>
             </div>
-            <div className="segment-group self-start">
+            <SegmentedControl className="self-start">
               {items.map((item) => (
                 <NavLink
                   key={item.to}
                   to={item.to}
-                  className={({ isActive }) => cn('segment-button', isActive && 'font-semibold')}
-                  data-active={location.pathname.startsWith(item.to)}
+                  className={segmentedControlItemVariants({
+                    active: location.pathname.startsWith(item.to),
+                  })}
                 >
                   {t(item.key)}
                 </NavLink>
               ))}
-            </div>
+            </SegmentedControl>
           </div>
         </div>
       </section>

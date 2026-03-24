@@ -30,6 +30,10 @@ import { FloatingFieldError } from "../../components/ui/floating-field-error";
 import { FormFieldFeedback } from "../../components/ui/form-field-feedback";
 import { Input } from "../../components/ui/input";
 import {
+  SegmentedControl,
+  SegmentedControlItem,
+} from "../../components/ui/segmented-control";
+import {
   Popover,
   PopoverAnchor,
   PopoverArrow,
@@ -3541,8 +3545,8 @@ export default function UpstreamAccountCreatePage() {
           ) : null}
 
           {!isRelinking ? (
-            <div
-              className="segment-group self-start"
+            <SegmentedControl
+              className="self-start"
               role="tablist"
               aria-label={t(
                 "accountPool.upstreamAccounts.createPage.tabsLabel",
@@ -3550,13 +3554,11 @@ export default function UpstreamAccountCreatePage() {
             >
               {(["oauth", "batchOauth", "import", "apiKey"] as const).map(
                 (tab) => (
-                  <button
+                  <SegmentedControlItem
                     key={tab}
-                    type="button"
+                    active={activeTab === tab}
                     role="tab"
                     aria-selected={activeTab === tab}
-                    className="segment-button"
-                    data-active={activeTab === tab}
                     onClick={() => handleTabChange(tab)}
                   >
                     {tab === "oauth"
@@ -3572,10 +3574,10 @@ export default function UpstreamAccountCreatePage() {
                           : t(
                               "accountPool.upstreamAccounts.createPage.tabs.apiKey",
                             )}
-                  </button>
+                  </SegmentedControlItem>
                 ),
               )}
-            </div>
+            </SegmentedControl>
           ) : null}
 
           <Card className="border-base-300/80 bg-base-100/72">

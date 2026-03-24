@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { expect, userEvent, within } from 'storybook/test'
 import {
   AccountPoolStoryRouter,
   UpstreamAccountCreatePage,
@@ -36,4 +37,16 @@ export const NameConflict: Story = {
       }}
     />
   ),
+}
+
+export const InvalidUpstreamUrl: Story = {
+  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new?mode=apiKey" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.type(canvas.getByLabelText(/display name/i), 'Gateway Key')
+    await userEvent.type(canvas.getByLabelText(/^api key$/i), 'sk-gateway')
+    await userEvent.type(canvas.getByLabelText(/upstream base url/i), 'proxy.example.com/gateway')
+    await expect(canvas.getByText(/absolute http\(s\) url|http\(s\) 的绝对 url/i)).toBeInTheDocument()
+    await expect(canvas.getByRole('button', { name: /create api key account/i })).toBeDisabled()
+  },
 }

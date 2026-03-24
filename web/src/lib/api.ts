@@ -5,6 +5,11 @@ const API_BASE = rawBase.endsWith("/") ? rawBase.slice(0, -1) : rawBase;
 const FORWARD_PROXY_VALIDATION_TIMEOUT_MS = 5_000;
 const FORWARD_PROXY_SUBSCRIPTION_VALIDATION_TIMEOUT_MS = 60_000;
 const FORWARD_PROXY_HISTORY_DAY_MS = 86_400_000;
+export const DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS = {
+  primarySyncIntervalSecs: 300,
+  secondarySyncIntervalSecs: 1_800,
+  priorityAvailableAccountCap: 100,
+} as const;
 
 type ZonedDateParts = {
   year: number;
@@ -1361,10 +1366,67 @@ function normalizePoolRoutingSettings(
 ): PoolRoutingSettings | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
   if (typeof payload.apiKeyConfigured !== "boolean") return null;
+  const maintenanceRaw =
+    payload.maintenance && typeof payload.maintenance === "object"
+      ? (payload.maintenance as Record<string, unknown>)
+      : null;
+  const maintenance: PoolRoutingMaintenanceSettings = {
+    primarySyncIntervalSecs:
+      typeof maintenanceRaw?.primarySyncIntervalSecs === "number" &&
+      Number.isFinite(maintenanceRaw.primarySyncIntervalSecs)
+        ? Math.trunc(maintenanceRaw.primarySyncIntervalSecs)
+        : DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS.primarySyncIntervalSecs,
+    secondarySyncIntervalSecs:
+      typeof maintenanceRaw?.secondarySyncIntervalSecs === "number" &&
+      Number.isFinite(maintenanceRaw.secondarySyncIntervalSecs)
+        ? Math.trunc(maintenanceRaw.secondarySyncIntervalSecs)
+        : DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS.secondarySyncIntervalSecs,
+    priorityAvailableAccountCap:
+      typeof maintenanceRaw?.priorityAvailableAccountCap === "number" &&
+      Number.isFinite(maintenanceRaw.priorityAvailableAccountCap)
+        ? Math.trunc(maintenanceRaw.priorityAvailableAccountCap)
+        : DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS.priorityAvailableAccountCap,
+  };
   return {
+    writesEnabled:
+      typeof payload.writesEnabled === "boolean" ? payload.writesEnabled : true,
     apiKeyConfigured: payload.apiKeyConfigured,
     maskedApiKey:
       typeof payload.maskedApiKey === "string" ? payload.maskedApiKey : null,
+    maintenance,
+    timeouts: normalizePoolRoutingTimeoutSettings(payload.timeouts),
+  };
+}
+
+function normalizePoolRoutingTimeoutSettings(
+  raw: unknown,
+): PoolRoutingTimeoutSettings {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  return {
+    responsesFirstByteTimeoutSecs:
+      normalizeFiniteNumber(payload.responsesFirstByteTimeoutSecs) ?? 120,
+    compactFirstByteTimeoutSecs:
+      normalizeFiniteNumber(payload.compactFirstByteTimeoutSecs) ??
+      normalizeFiniteNumber(payload.compactUpstreamHandshakeTimeoutSecs) ??
+      300,
+    responsesStreamTimeoutSecs:
+      normalizeFiniteNumber(payload.responsesStreamTimeoutSecs) ?? 300,
+    compactStreamTimeoutSecs:
+      normalizeFiniteNumber(payload.compactStreamTimeoutSecs) ?? 300,
+  };
+}
+
+function normalizeCompactSupportState(raw: unknown): CompactSupportState {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const status =
+    payload.status === "supported" || payload.status === "unsupported"
+      ? payload.status
+      : "unknown";
+  return {
+    status,
+    observedAt:
+      typeof payload.observedAt === "string" ? payload.observedAt : null,
+    reason: typeof payload.reason === "string" ? payload.reason : null,
   };
 }
 
@@ -1463,6 +1525,12 @@ export interface LocalLimitSnapshot {
   limitUnit: string;
 }
 
+export interface CompactSupportState {
+  status: "unknown" | "supported" | "unsupported" | string;
+  observedAt?: string | null;
+  reason?: string | null;
+}
+
 export interface UpstreamAccountHistoryPoint {
   capturedAt: string;
   primaryUsedPercent?: number | null;
@@ -1526,6 +1594,16 @@ export interface UpstreamAccountSummary {
   groupName?: string | null;
   isMother: boolean;
   status: "active" | "syncing" | "needs_reauth" | "error" | "disabled" | string;
+  workStatus?: "working" | "idle" | "rate_limited" | string;
+  enableStatus?: "enabled" | "disabled" | string;
+  healthStatus?:
+    | "normal"
+    | "needs_reauth"
+    | "upstream_unavailable"
+    | "upstream_rejected"
+    | "error_other"
+    | string;
+  syncState?: "idle" | "syncing" | string;
   displayStatus?:
     | "active"
     | "syncing"
@@ -1557,6 +1635,7 @@ export interface UpstreamAccountSummary {
   secondaryWindow?: RateWindowSnapshot | null;
   credits?: CreditsSnapshot | null;
   localLimits?: LocalLimitSnapshot | null;
+  compactSupport?: CompactSupportState | null;
   duplicateInfo?: UpstreamAccountDuplicateInfo | null;
   tags: AccountTagSummary[];
   effectiveRoutingRule: EffectiveRoutingRule;
@@ -1591,12 +1670,36 @@ export interface UpstreamAccountGroupSummary {
 }
 
 export interface PoolRoutingSettings {
+  writesEnabled: boolean;
   apiKeyConfigured: boolean;
   maskedApiKey?: string | null;
+  maintenance?: PoolRoutingMaintenanceSettings;
+  timeouts?: PoolRoutingTimeoutSettings;
+}
+
+export interface PoolRoutingMaintenanceSettings {
+  primarySyncIntervalSecs: number;
+  secondarySyncIntervalSecs: number;
+  priorityAvailableAccountCap: number;
+}
+
+export interface UpdatePoolRoutingMaintenanceSettingsPayload {
+  primarySyncIntervalSecs?: number;
+  secondarySyncIntervalSecs?: number;
+  priorityAvailableAccountCap?: number;
+}
+
+export interface PoolRoutingTimeoutSettings {
+  responsesFirstByteTimeoutSecs: number;
+  compactFirstByteTimeoutSecs: number;
+  responsesStreamTimeoutSecs: number;
+  compactStreamTimeoutSecs: number;
 }
 
 export interface UpdatePoolRoutingSettingsPayload {
   apiKey?: string;
+  maintenance?: UpdatePoolRoutingMaintenanceSettingsPayload;
+  timeouts?: Partial<PoolRoutingTimeoutSettings>;
 }
 
 export interface UpstreamAccountListResponse {
@@ -1615,6 +1718,9 @@ export interface FetchUpstreamAccountsQuery {
   groupSearch?: string;
   groupUngrouped?: boolean;
   status?: string;
+  workStatus?: string;
+  enableStatus?: string;
+  healthStatus?: string;
   page?: number;
   pageSize?: number;
   tagIds?: number[];
@@ -2090,6 +2196,33 @@ function normalizeUpstreamAccountSummary(
   const status = typeof payload.status === "string" ? payload.status : "error";
   const displayStatus =
     typeof payload.displayStatus === "string" ? payload.displayStatus : status;
+  const enableStatus =
+    typeof payload.enableStatus === "string"
+      ? payload.enableStatus
+      : payload.enabled === false || displayStatus === "disabled"
+        ? "disabled"
+        : "enabled";
+  const syncState =
+    typeof payload.syncState === "string"
+      ? payload.syncState
+      : status === "syncing" || displayStatus === "syncing"
+        ? "syncing"
+        : "idle";
+  const healthStatus =
+    typeof payload.healthStatus === "string"
+      ? payload.healthStatus
+      : displayStatus === "needs_reauth" ||
+          displayStatus === "upstream_unavailable" ||
+          displayStatus === "upstream_rejected" ||
+          displayStatus === "error_other"
+        ? displayStatus
+        : status === "needs_reauth"
+          ? "needs_reauth"
+          : status === "error"
+            ? "error_other"
+            : "normal";
+  const workStatus =
+    typeof payload.workStatus === "string" ? payload.workStatus : "idle";
   if (id == null || !displayName || !kind || !provider) return null;
   return {
     id,
@@ -2099,6 +2232,10 @@ function normalizeUpstreamAccountSummary(
     groupName: typeof payload.groupName === "string" ? payload.groupName : null,
     isMother: payload.isMother === true,
     status,
+    workStatus,
+    enableStatus,
+    healthStatus,
+    syncState,
     displayStatus,
     enabled: payload.enabled !== false,
     email: typeof payload.email === "string" ? payload.email : null,
@@ -2152,6 +2289,7 @@ function normalizeUpstreamAccountSummary(
     secondaryWindow: normalizeRateWindowSnapshot(payload.secondaryWindow),
     credits: normalizeCreditsSnapshot(payload.credits),
     localLimits: normalizeLocalLimitSnapshot(payload.localLimits),
+    compactSupport: normalizeCompactSupportState(payload.compactSupport),
     duplicateInfo: normalizeUpstreamAccountDuplicateInfo(payload.duplicateInfo),
     tags: Array.isArray(payload.tags)
       ? payload.tags
@@ -3017,6 +3155,9 @@ export async function fetchUpstreamAccounts(
   if (query?.groupUngrouped != null)
     search.set("groupUngrouped", String(query.groupUngrouped));
   if (query?.status) search.set("status", query.status);
+  if (query?.workStatus) search.set("workStatus", query.workStatus);
+  if (query?.enableStatus) search.set("enableStatus", query.enableStatus);
+  if (query?.healthStatus) search.set("healthStatus", query.healthStatus);
   if (query?.page != null) search.set("page", String(query.page));
   if (query?.pageSize != null) search.set("pageSize", String(query.pageSize));
   for (const tagId of query?.tagIds ?? []) {

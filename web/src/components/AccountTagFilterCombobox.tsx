@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { AppIcon } from './AppIcon'
 import { Button } from './ui/button'
+import { formControlSizeVariants, type FormControlSize } from './ui/form-control'
 import { Command, CommandGroup, CommandInput, CommandItem, CommandList, CommandSeparator } from './ui/command'
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
 import type { TagSummary } from '../lib/api'
@@ -20,6 +21,7 @@ interface AccountTagFilterComboboxProps {
   ariaLabel?: string
   className?: string
   triggerClassName?: string
+  size?: FormControlSize
 }
 
 function normalizeTags(tags: TagSummary[]) {
@@ -53,6 +55,7 @@ export function AccountTagFilterCombobox({
   ariaLabel,
   className,
   triggerClassName,
+  size = 'default',
 }: AccountTagFilterComboboxProps) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -126,8 +129,9 @@ export function AccountTagFilterCombobox({
             aria-label={ariaLabel}
             disabled={disabled}
             className={cn(
-              'h-10 w-full justify-between rounded-lg bg-base-100 px-3 text-left font-normal hover:bg-base-100',
+              'w-full justify-between bg-base-100 text-left font-normal hover:bg-base-100',
               'border-base-300 text-base-content shadow-sm',
+              formControlSizeVariants({ size }),
               selectedTags.length === 0 && 'text-base-content/45',
               triggerClassName,
             )}

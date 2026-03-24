@@ -20,6 +20,7 @@ import { FormFieldFeedback } from '../../components/ui/form-field-feedback'
 import { Input } from '../../components/ui/input'
 import { Popover, PopoverArrow, PopoverContent, PopoverTrigger } from '../../components/ui/popover'
 import { OverlayHostProvider } from '../../components/ui/overlay-host'
+import { formFieldSpanVariants } from '../../components/ui/form-control'
 import { SelectField } from '../../components/ui/select-field'
 import { MotherAccountBadge, MotherAccountToggle } from '../../components/MotherAccountToggle'
 import { Spinner } from '../../components/ui/spinner'
@@ -40,10 +41,14 @@ import type {
   BulkUpstreamAccountActionPayload,
   BulkUpstreamAccountSyncCounts,
   BulkUpstreamAccountSyncSnapshot,
+  PoolRoutingMaintenanceSettings,
+  CompactSupportState,
+  PoolRoutingTimeoutSettings,
   UpstreamAccountDetail,
   UpstreamAccountDuplicateInfo,
   UpstreamAccountSummary,
 } from '../../lib/api'
+import { DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS } from '../../lib/api'
 import {
   createBulkUpstreamAccountSyncJobEventSource,
   normalizeBulkUpstreamAccountSyncFailedEventPayload,
@@ -59,8 +64,9 @@ import {
 import { validateUpstreamBaseUrl } from '../../lib/upstreamBaseUrl'
 import { generatePoolRoutingKey } from '../../lib/poolRouting'
 import { applyMotherUpdateToItems } from '../../lib/upstreamMother'
+import { upstreamPlanBadgeRecipe } from '../../lib/upstreamAccountBadges'
 import { cn } from '../../lib/utils'
-import { useTranslation } from '../../i18n'
+import { useTranslation, type TranslationValues } from '../../i18n'
 
 type AccountDraft = {
   displayName: string
@@ -74,6 +80,26 @@ type AccountDraft = {
   localLimitUnit: string
   apiKey: string
 }
+
+type RoutingDraft = {
+  apiKey: string
+  maskedApiKey: string | null
+  primarySyncIntervalSecs: string
+  secondarySyncIntervalSecs: string
+  priorityAvailableAccountCap: string
+  responsesFirstByteTimeoutSecs: string
+  compactFirstByteTimeoutSecs: string
+  responsesStreamTimeoutSecs: string
+  compactStreamTimeoutSecs: string
+}
+
+const DEFAULT_ROUTING_TIMEOUTS: PoolRoutingTimeoutSettings = {
+  responsesFirstByteTimeoutSecs: 120,
+  compactFirstByteTimeoutSecs: 300,
+  responsesStreamTimeoutSecs: 300,
+  compactStreamTimeoutSecs: 300,
+}
+const POSITIVE_INTEGER_PATTERN = /^[1-9]\d*$/
 
 const STICKY_CONVERSATION_LIMIT_OPTIONS = [20, 50, 100] as const
 
@@ -196,25 +222,125 @@ function buildDraft(detail: UpstreamAccountDetail | null): AccountDraft {
   }
 }
 
-function buildRoutingDraft(maskedApiKey?: string | null) {
+function resolveRoutingMaintenance(
+  maintenance?: PoolRoutingMaintenanceSettings | null,
+): PoolRoutingMaintenanceSettings {
   return {
-    apiKey: '',
-    maskedApiKey: maskedApiKey ?? null,
+    primarySyncIntervalSecs:
+      maintenance?.primarySyncIntervalSecs ??
+      DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS.primarySyncIntervalSecs,
+    secondarySyncIntervalSecs:
+      maintenance?.secondarySyncIntervalSecs ??
+      DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS.secondarySyncIntervalSecs,
+    priorityAvailableAccountCap:
+      maintenance?.priorityAvailableAccountCap ??
+      DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS.priorityAvailableAccountCap,
   }
 }
 
-function statusVariant(status: string): 'success' | 'warning' | 'error' | 'secondary' {
-  if (status === 'active') return 'success'
-  if (status === 'syncing') return 'warning'
+function buildRoutingDraft(
+  routing?: {
+    maskedApiKey?: string | null
+    maintenance?: PoolRoutingMaintenanceSettings | null
+    timeouts?: PoolRoutingTimeoutSettings | null
+  } | null,
+): RoutingDraft {
+  const maintenance = resolveRoutingMaintenance(routing?.maintenance)
+  const timeouts = routing?.timeouts ?? DEFAULT_ROUTING_TIMEOUTS
+  return {
+    apiKey: '',
+    maskedApiKey: routing?.maskedApiKey ?? null,
+    primarySyncIntervalSecs: String(maintenance.primarySyncIntervalSecs),
+    secondarySyncIntervalSecs: String(maintenance.secondarySyncIntervalSecs),
+    priorityAvailableAccountCap: String(maintenance.priorityAvailableAccountCap),
+    responsesFirstByteTimeoutSecs: String(timeouts.responsesFirstByteTimeoutSecs),
+    compactFirstByteTimeoutSecs: String(timeouts.compactFirstByteTimeoutSecs),
+    responsesStreamTimeoutSecs: String(timeouts.responsesStreamTimeoutSecs),
+    compactStreamTimeoutSecs: String(timeouts.compactStreamTimeoutSecs),
+  }
+}
+
+type AccountStatusSnapshot = Pick<
+  UpstreamAccountSummary,
+  'status' | 'displayStatus' | 'enabled' | 'workStatus' | 'enableStatus' | 'healthStatus' | 'syncState'
+>
+
+function accountEnableStatus(item?: AccountStatusSnapshot | null) {
+  if (item?.enableStatus) return item.enableStatus
+  if (item?.enabled === false || item?.displayStatus === 'disabled') return 'disabled'
+  return 'enabled'
+}
+
+function accountWorkStatus(item?: AccountStatusSnapshot | null) {
+  if (!item) return 'idle'
+  if (accountEnableStatus(item) !== 'enabled') return 'idle'
+  if (accountSyncState(item) === 'syncing') return 'idle'
+  if (accountHealthStatus(item) !== 'normal') return 'idle'
+  return item?.workStatus ?? 'idle'
+}
+
+function accountHealthStatus(item?: AccountStatusSnapshot | null) {
+  if (item?.healthStatus) return item.healthStatus
+  const legacyStatus = item?.displayStatus ?? item?.status ?? 'error_other'
+  if (
+    legacyStatus === 'needs_reauth' ||
+    legacyStatus === 'upstream_unavailable' ||
+    legacyStatus === 'upstream_rejected' ||
+    legacyStatus === 'error_other'
+  ) {
+    return legacyStatus
+  }
+  if (legacyStatus === 'error') {
+    return 'error_other'
+  }
+  return 'normal'
+}
+
+function accountSyncState(item?: AccountStatusSnapshot | null) {
+  if (item?.syncState) return item.syncState
+  const legacyStatus = item?.displayStatus ?? item?.status
+  return legacyStatus === 'syncing' ? 'syncing' : 'idle'
+}
+
+function parseRoutingPositiveInteger(value: string) {
+  const trimmed = value.trim()
+  if (!trimmed || !/^\d+$/.test(trimmed)) return null
+  const parsed = Number(trimmed)
+  return Number.isSafeInteger(parsed) ? parsed : null
+}
+
+function enableStatusVariant(status: string): 'success' | 'secondary' {
+  return status === 'enabled' ? 'success' : 'secondary'
+}
+
+function workStatusVariant(status: string): 'info' | 'warning' | 'secondary' {
+  if (status === 'working') return 'info'
+  if (status === 'rate_limited') return 'warning'
+  return 'secondary'
+}
+
+function healthStatusVariant(status: string): 'success' | 'warning' | 'error' | 'secondary' {
+  if (status === 'normal') return 'success'
+  if (status === 'upstream_unavailable') return 'warning'
   if (
     status === 'needs_reauth' ||
-    status === 'upstream_unavailable' ||
     status === 'upstream_rejected' ||
     status === 'error_other' ||
     status === 'error'
   ) {
     return 'error'
   }
+  return 'secondary'
+}
+
+function syncStateVariant(status: string): 'warning' | 'secondary' {
+  return status === 'syncing' ? 'warning' : 'secondary'
+}
+
+function bulkSyncRowStatusVariant(status: string): 'success' | 'warning' | 'error' | 'secondary' {
+  if (status === 'succeeded') return 'success'
+  if (status === 'pending') return 'warning'
+  if (status === 'failed') return 'error'
   return 'secondary'
 }
 
@@ -229,7 +355,7 @@ function isLegacyOauthBridgeExchangeError(lastError?: string | null) {
 
 function resolveOauthRecoveryHint(
   kind: string,
-  displayStatus: string,
+  healthStatus: string,
   lastError?: string | null,
 ): OauthRecoveryHint | null {
   if (kind !== 'oauth_codex') return null
@@ -239,25 +365,71 @@ function resolveOauthRecoveryHint(
       bodyKey: 'accountPool.upstreamAccounts.hints.bridgeExchangeBody',
     }
   }
-  if (displayStatus === 'upstream_unavailable') {
+  if (healthStatus === 'upstream_unavailable') {
     return {
       titleKey: 'accountPool.upstreamAccounts.hints.dataPlaneUnavailableTitle',
       bodyKey: 'accountPool.upstreamAccounts.hints.dataPlaneUnavailableBody',
     }
   }
-  if (displayStatus === 'upstream_rejected') {
+  if (healthStatus === 'upstream_rejected') {
     return {
       titleKey: 'accountPool.upstreamAccounts.hints.dataPlaneRejectedTitle',
       bodyKey: 'accountPool.upstreamAccounts.hints.dataPlaneRejectedBody',
     }
   }
-  if (displayStatus === 'needs_reauth') {
+  if (healthStatus === 'needs_reauth') {
     return {
       titleKey: 'accountPool.upstreamAccounts.hints.reauthTitle',
       bodyKey: 'accountPool.upstreamAccounts.hints.reauthBody',
     }
   }
   return null
+}
+
+function compactSupportLabel(
+  support: CompactSupportState | null | undefined,
+  t: (key: string) => string,
+) {
+  if (!support || support.status === 'unknown') return null
+  return support.status === 'unsupported'
+    ? t('accountPool.upstreamAccounts.compactSupport.unsupportedBadge')
+    : t('accountPool.upstreamAccounts.compactSupport.supportedBadge')
+}
+
+function compactSupportHint(
+  support: CompactSupportState | null | undefined,
+  t: (key: string, values?: TranslationValues) => string,
+) {
+  if (!support || support.status === 'unknown') return null
+  const statusLabel =
+    support.status === 'unsupported'
+      ? t('accountPool.upstreamAccounts.compactSupport.status.unsupported')
+      : t('accountPool.upstreamAccounts.compactSupport.status.supported')
+  const observedAt = support.observedAt
+    ? formatDateTime(support.observedAt)
+    : t('accountPool.upstreamAccounts.unavailable')
+  if (support.reason) {
+    return `${statusLabel} · ${observedAt} · ${support.reason}`
+  }
+  return `${statusLabel} · ${observedAt}`
+}
+
+function parseRoutingTimeoutValue(
+  raw: string,
+  label: string,
+): { ok: true; value: number } | { ok: false; error: string } {
+  const trimmed = raw.trim()
+  if (!trimmed) {
+    return { ok: false, error: `${label} is required.` }
+  }
+  if (!POSITIVE_INTEGER_PATTERN.test(trimmed)) {
+    return { ok: false, error: `${label} must be a positive integer.` }
+  }
+  const parsed = Number(trimmed)
+  if (!Number.isSafeInteger(parsed)) {
+    return { ok: false, error: `${label} must be a positive integer.` }
+  }
+  return { ok: true, value: parsed }
 }
 
 
@@ -397,16 +569,23 @@ function RoutingSettingsDialog({
   title,
   description,
   closeLabel,
-  apiKeyLabel,
-  generateLabel,
-  apiKeyPlaceholder,
   cancelLabel,
   saveLabel,
   apiKey,
+  primarySyncIntervalSecs,
+  secondarySyncIntervalSecs,
+  priorityAvailableAccountCap,
+  timeoutSectionTitle,
+  timeoutFields,
   busy,
-  writesEnabled,
+  apiKeyWritesEnabled,
+  timeoutWritesEnabled,
+  canSave,
   onApiKeyChange,
   onGenerate,
+  onPrimarySyncIntervalChange,
+  onSecondarySyncIntervalChange,
+  onPriorityAvailableAccountCapChange,
   onClose,
   onSave,
 }: {
@@ -414,29 +593,50 @@ function RoutingSettingsDialog({
   title: string
   description: string
   closeLabel: string
-  apiKeyLabel: string
-  generateLabel: string
-  apiKeyPlaceholder: string
   cancelLabel: string
   saveLabel: string
   apiKey: string
+  primarySyncIntervalSecs: string
+  secondarySyncIntervalSecs: string
+  priorityAvailableAccountCap: string
+  timeoutSectionTitle: string
+  timeoutFields: Array<{
+    key: string
+    label: string
+    value: string
+    onChange: (value: string) => void
+  }>
   busy: boolean
-  writesEnabled: boolean
+  apiKeyWritesEnabled: boolean
+  timeoutWritesEnabled: boolean
+  canSave: boolean
   onApiKeyChange: (value: string) => void
   onGenerate: () => void
+  onPrimarySyncIntervalChange: (value: string) => void
+  onSecondarySyncIntervalChange: (value: string) => void
+  onPriorityAvailableAccountCapChange: (value: string) => void
   onClose: () => void
   onSave: () => void
 }) {
-  const inputRef = useRef<HTMLInputElement | null>(null)
-  const inputId = 'pool-routing-secret-input'
+  const { t } = useTranslation()
+  const apiKeyInputRef = useRef<HTMLInputElement | null>(null)
+  const primaryInputRef = useRef<HTMLInputElement | null>(null)
+  const apiKeyInputId = 'pool-routing-secret-input'
+  const primaryInputId = 'pool-routing-primary-sync-interval'
+  const secondaryInputId = 'pool-routing-secondary-sync-interval'
+  const capInputId = 'pool-routing-priority-cap'
 
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => (!busy ? (nextOpen ? undefined : onClose()) : undefined)}>
       <DialogContent
-        className="p-0"
+        className="flex max-h-[calc(100dvh-2rem)] flex-col overflow-hidden p-0 sm:max-h-[calc(100dvh-4rem)]"
         onOpenAutoFocus={(event) => {
           event.preventDefault()
-          inputRef.current?.focus()
+          if (apiKeyWritesEnabled) {
+            apiKeyInputRef.current?.focus()
+            return
+          }
+          primaryInputRef.current?.focus()
         }}
         onPointerDownOutside={(event) => {
           if (busy) event.preventDefault()
@@ -452,40 +652,149 @@ function RoutingSettingsDialog({
           </DialogHeader>
           <DialogCloseIcon aria-label={closeLabel} disabled={busy} />
         </div>
-        <div className="space-y-4 px-6 py-6">
-          <div className="field">
-            <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
-              <label htmlFor={inputId} className="text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
-                {apiKeyLabel}
-              </label>
-              <Button type="button" variant="outline" size="sm" onClick={onGenerate} disabled={busy || !writesEnabled}>
-                <AppIcon name="auto-fix" className="mr-2 h-4 w-4" aria-hidden />
-                {generateLabel}
-              </Button>
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
+          <div className="space-y-4">
+            <div className="space-y-3 rounded-2xl border border-base-300/80 bg-base-100/70 p-4">
+              <div className="space-y-1">
+                <p className="text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
+                  {t('accountPool.upstreamAccounts.routing.apiKeySectionTitle')}
+                </p>
+                <p className="text-sm text-base-content/68">
+                  {t('accountPool.upstreamAccounts.routing.apiKeySectionDescription')}
+                </p>
+              </div>
+              <div className="field">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
+                  <label htmlFor={apiKeyInputId} className="text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
+                    {t('accountPool.upstreamAccounts.routing.apiKeyLabel')}
+                  </label>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={onGenerate}
+                    disabled={busy || !apiKeyWritesEnabled}
+                  >
+                    <AppIcon name="auto-fix" className="mr-2 h-4 w-4" aria-hidden />
+                    {t('accountPool.upstreamAccounts.routing.generate')}
+                  </Button>
+                </div>
+                <Input
+                  id={apiKeyInputId}
+                  ref={apiKeyInputRef}
+                  name="poolRoutingSecret"
+                  type="text"
+                  value={apiKey}
+                  onChange={(event) => onApiKeyChange(event.target.value)}
+                  placeholder={t('accountPool.upstreamAccounts.routing.apiKeyPlaceholder')}
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="none"
+                  spellCheck={false}
+                  data-1p-ignore="true"
+                  data-lpignore="true"
+                  disabled={busy || !apiKeyWritesEnabled}
+                  className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4 text-[15px] font-mono placeholder:text-base-content/58"
+                />
+              </div>
             </div>
-            <Input
-              id={inputId}
-              ref={inputRef}
-              name="poolRoutingSecret"
-              type="text"
-              value={apiKey}
-              onChange={(event) => onApiKeyChange(event.target.value)}
-              placeholder={apiKeyPlaceholder}
-              autoComplete="off"
-              autoCorrect="off"
-              autoCapitalize="none"
-              spellCheck={false}
-              data-1p-ignore="true"
-              data-lpignore="true"
-              className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4 text-[15px] font-mono placeholder:text-base-content/58"
-            />
+
+            <div className="space-y-4 rounded-2xl border border-base-300/80 bg-base-100/70 p-4">
+              <div className="space-y-1">
+                <p className="text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
+                  {t('accountPool.upstreamAccounts.routing.maintenanceSectionTitle')}
+                </p>
+                <p className="text-sm text-base-content/68">
+                  {t('accountPool.upstreamAccounts.routing.maintenanceSectionDescription')}
+                </p>
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="field">
+                  <label htmlFor={primaryInputId} className="mb-2 text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
+                    {t('accountPool.upstreamAccounts.routing.primarySyncIntervalLabel')}
+                  </label>
+                  <Input
+                    id={primaryInputId}
+                    ref={primaryInputRef}
+                    name="primarySyncIntervalSecs"
+                    type="number"
+                    min={60}
+                    step={60}
+                    inputMode="numeric"
+                    value={primarySyncIntervalSecs}
+                    onChange={(event) => onPrimarySyncIntervalChange(event.target.value)}
+                    placeholder="300"
+                    disabled={busy || !timeoutWritesEnabled}
+                    className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4"
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor={secondaryInputId} className="mb-2 text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
+                    {t('accountPool.upstreamAccounts.routing.secondarySyncIntervalLabel')}
+                  </label>
+                  <Input
+                    id={secondaryInputId}
+                    name="secondarySyncIntervalSecs"
+                    type="number"
+                    min={60}
+                    step={60}
+                    inputMode="numeric"
+                    value={secondarySyncIntervalSecs}
+                    onChange={(event) => onSecondarySyncIntervalChange(event.target.value)}
+                    placeholder="1800"
+                    disabled={busy || !timeoutWritesEnabled}
+                    className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4"
+                  />
+                </div>
+              </div>
+              <div className="field">
+                <label htmlFor={capInputId} className="mb-2 text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
+                  {t('accountPool.upstreamAccounts.routing.priorityCapLabel')}
+                </label>
+                <Input
+                  id={capInputId}
+                  name="priorityAvailableAccountCap"
+                  type="number"
+                  min={1}
+                  step={1}
+                  inputMode="numeric"
+                  value={priorityAvailableAccountCap}
+                  onChange={(event) => onPriorityAvailableAccountCapChange(event.target.value)}
+                  placeholder="100"
+                  disabled={busy || !timeoutWritesEnabled}
+                  className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4"
+                />
+              </div>
+            </div>
+            <div className="space-y-3">
+              <p className="text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
+                {timeoutSectionTitle}
+              </p>
+              <div className="grid gap-3 md:grid-cols-2">
+                {timeoutFields.map((field) => (
+                  <label key={field.key} className="field">
+                    <span className="field-label">{field.label}</span>
+                    <Input
+                      name={field.key}
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={field.value}
+                      onChange={(event) => field.onChange(event.target.value)}
+                      disabled={busy || !timeoutWritesEnabled}
+                      className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4 text-[15px] font-mono"
+                    />
+                  </label>
+                ))}
+              </div>
+            </div>
           </div>
         </div>
         <DialogFooter className="border-t border-base-300/80 px-6 py-5">
           <Button type="button" variant="outline" onClick={onClose} disabled={busy}>
             {cancelLabel}
           </Button>
-          <Button type="button" onClick={onSave} disabled={busy || !writesEnabled}>
+          <Button type="button" onClick={onSave} disabled={busy || !canSave}>
             {busy ? <Spinner size="sm" className="mr-2" /> : <AppIcon name="key-chain-variant" className="mr-2 h-4 w-4" aria-hidden />}
             {saveLabel}
           </Button>
@@ -501,7 +810,9 @@ export default function UpstreamAccountsPage() {
   const navigate = useNavigate()
   const [groupFilterQuery, setGroupFilterQuery] = useState('')
   const [selectedTagIds, setSelectedTagIds] = useState<number[]>([])
-  const [statusFilter, setStatusFilter] = useState('all')
+  const [workStatusFilter, setWorkStatusFilter] = useState('all')
+  const [enableStatusFilter, setEnableStatusFilter] = useState('all')
+  const [healthStatusFilter, setHealthStatusFilter] = useState('all')
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [selectedAccountIds, setSelectedAccountIds] = useState<number[]>([])
@@ -518,28 +829,45 @@ export default function UpstreamAccountsPage() {
           ? undefined
           : normalizedQuery,
       groupUngrouped: normalizedQuery ? normalizedLowerQuery === ungroupedLabel : undefined,
-      status: statusFilter === 'all' ? undefined : statusFilter,
+      workStatus: workStatusFilter === 'all' ? undefined : workStatusFilter,
+      enableStatus: enableStatusFilter === 'all' ? undefined : enableStatusFilter,
+      healthStatus: healthStatusFilter === 'all' ? undefined : healthStatusFilter,
       page,
       pageSize,
       tagIds: selectedTagIds.length > 0 ? selectedTagIds : undefined,
     }
-  }, [groupFilterQuery, page, pageSize, selectedTagIds, statusFilter, t])
-  const statusFilterOptions = useMemo(
+  }, [enableStatusFilter, groupFilterQuery, healthStatusFilter, page, pageSize, selectedTagIds, t, workStatusFilter])
+  const workStatusFilterOptions = useMemo(
     () => [
-      { value: 'all', label: t('accountPool.upstreamAccounts.statusFilter.all') },
-      { value: 'active', label: t('accountPool.upstreamAccounts.status.active') },
-      { value: 'syncing', label: t('accountPool.upstreamAccounts.status.syncing') },
-      { value: 'needs_reauth', label: t('accountPool.upstreamAccounts.status.needs_reauth') },
+      { value: 'all', label: t('accountPool.upstreamAccounts.workStatusFilter.all') },
+      { value: 'working', label: t('accountPool.upstreamAccounts.workStatus.working') },
+      { value: 'idle', label: t('accountPool.upstreamAccounts.workStatus.idle') },
+      { value: 'rate_limited', label: t('accountPool.upstreamAccounts.workStatus.rate_limited') },
+    ],
+    [t],
+  )
+  const enableStatusFilterOptions = useMemo(
+    () => [
+      { value: 'all', label: t('accountPool.upstreamAccounts.enableStatusFilter.all') },
+      { value: 'enabled', label: t('accountPool.upstreamAccounts.enableStatus.enabled') },
+      { value: 'disabled', label: t('accountPool.upstreamAccounts.enableStatus.disabled') },
+    ],
+    [t],
+  )
+  const healthStatusFilterOptions = useMemo(
+    () => [
+      { value: 'all', label: t('accountPool.upstreamAccounts.healthStatusFilter.all') },
+      { value: 'normal', label: t('accountPool.upstreamAccounts.healthStatus.normal') },
+      { value: 'needs_reauth', label: t('accountPool.upstreamAccounts.healthStatus.needs_reauth') },
       {
         value: 'upstream_unavailable',
-        label: t('accountPool.upstreamAccounts.status.upstream_unavailable'),
+        label: t('accountPool.upstreamAccounts.healthStatus.upstream_unavailable'),
       },
       {
         value: 'upstream_rejected',
-        label: t('accountPool.upstreamAccounts.status.upstream_rejected'),
+        label: t('accountPool.upstreamAccounts.healthStatus.upstream_rejected'),
       },
-      { value: 'error_other', label: t('accountPool.upstreamAccounts.status.error_other') },
-      { value: 'disabled', label: t('accountPool.upstreamAccounts.status.disabled') },
+      { value: 'error_other', label: t('accountPool.upstreamAccounts.healthStatus.error_other') },
     ],
     [t],
   )
@@ -623,14 +951,16 @@ export default function UpstreamAccountsPage() {
   const deleteConfirmTitleId = useId()
   const selectedIdRef = useRef<number | null>(selectedId)
   const selectedAccountIdSet = useMemo(() => new Set(selectedAccountIds), [selectedAccountIds])
+  const routingWritesEnabled = routing
+    ? (routing.writesEnabled ?? writesEnabled)
+    : false
   const effectiveMetrics = listMetrics ?? {
     total: items.length,
     oauth: items.filter((item) => item.kind === 'oauth_codex').length,
     apiKey: items.filter((item) => item.kind === 'api_key_codex').length,
-    attention: items.filter((item) => {
-      const status = item.displayStatus ?? item.status
-      return status === 'syncing' || status === 'needs_reauth' || status === 'upstream_unavailable' || status === 'upstream_rejected' || status === 'error_other'
-    }).length,
+    attention: items.filter((item) =>
+      accountHealthStatus(item) !== 'normal' || accountWorkStatus(item) === 'rate_limited',
+    ).length,
   }
   const effectiveTotal = total ?? effectiveMetrics.total
   const pageCount = Math.max(1, Math.ceil(effectiveTotal / Math.max(pageSize, 1)))
@@ -658,8 +988,20 @@ export default function UpstreamAccountsPage() {
     clearBulkSelection()
   }, [clearBulkSelection])
 
-  const handleStatusFilterChange = useCallback((value: string) => {
-    setStatusFilter(value)
+  const handleWorkStatusFilterChange = useCallback((value: string) => {
+    setWorkStatusFilter(value)
+    setPage(1)
+    clearBulkSelection()
+  }, [clearBulkSelection])
+
+  const handleEnableStatusFilterChange = useCallback((value: string) => {
+    setEnableStatusFilter(value)
+    setPage(1)
+    clearBulkSelection()
+  }, [clearBulkSelection])
+
+  const handleHealthStatusFilterChange = useCallback((value: string) => {
+    setHealthStatusFilter(value)
     setPage(1)
     clearBulkSelection()
   }, [clearBulkSelection])
@@ -705,12 +1047,29 @@ export default function UpstreamAccountsPage() {
   }, [selectedId, isDetailDrawerOpen])
 
   useEffect(() => {
-    setRoutingDraft(buildRoutingDraft(routing?.maskedApiKey))
-  }, [routing?.maskedApiKey])
+    if (isRoutingDialogOpen) return
+    setRoutingDraft(buildRoutingDraft(routing))
+  }, [
+    isRoutingDialogOpen,
+    routing?.maskedApiKey,
+    routing?.writesEnabled,
+    routing?.maintenance?.primarySyncIntervalSecs,
+    routing?.maintenance?.secondarySyncIntervalSecs,
+    routing?.maintenance?.priorityAvailableAccountCap,
+    routing?.timeouts?.responsesFirstByteTimeoutSecs,
+    routing?.timeouts?.compactFirstByteTimeoutSecs,
+    routing?.timeouts?.responsesStreamTimeoutSecs,
+    routing?.timeouts?.compactStreamTimeoutSecs,
+  ])
+
+  useEffect(() => {
+    if (!routingWritesEnabled) {
+      setIsRoutingDialogOpen(false)
+    }
+  }, [routingWritesEnabled])
 
   useEffect(() => {
     if (!writesEnabled) {
-      setIsRoutingDialogOpen(false)
       setIsDeleteConfirmOpen(false)
     }
   }, [writesEnabled])
@@ -900,14 +1259,80 @@ export default function UpstreamAccountsPage() {
 
   const selectedDetail = detail?.id === selectedId ? detail : null
   const selected = selectedDetail ?? selectedSummary
+  const selectedPlanBadge = upstreamPlanBadgeRecipe(selected?.planType)
   const visibleAccountActionError =
     typeof selectedId === 'number' ? actionError.accountMessages[selectedId] ?? null : null
   const visibleRoutingError = actionError.routing
-  const accountDisplayStatus = (item?: Pick<UpstreamAccountSummary, 'displayStatus' | 'status'> | null) =>
-    item?.displayStatus ?? item?.status ?? 'error'
+  const resolvedRoutingMaintenance = useMemo(
+    () => resolveRoutingMaintenance(routing?.maintenance),
+    [routing?.maintenance],
+  )
+  const parsedRoutingMaintenance = useMemo(() => {
+    const primarySyncIntervalSecs = parseRoutingPositiveInteger(routingDraft.primarySyncIntervalSecs)
+    const secondarySyncIntervalSecs = parseRoutingPositiveInteger(routingDraft.secondarySyncIntervalSecs)
+    const priorityAvailableAccountCap = parseRoutingPositiveInteger(routingDraft.priorityAvailableAccountCap)
+    if (
+      primarySyncIntervalSecs == null ||
+      secondarySyncIntervalSecs == null ||
+      priorityAvailableAccountCap == null
+    ) {
+      return null
+    }
+    return {
+      primarySyncIntervalSecs,
+      secondarySyncIntervalSecs,
+      priorityAvailableAccountCap,
+    }
+  }, [
+    routingDraft.primarySyncIntervalSecs,
+    routingDraft.secondarySyncIntervalSecs,
+    routingDraft.priorityAvailableAccountCap,
+  ])
+  const routingDraftValidationError = useMemo(() => {
+    if (parsedRoutingMaintenance == null) {
+      return t('accountPool.upstreamAccounts.routing.validation.integerRequired')
+    }
+    if (parsedRoutingMaintenance.primarySyncIntervalSecs < 60) {
+      return t('accountPool.upstreamAccounts.routing.validation.primaryMin')
+    }
+    if (parsedRoutingMaintenance.secondarySyncIntervalSecs < 60) {
+      return t('accountPool.upstreamAccounts.routing.validation.secondaryMin')
+    }
+    if (
+      parsedRoutingMaintenance.secondarySyncIntervalSecs <
+      parsedRoutingMaintenance.primarySyncIntervalSecs
+    ) {
+      return t('accountPool.upstreamAccounts.routing.validation.secondaryAtLeastPrimary')
+    }
+    if (parsedRoutingMaintenance.priorityAvailableAccountCap < 1) {
+      return t('accountPool.upstreamAccounts.routing.validation.priorityCapMin')
+    }
+    return null
+  }, [parsedRoutingMaintenance, t])
+  const routingHasApiKeyChange = routingDraft.apiKey.trim().length > 0
+  const routingHasMaintenanceChange =
+    parsedRoutingMaintenance != null &&
+    (
+      parsedRoutingMaintenance.primarySyncIntervalSecs !== resolvedRoutingMaintenance.primarySyncIntervalSecs ||
+      parsedRoutingMaintenance.secondarySyncIntervalSecs !== resolvedRoutingMaintenance.secondarySyncIntervalSecs ||
+      parsedRoutingMaintenance.priorityAvailableAccountCap !== resolvedRoutingMaintenance.priorityAvailableAccountCap
+    )
+  const resolvedRoutingTimeouts = routing?.timeouts ?? DEFAULT_ROUTING_TIMEOUTS
+  const routingHasTimeoutChange =
+    routingDraft.responsesFirstByteTimeoutSecs.trim() !==
+      String(resolvedRoutingTimeouts.responsesFirstByteTimeoutSecs) ||
+    routingDraft.compactFirstByteTimeoutSecs.trim() !==
+      String(resolvedRoutingTimeouts.compactFirstByteTimeoutSecs) ||
+    routingDraft.responsesStreamTimeoutSecs.trim() !==
+      String(resolvedRoutingTimeouts.responsesStreamTimeoutSecs) ||
+    routingDraft.compactStreamTimeoutSecs.trim() !==
+      String(resolvedRoutingTimeouts.compactStreamTimeoutSecs)
+  const routingCanSave =
+    !routingDraftValidationError &&
+    (routingHasMaintenanceChange || routingHasTimeoutChange || (writesEnabled && routingHasApiKeyChange))
   const selectedRecoveryHint = resolveOauthRecoveryHint(
     selectedDetail?.kind ?? selected?.kind ?? '',
-    accountDisplayStatus(selectedDetail ?? selected),
+    accountHealthStatus(selectedDetail ?? selected),
     selectedDetail?.lastError ?? selected?.lastError,
   )
   const formatDuplicateReasons = (
@@ -930,11 +1355,16 @@ export default function UpstreamAccountsPage() {
       })
       .join(' / ')
   }
-  const accountStatusLabel = (status: string) => t(`accountPool.upstreamAccounts.status.${status}`)
-  const accountSummaryStatusLabel = (item: UpstreamAccountSummary) =>
-    accountStatusLabel(accountDisplayStatus(item))
+  const accountEnableStatusLabel = (status: string) =>
+    t(`accountPool.upstreamAccounts.enableStatus.${status}`)
+  const accountWorkStatusLabel = (status: string) =>
+    t(`accountPool.upstreamAccounts.workStatus.${status}`)
+  const accountHealthStatusLabel = (status: string) =>
+    t(`accountPool.upstreamAccounts.healthStatus.${status}`)
+  const accountSyncStateLabel = (status: string) =>
+    t(`accountPool.upstreamAccounts.syncState.${status}`)
   const accountActionLabel = (action?: string | null) => {
-    if (!action) return t('accountPool.upstreamAccounts.latestAction.empty')
+    if (!action) return null
     const key = `accountPool.upstreamAccounts.latestAction.actions.${action}`
     const translated = t(key)
     return translated === key ? action : translated
@@ -1133,10 +1563,62 @@ export default function UpstreamAccountsPage() {
 
 
   const handleSaveRouting = async () => {
+    if (routingDraftValidationError) {
+      setActionError((current) => ({ ...current, routing: routingDraftValidationError }))
+      return
+    }
+    if (!routing) {
+      setActionError((current) => ({
+        ...current,
+        routing: "Pool routing settings are still loading.",
+      }))
+      return
+    }
+    if (!routingWritesEnabled) {
+      setActionError((current) => ({
+        ...current,
+        routing: "Pool routing settings are currently read-only.",
+      }))
+      return
+    }
+    const timeoutEntries: Array<[keyof PoolRoutingTimeoutSettings, string, string]> = [
+      ['responsesFirstByteTimeoutSecs', t('accountPool.upstreamAccounts.routing.timeout.responsesFirstByte'), routingDraft.responsesFirstByteTimeoutSecs],
+      ['compactFirstByteTimeoutSecs', t('accountPool.upstreamAccounts.routing.timeout.compactFirstByte'), routingDraft.compactFirstByteTimeoutSecs],
+      ['responsesStreamTimeoutSecs', t('accountPool.upstreamAccounts.routing.timeout.responsesStream'), routingDraft.responsesStreamTimeoutSecs],
+      ['compactStreamTimeoutSecs', t('accountPool.upstreamAccounts.routing.timeout.compactStream'), routingDraft.compactStreamTimeoutSecs],
+    ]
+    const parsedTimeouts = {} as PoolRoutingTimeoutSettings
+    for (const [key, label, raw] of timeoutEntries) {
+      const result = parseRoutingTimeoutValue(raw, label)
+      if (!result.ok) {
+        setActionError((current) => ({ ...current, routing: result.error }))
+        return
+      }
+      parsedTimeouts[key] = result.value
+    }
     setActionError((current) => ({ ...current, routing: null }))
+    const trimmedApiKey = routingDraft.apiKey.trim()
+    const payload: {
+      apiKey?: string
+      maintenance?: PoolRoutingMaintenanceSettings
+      timeouts?: PoolRoutingTimeoutSettings
+    } = {}
+    if (writesEnabled && trimmedApiKey) {
+      payload.apiKey = trimmedApiKey
+    }
+    if (routingHasMaintenanceChange && parsedRoutingMaintenance) {
+      payload.maintenance = parsedRoutingMaintenance
+    }
+    if (routingHasTimeoutChange) {
+      payload.timeouts = parsedTimeouts
+    }
+    if (!payload.apiKey && !payload.maintenance && !payload.timeouts) {
+      setIsRoutingDialogOpen(false)
+      return
+    }
     setBusyAction((current) => ({ ...current, routing: true }))
     try {
-      await saveRouting({ apiKey: routingDraft.apiKey.trim() })
+      await saveRouting(payload)
       setRoutingDraft((current) => ({ ...current, apiKey: '' }))
       setIsRoutingDialogOpen(false)
     } catch (err) {
@@ -1481,13 +1963,43 @@ export default function UpstreamAccountsPage() {
                     <p className="mt-2 break-all font-mono text-sm text-base-content">
                       {routing?.apiKeyConfigured ? routing?.maskedApiKey ?? t('accountPool.upstreamAccounts.routing.configured') : t('accountPool.upstreamAccounts.routing.notConfigured')}
                     </p>
+                    <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                      <DetailField
+                        label={t('accountPool.upstreamAccounts.routing.primarySyncIntervalLabel')}
+                        value={`${resolvedRoutingMaintenance.primarySyncIntervalSecs}s`}
+                      />
+                      <DetailField
+                        label={t('accountPool.upstreamAccounts.routing.secondarySyncIntervalLabel')}
+                        value={`${resolvedRoutingMaintenance.secondarySyncIntervalSecs}s`}
+                      />
+                      <DetailField
+                        label={t('accountPool.upstreamAccounts.routing.priorityCapLabel')}
+                        value={String(resolvedRoutingMaintenance.priorityAvailableAccountCap)}
+                      />
+                      <DetailField
+                        label={t('accountPool.upstreamAccounts.routing.timeout.responsesFirstByte')}
+                        value={`${resolvedRoutingTimeouts.responsesFirstByteTimeoutSecs}s`}
+                      />
+                      <DetailField
+                        label={t('accountPool.upstreamAccounts.routing.timeout.compactFirstByte')}
+                        value={`${resolvedRoutingTimeouts.compactFirstByteTimeoutSecs}s`}
+                      />
+                      <DetailField
+                        label={t('accountPool.upstreamAccounts.routing.timeout.responsesStream')}
+                        value={`${resolvedRoutingTimeouts.responsesStreamTimeoutSecs}s`}
+                      />
+                      <DetailField
+                        label={t('accountPool.upstreamAccounts.routing.timeout.compactStream')}
+                        value={`${resolvedRoutingTimeouts.compactStreamTimeoutSecs}s`}
+                      />
+                    </div>
                   </div>
                   <Button
                     type="button"
                     variant="ghost"
                     size="icon"
                     onClick={() => setIsRoutingDialogOpen(true)}
-                    disabled={!writesEnabled}
+                    disabled={!routingWritesEnabled}
                   >
                     <AppIcon name="pencil-outline" className="h-4 w-4" aria-hidden />
                     <span className="sr-only">{t('accountPool.upstreamAccounts.routing.edit')}</span>
@@ -1502,24 +2014,54 @@ export default function UpstreamAccountsPage() {
       <section className="grid gap-6">
         <div className="surface-panel overflow-hidden">
           <div className="surface-panel-body gap-4">
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <div className="section-heading">
-                <h2 className="section-title">{t('accountPool.upstreamAccounts.listTitle')}</h2>
-                <p className="section-description">{t('accountPool.upstreamAccounts.listDescription')}</p>
+            <div className="space-y-4">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
+                <div className="section-heading">
+                  <h2 className="section-title">{t('accountPool.upstreamAccounts.listTitle')}</h2>
+                  <p className="section-description">{t('accountPool.upstreamAccounts.listDescription')}</p>
+                </div>
+                {isLoading ? (
+                  <div className="flex items-center justify-start lg:justify-end">
+                    <Spinner className="text-primary" />
+                  </div>
+                ) : null}
               </div>
-              <div className="flex flex-wrap items-end gap-3">
+
+              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-12">
                 <SelectField
-                  label={t('accountPool.upstreamAccounts.statusFilterLabel')}
-                  className="min-w-[12rem]"
-                  value={statusFilter}
-                  options={statusFilterOptions}
-                  triggerClassName="h-12 rounded-xl border-base-300/90 bg-base-100 px-4 text-[15px]"
-                  aria-label={t('accountPool.upstreamAccounts.statusFilterLabel')}
-                  onValueChange={handleStatusFilterChange}
+                  label={t('accountPool.upstreamAccounts.workStatusFilterLabel')}
+                  className={cn('min-w-0', formFieldSpanVariants({ size: 'compact' }))}
+                  value={workStatusFilter}
+                  options={workStatusFilterOptions}
+                  size="filter"
+                  triggerClassName="border-base-300/90 bg-base-100"
+                  aria-label={t('accountPool.upstreamAccounts.workStatusFilterLabel')}
+                  onValueChange={handleWorkStatusFilterChange}
                 />
-                <label className="field min-w-[15rem]">
+                <SelectField
+                  label={t('accountPool.upstreamAccounts.enableStatusFilterLabel')}
+                  className={cn('min-w-0', formFieldSpanVariants({ size: 'compact' }))}
+                  value={enableStatusFilter}
+                  options={enableStatusFilterOptions}
+                  size="filter"
+                  triggerClassName="border-base-300/90 bg-base-100"
+                  aria-label={t('accountPool.upstreamAccounts.enableStatusFilterLabel')}
+                  onValueChange={handleEnableStatusFilterChange}
+                />
+                <SelectField
+                  label={t('accountPool.upstreamAccounts.healthStatusFilterLabel')}
+                  className={cn('min-w-0', formFieldSpanVariants({ size: 'compact' }))}
+                  value={healthStatusFilter}
+                  options={healthStatusFilterOptions}
+                  size="filter"
+                  triggerClassName="border-base-300/90 bg-base-100"
+                  aria-label={t('accountPool.upstreamAccounts.healthStatusFilterLabel')}
+                  onValueChange={handleHealthStatusFilterChange}
+                />
+                <label className={cn('field min-w-0', formFieldSpanVariants({ size: 'wide' }))}>
                   <span className="field-label">{t('accountPool.upstreamAccounts.groupFilterLabel')}</span>
                   <UpstreamAccountGroupCombobox
+                    size="filter"
                     value={groupFilterQuery}
                     suggestions={groupFilterSuggestions}
                     placeholder={t('accountPool.upstreamAccounts.groupFilterPlaceholder')}
@@ -1527,12 +2069,14 @@ export default function UpstreamAccountsPage() {
                     emptyLabel={t('accountPool.upstreamAccounts.groupFilterEmpty')}
                     createLabel={(value) => t('accountPool.upstreamAccounts.groupFilterUseValue', { value })}
                     ariaLabel={t('accountPool.upstreamAccounts.groupFilterLabel')}
+                    triggerClassName="border-base-300/90 bg-base-100"
                     onValueChange={handleGroupFilterChange}
                   />
                 </label>
-                <label className="field min-w-[15rem]">
+                <label className={cn('field min-w-0', formFieldSpanVariants({ size: 'wide' }))}>
                   <span className="field-label">{t('accountPool.upstreamAccounts.tagFilterLabel')}</span>
                   <AccountTagFilterCombobox
+                    size="filter"
                     tags={tagItems}
                     value={selectedTagIds}
                     placeholder={t('accountPool.upstreamAccounts.tagFilterPlaceholder')}
@@ -1540,10 +2084,10 @@ export default function UpstreamAccountsPage() {
                     emptyLabel={t('accountPool.upstreamAccounts.tagFilterEmpty')}
                     clearLabel={t('accountPool.upstreamAccounts.tagFilterClear')}
                     ariaLabel={t('accountPool.upstreamAccounts.tagFilterAriaLabel')}
+                    triggerClassName="border-base-300/90 bg-base-100"
                     onValueChange={handleTagFilterChange}
                   />
                 </label>
-                {isLoading ? <Spinner className="text-primary" /> : null}
               </div>
             </div>
 
@@ -1690,7 +2234,7 @@ export default function UpstreamAccountsPage() {
                       <div key={row.accountId} className="flex flex-col gap-1 rounded-xl border border-base-300/60 px-3 py-2 text-sm">
                         <div className="flex items-center justify-between gap-3">
                           <span className="font-medium text-base-content">{row.displayName}</span>
-                          <Badge variant={statusVariant(row.status)}>{t(`accountPool.upstreamAccounts.bulk.rowStatus.${row.status}`)}</Badge>
+                          <Badge variant={bulkSyncRowStatusVariant(row.status)}>{t(`accountPool.upstreamAccounts.bulk.rowStatus.${row.status}`)}</Badge>
                         </div>
                         {row.detail ? <p className="text-xs text-base-content/68">{row.detail}</p> : null}
                       </div>
@@ -1725,17 +2269,35 @@ export default function UpstreamAccountsPage() {
                 secondaryShort: t('accountPool.upstreamAccounts.secondaryWindowShortLabel'),
                 nextReset: t('accountPool.upstreamAccounts.table.nextReset'),
                 nextResetCompact: t('accountPool.upstreamAccounts.table.nextResetCompact'),
+                unknown: t('accountPool.upstreamAccounts.latestAction.unknown'),
+                unavailable: t('accountPool.upstreamAccounts.unavailable'),
                 oauth: t('accountPool.upstreamAccounts.kind.oauth'),
                 apiKey: t('accountPool.upstreamAccounts.kind.apiKey'),
                 mother: t('accountPool.upstreamAccounts.mother.badge'),
                 duplicate: t('accountPool.upstreamAccounts.duplicate.badge'),
-                off: t('accountPool.upstreamAccounts.table.off'),
                 hiddenTagsA11y: (count, names) =>
                   t('accountPool.upstreamAccounts.table.hiddenTagsA11y', { count, names }),
-                status: accountSummaryStatusLabel,
-                statusValue: (item) => accountDisplayStatus(item),
-                actionSource: (item) => accountActionSourceLabel(item.lastActionSource),
-                actionReason: (item) => accountActionReasonLabel(item.lastActionReasonCode),
+                workStatus: accountWorkStatusLabel,
+                enableStatus: accountEnableStatusLabel,
+                healthStatus: accountHealthStatusLabel,
+                syncState: accountSyncStateLabel,
+                action: accountActionLabel,
+                compactSupport: (item) => compactSupportLabel(item.compactSupport, t),
+                compactSupportHint: (item) => compactSupportHint(item.compactSupport, t),
+                actionSource: (value: UpstreamAccountSummary | string | null | undefined) =>
+                  accountActionSourceLabel(
+                    typeof value === 'string' || value == null ? value : value.lastActionSource,
+                  ),
+                actionReason: (value: UpstreamAccountSummary | string | null | undefined) =>
+                  accountActionReasonLabel(
+                    typeof value === 'string' || value == null ? value : value.lastActionReasonCode,
+                  ),
+                latestActionFieldAction: t('accountPool.upstreamAccounts.latestAction.fields.action'),
+                latestActionFieldSource: t('accountPool.upstreamAccounts.latestAction.fields.source'),
+                latestActionFieldReason: t('accountPool.upstreamAccounts.latestAction.fields.reason'),
+                latestActionFieldHttpStatus: t('accountPool.upstreamAccounts.latestAction.fields.httpStatus'),
+                latestActionFieldOccurredAt: t('accountPool.upstreamAccounts.latestAction.fields.occurredAt'),
+                latestActionFieldMessage: t('accountPool.upstreamAccounts.latestAction.fields.message'),
               }}
             />
 
@@ -1748,21 +2310,26 @@ export default function UpstreamAccountsPage() {
                 })}
               </div>
               <div className="flex flex-wrap items-center gap-3">
-                <SelectField
-                  label={t('accountPool.upstreamAccounts.pagination.pageSize')}
-                  className="min-w-[8rem]"
-                  value={String(pageSize)}
-                  options={pageSizeOptions}
-                  size="sm"
-                  triggerClassName="h-10 rounded-xl border-base-300/90 bg-base-100 px-3 text-sm"
-                  aria-label={t('accountPool.upstreamAccounts.pagination.pageSize')}
-                  onValueChange={(value) => handlePageSizeChange(Number(value))}
-                />
+                <div className="flex items-center gap-2 rounded-xl border border-base-300/70 bg-base-100/55 px-3 py-2">
+                  <span className="text-sm font-medium text-base-content/65">
+                    {t('accountPool.upstreamAccounts.pagination.pageSize')}
+                  </span>
+                  <SelectField
+                    className="min-w-[7rem]"
+                    value={String(pageSize)}
+                    options={pageSizeOptions}
+                    size="sm"
+                    triggerClassName="h-10 rounded-xl border-base-300/90 bg-base-100 px-3 text-sm"
+                    aria-label={t('accountPool.upstreamAccounts.pagination.pageSize')}
+                    onValueChange={(value) => handlePageSizeChange(Number(value))}
+                  />
+                </div>
                 <div className="flex items-center gap-2">
                   <Button
                     type="button"
                     variant="outline"
                     size="sm"
+                    className="h-10 rounded-xl px-4"
                     onClick={() => setPage((current) => Math.max(1, current - 1))}
                     disabled={page <= 1}
                   >
@@ -1772,6 +2339,7 @@ export default function UpstreamAccountsPage() {
                     type="button"
                     variant="outline"
                     size="sm"
+                    className="h-10 rounded-xl px-4"
                     onClick={() => setPage((current) => Math.min(pageCount, current + 1))}
                     disabled={page >= pageCount}
                   >
@@ -1911,18 +2479,56 @@ export default function UpstreamAccountsPage() {
         title={t('accountPool.upstreamAccounts.routing.dialogTitle')}
         description={t('accountPool.upstreamAccounts.routing.dialogDescription')}
         closeLabel={t('accountPool.upstreamAccounts.routing.close')}
-        apiKeyLabel={t('accountPool.upstreamAccounts.routing.apiKeyLabel')}
-        generateLabel={t('accountPool.upstreamAccounts.routing.generate')}
-        apiKeyPlaceholder={t('accountPool.upstreamAccounts.routing.apiKeyPlaceholder')}
         cancelLabel={t('accountPool.upstreamAccounts.actions.cancel')}
         saveLabel={t('accountPool.upstreamAccounts.routing.save')}
         apiKey={routingDraft.apiKey}
+        primarySyncIntervalSecs={routingDraft.primarySyncIntervalSecs}
+        secondarySyncIntervalSecs={routingDraft.secondarySyncIntervalSecs}
+        priorityAvailableAccountCap={routingDraft.priorityAvailableAccountCap}
+        timeoutSectionTitle={t('accountPool.upstreamAccounts.routing.timeout.sectionTitle')}
+        timeoutFields={[
+          {
+            key: 'responsesFirstByteTimeoutSecs',
+            label: t('accountPool.upstreamAccounts.routing.timeout.responsesFirstByte'),
+            value: routingDraft.responsesFirstByteTimeoutSecs,
+            onChange: (value) => setRoutingDraft((current) => ({ ...current, responsesFirstByteTimeoutSecs: value })),
+          },
+          {
+            key: 'compactFirstByteTimeoutSecs',
+            label: t('accountPool.upstreamAccounts.routing.timeout.compactFirstByte'),
+            value: routingDraft.compactFirstByteTimeoutSecs,
+            onChange: (value) => setRoutingDraft((current) => ({ ...current, compactFirstByteTimeoutSecs: value })),
+          },
+          {
+            key: 'responsesStreamTimeoutSecs',
+            label: t('accountPool.upstreamAccounts.routing.timeout.responsesStream'),
+            value: routingDraft.responsesStreamTimeoutSecs,
+            onChange: (value) => setRoutingDraft((current) => ({ ...current, responsesStreamTimeoutSecs: value })),
+          },
+          {
+            key: 'compactStreamTimeoutSecs',
+            label: t('accountPool.upstreamAccounts.routing.timeout.compactStream'),
+            value: routingDraft.compactStreamTimeoutSecs,
+            onChange: (value) => setRoutingDraft((current) => ({ ...current, compactStreamTimeoutSecs: value })),
+          },
+        ]}
         busy={isBusyAction(busyAction, 'routing')}
-        writesEnabled={writesEnabled}
+        apiKeyWritesEnabled={writesEnabled}
+        timeoutWritesEnabled={routingWritesEnabled}
+        canSave={routingCanSave}
         onApiKeyChange={(value) => setRoutingDraft((current) => ({ ...current, apiKey: value }))}
         onGenerate={() => setRoutingDraft((current) => ({ ...current, apiKey: generatePoolRoutingKey() }))}
+        onPrimarySyncIntervalChange={(value) =>
+          setRoutingDraft((current) => ({ ...current, primarySyncIntervalSecs: value }))
+        }
+        onSecondarySyncIntervalChange={(value) =>
+          setRoutingDraft((current) => ({ ...current, secondarySyncIntervalSecs: value }))
+        }
+        onPriorityAvailableAccountCapChange={(value) =>
+          setRoutingDraft((current) => ({ ...current, priorityAvailableAccountCap: value }))
+        }
         onClose={() => {
-          setRoutingDraft(buildRoutingDraft(routing?.maskedApiKey))
+          setRoutingDraft(buildRoutingDraft(routing))
           setIsRoutingDialogOpen(false)
         }}
         onSave={() => void handleSaveRouting()}
@@ -1955,13 +2561,28 @@ export default function UpstreamAccountsPage() {
             <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
               <div className="space-y-3">
                 <div className="flex flex-wrap items-center gap-2">
-                  <Badge
-                    variant={statusVariant(accountDisplayStatus(selected))}
-                  >
-                    {accountStatusLabel(accountDisplayStatus(selected))}
+                  <Badge variant={enableStatusVariant(accountEnableStatus(selected))}>
+                    {accountEnableStatusLabel(accountEnableStatus(selected))}
+                  </Badge>
+                  <Badge variant={workStatusVariant(accountWorkStatus(selected))}>
+                    {accountWorkStatusLabel(accountWorkStatus(selected))}
+                  </Badge>
+                  <Badge variant={syncStateVariant(accountSyncState(selected))}>
+                    {accountSyncStateLabel(accountSyncState(selected))}
+                  </Badge>
+                  <Badge variant={healthStatusVariant(accountHealthStatus(selected))}>
+                    {accountHealthStatusLabel(accountHealthStatus(selected))}
                   </Badge>
                   <Badge variant={kindVariant(selected.kind)}>{accountKindLabel(selected.kind)}</Badge>
-                  {selected.planType ? <Badge variant="secondary">{selected.planType}</Badge> : null}
+                  {selected.planType && selectedPlanBadge ? (
+                    <Badge
+                      variant={selectedPlanBadge.variant}
+                      className={selectedPlanBadge.className}
+                      data-plan={selectedPlanBadge.dataPlan}
+                    >
+                      {selected.planType}
+                    </Badge>
+                  ) : null}
                   {selected.duplicateInfo ? (
                     <Badge variant="warning">
                       {t('accountPool.upstreamAccounts.duplicate.badge')}
@@ -2373,8 +2994,26 @@ export default function UpstreamAccountsPage() {
                     <DetailField label={t('accountPool.upstreamAccounts.fields.lastRefreshedAt')} value={formatDateTime(selectedDetail.lastRefreshedAt)} />
                     <DetailField label={t('accountPool.upstreamAccounts.fields.tokenExpiresAt')} value={formatDateTime(selectedDetail.tokenExpiresAt)} />
                     <DetailField
+                      label={t('accountPool.upstreamAccounts.fields.compactSupport')}
+                      value={
+                        selectedDetail.compactSupport?.status === 'supported'
+                          ? t('accountPool.upstreamAccounts.compactSupport.status.supported')
+                          : selectedDetail.compactSupport?.status === 'unsupported'
+                            ? t('accountPool.upstreamAccounts.compactSupport.status.unsupported')
+                            : t('accountPool.upstreamAccounts.compactSupport.status.unknown')
+                      }
+                    />
+                    <DetailField
                       label={t('accountPool.upstreamAccounts.fields.credits')}
                       value={selectedDetail.credits?.balance ? `${selectedDetail.credits.balance}` : selectedDetail.credits?.unlimited ? t('accountPool.upstreamAccounts.unlimited') : t('accountPool.upstreamAccounts.unavailable')}
+                    />
+                    <DetailField
+                      label={t('accountPool.upstreamAccounts.fields.compactObservedAt')}
+                      value={formatDateTime(selectedDetail.compactSupport?.observedAt)}
+                    />
+                    <DetailField
+                      label={t('accountPool.upstreamAccounts.fields.compactReason')}
+                      value={selectedDetail.compactSupport?.reason ?? t('accountPool.upstreamAccounts.unavailable')}
                     />
                     <div className="md:col-span-2 xl:col-span-4 rounded-[1.2rem] border border-base-300/80 bg-base-100/75 p-4">
                       {selectedRecoveryHint ? (
@@ -2395,7 +3034,7 @@ export default function UpstreamAccountsPage() {
                         <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                           <DetailField
                             label={t('accountPool.upstreamAccounts.latestAction.fields.action')}
-                            value={accountActionLabel(selectedDetail.lastAction)}
+                            value={accountActionLabel(selectedDetail.lastAction) ?? t('accountPool.upstreamAccounts.latestAction.empty')}
                           />
                           <DetailField
                             label={t('accountPool.upstreamAccounts.latestAction.fields.source')}
@@ -2461,7 +3100,9 @@ export default function UpstreamAccountsPage() {
                             className="rounded-[1rem] border border-base-300/70 bg-base-100/70 p-3"
                           >
                             <div className="flex flex-wrap items-center gap-2">
-                              <Badge variant="secondary">{accountActionLabel(actionEvent.action)}</Badge>
+                              <Badge variant="secondary">
+                                {accountActionLabel(actionEvent.action) ?? t('accountPool.upstreamAccounts.latestAction.unknown')}
+                              </Badge>
                               <Badge variant="secondary">
                                 {accountActionSourceLabel(actionEvent.source) ?? t('accountPool.upstreamAccounts.latestAction.unknown')}
                               </Badge>
