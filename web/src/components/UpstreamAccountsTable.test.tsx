@@ -40,6 +40,8 @@ const labels = {
   secondary: '7d',
   secondaryShort: '7d',
   nextReset: 'Reset',
+  unknown: 'Unknown',
+  unavailable: 'Unavailable',
   oauth: 'OAuth',
   apiKey: 'API key',
   duplicate: 'Duplicate',
@@ -70,9 +72,28 @@ const labels = {
       idle: 'Sync idle',
       syncing: 'Syncing',
     })[status] ?? status,
-  actionSource: () => 'Call',
-  actionReason: (item: { lastActionReasonCode?: string | null }) =>
-    item.lastActionReasonCode ?? null,
+  action: (action?: string | null) =>
+    ({
+      route_hard_unavailable: 'Hard unavailable',
+      route_cooldown_started: 'Route cooldown',
+      sync_failed: 'Sync failed',
+    })[action ?? ''] ?? action ?? null,
+  actionSource: (source?: string | null) =>
+    ({
+      call: 'Call',
+      sync_maintenance: 'Maintenance sync',
+    })[source ?? ''] ?? source ?? null,
+  actionReason: (reason?: string | null) =>
+    ({
+      upstream_http_429_quota_exhausted: 'Weekly cap exhausted',
+      reauth_required: 'Needs reauth',
+    })[reason ?? ''] ?? reason ?? null,
+  latestActionFieldAction: 'Action',
+  latestActionFieldSource: 'Source',
+  latestActionFieldReason: 'Reason',
+  latestActionFieldHttpStatus: 'HTTP',
+  latestActionFieldOccurredAt: 'Occurred',
+  latestActionFieldMessage: 'Message',
 }
 
 function renderTable(items: UpstreamAccountSummary[]) {
@@ -145,8 +166,10 @@ describe('UpstreamAccountsTable', () => {
         planType: 'team',
         lastSuccessfulSyncAt: '2026-03-16T01:55:00.000Z',
         lastActivityAt: '2026-03-16T02:05:00.000Z',
+        lastAction: 'route_hard_unavailable',
         lastActionSource: 'call',
         lastActionReasonCode: 'upstream_http_429_quota_exhausted',
+        lastActionReasonMessage: 'Weekly cap exhausted for this account',
         lastActionHttpStatus: 429,
         lastActionAt: '2026-03-16T02:06:00.000Z',
         primaryWindow: {
@@ -176,10 +199,11 @@ describe('UpstreamAccountsTable', () => {
 
     expect(html).toContain('Windows')
     expect(html).toContain('Sync / Call')
-    expect(html).toContain('Call')
     expect(html).toContain('Latest')
-    expect(html).toContain('upstream_http_429_quota_exhausted')
+    expect(html).toContain('Hard unavailable')
+    expect(html).toContain('Weekly cap exhausted')
     expect(html).toContain('HTTP 429')
+    expect(html).toContain('Message: Weekly cap exhausted for this account')
     expect(html).toContain('font-mono tabular-nums')
     expect(html).toContain('Duplicate')
     expect(html).toContain('Mother')
@@ -190,13 +214,57 @@ describe('UpstreamAccountsTable', () => {
     expect(html).toContain('+2')
     expect(html).toContain('title="sticky-pool, rotating"')
     expect(html).toContain('aria-label="Show 2 hidden tags: sticky-pool, rotating"')
-    expect(html).toContain('5h')
-    expect(html).toContain('7d')
+    expect(html).toContain('5H')
+    expect(html).toContain('7D')
     expect(html).toContain('grid-cols-[max-content,minmax(0,1fr),minmax(0,1fr)]')
     expect(html).not.toContain('production-apac-primary-operators')
     expect(html).toContain('overflow-x-auto')
     expect(html).toContain('md:overflow-x-visible')
     expect(html).toContain('md:min-w-0')
+  })
+
+  it('uses the actual window duration labels when a slot returns non-standard window data', () => {
+    const html = renderTable([
+      {
+        id: 21,
+        kind: 'oauth_codex',
+        provider: 'codex',
+        displayName: 'Unexpected window account',
+        groupName: null,
+        isMother: false,
+        status: 'active',
+        displayStatus: 'active',
+        enabled: true,
+        enableStatus: 'enabled',
+        workStatus: 'idle',
+        healthStatus: 'normal',
+        syncState: 'idle',
+        lastSuccessfulSyncAt: null,
+        lastActivityAt: null,
+        primaryWindow: {
+          usedPercent: 47,
+          usedText: '47%',
+          limitText: '12h quota',
+          resetsAt: '2026-03-31T00:08:00.000Z',
+          windowDurationMins: 720,
+        },
+        secondaryWindow: {
+          usedPercent: 0,
+          usedText: '0%',
+          limitText: '7d quota',
+          resetsAt: '2026-04-07T00:00:00.000Z',
+          windowDurationMins: 10080,
+        },
+        credits: null,
+        localLimits: null,
+        duplicateInfo: null,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
+    ])
+
+    expect(html).toContain('12H')
+    expect(html).toContain('title="12h quota')
   })
 
   it('keeps disabled and placeholder values in the compact layout', () => {

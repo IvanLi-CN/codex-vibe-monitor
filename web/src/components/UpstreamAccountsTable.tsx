@@ -31,6 +31,8 @@ interface UpstreamAccountsTableProps {
     secondaryShort: string
     nextReset: string
     nextResetCompact?: string
+    unknown: string
+    unavailable: string
     oauth: string
     apiKey: string
     mother: string
@@ -40,8 +42,15 @@ interface UpstreamAccountsTableProps {
     enableStatus: (status: string) => string
     healthStatus: (status: string) => string
     syncState: (status: string) => string
-    actionSource: (item: UpstreamAccountSummary) => string | null
-    actionReason: (item: UpstreamAccountSummary) => string | null
+    action: (action?: string | null) => string | null
+    actionSource: (source?: string | null) => string | null
+    actionReason: (reason?: string | null) => string | null
+    latestActionFieldAction: string
+    latestActionFieldSource: string
+    latestActionFieldReason: string
+    latestActionFieldHttpStatus: string
+    latestActionFieldOccurredAt: string
+    latestActionFieldMessage: string
   }
 }
 
@@ -159,9 +168,20 @@ function syncBadgeVariant(status: string): 'warning' | 'secondary' {
   return status === 'syncing' ? 'warning' : 'secondary'
 }
 
-function compactBadge(content: ReactNode, variant: 'accent' | 'secondary' | 'success' | 'warning' | 'error' | 'info') {
+function compactBadge(
+  content: ReactNode,
+  variant: 'accent' | 'secondary' | 'success' | 'warning' | 'error' | 'info',
+  options?: {
+    className?: string
+    title?: string
+  },
+) {
   return (
-    <Badge variant={variant} className="shrink-0 whitespace-nowrap px-2 py-px text-[11px] font-medium leading-4">
+    <Badge
+      variant={variant}
+      className={cn('shrink-0 whitespace-nowrap px-2 py-px text-[11px] font-medium leading-4', options?.className)}
+      title={options?.title}
+    >
       {content}
     </Badge>
   )
@@ -185,7 +205,7 @@ function renderTagBadges(tags?: AccountTagSummary[] | null) {
         <Badge
           key={tag.id}
           variant="secondary"
-          className="min-w-0 max-w-[7.5rem] truncate px-2 py-px text-[11px] font-medium leading-4"
+          className="min-w-0 max-w-[7.5rem] truncate border-base-300/90 bg-base-200/90 px-2 py-px text-[11px] font-medium leading-4 text-base-content/92"
           title={tag.name}
         >
           {tag.name}
@@ -229,27 +249,36 @@ function CompactWindowLine({
   text,
   resetText,
   accentClassName,
+  title,
+  labelClassName,
 }: {
   label: string
   percent: number
   text: string
   resetText?: string
   accentClassName?: string
+  title?: string
+  labelClassName?: string
 }) {
   const summary = resetText ? `${text} · ${resetText}` : text
 
   return (
-    <div className="grid grid-cols-[max-content,minmax(0,1fr),minmax(0,1fr)] items-center gap-x-2 gap-y-0.5 xl:grid-cols-[max-content,minmax(0,1fr),minmax(0,1fr),minmax(5rem,1fr)]">
-      <span className="truncate whitespace-nowrap text-[10px] font-semibold uppercase tracking-[0.06em] leading-4 text-base-content/48 font-mono tabular-nums">
+    <div
+      className="grid grid-cols-[max-content,minmax(0,1fr),minmax(0,1fr)] items-center gap-x-2 gap-y-0.5 xl:grid-cols-[max-content,minmax(0,1fr),minmax(0,1fr),minmax(5rem,1fr)]"
+      title={title ?? summary}
+    >
+      <span
+        className={cn(
+          'truncate whitespace-nowrap text-[10px] font-semibold uppercase tracking-[0.06em] leading-4 text-base-content/48 font-mono tabular-nums',
+          labelClassName,
+        )}
+      >
         {label}
       </span>
-      <span className="truncate whitespace-nowrap text-[11px] leading-4 text-base-content/68 font-mono tabular-nums" title={text}>
+      <span className="truncate whitespace-nowrap text-[11px] leading-4 text-base-content/68 font-mono tabular-nums">
         {text}
       </span>
-      <span
-        className="truncate whitespace-nowrap text-[11px] leading-4 text-base-content/68 font-mono tabular-nums"
-        title={summary}
-      >
+      <span className="truncate whitespace-nowrap text-[11px] leading-4 text-base-content/68 font-mono tabular-nums">
         {resetText ?? '—'}
       </span>
       <div className="col-start-2 col-span-2 flex min-w-0 items-center gap-2 xl:col-start-4 xl:col-span-1">
@@ -270,29 +299,71 @@ function CompactWindowLine({
 function CompactTimestampLine({
   label,
   value,
+  title,
 }: {
   label: string
   value: string
+  title?: string
 }) {
   return (
-    <div className="grid grid-cols-[max-content,minmax(0,1fr)] items-center gap-1">
+    <div className="grid grid-cols-[max-content,minmax(0,1fr)] items-center gap-1" title={title ?? value}>
       <span className="truncate whitespace-nowrap text-[10px] font-semibold uppercase tracking-[0.06em] leading-4 text-base-content/48">
         {label}
       </span>
-      <span className="truncate whitespace-nowrap text-[13px] leading-4 text-base-content/72 font-mono tabular-nums" title={value}>
+      <span className="truncate whitespace-nowrap text-[12px] leading-4 text-base-content/72 font-mono tabular-nums">
         {value}
       </span>
     </div>
   )
 }
 
+function formatWindowShortLabel(windowDurationMins?: number | null) {
+  if (!Number.isFinite(windowDurationMins ?? NaN)) return null
+  const minutes = Math.max(0, Math.round(windowDurationMins ?? 0))
+  if (minutes === 300) return '5H'
+  if (minutes === 10_080) return '7D'
+  if (minutes % (60 * 24) === 0) return `${minutes / (60 * 24)}D`
+  if (minutes % 60 === 0) return `${minutes / 60}H`
+  return `${minutes}M`
+}
+
+function buildLatestActionTitle(
+  item: UpstreamAccountSummary,
+  labels: UpstreamAccountsTableProps['labels'],
+) {
+  const message = item.lastActionReasonMessage ?? item.lastError
+  const hasActionDetails =
+    Boolean(item.lastAction || item.lastActionSource || item.lastActionReasonCode || item.lastActionAt || message) ||
+    Number.isFinite(item.lastActionHttpStatus ?? NaN)
+  if (!hasActionDetails) return null
+
+  const action = labels.action(item.lastAction) ?? labels.unknown
+  const source = labels.actionSource(item.lastActionSource) ?? labels.unknown
+  const reason = labels.actionReason(item.lastActionReasonCode) ?? labels.unknown
+  const httpStatus = Number.isFinite(item.lastActionHttpStatus ?? NaN)
+    ? `HTTP ${item.lastActionHttpStatus}`
+    : labels.unavailable
+  const occurredAt = formatDateTime(item.lastActionAt, labels.never)
+  const parts = [
+    `${labels.latestActionFieldAction}: ${action}`,
+    `${labels.latestActionFieldSource}: ${source}`,
+    `${labels.latestActionFieldReason}: ${reason}`,
+    `${labels.latestActionFieldHttpStatus}: ${httpStatus}`,
+    `${labels.latestActionFieldOccurredAt}: ${occurredAt}`,
+  ]
+  if (message) {
+    parts.push(`${labels.latestActionFieldMessage}: ${message}`)
+  }
+  return parts.join(' · ')
+}
+
 function buildLatestActionSummary(
   item: UpstreamAccountSummary,
   labels: UpstreamAccountsTableProps['labels'],
 ) {
-  const source = labels.actionSource(item)
-  const reason = labels.actionReason(item)
-  const parts = [source, reason]
+  const action = labels.action(item.lastAction)
+  const reason = labels.actionReason(item.lastActionReasonCode)
+  const parts = [action, reason]
   if (Number.isFinite(item.lastActionHttpStatus ?? NaN)) {
     parts.push(`HTTP ${item.lastActionHttpStatus}`)
   }
@@ -389,11 +460,31 @@ export function UpstreamAccountsTable({
             const secondaryResetText = item.secondaryWindow?.resetsAt
               ? `${labels.nextResetCompact ?? labels.nextReset} ${formatDateTime(item.secondaryWindow.resetsAt)}`
               : undefined
+            const primaryLabel =
+              formatWindowShortLabel(item.primaryWindow?.windowDurationMins) ?? labels.primaryShort.toUpperCase()
+            const secondaryLabel =
+              formatWindowShortLabel(item.secondaryWindow?.windowDurationMins) ?? labels.secondaryShort.toUpperCase()
+            const primaryWindowUnexpected =
+              item.primaryWindow != null &&
+              Number.isFinite(item.primaryWindow.windowDurationMins) &&
+              Math.round(item.primaryWindow.windowDurationMins) !== 300
+            const secondaryWindowUnexpected =
+              item.secondaryWindow != null &&
+              Number.isFinite(item.secondaryWindow.windowDurationMins) &&
+              Math.round(item.secondaryWindow.windowDurationMins) !== 10_080
             const selected = item.id === selectedId
             const enableStatus = accountEnableStatus(item)
             const workStatus = accountWorkStatus(item)
             const healthStatus = accountHealthStatus(item)
             const syncState = accountSyncState(item)
+            const latestActionTitle = buildLatestActionTitle(item, labels)
+            const healthBadgeTitle =
+              healthStatus !== 'normal'
+                ? item.lastActionReasonMessage ?? item.lastError ?? latestActionTitle
+                : undefined
+            const primaryWindowTitle = [item.primaryWindow?.limitText, primaryResetText].filter(Boolean).join(' · ') || undefined
+            const secondaryWindowTitle =
+              [item.secondaryWindow?.limitText, secondaryResetText].filter(Boolean).join(' · ') || undefined
             return (
               <tr
                 key={item.id}
@@ -422,7 +513,7 @@ export function UpstreamAccountsTable({
                 <td className="px-4 py-3">
                   <div className="min-w-0">
                     <p
-                      className="truncate whitespace-nowrap text-[15px] font-semibold leading-5 text-base-content"
+                      className="truncate whitespace-nowrap text-[14px] font-semibold leading-5 text-base-content"
                       title={item.displayName}
                     >
                       {item.displayName}
@@ -443,11 +534,16 @@ export function UpstreamAccountsTable({
                           ? compactBadge(labels.syncState(syncState), syncBadgeVariant(syncState))
                           : null}
                         {healthStatus !== 'normal'
-                          ? compactBadge(labels.healthStatus(healthStatus), healthBadgeVariant(healthStatus))
+                          ? compactBadge(labels.healthStatus(healthStatus), healthBadgeVariant(healthStatus), {
+                            title: healthBadgeTitle ?? undefined,
+                          })
                           : null}
                         {compactBadge(kindLabel(item, labels), 'secondary')}
                         {item.planType
-                          ? compactBadge(item.planType, 'accent')
+                          ? compactBadge(item.planType, 'accent', {
+                            className: 'border-accent/45 bg-accent/22 text-base-content/88',
+                            title: item.planType,
+                          })
                           : null}
                       </div>
                       <div className="flex min-w-0 flex-wrap items-center gap-1">
@@ -472,23 +568,28 @@ export function UpstreamAccountsTable({
                     <CompactTimestampLine
                       label={labels.latestAction}
                       value={buildLatestActionSummary(item, labels)}
+                      title={latestActionTitle ?? undefined}
                     />
                   </div>
                 </td>
                 <td className="pl-1 pr-3 py-3 align-middle">
                   <div className="space-y-1.5">
                     <CompactWindowLine
-                      label={labels.primaryShort}
+                      label={primaryLabel}
                       percent={primary}
                       text={item.primaryWindow?.usedText ?? '—'}
                       resetText={primaryResetText}
+                      title={primaryWindowTitle}
+                      labelClassName={primaryWindowUnexpected ? 'text-warning/78' : undefined}
                     />
                     <CompactWindowLine
-                      label={labels.secondaryShort}
+                      label={secondaryLabel}
                       percent={secondary}
                       text={item.secondaryWindow?.usedText ?? '—'}
                       resetText={secondaryResetText}
                       accentClassName="bg-secondary"
+                      title={secondaryWindowTitle}
+                      labelClassName={secondaryWindowUnexpected ? 'text-warning/78' : undefined}
                     />
                   </div>
                 </td>
