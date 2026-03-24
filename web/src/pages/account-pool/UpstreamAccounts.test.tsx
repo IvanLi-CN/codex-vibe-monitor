@@ -828,7 +828,7 @@ describe("UpstreamAccountsPage duplicates", () => {
       'input[name="compactFirstByteTimeoutSecs"]',
     );
     expect(compactInput).toBeInstanceOf(HTMLInputElement);
-    expect((compactInput as HTMLInputElement).value).toBe("420");
+    expect((compactInput as HTMLInputElement).value).toBe("300");
     expect((compactInput as HTMLInputElement).disabled).toBe(true);
 
     const saveButton = findButton(/Save settings/i);

@@ -1059,9 +1059,13 @@ export default function UpstreamAccountsPage() {
       return
     }
     if (isRoutingDialogOpen) {
-      if (!isRoutingDialogInspectOnly) return
-      setRoutingDraft(buildRoutingDraft(routing))
-      if (routingWritesEnabled) {
+      if (!routingWritesEnabled) {
+        setRoutingDraft(buildRoutingDraft(routing))
+        setIsRoutingDialogInspectOnly(true)
+        return
+      }
+      if (isRoutingDialogInspectOnly) {
+        setRoutingDraft(buildRoutingDraft(routing))
         setIsRoutingDialogInspectOnly(false)
       }
       return
