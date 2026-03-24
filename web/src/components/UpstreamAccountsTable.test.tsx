@@ -208,6 +208,8 @@ describe('UpstreamAccountsTable', () => {
     expect(html).toContain('Duplicate')
     expect(html).toContain('Mother')
     expect(html).toContain('team')
+    expect(html).toContain('data-plan="team"')
+    expect(html).toContain('upstream-plan-badge')
     expect(html).toContain('vip')
     expect(html).toContain('burst-safe')
     expect(html).toContain('prod-apac')

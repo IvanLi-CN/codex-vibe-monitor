@@ -4,6 +4,7 @@ import { MotherAccountBadge } from './MotherAccountToggle'
 import { Badge } from './ui/badge'
 import { Tooltip } from './ui/tooltip'
 import type { AccountTagSummary, UpstreamAccountSummary } from '../lib/api'
+import { upstreamPlanBadgeRecipe } from '../lib/upstreamAccountBadges'
 import { cn } from '../lib/utils'
 
 interface UpstreamAccountsTableProps {
@@ -170,9 +171,10 @@ function syncBadgeVariant(status: string): 'warning' | 'secondary' {
 
 function compactBadge(
   content: ReactNode,
-  variant: 'accent' | 'secondary' | 'success' | 'warning' | 'error' | 'info',
+  variant: 'default' | 'accent' | 'secondary' | 'success' | 'warning' | 'error' | 'info',
   options?: {
     className?: string
+    dataPlan?: string
     title?: string
   },
 ) {
@@ -180,6 +182,7 @@ function compactBadge(
     <Badge
       variant={variant}
       className={cn('shrink-0 whitespace-nowrap px-2 py-px text-[11px] font-medium leading-4', options?.className)}
+      data-plan={options?.dataPlan}
       title={options?.title}
     >
       {content}
@@ -485,6 +488,7 @@ export function UpstreamAccountsTable({
             const primaryWindowTitle = [item.primaryWindow?.limitText, primaryResetText].filter(Boolean).join(' · ') || undefined
             const secondaryWindowTitle =
               [item.secondaryWindow?.limitText, secondaryResetText].filter(Boolean).join(' · ') || undefined
+            const planBadge = upstreamPlanBadgeRecipe(item.planType)
             return (
               <tr
                 key={item.id}
@@ -539,9 +543,10 @@ export function UpstreamAccountsTable({
                           })
                           : null}
                         {compactBadge(kindLabel(item, labels), 'secondary')}
-                        {item.planType
-                          ? compactBadge(item.planType, 'accent', {
-                            className: 'border-accent/45 bg-accent/22 text-base-content/88',
+                        {item.planType && planBadge
+                          ? compactBadge(item.planType, planBadge.variant, {
+                            className: planBadge.className,
+                            dataPlan: planBadge.dataPlan,
                             title: item.planType,
                           })
                           : null}

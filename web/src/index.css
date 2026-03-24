@@ -171,6 +171,86 @@ body {
     @apply text-primary underline decoration-primary/60 underline-offset-4 transition-colors hover:text-primary/85;
   }
 
+  .upstream-plan-badge {
+    font-weight: 600;
+    letter-spacing: 0.01em;
+  }
+
+  :root .upstream-plan-badge[data-plan='local'],
+  [data-theme='vibe-light'] .upstream-plan-badge[data-plan='local'] {
+    border-color: rgba(96, 165, 250, 0.34);
+    background-color: rgba(239, 246, 255, 0.92);
+    color: #1d4ed8;
+    box-shadow: inset 0 0 0 1px rgba(191, 219, 254, 0.52);
+  }
+
+  :root .upstream-plan-badge[data-plan='team'],
+  [data-theme='vibe-light'] .upstream-plan-badge[data-plan='team'] {
+    border-color: rgba(45, 212, 191, 0.34);
+    background-color: rgba(240, 253, 250, 0.92);
+    color: #0f766e;
+    box-shadow: inset 0 0 0 1px rgba(153, 246, 228, 0.45);
+  }
+
+  :root .upstream-plan-badge[data-plan='pro'],
+  [data-theme='vibe-light'] .upstream-plan-badge[data-plan='pro'] {
+    border-color: rgba(129, 140, 248, 0.32);
+    background-color: rgba(238, 242, 255, 0.92);
+    color: #4338ca;
+    box-shadow: inset 0 0 0 1px rgba(199, 210, 254, 0.48);
+  }
+
+  :root .upstream-plan-badge[data-plan='enterprise'],
+  [data-theme='vibe-light'] .upstream-plan-badge[data-plan='enterprise'] {
+    border-color: rgba(234, 179, 8, 0.34);
+    background-color: rgba(254, 252, 232, 0.94);
+    color: #a16207;
+    box-shadow: inset 0 0 0 1px rgba(253, 224, 71, 0.38);
+  }
+
+  :root .upstream-plan-badge[data-plan='free'],
+  [data-theme='vibe-light'] .upstream-plan-badge[data-plan='free'] {
+    border-color: rgba(249, 115, 22, 0.3);
+    background-color: rgba(255, 247, 237, 0.94);
+    color: #c2410c;
+    box-shadow: inset 0 0 0 1px rgba(253, 186, 116, 0.36);
+  }
+
+  [data-theme='vibe-dark'] .upstream-plan-badge[data-plan='local'] {
+    border-color: rgba(96, 165, 250, 0.38);
+    background-color: rgba(20, 34, 56, 0.8);
+    color: #bfdbfe;
+    box-shadow: inset 0 0 0 1px rgba(59, 130, 246, 0.22);
+  }
+
+  [data-theme='vibe-dark'] .upstream-plan-badge[data-plan='team'] {
+    border-color: rgba(45, 212, 191, 0.36);
+    background-color: rgba(12, 43, 42, 0.78);
+    color: #99f6e4;
+    box-shadow: inset 0 0 0 1px rgba(20, 184, 166, 0.22);
+  }
+
+  [data-theme='vibe-dark'] .upstream-plan-badge[data-plan='pro'] {
+    border-color: rgba(129, 140, 248, 0.36);
+    background-color: rgba(34, 30, 68, 0.8);
+    color: #c7d2fe;
+    box-shadow: inset 0 0 0 1px rgba(99, 102, 241, 0.22);
+  }
+
+  [data-theme='vibe-dark'] .upstream-plan-badge[data-plan='enterprise'] {
+    border-color: rgba(250, 204, 21, 0.34);
+    background-color: rgba(61, 45, 8, 0.8);
+    color: #fde68a;
+    box-shadow: inset 0 0 0 1px rgba(234, 179, 8, 0.2);
+  }
+
+  [data-theme='vibe-dark'] .upstream-plan-badge[data-plan='free'] {
+    border-color: rgba(251, 146, 60, 0.34);
+    background-color: rgba(67, 34, 10, 0.8);
+    color: #fdba74;
+    box-shadow: inset 0 0 0 1px rgba(249, 115, 22, 0.18);
+  }
+
 
   .dialog-overlay {
     background: var(--dialog-overlay-bg);

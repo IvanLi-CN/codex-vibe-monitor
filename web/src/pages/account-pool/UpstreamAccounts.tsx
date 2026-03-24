@@ -62,6 +62,7 @@ import {
 import { validateUpstreamBaseUrl } from '../../lib/upstreamBaseUrl'
 import { generatePoolRoutingKey } from '../../lib/poolRouting'
 import { applyMotherUpdateToItems } from '../../lib/upstreamMother'
+import { upstreamPlanBadgeRecipe } from '../../lib/upstreamAccountBadges'
 import { cn } from '../../lib/utils'
 import { useTranslation } from '../../i18n'
 
@@ -1130,6 +1131,7 @@ export default function UpstreamAccountsPage() {
 
   const selectedDetail = detail?.id === selectedId ? detail : null
   const selected = selectedDetail ?? selectedSummary
+  const selectedPlanBadge = upstreamPlanBadgeRecipe(selected?.planType)
   const visibleAccountActionError =
     typeof selectedId === 'number' ? actionError.accountMessages[selectedId] ?? null : null
   const visibleRoutingError = actionError.routing
@@ -2333,7 +2335,15 @@ export default function UpstreamAccountsPage() {
                     {accountHealthStatusLabel(accountHealthStatus(selected))}
                   </Badge>
                   <Badge variant={kindVariant(selected.kind)}>{accountKindLabel(selected.kind)}</Badge>
-                  {selected.planType ? <Badge variant="secondary">{selected.planType}</Badge> : null}
+                  {selected.planType && selectedPlanBadge ? (
+                    <Badge
+                      variant={selectedPlanBadge.variant}
+                      className={selectedPlanBadge.className}
+                      data-plan={selectedPlanBadge.dataPlan}
+                    >
+                      {selected.planType}
+                    </Badge>
+                  ) : null}
                   {selected.duplicateInfo ? (
                     <Badge variant="warning">
                       {t('accountPool.upstreamAccounts.duplicate.badge')}
