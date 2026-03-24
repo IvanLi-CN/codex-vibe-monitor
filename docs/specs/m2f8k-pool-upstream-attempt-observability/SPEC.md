@@ -134,6 +134,19 @@
 - `cd web && bun run test --run src/components/InvocationTable.test.tsx`
 - `cd web && bun run build`
 
+## Visual Evidence (PR)
+
+- source_type: `storybook_canvas`
+- target_program: `mock-only`
+- capture_scope: `browser-viewport`
+- sensitive_exclusion: `N/A`
+- submission_gate: `pending-owner-approval`
+- story_id_or_title: `Monitoring/InvocationTable/Pool Attempt Detail Lifecycle`
+- state: `expanded detail lifecycle`
+- evidence_note: `证明本次任务新增的号池尝试明细在展开详情后可直接看到最终落定的 attempt 行，且同一条 attempt 会原地补齐 HTTP 状态、阶段耗时与 upstream request id，不会出现空明细或重复 attempt 行。`
+
+![号池尝试明细生命周期 Storybook 截图](./assets/pool-attempt-detail-lifecycle.png)
+
 ## 文档更新（Docs to Update）
 
 - `docs/specs/README.md`：登记本 spec 与当前状态。
