@@ -4,7 +4,7 @@
 
 - Status: 已完成（5/5）
 - Created: 2026-03-16
-- Last: 2026-03-24
+- Last: 2026-03-25
 
 ## 背景 / 问题陈述
 
@@ -60,6 +60,7 @@
 - 账号区固定只显示 `displayName` 一行字段值；分组名不得出现在账号列表行里，避免与主信息竞争空间。
 - 账号字段值下方必须显示独立的标记带，顺序固定为：母号、重复账号、状态、类型、Plan、tags；tags 最多渲染 `3` 个，剩余汇总为 `+N`。
 - `+N` 必须保留可发现路径：鼠标悬浮时显示隐藏 tags，键盘聚焦同样可读取隐藏 tags 提示，不得因为整行点击逻辑而失效。
+- Storybook `CompactLongLabels` 场景中的 `Compact 可用 / Compact 不支持` 与 tags `+N` badge 必须与同排相邻 badge 维持同一顶部对齐；不得再通过额外 `span > Badge(div)` 包裹来挂载 `title`。
 - 同步列必须同时显示最近成功同步时间与上次调用时间，两者各占一行且值不换行；没有调用记录时显示占位值。
 - 账号可调用时显示 `工作 / 空闲` 标记；`working` 标记文案必须显示最近 `30` 分钟活跃 sticky route 数量，`idle` 保持纯文本；若账号因限流不可调用，则继续显示 `限流` 标记；`disabled`、`syncing` 与异常健康态不显示工作态标记。
 - `5 小时` / `7 天` 必须在同一列中上下排列；每一行都要包含窗口名、当前使用文案、重置时间与百分比，且值不换行。
@@ -81,11 +82,13 @@
 - Given 某账号同时有母号、重复账号、状态、类型、Plan 和超过 `3` 个 tags，When 列表渲染，Then 标记带按固定顺序显示，且 tag 区域以 `+N` 汇总剩余项。
 - Given OAuth 与 API Key 账号都存在窗口数据，When 列表渲染，Then `5 小时` / `7 天` 统一出现在同一列的两行摘要中，仍能区分两种窗口。
 - Given 现有账号列表选中逻辑与详情入口，When 点击整行或按 Enter/Space，Then 仍然选中账号并可继续打开号池详情抽屉。
+- Given Storybook `Account Pool/Pages/Upstream Accounts/List — CompactLongLabels` 暗色主题，When 测量 `Compact 不支持` 对 `OAuth/pro`、`Compact 可用` 对 `API Key/local` 与 tags `+N` 对可见 tag 的 DOM `top/height`，Then 各自 `top` 偏差都不超过 `0.5px`，且高度保持 `20px`。
 
 ## 质量门槛（Quality Gates）
 
 - `cd web && bun run test`
 - `cd web && bun run build`
+- `cd web && bun run build-storybook`
 - 本地浏览器 smoke：打开当前 workspace 启动的账号页，验证列表无横向滚动依赖、长文本截断稳定、详情入口可用。
 
 ## 里程碑（Milestones）
@@ -133,6 +136,17 @@
   image:
   ![上游账号列表暗色主题](./assets/upstream-accounts-list-dark.png)
 
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Account Pool/Pages/Upstream Accounts/List — CompactLongLabels
+  state: dark-theme / compact badge alignment hotfix
+  evidence_note: 验证暗色主题下 `Compact 不支持`、`Compact 可用` 与 tags `+1` 不再因额外 `span > Badge(div)` 包裹而下沉；浏览器实测 `Compact 不支持/OAuth/pro` 同为 `top=1170.5 height=20`，`Compact 可用/API Key/local` 同为 `top=1271.5 height=20`，`+1/prod-apac` 同为 `top=1198.5 height=20`。
+  image:
+  ![上游账号列表 compact badge 对齐热修](./assets/upstream-accounts-compact-badge-alignment-dark.png)
+
 ## 风险 / 假设
 
 - 假设：账号下方的标记带不计入“两行字段值”限制，但自身仍保持单行紧凑展示。
@@ -151,3 +165,4 @@
 - 2026-03-16: 为最近调用时间聚合补充 `codex_invocations` 表达式索引，并将列表返回的 `lastActivityAt` 统一序列化为 UTC ISO，避免浏览器按本地时区误解析。
 - 2026-03-16: 调整标记带折叠策略与 `+N` 提示交互，继续保留前 `3` 个 tags，同时让折叠提示支持悬浮与键盘聚焦读取。
 - 2026-03-17: 快车道收敛完成，PR visual evidence 已同步，review-loop 对最新 PR head 收敛完成，进入直接合并阶段。
+- 2026-03-25: 修复 `CompactLongLabels` 场景里 `Compact 可用 / Compact 不支持` 与 tags `+1` 的 `1.5px` 垂直下沉；把 `title` 直接挂回 badge 本体，移除额外 `span > Badge(div)` 包裹，并补齐 Storybook play DOM 对齐断言、组件结构回归与新一轮暗色主题视觉证据。
