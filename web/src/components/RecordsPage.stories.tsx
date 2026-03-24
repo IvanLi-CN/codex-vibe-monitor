@@ -1,10 +1,16 @@
-import { useEffect, useRef, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, type ReactNode } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { expect, userEvent, within } from 'storybook/test'
+import { expect, userEvent, waitFor, within } from 'storybook/test'
 import { I18nProvider } from '../i18n'
-import type { ApiInvocation, InvocationRecordsQuery, InvocationSortBy, InvocationSortOrder } from '../lib/api'
+import type {
+  ApiInvocation,
+  InvocationRecordsQuery,
+  InvocationSortBy,
+  InvocationSortOrder,
+} from '../lib/api'
 import RecordsPage from '../pages/Records'
 import {
+  createStoryPoolAttemptsByInvokeId,
   createStoryInvocationRecordsResponse,
   createStoryInvocationRecordsSummary,
   STORYBOOK_INVOCATION_RECORDS,
@@ -41,6 +47,9 @@ function alignStoryRecordsToNow(records: ApiInvocation[]) {
 }
 
 const STORYBOOK_RECENT_INVOCATION_RECORDS = alignStoryRecordsToNow(STORYBOOK_INVOCATION_RECORDS)
+const STORYBOOK_POOL_DETAILS_RECORDS = STORYBOOK_RECENT_INVOCATION_RECORDS.filter(
+  (record) => record.routeMode === 'pool' && record.status !== 'running',
+)
 
 function normalizeText(value: string | null) {
   const normalized = value?.trim() ?? ''
@@ -201,11 +210,21 @@ function StorybookRecordsPageMock({
   const originalFetchRef = useRef<typeof window.fetch | null>(null)
   const originalSetIntervalRef = useRef<typeof window.setInterval | null>(null)
   const invocationSearchCountRef = useRef(0)
+  const poolAttemptsByInvokeId = useMemo(() => createStoryPoolAttemptsByInvokeId(records), [records])
+  const recordsRef = useRef(records)
+  const newRecordsCountRef = useRef(newRecordsCount)
+  const refreshDelayMsRef = useRef(refreshDelayMs)
+  const poolAttemptsByInvokeIdRef = useRef(poolAttemptsByInvokeId)
+
+  recordsRef.current = records
+  newRecordsCountRef.current = newRecordsCount
+  refreshDelayMsRef.current = refreshDelayMs
+  poolAttemptsByInvokeIdRef.current = poolAttemptsByInvokeId
 
   const maybeDelayRefresh = async () => {
-    if (refreshDelayMs <= 0) return
+    if (refreshDelayMsRef.current <= 0) return
     await new Promise<void>((resolve) => {
-      window.setTimeout(resolve, refreshDelayMs)
+      window.setTimeout(resolve, refreshDelayMsRef.current)
     })
   }
 
@@ -227,7 +246,7 @@ function StorybookRecordsPageMock({
       const params = url.searchParams
       const sortBy = (params.get('sortBy') as InvocationSortBy | null) ?? 'occurredAt'
       const sortOrder = (params.get('sortOrder') as InvocationSortOrder | null) ?? 'desc'
-      const filtered = filterRecords(records, params)
+      const filtered = filterRecords(recordsRef.current, params)
       const sorted = sortRecords(filtered, sortBy, sortOrder)
 
       if (path === '/api/invocations') {
@@ -273,8 +292,14 @@ function StorybookRecordsPageMock({
       if (path === '/api/invocations/new-count') {
         return jsonResponse({
           snapshotId: Number(params.get('snapshotId') ?? SNAPSHOT_ID),
-          newRecordsCount,
+          newRecordsCount: newRecordsCountRef.current,
         })
+      }
+
+      const poolAttemptsMatch = path.match(/^\/api\/invocations\/([^/]+)\/pool-attempts$/)
+      if (poolAttemptsMatch) {
+        const invokeId = decodeURIComponent(poolAttemptsMatch[1] ?? '')
+        return jsonResponse(poolAttemptsByInvokeIdRef.current[invokeId] ?? [])
       }
 
       return (originalFetchRef.current as typeof window.fetch)(input, init)
@@ -417,5 +442,39 @@ export const AutocompleteSuppressedFilters: Story = {
 
     await expect(listbox).toBeVisible()
     await expect(listbox.textContent ?? '').toContain('gpt-5.3-codex')
+  },
+}
+
+export const PoolDetailsExpanded: Story = {
+  parameters: {
+    newRecordsCount: 0,
+    records: STORYBOOK_POOL_DETAILS_RECORDS,
+  },
+  render: () => <RecordsPage />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const doc = canvasElement.ownerDocument
+
+    await expect(canvas.getByRole('heading', { name: /记录|records/i })).toBeInTheDocument()
+
+    await userEvent.click(canvas.getByRole('tab', { name: /网络|network/i }))
+
+    let detailToggle: HTMLButtonElement | null = null
+    await waitFor(() => {
+      detailToggle =
+        Array.from(doc.querySelectorAll('button[aria-expanded="false"]')).find(
+          (element): element is HTMLButtonElement => element instanceof HTMLButtonElement && element.offsetParent !== null,
+        ) ?? null
+      expect(detailToggle).not.toBeNull()
+    })
+
+    await userEvent.click(detailToggle!)
+
+    await waitFor(() => {
+      expect(doc.querySelector('[data-testid="records-detail-summary-strip"]')).not.toBeNull()
+      expect(doc.querySelector('[data-testid="pool-attempts-list"]')).not.toBeNull()
+    })
+
+    await expect(doc.body.textContent ?? '').toContain('Pool Alpha 17')
   },
 }

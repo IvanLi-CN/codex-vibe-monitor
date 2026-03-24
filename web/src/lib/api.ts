@@ -1401,10 +1401,45 @@ function normalizePoolRoutingSettings(
         : DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS.priorityAvailableAccountCap,
   };
   return {
+    writesEnabled:
+      typeof payload.writesEnabled === "boolean" ? payload.writesEnabled : true,
     apiKeyConfigured: payload.apiKeyConfigured,
     maskedApiKey:
       typeof payload.maskedApiKey === "string" ? payload.maskedApiKey : null,
     maintenance,
+    timeouts: normalizePoolRoutingTimeoutSettings(payload.timeouts),
+  };
+}
+
+function normalizePoolRoutingTimeoutSettings(
+  raw: unknown,
+): PoolRoutingTimeoutSettings {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  return {
+    responsesFirstByteTimeoutSecs:
+      normalizeFiniteNumber(payload.responsesFirstByteTimeoutSecs) ?? 120,
+    compactFirstByteTimeoutSecs:
+      normalizeFiniteNumber(payload.compactFirstByteTimeoutSecs) ??
+      normalizeFiniteNumber(payload.compactUpstreamHandshakeTimeoutSecs) ??
+      300,
+    responsesStreamTimeoutSecs:
+      normalizeFiniteNumber(payload.responsesStreamTimeoutSecs) ?? 300,
+    compactStreamTimeoutSecs:
+      normalizeFiniteNumber(payload.compactStreamTimeoutSecs) ?? 300,
+  };
+}
+
+function normalizeCompactSupportState(raw: unknown): CompactSupportState {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const status =
+    payload.status === "supported" || payload.status === "unsupported"
+      ? payload.status
+      : "unknown";
+  return {
+    status,
+    observedAt:
+      typeof payload.observedAt === "string" ? payload.observedAt : null,
+    reason: typeof payload.reason === "string" ? payload.reason : null,
   };
 }
 
@@ -1501,6 +1536,12 @@ export interface LocalLimitSnapshot {
   primaryLimit?: number | null;
   secondaryLimit?: number | null;
   limitUnit: string;
+}
+
+export interface CompactSupportState {
+  status: "unknown" | "supported" | "unsupported" | string;
+  observedAt?: string | null;
+  reason?: string | null;
 }
 
 export interface UpstreamAccountHistoryPoint {
@@ -1607,6 +1648,7 @@ export interface UpstreamAccountSummary {
   secondaryWindow?: RateWindowSnapshot | null;
   credits?: CreditsSnapshot | null;
   localLimits?: LocalLimitSnapshot | null;
+  compactSupport?: CompactSupportState | null;
   duplicateInfo?: UpstreamAccountDuplicateInfo | null;
   tags: AccountTagSummary[];
   effectiveRoutingRule: EffectiveRoutingRule;
@@ -1641,9 +1683,11 @@ export interface UpstreamAccountGroupSummary {
 }
 
 export interface PoolRoutingSettings {
+  writesEnabled: boolean;
   apiKeyConfigured: boolean;
   maskedApiKey?: string | null;
   maintenance?: PoolRoutingMaintenanceSettings;
+  timeouts?: PoolRoutingTimeoutSettings;
 }
 
 export interface PoolRoutingMaintenanceSettings {
@@ -1658,9 +1702,17 @@ export interface UpdatePoolRoutingMaintenanceSettingsPayload {
   priorityAvailableAccountCap?: number;
 }
 
+export interface PoolRoutingTimeoutSettings {
+  responsesFirstByteTimeoutSecs: number;
+  compactFirstByteTimeoutSecs: number;
+  responsesStreamTimeoutSecs: number;
+  compactStreamTimeoutSecs: number;
+}
+
 export interface UpdatePoolRoutingSettingsPayload {
   apiKey?: string;
   maintenance?: UpdatePoolRoutingMaintenanceSettingsPayload;
+  timeouts?: Partial<PoolRoutingTimeoutSettings>;
 }
 
 export interface UpstreamAccountListResponse {
@@ -2250,6 +2302,7 @@ function normalizeUpstreamAccountSummary(
     secondaryWindow: normalizeRateWindowSnapshot(payload.secondaryWindow),
     credits: normalizeCreditsSnapshot(payload.credits),
     localLimits: normalizeLocalLimitSnapshot(payload.localLimits),
+    compactSupport: normalizeCompactSupportState(payload.compactSupport),
     duplicateInfo: normalizeUpstreamAccountDuplicateInfo(payload.duplicateInfo),
     tags: Array.isArray(payload.tags)
       ? payload.tags

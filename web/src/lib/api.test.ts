@@ -631,6 +631,7 @@ describe("account pool frontend API helpers", () => {
     const response = await fetchUpstreamAccounts();
 
     expect(response.routing).toEqual({
+      writesEnabled: true,
       apiKeyConfigured: true,
       maskedApiKey: "pool-live••••••c0de",
       maintenance: {
@@ -641,6 +642,48 @@ describe("account pool frontend API helpers", () => {
         priorityAvailableAccountCap:
           DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS.priorityAvailableAccountCap,
       },
+      timeouts: {
+        responsesFirstByteTimeoutSecs: 120,
+        compactFirstByteTimeoutSecs: 300,
+        responsesStreamTimeoutSecs: 300,
+        compactStreamTimeoutSecs: 300,
+      },
+    });
+  });
+
+  it("normalizes explicit routing timeouts from the upstream account list payload", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(
+          JSON.stringify({
+            writesEnabled: true,
+            groups: [],
+            hasUngroupedAccounts: false,
+            routing: {
+              apiKeyConfigured: true,
+              maskedApiKey: "pool-live••••••c0de",
+              timeouts: {
+                responsesFirstByteTimeoutSecs: 180,
+                compactFirstByteTimeoutSecs: 420,
+                responsesStreamTimeoutSecs: 360,
+                compactStreamTimeoutSecs: 540,
+              },
+            },
+            items: [],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch,
+    );
+
+    const response = await fetchUpstreamAccounts();
+
+    expect(response.routing?.timeouts).toEqual({
+      responsesFirstByteTimeoutSecs: 180,
+      compactFirstByteTimeoutSecs: 420,
+      responsesStreamTimeoutSecs: 360,
+      compactStreamTimeoutSecs: 540,
     });
   });
 
@@ -679,6 +722,47 @@ describe("account pool frontend API helpers", () => {
     expect(response.items[0]?.duplicateInfo).toEqual({
       peerAccountIds: [2],
       reasons: ["sharedChatgptAccountId"],
+    });
+  });
+
+  it("normalizes compact support state from upstream account payloads", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(
+          JSON.stringify({
+            writesEnabled: true,
+            groups: [],
+            hasUngroupedAccounts: false,
+            items: [
+              {
+                id: 1,
+                kind: "oauth_codex",
+                provider: "codex",
+                displayName: "Compact Probe",
+                isMother: false,
+                status: "active",
+                enabled: true,
+                compactSupport: {
+                  status: "unsupported",
+                  observedAt: "2026-03-16T02:08:00.000Z",
+                  reason:
+                    "No available channel for compact model gpt-5.4-openai-compact",
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch,
+    );
+
+    const response = await fetchUpstreamAccounts();
+
+    expect(response.items[0]?.compactSupport).toEqual({
+      status: "unsupported",
+      observedAt: "2026-03-16T02:08:00.000Z",
+      reason: "No available channel for compact model gpt-5.4-openai-compact",
     });
   });
 
@@ -776,6 +860,12 @@ describe("account pool frontend API helpers", () => {
         expect(init?.method).toBe("PUT");
         expect(JSON.parse(String(init?.body))).toEqual({
           apiKey: "pool-secret",
+          timeouts: {
+            responsesFirstByteTimeoutSecs: 180,
+            compactFirstByteTimeoutSecs: 420,
+            responsesStreamTimeoutSecs: 360,
+            compactStreamTimeoutSecs: 540,
+          },
         });
         return new Response(
           JSON.stringify({
@@ -786,6 +876,12 @@ describe("account pool frontend API helpers", () => {
               secondarySyncIntervalSecs: 1800,
               priorityAvailableAccountCap: 100,
             },
+            timeouts: {
+              responsesFirstByteTimeoutSecs: 180,
+              compactFirstByteTimeoutSecs: 420,
+              responsesStreamTimeoutSecs: 360,
+              compactStreamTimeoutSecs: 540,
+            },
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         );
@@ -793,14 +889,29 @@ describe("account pool frontend API helpers", () => {
     );
     vi.stubGlobal("fetch", fetchMock as typeof fetch);
 
-    const response = await updatePoolRoutingSettings({ apiKey: "pool-secret" });
+    const response = await updatePoolRoutingSettings({
+      apiKey: "pool-secret",
+      timeouts: {
+        responsesFirstByteTimeoutSecs: 180,
+        compactFirstByteTimeoutSecs: 420,
+        responsesStreamTimeoutSecs: 360,
+        compactStreamTimeoutSecs: 540,
+      },
+    });
 
     expect(response.apiKeyConfigured).toBe(true);
+    expect(response.writesEnabled).toBe(true);
     expect(response.maskedApiKey).toBe("pool-live••••••cret");
     expect(response.maintenance).toEqual({
       primarySyncIntervalSecs: 300,
       secondarySyncIntervalSecs: 1800,
       priorityAvailableAccountCap: 100,
+    });
+    expect(response.timeouts).toEqual({
+      responsesFirstByteTimeoutSecs: 180,
+      compactFirstByteTimeoutSecs: 420,
+      responsesStreamTimeoutSecs: 360,
+      compactStreamTimeoutSecs: 540,
     });
   });
 

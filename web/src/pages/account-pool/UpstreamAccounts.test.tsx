@@ -359,11 +359,35 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
-function mockAccountsPage(overrides?: {
+function mockAccountsPage(options?: {
+  saveRouting?: ReturnType<typeof vi.fn>
+  routing?: {
+    writesEnabled: boolean
+    apiKeyConfigured: boolean
+    maskedApiKey: string | null
+    timeouts: {
+      responsesFirstByteTimeoutSecs: number
+      compactFirstByteTimeoutSecs: number
+      responsesStreamTimeoutSecs: number
+      compactStreamTimeoutSecs: number
+    }
+  } | null
   item?: Record<string, unknown>
   selectedSummary?: Record<string, unknown>
   detail?: Record<string, unknown>
 }) {
+  const saveRouting = options?.saveRouting ?? vi.fn();
+  const compactSupport = {
+    status: "unsupported" as const,
+    observedAt: "2026-03-16T02:08:00.000Z",
+    reason: "No available channel for compact model gpt-5.4-openai-compact",
+  };
+  const routingTimeouts = {
+    responsesFirstByteTimeoutSecs: 120,
+    compactFirstByteTimeoutSecs: 300,
+    responsesStreamTimeoutSecs: 300,
+    compactStreamTimeoutSecs: 300,
+  };
   const primaryItem = {
     id: 5,
     kind: "oauth_codex",
@@ -395,6 +419,7 @@ function mockAccountsPage(overrides?: {
     },
     credits: null,
     localLimits: null,
+    compactSupport,
     duplicateInfo: {
       peerAccountIds: [9],
       reasons: ["sharedChatgptAccountId"],
@@ -406,8 +431,8 @@ function mockAccountsPage(overrides?: {
       { id: 4, name: "sticky-pool", routingRule: defaultEffectiveRoutingRule },
     ],
     effectiveRoutingRule: defaultEffectiveRoutingRule,
-    ...(overrides?.item ?? {}),
-  }
+    ...(options?.item ?? {}),
+  };
   const selectedSummary = {
     ...primaryItem,
     lastSuccessfulSyncAt: "2026-03-16T01:55:00.000Z",
@@ -419,8 +444,8 @@ function mockAccountsPage(overrides?: {
     lastActionHttpStatus: 429,
     lastActionInvokeId: "invk_action_001",
     lastActionAt: "2026-03-16T02:06:00.000Z",
-    ...(overrides?.selectedSummary ?? {}),
-  }
+    ...(options?.selectedSummary ?? {}),
+  };
   const detail = {
     ...selectedSummary,
     email: "dup@example.com",
@@ -442,12 +467,11 @@ function mockAccountsPage(overrides?: {
         createdAt: "2026-03-16T02:06:00.000Z",
       },
     ],
-    ...(overrides?.detail ?? {}),
-  }
-
+    ...(options?.detail ?? {}),
+  };
   hookMocks.useUpstreamAccounts.mockReturnValue({
     items: [
-      primaryItem,
+      selectedSummary,
       {
         id: 9,
         kind: "oauth_codex",
@@ -499,7 +523,7 @@ function mockAccountsPage(overrides?: {
     completeOauthLogin: vi.fn(),
     createApiKeyAccount: vi.fn(),
     saveAccount: vi.fn(),
-    saveRouting: vi.fn(),
+    saveRouting,
     saveGroupNote: vi.fn(),
     runBulkAction: vi.fn(),
     startBulkSyncJob: vi.fn(),
@@ -508,8 +532,17 @@ function mockAccountsPage(overrides?: {
     runSync: vi.fn(),
     removeAccount: vi.fn(),
     groups: [],
-    routing: { apiKeyConfigured: false, maskedApiKey: null },
+    routing:
+      options && 'routing' in options
+        ? options.routing
+        : {
+            writesEnabled: true,
+            apiKeyConfigured: false,
+            maskedApiKey: null,
+            timeouts: routingTimeouts,
+          },
   });
+  return { saveRouting, compactSupport, routingTimeouts };
 }
 
 describe("UpstreamAccountsPage duplicates", () => {
@@ -524,6 +557,21 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect(document.body.textContent).toContain("vip");
     expect(document.body.textContent).toContain("+1");
     expect(document.body.textContent).toContain("team");
+  });
+
+  it("shows action-first roster summaries and keeps the concrete failure message in hover text", () => {
+    mockAccountsPage();
+    render("/account-pool/upstream-accounts");
+
+    const firstRow = document.body.querySelector('tbody tr[role="button"]');
+    if (!(firstRow instanceof HTMLTableRowElement)) {
+      throw new Error("missing roster row");
+    }
+
+    expect(firstRow.textContent).toContain("Hard unavailable");
+    expect(firstRow.textContent).toContain("Upstream quota or weekly cap was exhausted");
+    expect(firstRow.textContent).toContain("HTTP 429");
+    expect(document.body.querySelector('[title*="Weekly cap exhausted for this account"]')).not.toBeNull();
   });
 
   it("shows latest account action details and recent events in the drawer", async () => {
@@ -591,6 +639,84 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect(document.body.textContent).toContain(
       "Fresh usage snapshot still shows an exhausted limit window",
     );
+  });
+
+  it("shows compact support state and saves routing timeouts", async () => {
+    const saveRouting = vi.fn().mockResolvedValue(undefined);
+    const { compactSupport, routingTimeouts } = mockAccountsPage({ saveRouting });
+    render("/account-pool/upstream-accounts");
+
+    expect(document.body.textContent).toContain("Compact unsupported");
+    expect(document.body.textContent).toContain("300s");
+
+    clickFirstRosterRow();
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Compact support");
+    expect(document.body.textContent).toContain("Unsupported");
+    expect(document.body.textContent).toContain(compactSupport.reason);
+
+    clickButton(/Edit routing settings/i);
+    const compactInput = document.body.querySelector(
+      'input[name="compactFirstByteTimeoutSecs"]',
+    );
+    expect(compactInput).toBeInstanceOf(HTMLInputElement);
+    expect((compactInput as HTMLInputElement).value).toBe("300");
+
+    setInputValue('input[name="compactFirstByteTimeoutSecs"]', "420");
+    clickButton(/Save settings/i);
+    await flushAsync();
+
+    expect(saveRouting).toHaveBeenCalledWith({
+      apiKey: undefined,
+      timeouts: {
+        ...routingTimeouts,
+        compactFirstByteTimeoutSecs: 420,
+      },
+    });
+  });
+
+  it("rejects non-integer routing timeout edits before saving", async () => {
+    const saveRouting = vi.fn().mockResolvedValue(undefined);
+    mockAccountsPage({ saveRouting });
+    render("/account-pool/upstream-accounts");
+
+    clickButton(/Edit routing settings/i);
+    setInputValue('input[name="compactFirstByteTimeoutSecs"]', "1.5");
+    clickButton(/Save settings/i);
+    await flushAsync();
+
+    expect(saveRouting).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("must be a positive integer");
+  });
+
+  it("keeps routing save disabled until settings have loaded", async () => {
+    mockAccountsPage({ routing: null });
+    render("/account-pool/upstream-accounts");
+
+    const editButton = Array.from(document.body.querySelectorAll("button")).find((button) =>
+      /edit routing settings/i.test(button.textContent || ""),
+    );
+    expect(editButton).toBeInstanceOf(HTMLButtonElement);
+    expect((editButton as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("preserves unsaved routing edits while the dialog is open during refresh", async () => {
+    mockAccountsPage();
+    render("/account-pool/upstream-accounts");
+
+    clickButton(/Edit routing settings/i);
+    setInputValue('input[name="compactFirstByteTimeoutSecs"]', "420");
+
+    mockAccountsPage();
+    rerender("/account-pool/upstream-accounts");
+    await flushAsync();
+
+    const compactInput = document.body.querySelector(
+      'input[name="compactFirstByteTimeoutSecs"]',
+    );
+    expect(compactInput).toBeInstanceOf(HTMLInputElement);
+    expect((compactInput as HTMLInputElement).value).toBe("420");
   });
 
   it("passes all-match tag filters to the roster hook", () => {
@@ -1199,6 +1325,7 @@ describe("UpstreamAccountsPage duplicates", () => {
       runSync: vi.fn(),
       removeAccount: vi.fn(),
       routing: {
+        writesEnabled: true,
         apiKeyConfigured: true,
         maskedApiKey: "pool-live••••",
         maintenance: {

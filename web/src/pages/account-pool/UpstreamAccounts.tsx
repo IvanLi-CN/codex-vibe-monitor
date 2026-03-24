@@ -42,6 +42,8 @@ import type {
   BulkUpstreamAccountSyncCounts,
   BulkUpstreamAccountSyncSnapshot,
   PoolRoutingMaintenanceSettings,
+  CompactSupportState,
+  PoolRoutingTimeoutSettings,
   UpstreamAccountDetail,
   UpstreamAccountDuplicateInfo,
   UpstreamAccountSummary,
@@ -62,8 +64,9 @@ import {
 import { validateUpstreamBaseUrl } from '../../lib/upstreamBaseUrl'
 import { generatePoolRoutingKey } from '../../lib/poolRouting'
 import { applyMotherUpdateToItems } from '../../lib/upstreamMother'
+import { upstreamPlanBadgeRecipe } from '../../lib/upstreamAccountBadges'
 import { cn } from '../../lib/utils'
-import { useTranslation } from '../../i18n'
+import { useTranslation, type TranslationValues } from '../../i18n'
 
 type AccountDraft = {
   displayName: string
@@ -77,6 +80,26 @@ type AccountDraft = {
   localLimitUnit: string
   apiKey: string
 }
+
+type RoutingDraft = {
+  apiKey: string
+  maskedApiKey: string | null
+  primarySyncIntervalSecs: string
+  secondarySyncIntervalSecs: string
+  priorityAvailableAccountCap: string
+  responsesFirstByteTimeoutSecs: string
+  compactFirstByteTimeoutSecs: string
+  responsesStreamTimeoutSecs: string
+  compactStreamTimeoutSecs: string
+}
+
+const DEFAULT_ROUTING_TIMEOUTS: PoolRoutingTimeoutSettings = {
+  responsesFirstByteTimeoutSecs: 120,
+  compactFirstByteTimeoutSecs: 300,
+  responsesStreamTimeoutSecs: 300,
+  compactStreamTimeoutSecs: 300,
+}
+const POSITIVE_INTEGER_PATTERN = /^[1-9]\d*$/
 
 const STICKY_CONVERSATION_LIMIT_OPTIONS = [20, 50, 100] as const
 
@@ -107,14 +130,6 @@ type OauthRecoveryHint = {
 type ActionErrorState = {
   routing: string | null
   accountMessages: Record<number, string>
-}
-
-type RoutingDraft = {
-  apiKey: string
-  maskedApiKey: string | null
-  primarySyncIntervalSecs: string
-  secondarySyncIntervalSecs: string
-  priorityAvailableAccountCap: string
 }
 
 type AccountBusyActionType = 'save' | 'sync' | 'toggle' | 'relogin' | 'delete'
@@ -227,15 +242,21 @@ function buildRoutingDraft(
   routing?: {
     maskedApiKey?: string | null
     maintenance?: PoolRoutingMaintenanceSettings | null
+    timeouts?: PoolRoutingTimeoutSettings | null
   } | null,
 ): RoutingDraft {
   const maintenance = resolveRoutingMaintenance(routing?.maintenance)
+  const timeouts = routing?.timeouts ?? DEFAULT_ROUTING_TIMEOUTS
   return {
     apiKey: '',
     maskedApiKey: routing?.maskedApiKey ?? null,
     primarySyncIntervalSecs: String(maintenance.primarySyncIntervalSecs),
     secondarySyncIntervalSecs: String(maintenance.secondarySyncIntervalSecs),
     priorityAvailableAccountCap: String(maintenance.priorityAvailableAccountCap),
+    responsesFirstByteTimeoutSecs: String(timeouts.responsesFirstByteTimeoutSecs),
+    compactFirstByteTimeoutSecs: String(timeouts.compactFirstByteTimeoutSecs),
+    responsesStreamTimeoutSecs: String(timeouts.responsesStreamTimeoutSecs),
+    compactStreamTimeoutSecs: String(timeouts.compactStreamTimeoutSecs),
   }
 }
 
@@ -363,6 +384,52 @@ function resolveOauthRecoveryHint(
     }
   }
   return null
+}
+
+function compactSupportLabel(
+  support: CompactSupportState | null | undefined,
+  t: (key: string) => string,
+) {
+  if (!support || support.status === 'unknown') return null
+  return support.status === 'unsupported'
+    ? t('accountPool.upstreamAccounts.compactSupport.unsupportedBadge')
+    : t('accountPool.upstreamAccounts.compactSupport.supportedBadge')
+}
+
+function compactSupportHint(
+  support: CompactSupportState | null | undefined,
+  t: (key: string, values?: TranslationValues) => string,
+) {
+  if (!support || support.status === 'unknown') return null
+  const statusLabel =
+    support.status === 'unsupported'
+      ? t('accountPool.upstreamAccounts.compactSupport.status.unsupported')
+      : t('accountPool.upstreamAccounts.compactSupport.status.supported')
+  const observedAt = support.observedAt
+    ? formatDateTime(support.observedAt)
+    : t('accountPool.upstreamAccounts.unavailable')
+  if (support.reason) {
+    return `${statusLabel} · ${observedAt} · ${support.reason}`
+  }
+  return `${statusLabel} · ${observedAt}`
+}
+
+function parseRoutingTimeoutValue(
+  raw: string,
+  label: string,
+): { ok: true; value: number } | { ok: false; error: string } {
+  const trimmed = raw.trim()
+  if (!trimmed) {
+    return { ok: false, error: `${label} is required.` }
+  }
+  if (!POSITIVE_INTEGER_PATTERN.test(trimmed)) {
+    return { ok: false, error: `${label} must be a positive integer.` }
+  }
+  const parsed = Number(trimmed)
+  if (!Number.isSafeInteger(parsed)) {
+    return { ok: false, error: `${label} must be a positive integer.` }
+  }
+  return { ok: true, value: parsed }
 }
 
 
@@ -508,8 +575,11 @@ function RoutingSettingsDialog({
   primarySyncIntervalSecs,
   secondarySyncIntervalSecs,
   priorityAvailableAccountCap,
+  timeoutSectionTitle,
+  timeoutFields,
   busy,
-  writesEnabled,
+  apiKeyWritesEnabled,
+  timeoutWritesEnabled,
   canSave,
   onApiKeyChange,
   onGenerate,
@@ -529,8 +599,16 @@ function RoutingSettingsDialog({
   primarySyncIntervalSecs: string
   secondarySyncIntervalSecs: string
   priorityAvailableAccountCap: string
+  timeoutSectionTitle: string
+  timeoutFields: Array<{
+    key: string
+    label: string
+    value: string
+    onChange: (value: string) => void
+  }>
   busy: boolean
-  writesEnabled: boolean
+  apiKeyWritesEnabled: boolean
+  timeoutWritesEnabled: boolean
   canSave: boolean
   onApiKeyChange: (value: string) => void
   onGenerate: () => void
@@ -551,10 +629,10 @@ function RoutingSettingsDialog({
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => (!busy ? (nextOpen ? undefined : onClose()) : undefined)}>
       <DialogContent
-        className="p-0"
+        className="flex max-h-[calc(100dvh-2rem)] flex-col overflow-hidden p-0 sm:max-h-[calc(100dvh-4rem)]"
         onOpenAutoFocus={(event) => {
           event.preventDefault()
-          if (writesEnabled) {
+          if (apiKeyWritesEnabled) {
             apiKeyInputRef.current?.focus()
             return
           }
@@ -574,111 +652,141 @@ function RoutingSettingsDialog({
           </DialogHeader>
           <DialogCloseIcon aria-label={closeLabel} disabled={busy} />
         </div>
-        <div className="space-y-4 px-6 py-6">
-          <div className="space-y-3 rounded-2xl border border-base-300/80 bg-base-100/70 p-4">
-            <div className="space-y-1">
-              <p className="text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
-                {t('accountPool.upstreamAccounts.routing.apiKeySectionTitle')}
-              </p>
-              <p className="text-sm text-base-content/68">
-                {t('accountPool.upstreamAccounts.routing.apiKeySectionDescription')}
-              </p>
-            </div>
-            <div className="field">
-              <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
-                <label htmlFor={apiKeyInputId} className="text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
-                  {t('accountPool.upstreamAccounts.routing.apiKeyLabel')}
-                </label>
-                <Button type="button" variant="outline" size="sm" onClick={onGenerate} disabled={busy || !writesEnabled}>
-                  <AppIcon name="auto-fix" className="mr-2 h-4 w-4" aria-hidden />
-                  {t('accountPool.upstreamAccounts.routing.generate')}
-                </Button>
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
+          <div className="space-y-4">
+            <div className="space-y-3 rounded-2xl border border-base-300/80 bg-base-100/70 p-4">
+              <div className="space-y-1">
+                <p className="text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
+                  {t('accountPool.upstreamAccounts.routing.apiKeySectionTitle')}
+                </p>
+                <p className="text-sm text-base-content/68">
+                  {t('accountPool.upstreamAccounts.routing.apiKeySectionDescription')}
+                </p>
               </div>
-              <Input
-                id={apiKeyInputId}
-                ref={apiKeyInputRef}
-                name="poolRoutingSecret"
-                type="text"
-                value={apiKey}
-                onChange={(event) => onApiKeyChange(event.target.value)}
-                placeholder={t('accountPool.upstreamAccounts.routing.apiKeyPlaceholder')}
-                autoComplete="off"
-                autoCorrect="off"
-                autoCapitalize="none"
-                spellCheck={false}
-                data-1p-ignore="true"
-                data-lpignore="true"
-                disabled={busy || !writesEnabled}
-                className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4 text-[15px] font-mono placeholder:text-base-content/58"
-              />
+              <div className="field">
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
+                  <label htmlFor={apiKeyInputId} className="text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
+                    {t('accountPool.upstreamAccounts.routing.apiKeyLabel')}
+                  </label>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={onGenerate}
+                    disabled={busy || !apiKeyWritesEnabled}
+                  >
+                    <AppIcon name="auto-fix" className="mr-2 h-4 w-4" aria-hidden />
+                    {t('accountPool.upstreamAccounts.routing.generate')}
+                  </Button>
+                </div>
+                <Input
+                  id={apiKeyInputId}
+                  ref={apiKeyInputRef}
+                  name="poolRoutingSecret"
+                  type="text"
+                  value={apiKey}
+                  onChange={(event) => onApiKeyChange(event.target.value)}
+                  placeholder={t('accountPool.upstreamAccounts.routing.apiKeyPlaceholder')}
+                  autoComplete="off"
+                  autoCorrect="off"
+                  autoCapitalize="none"
+                  spellCheck={false}
+                  data-1p-ignore="true"
+                  data-lpignore="true"
+                  disabled={busy || !apiKeyWritesEnabled}
+                  className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4 text-[15px] font-mono placeholder:text-base-content/58"
+                />
+              </div>
             </div>
-          </div>
 
-          <div className="space-y-4 rounded-2xl border border-base-300/80 bg-base-100/70 p-4">
-            <div className="space-y-1">
+            <div className="space-y-4 rounded-2xl border border-base-300/80 bg-base-100/70 p-4">
+              <div className="space-y-1">
+                <p className="text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
+                  {t('accountPool.upstreamAccounts.routing.maintenanceSectionTitle')}
+                </p>
+                <p className="text-sm text-base-content/68">
+                  {t('accountPool.upstreamAccounts.routing.maintenanceSectionDescription')}
+                </p>
+              </div>
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="field">
+                  <label htmlFor={primaryInputId} className="mb-2 text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
+                    {t('accountPool.upstreamAccounts.routing.primarySyncIntervalLabel')}
+                  </label>
+                  <Input
+                    id={primaryInputId}
+                    ref={primaryInputRef}
+                    name="primarySyncIntervalSecs"
+                    type="number"
+                    min={60}
+                    step={60}
+                    inputMode="numeric"
+                    value={primarySyncIntervalSecs}
+                    onChange={(event) => onPrimarySyncIntervalChange(event.target.value)}
+                    placeholder="300"
+                    disabled={busy || !timeoutWritesEnabled}
+                    className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4"
+                  />
+                </div>
+                <div className="field">
+                  <label htmlFor={secondaryInputId} className="mb-2 text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
+                    {t('accountPool.upstreamAccounts.routing.secondarySyncIntervalLabel')}
+                  </label>
+                  <Input
+                    id={secondaryInputId}
+                    name="secondarySyncIntervalSecs"
+                    type="number"
+                    min={60}
+                    step={60}
+                    inputMode="numeric"
+                    value={secondarySyncIntervalSecs}
+                    onChange={(event) => onSecondarySyncIntervalChange(event.target.value)}
+                    placeholder="1800"
+                    disabled={busy || !timeoutWritesEnabled}
+                    className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4"
+                  />
+                </div>
+              </div>
+              <div className="field">
+                <label htmlFor={capInputId} className="mb-2 text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
+                  {t('accountPool.upstreamAccounts.routing.priorityCapLabel')}
+                </label>
+                <Input
+                  id={capInputId}
+                  name="priorityAvailableAccountCap"
+                  type="number"
+                  min={1}
+                  step={1}
+                  inputMode="numeric"
+                  value={priorityAvailableAccountCap}
+                  onChange={(event) => onPriorityAvailableAccountCapChange(event.target.value)}
+                  placeholder="100"
+                  disabled={busy || !timeoutWritesEnabled}
+                  className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4"
+                />
+              </div>
+            </div>
+            <div className="space-y-3">
               <p className="text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
-                {t('accountPool.upstreamAccounts.routing.maintenanceSectionTitle')}
+                {timeoutSectionTitle}
               </p>
-              <p className="text-sm text-base-content/68">
-                {t('accountPool.upstreamAccounts.routing.maintenanceSectionDescription')}
-              </p>
-            </div>
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="field">
-                <label htmlFor={primaryInputId} className="mb-2 text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
-                  {t('accountPool.upstreamAccounts.routing.primarySyncIntervalLabel')}
-                </label>
-                <Input
-                  id={primaryInputId}
-                  ref={primaryInputRef}
-                  name="primarySyncIntervalSecs"
-                  type="number"
-                  min={60}
-                  step={60}
-                  inputMode="numeric"
-                  value={primarySyncIntervalSecs}
-                  onChange={(event) => onPrimarySyncIntervalChange(event.target.value)}
-                  placeholder="300"
-                  disabled={busy}
-                  className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4"
-                />
+              <div className="grid gap-3 md:grid-cols-2">
+                {timeoutFields.map((field) => (
+                  <label key={field.key} className="field">
+                    <span className="field-label">{field.label}</span>
+                    <Input
+                      name={field.key}
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={field.value}
+                      onChange={(event) => field.onChange(event.target.value)}
+                      disabled={busy || !timeoutWritesEnabled}
+                      className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4 text-[15px] font-mono"
+                    />
+                  </label>
+                ))}
               </div>
-              <div className="field">
-                <label htmlFor={secondaryInputId} className="mb-2 text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
-                  {t('accountPool.upstreamAccounts.routing.secondarySyncIntervalLabel')}
-                </label>
-                <Input
-                  id={secondaryInputId}
-                  name="secondarySyncIntervalSecs"
-                  type="number"
-                  min={60}
-                  step={60}
-                  inputMode="numeric"
-                  value={secondarySyncIntervalSecs}
-                  onChange={(event) => onSecondarySyncIntervalChange(event.target.value)}
-                  placeholder="1800"
-                  disabled={busy}
-                  className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4"
-                />
-              </div>
-            </div>
-            <div className="field">
-              <label htmlFor={capInputId} className="mb-2 text-sm font-semibold uppercase tracking-[0.14em] text-base-content/82">
-                {t('accountPool.upstreamAccounts.routing.priorityCapLabel')}
-              </label>
-              <Input
-                id={capInputId}
-                name="priorityAvailableAccountCap"
-                type="number"
-                min={1}
-                step={1}
-                inputMode="numeric"
-                value={priorityAvailableAccountCap}
-                onChange={(event) => onPriorityAvailableAccountCapChange(event.target.value)}
-                placeholder="100"
-                disabled={busy}
-                className="h-12 rounded-xl border-base-300/90 bg-base-100 px-4"
-              />
             </div>
           </div>
         </div>
@@ -843,6 +951,9 @@ export default function UpstreamAccountsPage() {
   const deleteConfirmTitleId = useId()
   const selectedIdRef = useRef<number | null>(selectedId)
   const selectedAccountIdSet = useMemo(() => new Set(selectedAccountIds), [selectedAccountIds])
+  const routingWritesEnabled = routing
+    ? (routing.writesEnabled ?? writesEnabled)
+    : false
   const effectiveMetrics = listMetrics ?? {
     total: items.length,
     oauth: items.filter((item) => item.kind === 'oauth_codex').length,
@@ -936,8 +1047,26 @@ export default function UpstreamAccountsPage() {
   }, [selectedId, isDetailDrawerOpen])
 
   useEffect(() => {
+    if (isRoutingDialogOpen) return
     setRoutingDraft(buildRoutingDraft(routing))
-  }, [routing])
+  }, [
+    isRoutingDialogOpen,
+    routing?.maskedApiKey,
+    routing?.writesEnabled,
+    routing?.maintenance?.primarySyncIntervalSecs,
+    routing?.maintenance?.secondarySyncIntervalSecs,
+    routing?.maintenance?.priorityAvailableAccountCap,
+    routing?.timeouts?.responsesFirstByteTimeoutSecs,
+    routing?.timeouts?.compactFirstByteTimeoutSecs,
+    routing?.timeouts?.responsesStreamTimeoutSecs,
+    routing?.timeouts?.compactStreamTimeoutSecs,
+  ])
+
+  useEffect(() => {
+    if (!routingWritesEnabled) {
+      setIsRoutingDialogOpen(false)
+    }
+  }, [routingWritesEnabled])
 
   useEffect(() => {
     if (!writesEnabled) {
@@ -1130,6 +1259,7 @@ export default function UpstreamAccountsPage() {
 
   const selectedDetail = detail?.id === selectedId ? detail : null
   const selected = selectedDetail ?? selectedSummary
+  const selectedPlanBadge = upstreamPlanBadgeRecipe(selected?.planType)
   const visibleAccountActionError =
     typeof selectedId === 'number' ? actionError.accountMessages[selectedId] ?? null : null
   const visibleRoutingError = actionError.routing
@@ -1187,9 +1317,19 @@ export default function UpstreamAccountsPage() {
       parsedRoutingMaintenance.secondarySyncIntervalSecs !== resolvedRoutingMaintenance.secondarySyncIntervalSecs ||
       parsedRoutingMaintenance.priorityAvailableAccountCap !== resolvedRoutingMaintenance.priorityAvailableAccountCap
     )
+  const resolvedRoutingTimeouts = routing?.timeouts ?? DEFAULT_ROUTING_TIMEOUTS
+  const routingHasTimeoutChange =
+    routingDraft.responsesFirstByteTimeoutSecs.trim() !==
+      String(resolvedRoutingTimeouts.responsesFirstByteTimeoutSecs) ||
+    routingDraft.compactFirstByteTimeoutSecs.trim() !==
+      String(resolvedRoutingTimeouts.compactFirstByteTimeoutSecs) ||
+    routingDraft.responsesStreamTimeoutSecs.trim() !==
+      String(resolvedRoutingTimeouts.responsesStreamTimeoutSecs) ||
+    routingDraft.compactStreamTimeoutSecs.trim() !==
+      String(resolvedRoutingTimeouts.compactStreamTimeoutSecs)
   const routingCanSave =
     !routingDraftValidationError &&
-    (routingHasMaintenanceChange || (writesEnabled && routingHasApiKeyChange))
+    (routingHasMaintenanceChange || routingHasTimeoutChange || (writesEnabled && routingHasApiKeyChange))
   const selectedRecoveryHint = resolveOauthRecoveryHint(
     selectedDetail?.kind ?? selected?.kind ?? '',
     accountHealthStatus(selectedDetail ?? selected),
@@ -1224,7 +1364,7 @@ export default function UpstreamAccountsPage() {
   const accountSyncStateLabel = (status: string) =>
     t(`accountPool.upstreamAccounts.syncState.${status}`)
   const accountActionLabel = (action?: string | null) => {
-    if (!action) return t('accountPool.upstreamAccounts.latestAction.empty')
+    if (!action) return null
     const key = `accountPool.upstreamAccounts.latestAction.actions.${action}`
     const translated = t(key)
     return translated === key ? action : translated
@@ -1427,11 +1567,41 @@ export default function UpstreamAccountsPage() {
       setActionError((current) => ({ ...current, routing: routingDraftValidationError }))
       return
     }
+    if (!routing) {
+      setActionError((current) => ({
+        ...current,
+        routing: "Pool routing settings are still loading.",
+      }))
+      return
+    }
+    if (!routingWritesEnabled) {
+      setActionError((current) => ({
+        ...current,
+        routing: "Pool routing settings are currently read-only.",
+      }))
+      return
+    }
+    const timeoutEntries: Array<[keyof PoolRoutingTimeoutSettings, string, string]> = [
+      ['responsesFirstByteTimeoutSecs', t('accountPool.upstreamAccounts.routing.timeout.responsesFirstByte'), routingDraft.responsesFirstByteTimeoutSecs],
+      ['compactFirstByteTimeoutSecs', t('accountPool.upstreamAccounts.routing.timeout.compactFirstByte'), routingDraft.compactFirstByteTimeoutSecs],
+      ['responsesStreamTimeoutSecs', t('accountPool.upstreamAccounts.routing.timeout.responsesStream'), routingDraft.responsesStreamTimeoutSecs],
+      ['compactStreamTimeoutSecs', t('accountPool.upstreamAccounts.routing.timeout.compactStream'), routingDraft.compactStreamTimeoutSecs],
+    ]
+    const parsedTimeouts = {} as PoolRoutingTimeoutSettings
+    for (const [key, label, raw] of timeoutEntries) {
+      const result = parseRoutingTimeoutValue(raw, label)
+      if (!result.ok) {
+        setActionError((current) => ({ ...current, routing: result.error }))
+        return
+      }
+      parsedTimeouts[key] = result.value
+    }
     setActionError((current) => ({ ...current, routing: null }))
     const trimmedApiKey = routingDraft.apiKey.trim()
     const payload: {
       apiKey?: string
       maintenance?: PoolRoutingMaintenanceSettings
+      timeouts?: PoolRoutingTimeoutSettings
     } = {}
     if (writesEnabled && trimmedApiKey) {
       payload.apiKey = trimmedApiKey
@@ -1439,13 +1609,17 @@ export default function UpstreamAccountsPage() {
     if (routingHasMaintenanceChange && parsedRoutingMaintenance) {
       payload.maintenance = parsedRoutingMaintenance
     }
-    if (!payload.apiKey && !payload.maintenance) {
+    if (routingHasTimeoutChange) {
+      payload.timeouts = parsedTimeouts
+    }
+    if (!payload.apiKey && !payload.maintenance && !payload.timeouts) {
       setIsRoutingDialogOpen(false)
       return
     }
     setBusyAction((current) => ({ ...current, routing: true }))
     try {
       await saveRouting(payload)
+      setRoutingDraft((current) => ({ ...current, apiKey: '' }))
       setIsRoutingDialogOpen(false)
     } catch (err) {
       setActionError((current) => ({
@@ -1789,12 +1963,43 @@ export default function UpstreamAccountsPage() {
                     <p className="mt-2 break-all font-mono text-sm text-base-content">
                       {routing?.apiKeyConfigured ? routing?.maskedApiKey ?? t('accountPool.upstreamAccounts.routing.configured') : t('accountPool.upstreamAccounts.routing.notConfigured')}
                     </p>
+                    <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                      <DetailField
+                        label={t('accountPool.upstreamAccounts.routing.primarySyncIntervalLabel')}
+                        value={`${resolvedRoutingMaintenance.primarySyncIntervalSecs}s`}
+                      />
+                      <DetailField
+                        label={t('accountPool.upstreamAccounts.routing.secondarySyncIntervalLabel')}
+                        value={`${resolvedRoutingMaintenance.secondarySyncIntervalSecs}s`}
+                      />
+                      <DetailField
+                        label={t('accountPool.upstreamAccounts.routing.priorityCapLabel')}
+                        value={String(resolvedRoutingMaintenance.priorityAvailableAccountCap)}
+                      />
+                      <DetailField
+                        label={t('accountPool.upstreamAccounts.routing.timeout.responsesFirstByte')}
+                        value={`${resolvedRoutingTimeouts.responsesFirstByteTimeoutSecs}s`}
+                      />
+                      <DetailField
+                        label={t('accountPool.upstreamAccounts.routing.timeout.compactFirstByte')}
+                        value={`${resolvedRoutingTimeouts.compactFirstByteTimeoutSecs}s`}
+                      />
+                      <DetailField
+                        label={t('accountPool.upstreamAccounts.routing.timeout.responsesStream')}
+                        value={`${resolvedRoutingTimeouts.responsesStreamTimeoutSecs}s`}
+                      />
+                      <DetailField
+                        label={t('accountPool.upstreamAccounts.routing.timeout.compactStream')}
+                        value={`${resolvedRoutingTimeouts.compactStreamTimeoutSecs}s`}
+                      />
+                    </div>
                   </div>
                   <Button
                     type="button"
                     variant="ghost"
                     size="icon"
                     onClick={() => setIsRoutingDialogOpen(true)}
+                    disabled={!routingWritesEnabled}
                   >
                     <AppIcon name="pencil-outline" className="h-4 w-4" aria-hidden />
                     <span className="sr-only">{t('accountPool.upstreamAccounts.routing.edit')}</span>
@@ -2064,6 +2269,8 @@ export default function UpstreamAccountsPage() {
                 secondaryShort: t('accountPool.upstreamAccounts.secondaryWindowShortLabel'),
                 nextReset: t('accountPool.upstreamAccounts.table.nextReset'),
                 nextResetCompact: t('accountPool.upstreamAccounts.table.nextResetCompact'),
+                unknown: t('accountPool.upstreamAccounts.latestAction.unknown'),
+                unavailable: t('accountPool.upstreamAccounts.unavailable'),
                 oauth: t('accountPool.upstreamAccounts.kind.oauth'),
                 apiKey: t('accountPool.upstreamAccounts.kind.apiKey'),
                 mother: t('accountPool.upstreamAccounts.mother.badge'),
@@ -2074,8 +2281,23 @@ export default function UpstreamAccountsPage() {
                 enableStatus: accountEnableStatusLabel,
                 healthStatus: accountHealthStatusLabel,
                 syncState: accountSyncStateLabel,
-                actionSource: (item) => accountActionSourceLabel(item.lastActionSource),
-                actionReason: (item) => accountActionReasonLabel(item.lastActionReasonCode),
+                action: accountActionLabel,
+                compactSupport: (item) => compactSupportLabel(item.compactSupport, t),
+                compactSupportHint: (item) => compactSupportHint(item.compactSupport, t),
+                actionSource: (value: UpstreamAccountSummary | string | null | undefined) =>
+                  accountActionSourceLabel(
+                    typeof value === 'string' || value == null ? value : value.lastActionSource,
+                  ),
+                actionReason: (value: UpstreamAccountSummary | string | null | undefined) =>
+                  accountActionReasonLabel(
+                    typeof value === 'string' || value == null ? value : value.lastActionReasonCode,
+                  ),
+                latestActionFieldAction: t('accountPool.upstreamAccounts.latestAction.fields.action'),
+                latestActionFieldSource: t('accountPool.upstreamAccounts.latestAction.fields.source'),
+                latestActionFieldReason: t('accountPool.upstreamAccounts.latestAction.fields.reason'),
+                latestActionFieldHttpStatus: t('accountPool.upstreamAccounts.latestAction.fields.httpStatus'),
+                latestActionFieldOccurredAt: t('accountPool.upstreamAccounts.latestAction.fields.occurredAt'),
+                latestActionFieldMessage: t('accountPool.upstreamAccounts.latestAction.fields.message'),
               }}
             />
 
@@ -2263,8 +2485,36 @@ export default function UpstreamAccountsPage() {
         primarySyncIntervalSecs={routingDraft.primarySyncIntervalSecs}
         secondarySyncIntervalSecs={routingDraft.secondarySyncIntervalSecs}
         priorityAvailableAccountCap={routingDraft.priorityAvailableAccountCap}
+        timeoutSectionTitle={t('accountPool.upstreamAccounts.routing.timeout.sectionTitle')}
+        timeoutFields={[
+          {
+            key: 'responsesFirstByteTimeoutSecs',
+            label: t('accountPool.upstreamAccounts.routing.timeout.responsesFirstByte'),
+            value: routingDraft.responsesFirstByteTimeoutSecs,
+            onChange: (value) => setRoutingDraft((current) => ({ ...current, responsesFirstByteTimeoutSecs: value })),
+          },
+          {
+            key: 'compactFirstByteTimeoutSecs',
+            label: t('accountPool.upstreamAccounts.routing.timeout.compactFirstByte'),
+            value: routingDraft.compactFirstByteTimeoutSecs,
+            onChange: (value) => setRoutingDraft((current) => ({ ...current, compactFirstByteTimeoutSecs: value })),
+          },
+          {
+            key: 'responsesStreamTimeoutSecs',
+            label: t('accountPool.upstreamAccounts.routing.timeout.responsesStream'),
+            value: routingDraft.responsesStreamTimeoutSecs,
+            onChange: (value) => setRoutingDraft((current) => ({ ...current, responsesStreamTimeoutSecs: value })),
+          },
+          {
+            key: 'compactStreamTimeoutSecs',
+            label: t('accountPool.upstreamAccounts.routing.timeout.compactStream'),
+            value: routingDraft.compactStreamTimeoutSecs,
+            onChange: (value) => setRoutingDraft((current) => ({ ...current, compactStreamTimeoutSecs: value })),
+          },
+        ]}
         busy={isBusyAction(busyAction, 'routing')}
-        writesEnabled={writesEnabled}
+        apiKeyWritesEnabled={writesEnabled}
+        timeoutWritesEnabled={routingWritesEnabled}
         canSave={routingCanSave}
         onApiKeyChange={(value) => setRoutingDraft((current) => ({ ...current, apiKey: value }))}
         onGenerate={() => setRoutingDraft((current) => ({ ...current, apiKey: generatePoolRoutingKey() }))}
@@ -2324,7 +2574,15 @@ export default function UpstreamAccountsPage() {
                     {accountHealthStatusLabel(accountHealthStatus(selected))}
                   </Badge>
                   <Badge variant={kindVariant(selected.kind)}>{accountKindLabel(selected.kind)}</Badge>
-                  {selected.planType ? <Badge variant="secondary">{selected.planType}</Badge> : null}
+                  {selected.planType && selectedPlanBadge ? (
+                    <Badge
+                      variant={selectedPlanBadge.variant}
+                      className={selectedPlanBadge.className}
+                      data-plan={selectedPlanBadge.dataPlan}
+                    >
+                      {selected.planType}
+                    </Badge>
+                  ) : null}
                   {selected.duplicateInfo ? (
                     <Badge variant="warning">
                       {t('accountPool.upstreamAccounts.duplicate.badge')}
@@ -2736,8 +2994,26 @@ export default function UpstreamAccountsPage() {
                     <DetailField label={t('accountPool.upstreamAccounts.fields.lastRefreshedAt')} value={formatDateTime(selectedDetail.lastRefreshedAt)} />
                     <DetailField label={t('accountPool.upstreamAccounts.fields.tokenExpiresAt')} value={formatDateTime(selectedDetail.tokenExpiresAt)} />
                     <DetailField
+                      label={t('accountPool.upstreamAccounts.fields.compactSupport')}
+                      value={
+                        selectedDetail.compactSupport?.status === 'supported'
+                          ? t('accountPool.upstreamAccounts.compactSupport.status.supported')
+                          : selectedDetail.compactSupport?.status === 'unsupported'
+                            ? t('accountPool.upstreamAccounts.compactSupport.status.unsupported')
+                            : t('accountPool.upstreamAccounts.compactSupport.status.unknown')
+                      }
+                    />
+                    <DetailField
                       label={t('accountPool.upstreamAccounts.fields.credits')}
                       value={selectedDetail.credits?.balance ? `${selectedDetail.credits.balance}` : selectedDetail.credits?.unlimited ? t('accountPool.upstreamAccounts.unlimited') : t('accountPool.upstreamAccounts.unavailable')}
+                    />
+                    <DetailField
+                      label={t('accountPool.upstreamAccounts.fields.compactObservedAt')}
+                      value={formatDateTime(selectedDetail.compactSupport?.observedAt)}
+                    />
+                    <DetailField
+                      label={t('accountPool.upstreamAccounts.fields.compactReason')}
+                      value={selectedDetail.compactSupport?.reason ?? t('accountPool.upstreamAccounts.unavailable')}
                     />
                     <div className="md:col-span-2 xl:col-span-4 rounded-[1.2rem] border border-base-300/80 bg-base-100/75 p-4">
                       {selectedRecoveryHint ? (
@@ -2758,7 +3034,7 @@ export default function UpstreamAccountsPage() {
                         <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
                           <DetailField
                             label={t('accountPool.upstreamAccounts.latestAction.fields.action')}
-                            value={accountActionLabel(selectedDetail.lastAction)}
+                            value={accountActionLabel(selectedDetail.lastAction) ?? t('accountPool.upstreamAccounts.latestAction.empty')}
                           />
                           <DetailField
                             label={t('accountPool.upstreamAccounts.latestAction.fields.source')}
@@ -2824,7 +3100,9 @@ export default function UpstreamAccountsPage() {
                             className="rounded-[1rem] border border-base-300/70 bg-base-100/70 p-3"
                           >
                             <div className="flex flex-wrap items-center gap-2">
-                              <Badge variant="secondary">{accountActionLabel(actionEvent.action)}</Badge>
+                              <Badge variant="secondary">
+                                {accountActionLabel(actionEvent.action) ?? t('accountPool.upstreamAccounts.latestAction.unknown')}
+                              </Badge>
                               <Badge variant="secondary">
                                 {accountActionSourceLabel(actionEvent.source) ?? t('accountPool.upstreamAccounts.latestAction.unknown')}
                               </Badge>

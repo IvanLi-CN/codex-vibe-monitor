@@ -136,7 +136,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.routing.dialogTitle":
       "Advanced routing & sync settings",
     "accountPool.upstreamAccounts.routing.dialogDescription":
-      "Edit the pool route key and the two-tier maintenance queue without touching environment variables.",
+      "Edit the pool route key, request path timeouts, and the two-tier maintenance queue without touching environment variables.",
     "accountPool.upstreamAccounts.routing.save": "Save settings",
     "accountPool.upstreamAccounts.routing.validation.integerRequired":
       "Sync fields must be positive integers.",
@@ -148,6 +148,16 @@ const baseTranslations = {
       "Secondary sync interval must be greater than or equal to the priority sync interval.",
     "accountPool.upstreamAccounts.routing.validation.priorityCapMin":
       "Priority available account cap must be at least 1.",
+    "accountPool.upstreamAccounts.routing.timeout.sectionTitle":
+      "Request path timeouts (seconds)",
+    "accountPool.upstreamAccounts.routing.timeout.responsesFirstByte":
+      "Standard response first byte timeout",
+    "accountPool.upstreamAccounts.routing.timeout.compactFirstByte":
+      "Compact response first byte timeout",
+    "accountPool.upstreamAccounts.routing.timeout.responsesStream":
+      "Standard stream completion timeout",
+    "accountPool.upstreamAccounts.routing.timeout.compactStream":
+      "Compact stream completion timeout",
     "accountPool.upstreamAccounts.actions.refresh": "Refresh",
     "accountPool.upstreamAccounts.actions.addAccount": "Add account",
     "accountPool.upstreamAccounts.actions.addOauth": "Add OAuth account",
@@ -772,6 +782,10 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.fields.lastSuccessSync":
       "Last successful sync",
     "accountPool.upstreamAccounts.fields.credits": "Credits",
+    "accountPool.upstreamAccounts.fields.compactSupport": "Compact support",
+    "accountPool.upstreamAccounts.fields.compactObservedAt":
+      "Compact observed at",
+    "accountPool.upstreamAccounts.fields.compactReason": "Compact reason",
     "accountPool.upstreamAccounts.fields.lastError": "Last error",
     "accountPool.upstreamAccounts.table.latestActionShort": "Latest",
     "accountPool.upstreamAccounts.validation.displayNameDuplicate":
@@ -790,6 +804,16 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.latestAction.fields.invokeId":
       "Invoke ID",
     "accountPool.upstreamAccounts.latestAction.fields.message": "Message",
+    "accountPool.upstreamAccounts.compactSupport.supportedBadge":
+      "Compact OK",
+    "accountPool.upstreamAccounts.compactSupport.unsupportedBadge":
+      "Compact unsupported",
+    "accountPool.upstreamAccounts.compactSupport.status.supported":
+      "Supported",
+    "accountPool.upstreamAccounts.compactSupport.status.unsupported":
+      "Unsupported",
+    "accountPool.upstreamAccounts.compactSupport.status.unknown":
+      "Unknown",
     "accountPool.upstreamAccounts.latestAction.actions.route_recovered":
       "Route recovered",
     "accountPool.upstreamAccounts.latestAction.actions.route_cooldown_started":
@@ -1369,6 +1393,10 @@ const baseTranslations = {
     "table.details.proxyWeightDeltaA11yUnchanged":
       "Proxy weight unchanged ({{value}})",
     "table.details.failureKind": "Failure kind",
+    "table.details.failureClass": "Failure class",
+    "table.details.actionable": "Actionable",
+    "table.details.actionableYes": "Yes",
+    "table.details.actionableNo": "No",
     "table.details.streamTerminalEvent": "Stream terminal event",
     "table.details.upstreamErrorCode": "Upstream error code",
     "table.details.upstreamErrorMessage": "Upstream error message",
@@ -1558,7 +1586,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.routing.intervalSeconds": "{{count}} 秒",
     "accountPool.upstreamAccounts.routing.dialogTitle": "高级路由与同步设置",
     "accountPool.upstreamAccounts.routing.dialogDescription":
-      "在项目界面里直接编辑号池路由密钥和双层 maintenance 队列参数。",
+      "在项目界面里直接编辑号池路由密钥、请求链路超时和双层 maintenance 队列参数。",
     "accountPool.upstreamAccounts.routing.save": "保存设置",
     "accountPool.upstreamAccounts.routing.validation.integerRequired":
       "同步字段必须填写为正整数。",
@@ -1570,6 +1598,16 @@ const baseTranslations = {
       "次级队列同步间隔必须大于等于优先队列同步间隔。",
     "accountPool.upstreamAccounts.routing.validation.priorityCapMin":
       "优先可用账号上限不能小于 1。",
+    "accountPool.upstreamAccounts.routing.timeout.sectionTitle":
+      "请求链路超时（秒）",
+    "accountPool.upstreamAccounts.routing.timeout.responsesFirstByte":
+      "一般请求响应体首字超时",
+    "accountPool.upstreamAccounts.routing.timeout.compactFirstByte":
+      "压缩请求响应体首字超时",
+    "accountPool.upstreamAccounts.routing.timeout.responsesStream":
+      "一般请求流结束超时",
+    "accountPool.upstreamAccounts.routing.timeout.compactStream":
+      "压缩请求流结束超时",
     "accountPool.upstreamAccounts.actions.refresh": "刷新列表",
     "accountPool.upstreamAccounts.actions.addAccount": "新增账号",
     "accountPool.upstreamAccounts.actions.addOauth": "新增 OAuth 账号",
@@ -2139,6 +2177,9 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.fields.tokenExpiresAt": "访问令牌过期时间",
     "accountPool.upstreamAccounts.fields.lastSuccessSync": "最近成功同步",
     "accountPool.upstreamAccounts.fields.credits": "Credits",
+    "accountPool.upstreamAccounts.fields.compactSupport": "Compact 支持",
+    "accountPool.upstreamAccounts.fields.compactObservedAt": "Compact 最近观测",
+    "accountPool.upstreamAccounts.fields.compactReason": "Compact 观测原因",
     "accountPool.upstreamAccounts.fields.lastError": "最近错误",
     "accountPool.upstreamAccounts.table.latestActionShort": "最近动作",
     "accountPool.upstreamAccounts.validation.displayNameDuplicate":
@@ -2147,6 +2188,14 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.latestAction.empty":
       "暂时还没有记录到账号动作。",
     "accountPool.upstreamAccounts.latestAction.unknown": "未知",
+    "accountPool.upstreamAccounts.compactSupport.supportedBadge":
+      "Compact 可用",
+    "accountPool.upstreamAccounts.compactSupport.unsupportedBadge":
+      "Compact 不支持",
+    "accountPool.upstreamAccounts.compactSupport.status.supported": "支持",
+    "accountPool.upstreamAccounts.compactSupport.status.unsupported":
+      "不支持",
+    "accountPool.upstreamAccounts.compactSupport.status.unknown": "未知",
     "accountPool.upstreamAccounts.latestAction.fields.action": "动作",
     "accountPool.upstreamAccounts.latestAction.fields.source": "来源",
     "accountPool.upstreamAccounts.latestAction.fields.reason": "原因",
@@ -2713,6 +2762,10 @@ const baseTranslations = {
     "table.details.proxyWeightDeltaA11yDecrease": "代理权重下降 {{value}}",
     "table.details.proxyWeightDeltaA11yUnchanged": "代理权重不变（{{value}}）",
     "table.details.failureKind": "失败分类",
+    "table.details.failureClass": "异常类别",
+    "table.details.actionable": "可行动",
+    "table.details.actionableYes": "是",
+    "table.details.actionableNo": "否",
     "table.details.streamTerminalEvent": "流终态事件",
     "table.details.upstreamErrorCode": "上游错误码",
     "table.details.upstreamErrorMessage": "上游错误消息",
