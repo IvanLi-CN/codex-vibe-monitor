@@ -11061,17 +11061,14 @@ fn pool_same_account_attempt_budget_keeps_legacy_budget_for_non_responses_routes
 }
 
 #[tokio::test]
-async fn proxy_capture_target_responses_uses_default_handshake_timeout() {
+async fn proxy_capture_target_responses_uses_dedicated_first_byte_timeout() {
     let (upstream_base, _captured_requests, upstream_handle) =
         spawn_capture_target_body_upstream().await;
-    let state = test_state_with_openai_base_and_proxy_timeouts(
-        Url::parse(&upstream_base).expect("valid upstream base url"),
-        DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES,
-        Duration::from_millis(100),
-        Duration::from_millis(400),
-        Duration::from_secs(DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS),
-    )
-    .await;
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.openai_proxy_handshake_timeout = Duration::from_millis(400);
+    config.pool_upstream_responses_attempt_timeout = Duration::from_millis(100);
+    let state = test_state_from_config(config, true).await;
 
     let request_body = serde_json::to_vec(&json!({
         "model": "gpt-5.3-codex",
@@ -11082,23 +11079,27 @@ async fn proxy_capture_target_responses_uses_default_handshake_timeout() {
 
     let response = proxy_openai_v1(
         State(state),
-        OriginalUri("/v1/responses?mode=delay".parse().expect("valid uri")),
+        OriginalUri(
+            "/v1/responses?mode=slow-first-chunk"
+                .parse()
+                .expect("valid uri"),
+        ),
         Method::POST,
-        HeaderMap::new(),
+        HeaderMap::from_iter([(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )]),
         Body::from(request_body),
     )
     .await;
 
-    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
-    let body = to_bytes(response.into_body(), usize::MAX)
+    assert_eq!(response.status(), StatusCode::OK);
+    let err = to_bytes(response.into_body(), usize::MAX)
         .await
-        .expect("read proxy error body");
-    let payload: Value = serde_json::from_slice(&body).expect("decode proxy error payload");
+        .expect_err("responses body should time out before the first chunk");
     assert!(
-        payload["error"]
-            .as_str()
-            .expect("error message should be present")
-            .contains(PROXY_UPSTREAM_HANDSHAKE_TIMEOUT)
+        err.to_string()
+            .contains("request timed out after 100ms while waiting for first upstream chunk")
     );
 
     upstream_handle.abort();
@@ -15320,18 +15321,17 @@ async fn capture_target_pool_route_total_timeout_can_succeed_on_second_route() {
 }
 
 #[tokio::test]
-async fn capture_target_pool_route_total_timeout_exhausts_before_third_route() {
+async fn capture_target_pool_route_stream_timeout_does_not_cap_pre_first_byte_failover() {
     #[derive(Debug, sqlx::FromRow)]
     struct AttemptRouteRow {
         attempt_index: i64,
         distinct_account_index: i64,
+        same_account_retry_index: i64,
         status: String,
-        failure_kind: Option<String>,
     }
 
     #[derive(Debug, sqlx::FromRow)]
     struct PersistedPayloadRow {
-        error_message: Option<String>,
         payload: Option<String>,
     }
 
@@ -15391,67 +15391,65 @@ async fn capture_target_pool_route_total_timeout_exhausts_before_third_route() {
         ),
     )
     .await;
-    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+    assert_eq!(response.status(), StatusCode::OK);
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
-        .expect("read timeout budget terminal response body");
+        .expect("read third-route success response body");
     let response_payload: Value =
-        serde_json::from_slice(&body).expect("decode timeout budget terminal response body");
-    assert!(
-        response_payload["error"]
-            .as_str()
-            .expect("timeout budget terminal error should be present")
-            .contains("pool upstream total timeout exhausted after 300ms")
+        serde_json::from_slice(&body).expect("decode third-route success body");
+    assert_eq!(response_payload["ok"].as_bool(), Some(true));
+    assert_eq!(
+        response_payload["authorization"].as_str(),
+        Some("Bearer route-three"),
     );
 
     wait_for_codex_invocations(&state.pool, 1).await;
-    wait_for_pool_attempt_row_count(&state.pool, 2).await;
+    wait_for_pool_attempt_row_count(&state.pool, 3).await;
 
     let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
         r#"
         SELECT
             attempt_index,
             distinct_account_index,
-            status,
-            failure_kind
+            same_account_retry_index,
+            status
         FROM pool_upstream_request_attempts
         ORDER BY attempt_index ASC
         "#,
     )
     .fetch_all(&state.pool)
     .await
-    .expect("load timeout budget terminal rows");
+    .expect("load third-route success rows");
     assert_eq!(attempt_rows.len(), 3);
     assert_eq!(attempt_rows[0].attempt_index, 1);
     assert_eq!(attempt_rows[0].distinct_account_index, 1);
+    assert_eq!(attempt_rows[0].same_account_retry_index, 1);
     assert_eq!(
         attempt_rows[0].status,
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
     );
     assert_eq!(attempt_rows[1].attempt_index, 2);
     assert_eq!(attempt_rows[1].distinct_account_index, 2);
+    assert_eq!(attempt_rows[1].same_account_retry_index, 1);
     assert_eq!(
         attempt_rows[1].status,
         POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
     );
     assert_eq!(attempt_rows[2].attempt_index, 3);
-    assert_eq!(attempt_rows[2].distinct_account_index, 2);
+    assert_eq!(attempt_rows[2].distinct_account_index, 3);
+    assert_eq!(attempt_rows[2].same_account_retry_index, 1);
     assert_eq!(
         attempt_rows[2].status,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL,
-    );
-    assert_eq!(
-        attempt_rows[2].failure_kind.as_deref(),
-        Some(PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED),
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
     );
 
     let attempts = attempts.lock().expect("lock unused route attempts");
-    assert_eq!(attempts.get("Bearer route-three").copied(), None);
+    assert_eq!(attempts.get("Bearer route-three").copied(), Some(1));
     drop(attempts);
 
     let row = sqlx::query_as::<_, PersistedPayloadRow>(
         r#"
-        SELECT error_message, payload
+        SELECT payload
         FROM codex_invocations
         ORDER BY id DESC
         LIMIT 1
@@ -15459,29 +15457,16 @@ async fn capture_target_pool_route_total_timeout_exhausts_before_third_route() {
     )
     .fetch_one(&state.pool)
     .await
-    .expect("load timeout budget terminal payload");
+    .expect("load third-route success payload");
     let payload: Value = serde_json::from_str(
         row.payload
             .as_deref()
-            .expect("timeout budget terminal payload should be present"),
+            .expect("third-route success payload should be present"),
     )
-    .expect("decode timeout budget terminal payload");
-    assert!(
-        row.error_message
-            .as_deref()
-            .is_some_and(|msg| msg.contains("pool upstream total timeout exhausted after 300ms"))
-    );
-    assert_eq!(payload["statusCode"].as_i64(), Some(504));
-    assert_eq!(
-        payload["failureKind"].as_str(),
-        Some(PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED),
-    );
-    assert_eq!(payload["poolAttemptCount"].as_i64(), Some(2));
-    assert_eq!(payload["poolDistinctAccountCount"].as_i64(), Some(2));
-    assert_eq!(
-        payload["poolAttemptTerminalReason"].as_str(),
-        Some(PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED),
-    );
+    .expect("decode third-route success payload");
+    assert_eq!(payload["poolAttemptCount"].as_i64(), Some(3));
+    assert_eq!(payload["poolDistinctAccountCount"].as_i64(), Some(3));
+    assert!(payload["poolAttemptTerminalReason"].is_null());
 
     slow_one_handle.abort();
     slow_two_handle.abort();
@@ -15489,19 +15474,25 @@ async fn capture_target_pool_route_total_timeout_exhausts_before_third_route() {
 }
 
 #[tokio::test]
-async fn pool_openai_v1_responses_compact_total_timeout_exhausts_before_third_route() {
+async fn pool_openai_v1_responses_compact_stream_timeout_does_not_cap_pre_first_byte_failover() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptRouteRow {
+        attempt_index: i64,
+        distinct_account_index: i64,
+        status: String,
+    }
+
     #[derive(Debug, sqlx::FromRow)]
     struct PersistedPayloadRow {
-        error_message: Option<String>,
         payload: Option<String>,
     }
 
-    let (slow_one_base, slow_one_requests, slow_one_handle) =
+    let (slow_one_base, _slow_one_requests, slow_one_handle) =
         spawn_capture_target_body_upstream().await;
-    let (slow_two_base, slow_two_requests, slow_two_handle) =
+    let (slow_two_base, _slow_two_requests, slow_two_handle) =
         spawn_capture_target_body_upstream().await;
-    let (fast_three_base, fast_three_requests, fast_three_handle) =
-        spawn_capture_target_body_upstream().await;
+    let (fast_three_base, fast_three_attempts, fast_three_handle) =
+        spawn_pool_retry_upstream(&[("Bearer route-three", 0)]).await;
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -15564,35 +15555,61 @@ async fn pool_openai_v1_responses_compact_total_timeout_exhausts_before_third_ro
         Body::from(request_body),
     )
     .await;
-    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+    assert_eq!(response.status(), StatusCode::OK);
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
-        .expect("read compact timeout budget terminal response body");
-    let response_payload: Value = serde_json::from_slice(&body)
-        .expect("decode compact timeout budget terminal response body");
-    assert!(
-        response_payload["error"]
-            .as_str()
-            .expect("compact timeout budget terminal error should be present")
-            .contains("pool upstream total timeout exhausted after 300ms")
+        .expect("read compact third-route success response body");
+    let response_payload: Value =
+        serde_json::from_slice(&body).expect("decode compact third-route success body");
+    assert_eq!(response_payload["ok"].as_bool(), Some(true));
+    assert_eq!(
+        response_payload["authorization"].as_str(),
+        Some("Bearer route-three"),
     );
 
     wait_for_codex_invocations(&state.pool, 1).await;
-    wait_for_pool_attempt_row_count(&state.pool, 2).await;
+    wait_for_pool_attempt_row_count(&state.pool, 3).await;
 
-    let slow_one_requests = slow_one_requests.lock().await;
-    let slow_two_requests = slow_two_requests.lock().await;
-    let fast_three_requests = fast_three_requests.lock().await;
-    assert_eq!(slow_one_requests.len(), 1);
-    assert_eq!(slow_two_requests.len(), 1);
-    assert_eq!(fast_three_requests.len(), 0);
-    drop(slow_one_requests);
-    drop(slow_two_requests);
-    drop(fast_three_requests);
+    let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
+        r#"
+        SELECT
+            attempt_index,
+            distinct_account_index,
+            status
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load compact third-route rows");
+    assert_eq!(attempt_rows.len(), 3);
+    assert_eq!(
+        attempt_rows[0].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+    );
+    assert_eq!(
+        attempt_rows[1].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+    );
+    assert_eq!(
+        attempt_rows[2].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+    );
+    assert_eq!(attempt_rows[2].distinct_account_index, 3);
+
+    let fast_three_attempts = fast_three_attempts
+        .lock()
+        .expect("lock compact route-three attempts");
+    assert_eq!(
+        fast_three_attempts.get("Bearer route-three").copied(),
+        Some(1)
+    );
+    drop(fast_three_attempts);
 
     let row = sqlx::query_as::<_, PersistedPayloadRow>(
         r#"
-        SELECT error_message, payload
+        SELECT payload
         FROM codex_invocations
         ORDER BY id DESC
         LIMIT 1
@@ -15600,27 +15617,16 @@ async fn pool_openai_v1_responses_compact_total_timeout_exhausts_before_third_ro
     )
     .fetch_one(&state.pool)
     .await
-    .expect("load compact timeout budget terminal payload");
+    .expect("load compact third-route success payload");
     let payload: Value = serde_json::from_str(
         row.payload
             .as_deref()
-            .expect("compact timeout budget terminal payload should be present"),
+            .expect("compact third-route success payload should be present"),
     )
-    .expect("decode compact timeout budget terminal payload");
-    assert!(
-        row.error_message
-            .as_deref()
-            .is_some_and(|msg| msg.contains("pool upstream total timeout exhausted after 300ms"))
-    );
-    assert_eq!(payload["statusCode"].as_i64(), Some(504));
-    assert_eq!(
-        payload["failureKind"].as_str(),
-        Some(PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED),
-    );
-    assert_eq!(
-        payload["poolAttemptTerminalReason"].as_str(),
-        Some(PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED),
-    );
+    .expect("decode compact third-route success payload");
+    assert_eq!(payload["poolAttemptCount"].as_i64(), Some(3));
+    assert_eq!(payload["poolDistinctAccountCount"].as_i64(), Some(3));
+    assert!(payload["poolAttemptTerminalReason"].is_null());
 
     slow_one_handle.abort();
     slow_two_handle.abort();
@@ -15694,17 +15700,18 @@ async fn pool_openai_v1_responses_total_timeout_starts_at_first_upstream_attempt
 }
 
 #[tokio::test]
-async fn pool_openai_v1_responses_total_timeout_preserves_distinct_account_count_on_same_account_retry_exhaustion()
- {
+async fn pool_openai_v1_responses_stream_timeout_does_not_cap_same_account_retry_before_first_byte()
+{
     #[derive(Debug, sqlx::FromRow)]
     struct PersistedPayloadRow {
-        error_message: Option<String>,
         payload: Option<String>,
     }
 
     #[derive(Debug, sqlx::FromRow)]
     struct AttemptRouteRow {
+        attempt_index: i64,
         distinct_account_index: i64,
+        status: String,
     }
 
     let (retry_upstream_base, retry_attempts, retry_upstream_handle) =
@@ -15741,44 +15748,61 @@ async fn pool_openai_v1_responses_total_timeout_preserves_distinct_account_count
         ),
     )
     .await;
-    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+    assert_eq!(response.status(), StatusCode::OK);
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
-        .expect("read same-account timeout exhaustion response");
+        .expect("read same-account retry success response");
     let response_payload: Value =
-        serde_json::from_slice(&body).expect("decode same-account timeout exhaustion body");
-    assert!(
-        response_payload["error"]
-            .as_str()
-            .expect("timeout exhaustion error should be present")
-            .contains("pool upstream total timeout exhausted")
+        serde_json::from_slice(&body).expect("decode same-account retry success body");
+    assert_eq!(response_payload["ok"].as_bool(), Some(true));
+    assert_eq!(
+        response_payload["authorization"].as_str(),
+        Some("Bearer route-one"),
     );
 
     wait_for_codex_invocations(&state.pool, 1).await;
-    wait_for_pool_attempt_row_count(&state.pool, 2).await;
+    wait_for_pool_attempt_row_count(&state.pool, 3).await;
 
     let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
         r#"
         SELECT
-            distinct_account_index
+            attempt_index,
+            distinct_account_index,
+            status
         FROM pool_upstream_request_attempts
         ORDER BY attempt_index ASC
         "#,
     )
     .fetch_all(&state.pool)
     .await
-    .expect("load same-account timeout exhaustion rows");
-    assert_eq!(attempt_rows.len(), 2);
+    .expect("load same-account retry success rows");
+    assert_eq!(attempt_rows.len(), 3);
+    assert_eq!(attempt_rows[0].attempt_index, 1);
     assert_eq!(attempt_rows[0].distinct_account_index, 1);
+    assert_eq!(
+        attempt_rows[0].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
+    );
+    assert_eq!(attempt_rows[1].attempt_index, 2);
     assert_eq!(attempt_rows[1].distinct_account_index, 1);
+    assert_eq!(
+        attempt_rows[1].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
+    );
+    assert_eq!(attempt_rows[2].attempt_index, 3);
+    assert_eq!(attempt_rows[2].distinct_account_index, 1);
+    assert_eq!(
+        attempt_rows[2].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+    );
 
     let attempts = retry_attempts.lock().expect("lock retry route attempts");
-    assert_eq!(attempts.get("Bearer route-one").copied(), Some(1));
+    assert_eq!(attempts.get("Bearer route-one").copied(), Some(3));
     drop(attempts);
 
     let row = sqlx::query_as::<_, PersistedPayloadRow>(
         r#"
-        SELECT error_message, payload
+        SELECT payload
         FROM codex_invocations
         ORDER BY id DESC
         LIMIT 1
@@ -15790,24 +15814,12 @@ async fn pool_openai_v1_responses_total_timeout_preserves_distinct_account_count
     let payload: Value = serde_json::from_str(
         row.payload
             .as_deref()
-            .expect("same-account timeout exhaustion payload should be present"),
+            .expect("same-account retry success payload should be present"),
     )
-    .expect("decode same-account timeout exhaustion payload");
-    assert!(
-        row.error_message
-            .as_deref()
-            .is_some_and(|msg| msg.contains("pool upstream total timeout exhausted"))
-    );
-    assert_eq!(
-        payload["failureKind"].as_str(),
-        Some(PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED),
-    );
-    assert_eq!(payload["poolAttemptCount"].as_i64(), Some(1));
+    .expect("decode same-account retry success payload");
+    assert_eq!(payload["poolAttemptCount"].as_i64(), Some(3));
     assert_eq!(payload["poolDistinctAccountCount"].as_i64(), Some(1));
-    assert_eq!(
-        payload["poolAttemptTerminalReason"].as_str(),
-        Some(PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED),
-    );
+    assert!(payload["poolAttemptTerminalReason"].is_null());
 
     retry_upstream_handle.abort();
 }
@@ -17205,7 +17217,7 @@ async fn pool_route_large_oauth_responses_falls_back_to_api_key_account() {
 }
 
 #[tokio::test]
-async fn pool_route_oauth_compact_total_timeout_caps_send_phase() {
+async fn pool_route_oauth_compact_stream_timeout_does_not_cap_send_phase_before_first_byte() {
     let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
         .lock()
         .await;
@@ -17253,16 +17265,16 @@ async fn pool_route_oauth_compact_total_timeout_caps_send_phase() {
     )
     .await;
 
-    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
+    assert_eq!(response.status(), StatusCode::OK);
     let payload: Value = serde_json::from_slice(
         &to_bytes(response.into_body(), usize::MAX)
             .await
-            .expect("read oauth compact timeout response"),
+            .expect("read oauth compact success response"),
     )
-    .expect("decode oauth compact timeout response");
+    .expect("decode oauth compact success response");
     assert_eq!(
-        payload["error"].as_str(),
-        Some("pool upstream total timeout exhausted after 300ms")
+        payload["path"].as_str(),
+        Some("/backend-api/codex/responses/compact"),
     );
 
     wait_for_codex_invocations(&state.pool, 1).await;
@@ -17276,11 +17288,8 @@ async fn pool_route_oauth_compact_total_timeout_caps_send_phase() {
     )
     .fetch_one(&state.pool)
     .await
-    .expect("load oauth compact timeout failure kind");
-    assert_eq!(
-        failure_kind.as_deref(),
-        Some(PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED),
-    );
+    .expect("load oauth compact success failure kind");
+    assert_eq!(failure_kind, None);
 
     upstream_handle.abort();
 }
