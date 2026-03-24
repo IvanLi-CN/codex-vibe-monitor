@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.24.3",
+  "base_stable_version": "1.24.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-24T19:22:41Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.24.3",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "d0e2b07c5f46a524a777cc57934fda90188bafbe",
+  "pr_number": 227,
+  "pr_title": "fix(pool): exclude exhausted accounts from routing",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.24.3",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.24.3,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "aac6f5c191736bde7ecdd38341d519de3e04a370",
+  "type_label": "type:patch"
+}
