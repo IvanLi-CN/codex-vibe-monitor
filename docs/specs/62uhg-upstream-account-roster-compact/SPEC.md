@@ -4,7 +4,7 @@
 
 - Status: 已完成（5/5）
 - Created: 2026-03-16
-- Last: 2026-03-17
+- Last: 2026-03-24
 
 ## 背景 / 问题陈述
 
@@ -20,6 +20,7 @@
 - 将列表收敛成“账号 / 同步与调用 / 窗口 / 详情入口”四段式结构，默认桌面视图不再依赖横向滚动。
 - 每条记录的字段值保持单行显示：账号主体只展示 `displayName` 一行值，超长内容统一截断；分组名不再出现在列表主信息区。
 - 账号名下方新增紧凑标记带，承载母号、重复账号、状态、类型、Plan 与账号标签；标签默认显示前 `3` 个，多余部分汇总为 `+N`。
+- 工作态标记收口为“可调用态徽章”：只有 `enableStatus=enabled`、`healthStatus=normal`、`syncState=idle` 的账号才显示 `工作 / 空闲` 标记；`working` 必须带出活跃对话数量。
 - 将 `5 小时` 与 `7 天` 合并为同一列中的双窗口摘要，每个窗口占一行，保留窗口名、使用值、下次重置与迷你进度可视化。
 
 ### Non-goals
@@ -27,6 +28,7 @@
 - 不新增持久化业务字段或改造账号详情数据模型；仅允许为现有调用记录补充必要的派生字段与性能索引。
 - 不改造账号详情抽屉、分组筛选、顶部统计卡片和写操作流程。
 - 不新增筛选器、批量操作或新的业务字段。
+- 不调整详情抽屉头部四态 badge，也不改变现有 `workStatus` 筛选 taxonomy 与兼容 query 语义。
 
 ## 范围（Scope）
 
@@ -59,6 +61,7 @@
 - 账号字段值下方必须显示独立的标记带，顺序固定为：母号、重复账号、状态、类型、Plan、tags；tags 最多渲染 `3` 个，剩余汇总为 `+N`。
 - `+N` 必须保留可发现路径：鼠标悬浮时显示隐藏 tags，键盘聚焦同样可读取隐藏 tags 提示，不得因为整行点击逻辑而失效。
 - 同步列必须同时显示最近成功同步时间与上次调用时间，两者各占一行且值不换行；没有调用记录时显示占位值。
+- 账号可调用时显示 `工作 / 空闲` 标记；`working` 标记文案必须显示最近 `30` 分钟活跃 sticky route 数量，`idle` 保持纯文本；若账号因限流不可调用，则继续显示 `限流` 标记；`disabled`、`syncing` 与异常健康态不显示工作态标记。
 - `5 小时` / `7 天` 必须在同一列中上下排列；每一行都要包含窗口名、当前使用文案、重置时间与百分比，且值不换行。
 - 选中态、整行点击、键盘 Enter/Space 触发、右侧详情 chevron 入口必须保持现有行为。
 
@@ -73,6 +76,8 @@
 - Given 账号页列表在默认桌面容器中渲染，When 打开页面，Then 表头只保留账号、同步与调用、窗口和详情入口，不再出现独立 `5h/7d` 列。
 - Given 任一账号名、同步时间或窗口摘要过长，When 列表渲染，Then 对应值保持单行并被截断，而不是换行撑高布局。
 - Given 某账号已有路由调用记录，When 列表渲染，Then 同步列第二行显示最近一次调用时间；若没有调用记录，则显示统一占位值。
+- Given 某账号 `enableStatus=enabled`、`healthStatus=normal`、`syncState=idle` 且 `workStatus=working`，When 列表渲染，Then 标记带显示 `工作 {{count}}` / `Working {{count}}`，其中 `count` 来自最近 `30` 分钟活跃 sticky route 数量；若 `count <= 0`，则回退为纯文本 `工作` / `Working`。
+- Given 某账号因限流不可调用，When 列表渲染，Then 标记带继续显示 `限流` 徽章；Given 某账号因禁用、同步中或异常健康态不可调用，When 列表渲染，Then 标记带不显示 `工作 / 空闲` 徽章，其它徽章与布局保持不变。
 - Given 某账号同时有母号、重复账号、状态、类型、Plan 和超过 `3` 个 tags，When 列表渲染，Then 标记带按固定顺序显示，且 tag 区域以 `+N` 汇总剩余项。
 - Given OAuth 与 API Key 账号都存在窗口数据，When 列表渲染，Then `5 小时` / `7 天` 统一出现在同一列的两行摘要中，仍能区分两种窗口。
 - Given 现有账号列表选中逻辑与详情入口，When 点击整行或按 Enter/Space，Then 仍然选中账号并可继续打开号池详情抽屉。
@@ -90,6 +95,19 @@
 - [x] M3: 补齐组件/页面测试与 Storybook 场景。
 - [x] M4: 完成本地验证与浏览器 smoke。
 - [x] M5: 快车道收敛（spec sync、push、PR、checks、review-loop）。
+
+## Visual Evidence
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Account Pool/Pages/Upstream Accounts/List — Availability Badges
+  state: light-theme
+  evidence_note: 验证工作/空闲徽章只在可调用账号上显示，`working` 行内携带活跃对话数量，限流行保留 `限流` 徽章，异常健康态行隐藏工作态徽章。
+  image:
+  ![上游账号列表可用态工作空闲徽章](./assets/upstream-accounts-availability-badges.png)
 
 ## Visual Evidence (PR)
 

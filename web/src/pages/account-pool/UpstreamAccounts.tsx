@@ -1359,6 +1359,8 @@ export default function UpstreamAccountsPage() {
     t(`accountPool.upstreamAccounts.enableStatus.${status}`)
   const accountWorkStatusLabel = (status: string) =>
     t(`accountPool.upstreamAccounts.workStatus.${status}`)
+  const accountWorkingCountLabel = (count: number) =>
+    t('accountPool.upstreamAccounts.workStatus.workingWithCount', { count })
   const accountHealthStatusLabel = (status: string) =>
     t(`accountPool.upstreamAccounts.healthStatus.${status}`)
   const accountSyncStateLabel = (status: string) =>
@@ -2278,6 +2280,7 @@ export default function UpstreamAccountsPage() {
                 hiddenTagsA11y: (count, names) =>
                   t('accountPool.upstreamAccounts.table.hiddenTagsA11y', { count, names }),
                 workStatus: accountWorkStatusLabel,
+                workStatusCount: accountWorkingCountLabel,
                 enableStatus: accountEnableStatusLabel,
                 healthStatus: accountHealthStatusLabel,
                 syncState: accountSyncStateLabel,

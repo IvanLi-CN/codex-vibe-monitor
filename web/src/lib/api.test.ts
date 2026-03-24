@@ -8,6 +8,7 @@ import {
   fetchPromptCacheConversations,
   fetchSettings,
   fetchSummary,
+  fetchUpstreamAccountDetail,
   fetchUpstreamAccounts,
   fetchUpstreamStickyConversations,
   updateProxySettings,
@@ -764,6 +765,74 @@ describe("account pool frontend API helpers", () => {
       observedAt: "2026-03-16T02:08:00.000Z",
       reason: "No available channel for compact model gpt-5.4-openai-compact",
     });
+  });
+
+  it("normalizes active conversation counts from upstream account payloads", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(
+          JSON.stringify({
+            writesEnabled: true,
+            groups: [],
+            hasUngroupedAccounts: false,
+            items: [
+              {
+                id: 1,
+                kind: "oauth_codex",
+                provider: "codex",
+                displayName: "Working OAuth",
+                isMother: false,
+                status: "active",
+                enabled: true,
+                activeConversationCount: 4,
+              },
+              {
+                id: 2,
+                kind: "api_key_codex",
+                provider: "codex",
+                displayName: "Missing Count API key",
+                isMother: false,
+                status: "active",
+                enabled: true,
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch,
+    );
+
+    const response = await fetchUpstreamAccounts();
+
+    expect(response.items[0]?.activeConversationCount).toBe(4);
+    expect(response.items[1]?.activeConversationCount).toBe(0);
+  });
+
+  it("normalizes active conversation counts from upstream account detail payloads", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(
+          JSON.stringify({
+            id: 9,
+            kind: "oauth_codex",
+            provider: "codex",
+            displayName: "Detail OAuth",
+            isMother: false,
+            status: "active",
+            enabled: true,
+            activeConversationCount: 2,
+            history: [],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch,
+    );
+
+    const response = await fetchUpstreamAccountDetail(9);
+
+    expect(response.activeConversationCount).toBe(2);
   });
 
   it("serializes upstream account roster filters into the query string", async () => {

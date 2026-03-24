@@ -58,6 +58,7 @@ const items: UpstreamAccountSummary[] = [
     lastSyncedAt: now,
     lastSuccessfulSyncAt: now,
     lastActivityAt: '2026-03-11T12:12:00.000Z',
+    activeConversationCount: 3,
     lastAction: 'route_hard_unavailable',
     lastActionSource: 'call',
     lastActionReasonCode: 'upstream_http_429_quota_exhausted',
@@ -173,6 +174,7 @@ const labels = {
       idle: 'Idle',
       rate_limited: 'Rate limited',
     })[status] ?? status,
+  workStatusCount: (count: number) => `Working ${count}`,
   enableStatus: (status: string) =>
     ({
       enabled: 'Enabled',
@@ -298,6 +300,43 @@ export const CompactLongLabels: Story = {
       },
     ],
     selectedId: 12,
+  },
+}
+
+export const AvailabilityBadges: Story = {
+  args: {
+    items: [
+      items[0],
+      {
+        ...items[0],
+        id: 13,
+        displayName: 'Available idle badge',
+        isMother: false,
+        workStatus: 'idle',
+        activeConversationCount: 0,
+        duplicateInfo: null,
+        tags: [],
+      },
+      {
+        ...items[1],
+        id: 14,
+        displayName: 'Rate-limited badge visible',
+        workStatus: 'rate_limited',
+        activeConversationCount: 4,
+      },
+      {
+        ...items[0],
+        id: 15,
+        displayName: 'Unavailable badge hidden',
+        isMother: false,
+        displayStatus: 'upstream_unavailable',
+        workStatus: 'working',
+        healthStatus: 'upstream_unavailable',
+        activeConversationCount: 2,
+        tags: [],
+      },
+    ],
+    selectedId: 11,
   },
 }
 

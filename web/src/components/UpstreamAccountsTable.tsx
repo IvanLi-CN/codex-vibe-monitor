@@ -44,6 +44,7 @@ interface UpstreamAccountsTableProps {
     duplicate: string
     hiddenTagsA11y: (count: number, names: string) => string
     workStatus: (status: string) => string
+    workStatusCount: (count: number) => string
     enableStatus: (status: string) => string
     healthStatus: (status: string) => string
     syncState: (status: string) => string
@@ -119,13 +120,6 @@ function accountEnableStatus(item: UpstreamAccountSummary) {
   return item.enableStatus ?? (item.enabled === false || item.displayStatus === 'disabled' ? 'disabled' : 'enabled')
 }
 
-function accountWorkStatus(item: UpstreamAccountSummary) {
-  if (accountEnableStatus(item) !== 'enabled') return 'idle'
-  if (accountSyncState(item) === 'syncing') return 'idle'
-  if (accountHealthStatus(item) !== 'normal') return 'idle'
-  return item.workStatus ?? 'idle'
-}
-
 function accountHealthStatus(item: UpstreamAccountSummary) {
   if (item.healthStatus) return item.healthStatus
   const legacyStatus = item.displayStatus ?? item.status
@@ -156,6 +150,51 @@ function workBadgeVariant(status: string): 'info' | 'warning' | 'secondary' {
   if (status === 'working') return 'info'
   if (status === 'rate_limited') return 'warning'
   return 'secondary'
+}
+
+function resolveAvailabilityBadge(
+  item: UpstreamAccountSummary,
+  labels: UpstreamAccountsTableProps['labels'],
+) {
+  const enableStatus = accountEnableStatus(item)
+  const healthStatus = accountHealthStatus(item)
+  const syncState = accountSyncState(item)
+
+  if (
+    item.workStatus === 'rate_limited' &&
+    enableStatus === 'enabled' &&
+    healthStatus === 'normal' &&
+    syncState === 'idle'
+  ) {
+    return {
+      label: labels.workStatus('rate_limited'),
+      variant: workBadgeVariant('rate_limited'),
+    }
+  }
+
+  if (enableStatus !== 'enabled' || healthStatus !== 'normal' || syncState !== 'idle') {
+    return null
+  }
+
+  if (item.workStatus === 'working') {
+    const activeConversationCount = item.activeConversationCount ?? 0
+    return {
+      label:
+        activeConversationCount > 0
+          ? labels.workStatusCount(activeConversationCount)
+          : labels.workStatus('working'),
+      variant: workBadgeVariant('working'),
+    }
+  }
+
+  if ((item.workStatus ?? 'idle') === 'idle') {
+    return {
+      label: labels.workStatus('idle'),
+      variant: workBadgeVariant('idle'),
+    }
+  }
+
+  return null
 }
 
 function healthBadgeVariant(status: string): 'warning' | 'error' | 'secondary' {
@@ -513,9 +552,9 @@ export function UpstreamAccountsTable({
               Math.round(item.secondaryWindow.windowDurationMins) !== 10_080
             const selected = item.id === selectedId
             const enableStatus = accountEnableStatus(item)
-            const workStatus = accountWorkStatus(item)
             const healthStatus = accountHealthStatus(item)
             const syncState = accountSyncState(item)
+            const availabilityBadge = resolveAvailabilityBadge(item, labels)
             const latestActionTitle = buildLatestActionTitle(item, labels)
             const healthBadgeTitle =
               healthStatus !== 'normal'
@@ -569,7 +608,9 @@ export function UpstreamAccountsTable({
                           ? compactBadge(labels.duplicate, 'warning')
                           : null}
                         {compactBadge(labels.enableStatus(enableStatus), enableBadgeVariant(enableStatus))}
-                        {compactBadge(labels.workStatus(workStatus), workBadgeVariant(workStatus))}
+                        {availabilityBadge
+                          ? compactBadge(availabilityBadge.label, availabilityBadge.variant)
+                          : null}
                         {syncState === 'syncing'
                           ? compactBadge(labels.syncState(syncState), syncBadgeVariant(syncState))
                           : null}
