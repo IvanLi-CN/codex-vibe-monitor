@@ -500,6 +500,55 @@ describe('InvocationTable', () => {
     expect(afterExpandMatches.length).toBeGreaterThanOrEqual(2)
   })
 
+  it('keeps latency summary fields out of request details while preserving stage timings', async () => {
+    await renderInteractiveTable([
+      {
+        id: 34,
+        invokeId: 'invocation-detail-deduped-latency',
+        occurredAt: '2026-03-24T06:48:52Z',
+        createdAt: '2026-03-24T06:48:52Z',
+        source: 'proxy',
+        routeMode: 'pool',
+        upstreamAccountId: 7,
+        upstreamAccountName: 'pool-account-a',
+        proxyDisplayName: 'storybook-proxy',
+        responseContentEncoding: 'gzip',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'success',
+        totalTokens: 2236,
+        cost: 0.0046,
+        tUpstreamConnectMs: 26,
+        tUpstreamTtfbMs: 148.2,
+        tUpstreamStreamMs: 613,
+        tTotalMs: 805,
+      },
+    ])
+
+    const toggle = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.getAttribute('aria-expanded') === 'false',
+    )
+    expect(toggle).toBeTruthy()
+
+    await act(async () => {
+      toggle?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    const metaSection = document.querySelector('[data-testid="invocation-details-meta"]')
+    const timingsSection = document.querySelector('[data-testid="invocation-details-timings"]')
+
+    expect(metaSection?.textContent).toContain('请求详情')
+    expect(metaSection?.textContent).toContain('HTTP 压缩算法')
+    expect(metaSection?.textContent).not.toContain('用时')
+    expect(metaSection?.textContent).not.toContain('首字耗时')
+
+    expect(timingsSection?.textContent).toContain('阶段耗时')
+    expect(timingsSection?.textContent).toContain('上游首字节')
+    expect(timingsSection?.textContent).toContain('总耗时')
+  })
+
   it('lazy-loads pool attempts inside expanded details', async () => {
     apiMocks.fetchInvocationPoolAttempts.mockResolvedValue([
       {

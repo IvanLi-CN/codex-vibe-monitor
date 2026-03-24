@@ -648,8 +648,6 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
             label: t('table.details.poolAttemptTerminalReason'),
             value: formatOptionalText(record.poolAttemptTerminalReason),
           },
-          { key: 'totalLatency', label: t('table.details.totalLatency'), value: totalLatencyValue },
-          { key: 'firstByteLatency', label: t('table.details.firstByteLatency'), value: firstByteLatencyValue },
           { key: 'responseContentEncoding', label: t('table.details.httpCompression'), value: responseContentEncodingValue },
           { key: 'requestedServiceTier', label: t('table.details.requestedServiceTier'), value: requestedServiceTierValue },
           { key: 'serviceTier', label: t('table.details.serviceTier'), value: serviceTierValue },
@@ -1039,7 +1037,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
         </div>
       )}
 
-      <div className="flex flex-col gap-2">
+      <div className="flex flex-col gap-2" data-testid="invocation-details-meta">
         <span className="text-xs font-semibold uppercase tracking-wide text-base-content/70">{t('table.detailsTitle')}</span>
         <div className="grid gap-2 md:grid-cols-2">
           {detailPairs.map((entry) => (
@@ -1051,7 +1049,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
         </div>
       </div>
 
-      <div className="flex flex-col gap-2">
+      <div className="flex flex-col gap-2" data-testid="invocation-details-timings">
         <span className="text-xs font-semibold uppercase tracking-wide text-base-content/70">
           {t('table.details.timingsTitle')}
         </span>
