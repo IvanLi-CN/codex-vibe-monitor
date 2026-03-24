@@ -1,8 +1,14 @@
-import { useEffect, useRef, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, type ReactNode } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { expect, userEvent, within } from 'storybook/test'
+import { expect, userEvent, waitFor, within } from 'storybook/test'
 import { I18nProvider } from '../i18n'
-import type { ApiInvocation, InvocationRecordsQuery, InvocationSortBy, InvocationSortOrder } from '../lib/api'
+import type {
+  ApiInvocation,
+  ApiPoolUpstreamRequestAttempt,
+  InvocationRecordsQuery,
+  InvocationSortBy,
+  InvocationSortOrder,
+} from '../lib/api'
 import RecordsPage from '../pages/Records'
 import {
   createStoryInvocationRecordsResponse,
@@ -41,6 +47,9 @@ function alignStoryRecordsToNow(records: ApiInvocation[]) {
 }
 
 const STORYBOOK_RECENT_INVOCATION_RECORDS = alignStoryRecordsToNow(STORYBOOK_INVOCATION_RECORDS)
+const STORYBOOK_POOL_DETAILS_RECORDS = STORYBOOK_RECENT_INVOCATION_RECORDS.filter(
+  (record) => record.routeMode === 'pool' && record.status !== 'running',
+)
 
 function normalizeText(value: string | null) {
   const normalized = value?.trim() ?? ''
@@ -176,6 +185,88 @@ function buildSuggestions(records: ApiInvocation[]) {
   }
 }
 
+function resolveFinalAttemptStatus(record: ApiInvocation): ApiPoolUpstreamRequestAttempt['status'] {
+  if (record.status === 'success') return 'success'
+  if (record.poolAttemptTerminalReason === 'budget_exhausted_final') return 'budget_exhausted_final'
+  if (record.failureClass === 'client_failure') return 'http_failure'
+  return 'transport_failure'
+}
+
+function createPoolAttemptFixtures(records: ApiInvocation[]) {
+  const attemptsByInvokeId: Record<string, ApiPoolUpstreamRequestAttempt[]> = {}
+
+  records.forEach((record, recordIndex) => {
+    if (record.routeMode !== 'pool') return
+
+    const attemptTotal = Math.max(1, record.poolAttemptCount ?? 1)
+    const distinctTotal = Math.max(1, Math.min(attemptTotal, record.poolDistinctAccountCount ?? attemptTotal))
+    const finalAccountId =
+      typeof record.upstreamAccountId === 'number' && Number.isFinite(record.upstreamAccountId)
+        ? Math.trunc(record.upstreamAccountId)
+        : 100 + recordIndex * 10 + distinctTotal
+    const baseAccountId = finalAccountId - (distinctTotal - 1)
+    const finalStatus = resolveFinalAttemptStatus(record)
+
+    attemptsByInvokeId[record.invokeId] = Array.from({ length: attemptTotal }, (_, attemptIndex) => {
+      const isLastAttempt = attemptIndex === attemptTotal - 1
+      const distinctAccountIndex = Math.min(distinctTotal, attemptIndex + 1)
+      const sameAccountRetryIndex = attemptIndex < distinctTotal ? 1 : attemptIndex - distinctTotal + 2
+      const upstreamAccountId = isLastAttempt ? finalAccountId : baseAccountId + distinctAccountIndex - 1
+      const upstreamAccountName =
+        isLastAttempt && record.upstreamAccountName?.trim()
+          ? record.upstreamAccountName
+          : `Pool Candidate ${upstreamAccountId}`
+      const status = isLastAttempt ? finalStatus : attemptIndex % 2 === 0 ? 'transport_failure' : 'http_failure'
+      const startedAtMs = Date.parse(record.occurredAt) - (attemptTotal - attemptIndex) * 900
+      const finishedAtMs = startedAtMs + 240 + attemptIndex * 90
+
+      return {
+        id: record.id * 100 + attemptIndex + 1,
+        invokeId: record.invokeId,
+        occurredAt: record.occurredAt,
+        endpoint: record.endpoint ?? '/v1/responses',
+        attemptIndex: attemptIndex + 1,
+        distinctAccountIndex,
+        sameAccountRetryIndex,
+        status,
+        httpStatus:
+          status === 'success' ? 200 : status === 'http_failure' ? (isLastAttempt ? 400 : 429) : null,
+        failureKind:
+          status === 'success'
+            ? null
+            : status === 'http_failure'
+              ? isLastAttempt
+                ? record.failureKind ?? 'invalid_request'
+                : 'rate_limit'
+              : 'connect_timeout',
+        errorMessage:
+          status === 'success'
+            ? null
+            : status === 'http_failure'
+              ? isLastAttempt
+                ? record.errorMessage ?? 'upstream rejected request'
+                : 'upstream returned 429'
+              : 'forward proxy connect timeout',
+        connectLatencyMs: status === 'transport_failure' ? 160 + attemptIndex * 20 : 55 + attemptIndex * 12,
+        firstByteLatencyMs:
+          status === 'success' ? (record.tUpstreamTtfbMs ?? 180) : status === 'http_failure' ? 210 + attemptIndex * 18 : null,
+        streamLatencyMs:
+          status === 'success' && typeof record.tTotalMs === 'number' && Number.isFinite(record.tTotalMs)
+            ? Math.max(80, record.tTotalMs - (record.tUpstreamTtfbMs ?? 180))
+            : null,
+        upstreamRequestId: `${record.invokeId}-attempt-${attemptIndex + 1}`,
+        startedAt: new Date(startedAtMs).toISOString(),
+        finishedAt: new Date(finishedAtMs).toISOString(),
+        createdAt: new Date(finishedAtMs).toISOString(),
+        upstreamAccountId,
+        upstreamAccountName,
+      }
+    })
+  })
+
+  return attemptsByInvokeId
+}
+
 function jsonResponse(payload: unknown) {
   return new Response(JSON.stringify(payload), {
     status: 200,
@@ -201,6 +292,7 @@ function StorybookRecordsPageMock({
   const originalFetchRef = useRef<typeof window.fetch | null>(null)
   const originalSetIntervalRef = useRef<typeof window.setInterval | null>(null)
   const invocationSearchCountRef = useRef(0)
+  const poolAttemptsByInvokeId = useMemo(() => createPoolAttemptFixtures(records), [records])
 
   const maybeDelayRefresh = async () => {
     if (refreshDelayMs <= 0) return
@@ -275,6 +367,12 @@ function StorybookRecordsPageMock({
           snapshotId: Number(params.get('snapshotId') ?? SNAPSHOT_ID),
           newRecordsCount,
         })
+      }
+
+      const poolAttemptsMatch = path.match(/^\/api\/invocations\/([^/]+)\/pool-attempts$/)
+      if (poolAttemptsMatch) {
+        const invokeId = decodeURIComponent(poolAttemptsMatch[1] ?? '')
+        return jsonResponse(poolAttemptsByInvokeId[invokeId] ?? [])
       }
 
       return (originalFetchRef.current as typeof window.fetch)(input, init)
@@ -417,5 +515,39 @@ export const AutocompleteSuppressedFilters: Story = {
 
     await expect(listbox).toBeVisible()
     await expect(listbox.textContent ?? '').toContain('gpt-5.3-codex')
+  },
+}
+
+export const PoolDetailsExpanded: Story = {
+  parameters: {
+    newRecordsCount: 0,
+    records: STORYBOOK_POOL_DETAILS_RECORDS,
+  },
+  render: () => <RecordsPage />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const doc = canvasElement.ownerDocument
+
+    await expect(canvas.getByRole('heading', { name: /记录|records/i })).toBeInTheDocument()
+
+    await userEvent.click(canvas.getByRole('tab', { name: /网络|network/i }))
+
+    let detailToggle: HTMLButtonElement | null = null
+    await waitFor(() => {
+      detailToggle =
+        Array.from(doc.querySelectorAll('button[aria-expanded="false"]')).find(
+          (element): element is HTMLButtonElement => element instanceof HTMLButtonElement && element.offsetParent !== null,
+        ) ?? null
+      expect(detailToggle).not.toBeNull()
+    })
+
+    await userEvent.click(detailToggle!)
+
+    await waitFor(() => {
+      expect(doc.querySelector('[data-testid="records-detail-summary-strip"]')).not.toBeNull()
+      expect(doc.querySelector('[data-testid="pool-attempts-list"]')).not.toBeNull()
+    })
+
+    await expect(doc.body.textContent ?? '').toContain('Pool Alpha 17')
   },
 }
