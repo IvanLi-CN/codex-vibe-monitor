@@ -4,7 +4,7 @@
 
 - Status: 已完成（5/5）
 - Created: 2026-03-10
-- Last: 2026-03-19
+- Last: 2026-03-24
 
 ## 背景 / 问题陈述
 
@@ -141,6 +141,7 @@
 - 2026-03-12: 将新数据提示从静态数量 + tooltip 说明调整为可点击刷新入口；hover/focus 切换“加载新数据”主题态，点击后显示旋转刷新图标并防止重复触发。
 - 2026-03-13: 将记录页新数据提示抽成独立 `RecordsNewDataButton` 组件，补充 Storybook 独立 stories，并新增组件三态截图作为 PR 视觉证据来源。
 - 2026-03-19: 为记录页筛选表单补齐浏览器原生自动填充抑制；`FilterableCombobox` 默认关闭浏览器自动填充并允许显式 override，原生 `input/select` 同步复用共享属性策略。
+- 2026-03-24: 补充记录页行内详情重做后的页级 Storybook 视觉证据，覆盖完整诊断面板与号池尝试明细区。
 
 ## Visual Evidence (PR)
 
@@ -150,6 +151,17 @@
   ![模型筛选下拉过滤](./assets/records-page-model-combobox.png)
 - 记录页新数据提示组件三态（默认 / hover / loading）
   ![记录页新数据提示组件三态](./assets/records-new-data-button-states.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Records / RecordsPage / Pool Details Expanded
+  state: inline diagnostic panel
+  evidence_note: 验证记录页展开后不再是缩水三卡，而是完整的行内诊断面板，顶部摘要、请求上下文、诊断字段、阶段耗时与号池尝试区会一起出现。
+  image:
+  ![记录页行内诊断面板](./assets/records-page-inline-detail-panel.png)
 
 ## 参考（References）
 
