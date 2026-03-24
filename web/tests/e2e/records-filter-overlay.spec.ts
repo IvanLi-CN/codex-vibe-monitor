@@ -198,9 +198,10 @@ async function expectPromptCacheDropdownAboveSummary(page: Page, viewport: Overl
 
   const listbox = filtersPanel.locator('[role="listbox"]')
   await expect(listbox).toBeVisible()
+  await expect(listbox.getByRole('option').first()).toBeVisible()
   await expect(filtersPanel).toHaveAttribute('data-suggestions-open', 'true')
 
-  // Force an overlap scenario after the listbox opens so layout shifts do not block the click target itself.
+  // Force an overlap scenario after the populated listbox opens so layout shifts do not block the click target itself.
   await page.addStyleTag({
     content: `
       [data-testid="records-summary-panel"] {

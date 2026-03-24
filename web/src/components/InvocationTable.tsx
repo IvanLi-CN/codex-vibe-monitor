@@ -71,7 +71,7 @@ interface InvocationRowViewModel {
   endpointDisplay: InvocationEndpointDisplay
   errorMessage: string
   totalLatencyValue: string
-  firstByteLatencyValue: string
+  firstResponseByteTotalValue: string
   responseContentEncodingValue: string
   detailNotice: string | null
   detailPairs: Array<{ key: string; label: string; value: ReactNode }>
@@ -346,7 +346,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
 
               <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs font-mono text-base-content/70">
                 <span title={row.totalLatencyValue}>{`${t('table.column.totalLatencyShort')} ${row.totalLatencyValue}`}</span>
-                <span title={row.firstByteLatencyValue}>{`${t('table.column.firstByteLatencyShort')} ${row.firstByteLatencyValue}`}</span>
+                <span title={row.firstResponseByteTotalValue}>{`${t('table.column.firstResponseByteTotalShort')} ${row.firstResponseByteTotalValue}`}</span>
                 <span title={row.responseContentEncodingValue}>{`${t('table.column.httpCompressionShort')} ${row.responseContentEncodingValue}`}</span>
               </div>
 
@@ -429,7 +429,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                   <div className="flex flex-col leading-tight">
                     <span>{t('table.column.latency')}</span>
                     <span className="text-[10px] font-medium normal-case tracking-normal text-base-content/60">
-                      {t('table.column.firstByteCompression')}
+                      {t('table.column.firstResponseByteTotalCompression')}
                     </span>
                   </div>
                 </th>
@@ -526,9 +526,9 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
                           </span>
                           <span
                             className="truncate whitespace-nowrap text-[11px] text-base-content/70"
-                            title={`${row.firstByteLatencyValue} · ${row.responseContentEncodingValue}`}
+                            title={`${row.firstResponseByteTotalValue} · ${row.responseContentEncodingValue}`}
                           >
-                            {`${row.firstByteLatencyValue} · ${row.responseContentEncodingValue}`}
+                            {`${row.firstResponseByteTotalValue} · ${row.responseContentEncodingValue}`}
                           </span>
                         </div>
                       </td>

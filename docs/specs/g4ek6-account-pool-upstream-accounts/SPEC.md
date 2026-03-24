@@ -4,7 +4,7 @@
 
 - Status: 已实现
 - Created: 2026-03-11
-- Last: 2026-03-20
+- Last: 2026-03-23
 
 ## 背景 / 问题陈述
 
@@ -63,6 +63,9 @@
 - 批量 OAuth 模式必须以表格呈现，允许“一个逻辑账号占两行视觉布局”，但每个字段控件都必须保持单行输入，不得在单元格内自动换行；每行 OAuth 生成/完成状态独立，失败不得阻塞其他行。
 - 批量 OAuth 行操作区必须在“完成 OAuth 登录”与状态 badge 之间提供母号皇冠按钮，使用 Iconify `mdi:crown` / `mdi:crown-outline`。
 - 账号状态至少支持 `active`、`syncing`、`needs_reauth`、`error` 与 `disabled`；授权失效只能转 `needs_reauth`，不得静默删除账号或清空最后一次成功快照。
+- 对外列表 / 详情读模型必须把混合状态拆成 `workStatus`、`enableStatus`、`healthStatus`、`syncState` 四个维度；`限流` 只能出现在 `workStatus`，`同步中` 只能出现在 `syncState`，`enabled=false` 只能出现在 `enableStatus`，旧 `status` 查询参数只保留一轮兼容映射。
+- 状态拆分不得新增持久化状态列或新表；`workStatus`、`enableStatus`、`healthStatus`、`syncState` 必须统一由 `enabled`、`status`、`last_error`、`cooldown_until`、`last_selected_at` 的读模型派生得出，避免状态回写漂移。
+- `workStatus` 只允许在 `enableStatus=enabled`、`healthStatus=normal` 且 `syncState=idle` 时派生为 `working` 或 `rate_limited`；账号一旦进入 `needs_reauth`、上游异常、`syncing` 或 `disabled`，`workStatus` 必须统一回收为 `idle`，避免列表同时展示陈旧的限流状态与异常状态。
 - 任何导致组内母号归属变化的写操作，都必须触发系统级通知，并提供 10 秒可撤销窗口；同组后续切换应覆盖旧撤销上下文。
 - 账号详情页的操作忙碌态必须按账号隔离：当账号 A 正在同步/保存/删除/启停时，切到账号 B 的详情不得继承 A 的 loading/spinning 状态；若随后对账号 B 发起同类操作，账号 A 原有的按钮 busy 态也不得被覆盖或提前清除；同一账号存在任一进行中的写操作时，该账号的其它写操作入口必须一并禁用，直到该账号自己的请求结束。
 - 后端账号维护与人工写操作必须按账号粒度串行：同一账号上的维护、启停、保存、删除、立即同步、re-login callback 落库与导入覆盖不得并发执行，但无关账号之间不得被整池维护阻塞；在维护竞争下，对无关账号的人工启用/禁用写入必须以 `1 秒内完成服务端提交` 为目标。
@@ -71,7 +74,7 @@
 
 ### SHOULD
 
-- 列表应支持搜索、状态筛选与一键同步，便于首版管理几十个账号时仍可浏览。
+- 列表应支持搜索、三组状态筛选（`工作状态` / `启用状态` / `账号状态`）与一键同步，便于首版管理几十个账号时仍可浏览。
 - 账号列表头部应同时提供 `分组` 与 `标签` 两类筛选；两者都必须由 `GET /api/pool/upstream-accounts` 在服务端完成筛选收口，标签筛选使用可搜索的多选控件，且必须按“账号包含全部已选 tag”收口，不允许退化为“命中任一 tag 即展示”。
 - 当列表行已经可以直接打开详情抽屉时，头部不应再保留额外的 `打开详情` 冗余按钮。
 - 详情页应支持行内编辑名称/备注/本地限额，不强制弹出完整编辑页面。
@@ -98,6 +101,9 @@
 - 账号操作在清理自己的错误提示时，不得顺带清空 routing 级错误；routing 保存失败后，后续任意账号的保存/同步/启停/删除成功都不得吞掉该 routing 错误。
 - routing 错误与账号级错误必须分别展示；当两类错误同时存在时，页面不得只保留其中一条。
 - 列表头部切换分组筛选或标签筛选时，前端只能更新请求参数并重新拉取 `GET /api/pool/upstream-accounts`；不得再用已拉取的 `items` 在本地做二次筛选，以免分组选项、未分组可见性和列表内容出现口径漂移。
+- 列表头部的主状态筛选必须拆成 `workStatus`、`enableStatus`、`healthStatus` 三组 query 参数，并继续由 `GET /api/pool/upstream-accounts` 在服务端做交集收口；`syncState=syncing` 只作为次级过程徽章展示，不进入主筛选体系。
+- 列表行必须常驻显示 `启用状态 + 工作状态` 两个主徽章；`syncState=syncing` 仅在同步进行中显示次级徽章，`healthStatus != normal` 仅在异常时显示补充徽章；当账号处于异常或同步中时，`工作状态` 必须显示为 `空闲`，不得与异常徽章并列展示 `限流`；详情抽屉头部显示完整四态。
+- 列表概览卡的“需要关注”口径必须只统计 `healthStatus != normal` 或 `workStatus=rate_limited` 的账号，不得再把 `syncing` 或 `disabled` 混入异常统计。
 - 页面级 `Refresh` 不得因为其它账号的保存/同步/启停/删除而被全局锁死；只有真正的全局路由保存过程才允许暂时禁用该按钮。
 - 删除账号的成功响应不得覆盖用户已经切换后的当前选中项；只有“当前正显示的账号被删除”时，才允许把选中项收口到 fallback。
 - 若用户在账号 A 删除进行中切换到账号 B，A 的删除成功后不得把当前抽屉关闭；只有当前抽屉仍停留在 A 时，删除成功才允许关闭抽屉或收口到 fallback。
@@ -134,6 +140,14 @@
 - Given 用户位于 `dashboard / live / settings` 任意页面，When 点击导航中的 `号池`，Then 页面进入 `号池 -> 上游账号` 且不影响现有四个模块。
 - Given 前端创建 OAuth 登录会话，When 打开 `authUrl` 并完成授权，Then callback 会把账号落库，轮询接口变为 `completed`，列表中出现该账号。
 - Given 用户进入 `Batch OAuth` 模式，When 在多行里分别生成授权链接、粘贴 callback 并完成其中一行，Then 该行显示 `completed` 且页面保持在批量表格，其他行仍可继续生成或完成。
+- Given 账号启用、`healthStatus=normal`、`syncState=idle` 且 `cooldown_until > now`，When 列表返回该账号，Then `workStatus=rate_limited`。
+- Given 账号启用且 `last_selected_at` 在最近 30 分钟内、且不在 cooldown，When 列表返回该账号，Then `workStatus=working`。
+- Given 账号禁用，When 列表与筛选渲染，Then `enableStatus=disabled`，且不会再通过旧混合状态把主状态显示成“已停用”。
+- Given 账号原始 `status=syncing`，When 列表与详情渲染，Then 仅出现 `syncState=syncing` 的次级徽章，不进入三组主筛选。
+- Given 账号进入 `needs_reauth`、上游异常或 `syncing`，When 列表返回该账号且它仍残留 `cooldown_until`，Then `workStatus` 仍必须回收为 `idle`，不得和异常状态同时显示。
+- Given 用户同时选择 `workStatus=rate_limited`、`enableStatus=enabled`、`healthStatus=normal`、分组与标签，When 调用列表接口，Then 服务端一次性完成交集筛选，不再由前端二次拼装状态口径。
+- Given 老请求仍使用 `status=disabled` 或 `status=needs_reauth`，When 请求到达后端，Then 仍能命中兼容映射并返回与旧语义一致的结果。
+- Given 列表概览卡展示“需要关注”，When 页面刷新，Then 只统计 `healthStatus != normal` 或 `workStatus=rate_limited` 的账号，不把 `syncing` 误算为异常。
 - Given 两个 OAuth 账号共享相同的 `chatgpt_account_id` 或 `chatgpt_user_id`，When 第二个账号完成入池，Then 系统保留两条账号记录，并在列表/详情中标记为重复身份。
 - Given 用户在任一创建/编辑入口提交重复的 `displayName`，When 后端接收请求，Then 请求返回 `409`，前端展示 inline error，并禁止继续提交。
 - Given 同组已有母号，When 用户把另一账号设为母号，Then 系统自动切换母号归属、弹出系统级通知，并在通知中提供撤销按钮恢复到切换前状态。
@@ -203,8 +217,42 @@
 
 - 2026-03-16：补充账号详情抽屉的异步一致性约束，明确账号级 busy state 与 action error 都要按账号隔离、同一账号任一写操作进行中时其它写入口必须锁住、账号切换要在同一交互拍内使旧 detail 请求失效、保存/同步成功要先失效旧 detail reload、refresh 必须用列表数据纯计算最终选中账号后再刷新 detail 且列表失败时不得清空当前 detail、hook 级 list/detail 错误必须按来源隔离、同类动作跨账号并发时不得互相覆盖 busy/error 态、晚到 detail 成功/失败响应与 sync 响应都要按当前选中账号过滤，以及同步按钮 idle 态改用 outline 图标。
 - 2026-03-20：补充账号级 actor 串行与后台维护去重约束，明确维护只允许阻塞同一账号、无关账号启停在维护竞争下需以 `1 秒内完成服务端提交` 为目标，并新增对应的 Rust 并发回归测试要求。
+- 2026-03-23：把上游账号列表的混合 `displayStatus` 读模型拆成 `workStatus` / `enableStatus` / `healthStatus` / `syncState` 四个维度，列表筛选同步拆成 `工作状态`、`启用状态`、`账号状态` 三组服务端交集筛选，并锁定“不新增持久化状态列”的实现边界。
 
 ## Visual Evidence (PR)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Account Pool / Pages / Upstream Accounts / List / Status Filters
+  state: split-status-filters
+  evidence_note: 验证账号列表已拆分为工作状态、启用状态、账号状态三组独立筛选，并且服务端筛选后的列表结果只保留符合条件的账号。
+  image:
+  ![Upstream accounts split status filters](./assets/upstream-accounts-status-filters.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Account Pool / Pages / Upstream Accounts / List / Bulk Selection
+  state: cross-page-bulk-selection
+  evidence_note: 验证列表在高密度账号样本下可展示跨页选择提示条，以及与批量启用、停用、分组和标签操作并排的主操作布局。
+  image:
+  ![Upstream accounts bulk selection bar](./assets/upstream-accounts-bulk-selection.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Account Pool / Pages / Upstream Accounts / Overlays / Detail Drawer
+  state: detail-drawer-status-breakdown
+  evidence_note: 验证账号详情抽屉顶部展示了解耦后的启用状态、工作状态、同步状态和账号固有状态，并保留母号标记与核心操作入口。
+  image:
+  ![Upstream account detail drawer status breakdown](./assets/upstream-accounts-detail-drawer-statuses.png)
 
 - source_type: storybook_canvas
   target_program: mock-only

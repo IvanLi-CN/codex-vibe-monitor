@@ -209,6 +209,41 @@ export const MailboxGeneratePending: Story = {
   },
 }
 
+export const GroupNoteDraft: Story = {
+  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new?mode=batchOauth" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const doc = canvasElement.ownerDocument
+    const trigger = canvas.getAllByRole('combobox')[0]
+    await userEvent.click(trigger)
+
+    const searchInput = doc.body.querySelector('[cmdk-input]')
+    if (!(searchInput instanceof HTMLInputElement)) {
+      throw new Error('missing group combobox search input')
+    }
+    await userEvent.type(searchInput, 'new-team')
+
+    const createOption = Array.from(doc.body.querySelectorAll('[cmdk-item]')).find((candidate) =>
+      (candidate.textContent || '').toLowerCase().includes('new-team'),
+    )
+    if (!(createOption instanceof HTMLElement)) {
+      throw new Error('missing create option for new-team')
+    }
+    await userEvent.click(createOption)
+
+    const documentScope = within(doc.body)
+    await userEvent.click(
+      await documentScope.findByRole('button', {
+        name: /编辑分组备注|edit group note/i,
+      }),
+    )
+    await expect(
+      documentScope.getByRole('dialog', { name: /编辑分组备注|edit group note/i }),
+    ).toBeInTheDocument()
+    await expect(documentScope.getByText(/new-team/i)).toBeInTheDocument()
+  },
+}
+
 export const ActionTooltips: Story = {
   render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new?mode=batchOauth" />,
   play: async ({ canvasElement }) => {

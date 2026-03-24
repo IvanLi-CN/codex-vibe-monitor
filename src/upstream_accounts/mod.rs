@@ -58,13 +58,22 @@ const UPSTREAM_ACCOUNT_STATUS_SYNCING: &str = "syncing";
 const UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH: &str = "needs_reauth";
 const UPSTREAM_ACCOUNT_STATUS_ERROR: &str = "error";
 const UPSTREAM_ACCOUNT_STATUS_DISABLED: &str = "disabled";
+const UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED: &str = "enabled";
+const UPSTREAM_ACCOUNT_ENABLE_STATUS_DISABLED: &str = "disabled";
+const UPSTREAM_ACCOUNT_WORK_STATUS_WORKING: &str = "working";
+const UPSTREAM_ACCOUNT_WORK_STATUS_IDLE: &str = "idle";
+const UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED: &str = "rate_limited";
+const UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL: &str = "normal";
 const UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE: &str = "upstream_unavailable";
 const UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED: &str = "upstream_rejected";
 const UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER: &str = "error_other";
+const UPSTREAM_ACCOUNT_SYNC_STATE_IDLE: &str = "idle";
+const UPSTREAM_ACCOUNT_SYNC_STATE_SYNCING: &str = "syncing";
 const UPSTREAM_ACCOUNT_ACTION_ROUTE_RECOVERED: &str = "route_recovered";
 const UPSTREAM_ACCOUNT_ACTION_ROUTE_COOLDOWN_STARTED: &str = "route_cooldown_started";
 const UPSTREAM_ACCOUNT_ACTION_ROUTE_HARD_UNAVAILABLE: &str = "route_hard_unavailable";
 const UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED: &str = "sync_succeeded";
+const UPSTREAM_ACCOUNT_ACTION_SYNC_RECOVERY_BLOCKED: &str = "sync_recovery_blocked";
 const UPSTREAM_ACCOUNT_ACTION_SYNC_FAILED: &str = "sync_failed";
 const UPSTREAM_ACCOUNT_ACTION_ACCOUNT_UPDATED: &str = "account_updated";
 const UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL: &str = "call";
@@ -76,6 +85,9 @@ const UPSTREAM_ACCOUNT_ACTION_SOURCE_ACCOUNT_UPDATE: &str = "account_update";
 const UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_OK: &str = "sync_ok";
 const UPSTREAM_ACCOUNT_ACTION_REASON_ACCOUNT_UPDATED: &str = "account_updated";
 const UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR: &str = "sync_error";
+const UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED: &str = "quota_still_exhausted";
+const UPSTREAM_ACCOUNT_ACTION_REASON_RECOVERY_UNCONFIRMED_MANUAL_REQUIRED: &str =
+    "recovery_unconfirmed_manual_required";
 const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_RATE_LIMIT: &str =
     "upstream_http_429_rate_limit";
 const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED: &str =
@@ -149,6 +161,12 @@ enum SyncCause {
     Manual,
     Maintenance,
     PostCreate,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SyncSuccessRouteState {
+    PreserveFailureState,
+    ClearFailureState,
 }
 
 #[cfg(test)]
@@ -780,6 +798,9 @@ pub(crate) struct ListUpstreamAccountsQuery {
     pub(crate) group_search: Option<String>,
     pub(crate) group_ungrouped: Option<bool>,
     pub(crate) status: Option<String>,
+    pub(crate) work_status: Option<String>,
+    pub(crate) enable_status: Option<String>,
+    pub(crate) health_status: Option<String>,
     pub(crate) page: Option<usize>,
     pub(crate) page_size: Option<usize>,
     #[serde(default)]
@@ -884,6 +905,10 @@ pub(crate) struct UpstreamAccountSummary {
     status: String,
     display_status: String,
     enabled: bool,
+    work_status: String,
+    enable_status: String,
+    health_status: String,
+    sync_state: String,
     email: Option<String>,
     chatgpt_account_id: Option<String>,
     plan_type: Option<String>,
@@ -4794,6 +4819,11 @@ async fn update_upstream_account_inner(
         .await
         .map_err(internal_error_tuple)?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
+    let clear_hard_failure_after_update = row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX
+        && account_update_requests_manual_recovery(&payload)
+        && route_failure_kind_requires_manual_api_key_recovery(
+            row.last_route_failure_kind.as_deref(),
+        );
     let tag_ids = match payload.tag_ids.as_ref() {
         Some(values) => Some(validate_tag_ids(&state.pool, values).await?),
         None => None,
@@ -4919,6 +4949,11 @@ async fn update_upstream_account_inner(
     tx.commit().await.map_err(internal_error_tuple)?;
     if let Some(tag_ids) = tag_ids {
         sync_account_tag_links(&state.pool, id, &tag_ids)
+            .await
+            .map_err(internal_error_tuple)?;
+    }
+    if clear_hard_failure_after_update {
+        set_account_status(&state.pool, id, UPSTREAM_ACCOUNT_STATUS_ACTIVE, None)
             .await
             .map_err(internal_error_tuple)?;
     }
@@ -5926,7 +5961,42 @@ async fn sync_api_key_account(
     row: &UpstreamAccountRow,
     cause: SyncCause,
 ) -> Result<()> {
-    mark_account_sync_success(pool, row.id, sync_cause_action_source(cause)).await
+    let sync_source = sync_cause_action_source(cause);
+    if row.status != UPSTREAM_ACCOUNT_STATUS_ACTIVE
+        && route_failure_kind_requires_manual_api_key_recovery(
+            row.last_route_failure_kind.as_deref(),
+        )
+    {
+        let reason_message = if route_failure_kind_is_quota_exhausted(
+            row.last_route_failure_kind.as_deref(),
+        ) {
+            "manual recovery required because API key sync cannot verify whether the upstream usage limit has reset"
+        } else {
+            "manual recovery required because API key sync cannot verify whether upstream credentials or entitlements have recovered"
+        };
+        return record_account_sync_recovery_blocked(
+            pool,
+            row.id,
+            sync_source,
+            &row.status,
+            UPSTREAM_ACCOUNT_ACTION_REASON_RECOVERY_UNCONFIRMED_MANUAL_REQUIRED,
+            reason_message,
+            row.last_error.as_deref(),
+            row.last_route_failure_kind.as_deref(),
+        )
+        .await;
+    }
+    mark_account_sync_success(
+        pool,
+        row.id,
+        sync_source,
+        if should_clear_route_failure_state_after_sync_success(row) {
+            SyncSuccessRouteState::ClearFailureState
+        } else {
+            SyncSuccessRouteState::PreserveFailureState
+        },
+    )
+    .await
 }
 
 async fn sync_oauth_account(
@@ -6174,7 +6244,33 @@ async fn sync_oauth_account(
         state.config.upstream_accounts_history_retention_days,
     )
     .await?;
-    mark_account_sync_success(&state.pool, row.id, sync_source).await?;
+    if route_failure_kind_is_quota_exhausted(row.last_route_failure_kind.as_deref())
+        && imported_snapshot_is_exhausted(&snapshot)
+    {
+        record_account_sync_recovery_blocked(
+            &state.pool,
+            row.id,
+            sync_source,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED,
+            "latest usage snapshot still shows an exhausted upstream usage limit window",
+            row.last_error.as_deref(),
+            row.last_route_failure_kind.as_deref(),
+        )
+        .await?;
+        return Ok(());
+    }
+    mark_account_sync_success(
+        &state.pool,
+        row.id,
+        sync_source,
+        if should_clear_route_failure_state_after_sync_success(row) {
+            SyncSuccessRouteState::ClearFailureState
+        } else {
+            SyncSuccessRouteState::PreserveFailureState
+        },
+    )
+    .await?;
     Ok(())
 }
 
@@ -6327,6 +6423,7 @@ async fn apply_imported_oauth_probe_result(
             &state.pool,
             account_id,
             UPSTREAM_ACCOUNT_ACTION_SOURCE_OAUTH_IMPORT,
+            SyncSuccessRouteState::ClearFailureState,
         )
         .await?;
     }
@@ -7167,7 +7264,18 @@ async fn load_upstream_account_summaries_filtered(
     pool: &Pool<Sqlite>,
     params: &ListUpstreamAccountsQuery,
 ) -> Result<Vec<UpstreamAccountSummary>> {
-    let status_filter = normalize_upstream_account_display_status_filter(params.status.as_deref());
+    let legacy_status_filter =
+        normalize_legacy_upstream_account_status_filter(params.status.as_deref());
+    let work_status_filter =
+        normalize_upstream_account_work_status_filter(params.work_status.as_deref())
+            .or(legacy_status_filter.work_status);
+    let enable_status_filter =
+        normalize_upstream_account_enable_status_filter(params.enable_status.as_deref())
+            .or(legacy_status_filter.enable_status);
+    let health_status_filter =
+        normalize_upstream_account_health_status_filter(params.health_status.as_deref())
+            .or(legacy_status_filter.health_status);
+    let sync_state_filter = legacy_status_filter.sync_state;
     let duplicate_info_map = load_duplicate_info_map(pool).await?;
     let mut normalized_tag_ids = params
         .tag_ids
@@ -7226,6 +7334,7 @@ async fn load_upstream_account_summaries_filtered(
         .build_query_as::<UpstreamAccountRow>()
         .fetch_all(pool)
         .await?;
+    let now = Utc::now();
     let account_ids = rows.iter().map(|row| row.id).collect::<Vec<_>>();
     let tag_map = load_account_tag_map(pool, &account_ids).await?;
 
@@ -7239,16 +7348,21 @@ async fn load_upstream_account_summaries_filtered(
             row.last_activity_at.clone(),
             tags,
             duplicate_info_map.get(&row.id).cloned(),
+            now.clone(),
         ));
     }
-    if let Some(status_filter) = status_filter {
-        Ok(items
-            .into_iter()
-            .filter(|item| item.display_status == status_filter)
-            .collect())
-    } else {
-        Ok(items)
-    }
+    Ok(items
+        .into_iter()
+        .filter(|item| {
+            matches_upstream_account_filters(
+                item,
+                work_status_filter,
+                enable_status_filter,
+                health_status_filter,
+                sync_state_filter,
+            )
+        })
+        .collect())
 }
 
 async fn build_bulk_upstream_account_sync_pending_rows(
@@ -7455,6 +7569,7 @@ async fn load_upstream_account_detail(
             row.last_activity_at.clone(),
             tags,
             duplicate_info_map.get(&row.id).cloned(),
+            Utc::now(),
         ),
         note: row.note,
         upstream_base_url: row.upstream_base_url,
@@ -7561,6 +7676,7 @@ fn build_summary_from_row(
     last_activity_at: Option<String>,
     tags: Vec<AccountTagSummary>,
     duplicate_info: Option<DuplicateInfo>,
+    now: DateTime<Utc>,
 ) -> UpstreamAccountSummary {
     let local_limits = if row.kind == UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX {
         Some(LocalLimitSnapshot {
@@ -7615,10 +7731,33 @@ fn build_summary_from_row(
     });
     let effective_routing_rule = build_effective_routing_rule(&tags);
     let status = effective_account_status(row);
+    let enable_status = derive_upstream_account_enable_status(row.enabled != 0);
+    let health_status = derive_upstream_account_health_status(
+        row.enabled != 0,
+        &row.status,
+        row.last_error.as_deref(),
+        row.last_error_at.as_deref(),
+        row.last_route_failure_at.as_deref(),
+        row.last_route_failure_kind.as_deref(),
+    );
+    let sync_state = derive_upstream_account_sync_state(row.enabled != 0, &row.status);
+    let work_status = derive_upstream_account_work_status(
+        row.enabled != 0,
+        health_status,
+        sync_state,
+        row.cooldown_until.as_deref(),
+        row.last_route_failure_kind.as_deref(),
+        row.last_action_reason_code.as_deref(),
+        row.last_selected_at.as_deref(),
+        now,
+    );
     let display_status = classify_upstream_account_display_status(
         row.enabled != 0,
-        &status,
+        &row.status,
         row.last_error.as_deref(),
+        row.last_error_at.as_deref(),
+        row.last_route_failure_at.as_deref(),
+        row.last_route_failure_kind.as_deref(),
     )
     .to_string();
 
@@ -7632,6 +7771,10 @@ fn build_summary_from_row(
         status,
         display_status,
         enabled: row.enabled != 0,
+        work_status: work_status.to_string(),
+        enable_status: enable_status.to_string(),
+        health_status: health_status.to_string(),
+        sync_state: sync_state.to_string(),
         email: row.email.clone(),
         chatgpt_account_id: row.chatgpt_account_id.clone(),
         plan_type: resolve_effective_plan_type(
@@ -8201,13 +8344,70 @@ struct MoeMailMessageDetail {
     received_at: Option<String>,
 }
 
-static OAUTH_SUBJECT_CODE_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)your\s+(?:chatgpt|openai)\s+code\s+is\s+(\d{4,8})")
-        .expect("valid oauth subject code regex")
-});
-static OAUTH_BODY_CODE_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)(?:verification\s+code|code\s+is)[^0-9]{0,24}(\d{4,8})")
-        .expect("valid oauth body code regex")
+const MAILBOX_CODE_CONTEXT_WINDOW_BYTES: usize = 64;
+const OAUTH_BRAND_MARKERS: &[&str] = &["openai", "chatgpt"];
+const OAUTH_STRONG_CODE_MARKERS: &[&str] = &[
+    "verification code",
+    "temporary verification code",
+    "one-time code",
+    "one time code",
+    "security code",
+    "验证码",
+    "驗證碼",
+    "校验码",
+    "校驗碼",
+    "验证代码",
+    "驗證代碼",
+    "認證碼",
+    "認証コード",
+    "인증 코드",
+    "인증번호",
+];
+const OAUTH_WEAK_CODE_MARKERS: &[&str] = &[
+    "your code",
+    "code is",
+    "code:",
+    "temporary code",
+    "代码为",
+    "代碼為",
+    "代码是",
+    "代碼是",
+    "臨時代碼",
+    "临时代码",
+];
+const OAUTH_INVITE_SUBJECT_MARKERS: &[&str] = &[
+    "has invited you",
+    "invited you to",
+    "invite you to",
+    "邀请你",
+    "邀請你",
+    "邀请您",
+    "邀請您",
+    "招待",
+    "초대",
+];
+const OAUTH_INVITE_BODY_MARKERS: &[&str] = &[
+    "join workspace",
+    "join the workspace",
+    "accept invitation",
+    "accept invite",
+    "workspace invite",
+    "accept the invitation",
+    "加入工作区",
+    "加入工作區",
+    "加入工作空间",
+    "加入工作空間",
+    "接受邀请",
+    "接受邀請",
+    "接受此邀请",
+    "接受此邀請",
+    "ワークスペース",
+    "招待",
+    "워크스페이스",
+    "초대 수락",
+];
+static OAUTH_CODE_CANDIDATE_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"(?:^|[^0-9])([0-9]{4,8})(?:[^0-9]|$)").expect("valid oauth code candidate regex")
 });
 static URL_REGEX: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"https?://[^\s"'<>)]+"#).expect("valid url regex"));
@@ -8400,31 +8600,238 @@ fn strip_html_tags(raw: &str) -> String {
     HTML_TAG_REGEX.replace_all(raw, " ").into_owned()
 }
 
+fn normalize_mailbox_text(raw: &str) -> String {
+    let mut normalized = String::with_capacity(raw.len());
+    let mut previous_was_space = true;
+
+    for ch in raw.chars() {
+        let mapped = match ch {
+            '\u{00a0}' | '\u{3000}' => ' ',
+            '０'..='９' => {
+                char::from_u32(u32::from(ch) - u32::from('０') + u32::from('0')).unwrap_or(ch)
+            }
+            'Ａ'..='Ｚ' => {
+                char::from_u32(u32::from(ch) - u32::from('Ａ') + u32::from('a')).unwrap_or(ch)
+            }
+            'ａ'..='ｚ' => {
+                char::from_u32(u32::from(ch) - u32::from('ａ') + u32::from('a')).unwrap_or(ch)
+            }
+            '：' => ':',
+            '－' => '-',
+            '／' => '/',
+            '．' => '.',
+            '，' => ',',
+            '（' => '(',
+            '）' => ')',
+            '【' => '[',
+            '】' => ']',
+            _ if ch.is_ascii_uppercase() => ch.to_ascii_lowercase(),
+            _ => ch,
+        };
+
+        if mapped.is_whitespace() {
+            if !previous_was_space && !normalized.is_empty() {
+                normalized.push(' ');
+            }
+            previous_was_space = true;
+        } else {
+            normalized.push(mapped);
+            previous_was_space = false;
+        }
+    }
+
+    normalized.trim().to_string()
+}
+
+fn mailbox_text_contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
+}
+
+fn mailbox_text_has_brand(text: &str) -> bool {
+    mailbox_text_contains_any(text, OAUTH_BRAND_MARKERS)
+}
+
+fn clamp_mailbox_context_start(raw: &str, index: usize) -> usize {
+    let mut candidate = index.min(raw.len());
+    while candidate > 0 && !raw.is_char_boundary(candidate) {
+        candidate -= 1;
+    }
+    candidate
+}
+
+fn clamp_mailbox_context_end(raw: &str, index: usize) -> usize {
+    let mut candidate = index.min(raw.len());
+    while candidate < raw.len() && !raw.is_char_boundary(candidate) {
+        candidate += 1;
+    }
+    candidate
+}
+
+fn mailbox_context_slice(raw: &str, start: usize, end: usize, radius: usize) -> &str {
+    let context_start = clamp_mailbox_context_start(raw, start.saturating_sub(radius));
+    let context_end = clamp_mailbox_context_end(raw, end.saturating_add(radius));
+    &raw[context_start..context_end]
+}
+
+fn mailbox_context_before(raw: &str, index: usize, radius: usize) -> &str {
+    let context_start = clamp_mailbox_context_start(raw, index.saturating_sub(radius));
+    let context_end = clamp_mailbox_context_end(raw, index);
+    &raw[context_start..context_end]
+}
+
+fn extract_mailbox_code_candidate(text: &str, message_has_brand: bool) -> Option<String> {
+    let mut best_match: Option<(u8, usize, String)> = None;
+
+    for captures in OAUTH_CODE_CANDIDATE_REGEX.captures_iter(text) {
+        let whole_match = captures.get(0)?;
+        let digit_match = captures.get(1)?;
+        let context = mailbox_context_slice(
+            text,
+            whole_match.start(),
+            whole_match.end(),
+            MAILBOX_CODE_CONTEXT_WINDOW_BYTES,
+        );
+        let prefix_context =
+            mailbox_context_before(text, digit_match.start(), MAILBOX_CODE_CONTEXT_WINDOW_BYTES);
+        let context_has_strong_code =
+            mailbox_text_contains_any(prefix_context, OAUTH_STRONG_CODE_MARKERS);
+        let context_has_weak_code =
+            mailbox_text_contains_any(prefix_context, OAUTH_WEAK_CODE_MARKERS);
+        let context_has_brand =
+            mailbox_text_has_brand(prefix_context) || mailbox_text_has_brand(context);
+        let score = if context_has_strong_code {
+            3
+        } else if context_has_weak_code && (message_has_brand || context_has_brand) {
+            2
+        } else {
+            0
+        };
+
+        if score == 0 {
+            continue;
+        }
+
+        let candidate = (score, digit_match.start(), digit_match.as_str().to_string());
+        if best_match
+            .as_ref()
+            .map(|existing| {
+                candidate.0 > existing.0 || (candidate.0 == existing.0 && candidate.1 < existing.1)
+            })
+            .unwrap_or(true)
+        {
+            best_match = Some(candidate);
+        }
+    }
+
+    best_match.map(|(_, _, value)| value)
+}
+
+fn mailbox_url_candidate_urls(url: &str) -> Vec<String> {
+    let mut candidates = vec![url.trim_end_matches('.').to_string()];
+    let Ok(parsed) = Url::parse(url) else {
+        return candidates;
+    };
+
+    for value in parsed
+        .query_pairs()
+        .map(|(_, value)| value.into_owned())
+        .chain(parsed.fragment().map(ToOwned::to_owned))
+    {
+        if let Some(nested) = URL_REGEX.find(&value) {
+            let nested = nested.as_str().trim_end_matches('.').to_string();
+            if !candidates.iter().any(|existing| existing == &nested) {
+                candidates.push(nested);
+            }
+        }
+    }
+
+    candidates
+}
+
+fn mailbox_url_looks_like_direct_invite(url: &str) -> bool {
+    let Ok(parsed) = Url::parse(url) else {
+        return false;
+    };
+    let Some(host) = parsed.host_str() else {
+        return false;
+    };
+
+    let host = host.to_ascii_lowercase();
+    let path = parsed.path().to_ascii_lowercase();
+    let query = parsed.query().unwrap_or_default().to_ascii_lowercase();
+    let combined = if query.is_empty() {
+        format!("{host}{path}")
+    } else {
+        format!("{host}{path}?{query}")
+    };
+    let has_invite_action = combined.contains("invite")
+        || combined.contains("invitation")
+        || combined.contains("accept");
+    let has_workspace_context =
+        combined.contains("workspace") || host.contains("chatgpt") || host.contains("openai");
+    let is_help_like = host.starts_with("help.")
+        || host.starts_with("docs.")
+        || host.contains("support")
+        || path.contains("/articles/")
+        || path.contains("/hc/")
+        || path.contains("/help/")
+        || path.contains("/docs/");
+
+    has_invite_action && has_workspace_context && !is_help_like
+}
+
+fn mailbox_url_resolve_invite_target(url: &str) -> Option<String> {
+    let candidates = mailbox_url_candidate_urls(url);
+    candidates
+        .iter()
+        .skip(1)
+        .find(|candidate| mailbox_url_looks_like_direct_invite(candidate))
+        .cloned()
+        .or_else(|| {
+            candidates
+                .into_iter()
+                .next()
+                .filter(|candidate| mailbox_url_looks_like_direct_invite(candidate))
+        })
+}
+
+fn mailbox_url_has_brand(url: &str) -> bool {
+    mailbox_url_candidate_urls(url)
+        .into_iter()
+        .any(|candidate| {
+            let lower = candidate.to_ascii_lowercase();
+            lower.contains("openai") || lower.contains("chatgpt")
+        })
+}
+
 fn parse_mailbox_code(detail: &MoeMailMessageDetail) -> Option<ParsedMailboxCode> {
     let subject = detail.subject.as_deref().unwrap_or_default();
-    if let Some(captures) = OAUTH_SUBJECT_CODE_REGEX.captures(subject) {
-        let value = captures.get(1)?.as_str().to_string();
-        return Some(ParsedMailboxCode {
-            value,
-            source: "subject".to_string(),
-            updated_at: detail
-                .received_at
-                .clone()
-                .unwrap_or_else(|| format_utc_iso(Utc::now())),
-        });
+    let content = detail.content.as_deref().unwrap_or_default();
+    let html_text = strip_html_tags(detail.html.as_deref().unwrap_or_default());
+    let message_context = normalize_mailbox_text(&format!("{subject}\n{content}\n{html_text}"));
+    let message_has_brand = mailbox_text_has_brand(&message_context);
+
+    let subject_text = normalize_mailbox_text(subject);
+    let subject_has_brand = mailbox_text_has_brand(&subject_text);
+    if subject_has_brand {
+        if let Some(value) = extract_mailbox_code_candidate(&subject_text, subject_has_brand) {
+            return Some(ParsedMailboxCode {
+                value,
+                source: "subject".to_string(),
+                updated_at: detail
+                    .received_at
+                    .clone()
+                    .unwrap_or_else(|| format_utc_iso(Utc::now())),
+            });
+        }
     }
 
     for (source, raw) in [
-        ("content", detail.content.as_deref().unwrap_or_default()),
-        ("html", detail.html.as_deref().unwrap_or_default()),
+        ("content", content.to_string()),
+        ("html", html_text.clone()),
     ] {
-        let normalized = if source == "html" {
-            strip_html_tags(raw)
-        } else {
-            raw.to_string()
-        };
-        if let Some(captures) = OAUTH_BODY_CODE_REGEX.captures(&normalized) {
-            let value = captures.get(1)?.as_str().to_string();
+        let normalized = normalize_mailbox_text(&raw);
+        if let Some(value) = extract_mailbox_code_candidate(&normalized, message_has_brand) {
             return Some(ParsedMailboxCode {
                 value,
                 source: source.to_string(),
@@ -8441,27 +8848,39 @@ fn parse_mailbox_code(detail: &MoeMailMessageDetail) -> Option<ParsedMailboxCode
 
 fn parse_mailbox_invite(detail: &MoeMailMessageDetail) -> Option<ParsedMailboxInvite> {
     let subject = detail.subject.as_deref().unwrap_or_default().trim();
-    if subject.is_empty() || !subject.to_ascii_lowercase().contains("has invited you") {
+    if subject.is_empty() {
         return None;
     }
 
-    let text_candidates = [
-        detail.content.as_deref().unwrap_or_default().to_string(),
-        strip_html_tags(detail.html.as_deref().unwrap_or_default()),
-    ];
-    let body = text_candidates.join("\n");
-    let normalized = body.to_ascii_lowercase();
-    if !normalized.contains("join workspace") && !normalized.contains("accept invitation") {
-        return None;
-    }
+    let stripped_html = strip_html_tags(detail.html.as_deref().unwrap_or_default());
+    let subject_text = normalize_mailbox_text(subject);
+    let body_text = normalize_mailbox_text(&format!(
+        "{}\n{}",
+        detail.content.as_deref().unwrap_or_default(),
+        stripped_html
+    ));
+    let subject_has_invite_semantics =
+        mailbox_text_contains_any(&subject_text, OAUTH_INVITE_SUBJECT_MARKERS);
+    let body_has_invite_semantics =
+        mailbox_text_contains_any(&body_text, OAUTH_INVITE_BODY_MARKERS);
 
+    let body_with_urls = format!(
+        "{}\n{}",
+        detail.content.as_deref().unwrap_or_default(),
+        stripped_html
+    );
     let copy_value = URL_REGEX
-        .find_iter(&body)
-        .map(|value| value.as_str().trim_end_matches('.').to_string())
-        .find(|value| {
-            let lower = value.to_ascii_lowercase();
-            lower.contains("workspace") || lower.contains("invite") || lower.contains("accept")
-        })?;
+        .find_iter(&body_with_urls)
+        .find_map(|value| mailbox_url_resolve_invite_target(value.as_str()))?;
+    let body_can_drive_invite = body_has_invite_semantics;
+    if !subject_has_invite_semantics && !body_can_drive_invite {
+        return None;
+    }
+    if !mailbox_text_has_brand(&format!("{subject_text}\n{body_text}"))
+        && !mailbox_url_has_brand(&copy_value)
+    {
+        return None;
+    }
 
     Some(ParsedMailboxInvite {
         subject: subject.to_string(),
@@ -8979,20 +9398,116 @@ fn normalize_upstream_account_list_page_size(value: Option<usize>) -> usize {
         .unwrap_or(DEFAULT_UPSTREAM_ACCOUNT_LIST_PAGE_SIZE)
 }
 
-fn normalize_upstream_account_display_status_filter(value: Option<&str>) -> Option<String> {
+#[derive(Debug, Default, Clone, Copy)]
+struct LegacyUpstreamAccountStatusFilter {
+    work_status: Option<&'static str>,
+    enable_status: Option<&'static str>,
+    health_status: Option<&'static str>,
+    sync_state: Option<&'static str>,
+}
+
+fn normalize_upstream_account_work_status_filter(value: Option<&str>) -> Option<&'static str> {
     let normalized = value?.trim().to_ascii_lowercase();
     if normalized.is_empty() {
         return None;
     }
     match normalized.as_str() {
-        UPSTREAM_ACCOUNT_STATUS_ACTIVE
-        | UPSTREAM_ACCOUNT_STATUS_SYNCING
-        | UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH
-        | UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE
-        | UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
-        | UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER
-        | UPSTREAM_ACCOUNT_STATUS_DISABLED => Some(normalized),
+        UPSTREAM_ACCOUNT_WORK_STATUS_WORKING => Some(UPSTREAM_ACCOUNT_WORK_STATUS_WORKING),
+        UPSTREAM_ACCOUNT_WORK_STATUS_IDLE => Some(UPSTREAM_ACCOUNT_WORK_STATUS_IDLE),
+        UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED => {
+            Some(UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED)
+        }
         _ => None,
+    }
+}
+
+fn normalize_upstream_account_enable_status_filter(value: Option<&str>) -> Option<&'static str> {
+    let normalized = value?.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+    match normalized.as_str() {
+        UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED => Some(UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED),
+        UPSTREAM_ACCOUNT_ENABLE_STATUS_DISABLED => Some(UPSTREAM_ACCOUNT_ENABLE_STATUS_DISABLED),
+        _ => None,
+    }
+}
+
+fn normalize_upstream_account_health_status_filter(value: Option<&str>) -> Option<&'static str> {
+    let normalized = value?.trim().to_ascii_lowercase();
+    if normalized.is_empty() {
+        return None;
+    }
+    match normalized.as_str() {
+        UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL => Some(UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL),
+        UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH => Some(UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH),
+        UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE => {
+            Some(UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE)
+        }
+        UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED => {
+            Some(UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED)
+        }
+        UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER | UPSTREAM_ACCOUNT_STATUS_ERROR => {
+            Some(UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER)
+        }
+        _ => None,
+    }
+}
+
+fn normalize_legacy_upstream_account_status_filter(
+    value: Option<&str>,
+) -> LegacyUpstreamAccountStatusFilter {
+    let normalized = value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(|value| value.to_ascii_lowercase());
+    match normalized.as_deref() {
+        Some(UPSTREAM_ACCOUNT_STATUS_ACTIVE) => LegacyUpstreamAccountStatusFilter {
+            enable_status: Some(UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED),
+            health_status: Some(UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL),
+            sync_state: Some(UPSTREAM_ACCOUNT_SYNC_STATE_IDLE),
+            ..LegacyUpstreamAccountStatusFilter::default()
+        },
+        Some(UPSTREAM_ACCOUNT_STATUS_SYNCING) => LegacyUpstreamAccountStatusFilter {
+            enable_status: Some(UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED),
+            sync_state: Some(UPSTREAM_ACCOUNT_SYNC_STATE_SYNCING),
+            ..LegacyUpstreamAccountStatusFilter::default()
+        },
+        Some(UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH) => LegacyUpstreamAccountStatusFilter {
+            enable_status: Some(UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED),
+            health_status: Some(UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH),
+            sync_state: Some(UPSTREAM_ACCOUNT_SYNC_STATE_IDLE),
+            ..LegacyUpstreamAccountStatusFilter::default()
+        },
+        Some(UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE) => {
+            LegacyUpstreamAccountStatusFilter {
+                enable_status: Some(UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED),
+                health_status: Some(UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE),
+                sync_state: Some(UPSTREAM_ACCOUNT_SYNC_STATE_IDLE),
+                ..LegacyUpstreamAccountStatusFilter::default()
+            }
+        }
+        Some(UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED) => {
+            LegacyUpstreamAccountStatusFilter {
+                enable_status: Some(UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED),
+                health_status: Some(UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED),
+                sync_state: Some(UPSTREAM_ACCOUNT_SYNC_STATE_IDLE),
+                ..LegacyUpstreamAccountStatusFilter::default()
+            }
+        }
+        Some(UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER) | Some(UPSTREAM_ACCOUNT_STATUS_ERROR) => {
+            LegacyUpstreamAccountStatusFilter {
+                enable_status: Some(UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED),
+                health_status: Some(UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER),
+                sync_state: Some(UPSTREAM_ACCOUNT_SYNC_STATE_IDLE),
+                ..LegacyUpstreamAccountStatusFilter::default()
+            }
+        }
+        Some(UPSTREAM_ACCOUNT_STATUS_DISABLED) => LegacyUpstreamAccountStatusFilter {
+            enable_status: Some(UPSTREAM_ACCOUNT_ENABLE_STATUS_DISABLED),
+            ..LegacyUpstreamAccountStatusFilter::default()
+        },
+        _ => LegacyUpstreamAccountStatusFilter::default(),
     }
 }
 
@@ -9144,21 +9659,50 @@ fn effective_account_status(row: &UpstreamAccountRow) -> String {
     }
 }
 
-fn classify_upstream_account_display_status(
+fn derive_upstream_account_enable_status(enabled: bool) -> &'static str {
+    if enabled {
+        UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED
+    } else {
+        UPSTREAM_ACCOUNT_ENABLE_STATUS_DISABLED
+    }
+}
+
+fn derive_upstream_account_sync_state(enabled: bool, raw_status: &str) -> &'static str {
+    if !enabled {
+        return UPSTREAM_ACCOUNT_SYNC_STATE_IDLE;
+    }
+    if raw_status
+        .trim()
+        .eq_ignore_ascii_case(UPSTREAM_ACCOUNT_STATUS_SYNCING)
+    {
+        UPSTREAM_ACCOUNT_SYNC_STATE_SYNCING
+    } else {
+        UPSTREAM_ACCOUNT_SYNC_STATE_IDLE
+    }
+}
+
+fn derive_upstream_account_health_status(
     enabled: bool,
     raw_status: &str,
     last_error: Option<&str>,
+    last_error_at: Option<&str>,
+    last_route_failure_at: Option<&str>,
+    last_route_failure_kind: Option<&str>,
 ) -> &'static str {
+    if !enabled {
+        return UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL;
+    }
     let status = raw_status.trim().to_ascii_lowercase();
     let error_message = last_error.unwrap_or_default();
-    if !enabled || status == UPSTREAM_ACCOUNT_STATUS_DISABLED {
-        return UPSTREAM_ACCOUNT_STATUS_DISABLED;
-    }
-    if status == UPSTREAM_ACCOUNT_STATUS_SYNCING {
-        return UPSTREAM_ACCOUNT_STATUS_SYNCING;
-    }
-    if status == UPSTREAM_ACCOUNT_STATUS_ACTIVE {
-        return UPSTREAM_ACCOUNT_STATUS_ACTIVE;
+    if matches!(
+        status.as_str(),
+        UPSTREAM_ACCOUNT_STATUS_ACTIVE | UPSTREAM_ACCOUNT_STATUS_SYNCING
+    ) && is_transient_route_failure_error(
+        last_error_at,
+        last_route_failure_at,
+        last_route_failure_kind,
+    ) {
+        return UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL;
     }
     if is_upstream_unavailable_error_message(error_message) {
         return UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE;
@@ -9177,7 +9721,115 @@ fn classify_upstream_account_display_status(
     {
         return UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER;
     }
-    UPSTREAM_ACCOUNT_STATUS_ACTIVE
+    UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL
+}
+
+fn is_transient_route_failure_error(
+    last_error_at: Option<&str>,
+    last_route_failure_at: Option<&str>,
+    last_route_failure_kind: Option<&str>,
+) -> bool {
+    if last_error_at.is_none() || last_error_at != last_route_failure_at {
+        return false;
+    }
+    matches!(
+        last_route_failure_kind
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+        Some(
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429
+                | FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX
+                | FORWARD_PROXY_FAILURE_SEND_ERROR
+                | FORWARD_PROXY_FAILURE_HANDSHAKE_TIMEOUT
+                | FORWARD_PROXY_FAILURE_STREAM_ERROR
+                | PROXY_FAILURE_FAILED_CONTACT_UPSTREAM
+                | PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT
+        )
+    )
+}
+
+fn derive_upstream_account_work_status(
+    enabled: bool,
+    health_status: &str,
+    sync_state: &str,
+    cooldown_until: Option<&str>,
+    last_route_failure_kind: Option<&str>,
+    last_action_reason_code: Option<&str>,
+    last_selected_at: Option<&str>,
+    now: DateTime<Utc>,
+) -> &'static str {
+    if !enabled
+        || health_status != UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL
+        || sync_state == UPSTREAM_ACCOUNT_SYNC_STATE_SYNCING
+    {
+        return UPSTREAM_ACCOUNT_WORK_STATUS_IDLE;
+    }
+    if cooldown_until
+        .and_then(parse_rfc3339_utc)
+        .is_some_and(|until| {
+            until > now
+                && (matches!(
+                    last_route_failure_kind,
+                    Some(
+                        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429
+                            | FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
+                    )
+                ) || account_reason_is_rate_limited(last_action_reason_code))
+        })
+    {
+        return UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED;
+    }
+    let active_cutoff = now - ChronoDuration::minutes(POOL_ROUTE_ACTIVE_STICKY_WINDOW_MINUTES);
+    if last_selected_at
+        .and_then(parse_rfc3339_utc)
+        .is_some_and(|selected_at| selected_at >= active_cutoff)
+    {
+        return UPSTREAM_ACCOUNT_WORK_STATUS_WORKING;
+    }
+    UPSTREAM_ACCOUNT_WORK_STATUS_IDLE
+}
+
+fn classify_upstream_account_display_status(
+    enabled: bool,
+    raw_status: &str,
+    last_error: Option<&str>,
+    last_error_at: Option<&str>,
+    last_route_failure_at: Option<&str>,
+    last_route_failure_kind: Option<&str>,
+) -> &'static str {
+    let enable_status = derive_upstream_account_enable_status(enabled);
+    if enable_status == UPSTREAM_ACCOUNT_ENABLE_STATUS_DISABLED {
+        return UPSTREAM_ACCOUNT_STATUS_DISABLED;
+    }
+    let sync_state = derive_upstream_account_sync_state(enabled, raw_status);
+    if sync_state == UPSTREAM_ACCOUNT_SYNC_STATE_SYNCING {
+        return UPSTREAM_ACCOUNT_STATUS_SYNCING;
+    }
+    let health_status = derive_upstream_account_health_status(
+        enabled,
+        raw_status,
+        last_error,
+        last_error_at,
+        last_route_failure_at,
+        last_route_failure_kind,
+    );
+    if health_status == UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL {
+        return UPSTREAM_ACCOUNT_STATUS_ACTIVE;
+    }
+    health_status
+}
+
+fn matches_upstream_account_filters(
+    item: &UpstreamAccountSummary,
+    work_status_filter: Option<&str>,
+    enable_status_filter: Option<&str>,
+    health_status_filter: Option<&str>,
+    sync_state_filter: Option<&str>,
+) -> bool {
+    work_status_filter.is_none_or(|value| item.work_status == value)
+        && enable_status_filter.is_none_or(|value| item.enable_status == value)
+        && health_status_filter.is_none_or(|value| item.health_status == value)
+        && sync_state_filter.is_none_or(|value| item.sync_state == value)
 }
 
 fn build_upstream_account_list_metrics(
@@ -9196,11 +9848,8 @@ fn build_upstream_account_list_metrics(
         attention: items
             .iter()
             .filter(|item| {
-                item.display_status == UPSTREAM_ACCOUNT_STATUS_SYNCING
-                    || item.display_status == UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH
-                    || item.display_status == UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE
-                    || item.display_status == UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
-                    || item.display_status == UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER
+                item.health_status != UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL
+                    || item.work_status == UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
             })
             .count(),
     }
@@ -9463,6 +10112,43 @@ fn account_reason_is_rate_limited(reason_code: Option<&str>) -> bool {
     )
 }
 
+fn route_failure_kind_is_quota_exhausted(failure_kind: Option<&str>) -> bool {
+    matches!(
+        failure_kind
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+    )
+}
+
+fn route_failure_kind_requires_manual_api_key_recovery(failure_kind: Option<&str>) -> bool {
+    matches!(
+        failure_kind
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+        Some(
+            PROXY_FAILURE_UPSTREAM_HTTP_AUTH
+                | PROXY_FAILURE_UPSTREAM_HTTP_402
+                | FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
+        )
+    )
+}
+
+fn should_clear_route_failure_state_after_sync_success(row: &UpstreamAccountRow) -> bool {
+    row.status != UPSTREAM_ACCOUNT_STATUS_ACTIVE
+        || route_failure_kind_requires_manual_api_key_recovery(
+            row.last_route_failure_kind.as_deref(),
+        )
+}
+
+fn account_update_requests_manual_recovery(payload: &UpdateUpstreamAccountRequest) -> bool {
+    payload.enabled == Some(true)
+        || payload
+            .api_key
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+}
+
 async fn set_account_status(
     pool: &Pool<Sqlite>,
     account_id: i64,
@@ -9510,25 +10196,53 @@ async fn mark_account_sync_success(
     pool: &Pool<Sqlite>,
     account_id: i64,
     source: &str,
+    route_state: SyncSuccessRouteState,
 ) -> Result<()> {
     let now_iso = format_utc_iso(Utc::now());
-    sqlx::query(
-        r#"
-        UPDATE pool_upstream_accounts
-        SET status = ?2,
-            last_synced_at = ?3,
-            last_successful_sync_at = ?3,
-            last_error = NULL,
-            last_error_at = NULL,
-            updated_at = ?3
-        WHERE id = ?1
-        "#,
-    )
-    .bind(account_id)
-    .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
-    .bind(&now_iso)
-    .execute(pool)
-    .await?;
+    match route_state {
+        SyncSuccessRouteState::PreserveFailureState => {
+            sqlx::query(
+                r#"
+                UPDATE pool_upstream_accounts
+                SET status = ?2,
+                    last_synced_at = ?3,
+                    last_successful_sync_at = ?3,
+                    last_error = NULL,
+                    last_error_at = NULL,
+                    updated_at = ?3
+                WHERE id = ?1
+                "#,
+            )
+            .bind(account_id)
+            .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+            .bind(&now_iso)
+            .execute(pool)
+            .await?;
+        }
+        SyncSuccessRouteState::ClearFailureState => {
+            sqlx::query(
+                r#"
+                UPDATE pool_upstream_accounts
+                SET status = ?2,
+                    last_synced_at = ?3,
+                    last_successful_sync_at = ?3,
+                    last_error = NULL,
+                    last_error_at = NULL,
+                    last_route_failure_at = NULL,
+                    last_route_failure_kind = NULL,
+                    cooldown_until = NULL,
+                    consecutive_route_failures = 0,
+                    updated_at = ?3
+                WHERE id = ?1
+                "#,
+            )
+            .bind(account_id)
+            .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+            .bind(&now_iso)
+            .execute(pool)
+            .await?;
+        }
+    }
     record_upstream_account_action(
         pool,
         account_id,
@@ -9539,6 +10253,52 @@ async fn mark_account_sync_success(
             reason_message: None,
             http_status: None,
             failure_kind: None,
+            invoke_id: None,
+            sticky_key: None,
+            occurred_at: &now_iso,
+        },
+    )
+    .await?;
+    Ok(())
+}
+
+async fn record_account_sync_recovery_blocked(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    source: &str,
+    status: &str,
+    reason_code: &'static str,
+    reason_message: &str,
+    preserved_error: Option<&str>,
+    failure_kind: Option<&str>,
+) -> Result<()> {
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET status = ?2,
+            last_synced_at = ?3,
+            last_error = COALESCE(?4, last_error),
+            updated_at = ?3
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .bind(status)
+    .bind(&now_iso)
+    .bind(preserved_error)
+    .execute(pool)
+    .await?;
+    record_upstream_account_action(
+        pool,
+        account_id,
+        UpstreamAccountActionPayload {
+            action: UPSTREAM_ACCOUNT_ACTION_SYNC_RECOVERY_BLOCKED,
+            source,
+            reason_code: Some(reason_code),
+            reason_message: Some(reason_message),
+            http_status: None,
+            failure_kind,
             invoke_id: None,
             sticky_key: None,
             occurred_at: &now_iso,
@@ -11594,6 +12354,8 @@ fn is_account_rate_limited_for_routing(row: &UpstreamAccountRow) -> bool {
     {
         return false;
     }
+    let quota_exhausted_hard_stop =
+        route_failure_kind_is_quota_exhausted(row.last_route_failure_kind.as_deref());
     let in_429_cooldown = row
         .cooldown_until
         .as_deref()
@@ -11607,7 +12369,9 @@ fn is_account_rate_limited_for_routing(row: &UpstreamAccountRow) -> bool {
                     | FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
             )
         );
-    in_429_cooldown || account_reason_is_rate_limited(row.last_action_reason_code.as_deref())
+    quota_exhausted_hard_stop
+        || in_429_cooldown
+        || account_reason_is_rate_limited(row.last_action_reason_code.as_deref())
 }
 
 async fn load_account_routing_candidates(
@@ -11658,9 +12422,7 @@ async fn load_account_routing_candidates(
     );
     query
         .push_bind(UPSTREAM_ACCOUNT_PROVIDER_CODEX)
-        .push(" AND account.enabled = 1")
-        .push(" AND account.status = ")
-        .push_bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        .push(" AND account.enabled = 1");
     if !excluded_ids.is_empty() {
         query.push(" AND account.id NOT IN (");
         {
@@ -12463,6 +13225,9 @@ mod tests {
             pool_upstream_responses_attempt_timeout: Duration::from_secs(
                 DEFAULT_POOL_UPSTREAM_RESPONSES_ATTEMPT_TIMEOUT_SECS,
             ),
+            pool_upstream_responses_total_timeout: Duration::from_secs(
+                DEFAULT_POOL_UPSTREAM_RESPONSES_TOTAL_TIMEOUT_SECS,
+            ),
             openai_proxy_handshake_timeout: Duration::from_secs(
                 DEFAULT_OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS,
             ),
@@ -12893,6 +13658,32 @@ mod tests {
         .fetch_one(pool)
         .await
         .expect("insert syncable oauth account")
+    }
+
+    async fn spawn_usage_snapshot_server(
+        status: StatusCode,
+        body: serde_json::Value,
+    ) -> (String, JoinHandle<()>) {
+        async fn handler(
+            State((status, body)): State<(StatusCode, Arc<String>)>,
+        ) -> (StatusCode, String) {
+            (status, (*body).clone())
+        }
+
+        let app = Router::new()
+            .route("/backend-api/wham/usage", get(handler))
+            .with_state((status, Arc::new(body.to_string())));
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind usage snapshot server");
+        let addr = listener.local_addr().expect("usage snapshot server addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve usage snapshot server");
+        });
+
+        (format!("http://{addr}/backend-api"), server)
     }
 
     #[derive(Clone)]
@@ -13501,7 +14292,11 @@ mod tests {
                 .expect("serve usage server");
         });
 
-        let state = test_app_state_with_usage_base(&format!("http://{addr}/backend-api")).await;
+        let state = test_app_state_with_usage_base_and_parallelism(
+            &format!("http://{addr}/backend-api"),
+            1,
+        )
+        .await;
         let crypto_key = state
             .upstream_accounts
             .crypto_key
@@ -14109,6 +14904,28 @@ mod tests {
         assert!(row.cooldown_until.is_none());
     }
 
+    #[test]
+    fn classify_pool_account_http_failure_treats_usage_limit_reached_as_quota_exhausted() {
+        let classification = classify_pool_account_http_failure(
+            UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            StatusCode::TOO_MANY_REQUESTS,
+            "pool upstream responded with 429: The usage limit has been reached",
+        );
+
+        assert_eq!(
+            classification.disposition,
+            UpstreamAccountFailureDisposition::HardUnavailable
+        );
+        assert_eq!(
+            classification.reason_code,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
+        );
+        assert_eq!(
+            classification.failure_kind,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
+        );
+    }
+
     async fn insert_limit_sample(
         pool: &SqlitePool,
         account_id: i64,
@@ -14203,6 +15020,49 @@ mod tests {
         .expect("seed route cooldown");
     }
 
+    async fn seed_hard_unavailable_route_failure(
+        pool: &SqlitePool,
+        account_id: i64,
+        status: &str,
+        failure_kind: &str,
+        reason_code: &str,
+        http_status: Option<i64>,
+    ) {
+        let now_iso = format_utc_iso(Utc::now());
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET status = ?2,
+                last_error = ?3,
+                last_error_at = ?4,
+                last_route_failure_at = ?4,
+                last_route_failure_kind = ?5,
+                cooldown_until = NULL,
+                consecutive_route_failures = 1,
+                last_action = ?6,
+                last_action_source = ?7,
+                last_action_reason_code = ?8,
+                last_action_reason_message = ?3,
+                last_action_http_status = ?9,
+                last_action_at = ?4,
+                updated_at = ?4
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .bind(status)
+        .bind("seed hard unavailable")
+        .bind(&now_iso)
+        .bind(failure_kind)
+        .bind(UPSTREAM_ACCOUNT_ACTION_ROUTE_HARD_UNAVAILABLE)
+        .bind(UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL)
+        .bind(reason_code)
+        .bind(http_status)
+        .execute(pool)
+        .await
+        .expect("seed hard unavailable");
+    }
+
     #[tokio::test]
     async fn mark_account_sync_success_preserves_route_cooldown_state() {
         let pool = test_pool().await;
@@ -14223,6 +15083,7 @@ mod tests {
             &pool,
             account_id,
             UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MANUAL,
+            SyncSuccessRouteState::PreserveFailureState,
         )
         .await
         .expect("mark sync success");
@@ -14243,6 +15104,43 @@ mod tests {
         assert_eq!(
             after.consecutive_route_failures,
             before.consecutive_route_failures
+        );
+    }
+
+    #[tokio::test]
+    async fn mark_account_sync_success_clears_hard_unavailable_state_when_requested() {
+        let pool = test_pool().await;
+        let account_id = insert_oauth_account(&pool, "Recovered OAuth").await;
+        seed_hard_unavailable_route_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+
+        mark_account_sync_success(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MANUAL,
+            SyncSuccessRouteState::ClearFailureState,
+        )
+        .await
+        .expect("mark sync success");
+
+        let after = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load row after sync success")
+            .expect("row exists after sync success");
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert!(after.last_error.is_none());
+        assert!(after.last_route_failure_kind.is_none());
+        assert!(after.cooldown_until.is_none());
+        assert_eq!(
+            after.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED)
         );
     }
 
@@ -14276,6 +15174,396 @@ mod tests {
         );
         assert!(after.cooldown_until.is_some());
         assert_eq!(after.consecutive_route_failures, 1);
+    }
+
+    #[tokio::test]
+    async fn sync_api_key_account_keeps_hard_unavailable_accounts_blocked() {
+        let pool = test_pool().await;
+        let account_id = insert_api_key_account(&pool, "Blocked API Key").await;
+        seed_hard_unavailable_route_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load api key row")
+            .expect("api key row exists");
+
+        sync_api_key_account(&pool, &row, SyncCause::Manual)
+            .await
+            .expect("sync api key account");
+        let after = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load row after api key sync")
+            .expect("row exists after api key sync");
+
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
+        assert!(after.last_synced_at.is_some());
+        assert!(after.last_successful_sync_at.is_none());
+        assert_eq!(after.last_error.as_deref(), Some("seed hard unavailable"));
+        assert_eq!(
+            after.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_SYNC_RECOVERY_BLOCKED)
+        );
+        assert_eq!(
+            after.last_action_reason_code.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_RECOVERY_UNCONFIRMED_MANUAL_REQUIRED)
+        );
+        assert_eq!(
+            after.last_route_failure_kind.as_deref(),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_api_key_account_clears_stale_manual_recovery_marker_on_active_rows() {
+        let pool = test_pool().await;
+        let account_id = insert_api_key_account(&pool, "Active API Key With Stale Marker").await;
+        seed_hard_unavailable_route_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+        mark_account_sync_success(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
+            SyncSuccessRouteState::PreserveFailureState,
+        )
+        .await
+        .expect("mark legacy sync success");
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load api key row")
+            .expect("api key row exists");
+        assert_eq!(row.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert_eq!(
+            row.last_route_failure_kind.as_deref(),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+        );
+
+        sync_api_key_account(&pool, &row, SyncCause::Maintenance)
+            .await
+            .expect("sync api key account");
+        let after = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load row after api key sync")
+            .expect("row exists after api key sync");
+
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert!(after.last_route_failure_kind.is_none());
+        assert!(after.cooldown_until.is_none());
+        assert_eq!(
+            after.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED)
+        );
+    }
+
+    #[tokio::test]
+    async fn updating_api_key_reactivates_manually_recoverable_account() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let account_id = insert_api_key_account(&state.pool, "Recoverable API Key").await;
+        seed_hard_unavailable_route_failure(
+            &state.pool,
+            account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+
+        state
+            .upstream_accounts
+            .account_ops
+            .run_update_account(
+                state.clone(),
+                account_id,
+                UpdateUpstreamAccountRequest {
+                    display_name: None,
+                    group_name: None,
+                    note: None,
+                    group_note: None,
+                    upstream_base_url: OptionalField::Missing,
+                    enabled: None,
+                    is_mother: None,
+                    api_key: Some("sk-live-new".to_string()),
+                    local_primary_limit: None,
+                    local_secondary_limit: None,
+                    local_limit_unit: None,
+                    tag_ids: None,
+                },
+            )
+            .await
+            .expect("update api key account");
+
+        let after = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load row after api key update")
+            .expect("row exists after api key update");
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert!(after.last_error.is_none());
+        assert!(after.last_route_failure_kind.is_none());
+        assert_eq!(
+            after.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_ACCOUNT_UPDATED)
+        );
+    }
+
+    #[tokio::test]
+    async fn oauth_sync_keeps_quota_exhausted_accounts_blocked_until_snapshot_recovers() {
+        let (base_url, server) = spawn_usage_snapshot_server(
+            StatusCode::OK,
+            json!({
+                "planType": "team",
+                "rateLimit": {
+                    "primaryWindow": {
+                        "usedPercent": 100,
+                        "windowDurationMins": 300,
+                        "resetsAt": 1771322400
+                    }
+                }
+            }),
+        )
+        .await;
+        let state = test_app_state_with_usage_base(&base_url).await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Exhausted OAuth",
+            "exhausted@example.com",
+            "org_exhausted",
+            "user_exhausted",
+        )
+        .await;
+        seed_hard_unavailable_route_failure(
+            &state.pool,
+            account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+        let row = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth row")
+            .expect("oauth row exists");
+
+        sync_oauth_account(&state, &row, SyncCause::Manual)
+            .await
+            .expect("sync oauth account");
+
+        let after = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth row after sync")
+            .expect("oauth row exists after sync");
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
+        assert!(after.last_synced_at.is_some());
+        assert!(after.last_successful_sync_at.is_none());
+        assert_eq!(after.last_error.as_deref(), Some("seed hard unavailable"));
+        assert_eq!(
+            after.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_SYNC_RECOVERY_BLOCKED)
+        );
+        assert_eq!(
+            after.last_action_reason_code.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED)
+        );
+        assert_eq!(
+            after.last_route_failure_kind.as_deref(),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn oauth_sync_demotes_active_stale_quota_marker_when_snapshot_is_still_exhausted() {
+        let (base_url, server) = spawn_usage_snapshot_server(
+            StatusCode::OK,
+            json!({
+                "planType": "team",
+                "rateLimit": {
+                    "primaryWindow": {
+                        "usedPercent": 100,
+                        "windowDurationMins": 300,
+                        "resetsAt": 1771322400
+                    }
+                }
+            }),
+        )
+        .await;
+        let state = test_app_state_with_usage_base(&base_url).await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Legacy Active Exhausted OAuth",
+            "legacy-exhausted@example.com",
+            "org_legacy_exhausted",
+            "user_legacy_exhausted",
+        )
+        .await;
+        seed_hard_unavailable_route_failure(
+            &state.pool,
+            account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+        mark_account_sync_success(
+            &state.pool,
+            account_id,
+            UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
+            SyncSuccessRouteState::PreserveFailureState,
+        )
+        .await
+        .expect("mark legacy sync success");
+        let row = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth row")
+            .expect("oauth row exists");
+        assert_eq!(row.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert_eq!(
+            row.last_route_failure_kind.as_deref(),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+        );
+
+        sync_oauth_account(&state, &row, SyncCause::Maintenance)
+            .await
+            .expect("sync oauth account");
+
+        let after = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth row after sync")
+            .expect("oauth row exists after sync");
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
+        assert_eq!(
+            after.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_SYNC_RECOVERY_BLOCKED)
+        );
+        assert_eq!(
+            after.last_route_failure_kind.as_deref(),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn oauth_sync_reactivates_quota_exhausted_account_once_snapshot_recovers() {
+        let (base_url, server) = spawn_usage_snapshot_server(
+            StatusCode::OK,
+            json!({
+                "planType": "team",
+                "rateLimit": {
+                    "primaryWindow": {
+                        "usedPercent": 42,
+                        "windowDurationMins": 300,
+                        "resetsAt": 1771322400
+                    }
+                }
+            }),
+        )
+        .await;
+        let state = test_app_state_with_usage_base(&base_url).await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Recovered OAuth Sync",
+            "recovered@example.com",
+            "org_recovered",
+            "user_recovered",
+        )
+        .await;
+        seed_hard_unavailable_route_failure(
+            &state.pool,
+            account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+        let row = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth row")
+            .expect("oauth row exists");
+
+        sync_oauth_account(&state, &row, SyncCause::Manual)
+            .await
+            .expect("sync oauth account");
+
+        let after = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth row after recovery")
+            .expect("oauth row exists after recovery");
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert!(after.last_error.is_none());
+        assert!(after.last_route_failure_kind.is_none());
+        assert!(after.last_successful_sync_at.is_some());
+        assert_eq!(
+            after.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED)
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn resolver_keeps_quota_exhausted_accounts_in_rate_limited_terminal_state_after_sync_block()
+     {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let account_id = insert_api_key_account(&state.pool, "Quota Exhausted Resolver").await;
+        seed_hard_unavailable_route_failure(
+            &state.pool,
+            account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+        record_account_sync_recovery_blocked(
+            &state.pool,
+            account_id,
+            UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            UPSTREAM_ACCOUNT_ACTION_REASON_RECOVERY_UNCONFIRMED_MANUAL_REQUIRED,
+            "manual recovery required because API key sync cannot verify whether the upstream usage limit has reset",
+            Some("seed hard unavailable"),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED),
+        )
+        .await
+        .expect("record blocked recovery");
+
+        let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
+            .await
+            .expect("resolve pool account");
+        assert!(matches!(resolution, PoolAccountResolution::RateLimited));
     }
 
     #[tokio::test]
@@ -15455,6 +16743,93 @@ mod tests {
     }
 
     #[test]
+    fn parse_mailbox_code_supports_localized_subjects() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_zh_subject".to_string(),
+            subject: Some("你的 OpenAI 代码为 438211".to_string()),
+            content: Some("如果这不是你本人操作，请重置密码。".to_string()),
+            html: None,
+            received_at: Some("2026-03-23T23:48:33Z".to_string()),
+        };
+
+        let parsed = parse_mailbox_code(&detail).expect("localized subject code");
+        assert_eq!(parsed.value, "438211");
+        assert_eq!(parsed.source, "subject");
+    }
+
+    #[test]
+    fn parse_mailbox_code_supports_localized_html_and_fullwidth_digits() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_zh_html".to_string(),
+            subject: Some("安全提醒".to_string()),
+            content: None,
+            html: Some(
+                "<div>OpenAI</div><p>输入此临时验证码以继续：</p><strong>４３８２１１</strong>"
+                    .to_string(),
+            ),
+            received_at: Some("2026-03-24T00:00:00Z".to_string()),
+        };
+
+        let parsed = parse_mailbox_code(&detail).expect("localized html code");
+        assert_eq!(parsed.value, "438211");
+        assert_eq!(parsed.source, "html");
+    }
+
+    #[test]
+    fn parse_mailbox_code_prefers_digits_after_marker() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_order_and_code".to_string(),
+            subject: Some("OpenAI order update".to_string()),
+            content: Some("Order 1234. Your verification code is 567890.".to_string()),
+            html: None,
+            received_at: Some("2026-03-24T00:05:30Z".to_string()),
+        };
+
+        let parsed = parse_mailbox_code(&detail).expect("verification code");
+        assert_eq!(parsed.value, "567890");
+        assert_eq!(parsed.source, "content");
+    }
+
+    #[test]
+    fn parse_mailbox_code_rejects_weak_subject_match_without_local_brand() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_weak_subject_without_local_brand".to_string(),
+            subject: Some("Your code is 123456".to_string()),
+            content: Some("OpenAI account activity summary".to_string()),
+            html: None,
+            received_at: Some("2026-03-24T00:05:45Z".to_string()),
+        };
+
+        assert!(parse_mailbox_code(&detail).is_none());
+    }
+
+    #[test]
+    fn parse_mailbox_code_rejects_strong_subject_match_without_brand() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_strong_subject_without_brand".to_string(),
+            subject: Some("验证码 123456".to_string()),
+            content: Some("请在十分钟内完成验证。".to_string()),
+            html: None,
+            received_at: Some("2026-03-24T00:05:50Z".to_string()),
+        };
+
+        assert!(parse_mailbox_code(&detail).is_none());
+    }
+
+    #[test]
+    fn parse_mailbox_code_rejects_unrelated_numbers_without_code_semantics() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_negative_code".to_string(),
+            subject: Some("OpenAI receipt 438211".to_string()),
+            content: Some("Invoice total: 23.00 USD".to_string()),
+            html: None,
+            received_at: Some("2026-03-24T00:05:00Z".to_string()),
+        };
+
+        assert!(parse_mailbox_code(&detail).is_none());
+    }
+
+    #[test]
     fn parse_mailbox_invite_extracts_workspace_link() {
         let detail = MoeMailMessageDetail {
             id: "msg_3".to_string(),
@@ -15473,6 +16848,146 @@ mod tests {
             "https://chatgpt.com/workspace/invite/abc123"
         );
         assert_eq!(parsed.copy_label, "invite-link");
+    }
+
+    #[test]
+    fn parse_mailbox_invite_supports_localized_templates() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_zh_invite".to_string(),
+            subject: Some("Alice 邀请你加入 OpenAI 工作区".to_string()),
+            content: Some("请接受邀请：https://chatgpt.com/workspace/invite/abc123".to_string()),
+            html: None,
+            received_at: Some("2026-03-24T00:06:00Z".to_string()),
+        };
+
+        let parsed = parse_mailbox_invite(&detail).expect("localized invite");
+        assert_eq!(parsed.subject, "Alice 邀请你加入 OpenAI 工作区");
+        assert_eq!(
+            parsed.copy_value,
+            "https://chatgpt.com/workspace/invite/abc123"
+        );
+    }
+
+    #[test]
+    fn parse_mailbox_invite_accepts_body_only_workspace_invites() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_body_only_invite".to_string(),
+            subject: Some("OpenAI workspace update".to_string()),
+            content: Some(
+                "请接受邀请并加入工作区：https://chatgpt.com/workspace/invite/accept?workspace=ws_789"
+                    .to_string(),
+            ),
+            html: None,
+            received_at: Some("2026-03-24T00:06:30Z".to_string()),
+        };
+
+        let parsed = parse_mailbox_invite(&detail).expect("body invite");
+        assert_eq!(
+            parsed.copy_value,
+            "https://chatgpt.com/workspace/invite/accept?workspace=ws_789"
+        );
+    }
+
+    #[test]
+    fn parse_mailbox_invite_accepts_query_driven_cta_links() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_query_invite".to_string(),
+            subject: Some("Alice has invited you to a workspace".to_string()),
+            content: Some(
+                "Open your invite: https://chatgpt.com/workspace?invite=abc123".to_string(),
+            ),
+            html: None,
+            received_at: Some("2026-03-24T00:06:45Z".to_string()),
+        };
+
+        let parsed = parse_mailbox_invite(&detail).expect("query invite");
+        assert_eq!(
+            parsed.copy_value,
+            "https://chatgpt.com/workspace?invite=abc123"
+        );
+    }
+
+    #[test]
+    fn parse_mailbox_invite_accepts_body_only_invites_without_workspace_keyword() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_body_only_plain_invite".to_string(),
+            subject: Some("OpenAI account notice".to_string()),
+            content: Some("Accept invitation: https://chatgpt.com/invite/abc123".to_string()),
+            html: None,
+            received_at: Some("2026-03-24T00:06:50Z".to_string()),
+        };
+
+        let parsed = parse_mailbox_invite(&detail).expect("body invite without workspace");
+        assert_eq!(parsed.copy_value, "https://chatgpt.com/invite/abc123");
+    }
+
+    #[test]
+    fn parse_mailbox_invite_accepts_redirect_wrapped_brand_invites() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_redirect_wrapped_invite".to_string(),
+            subject: Some("Alex has invited you to a workspace".to_string()),
+            content: Some(
+                "Accept invitation: https://click.example.com/track?target=https%3A%2F%2Fchatgpt.com%2Fworkspace%2Finvite%2Fabc123".to_string(),
+            ),
+            html: None,
+            received_at: Some("2026-03-24T00:07:10Z".to_string()),
+        };
+
+        let parsed = parse_mailbox_invite(&detail).expect("redirect wrapped invite");
+        assert_eq!(
+            parsed.copy_value,
+            "https://chatgpt.com/workspace/invite/abc123"
+        );
+    }
+
+    #[test]
+    fn parse_mailbox_invite_rejects_non_invite_workspace_links() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_negative_invite".to_string(),
+            subject: Some("OpenAI workspace digest".to_string()),
+            content: Some("Workspace docs: https://chatgpt.com/workspace".to_string()),
+            html: None,
+            received_at: Some("2026-03-24T00:07:00Z".to_string()),
+        };
+
+        assert!(parse_mailbox_invite(&detail).is_none());
+    }
+
+    #[test]
+    fn parse_mailbox_invite_rejects_help_articles_about_accepting_invites() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_help_article".to_string(),
+            subject: Some("OpenAI workspace help".to_string()),
+            content: Some(
+                "Need help to accept invitation to your workspace? Read https://help.openai.com/en/articles/12345-accept-invitation-to-workspace"
+                    .to_string(),
+            ),
+            html: None,
+            received_at: Some("2026-03-24T00:07:30Z".to_string()),
+        };
+
+        assert!(parse_mailbox_invite(&detail).is_none());
+    }
+
+    #[test]
+    fn parse_mailbox_invite_rejects_generic_workspace_url_even_with_invite_subject() {
+        let detail = MoeMailMessageDetail {
+            id: "msg_negative_workspace_home".to_string(),
+            subject: Some("Alice has invited you to a workspace".to_string()),
+            content: Some("Open workspace: https://chatgpt.com/workspace".to_string()),
+            html: None,
+            received_at: Some("2026-03-24T00:08:00Z".to_string()),
+        };
+
+        assert!(parse_mailbox_invite(&detail).is_none());
+    }
+
+    #[test]
+    fn normalize_mailbox_text_converts_fullwidth_digits_and_collapses_whitespace() {
+        assert_eq!(
+            normalize_mailbox_text("  OpenAI　验证码：４３８２１１ \n 下一步  "),
+            "openai 验证码:438211 下一步"
+        );
     }
 
     #[test]

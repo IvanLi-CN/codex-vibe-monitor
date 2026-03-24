@@ -70,6 +70,21 @@ beforeAll(() => {
     writable: true,
     value: vi.fn(),
   });
+  Object.defineProperty(HTMLElement.prototype, "hasPointerCapture", {
+    configurable: true,
+    writable: true,
+    value: vi.fn(() => false),
+  });
+  Object.defineProperty(HTMLElement.prototype, "setPointerCapture", {
+    configurable: true,
+    writable: true,
+    value: vi.fn(),
+  });
+  Object.defineProperty(HTMLElement.prototype, "releasePointerCapture", {
+    configurable: true,
+    writable: true,
+    value: vi.fn(),
+  });
   Object.defineProperty(globalThis, "IS_REACT_ACT_ENVIRONMENT", {
     configurable: true,
     writable: true,
@@ -261,6 +276,21 @@ function clickCommandItem(matcher: RegExp) {
   return item
 }
 
+function clickSelectOption(matcher: RegExp) {
+  const option = Array.from(document.body.querySelectorAll('[role="option"]')).find(
+    (candidate) =>
+      candidate instanceof HTMLElement &&
+      matcher.test(candidate.textContent || ''),
+  )
+  if (!(option instanceof HTMLElement)) {
+    throw new Error(`missing select option: ${matcher}`)
+  }
+  act(() => {
+    option.dispatchEvent(new MouseEvent("click", { bubbles: true }))
+  })
+  return option
+}
+
 function pressButton(button: HTMLButtonElement) {
   act(() => {
     if (typeof PointerEvent === "function") {
@@ -329,52 +359,95 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
-function mockAccountsPage() {
+function mockAccountsPage(overrides?: {
+  item?: Record<string, unknown>
+  selectedSummary?: Record<string, unknown>
+  detail?: Record<string, unknown>
+}) {
+  const primaryItem = {
+    id: 5,
+    kind: "oauth_codex",
+    provider: "codex",
+    displayName: "Existing OAuth",
+    groupName: "prod",
+    status: "active",
+    displayStatus: "active",
+    enabled: true,
+    isMother: true,
+    planType: "team",
+    lastActionSource: "call",
+    lastActionReasonCode: "upstream_http_429_quota_exhausted",
+    lastActionHttpStatus: 429,
+    lastActionAt: "2026-03-16T02:06:00.000Z",
+    primaryWindow: {
+      usedPercent: 42,
+      usedText: "42 requests",
+      limitText: "120 requests",
+      resetsAt: "2026-03-16T06:55:00.000Z",
+      windowDurationMins: 300,
+    },
+    secondaryWindow: {
+      usedPercent: 12,
+      usedText: "12 requests",
+      limitText: "500 requests",
+      resetsAt: "2026-03-18T00:00:00.000Z",
+      windowDurationMins: 10080,
+    },
+    credits: null,
+    localLimits: null,
+    duplicateInfo: {
+      peerAccountIds: [9],
+      reasons: ["sharedChatgptAccountId"],
+    },
+    tags: [
+      { id: 1, name: "vip", routingRule: defaultEffectiveRoutingRule },
+      { id: 2, name: "burst-safe", routingRule: defaultEffectiveRoutingRule },
+      { id: 3, name: "prod-apac", routingRule: defaultEffectiveRoutingRule },
+      { id: 4, name: "sticky-pool", routingRule: defaultEffectiveRoutingRule },
+    ],
+    effectiveRoutingRule: defaultEffectiveRoutingRule,
+    ...(overrides?.item ?? {}),
+  }
+  const selectedSummary = {
+    ...primaryItem,
+    lastSuccessfulSyncAt: "2026-03-16T01:55:00.000Z",
+    lastActivityAt: "2026-03-16T02:05:00.000Z",
+    lastAction: "route_hard_unavailable",
+    lastActionSource: "call",
+    lastActionReasonCode: "upstream_http_429_quota_exhausted",
+    lastActionReasonMessage: "Weekly cap exhausted for this account",
+    lastActionHttpStatus: 429,
+    lastActionInvokeId: "invk_action_001",
+    lastActionAt: "2026-03-16T02:06:00.000Z",
+    ...(overrides?.selectedSummary ?? {}),
+  }
+  const detail = {
+    ...selectedSummary,
+    email: "dup@example.com",
+    chatgptAccountId: "org_1",
+    chatgptUserId: "user_1",
+    history: [],
+    recentActions: [
+      {
+        id: 71,
+        occurredAt: "2026-03-16T02:06:00.000Z",
+        action: "route_hard_unavailable",
+        source: "call",
+        reasonCode: "upstream_http_429_quota_exhausted",
+        reasonMessage: "Weekly cap exhausted for this account",
+        httpStatus: 429,
+        failureKind: "upstream_http_429_quota_exhausted",
+        invokeId: "invk_action_001",
+        stickyKey: "sticky-dup-001",
+        createdAt: "2026-03-16T02:06:00.000Z",
+      },
+    ],
+    ...(overrides?.detail ?? {}),
+  }
+
   hookMocks.useUpstreamAccounts.mockReturnValue({
     items: [
-      {
-        id: 5,
-        kind: "oauth_codex",
-        provider: "codex",
-        displayName: "Existing OAuth",
-        groupName: "prod",
-        status: "active",
-        displayStatus: "active",
-        enabled: true,
-        isMother: true,
-        planType: "team",
-        lastActionSource: "call",
-        lastActionReasonCode: "upstream_http_429_quota_exhausted",
-        lastActionHttpStatus: 429,
-        lastActionAt: "2026-03-16T02:06:00.000Z",
-        primaryWindow: {
-          usedPercent: 42,
-          usedText: "42 requests",
-          limitText: "120 requests",
-          resetsAt: "2026-03-16T06:55:00.000Z",
-          windowDurationMins: 300,
-        },
-        secondaryWindow: {
-          usedPercent: 12,
-          usedText: "12 requests",
-          limitText: "500 requests",
-          resetsAt: "2026-03-18T00:00:00.000Z",
-          windowDurationMins: 10080,
-        },
-        credits: null,
-        localLimits: null,
-        duplicateInfo: {
-          peerAccountIds: [9],
-          reasons: ["sharedChatgptAccountId"],
-        },
-        tags: [
-          { id: 1, name: "vip", routingRule: defaultEffectiveRoutingRule },
-          { id: 2, name: "burst-safe", routingRule: defaultEffectiveRoutingRule },
-          { id: 3, name: "prod-apac", routingRule: defaultEffectiveRoutingRule },
-          { id: 4, name: "sticky-pool", routingRule: defaultEffectiveRoutingRule },
-        ],
-        effectiveRoutingRule: defaultEffectiveRoutingRule,
-      },
+      primaryItem,
       {
         id: 9,
         kind: "oauth_codex",
@@ -406,121 +479,8 @@ function mockAccountsPage() {
       attention: 0,
     },
     selectedId: 5,
-    selectedSummary: {
-      id: 5,
-      kind: "oauth_codex",
-      provider: "codex",
-      displayName: "Existing OAuth",
-      groupName: "prod",
-      status: "active",
-      displayStatus: "active",
-      enabled: true,
-      isMother: true,
-      planType: "team",
-      lastSuccessfulSyncAt: "2026-03-16T01:55:00.000Z",
-      lastActivityAt: "2026-03-16T02:05:00.000Z",
-      lastAction: "route_hard_unavailable",
-      lastActionSource: "call",
-      lastActionReasonCode: "upstream_http_429_quota_exhausted",
-      lastActionReasonMessage: "Weekly cap exhausted for this account",
-      lastActionHttpStatus: 429,
-      lastActionInvokeId: "invk_action_001",
-      lastActionAt: "2026-03-16T02:06:00.000Z",
-      primaryWindow: {
-        usedPercent: 42,
-        usedText: "42 requests",
-        limitText: "120 requests",
-        resetsAt: "2026-03-16T06:55:00.000Z",
-        windowDurationMins: 300,
-      },
-      secondaryWindow: {
-        usedPercent: 12,
-        usedText: "12 requests",
-        limitText: "500 requests",
-        resetsAt: "2026-03-18T00:00:00.000Z",
-        windowDurationMins: 10080,
-      },
-      credits: null,
-      localLimits: null,
-      duplicateInfo: {
-        peerAccountIds: [9],
-        reasons: ["sharedChatgptAccountId"],
-      },
-      tags: [
-        { id: 1, name: "vip", routingRule: defaultEffectiveRoutingRule },
-        { id: 2, name: "burst-safe", routingRule: defaultEffectiveRoutingRule },
-        { id: 3, name: "prod-apac", routingRule: defaultEffectiveRoutingRule },
-        { id: 4, name: "sticky-pool", routingRule: defaultEffectiveRoutingRule },
-      ],
-      effectiveRoutingRule: defaultEffectiveRoutingRule,
-    },
-    detail: {
-      id: 5,
-      kind: "oauth_codex",
-      provider: "codex",
-      displayName: "Existing OAuth",
-      groupName: "prod",
-      status: "active",
-      displayStatus: "active",
-      enabled: true,
-      isMother: true,
-      planType: "team",
-      lastSuccessfulSyncAt: "2026-03-16T01:55:00.000Z",
-      lastActivityAt: "2026-03-16T02:05:00.000Z",
-      lastAction: "route_hard_unavailable",
-      lastActionSource: "call",
-      lastActionReasonCode: "upstream_http_429_quota_exhausted",
-      lastActionReasonMessage: "Weekly cap exhausted for this account",
-      lastActionHttpStatus: 429,
-      lastActionInvokeId: "invk_action_001",
-      lastActionAt: "2026-03-16T02:06:00.000Z",
-      primaryWindow: {
-        usedPercent: 42,
-        usedText: "42 requests",
-        limitText: "120 requests",
-        resetsAt: "2026-03-16T06:55:00.000Z",
-        windowDurationMins: 300,
-      },
-      secondaryWindow: {
-        usedPercent: 12,
-        usedText: "12 requests",
-        limitText: "500 requests",
-        resetsAt: "2026-03-18T00:00:00.000Z",
-        windowDurationMins: 10080,
-      },
-      duplicateInfo: {
-        peerAccountIds: [9],
-        reasons: ["sharedChatgptAccountId"],
-      },
-      email: "dup@example.com",
-      chatgptAccountId: "org_1",
-      chatgptUserId: "user_1",
-      credits: null,
-      localLimits: null,
-      tags: [
-        { id: 1, name: "vip", routingRule: defaultEffectiveRoutingRule },
-        { id: 2, name: "burst-safe", routingRule: defaultEffectiveRoutingRule },
-        { id: 3, name: "prod-apac", routingRule: defaultEffectiveRoutingRule },
-        { id: 4, name: "sticky-pool", routingRule: defaultEffectiveRoutingRule },
-      ],
-      effectiveRoutingRule: defaultEffectiveRoutingRule,
-      history: [],
-      recentActions: [
-        {
-          id: 71,
-          occurredAt: "2026-03-16T02:06:00.000Z",
-          action: "route_hard_unavailable",
-          source: "call",
-          reasonCode: "upstream_http_429_quota_exhausted",
-          reasonMessage: "Weekly cap exhausted for this account",
-          httpStatus: 429,
-          failureKind: "upstream_http_429_quota_exhausted",
-          invokeId: "invk_action_001",
-          stickyKey: "sticky-dup-001",
-          createdAt: "2026-03-16T02:06:00.000Z",
-        },
-      ],
-    },
+    selectedSummary,
+    detail,
     isLoading: false,
     isDetailLoading: false,
     listError: null,
@@ -580,6 +540,59 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect(document.body.textContent).toContain("invk_action_001");
   });
 
+  it("renders blocked recovery actions with translated source and reason labels", async () => {
+    mockAccountsPage({
+      selectedSummary: {
+        status: "error",
+        displayStatus: "error_other",
+        healthStatus: "error_other",
+        lastAction: "sync_recovery_blocked",
+        lastActionSource: "sync_maintenance",
+        lastActionReasonCode: "quota_still_exhausted",
+        lastActionReasonMessage:
+          "latest usage snapshot still shows an exhausted upstream usage limit window",
+        lastActionHttpStatus: null,
+      },
+      detail: {
+        status: "error",
+        displayStatus: "error_other",
+        healthStatus: "error_other",
+        lastAction: "sync_recovery_blocked",
+        lastActionSource: "sync_maintenance",
+        lastActionReasonCode: "quota_still_exhausted",
+        lastActionReasonMessage:
+          "latest usage snapshot still shows an exhausted upstream usage limit window",
+        lastActionHttpStatus: null,
+        recentActions: [
+          {
+            id: 72,
+            occurredAt: "2026-03-16T03:10:00.000Z",
+            action: "sync_recovery_blocked",
+            source: "sync_maintenance",
+            reasonCode: "quota_still_exhausted",
+            reasonMessage:
+              "latest usage snapshot still shows an exhausted upstream usage limit window",
+            httpStatus: null,
+            failureKind: "upstream_http_429_quota_exhausted",
+            invokeId: null,
+            stickyKey: null,
+            createdAt: "2026-03-16T03:10:00.000Z",
+          },
+        ],
+      },
+    });
+    render("/account-pool/upstream-accounts");
+
+    clickFirstRosterRow();
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Recovery still blocked");
+    expect(document.body.textContent).toContain("Maintenance sync");
+    expect(document.body.textContent).toContain(
+      "Fresh usage snapshot still shows an exhausted limit window",
+    );
+  });
+
   it("passes all-match tag filters to the roster hook", () => {
     mockAccountsPage();
     render("/account-pool/upstream-accounts");
@@ -591,7 +604,9 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect(hookMocks.useUpstreamAccounts).toHaveBeenLastCalledWith({
       groupSearch: undefined,
       groupUngrouped: undefined,
-      status: undefined,
+      workStatus: undefined,
+      enableStatus: undefined,
+      healthStatus: undefined,
       page: 1,
       pageSize: 20,
       tagIds: [1, 2],
@@ -611,10 +626,35 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect(hookMocks.useUpstreamAccounts).toHaveBeenLastCalledWith({
       groupSearch: undefined,
       groupUngrouped: true,
-      status: undefined,
+      workStatus: undefined,
+      enableStatus: undefined,
+      healthStatus: undefined,
       page: 1,
       pageSize: 20,
       tagIds: [1, 2],
+    });
+  });
+
+  it("passes split status filters to the roster hook", () => {
+    mockAccountsPage();
+    render("/account-pool/upstream-accounts");
+
+    clickCombobox(/work status/i);
+    clickSelectOption(/^rate limited$/i);
+    clickCombobox(/enable status/i);
+    clickSelectOption(/^enabled$/i);
+    clickCombobox(/account health/i);
+    clickSelectOption(/^needs re-auth$/i);
+
+    expect(hookMocks.useUpstreamAccounts).toHaveBeenLastCalledWith({
+      groupSearch: undefined,
+      groupUngrouped: undefined,
+      workStatus: "rate_limited",
+      enableStatus: "enabled",
+      healthStatus: "needs_reauth",
+      page: 1,
+      pageSize: 20,
+      tagIds: undefined,
     });
   });
 

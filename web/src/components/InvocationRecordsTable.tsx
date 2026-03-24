@@ -58,6 +58,7 @@ interface InvocationRecordsRowViewModel {
   endpointDisplay: ReturnType<typeof buildInvocationDetailViewModel>['endpointDisplay']
   errorMessage: string
   totalLatencyValue: string
+  firstResponseByteTotalValue: string
   firstByteLatencyValue: string
   responseContentEncodingValue: string
   detailNotice: string | null
@@ -70,11 +71,6 @@ const STATUS_META: Record<string, { variant: StatusMeta['variant']; labelKey: st
   failed: { variant: 'error', labelKey: 'table.status.failed' },
   running: { variant: 'default', labelKey: 'table.status.running' },
   pending: { variant: 'warning', labelKey: 'table.status.pending' },
-}
-
-function formatRoundedMilliseconds(value?: number | null) {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return FALLBACK_CELL
-  return `${Math.round(value)} ms`
 }
 
 function formatStatusLabel(status: string) {
@@ -128,8 +124,8 @@ function renderFocusSummary(row: InvocationRecordsRowViewModel, focus: Invocatio
         <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
           <dt className="text-base-content/60">{t('records.table.network.endpoint')}</dt>
           <dd className="flex justify-end">{renderEndpointSummary(row.endpointDisplay, t, 'text-[10px]')}</dd>
-          <dt className="text-base-content/60">{t('records.table.network.ttfb')}</dt>
-          <dd className="truncate text-right font-mono">{row.firstByteLatencyValue}</dd>
+          <dt className="text-base-content/60">{t('records.table.network.firstResponseByteTotal')}</dt>
+          <dd className="truncate text-right font-mono">{row.firstResponseByteTotalValue}</dd>
           <dt className="text-base-content/60">{t('records.table.network.totalMs')}</dt>
           <dd className="truncate text-right font-mono">{row.totalLatencyValue}</dd>
           <dt className="text-base-content/60">{t('records.table.network.requesterIp')}</dt>
@@ -224,8 +220,8 @@ function renderDetailSummaryStrip(
         <dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
           <dt className="text-base-content/60">{t('records.table.network.totalMs')}</dt>
           <dd className="truncate text-right font-mono">{row.totalLatencyValue}</dd>
-          <dt className="text-base-content/60">{t('records.table.network.ttfb')}</dt>
-          <dd className="truncate text-right font-mono">{row.firstByteLatencyValue}</dd>
+          <dt className="text-base-content/60">{t('records.table.network.firstResponseByteTotal')}</dt>
+          <dd className="truncate text-right font-mono">{row.firstResponseByteTotalValue}</dd>
           <dt className="text-base-content/60">{t('table.details.httpCompression')}</dt>
           <dd className="truncate text-right font-mono">{row.responseContentEncodingValue}</dd>
         </dl>
@@ -378,7 +374,7 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
         return [
           t('records.table.network.endpoint'),
           t('records.table.network.requesterIp'),
-          t('records.table.network.ttfb'),
+          t('records.table.network.firstResponseByteTotal'),
           t('records.table.network.totalMs'),
         ]
       case 'exception':
@@ -410,7 +406,7 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
               <div className="w-fit max-w-full">{renderEndpointSummary(row.endpointDisplay, t, 'text-[10px]')}</div>
             </td>
             <td className="px-3 py-3 align-middle text-left font-mono text-xs">{formatOptionalText(row.record.requesterIp)}</td>
-            <td className="px-3 py-3 align-middle text-right font-mono text-xs">{formatRoundedMilliseconds(row.record.tUpstreamTtfbMs)}</td>
+            <td className="px-3 py-3 align-middle text-right font-mono text-xs">{row.firstResponseByteTotalValue}</td>
             <td className="px-3 py-3 align-middle text-right font-mono text-xs">{row.totalLatencyValue}</td>
           </>
         )
@@ -466,8 +462,8 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
               <dd className="truncate font-mono">{formatOptionalText(row.record.requesterIp)}</dd>
             </div>
             <div className="flex items-center justify-between gap-3">
-              <dt>{t('records.table.network.ttfb')}</dt>
-              <dd className="font-mono">{formatRoundedMilliseconds(row.record.tUpstreamTtfbMs)}</dd>
+              <dt>{t('records.table.network.firstResponseByteTotal')}</dt>
+              <dd className="font-mono">{row.firstResponseByteTotalValue}</dd>
             </div>
             <div className="flex items-center justify-between gap-3">
               <dt>{t('records.table.network.totalMs')}</dt>
@@ -553,7 +549,6 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
                   <AppIcon name={isExpanded ? 'chevron-down' : 'chevron-right'} className="h-5 w-5" aria-hidden />
                 </button>
               </div>
-
               <div className="mt-3">
                 <div className="flex items-start gap-1 text-sm font-medium" title={row.modelValue}>
                   <span className="min-w-0 flex-1 truncate">{row.modelValue}</span>
@@ -561,7 +556,9 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
                 </div>
                 <div className="mt-1 flex flex-wrap items-center gap-2 text-xs font-mono text-base-content/70">
                   <span title={row.totalLatencyValue}>{`${t('table.column.totalLatencyShort')} ${row.totalLatencyValue}`}</span>
-                  <span title={row.firstByteLatencyValue}>{`${t('table.column.firstByteLatencyShort')} ${row.firstByteLatencyValue}`}</span>
+                  <span title={row.firstResponseByteTotalValue}>
+                    {`${t('table.column.firstResponseByteTotalShort')} ${row.firstResponseByteTotalValue}`}
+                  </span>
                   <span title={row.responseContentEncodingValue}>{`${t('table.column.httpCompressionShort')} ${row.responseContentEncodingValue}`}</span>
                 </div>
               </div>

@@ -14,6 +14,7 @@ import {
   formatServiceTier,
   getFastIndicatorState,
   isPoolRouteMode,
+  resolveFirstResponseByteTotalMs,
   resolveInvocationAccountLabel,
   resolveInvocationEndpointDisplay,
   type FastIndicatorState,
@@ -50,6 +51,7 @@ export interface InvocationDetailViewModel {
   endpointDisplay: InvocationEndpointDisplay
   errorMessage: string
   totalLatencyValue: string
+  firstResponseByteTotalValue: string
   firstByteLatencyValue: string
   responseContentEncodingValue: string
   detailNotice: string | null
@@ -355,6 +357,10 @@ export function buildInvocationDetailViewModel({
     normalizedStatus === 'running' || normalizedStatus === 'pending'
       ? formatElapsedSecondsFromTimestamp(record.occurredAt, localeTag, nowMs)
       : formatSecondsFromMilliseconds(record.tTotalMs, localeTag)
+  const firstResponseByteTotalValue = formatSecondsFromMilliseconds(
+    resolveFirstResponseByteTotalMs(record),
+    localeTag,
+  )
   const firstByteLatencyValue = formatMilliseconds(record.tUpstreamTtfbMs)
   const responseContentEncodingValue = formatResponseContentEncoding(record.responseContentEncoding)
   const endpointDisplay = resolveInvocationEndpointDisplay(record.endpoint)
@@ -449,6 +455,11 @@ export function buildInvocationDetailViewModel({
       value: formatOptionalText(record.poolAttemptTerminalReason),
     },
     { key: 'totalLatency', label: t('table.details.totalLatency'), value: totalLatencyValue },
+    {
+      key: 'firstResponseByteTotal',
+      label: t('table.details.firstResponseByteTotal'),
+      value: firstResponseByteTotalValue,
+    },
     { key: 'firstByteLatency', label: t('table.details.firstByteLatency'), value: firstByteLatencyValue },
     { key: 'responseContentEncoding', label: t('table.details.httpCompression'), value: responseContentEncodingValue },
     { key: 'requestedServiceTier', label: t('table.details.requestedServiceTier'), value: requestedServiceTierValue },
@@ -516,6 +527,7 @@ export function buildInvocationDetailViewModel({
     endpointDisplay,
     errorMessage,
     totalLatencyValue,
+    firstResponseByteTotalValue,
     firstByteLatencyValue,
     responseContentEncodingValue,
     detailNotice,

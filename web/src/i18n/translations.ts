@@ -201,6 +201,12 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.groupFilterUseValue": 'Filter by "{{value}}"',
     "accountPool.upstreamAccounts.statusFilterLabel": "Account status",
     "accountPool.upstreamAccounts.statusFilter.all": "All statuses",
+    "accountPool.upstreamAccounts.workStatusFilterLabel": "Work status",
+    "accountPool.upstreamAccounts.workStatusFilter.all": "All work statuses",
+    "accountPool.upstreamAccounts.enableStatusFilterLabel": "Enable status",
+    "accountPool.upstreamAccounts.enableStatusFilter.all": "All enable statuses",
+    "accountPool.upstreamAccounts.healthStatusFilterLabel": "Account health",
+    "accountPool.upstreamAccounts.healthStatusFilter.all": "All account health statuses",
     "accountPool.upstreamAccounts.tagFilterLabel": "Account tags",
     "accountPool.upstreamAccounts.tagFilterPlaceholder": "All tags",
     "accountPool.upstreamAccounts.tagFilterSearchPlaceholder": "Search tags...",
@@ -494,6 +500,20 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.deleteConfirmTitle": "Delete {{name}}?",
     "accountPool.upstreamAccounts.kind.oauth": "OAuth",
     "accountPool.upstreamAccounts.kind.apiKey": "API key",
+    "accountPool.upstreamAccounts.workStatus.working": "Working",
+    "accountPool.upstreamAccounts.workStatus.idle": "Idle",
+    "accountPool.upstreamAccounts.workStatus.rate_limited": "Rate limited",
+    "accountPool.upstreamAccounts.enableStatus.enabled": "Enabled",
+    "accountPool.upstreamAccounts.enableStatus.disabled": "Disabled",
+    "accountPool.upstreamAccounts.healthStatus.normal": "Normal",
+    "accountPool.upstreamAccounts.healthStatus.needs_reauth": "Needs re-auth",
+    "accountPool.upstreamAccounts.healthStatus.upstream_unavailable":
+      "Upstream unavailable",
+    "accountPool.upstreamAccounts.healthStatus.upstream_rejected":
+      "Upstream rejected",
+    "accountPool.upstreamAccounts.healthStatus.error_other": "Other error",
+    "accountPool.upstreamAccounts.syncState.idle": "Sync idle",
+    "accountPool.upstreamAccounts.syncState.syncing": "Syncing",
     "accountPool.upstreamAccounts.status.active": "Active",
     "accountPool.upstreamAccounts.status.syncing": "Syncing",
     "accountPool.upstreamAccounts.status.needs_reauth": "Needs re-auth",
@@ -778,6 +798,8 @@ const baseTranslations = {
       "Hard unavailable",
     "accountPool.upstreamAccounts.latestAction.actions.sync_succeeded":
       "Sync succeeded",
+    "accountPool.upstreamAccounts.latestAction.actions.sync_recovery_blocked":
+      "Recovery still blocked",
     "accountPool.upstreamAccounts.latestAction.actions.sync_failed":
       "Sync failed",
     "accountPool.upstreamAccounts.latestAction.actions.account_updated":
@@ -799,6 +821,10 @@ const baseTranslations = {
       "Account settings were updated",
     "accountPool.upstreamAccounts.latestAction.reasons.sync_error":
       "Sync failed",
+    "accountPool.upstreamAccounts.latestAction.reasons.quota_still_exhausted":
+      "Fresh usage snapshot still shows an exhausted limit window",
+    "accountPool.upstreamAccounts.latestAction.reasons.recovery_unconfirmed_manual_required":
+      "Manual recovery is required before the account can return to routing",
     "accountPool.upstreamAccounts.latestAction.reasons.transport_failure":
       "Transport failure",
     "accountPool.upstreamAccounts.latestAction.reasons.reauth_required":
@@ -1247,6 +1273,7 @@ const baseTranslations = {
     "records.table.network.endpoint": "Endpoint",
     "records.table.network.requesterIp": "Requester IP",
     "records.table.network.ttfb": "TTFB",
+    "records.table.network.firstResponseByteTotal": "System to first byte",
     "records.table.network.totalMs": "Total time",
     "records.table.exception.failureKind": "Failure kind",
     "records.table.exception.failureClass": "Failure class",
@@ -1298,8 +1325,11 @@ const baseTranslations = {
     "table.column.costUsd": "Cost (USD)",
     "table.column.latency": "Elapsed",
     "table.column.firstByteCompression": "First byte / HTTP compression",
+    "table.column.firstResponseByteTotalCompression":
+      "System to first byte / HTTP compression",
     "table.column.totalLatencyShort": "Elapsed",
     "table.column.firstByteLatencyShort": "TTFB",
+    "table.column.firstResponseByteTotalShort": "First byte total",
     "table.column.httpCompressionShort": "HTTP",
     "table.latency.firstByteTotal": "First byte / Elapsed",
     "table.column.error": "Error",
@@ -1325,6 +1355,7 @@ const baseTranslations = {
     "table.details.promptCacheKey": "Prompt Cache Key",
     "table.details.totalLatency": "Elapsed time",
     "table.details.firstByteLatency": "First-byte latency",
+    "table.details.firstResponseByteTotal": "System to first byte",
     "table.details.httpCompression": "HTTP compression",
     "table.details.requestedServiceTier": "Requested service tier",
     "table.details.serviceTier": "Service tier",
@@ -1589,6 +1620,12 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.groupFilterUseValue": "按“{{value}}”筛选",
     "accountPool.upstreamAccounts.statusFilterLabel": "账号状态",
     "accountPool.upstreamAccounts.statusFilter.all": "全部状态",
+    "accountPool.upstreamAccounts.workStatusFilterLabel": "工作状态",
+    "accountPool.upstreamAccounts.workStatusFilter.all": "全部工作状态",
+    "accountPool.upstreamAccounts.enableStatusFilterLabel": "启用状态",
+    "accountPool.upstreamAccounts.enableStatusFilter.all": "全部启用状态",
+    "accountPool.upstreamAccounts.healthStatusFilterLabel": "账号状态",
+    "accountPool.upstreamAccounts.healthStatusFilter.all": "全部账号状态",
     "accountPool.upstreamAccounts.tagFilterLabel": "账号标签",
     "accountPool.upstreamAccounts.tagFilterPlaceholder": "全部标签",
     "accountPool.upstreamAccounts.tagFilterSearchPlaceholder": "搜索标签...",
@@ -1854,6 +1891,18 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.deleteConfirmTitle": "确认删除 {{name}}？",
     "accountPool.upstreamAccounts.kind.oauth": "OAuth",
     "accountPool.upstreamAccounts.kind.apiKey": "API Key",
+    "accountPool.upstreamAccounts.workStatus.working": "工作",
+    "accountPool.upstreamAccounts.workStatus.idle": "空闲",
+    "accountPool.upstreamAccounts.workStatus.rate_limited": "限流",
+    "accountPool.upstreamAccounts.enableStatus.enabled": "启用",
+    "accountPool.upstreamAccounts.enableStatus.disabled": "禁用",
+    "accountPool.upstreamAccounts.healthStatus.normal": "正常",
+    "accountPool.upstreamAccounts.healthStatus.needs_reauth": "需要重新授权",
+    "accountPool.upstreamAccounts.healthStatus.upstream_unavailable": "上游不可达",
+    "accountPool.upstreamAccounts.healthStatus.upstream_rejected": "上游拒绝",
+    "accountPool.upstreamAccounts.healthStatus.error_other": "其它异常",
+    "accountPool.upstreamAccounts.syncState.idle": "同步空闲",
+    "accountPool.upstreamAccounts.syncState.syncing": "同步中",
     "accountPool.upstreamAccounts.status.active": "正常",
     "accountPool.upstreamAccounts.status.syncing": "同步中",
     "accountPool.upstreamAccounts.status.needs_reauth": "需要重新授权",
@@ -2117,6 +2166,8 @@ const baseTranslations = {
       "标记为硬失效",
     "accountPool.upstreamAccounts.latestAction.actions.sync_succeeded":
       "同步成功",
+    "accountPool.upstreamAccounts.latestAction.actions.sync_recovery_blocked":
+      "恢复仍被阻止",
     "accountPool.upstreamAccounts.latestAction.actions.sync_failed": "同步失败",
     "accountPool.upstreamAccounts.latestAction.actions.account_updated":
       "账号已更新",
@@ -2136,6 +2187,10 @@ const baseTranslations = {
       "账号设置已更新",
     "accountPool.upstreamAccounts.latestAction.reasons.sync_error":
       "同步失败",
+    "accountPool.upstreamAccounts.latestAction.reasons.quota_still_exhausted":
+      "最新额度快照仍显示限制窗口已耗尽",
+    "accountPool.upstreamAccounts.latestAction.reasons.recovery_unconfirmed_manual_required":
+      "账号返回路由前仍需要人工恢复",
     "accountPool.upstreamAccounts.latestAction.reasons.transport_failure":
       "网络或传输失败",
     "accountPool.upstreamAccounts.latestAction.reasons.reauth_required":
@@ -2569,6 +2624,7 @@ const baseTranslations = {
     "records.table.network.endpoint": "端点",
     "records.table.network.requesterIp": "请求方 IP",
     "records.table.network.ttfb": "TTFB",
+    "records.table.network.firstResponseByteTotal": "首字总耗时",
     "records.table.network.totalMs": "总耗时",
     "records.table.exception.failureKind": "失败分类",
     "records.table.exception.failureClass": "异常类别",
@@ -2621,8 +2677,10 @@ const baseTranslations = {
     "table.column.costUsd": "成本（美元）",
     "table.column.latency": "用时",
     "table.column.firstByteCompression": "首字耗时 / HTTP 压缩",
+    "table.column.firstResponseByteTotalCompression": "首字总耗时 / HTTP 压缩",
     "table.column.totalLatencyShort": "用时",
     "table.column.firstByteLatencyShort": "首字",
+    "table.column.firstResponseByteTotalShort": "首字总",
     "table.column.httpCompressionShort": "HTTP",
     "table.latency.firstByteTotal": "首字耗时 / 用时",
     "table.column.error": "错误",
@@ -2648,6 +2706,7 @@ const baseTranslations = {
     "table.details.promptCacheKey": "Prompt Cache Key",
     "table.details.totalLatency": "用时",
     "table.details.firstByteLatency": "首字耗时",
+    "table.details.firstResponseByteTotal": "首字总耗时",
     "table.details.httpCompression": "HTTP 压缩算法",
     "table.details.requestedServiceTier": "Requested service tier",
     "table.details.serviceTier": "Service tier",

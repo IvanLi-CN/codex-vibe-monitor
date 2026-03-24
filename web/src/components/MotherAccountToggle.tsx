@@ -1,13 +1,19 @@
 import { AppIcon } from './AppIcon'
 import { Button } from './ui/button'
+import { Badge } from './ui/badge'
 import { cn } from '../lib/utils'
 
 export function MotherAccountBadge({ label }: { label: string }) {
   return (
-    <span className="inline-flex items-center gap-1 rounded-full border border-amber-400/35 bg-amber-300/12 px-2 py-0.5 text-[11px] font-semibold text-amber-200">
-      <AppIcon name="crown" className="h-3.5 w-3.5" aria-hidden />
-      {label}
-    </span>
+    <Badge
+      variant="warning"
+      className="shrink-0 whitespace-nowrap border-warning/70 bg-warning/25 px-2 py-px text-[11px] font-medium leading-4 text-warning-content shadow-none"
+    >
+      <span className="inline-flex items-center gap-1 leading-4">
+        <AppIcon name="crown" className="h-2.5 w-2.5 shrink-0" aria-hidden />
+        <span className="leading-4">{label}</span>
+      </span>
+    </Badge>
   )
 }
 
@@ -42,7 +48,7 @@ export function MotherAccountToggle({
           ? 'h-9 w-9 shrink-0 rounded-full border'
           : 'h-auto min-h-11 justify-start gap-3 rounded-2xl border px-3 py-2 text-left',
         checked
-          ? 'border-amber-400/45 bg-amber-300/14 text-amber-100 hover:bg-amber-300/20'
+          ? 'border-warning/70 bg-warning/25 text-warning-content shadow-sm shadow-warning/20 hover:bg-warning/40'
           : 'border-base-300/80 bg-base-100/72 text-base-content/68 hover:border-base-300 hover:bg-base-100',
       )}
     >
