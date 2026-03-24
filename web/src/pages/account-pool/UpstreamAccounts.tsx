@@ -1346,8 +1346,9 @@ export default function UpstreamAccountsPage() {
       String(resolvedRoutingTimeouts.responsesStreamTimeoutSecs) ||
     routingDraft.compactStreamTimeoutSecs.trim() !==
       String(resolvedRoutingTimeouts.compactStreamTimeoutSecs)
+  const routingDialogCanEdit = routingWritesEnabled && !isRoutingDialogInspectOnly
   const routingCanSave =
-    routingWritesEnabled &&
+    routingDialogCanEdit &&
     !routingDraftValidationError &&
     (routingHasMaintenanceChange || routingHasTimeoutChange || routingHasApiKeyChange)
   const selectedRecoveryHint = resolveOauthRecoveryHint(
@@ -2508,8 +2509,8 @@ export default function UpstreamAccountsPage() {
           },
         ]}
         busy={isBusyAction(busyAction, 'routing')}
-        apiKeyWritesEnabled={routingWritesEnabled}
-        timeoutWritesEnabled={routingWritesEnabled}
+        apiKeyWritesEnabled={routingDialogCanEdit}
+        timeoutWritesEnabled={routingDialogCanEdit}
         canSave={routingCanSave}
         onApiKeyChange={(value) => setRoutingDraft((current) => ({ ...current, apiKey: value }))}
         onGenerate={() => setRoutingDraft((current) => ({ ...current, apiKey: generatePoolRoutingKey() }))}
