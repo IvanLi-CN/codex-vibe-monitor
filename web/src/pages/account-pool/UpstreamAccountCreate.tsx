@@ -1481,6 +1481,16 @@ export default function UpstreamAccountCreatePage() {
     }
     return snapshots;
   }, [batchRows, batchTagIds, resolvePendingGroupNoteForName]);
+  singleOauthSessionSnapshotRef.current = singleOauthSessionSnapshot;
+  batchOauthSessionSnapshotsRef.current = batchOauthSessionSnapshots;
+  const getActivePendingOauthSessionSnapshots = useCallback(() => {
+    const snapshots: PendingOauthSessionSnapshot[] = [];
+    if (singleOauthSessionSnapshotRef.current) {
+      snapshots.push(singleOauthSessionSnapshotRef.current);
+    }
+    snapshots.push(...Object.values(batchOauthSessionSnapshotsRef.current));
+    return snapshots;
+  }, []);
   const getPendingOauthSessionSnapshot = useCallback((loginId: string) => {
     if (singleOauthSessionSnapshotRef.current?.loginId === loginId) {
       return singleOauthSessionSnapshotRef.current;
@@ -1624,18 +1634,24 @@ export default function UpstreamAccountCreatePage() {
             if (latestSession && latestSession.status !== "pending") {
               const latestRecord = pendingOauthSessionSyncRef.current[loginId];
               if (latestRecord) {
-                latestRecord.failedSignature = signature;
-                latestRecord.syncedSignature = null;
+                latestRecord.failedSignature =
+                  latestSession.status === "completed" ? null : signature;
+                latestRecord.syncedSignature =
+                  latestSession.status === "completed" ? signature : null;
               }
               applyPendingOauthSessionStatus(loginId, latestSession);
               if (latestSession.accountId) {
                 emitUpstreamAccountsChanged();
               }
-              setPendingOauthSessionSyncError(
-                loginId,
-                latestSession.error ??
-                  (err instanceof Error ? err.message : String(err)),
-              );
+              if (latestSession.status === "completed") {
+                clearPendingOauthSessionSyncError(loginId);
+              } else {
+                setPendingOauthSessionSyncError(
+                  loginId,
+                  latestSession.error ??
+                    (err instanceof Error ? err.message : String(err)),
+                );
+              }
               return;
             }
             if (shouldRetryPendingOauthSessionSync(err)) {
@@ -1780,24 +1796,43 @@ export default function UpstreamAccountCreatePage() {
   );
   const flushAllPendingOauthSessionSync = useCallback(() => {
     if (!writesEnabled) return;
+    const seenLoginIds = new Set<string>();
+    getActivePendingOauthSessionSnapshots().forEach((snapshot) => {
+      seenLoginIds.add(snapshot.loginId);
+      void flushPendingOauthSessionSync(snapshot.loginId, snapshot).catch(
+        () => undefined,
+      );
+    });
     Object.keys(pendingOauthSessionSyncRef.current).forEach((loginId) => {
+      if (seenLoginIds.has(loginId)) return;
       void flushPendingOauthSessionSync(loginId).catch(() => undefined);
     });
-  }, [flushPendingOauthSessionSync, writesEnabled]);
+  }, [
+    flushPendingOauthSessionSync,
+    getActivePendingOauthSessionSnapshots,
+    writesEnabled,
+  ]);
   const dispatchAllPendingOauthSessionKeepaliveSync = useCallback(() => {
     if (!writesEnabled) return;
+    const seenLoginIds = new Set<string>();
+    getActivePendingOauthSessionSnapshots().forEach((snapshot) => {
+      seenLoginIds.add(snapshot.loginId);
+      dispatchPendingOauthSessionKeepaliveSync(snapshot.loginId, snapshot);
+    });
     Object.keys(pendingOauthSessionSyncRef.current).forEach((loginId) => {
+      if (seenLoginIds.has(loginId)) return;
       dispatchPendingOauthSessionKeepaliveSync(loginId);
     });
-  }, [dispatchPendingOauthSessionKeepaliveSync, writesEnabled]);
+  }, [
+    dispatchPendingOauthSessionKeepaliveSync,
+    getActivePendingOauthSessionSnapshots,
+    writesEnabled,
+  ]);
   useEffect(() => {
     dispatchAllPendingOauthSessionKeepaliveSyncRef.current =
       dispatchAllPendingOauthSessionKeepaliveSync;
   }, [dispatchAllPendingOauthSessionKeepaliveSync]);
   useEffect(() => {
-    singleOauthSessionSnapshotRef.current = singleOauthSessionSnapshot;
-    batchOauthSessionSnapshotsRef.current = batchOauthSessionSnapshots;
-
     if (!writesEnabled) {
       for (const record of Object.values(pendingOauthSessionSyncRef.current)) {
         if (record.timerId != null) {
