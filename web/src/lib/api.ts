@@ -51,6 +51,21 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   return JSON.parse(rawText) as T;
 }
 
+async function ensureJsonRequestOk(response: Response): Promise<void> {
+  if (response.ok) {
+    return;
+  }
+
+  const rawText = await response.text();
+  const compactText = rawText.replace(/\s+/g, " ").trim();
+  const detail = (compactText || response.statusText || "").slice(0, 220);
+  throw new Error(
+    detail
+      ? `Request failed: ${response.status} ${detail}`
+      : `Request failed: ${response.status}`,
+  );
+}
+
 function parseForwardProxyHistoryRangeSeconds(range: string): number | null {
   if (range.endsWith("mo")) {
     const value = Number(range.slice(0, -2));
@@ -3371,6 +3386,26 @@ export async function updateOauthLoginSession(
     },
   );
   return normalizeLoginSessionStatusResponse(response);
+}
+
+export async function updateOauthLoginSessionKeepalive(
+  loginId: string,
+  payload: UpdateOauthLoginSessionPayload,
+): Promise<void> {
+  const response = await fetch(
+    withBase(
+      `/api/pool/upstream-accounts/oauth/login-sessions/${encodeURIComponent(loginId)}`,
+    ),
+    {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+      keepalive: true,
+    },
+  );
+  await ensureJsonRequestOk(response);
 }
 
 export async function reloginUpstreamAccount(

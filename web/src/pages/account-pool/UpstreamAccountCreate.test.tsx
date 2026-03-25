@@ -27,6 +27,7 @@ const hookMocks = vi.hoisted(() => ({
 const apiMocks = vi.hoisted(() => ({
   fetchUpstreamAccountDetail: vi.fn(),
   createImportedOauthValidationJobEventSource: vi.fn(),
+  updateOauthLoginSessionKeepalive: vi.fn(),
 }));
 
 vi.mock("react-router-dom", async () => {
@@ -52,6 +53,7 @@ vi.mock("../../lib/api", async () => {
     fetchUpstreamAccountDetail: apiMocks.fetchUpstreamAccountDetail,
     createImportedOauthValidationJobEventSource:
       apiMocks.createImportedOauthValidationJobEventSource,
+    updateOauthLoginSessionKeepalive: apiMocks.updateOauthLoginSessionKeepalive,
   };
 });
 
@@ -209,6 +211,8 @@ beforeEach(() => {
     key === "codex-vibe-monitor.locale" ? "en" : null,
   );
   apiMocks.createImportedOauthValidationJobEventSource.mockReset();
+  apiMocks.updateOauthLoginSessionKeepalive.mockReset();
+  apiMocks.updateOauthLoginSessionKeepalive.mockResolvedValue(undefined);
 });
 
 afterEach(() => {
@@ -221,6 +225,7 @@ afterEach(() => {
   navigateMock.mockReset();
   apiMocks.fetchUpstreamAccountDetail.mockReset();
   apiMocks.createImportedOauthValidationJobEventSource.mockReset();
+  apiMocks.updateOauthLoginSessionKeepalive.mockReset();
   vi.useRealTimers();
   vi.clearAllMocks();
 });
@@ -1586,6 +1591,69 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(updateOauthLogin.mock.lastCall?.[1]).not.toHaveProperty("groupNote");
   });
 
+  it("dispatches a keepalive sync for the latest oauth metadata on pagehide", async () => {
+    vi.useFakeTimers();
+    let resolveFirstSync:
+      | ((value: LoginSessionStatusResponse) => void)
+      | undefined;
+    const firstSync = new Promise<LoginSessionStatusResponse>((resolve) => {
+      resolveFirstSync = resolve;
+    });
+    const updateOauthLogin = vi.fn().mockReturnValueOnce(firstSync);
+    mockUpstreamAccounts({ updateOauthLogin });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      state: {
+        draft: {
+          oauth: {
+            displayName: "Fresh OAuth",
+            session: {
+              loginId: "login-1",
+              status: "pending",
+              authUrl: "https://auth.openai.com/authorize?login=1",
+              redirectUri: "http://localhost:1455/oauth/callback",
+              expiresAt: "2026-03-13T10:00:00.000Z",
+              accountId: null,
+              error: null,
+            },
+            sessionHint: "OAuth URL ready",
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    expect(updateOauthLogin).toHaveBeenCalledTimes(1);
+
+    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth Latest");
+    await flushAsync();
+
+    act(() => {
+      window.dispatchEvent(new Event("pagehide"));
+    });
+    await flushAsync();
+
+    expect(apiMocks.updateOauthLoginSessionKeepalive).toHaveBeenCalledWith(
+      "login-1",
+      {
+        displayName: "Fresh OAuth Latest",
+        groupName: "",
+        note: "",
+        tagIds: [],
+        isMother: false,
+        mailboxSessionId: "",
+        mailboxAddress: "",
+      },
+    );
+    expect(
+      apiMocks.updateOauthLoginSessionKeepalive.mock.lastCall?.[1],
+    ).not.toHaveProperty("groupNote");
+
+    if (!resolveFirstSync) {
+      throw new Error("missing oauth sync resolver");
+    }
+  });
+
   it("coalesces pending single oauth sync requests while an earlier patch is in flight", async () => {
     vi.useFakeTimers();
     let resolveFirstSync:
@@ -1756,6 +1824,60 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(host?.textContent).toContain(
       "The login session has expired. Please create a new authorization link.",
     );
+  });
+
+  it("does not surface a sync error after the oauth session already completed", async () => {
+    vi.useFakeTimers();
+    const updateOauthLogin = vi
+      .fn()
+      .mockRejectedValue(new Error("This login session can no longer be edited."));
+    const getLoginSession = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "completed",
+      authUrl: null,
+      redirectUri: null,
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: 41,
+      error: null,
+    });
+    mockUpstreamAccounts({ updateOauthLogin, getLoginSession });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      state: {
+        draft: {
+          oauth: {
+            displayName: "Fresh OAuth",
+            session: {
+              loginId: "login-1",
+              status: "pending",
+              authUrl: "https://auth.openai.com/authorize?login=1",
+              redirectUri: "http://localhost:1455/oauth/callback",
+              expiresAt: "2026-03-13T10:00:00.000Z",
+              accountId: null,
+              error: null,
+            },
+            sessionHint: "OAuth URL ready",
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
+      displayName: "Fresh OAuth",
+      groupName: "",
+      note: "",
+      tagIds: [],
+      isMother: false,
+      mailboxSessionId: "",
+      mailboxAddress: "",
+    });
+    expect(getLoginSession).toHaveBeenCalledWith("login-1");
+    expect(host?.textContent).not.toContain(
+      "This login session can no longer be edited.",
+    );
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(true);
+    expect(findButton(/Complete OAuth login/i)?.disabled).toBe(true);
   });
 
   it("syncs a restored pending oauth draft on first render", async () => {

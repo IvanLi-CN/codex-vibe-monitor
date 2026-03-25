@@ -75,6 +75,7 @@ import {
   normalizeImportedOauthValidationFailedEventPayload,
   normalizeImportedOauthValidationRowEventPayload,
   normalizeImportedOauthValidationSnapshotEventPayload,
+  updateOauthLoginSessionKeepalive,
 } from "../../lib/api";
 import { copyText, selectAllReadonlyText } from "../../lib/clipboard";
 import { emitUpstreamAccountsChanged } from "../../lib/upstreamAccountsEvents";
@@ -1495,6 +1496,10 @@ export default function UpstreamAccountCreatePage() {
         setSession((current) =>
           current?.loginId === loginId ? nextSession : current,
         );
+        if (nextSession.status !== "pending") {
+          setSessionHint(null);
+          setActionError(null);
+        }
         return;
       }
       setBatchRows((current) =>
@@ -1503,6 +1508,10 @@ export default function UpstreamAccountCreatePage() {
             ? {
                 ...row,
                 session: nextSession,
+                sessionHint:
+                  nextSession.status === "pending" ? row.sessionHint : null,
+                actionError:
+                  nextSession.status === "pending" ? row.actionError : null,
               }
             : row,
         ),
@@ -1555,7 +1564,14 @@ export default function UpstreamAccountCreatePage() {
               latestSession = null;
             }
             if (latestSession && latestSession.status !== "pending") {
+              const latestRecord = pendingOauthSessionSyncRef.current[loginId];
+              if (latestRecord) {
+                latestRecord.failedSignature = null;
+                latestRecord.syncedSignature = signature;
+              }
               applyPendingOauthSessionStatus(loginId, latestSession);
+              clearPendingOauthSessionSyncError(loginId);
+              return;
             }
             setPendingOauthSessionSyncError(
               loginId,
@@ -1635,12 +1651,57 @@ export default function UpstreamAccountCreatePage() {
       storePendingOauthSessionSnapshot,
     ],
   );
+  const dispatchPendingOauthSessionKeepaliveSync = useCallback(
+    (
+      loginId: string | null | undefined,
+      snapshotOverride?: PendingOauthSessionSnapshot | null,
+    ) => {
+      if (!loginId || !writesEnabled) return;
+      if (snapshotOverride && snapshotOverride.loginId === loginId) {
+        storePendingOauthSessionSnapshot(snapshotOverride);
+      }
+      const snapshot = getPendingOauthSessionSnapshot(loginId);
+      if (!snapshot) return;
+      let record = pendingOauthSessionSyncRef.current[loginId];
+      if (!record) {
+        record = pendingOauthSessionSyncRef.current[loginId] = {
+          syncedSignature: null,
+          failedSignature: null,
+          pendingSignature: snapshot.signature,
+          timerId: null,
+          inFlight: null,
+          lastSnapshot: snapshot,
+        };
+      }
+      record.pendingSignature = snapshot.signature;
+      record.lastSnapshot = snapshot;
+      if (record.timerId != null) {
+        window.clearTimeout(record.timerId);
+        record.timerId = null;
+      }
+      if (record.syncedSignature === snapshot.signature) {
+        return;
+      }
+      void updateOauthLoginSessionKeepalive(loginId, snapshot.payload).catch(() => undefined);
+    },
+    [
+      getPendingOauthSessionSnapshot,
+      storePendingOauthSessionSnapshot,
+      writesEnabled,
+    ],
+  );
   const flushAllPendingOauthSessionSync = useCallback(() => {
     if (!writesEnabled) return;
     Object.keys(pendingOauthSessionSyncRef.current).forEach((loginId) => {
       void flushPendingOauthSessionSync(loginId).catch(() => undefined);
     });
   }, [flushPendingOauthSessionSync, writesEnabled]);
+  const dispatchAllPendingOauthSessionKeepaliveSync = useCallback(() => {
+    if (!writesEnabled) return;
+    Object.keys(pendingOauthSessionSyncRef.current).forEach((loginId) => {
+      dispatchPendingOauthSessionKeepaliveSync(loginId);
+    });
+  }, [dispatchPendingOauthSessionKeepaliveSync, writesEnabled]);
   useEffect(() => {
     singleOauthSessionSnapshotRef.current = singleOauthSessionSnapshot;
     batchOauthSessionSnapshotsRef.current = batchOauthSessionSnapshots;
@@ -1741,22 +1802,24 @@ export default function UpstreamAccountCreatePage() {
     const flushPendingSync = () => {
       flushAllPendingOauthSessionSync();
     };
-    const handleVisibilityChange = () => {
-      if (document.visibilityState === "hidden") {
-        flushPendingSync();
-      }
+    const flushPendingSyncKeepalive = () => {
+      dispatchAllPendingOauthSessionKeepaliveSync();
     };
 
     window.addEventListener("blur", flushPendingSync);
-    window.addEventListener("pagehide", flushPendingSync);
-    document.addEventListener("visibilitychange", handleVisibilityChange);
+    window.addEventListener("beforeunload", flushPendingSyncKeepalive);
+    window.addEventListener("pagehide", flushPendingSyncKeepalive);
 
     return () => {
       window.removeEventListener("blur", flushPendingSync);
-      window.removeEventListener("pagehide", flushPendingSync);
-      document.removeEventListener("visibilitychange", handleVisibilityChange);
+      window.removeEventListener("beforeunload", flushPendingSyncKeepalive);
+      window.removeEventListener("pagehide", flushPendingSyncKeepalive);
     };
-  }, [flushAllPendingOauthSessionSync, writesEnabled]);
+  }, [
+    dispatchAllPendingOauthSessionKeepaliveSync,
+    flushAllPendingOauthSessionSync,
+    writesEnabled,
+  ]);
   const formatDuplicateReasons = (
     duplicateInfo?: UpstreamAccountDuplicateInfo | null,
   ) => {
