@@ -14,6 +14,8 @@ import { AppIcon } from '../AppIcon'
 import { Button } from './button'
 import type { MotherSwitchSnapshot } from '../../lib/upstreamMother'
 import { useTranslation } from '../../i18n'
+import { floatingSurfaceStyle } from './floating-surface'
+import { usePortaledTheme } from './use-portaled-theme'
 
 const DEFAULT_DURATION_MS = 10_000
 
@@ -96,10 +98,12 @@ function MotherSwitchUndoToast({
   notification,
   onDismiss,
   onUndoSettled,
+  theme,
 }: {
   notification: MotherSwitchUndoNotification
   onDismiss: (id: string) => void
   onUndoSettled: (id: string, error: string | null) => void
+  theme: 'vibe-light' | 'vibe-dark' | undefined
 }) {
   const { t } = useTranslation()
   const [pending, setPending] = useState(false)
@@ -140,22 +144,24 @@ function MotherSwitchUndoToast({
 
   return (
     <div
+      data-theme={theme}
       role="status"
       aria-live="polite"
-      className="pointer-events-auto w-full max-w-md rounded-[1.4rem] border border-amber-400/35 bg-neutral/92 p-4 text-neutral-content shadow-2xl backdrop-blur-md"
+      style={floatingSurfaceStyle('warning', theme)}
+      className="pointer-events-auto w-full max-w-md rounded-[1.4rem] border p-4 text-base-content"
       onMouseEnter={pause}
       onMouseLeave={resume}
     >
       <div className="flex items-start gap-3">
-        <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-amber-300/18 text-amber-200">
+        <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-warning/16 text-warning">
           <AppIcon name="crown" className="h-5 w-5" aria-hidden />
         </div>
         <div className="min-w-0 flex-1 space-y-2">
           <div className="space-y-1">
             <p className="text-sm font-semibold">{t('accountPool.upstreamAccounts.mother.notifications.title')}</p>
-            <p className="text-sm leading-6 text-neutral-content/82">{message}</p>
+            <p className="text-sm leading-6 text-base-content/82">{message}</p>
           </div>
-          {notification.error ? <p className="text-xs text-rose-200">{notification.error}</p> : null}
+          {notification.error ? <p className="text-xs text-error">{notification.error}</p> : null}
           <div className="flex items-center gap-2">
             <Button
               type="button"
@@ -163,7 +169,7 @@ function MotherSwitchUndoToast({
               variant="secondary"
               onClick={() => void handleUndo()}
               disabled={pending}
-              className="h-8 rounded-full bg-amber-300/85 px-3 text-neutral hover:bg-amber-200"
+              className="h-8 rounded-full bg-warning/85 px-3 text-warning-content hover:bg-warning"
             >
               {pending ? (
                 <AppIcon name="loading" className="mr-2 h-4 w-4 animate-spin" aria-hidden />
@@ -174,7 +180,7 @@ function MotherSwitchUndoToast({
             </Button>
             <button
               type="button"
-              className="inline-flex h-8 items-center rounded-full px-3 text-xs font-medium text-neutral-content/70 transition hover:bg-white/10 hover:text-neutral-content"
+              className="inline-flex h-8 items-center rounded-full px-3 text-xs font-medium text-base-content/72 transition hover:bg-white/10 hover:text-base-content"
               onClick={() => onDismiss(notification.id)}
             >
               {t('accountPool.upstreamAccounts.mother.notifications.dismiss')}
@@ -188,6 +194,7 @@ function MotherSwitchUndoToast({
 
 export function SystemNotificationProvider({ children }: { children: ReactNode }) {
   const [notifications, setNotifications] = useState<MotherSwitchUndoNotification[]>([])
+  const portalTheme = usePortaledTheme(null)
 
   const dismissNotification = useCallback((id: string) => {
     setNotifications((current) => current.filter((item) => item.id !== id))
@@ -238,6 +245,7 @@ export function SystemNotificationProvider({ children }: { children: ReactNode }
                   notification={notification}
                   onDismiss={dismissNotification}
                   onUndoSettled={handleUndoSettled}
+                  theme={portalTheme}
                 />
               ))}
             </div>,

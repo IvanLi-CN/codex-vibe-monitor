@@ -144,6 +144,12 @@ describe('OauthMailboxChip', () => {
 
     expect(getTooltip()?.textContent).toContain('Copied')
     expect(getCopyButton().className).not.toContain('border-success/55')
+    expect(getTooltip()?.getAttribute('style') ?? '').not.toContain('background-color')
+    expect(getTooltip()?.getAttribute('style') ?? '').not.toContain('border-color')
+    expect(getTooltip()?.style.boxShadow).toBe('')
+    const arrow = getTooltip()?.querySelector('svg')
+    expect((arrow as SVGElement | null)?.getAttribute('style') ?? '').not.toContain('fill')
+    expect((arrow as SVGElement | null)?.getAttribute('style') ?? '').not.toContain('stroke')
   })
 
   it('keeps the tooltip open with manual copy guidance after copy failure state', () => {
@@ -163,6 +169,8 @@ describe('OauthMailboxChip', () => {
 
     expect(getCopyButton().className).toContain('border-warning/35')
     expect(getTooltip()?.textContent).toContain('Auto copy failed. Please copy the mailbox below manually.')
+    expect(getTooltip()?.getAttribute('style') ?? '').not.toContain('background-color')
+    expect(getTooltip()?.getAttribute('style') ?? '').not.toContain('border-color')
     const manualValue = document.body.querySelector('[role="textbox"][aria-readonly="true"]') as HTMLDivElement | null
     expect(manualValue?.textContent).toContain('manual-chip@mail-tw.707079.xyz')
     expect(manualValue?.getAttribute('data-lpignore')).toBe('true')

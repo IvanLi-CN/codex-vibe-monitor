@@ -6,8 +6,60 @@ import {
   useResolvedOverlayContainer,
 } from './use-overlay-host'
 import { OverlayHostProvider } from './overlay-host'
+import { floatingSurfaceArrowStyle, floatingSurfaceStyle } from './floating-surface'
+import { usePortaledTheme } from './use-portaled-theme'
 
 const LONG_PRESS_DELAY_MS = 360
+
+function tokenList(className?: string) {
+  return className?.split(/\s+/).filter(Boolean) ?? []
+}
+
+function hasUtilityOverride(
+  className: string | undefined,
+  {
+    exact = [],
+    prefixes = [],
+  }: {
+    exact?: string[]
+    prefixes?: string[]
+  },
+) {
+  return tokenList(className).some((token) => {
+    const normalized = token.startsWith('!') ? token.slice(1) : token
+    return exact.includes(normalized) || prefixes.some((prefix) => normalized.startsWith(prefix))
+  })
+}
+
+function resolveTooltipContentStyle(contentClassName: string | undefined, theme: ReturnType<typeof usePortaledTheme>) {
+  const style = { ...floatingSurfaceStyle('neutral', theme) }
+  if (hasUtilityOverride(contentClassName, { prefixes: ['bg-'] })) {
+    delete style.backgroundColor
+  }
+  if (hasUtilityOverride(contentClassName, { prefixes: ['border-'] })) {
+    delete style.borderColor
+  }
+  if (hasUtilityOverride(contentClassName, { exact: ['shadow'], prefixes: ['shadow-'] })) {
+    delete style.boxShadow
+  }
+  if (hasUtilityOverride(contentClassName, { prefixes: ['backdrop-'] })) {
+    delete style.backdropFilter
+    delete style.WebkitBackdropFilter
+  }
+  return style
+}
+
+function resolveTooltipArrowStyle(arrowClassName: string | undefined, theme: ReturnType<typeof usePortaledTheme>) {
+  const style = { ...floatingSurfaceArrowStyle('neutral', theme) }
+  if (hasUtilityOverride(arrowClassName, { prefixes: ['fill-'] })) {
+    delete style.fill
+  }
+  if (hasUtilityOverride(arrowClassName, { prefixes: ['stroke-'] })) {
+    delete style.stroke
+    delete style.strokeWidth
+  }
+  return style
+}
 
 interface TooltipProps {
   content: React.ReactNode
@@ -37,9 +89,19 @@ export function Tooltip({
   const longPressTimerRef = React.useRef<number | null>(null)
   const [hoverOpen, setHoverOpen] = React.useState(false)
   const [longPressOpen, setLongPressOpen] = React.useState(false)
+  const [rootElement, setRootElement] = React.useState<HTMLSpanElement | null>(null)
   const resolvedContainer = useResolvedOverlayContainer(container)
   const { hostElement, ref: contentRef } = useOverlayHostElement<HTMLDivElement>(undefined)
   const hostValue = hostElement ?? (container === undefined ? resolvedContainer : container)
+  const portalTheme = usePortaledTheme(rootElement)
+  const contentStyle = React.useMemo(
+    () => resolveTooltipContentStyle(contentClassName, portalTheme),
+    [contentClassName, portalTheme],
+  )
+  const arrowStyle = React.useMemo(
+    () => resolveTooltipArrowStyle(arrowClassName, portalTheme),
+    [arrowClassName, portalTheme],
+  )
 
   const clearLongPressTimer = React.useCallback(() => {
     if (longPressTimerRef.current != null) {
@@ -72,6 +134,7 @@ export function Tooltip({
       <TooltipPrimitive.Root open={resolvedOpen}>
         <TooltipPrimitive.Trigger asChild>
           <span
+            ref={setRootElement}
             className={cn('inline-flex', className)}
             {...triggerProps}
             onBlur={open === undefined ? () => setHoverOpen(false) : undefined}
@@ -92,12 +155,14 @@ export function Tooltip({
         <TooltipPrimitive.Portal container={resolvedContainer ?? undefined}>
           <OverlayHostProvider value={hostValue}>
             <TooltipPrimitive.Content
+              data-theme={portalTheme}
               ref={contentRef}
               side={side}
               sideOffset={sideOffset}
+              style={contentStyle}
               className={cn(
-                'z-50 max-w-[min(20rem,calc(100vw-1rem))] rounded-xl border border-base-300/80 bg-base-100/96 px-3 py-2',
-                'text-left text-xs text-base-content shadow-lg backdrop-blur-sm outline-none',
+                'z-50 max-w-[min(20rem,calc(100vw-1rem))] rounded-xl border px-3 py-2',
+                'text-left text-xs text-base-content outline-none',
                 'data-[state=delayed-open]:animate-in data-[state=closed]:animate-out',
                 'data-[state=closed]:fade-out-0 data-[state=delayed-open]:fade-in-0',
                 'data-[state=closed]:zoom-out-95 data-[state=delayed-open]:zoom-in-95',
@@ -108,7 +173,9 @@ export function Tooltip({
             >
               {content}
               <TooltipPrimitive.Arrow
-                className={cn('fill-base-100/96 stroke-base-300/80 stroke-[0.6]', arrowClassName)}
+                data-theme={portalTheme}
+                style={arrowStyle}
+                className={cn(arrowClassName)}
                 width={14}
                 height={8}
               />

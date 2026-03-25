@@ -2,6 +2,8 @@ import { type ReactNode, useEffect, useId, useLayoutEffect, useMemo, useState } 
 import { createPortal } from 'react-dom'
 import { cn } from '../../lib/utils'
 import { useInlineChartInteraction } from './use-inline-chart-interaction'
+import { floatingSurfaceStyle } from './floating-surface'
+import { usePortaledTheme } from './use-portaled-theme'
 
 const TOOLTIP_OFFSET = 12
 const TOOLTIP_PADDING = 8
@@ -79,6 +81,7 @@ export function InlineChartTooltipSurface({
     defaultIndex,
   })
   const [position, setPosition] = useState<TooltipPosition | null>(null)
+  const portalTheme = usePortaledTheme(containerRef.current)
 
   const activeTooltip = useMemo(() => {
     if (state.activeIndex == null) return null
@@ -149,22 +152,24 @@ export function InlineChartTooltipSurface({
     <div
       id={tooltipId}
       ref={tooltipRef}
+      data-theme={portalTheme}
       role="tooltip"
       aria-hidden={!position}
       data-inline-chart-tooltip="true"
       data-active-index={state.activeIndex ?? undefined}
-      className={cn(
-        'pointer-events-none fixed z-[70] min-w-[11rem] max-w-[14rem] rounded-xl border border-base-300/70 bg-base-100/95 px-3 py-2 text-[11px] leading-tight text-base-content shadow-[0_14px_36px_rgba(2,6,23,0.28)] backdrop-blur-md transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none',
-        position?.placementX === 'right' ? 'origin-left' : 'origin-right',
-        position?.placementY === 'bottom' ? 'origin-top' : 'origin-bottom',
-        position ? 'opacity-100' : 'opacity-0',
-      )}
       style={{
+        ...floatingSurfaceStyle('neutral', portalTheme),
         left: position?.x ?? 0,
         top: position?.y ?? 0,
         transform: 'translateZ(0)',
         visibility: position ? 'visible' : 'hidden',
       }}
+      className={cn(
+        'pointer-events-none fixed z-[70] min-w-[11rem] max-w-[14rem] rounded-xl border px-3 py-2 text-[11px] leading-tight text-base-content transition-[opacity,transform] duration-150 ease-out motion-reduce:transition-none',
+        position?.placementX === 'right' ? 'origin-left' : 'origin-right',
+        position?.placementY === 'bottom' ? 'origin-top' : 'origin-bottom',
+        position ? 'opacity-100' : 'opacity-0',
+      )}
     >
       <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/60">{activeTooltip.title}</div>
       <dl className="mt-2 space-y-1.5">
