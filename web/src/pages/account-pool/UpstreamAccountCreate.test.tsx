@@ -16,6 +16,7 @@ import { I18nProvider } from "../../i18n";
 import type {
   ImportedOauthValidationResponse,
   ImportedOauthValidationRow,
+  LoginSessionStatusResponse,
 } from "../../lib/api";
 import UpstreamAccountCreatePage from "./UpstreamAccountCreate";
 
@@ -1478,6 +1479,69 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(updateOauthLogin.mock.lastCall?.[1]).not.toHaveProperty("groupNote");
   });
 
+  it("syncs edits made while oauth url generation is still in flight", async () => {
+    let resolveBeginOauthLogin:
+      | ((value: LoginSessionStatusResponse) => void)
+      | undefined;
+    const beginOauthLogin = vi.fn().mockImplementation(
+      () =>
+        new Promise<LoginSessionStatusResponse>((resolve) => {
+          resolveBeginOauthLogin = resolve;
+        }),
+    );
+    const updateOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    mockUpstreamAccounts({ beginOauthLogin, updateOauthLogin });
+    render();
+
+    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth");
+    await flushAsync();
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+
+    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth Edited");
+    await flushAsync();
+    expect(updateOauthLogin).not.toHaveBeenCalled();
+
+    if (!resolveBeginOauthLogin) {
+      throw new Error("missing begin oauth resolver");
+    }
+    const finishBeginOauthLogin = resolveBeginOauthLogin;
+    await act(async () => {
+      finishBeginOauthLogin({
+        loginId: "login-1",
+        status: "pending",
+        authUrl: "https://auth.openai.com/authorize?login=1",
+        redirectUri: "http://localhost:1455/oauth/callback",
+        expiresAt: "2026-03-13T10:00:00.000Z",
+        accountId: null,
+        error: null,
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await flushAsync();
+
+    expect(updateOauthLogin).toHaveBeenCalledTimes(1);
+    expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
+      displayName: "Fresh OAuth Edited",
+      groupName: "",
+      note: "",
+      tagIds: [],
+      isMother: false,
+      mailboxSessionId: "",
+      mailboxAddress: "",
+    });
+    expect(updateOauthLogin.mock.lastCall?.[1]).not.toHaveProperty("groupNote");
+  });
+
   it("syncs pending single oauth metadata immediately while typing", async () => {
     const updateOauthLogin = vi.fn().mockResolvedValue({
       loginId: "login-1",
@@ -1525,6 +1589,89 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(updateOauthLogin).toHaveBeenCalledTimes(3);
     expect(updateOauthLogin).toHaveBeenLastCalledWith("login-1", {
       displayName: "Fresh OAuth ABC",
+      groupName: "",
+      note: "",
+      tagIds: [],
+      isMother: false,
+      mailboxSessionId: "",
+      mailboxAddress: "",
+    });
+    expect(updateOauthLogin.mock.lastCall?.[1]).not.toHaveProperty("groupNote");
+  });
+
+  it("coalesces pending single oauth sync requests while an earlier patch is in flight", async () => {
+    let resolveFirstSync:
+      | ((value: LoginSessionStatusResponse) => void)
+      | undefined;
+    const firstSync = new Promise<LoginSessionStatusResponse>((resolve) => {
+      resolveFirstSync = resolve;
+    });
+    const updateOauthLogin = vi
+      .fn()
+      .mockReturnValueOnce(firstSync)
+      .mockResolvedValueOnce({
+        loginId: "login-1",
+        status: "pending",
+        authUrl: "https://auth.openai.com/authorize?login=1",
+        redirectUri: "http://localhost:1455/oauth/callback",
+        expiresAt: "2026-03-13T10:00:00.000Z",
+        accountId: null,
+        error: null,
+      });
+    mockUpstreamAccounts({ updateOauthLogin });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      state: {
+        draft: {
+          oauth: {
+            displayName: "Fresh OAuth",
+            session: {
+              loginId: "login-1",
+              status: "pending",
+              authUrl: "https://auth.openai.com/authorize?login=1",
+              redirectUri: "http://localhost:1455/oauth/callback",
+              expiresAt: "2026-03-13T10:00:00.000Z",
+              accountId: null,
+              error: null,
+            },
+            sessionHint: "OAuth URL ready",
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    expect(updateOauthLogin).toHaveBeenCalledTimes(1);
+
+    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth A");
+    await flushAsync();
+    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth AB");
+    await flushAsync();
+
+    expect(updateOauthLogin).toHaveBeenCalledTimes(1);
+
+    if (!resolveFirstSync) {
+      throw new Error("missing oauth sync resolver");
+    }
+    const finishFirstSync = resolveFirstSync;
+    await act(async () => {
+      finishFirstSync({
+        loginId: "login-1",
+        status: "pending",
+        authUrl: "https://auth.openai.com/authorize?login=1",
+        redirectUri: "http://localhost:1455/oauth/callback",
+        expiresAt: "2026-03-13T10:00:00.000Z",
+        accountId: null,
+        error: null,
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await flushAsync();
+
+    expect(updateOauthLogin).toHaveBeenCalledTimes(2);
+    expect(updateOauthLogin).toHaveBeenLastCalledWith("login-1", {
+      displayName: "Fresh OAuth AB",
       groupName: "",
       note: "",
       tagIds: [],

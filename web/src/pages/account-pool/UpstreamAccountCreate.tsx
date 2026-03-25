@@ -1226,6 +1226,9 @@ export default function UpstreamAccountCreatePage() {
   const batchOauthSessionSnapshotsRef = useRef<
     Record<string, PendingOauthSessionSnapshot>
   >({});
+  const createdPendingOauthSessionSignaturesRef = useRef<
+    Record<string, string>
+  >({});
   const restoredPendingOauthLoginIdsRef = useRef(
     new Set<string>([
       ...(draft?.oauth?.session?.status === "pending"
@@ -1477,61 +1480,69 @@ export default function UpstreamAccountCreatePage() {
     [],
   );
   const runPendingOauthSessionSync = useCallback(
-    async (loginId: string) => {
-      let record = pendingOauthSessionSyncRef.current[loginId];
-      let snapshot = getPendingOauthSessionSnapshot(loginId);
-      if (!record || !snapshot) return;
-      record.pendingSignature = snapshot.signature;
-      if (record.inFlight) {
-        await record.inFlight;
-        record = pendingOauthSessionSyncRef.current[loginId];
-        snapshot = getPendingOauthSessionSnapshot(loginId);
+    async (loginId: string, options?: { force?: boolean }) => {
+      while (true) {
+        const record = pendingOauthSessionSyncRef.current[loginId];
+        const snapshot = getPendingOauthSessionSnapshot(loginId);
         if (!record || !snapshot) return;
-      }
-      if (record.syncedSignature === snapshot.signature) {
+        record.pendingSignature = snapshot.signature;
+        if (record.syncedSignature === snapshot.signature) {
+          return;
+        }
+        if (!options?.force && record.failedSignature === snapshot.signature) {
+          return;
+        }
+        if (record.inFlight) {
+          try {
+            await record.inFlight;
+          } catch {
+            // Ignore stale failures so the latest snapshot can decide whether a retry is needed.
+          }
+          continue;
+        }
+
+        const { payload, signature } = snapshot;
+        const request = updateOauthLogin(loginId, payload)
+          .then((nextSession) => {
+            const currentRecord = pendingOauthSessionSyncRef.current[loginId];
+            if (currentRecord) {
+              currentRecord.syncedSignature = signature;
+              currentRecord.failedSignature = null;
+            }
+            applyPendingOauthSessionStatus(loginId, nextSession);
+            clearPendingOauthSessionSyncError(loginId);
+          })
+          .catch(async (err) => {
+            const currentRecord = pendingOauthSessionSyncRef.current[loginId];
+            if (currentRecord) {
+              currentRecord.failedSignature = signature;
+            }
+            let latestSession: LoginSessionStatusResponse | null = null;
+            try {
+              latestSession = await getLoginSession(loginId);
+            } catch {
+              latestSession = null;
+            }
+            if (latestSession && latestSession.status !== "pending") {
+              applyPendingOauthSessionStatus(loginId, latestSession);
+            }
+            setPendingOauthSessionSyncError(
+              loginId,
+              latestSession?.error ??
+                (err instanceof Error ? err.message : String(err)),
+            );
+            throw err;
+          })
+          .finally(() => {
+            const currentRecord = pendingOauthSessionSyncRef.current[loginId];
+            if (currentRecord?.inFlight === request) {
+              currentRecord.inFlight = null;
+            }
+          });
+        record.inFlight = request;
+        await request;
         return;
       }
-
-      const { payload, signature } = snapshot;
-      const request = updateOauthLogin(loginId, payload)
-        .then((nextSession) => {
-          const currentRecord = pendingOauthSessionSyncRef.current[loginId];
-          if (currentRecord) {
-            currentRecord.syncedSignature = signature;
-            currentRecord.failedSignature = null;
-          }
-          applyPendingOauthSessionStatus(loginId, nextSession);
-          clearPendingOauthSessionSyncError(loginId);
-        })
-        .catch(async (err) => {
-          const currentRecord = pendingOauthSessionSyncRef.current[loginId];
-          if (currentRecord) {
-            currentRecord.failedSignature = signature;
-          }
-          let latestSession: LoginSessionStatusResponse | null = null;
-          try {
-            latestSession = await getLoginSession(loginId);
-          } catch {
-            latestSession = null;
-          }
-          if (latestSession && latestSession.status !== "pending") {
-            applyPendingOauthSessionStatus(loginId, latestSession);
-          }
-          setPendingOauthSessionSyncError(
-            loginId,
-            latestSession?.error ??
-              (err instanceof Error ? err.message : String(err)),
-          );
-          throw err;
-        })
-        .finally(() => {
-          const currentRecord = pendingOauthSessionSyncRef.current[loginId];
-          if (currentRecord?.inFlight === request) {
-            currentRecord.inFlight = null;
-          }
-        });
-      record.inFlight = request;
-      await request;
     },
     [
       applyPendingOauthSessionStatus,
@@ -1584,7 +1595,7 @@ export default function UpstreamAccountCreatePage() {
       const latestSnapshot = getPendingOauthSessionSnapshot(loginId);
       if (!record || !latestSnapshot) return;
       if (record.syncedSignature !== latestSnapshot.signature) {
-        await runPendingOauthSessionSync(loginId);
+        await runPendingOauthSessionSync(loginId, { force: true });
       }
     },
     [
@@ -1608,8 +1619,14 @@ export default function UpstreamAccountCreatePage() {
       if (!existing) {
         const shouldStartUnsynced =
           restoredPendingOauthLoginIdsRef.current.delete(snapshot.loginId);
+        const createdSyncedSignature =
+          createdPendingOauthSessionSignaturesRef.current[snapshot.loginId] ??
+          null;
+        delete createdPendingOauthSessionSignaturesRef.current[snapshot.loginId];
         existing = pendingOauthSessionSyncRef.current[snapshot.loginId] = {
-          syncedSignature: shouldStartUnsynced ? null : snapshot.signature,
+          syncedSignature: shouldStartUnsynced
+            ? null
+            : (createdSyncedSignature ?? snapshot.signature),
           failedSignature: null,
           pendingSignature: snapshot.signature,
           timerId: null,
@@ -1646,6 +1663,7 @@ export default function UpstreamAccountCreatePage() {
         window.clearTimeout(record.timerId);
       }
       delete pendingOauthSessionSyncRef.current[loginId];
+      delete createdPendingOauthSessionSignaturesRef.current[loginId];
     }
   }, [
     batchOauthSessionSnapshots,
@@ -2981,6 +2999,15 @@ export default function UpstreamAccountCreatePage() {
     setOauthDuplicateWarning(null);
     setBusyAction("oauth-generate");
     try {
+      const oauthLoginSessionPayload = buildOauthLoginSessionUpdatePayload({
+        displayName: oauthDisplayName,
+        groupName: oauthGroupName,
+        note: oauthNote,
+        groupNote: resolvePendingGroupNoteForName(oauthGroupName),
+        tagIds: oauthTagIds,
+        isMother: oauthIsMother,
+        mailboxSession: activeOauthMailboxSession,
+      });
       const response = await beginOauthLogin({
         displayName: oauthDisplayName.trim() || undefined,
         groupName: oauthGroupName.trim() || undefined,
@@ -2992,6 +3019,11 @@ export default function UpstreamAccountCreatePage() {
         mailboxSessionId: activeOauthMailboxSession?.sessionId,
         mailboxAddress: activeOauthMailboxSession?.emailAddress,
       });
+      createdPendingOauthSessionSignaturesRef.current[response.loginId] =
+        buildPendingOauthSessionSnapshot(
+          response.loginId,
+          oauthLoginSessionPayload,
+        ).signature;
       setSession(response);
       setManualCopyOpen(false);
       setOauthCallbackUrl("");
@@ -3329,6 +3361,15 @@ export default function UpstreamAccountCreatePage() {
     }));
 
     try {
+      const oauthLoginSessionPayload = buildOauthLoginSessionUpdatePayload({
+        displayName: row.displayName,
+        groupName: row.groupName,
+        note: row.note,
+        groupNote: resolvePendingGroupNoteForName(row.groupName),
+        tagIds: batchTagIds,
+        isMother: row.isMother,
+        mailboxSession: row.mailboxSession,
+      });
       const response = await beginOauthLogin({
         displayName: row.displayName.trim() || undefined,
         groupName: row.groupName.trim() || undefined,
@@ -3339,6 +3380,11 @@ export default function UpstreamAccountCreatePage() {
         mailboxSessionId: row.mailboxSession?.sessionId,
         mailboxAddress: row.mailboxSession?.emailAddress,
       });
+      createdPendingOauthSessionSignaturesRef.current[response.loginId] =
+        buildPendingOauthSessionSnapshot(
+          response.loginId,
+          oauthLoginSessionPayload,
+        ).signature;
       setBatchManualCopyRowId((current) =>
         current === rowId ? null : current,
       );
