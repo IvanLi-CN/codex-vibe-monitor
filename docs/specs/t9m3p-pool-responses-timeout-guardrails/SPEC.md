@@ -2,9 +2,9 @@
 
 ## 状态
 
-- Status: 进行中
+- Status: 已实现
 - Created: 2026-03-23
-- Last: 2026-03-23
+- Last: 2026-03-25
 
 ## 背景 / 问题陈述
 
@@ -74,6 +74,7 @@
 
 - 若单跳在 headers 前超时，仍记为该跳的 transport failure；只有进入下一轮选择前发现总预算已尽时，才生成最终 `504` 终态。
 - 若某一跳快速返回 `5xx` 并触发同账号重试，等待和重试也必须消耗同一条总预算。
+- 若 timeout route failover 已把“当前 route key”的健康候选全部排除，而池内同时存在已知 exhausted / 429 hard-stop 候选，则终态仍必须保持 `502 + pool_no_alternate_upstream_after_timeout`，不得错误降解成 pool-wide `429`。
 - 非 `/v1/responses*` 的 pool 请求继续沿用现有超时语义，不参与这条 `300s` 护栏。
 
 ## 验收标准（Acceptance Criteria）
@@ -82,6 +83,7 @@
 - Given 第一跳超时、第二跳很快成功，When 请求完成，Then 调用方收到成功响应，且记录中的 `poolAttemptCount=2`、`poolDistinctAccountCount=2`。
 - Given 第一跳和第二跳都在首 chunk 前耗尽预算，When 总预算达到 `300s`，Then 返回 `HTTP 504`，并且第三跳不会再被尝试。
 - Given `/v1/responses/compact` 命中同样的慢首 chunk 路径，When 总预算达到 `300s`，Then 也必须返回 `HTTP 504 + pool_total_timeout_exhausted`。
+- Given 第一跳 timeout 后只剩同 route key 的健康账号，以及其它已知 exhausted 的候选，When resolver 继续 failover，Then 终态是 `no alternate upstream route is available after timeout`，而不是 `pool_all_accounts_rate_limited`。
 - Given 非 `/v1/responses*` 的 pool 请求，When 本次修复完成，Then 既有超时语义保持不变。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
@@ -115,9 +117,12 @@
 
 - 风险：如果线上问题的主因最终是 sticky/affinity 被 timeout cut-out 放大，那么这次修复会把“无限拖长”收敛成明确 `504`，但不会自动提升成功率。
 - 风险：总预算开始生效后，部分原本会在 `5-12` 分钟后失败的请求，会更早暴露为 `504`；这是预期收敛，不是回归。
+- 风险：timeout route failover 目前仍按 `upstream_route_key` 排除同 route 候选；当池内大多数健康账号共享同一 route key 时，超时后仍可能很快落到 `no alternate upstream route`，但这必须是明确的 `502`，不是伪造的 pool-wide `429`。
 - 假设：调用方宁可在 `300s` 内拿到明确失败，也不接受持续卡住无界等待；这与当前产品约束一致。
 
 ## 变更记录（Change log）
+
+- 2026-03-25: 修复 timeout route failover 与 exhausted 候选并存时的终态误分类；被 `route_key` 排除的健康候选现在会正确收敛到 `pool_no_alternate_upstream_after_timeout`，不再错误返回 `pool_all_accounts_rate_limited`。
 
 - 2026-03-23: 创建 spec，冻结 `180s / 300s / 504` 的 timeout guardrails 边界、验收与验证要求。
 - 2026-03-23: 完成本地实现与 targeted regression；待 fast-track 交付收口。
