@@ -99,30 +99,6 @@
 - 2026-03-25: `cargo test` 仍被现存基线用例 `tests::pool_route_non_capture_request_body_read_timeout_applies_to_replay_stream` 阻塞。
 - 2026-03-25: `cd /Users/ivan/.codex/worktrees/f3f3/codex-vibe-monitor/web && bun run test` 仍被现存基线失败阻塞，主要落在 `src/pages/account-pool/UpstreamAccounts.test.tsx`、`src/pages/Records.test.tsx`、`src/pages/Live.test.tsx` 与 `src/components/AccountTagFilterCombobox.test.tsx`。
 
-## Visual Evidence
-
-- source_type: storybook_canvas
-  target_program: mock-only
-  capture_scope: browser-viewport
-  sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
-  story_id_or_title: account-pool-pages-upstream-account-create-oauth--pending-metadata-sync
-  state: single-oauth-metadata-edit-preserves-url
-  evidence_note: 验证单账号 OAuth 在已生成授权地址后继续编辑显示名称时，页面仍保留 pending OAuth URL，不再提示重新生成。
-  image:
-  ![Single OAuth pending metadata sync](./assets/oauth-pending-metadata-sync.png)
-
-- source_type: storybook_canvas
-  target_program: mock-only
-  capture_scope: browser-viewport
-  sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
-  story_id_or_title: account-pool-pages-upstream-account-create-batch-oauth--pending-default-group-sync
-  state: batch-default-group-propagation-preserves-url
-  evidence_note: 验证批量 OAuth 在首行已生成 pending OAuth URL 后，顶部默认分组传播到继承行时不会清空当前 URL，待回调行保持可继续完成。
-  image:
-  ![Batch OAuth pending default group sync](./assets/batch-oauth-pending-default-group-sync.png)
-
 ## 变更记录
 
 - 2026-03-25: 创建增量 spec，冻结 pending OAuth login session metadata live-sync 的接口、交互与验收边界。
