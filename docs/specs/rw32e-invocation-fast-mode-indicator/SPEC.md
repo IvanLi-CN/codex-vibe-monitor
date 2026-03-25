@@ -9,7 +9,7 @@
 ## 背景 / 问题陈述
 
 - 当前请求列表会展示模型名、代理、耗时与详情上下文，但无法直接判断某次请求是否实际命中了 OpenAI 的 fast / priority processing。
-- 现有监控链路已经保存 `payload`、`raw_response` 与 proxy 原始响应文件路径，具备追加 `service_tier` 可观测性的基础，但 `/api/invocations` 和前端 `InvocationTable` 尚未投影该字段。
+- 现有监控链路已经保存 `payload`、`raw_response` 预览与 proxy 原始响应文件路径 `response_raw_path`，具备追加 `service_tier` 可观测性的基础，但 `/api/invocations` 和前端 `InvocationTable` 尚未投影该字段。
 - 如果继续只靠模型名或外部经验推断 fast 模式，会把“请求意图”与“实际执行 tier”混为一谈，排障与计费观察都不可靠。
 
 ## 目标 / 非目标
@@ -54,7 +54,7 @@
 ### SHOULD
 
 - HTTP 首屏列表与 SSE record 结构保持同构，避免首屏与增量记录展示不一致。
-- 回填优先复用现有 `raw_response`，仅在 proxy 场景必要时回退到 `response_raw_path` 原始文件。
+- 回填优先复用现有 `raw_response` 预览；当 preview 不完整时，proxy 场景必须回退到 `response_raw_path` 原始文件。
 - `serviceTier='priority'` 的视觉标识不应破坏现有表格截断、对齐与响应式布局。
 
 ### COULD
@@ -71,7 +71,7 @@
   - 当 `serviceTier === 'priority'`，模型名后显示闪电图标；
   - 当 `serviceTier` 为其它值或缺失，不显示 Fast 图标；
   - 展开详情时总能看到 `Service tier` 字段。
-- 服务启动时会批量扫描旧记录，为能从 `raw_response` 或 proxy 原始响应恢复出实际 tier 的记录补写 `payload.serviceTier`。
+- 服务启动时会批量扫描旧记录，为能从 `raw_response` 预览或 proxy 原始响应文件恢复出实际 tier 的记录补写 `payload.serviceTier`。
 
 ### Edge cases / errors
 
@@ -99,7 +99,7 @@
 - Given 列表记录 `serviceTier === 'priority'`，When 渲染模型列，Then 模型名后显示闪电图标，并带有 Fast / priority 语义的 tooltip 与 a11y 文案。
 - Given 记录 `serviceTier` 为 `flex`、`default`、`auto`、空值或缺失，When 渲染列表，Then 不显示 Fast 图标。
 - Given 用户展开详情，When 记录包含 `serviceTier`，Then 显示 `Service tier` 字段和值；缺失时显示 `—`。
-- Given 存在历史 proxy 记录且 `raw_response` 或 `response_raw_path` 可解析出实际 `service_tier`，When 服务启动执行回填，Then `payload.serviceTier` 被补齐且后续 `/api/invocations` 可返回该值。
+- Given 存在历史 proxy 记录且 `raw_response` 预览或 `response_raw_path` 可解析出实际 `service_tier`，When 服务启动执行回填，Then `payload.serviceTier` 被补齐且后续 `/api/invocations` 可返回该值。
 - Given 回填遇到损坏 JSON、缺失文件或无 `service_tier`，When 启动继续执行，Then 该记录被跳过且服务启动不失败。
 
 ## 实现前置条件（Definition of Ready / Preconditions）
