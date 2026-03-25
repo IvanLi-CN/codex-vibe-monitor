@@ -4,7 +4,7 @@ import { expect, userEvent, waitFor, within } from 'storybook/test'
 import { Tooltip } from './tooltip'
 import { InfoTooltip } from './info-tooltip'
 import { InlineChartTooltipSurface } from './inline-chart-tooltip'
-import { SystemNotificationProvider, useSystemNotifications } from './system-notifications'
+import { MotherSwitchUndoToast, SystemNotificationProvider } from './system-notifications'
 import { I18nProvider } from '../../i18n'
 
 function ThemeRoot({ theme, children }: { theme: 'vibe-light' | 'vibe-dark'; children: ReactNode }) {
@@ -21,27 +21,6 @@ function ThemeRoot({ theme, children }: { theme: 'vibe-light' | 'vibe-dark'; chi
   }, [theme])
 
   return <div data-theme={theme}>{children}</div>
-}
-
-function NotificationPreviewKickoff() {
-  const { showMotherSwitchUndo } = useSystemNotifications()
-
-  useEffect(() => {
-    showMotherSwitchUndo({
-      payload: {
-        groupKey: 'tokyo-core',
-        groupName: 'Tokyo Core',
-        previousMotherAccountId: 11,
-        previousMotherDisplayName: 'Codex Pro - Tokyo',
-        newMotherAccountId: 18,
-        newMotherDisplayName: 'Codex Team - Tokyo',
-        hadNoMotherBefore: false,
-      },
-      onUndo: async () => undefined,
-    })
-  }, [showMotherSwitchUndo])
-
-  return null
 }
 
 function NoiseCard({ title, children }: { title: string; children: ReactNode }) {
@@ -113,11 +92,27 @@ function InlineChartPreview() {
 }
 
 function OverlayGallery({ theme }: { theme: 'vibe-light' | 'vibe-dark' }) {
+  const previewNotification = {
+    id: 'storybook-mother-switch-preview',
+    kind: 'motherSwitchUndo' as const,
+    groupKey: 'tokyo-core',
+    payload: {
+      groupKey: 'tokyo-core',
+      groupName: 'Tokyo Core',
+      previousMotherAccountId: 11,
+      previousMotherDisplayName: 'Codex Pro - Tokyo',
+      newMotherAccountId: 18,
+      newMotherDisplayName: 'Codex Team - Tokyo',
+      hadNoMotherBefore: false,
+    },
+    onUndo: async () => undefined,
+    error: null,
+  }
+
   return (
     <I18nProvider>
       <ThemeRoot theme={theme}>
         <SystemNotificationProvider>
-          <NotificationPreviewKickoff />
           <div
             className="min-h-screen px-5 py-6"
             style={{
@@ -126,6 +121,14 @@ function OverlayGallery({ theme }: { theme: 'vibe-light' | 'vibe-dark' }) {
             }}
           >
             <div className="mx-auto max-w-6xl space-y-4">
+              <div className="flex justify-center px-3">
+                <MotherSwitchUndoToast
+                  notification={previewNotification}
+                  onDismiss={() => undefined}
+                  onUndoSettled={() => undefined}
+                  theme={theme}
+                />
+              </div>
               <div className="grid gap-4 lg:grid-cols-[1.15fr_1fr]">
                 <NoiseCard title="Tooltip + InfoTooltip">
                   <div className="rounded-[1.1rem] border border-base-300/35 bg-base-100/12 px-4 py-4">
@@ -188,12 +191,7 @@ export default meta
 
 type Story = StoryObj<typeof meta>
 
-export const LightTheme: Story = {
-  args: {
-    theme: 'vibe-light',
-  },
-  render: (args) => <OverlayGallery {...args} />,
-  play: async ({ canvasElement }) => {
+async function openOverlaySurfaceGallery({ canvasElement }: { canvasElement: HTMLElement }) {
     const canvas = within(canvasElement)
     const body = within(canvasElement.ownerDocument.body)
     await userEvent.click(canvas.getByRole('button', { name: /explain shared overlay surface/i }))
@@ -202,7 +200,14 @@ export const LightTheme: Story = {
       await expect(body.getAllByRole('tooltip').length).toBeGreaterThan(1)
       await expect(body.getByText(/Tokyo Core/i)).toBeInTheDocument()
     })
+}
+
+export const LightTheme: Story = {
+  args: {
+    theme: 'vibe-light',
   },
+  render: (args) => <OverlayGallery {...args} />,
+  play: openOverlaySurfaceGallery,
 }
 
 export const DarkTheme: Story = {
@@ -210,4 +215,5 @@ export const DarkTheme: Story = {
     theme: 'vibe-dark',
   },
   render: (args) => <OverlayGallery {...args} />,
+  play: openOverlaySurfaceGallery,
 }

@@ -149,6 +149,9 @@ describe('InfoTooltip', () => {
     expect((arrow as SVGElement | null)?.style.fill).toBe(
       bubbleArrowStyle('neutral', 'vibe-dark').fill,
     )
+    expect((tooltip as HTMLElement | null)?.style.boxShadow).toBe(
+      bubbleSurfaceStyle('neutral', 'vibe-dark').boxShadow,
+    )
     expect((tooltip as HTMLElement | null)?.style.backdropFilter).toBe(
       bubbleSurfaceStyle('neutral', 'vibe-dark').backdropFilter,
     )

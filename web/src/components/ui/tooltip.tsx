@@ -33,8 +33,11 @@ function hasUtilityOverride(
 
 function resolveTooltipContentStyle(contentClassName: string | undefined, theme: ReturnType<typeof usePortaledTheme>) {
   const style = { ...floatingSurfaceStyle('neutral', theme) }
-  if (hasUtilityOverride(contentClassName, { prefixes: ['bg-'] })) {
+  const hasBackgroundOverride = hasUtilityOverride(contentClassName, { prefixes: ['bg-'] })
+  if (hasBackgroundOverride) {
     delete style.backgroundColor
+    delete style.backdropFilter
+    delete style.WebkitBackdropFilter
   }
   if (hasUtilityOverride(contentClassName, { prefixes: ['border-'] })) {
     delete style.borderColor

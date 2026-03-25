@@ -27,26 +27,30 @@ beforeAll(() => {
         if (entry.target !== target) {
           continue
         }
+        const record = {
+          type: 'attributes',
+          attributeName,
+          attributeNamespace: null,
+          target,
+          addedNodes: [] as unknown as NodeList,
+          removedNodes: [] as unknown as NodeList,
+          nextSibling: null,
+          previousSibling: null,
+          oldValue: null,
+        } as unknown as MutationRecord
         entry.callback(
-          [
-            {
-              type: 'attributes',
-              attributeName,
-              target,
-              addedNodes: [] as unknown as NodeList,
-              removedNodes: [] as unknown as NodeList,
-              nextSibling: null,
-              previousSibling: null,
-              oldValue: null,
-            } as MutationRecord,
-          ],
+          [record],
           entry.observer,
         )
       }
     }
 
     class MutationObserverMock {
-      constructor(private readonly callback: MutationCallback) {}
+      private readonly callback: MutationCallback
+
+      constructor(callback: MutationCallback) {
+        this.callback = callback
+      }
 
       observe(target: Node) {
         observerEntries.push({ observer: this, target, callback: this.callback })

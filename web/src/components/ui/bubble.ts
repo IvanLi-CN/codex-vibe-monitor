@@ -9,7 +9,7 @@ import {
 
 const bubbleVariants = cva(
   [
-    'z-[92] max-w-[min(22rem,calc(100vw-1rem))] rounded-xl border px-3.5 py-2 !shadow-none',
+    'z-[92] max-w-[min(22rem,calc(100vw-1rem))] rounded-xl border px-3.5 py-2',
     'text-left text-xs font-medium leading-5 outline-none',
     'data-[state=open]:animate-in data-[state=closed]:animate-out',
     'data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',

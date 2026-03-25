@@ -94,7 +94,7 @@ function useAutoDismiss(
   return { pause, resume }
 }
 
-function MotherSwitchUndoToast({
+export function MotherSwitchUndoToast({
   notification,
   onDismiss,
   onUndoSettled,
