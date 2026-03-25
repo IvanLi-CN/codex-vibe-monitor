@@ -20032,8 +20032,7 @@ mod tests {
             .consumed_at
             .clone()
             .expect("completed session should record consumed_at");
-        let newer_account_updated_at =
-            next_login_session_updated_at(Some(consumed_at.as_str()));
+        let newer_account_updated_at = next_login_session_updated_at(Some(consumed_at.as_str()));
         sqlx::query(
             r#"
             UPDATE pool_upstream_accounts
