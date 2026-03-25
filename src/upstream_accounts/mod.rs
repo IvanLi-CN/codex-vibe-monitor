@@ -18140,6 +18140,223 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn oauth_sync_refresh_failure_preserves_quota_marker_from_current_db_state() {
+        let (usage_base_url, oauth_issuer, usage_requests, token_requests, server) =
+            spawn_sequenced_oauth_sync_server(
+                vec![(
+                    StatusCode::UNAUTHORIZED,
+                    json!({
+                        "error": {
+                            "message": "Session cookie expired during usage snapshot"
+                        }
+                    }),
+                )],
+                json!({
+                    "unexpected": "shape"
+                }),
+            )
+            .await;
+        let state = test_app_state_with_usage_and_oauth_base(&usage_base_url, &oauth_issuer).await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Refresh Failure Quota Preserve OAuth",
+            "refresh-quota-preserve@example.com",
+            "org_refresh_quota_preserve",
+            "user_refresh_quota_preserve",
+        )
+        .await;
+        let stale_row = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth row")
+            .expect("oauth row exists");
+        seed_hard_unavailable_route_failure(
+            &state.pool,
+            account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+
+        sync_oauth_account(&state, &stale_row, SyncCause::Maintenance)
+            .await
+            .expect("sync oauth account");
+
+        let after = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth row after refresh failure")
+            .expect("oauth row exists after refresh failure");
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert_eq!(
+            after.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_SYNC_FAILED)
+        );
+        assert_eq!(
+            after.last_action_reason_code.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR)
+        );
+        assert_eq!(after.last_action_http_status, None);
+        assert!(
+            after
+                .last_error
+                .as_deref()
+                .is_some_and(|message| message.contains("failed to decode OAuth token response"))
+        );
+        assert_eq!(
+            after.last_route_failure_kind.as_deref(),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+        );
+        assert_eq!(after.last_route_failure_at, after.last_error_at);
+
+        let summary = build_summary_from_row(
+            &after,
+            None,
+            after.last_activity_at.clone(),
+            vec![],
+            None,
+            0,
+            Utc::now(),
+        );
+        assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
+        assert_eq!(
+            summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+        );
+        assert_eq!(summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
+
+        let detail = load_upstream_account_detail(&state.pool, account_id)
+            .await
+            .expect("load detail export")
+            .expect("detail export exists");
+        assert_eq!(
+            detail.summary.display_status,
+            UPSTREAM_ACCOUNT_STATUS_ACTIVE
+        );
+        assert_eq!(
+            detail.summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+        );
+        assert_eq!(detail.summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
+
+        assert_eq!(usage_requests.load(Ordering::SeqCst), 1);
+        assert_eq!(token_requests.load(Ordering::SeqCst), 1);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn oauth_sync_direct_fetch_failure_preserves_quota_marker_from_current_db_state() {
+        let (usage_base_url, server) = spawn_usage_snapshot_server(
+            StatusCode::BAD_GATEWAY,
+            json!({
+                "error": {
+                    "message": "gateway temporarily unavailable"
+                }
+            }),
+        )
+        .await;
+        let state = test_app_state_with_usage_base(&usage_base_url).await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Direct Failure Quota Preserve OAuth",
+            "direct-quota-preserve@example.com",
+            "org_direct_quota_preserve",
+            "user_direct_quota_preserve",
+        )
+        .await;
+        let stale_row = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth row")
+            .expect("oauth row exists");
+        seed_hard_unavailable_route_failure(
+            &state.pool,
+            account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+
+        sync_oauth_account(&state, &stale_row, SyncCause::Maintenance)
+            .await
+            .expect("sync oauth account");
+
+        let after = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth row after direct fetch failure")
+            .expect("oauth row exists after direct fetch failure");
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert_eq!(
+            after.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_SYNC_FAILED)
+        );
+        assert_eq!(
+            after.last_action_reason_code.as_deref(),
+            Some("upstream_http_5xx")
+        );
+        assert_eq!(after.last_action_http_status, Some(502));
+        assert!(
+            after
+                .last_error
+                .as_deref()
+                .is_some_and(|message| message.contains("502 Bad Gateway"))
+        );
+        assert_eq!(
+            after.last_route_failure_kind.as_deref(),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+        );
+        assert_eq!(after.last_route_failure_at, after.last_error_at);
+
+        let summary = build_summary_from_row(
+            &after,
+            None,
+            after.last_activity_at.clone(),
+            vec![],
+            None,
+            0,
+            Utc::now(),
+        );
+        assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
+        assert_eq!(
+            summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+        );
+        assert_eq!(summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
+
+        let detail = load_upstream_account_detail(&state.pool, account_id)
+            .await
+            .expect("load detail export")
+            .expect("detail export exists");
+        assert_eq!(
+            detail.summary.display_status,
+            UPSTREAM_ACCOUNT_STATUS_ACTIVE
+        );
+        assert_eq!(
+            detail.summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+        );
+        assert_eq!(detail.summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn classified_sync_failure_preserves_existing_route_cooldown_across_new_error_timestamp()
     {
         let pool = test_pool().await;
