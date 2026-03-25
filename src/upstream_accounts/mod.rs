@@ -18007,6 +18007,139 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn oauth_sync_retry_after_refresh_preserves_quota_marker_from_current_db_state() {
+        let (usage_base_url, oauth_issuer, usage_requests, token_requests, server) =
+            spawn_sequenced_oauth_sync_server(
+                vec![
+                    (
+                        StatusCode::UNAUTHORIZED,
+                        json!({
+                            "error": {
+                                "message": "Session cookie expired during usage snapshot"
+                            }
+                        }),
+                    ),
+                    (
+                        StatusCode::BAD_GATEWAY,
+                        json!({
+                            "error": {
+                                "message": "gateway temporarily unavailable"
+                            }
+                        }),
+                    ),
+                ],
+                json!({
+                    "access_token": "refreshed-quota-preserving-token",
+                    "refresh_token": "refresh-token-rotated",
+                    "id_token": test_id_token(
+                        "retry-quota-preserve@example.com",
+                        Some("org_retry_quota_preserve"),
+                        Some("user_retry_quota_preserve"),
+                        Some("team"),
+                    ),
+                    "token_type": "Bearer",
+                    "expires_in": 3600
+                }),
+            )
+            .await;
+        let state = test_app_state_with_usage_and_oauth_base(&usage_base_url, &oauth_issuer).await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Retry Gateway Quota Preserve OAuth",
+            "retry-quota-preserve@example.com",
+            "org_retry_quota_preserve",
+            "user_retry_quota_preserve",
+        )
+        .await;
+        let stale_row = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth row")
+            .expect("oauth row exists");
+        seed_hard_unavailable_route_failure(
+            &state.pool,
+            account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+
+        sync_oauth_account(&state, &stale_row, SyncCause::Maintenance)
+            .await
+            .expect("sync oauth account");
+
+        let after = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth row after gateway failure")
+            .expect("oauth row exists after gateway failure");
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert!(after.last_synced_at.is_some());
+        assert!(after.last_successful_sync_at.is_none());
+        assert_eq!(
+            after.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_SYNC_FAILED)
+        );
+        assert_eq!(
+            after.last_action_reason_code.as_deref(),
+            Some("upstream_http_5xx")
+        );
+        assert_eq!(after.last_action_http_status, Some(502));
+        assert_eq!(
+            after.last_error.as_deref(),
+            Some("usage endpoint returned 502 Bad Gateway: gateway temporarily unavailable")
+        );
+        assert!(after.last_action_at.is_some());
+        assert_eq!(
+            after.last_route_failure_kind.as_deref(),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+        );
+        assert_eq!(after.last_route_failure_at, after.last_error_at);
+
+        let summary = build_summary_from_row(
+            &after,
+            None,
+            after.last_activity_at.clone(),
+            vec![],
+            None,
+            0,
+            Utc::now(),
+        );
+        assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
+        assert_eq!(
+            summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+        );
+        assert_eq!(summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
+
+        let detail = load_upstream_account_detail(&state.pool, account_id)
+            .await
+            .expect("load detail export")
+            .expect("detail export exists");
+        assert_eq!(
+            detail.summary.display_status,
+            UPSTREAM_ACCOUNT_STATUS_ACTIVE
+        );
+        assert_eq!(
+            detail.summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+        );
+        assert_eq!(detail.summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
+
+        assert_eq!(usage_requests.load(Ordering::SeqCst), 2);
+        assert_eq!(token_requests.load(Ordering::SeqCst), 1);
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn classified_sync_failure_preserves_existing_route_cooldown_across_new_error_timestamp()
     {
         let pool = test_pool().await;
