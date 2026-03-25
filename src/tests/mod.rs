@@ -30757,6 +30757,101 @@ async fn materialize_historical_rollups_marks_batches_and_prune_removes_files() 
 }
 
 #[tokio::test]
+async fn materialize_historical_rollups_skips_already_materialized_batches() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("historical-rollup-skip-materialized").await;
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days((config.invocation_max_days + 2) as i64))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived local hour");
+    let archived_occurred_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(10))
+            .expect("valid archived occurred_at"),
+    );
+    let bucket_start_epoch =
+        invocation_bucket_start_epoch(&archived_occurred_at).expect("invocation bucket epoch");
+
+    seed_invocation_archive_batch(
+        &pool,
+        &config,
+        "historical-rollup-skip-materialized",
+        &[(
+            1_i64,
+            "historical-rollup-skip-materialized",
+            archived_occurred_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            12_i64,
+            0.12_f64,
+            Some(120.0),
+        )],
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        UPDATE archive_batches
+        SET historical_rollups_materialized_at = datetime('now')
+        WHERE dataset = 'codex_invocations'
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("mark archive batch already materialized");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0, 0, ?8)
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind(1_i64)
+    .bind(1_i64)
+    .bind(0_i64)
+    .bind(12_i64)
+    .bind(0.12_f64)
+    .bind("[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]")
+    .execute(&pool)
+    .await
+    .expect("seed already materialized invocation rollup");
+
+    let snapshot = load_historical_rollup_backfill_snapshot(&pool, &config)
+        .await
+        .expect("load snapshot for already materialized batch");
+    assert_eq!(snapshot.legacy_archive_pending, 0);
+
+    let summary = materialize_historical_rollups(&pool, &config, false)
+        .await
+        .expect("materialize should skip already materialized archive batch");
+    assert_eq!(summary.materialized_invocation_batches, 0);
+
+    let total_count: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly WHERE source = ?1",
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load invocation rollup total count after skipped replay");
+    assert_eq!(total_count, 1);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn historical_rollup_backfill_stays_critical_until_legacy_invocations_materialized() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("historical-rollup-backfill-critical").await;
@@ -30897,7 +30992,7 @@ async fn prune_legacy_archive_batches_keeps_detail_prune_backups_within_live_win
 }
 
 #[tokio::test]
-async fn materialize_historical_rollups_keeps_existing_rollups_if_replay_fails() {
+async fn materialize_historical_rollups_skips_missing_archives_and_preserves_existing_rollups() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("historical-rollup-materialize-atomic").await;
     let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
@@ -30972,13 +31067,15 @@ async fn materialize_historical_rollups_keeps_existing_rollups_if_replay_fails()
     .await
     .expect("insert missing archive manifest");
 
-    let err = materialize_historical_rollups(&pool, &config, false)
+    let snapshot_before = load_historical_rollup_backfill_snapshot(&pool, &config)
         .await
-        .expect_err("materialization should fail when archive file is missing");
-    assert!(
-        err.to_string().contains("missing"),
-        "error should mention missing archive file: {err:#}"
-    );
+        .expect("load snapshot before skipping missing archive");
+    assert_eq!(snapshot_before.legacy_archive_pending, 0);
+
+    let summary = materialize_historical_rollups(&pool, &config, false)
+        .await
+        .expect("materialization should skip missing archive file");
+    assert_eq!(summary.materialized_invocation_batches, 0);
 
     let total_count: i64 = sqlx::query_scalar(
         "SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly WHERE source = ?1",
@@ -30989,8 +31086,19 @@ async fn materialize_historical_rollups_keeps_existing_rollups_if_replay_fails()
     .expect("load retained invocation rollup total");
     assert_eq!(
         total_count, 7,
-        "failed materialization must keep prior rollups"
+        "skipped materialization must keep prior rollups"
     );
+
+    let prune_summary = prune_legacy_archive_batches(&pool, &config, false)
+        .await
+        .expect("prune should remove stale missing archive metadata");
+    assert_eq!(prune_summary.deleted_archive_batches, 1);
+
+    let remaining_batches: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM archive_batches")
+        .fetch_one(&pool)
+        .await
+        .expect("count remaining archive batches after pruning missing metadata");
+    assert_eq!(remaining_batches, 0);
 
     cleanup_temp_test_dir(&temp_dir);
 }

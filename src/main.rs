@@ -4308,6 +4308,7 @@ async fn cleanup_expired_archive_batches(
 struct HistoricalRollupPendingArchiveBatchRow {
     dataset: String,
     month_key: String,
+    file_path: String,
     coverage_start_at: Option<String>,
     coverage_end_at: Option<String>,
 }
@@ -4445,7 +4446,7 @@ pub(crate) async fn load_historical_rollup_backfill_snapshot(
     config: &AppConfig,
 ) -> Result<HistoricalRollupBackfillSnapshot> {
     let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT dataset, month_key, coverage_start_at, coverage_end_at \
+        "SELECT dataset, month_key, file_path, coverage_start_at, coverage_end_at \
          FROM archive_batches WHERE status = ",
     );
     query.push_bind(ARCHIVE_STATUS_COMPLETED);
@@ -4463,11 +4464,16 @@ pub(crate) async fn load_historical_rollup_backfill_snapshot(
         .await?;
     let pending_buckets = pending_rows
         .iter()
+        .filter(|row| Path::new(&row.file_path).exists())
         .map(estimate_historical_rollup_pending_bucket_count)
         .sum::<u64>();
-    let legacy_archive_pending = pending_rows.len() as u64;
+    let legacy_archive_pending = pending_rows
+        .iter()
+        .filter(|row| Path::new(&row.file_path).exists())
+        .count() as u64;
     let legacy_invocation_pending = pending_rows
         .iter()
+        .filter(|row| Path::new(&row.file_path).exists())
         .any(|row| row.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS);
     let last_materialized_hour =
         load_latest_materialized_legacy_invocation_rollup_bucket_epoch(pool, config)
@@ -4572,8 +4578,12 @@ async fn prune_legacy_archive_batches(
     };
 
     for candidate in candidates {
-        if candidate.historical_rollups_materialized_at.is_none()
-            || (candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS && pending_account_count > 0)
+        let file_missing = !Path::new(&candidate.file_path).exists();
+
+        if !file_missing
+            && (candidate.historical_rollups_materialized_at.is_none()
+                || (candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS
+                    && pending_account_count > 0))
         {
             summary.skipped_unmaterialized_batches += 1;
             continue;
@@ -6715,7 +6725,9 @@ async fn replay_invocation_archives_into_hourly_rollups_tx(
         r#"
         SELECT id AS _id, month_key, file_path, coverage_start_at, coverage_end_at
         FROM archive_batches
-        WHERE dataset = 'codex_invocations' AND status = ?1
+        WHERE dataset = 'codex_invocations'
+          AND status = ?1
+          AND historical_rollups_materialized_at IS NULL
         ORDER BY month_key ASC, created_at ASC, id ASC
         "#,
     )
@@ -6751,10 +6763,12 @@ async fn replay_invocation_archives_into_hourly_rollups_tx(
 
         let archive_path = PathBuf::from(&archive_file.file_path);
         if !archive_path.exists() {
-            return Err(anyhow!(
-                "required codex_invocations archive batch is missing for hourly rollup replay: {}",
-                archive_path.display()
-            ));
+            warn!(
+                dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                file_path = archive_file.file_path,
+                "skipping missing archive batch during historical rollup materialization"
+            );
+            continue;
         }
         let temp_path = PathBuf::from(format!(
             "{}.{}.sqlite",
@@ -6845,7 +6859,9 @@ async fn replay_forward_proxy_archives_into_hourly_rollups_tx(
         r#"
         SELECT id AS _id, month_key, file_path, coverage_start_at, coverage_end_at
         FROM archive_batches
-        WHERE dataset = 'forward_proxy_attempts' AND status = ?1
+        WHERE dataset = 'forward_proxy_attempts'
+          AND status = ?1
+          AND historical_rollups_materialized_at IS NULL
         ORDER BY month_key ASC, created_at ASC, id ASC
         "#,
     )
@@ -6868,10 +6884,12 @@ async fn replay_forward_proxy_archives_into_hourly_rollups_tx(
 
         let archive_path = PathBuf::from(&archive_file.file_path);
         if !archive_path.exists() {
-            return Err(anyhow!(
-                "required forward_proxy_attempts archive batch is missing for hourly rollup replay: {}",
-                archive_path.display()
-            ));
+            warn!(
+                dataset = HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS,
+                file_path = archive_file.file_path,
+                "skipping missing archive batch during historical rollup materialization"
+            );
+            continue;
         }
         let temp_path = PathBuf::from(format!(
             "{}.{}.sqlite",

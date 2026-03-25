@@ -254,7 +254,7 @@ cargo run -- maintenance prune-legacy-archive-batches --dry-run
 cargo run -- maintenance prune-legacy-archive-batches
 ```
 
-- 正常服务启动会在 startup backfill 后台维护里自动补齐仍缺失的 `codex_invocations` archive upstream-activity manifest，并只把主库 live tail sync 到 hourly rollups；若 `maintenance.historicalRollupBackfill.legacyArchivePending > 0`，需要显式执行 `maintenance materialize-historical-rollups` 才会把 legacy archive 物化进主库统计表。在 legacy `codex_invocations` 仍未完成物化前，`maintenance.historicalRollupBackfill.alertLevel` 会保持 `critical`，且这批 pending legacy archive 不会被 TTL 自动提前删掉。
+- 正常服务启动会在 startup backfill 后台维护里自动补齐仍缺失的 `codex_invocations` archive upstream-activity manifest，并只把主库 live tail sync 到 hourly rollups；若 `maintenance.historicalRollupBackfill.legacyArchivePending > 0`，需要显式执行 `maintenance materialize-historical-rollups` 才会把 legacy archive 物化进主库统计表。在 remaining legacy `codex_invocations` 仍未完成物化前，`maintenance.historicalRollupBackfill.alertLevel` 会保持 `critical`，且这批 pending legacy archive 不会被 TTL 自动提前删掉；已经缺失的 legacy archive 文件会在物化时被跳过，不再把 backlog 永久卡死，可随后用 `maintenance prune-legacy-archive-batches` 清掉残留元数据。
 - `maintenance prune-legacy-archive-batches` 只会删除已经完成历史物化的 backup-only archive；`codex_invocations` 仍存在 upstream activity backlog 时会保守跳过，避免过早删掉 manifest 依赖。
 - `maintenance ... --dry-run` 与 `--retention-run-once --retention-dry-run` 不会再顺手执行 archive TTL 回填、manifest rebuild 或历史 rollup 物化，便于先做真正只读的容量预演。
 
