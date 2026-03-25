@@ -4238,10 +4238,12 @@ async fn cleanup_expired_archive_batches(
 
     let mut eligible_candidates = Vec::new();
     for candidate in candidates {
+        if HISTORICAL_ROLLUP_ARCHIVE_DATASETS.contains(&candidate.dataset.as_str())
+            && candidate.historical_rollups_materialized_at.is_none()
+        {
+            continue;
+        }
         if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS {
-            if candidate.historical_rollups_materialized_at.is_none() {
-                continue;
-            }
             if candidate
                 .coverage_end_at
                 .as_deref()

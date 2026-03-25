@@ -30523,6 +30523,66 @@ async fn pending_legacy_invocation_archives_do_not_expire_before_materialization
 }
 
 #[tokio::test]
+async fn pending_legacy_forward_proxy_archives_do_not_expire_before_materialization() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("archive-expiry-pending-forward-proxy").await;
+    let coverage_end_at = format_utc_iso(Utc::now() - ChronoDuration::days(120));
+    let archive_path = temp_dir.join("pending-forward-proxy.sqlite.gz");
+    write_gzip_test_file(&archive_path, b"pending-forward-proxy");
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            id,
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            archive_expires_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, datetime('now'))
+        "#,
+    )
+    .bind(1_i64)
+    .bind("forward_proxy_attempts")
+    .bind(&coverage_end_at[..7])
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind("deadbeef")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&coverage_end_at)
+    .bind(&coverage_end_at)
+    .bind("2025-01-01 00:00:00")
+    .execute(&pool)
+    .await
+    .expect("insert pending forward-proxy archive batch");
+
+    let dry_run_deleted = cleanup_expired_archive_batches(&pool, &config, true)
+        .await
+        .expect("dry-run should skip pending forward-proxy archive");
+    assert_eq!(dry_run_deleted, 0);
+
+    let deleted = cleanup_expired_archive_batches(&pool, &config, false)
+        .await
+        .expect("cleanup should keep pending forward-proxy archive");
+    assert_eq!(deleted, 0);
+    assert!(archive_path.exists());
+
+    let remaining_batches: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM archive_batches")
+        .fetch_one(&pool)
+        .await
+        .expect("count remaining pending forward-proxy batches");
+    assert_eq!(remaining_batches, 1);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_prune_preserves_upstream_account_id_for_archive_manifest() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("prune-preserve-upstream-account").await;
