@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 已实现，待截图提交授权
+- Status: 已实现，待 PR / CI 收敛
 - Created: 2026-03-25
 - Last: 2026-03-25
 
@@ -244,7 +244,7 @@ None
 
 - 2026-03-25: 创建 spec，冻结共享抽屉壳层、tabs taxonomy、视觉证据与 fast-track merge-ready 收口标准。
 - 2026-03-25: 完成共享 drawer shell、号池详情 tabs、Invocation 只读详情 tabs、i18n、Vitest 与 Storybook 覆盖；本地定向 `vitest` 与 `web build` 已通过，并根据最新反馈把配额卡并回概览页签，等待重新抓取 mock-only 视觉证据。
-- 2026-03-25: 已按最新反馈重拍 mock-only 视觉证据，当前等待截图提交授权后再继续 push / PR 收敛。
+- 2026-03-25: 已按最新反馈重拍 mock-only 视觉证据，截图提交授权已获确认，进入 PR / CI 收敛阶段。
 
 ## 参考（References）
 
