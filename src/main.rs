@@ -51,7 +51,7 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
 };
 use std::fs;
-use std::io::{self, BufRead, Read, Write};
+use std::io::{self, Read, Write};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -128,6 +128,7 @@ const DEFAULT_PROXY_RAW_COMPRESSION: RawCompressionCodec = RawCompressionCodec::
 const DEFAULT_PROXY_RAW_HOT_SECS: u64 = 24 * 60 * 60;
 const RAW_RESPONSE_PREVIEW_LIMIT: usize = 16 * 1024;
 const BOUNDED_NON_STREAM_RESPONSE_PARSE_LIMIT_BYTES: usize = 256 * 1024;
+const STREAM_RESPONSE_LINE_BUFFER_LIMIT: usize = 256 * 1024;
 const PROXY_USAGE_MISSING_NON_STREAM_PARSE_SKIPPED: &str =
     "non_stream_response_parse_skipped_body_too_large";
 const RAW_CODEC_IDENTITY: &str = "identity";
@@ -14075,6 +14076,7 @@ async fn proxy_openai_v1_capture_target(
         let mut response_preview = RawResponsePreviewBuffer::default();
         let mut response_raw_writer =
             StreamingRawPayloadWriter::new(&state_for_task.config, &invoke_id_for_task, "response");
+        let mut stream_response_parser = StreamResponsePayloadChunkParser::default();
         let mut stream_error: Option<String> = None;
         let mut downstream_closed = false;
         let mut forwarded_chunks = 0usize;
@@ -14083,6 +14085,7 @@ async fn proxy_openai_v1_capture_target(
         if let Some(chunk) = prefetched_first_chunk_for_task {
             response_preview.append(&chunk);
             response_raw_writer.append(&chunk).await;
+            stream_response_parser.ingest_bytes(&chunk);
             forwarded_chunks = forwarded_chunks.saturating_add(1);
             forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
             stream_started_at = Some(Instant::now());
@@ -14215,6 +14218,7 @@ async fn proxy_openai_v1_capture_target(
                     }
                     response_preview.append(&chunk);
                     response_raw_writer.append(&chunk).await;
+                    stream_response_parser.ingest_bytes(&chunk);
                     forwarded_chunks = forwarded_chunks.saturating_add(1);
                     forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
                     if !downstream_closed && tx.send(Ok(chunk)).await.is_err() {
@@ -14265,39 +14269,46 @@ async fn proxy_openai_v1_capture_target(
         let resp_raw = response_raw_writer.finish().await;
         let preview_bytes = response_preview.as_slice().to_vec();
         let raw_response_preview = response_preview.into_preview();
+        let (streamed_response_info, streamed_response_saw_fields) =
+            stream_response_parser.finish();
         let response_is_stream_hint = request_info_for_task.is_stream
             || response_is_event_stream_for_task
             || response_payload_looks_like_sse(&preview_bytes);
         let resp_parse_started = Instant::now();
-        let mut response_info = match tokio::task::spawn_blocking({
-            let preview_bytes_for_parse = preview_bytes.clone();
-            let resp_raw_for_parse = resp_raw.clone();
-            let upstream_content_encoding_for_parse = upstream_content_encoding_for_task.clone();
-            move || {
-                parse_target_response_payload_from_capture(
-                    capture_target,
-                    &resp_raw_for_parse,
-                    &preview_bytes_for_parse,
-                    response_is_stream_hint,
-                    upstream_content_encoding_for_parse.as_deref(),
-                )
-            }
-        })
-        .await
-        {
-            Ok(response_info) => response_info,
-            Err(err) => {
-                let mut response_info = parse_target_response_payload(
-                    capture_target,
-                    &preview_bytes,
-                    response_is_stream_hint,
-                    upstream_content_encoding_for_task.as_deref(),
-                );
-                merge_response_capture_reason(
-                    &mut response_info,
-                    format!("response_parse_join_error:{err}"),
-                );
-                response_info
+        let mut response_info = if response_is_stream_hint && streamed_response_saw_fields {
+            streamed_response_info
+        } else {
+            match tokio::task::spawn_blocking({
+                let preview_bytes_for_parse = preview_bytes.clone();
+                let resp_raw_for_parse = resp_raw.clone();
+                let upstream_content_encoding_for_parse =
+                    upstream_content_encoding_for_task.clone();
+                move || {
+                    parse_target_response_payload_from_capture(
+                        capture_target,
+                        &resp_raw_for_parse,
+                        &preview_bytes_for_parse,
+                        response_is_stream_hint,
+                        upstream_content_encoding_for_parse.as_deref(),
+                    )
+                }
+            })
+            .await
+            {
+                Ok(response_info) => response_info,
+                Err(err) => {
+                    let mut response_info = parse_target_response_payload(
+                        capture_target,
+                        &preview_bytes,
+                        response_is_stream_hint,
+                        upstream_content_encoding_for_task.as_deref(),
+                    );
+                    merge_response_capture_reason(
+                        &mut response_info,
+                        format!("response_parse_join_error:{err}"),
+                    );
+                    response_info
+                }
             }
         };
         let t_resp_parse_ms = elapsed_ms(resp_parse_started);
@@ -15285,18 +15296,21 @@ struct StreamResponsePayloadParser {
     usage_found: bool,
     parse_error_seen: bool,
     pending_event_name: Option<String>,
+    saw_stream_fields: bool,
 }
 
 impl StreamResponsePayloadParser {
     fn ingest_line(&mut self, line: &str) {
         let trimmed = line.trim();
         if trimmed.starts_with("event:") {
+            self.saw_stream_fields = true;
             self.pending_event_name = Some(trimmed.trim_start_matches("event:").trim().to_string());
             return;
         }
         if !trimmed.starts_with("data:") {
             return;
         }
+        self.saw_stream_fields = true;
         let payload = trimmed.trim_start_matches("data:").trim();
         if payload.is_empty() || payload == "[DONE]" {
             self.pending_event_name = None;
@@ -15365,31 +15379,112 @@ impl StreamResponsePayloadParser {
     }
 }
 
-fn parse_stream_response_payload(bytes: &[u8]) -> ResponseCaptureInfo {
-    let text = String::from_utf8_lossy(bytes);
-    let mut parser = StreamResponsePayloadParser::default();
-    for line in text.lines() {
-        parser.ingest_line(line);
+#[derive(Default)]
+struct StreamResponsePayloadChunkParser {
+    parser: StreamResponsePayloadParser,
+    line_buffer: Vec<u8>,
+    discarding_oversized_line: bool,
+}
+
+impl StreamResponsePayloadChunkParser {
+    fn line_bytes_look_like_stream_field(line: &[u8]) -> bool {
+        let decoded = String::from_utf8_lossy(line);
+        let trimmed = decoded.trim_start();
+        trimmed.starts_with("data:")
+            || trimmed.starts_with("event:")
+            || trimmed.starts_with("id:")
+            || trimmed.starts_with("retry:")
     }
-    parser.finish()
+
+    fn flush_line(&mut self) {
+        if self.line_buffer.is_empty() {
+            return;
+        }
+        let decoded = String::from_utf8_lossy(&self.line_buffer);
+        self.parser.ingest_line(decoded.as_ref());
+        self.line_buffer.clear();
+    }
+
+    fn start_discarding_oversized_line(&mut self) {
+        if Self::line_bytes_look_like_stream_field(&self.line_buffer) {
+            self.parser.saw_stream_fields = true;
+        }
+        self.parser.parse_error_seen = true;
+        self.line_buffer.clear();
+        self.discarding_oversized_line = true;
+    }
+
+    fn append_segment(&mut self, segment: &[u8], ends_line: bool) {
+        if self.discarding_oversized_line {
+            if ends_line {
+                self.discarding_oversized_line = false;
+            }
+            return;
+        }
+
+        if self.line_buffer.len().saturating_add(segment.len()) > STREAM_RESPONSE_LINE_BUFFER_LIMIT
+        {
+            self.start_discarding_oversized_line();
+            if ends_line {
+                self.discarding_oversized_line = false;
+            }
+            return;
+        }
+
+        self.line_buffer.extend_from_slice(segment);
+        if ends_line {
+            self.flush_line();
+        }
+    }
+
+    fn ingest_bytes(&mut self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+
+        let mut line_start = 0usize;
+        for (idx, byte) in bytes.iter().enumerate() {
+            if *byte == b'\n' {
+                self.append_segment(&bytes[line_start..=idx], true);
+                line_start = idx + 1;
+            }
+        }
+        if line_start < bytes.len() {
+            self.append_segment(&bytes[line_start..], false);
+        }
+    }
+
+    fn finish(mut self) -> (ResponseCaptureInfo, bool) {
+        if self.discarding_oversized_line {
+            self.parser.parse_error_seen = true;
+        } else {
+            self.flush_line();
+        }
+        let saw_stream_fields = self.parser.saw_stream_fields;
+        (self.parser.finish(), saw_stream_fields)
+    }
+}
+
+fn parse_stream_response_payload(bytes: &[u8]) -> ResponseCaptureInfo {
+    let mut parser = StreamResponsePayloadChunkParser::default();
+    parser.ingest_bytes(bytes);
+    parser.finish().0
 }
 
 fn parse_stream_response_payload_from_reader<R: Read>(
     reader: R,
 ) -> io::Result<ResponseCaptureInfo> {
-    let mut parser = StreamResponsePayloadParser::default();
+    let mut parser = StreamResponsePayloadChunkParser::default();
     let mut reader = io::BufReader::new(reader);
-    let mut line = Vec::new();
+    let mut chunk = [0_u8; 8192];
     loop {
-        line.clear();
-        let read = reader.read_until(b'\n', &mut line)?;
+        let read = reader.read(&mut chunk)?;
         if read == 0 {
             break;
         }
-        let decoded = String::from_utf8_lossy(&line);
-        parser.ingest_line(decoded.as_ref());
+        parser.ingest_bytes(&chunk[..read]);
     }
-    Ok(parser.finish())
+    Ok(parser.finish().0)
 }
 
 fn extract_stream_payload_type(value: &Value) -> Option<String> {
