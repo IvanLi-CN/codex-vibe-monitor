@@ -51,7 +51,7 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
 };
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, Read, Write};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -126,6 +126,10 @@ const DEFAULT_PROXY_PRICING_CATALOG_PATH: &str = "config/model-pricing.json";
 const DEFAULT_PROXY_RAW_DIR: &str = "proxy_raw_payloads";
 const DEFAULT_PROXY_RAW_COMPRESSION: RawCompressionCodec = RawCompressionCodec::Gzip;
 const DEFAULT_PROXY_RAW_HOT_SECS: u64 = 24 * 60 * 60;
+const RAW_RESPONSE_PREVIEW_LIMIT: usize = 16 * 1024;
+const BOUNDED_NON_STREAM_RESPONSE_PARSE_LIMIT_BYTES: usize = 256 * 1024;
+const PROXY_USAGE_MISSING_NON_STREAM_PARSE_SKIPPED: &str =
+    "non_stream_response_parse_skipped_body_too_large";
 const RAW_CODEC_IDENTITY: &str = "identity";
 const RAW_CODEC_GZIP: &str = "gzip";
 const POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES: usize = 1024 * 1024;
@@ -13973,6 +13977,11 @@ async fn proxy_openai_v1_capture_target(
     };
 
     let upstream_connection_scoped = connection_scoped_header_names(upstream_response.headers());
+    let response_is_event_stream = upstream_response
+        .headers()
+        .get(header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|value| value.starts_with("text/event-stream"));
     let upstream_content_encoding = upstream_response
         .headers()
         .get(header::CONTENT_ENCODING)
@@ -14054,6 +14063,7 @@ async fn proxy_openai_v1_capture_target(
     let upstream_attempt_started_at_utc_for_task = upstream_attempt_started_at_utc;
     let first_byte_timeout_for_task = first_byte_timeout;
     let stream_timeout_for_task = stream_timeout;
+    let response_is_event_stream_for_task = response_is_event_stream;
     let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(16);
 
     tokio::spawn(async move {
@@ -14062,14 +14072,17 @@ async fn proxy_openai_v1_capture_target(
         let stream_started = Instant::now();
         let mut t_upstream_ttfb_ms = prefetched_ttfb_ms_for_task;
         let mut stream_started_at: Option<Instant> = None;
-        let mut response_bytes: Vec<u8> = Vec::new();
+        let mut response_preview = RawResponsePreviewBuffer::default();
+        let mut response_raw_writer =
+            StreamingRawPayloadWriter::new(&state_for_task.config, &invoke_id_for_task, "response");
         let mut stream_error: Option<String> = None;
         let mut downstream_closed = false;
         let mut forwarded_chunks = 0usize;
         let mut forwarded_bytes = 0usize;
 
         if let Some(chunk) = prefetched_first_chunk_for_task {
-            response_bytes.extend_from_slice(&chunk);
+            response_preview.append(&chunk);
+            response_raw_writer.append(&chunk).await;
             forwarded_chunks = forwarded_chunks.saturating_add(1);
             forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
             stream_started_at = Some(Instant::now());
@@ -14200,7 +14213,8 @@ async fn proxy_openai_v1_capture_target(
                             );
                         }
                     }
-                    response_bytes.extend_from_slice(&chunk);
+                    response_preview.append(&chunk);
+                    response_raw_writer.append(&chunk).await;
                     forwarded_chunks = forwarded_chunks.saturating_add(1);
                     forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
                     if !downstream_closed && tx.send(Ok(chunk)).await.is_err() {
@@ -14248,13 +14262,44 @@ async fn proxy_openai_v1_capture_target(
         }
 
         let t_upstream_stream_ms = stream_started_at.map(elapsed_ms).unwrap_or(0.0);
+        let resp_raw = response_raw_writer.finish().await;
+        let preview_bytes = response_preview.as_slice().to_vec();
+        let raw_response_preview = response_preview.into_preview();
+        let response_is_stream_hint = request_info_for_task.is_stream
+            || response_is_event_stream_for_task
+            || response_payload_looks_like_sse(&preview_bytes);
         let resp_parse_started = Instant::now();
-        let mut response_info = parse_target_response_payload(
-            capture_target,
-            &response_bytes,
-            request_info_for_task.is_stream,
-            upstream_content_encoding_for_task.as_deref(),
-        );
+        let mut response_info = match tokio::task::spawn_blocking({
+            let preview_bytes_for_parse = preview_bytes.clone();
+            let resp_raw_for_parse = resp_raw.clone();
+            let upstream_content_encoding_for_parse = upstream_content_encoding_for_task.clone();
+            move || {
+                parse_target_response_payload_from_capture(
+                    capture_target,
+                    &resp_raw_for_parse,
+                    &preview_bytes_for_parse,
+                    response_is_stream_hint,
+                    upstream_content_encoding_for_parse.as_deref(),
+                )
+            }
+        })
+        .await
+        {
+            Ok(response_info) => response_info,
+            Err(err) => {
+                let mut response_info = parse_target_response_payload(
+                    capture_target,
+                    &preview_bytes,
+                    response_is_stream_hint,
+                    upstream_content_encoding_for_task.as_deref(),
+                );
+                merge_response_capture_reason(
+                    &mut response_info,
+                    format!("response_parse_join_error:{err}"),
+                );
+                response_info
+            }
+        };
         let t_resp_parse_ms = elapsed_ms(resp_parse_started);
 
         if response_info.model.is_none() {
@@ -14290,7 +14335,10 @@ async fn proxy_openai_v1_capture_target(
         } else if response_info.stream_terminal_event.is_some() {
             Some(format_upstream_response_failed_message(&response_info))
         } else if !upstream_status.is_success() {
-            extract_error_message_from_response(&response_bytes)
+            response_info
+                .upstream_error_message
+                .clone()
+                .or_else(|| extract_error_message_from_response_preview(&preview_bytes))
         } else {
             None
         };
@@ -14446,12 +14494,6 @@ async fn proxy_openai_v1_capture_target(
             &response_info.usage,
         )
         .await;
-        let resp_raw = store_raw_payload_file(
-            &state_for_task.config,
-            &invoke_id_for_task,
-            "response",
-            &response_bytes,
-        );
         let payload = build_proxy_payload_summary(ProxyPayloadSummary {
             target: capture_target,
             status: upstream_status,
@@ -14547,7 +14589,7 @@ async fn proxy_openai_v1_capture_target(
             error_message,
             failure_kind: failure_kind.map(|kind| kind.to_string()),
             payload: Some(payload),
-            raw_response: build_raw_response_preview(&response_bytes),
+            raw_response: raw_response_preview,
             req_raw: req_raw_for_task,
             resp_raw,
             timings: StageTimings {
@@ -15231,92 +15273,123 @@ fn decode_response_payload_for_parse<'a>(
     decode_response_payload(bytes, content_encoding, false)
 }
 
-fn parse_stream_response_payload(bytes: &[u8]) -> ResponseCaptureInfo {
-    let text = String::from_utf8_lossy(bytes);
-    let mut model: Option<String> = None;
-    let mut usage = ParsedUsage::default();
-    let mut service_tier: Option<String> = None;
-    let mut stream_terminal_event: Option<String> = None;
-    let mut upstream_error_code: Option<String> = None;
-    let mut upstream_error_message: Option<String> = None;
-    let mut upstream_request_id: Option<String> = None;
-    let mut usage_found = false;
-    let mut parse_error_seen = false;
-    let mut pending_event_name: Option<String> = None;
+#[derive(Default)]
+struct StreamResponsePayloadParser {
+    model: Option<String>,
+    usage: ParsedUsage,
+    service_tier: Option<String>,
+    stream_terminal_event: Option<String>,
+    upstream_error_code: Option<String>,
+    upstream_error_message: Option<String>,
+    upstream_request_id: Option<String>,
+    usage_found: bool,
+    parse_error_seen: bool,
+    pending_event_name: Option<String>,
+}
 
-    for line in text.lines() {
+impl StreamResponsePayloadParser {
+    fn ingest_line(&mut self, line: &str) {
         let trimmed = line.trim();
         if trimmed.starts_with("event:") {
-            pending_event_name = Some(trimmed.trim_start_matches("event:").trim().to_string());
-            continue;
+            self.pending_event_name = Some(trimmed.trim_start_matches("event:").trim().to_string());
+            return;
         }
         if !trimmed.starts_with("data:") {
-            continue;
+            return;
         }
         let payload = trimmed.trim_start_matches("data:").trim();
         if payload.is_empty() || payload == "[DONE]" {
-            pending_event_name = None;
-            continue;
+            self.pending_event_name = None;
+            return;
         }
         match serde_json::from_str::<Value>(payload) {
             Ok(value) => {
-                let event_name = pending_event_name.take();
-                if model.is_none() {
-                    model = extract_model_from_payload(&value);
+                let event_name = self.pending_event_name.take();
+                if self.model.is_none() {
+                    self.model = extract_model_from_payload(&value);
                 }
-                if service_tier.is_none() {
-                    service_tier = extract_service_tier_from_payload(&value);
+                if self.service_tier.is_none() {
+                    self.service_tier = extract_service_tier_from_payload(&value);
                 }
                 if let Some(parsed_usage) = extract_usage_from_payload(&value) {
-                    usage = parsed_usage;
-                    usage_found = true;
+                    self.usage = parsed_usage;
+                    self.usage_found = true;
                 }
                 if stream_payload_indicates_failure(event_name.as_deref(), &value) {
                     let candidate = event_name
                         .clone()
                         .or_else(|| extract_stream_payload_type(&value))
                         .unwrap_or_else(|| "response.failed".to_string());
-                    if stream_terminal_event.is_none() || candidate == "response.failed" {
-                        stream_terminal_event = Some(candidate);
+                    if self.stream_terminal_event.is_none() || candidate == "response.failed" {
+                        self.stream_terminal_event = Some(candidate);
                     }
                 }
-                if upstream_error_code.is_none() {
-                    upstream_error_code = extract_upstream_error_code(&value);
+                if self.upstream_error_code.is_none() {
+                    self.upstream_error_code = extract_upstream_error_code(&value);
                 }
-                if upstream_error_message.is_none() {
-                    upstream_error_message = extract_upstream_error_message(&value);
+                if self.upstream_error_message.is_none() {
+                    self.upstream_error_message = extract_upstream_error_message(&value);
                 }
-                if upstream_request_id.is_none() {
-                    upstream_request_id = extract_upstream_request_id(&value);
+                if self.upstream_request_id.is_none() {
+                    self.upstream_request_id = extract_upstream_request_id(&value);
                 }
             }
             Err(_) => {
-                pending_event_name = None;
-                parse_error_seen = true;
+                self.pending_event_name = None;
+                self.parse_error_seen = true;
             }
         }
     }
 
-    let usage_missing_reason = if usage_found {
-        None
-    } else if stream_terminal_event.is_some() {
-        Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED.to_string())
-    } else if parse_error_seen {
-        Some("stream_event_parse_error".to_string())
-    } else {
-        Some("usage_missing_in_stream".to_string())
-    };
+    fn finish(self) -> ResponseCaptureInfo {
+        let usage_missing_reason = if self.usage_found {
+            None
+        } else if self.stream_terminal_event.is_some() {
+            Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED.to_string())
+        } else if self.parse_error_seen {
+            Some("stream_event_parse_error".to_string())
+        } else {
+            Some("usage_missing_in_stream".to_string())
+        };
 
-    ResponseCaptureInfo {
-        model,
-        usage,
-        usage_missing_reason,
-        service_tier,
-        stream_terminal_event,
-        upstream_error_code,
-        upstream_error_message,
-        upstream_request_id,
+        ResponseCaptureInfo {
+            model: self.model,
+            usage: self.usage,
+            usage_missing_reason,
+            service_tier: self.service_tier,
+            stream_terminal_event: self.stream_terminal_event,
+            upstream_error_code: self.upstream_error_code,
+            upstream_error_message: self.upstream_error_message,
+            upstream_request_id: self.upstream_request_id,
+        }
     }
+}
+
+fn parse_stream_response_payload(bytes: &[u8]) -> ResponseCaptureInfo {
+    let text = String::from_utf8_lossy(bytes);
+    let mut parser = StreamResponsePayloadParser::default();
+    for line in text.lines() {
+        parser.ingest_line(line);
+    }
+    parser.finish()
+}
+
+fn parse_stream_response_payload_from_reader<R: Read>(
+    reader: R,
+) -> io::Result<ResponseCaptureInfo> {
+    let mut parser = StreamResponsePayloadParser::default();
+    let mut reader = io::BufReader::new(reader);
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        let read = reader.read_until(b'\n', &mut line)?;
+        if read == 0 {
+            break;
+        }
+        let decoded = String::from_utf8_lossy(&line);
+        parser.ingest_line(decoded.as_ref());
+    }
+    Ok(parser.finish())
 }
 
 fn extract_stream_payload_type(value: &Value) -> Option<String> {
@@ -16714,13 +16787,151 @@ fn summarize_response_content_encoding(content_encoding: Option<&str>) -> String
     }
 }
 
+#[derive(Default)]
+struct RawResponsePreviewBuffer {
+    bytes: Vec<u8>,
+}
+
+impl RawResponsePreviewBuffer {
+    fn append(&mut self, chunk: &[u8]) {
+        let remaining = RAW_RESPONSE_PREVIEW_LIMIT.saturating_sub(self.bytes.len());
+        if remaining == 0 || chunk.is_empty() {
+            return;
+        }
+        self.bytes
+            .extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+    }
+
+    fn as_slice(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    fn into_preview(self) -> String {
+        build_raw_response_preview(&self.bytes)
+    }
+}
+
+struct StreamingRawPayloadWriter {
+    path: PathBuf,
+    max_bytes: Option<usize>,
+    written_bytes: usize,
+    meta: RawPayloadMeta,
+    file: Option<tokio::fs::File>,
+}
+
+impl StreamingRawPayloadWriter {
+    fn new(config: &AppConfig, invoke_id: &str, kind: &str) -> Self {
+        let path = config
+            .resolved_proxy_raw_dir()
+            .join(format!("{invoke_id}-{kind}.bin"));
+        Self {
+            path,
+            max_bytes: config.proxy_raw_max_bytes,
+            written_bytes: 0,
+            meta: RawPayloadMeta::default(),
+            file: None,
+        }
+    }
+
+    async fn ensure_file(&mut self) -> io::Result<()> {
+        if self.file.is_some() {
+            return Ok(());
+        }
+        let Some(parent) = self.path.parent() else {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("raw payload path has no parent: {}", self.path.display()),
+            ));
+        };
+        tokio::fs::create_dir_all(parent).await?;
+        let file = tokio::fs::File::create(&self.path).await?;
+        self.meta.path = Some(self.path.to_string_lossy().to_string());
+        self.file = Some(file);
+        Ok(())
+    }
+
+    fn mark_max_bytes_exceeded(&mut self) {
+        self.meta.truncated = true;
+        self.meta
+            .truncated_reason
+            .get_or_insert_with(|| "max_bytes_exceeded".to_string());
+    }
+
+    async fn record_write_failure(&mut self, err: io::Error) {
+        self.meta.truncated = true;
+        self.meta.truncated_reason = Some(format!("write_failed:{err}"));
+        self.file = None;
+        if self.meta.path.is_some() {
+            let _ = tokio::fs::remove_file(&self.path).await;
+            self.meta.path = None;
+        }
+    }
+
+    async fn append(&mut self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+
+        self.meta.size_bytes = self.meta.size_bytes.saturating_add(bytes.len() as i64);
+
+        if self
+            .meta
+            .truncated_reason
+            .as_deref()
+            .is_some_and(|reason| reason.starts_with("write_failed:"))
+        {
+            return;
+        }
+
+        if let Err(err) = self.ensure_file().await {
+            self.record_write_failure(err).await;
+            return;
+        }
+
+        let write_len = if let Some(limit) = self.max_bytes {
+            let remaining = limit.saturating_sub(self.written_bytes);
+            if remaining == 0 {
+                self.mark_max_bytes_exceeded();
+                return;
+            }
+            let write_len = remaining.min(bytes.len());
+            if write_len < bytes.len() {
+                self.mark_max_bytes_exceeded();
+            }
+            write_len
+        } else {
+            bytes.len()
+        };
+
+        if write_len == 0 {
+            return;
+        }
+
+        if let Some(file) = self.file.as_mut() {
+            if let Err(err) = file.write_all(&bytes[..write_len]).await {
+                self.record_write_failure(err).await;
+                return;
+            }
+            self.written_bytes = self.written_bytes.saturating_add(write_len);
+        }
+    }
+
+    async fn finish(mut self) -> RawPayloadMeta {
+        if let Some(file) = self.file.as_mut()
+            && let Err(err) = file.flush().await
+        {
+            self.record_write_failure(err).await;
+        }
+        self.meta
+    }
+}
+
 fn build_raw_response_preview(bytes: &[u8]) -> String {
-    const PREVIEW_LIMIT: usize = 16 * 1024;
     if bytes.is_empty() {
         return "{}".to_string();
     }
-    let preview = if bytes.len() > PREVIEW_LIMIT {
-        &bytes[..PREVIEW_LIMIT]
+    let preview = if bytes.len() > RAW_RESPONSE_PREVIEW_LIMIT {
+        &bytes[..RAW_RESPONSE_PREVIEW_LIMIT]
     } else {
         bytes
     };
@@ -16755,6 +16966,127 @@ fn summarize_plaintext_upstream_error(bytes: &[u8]) -> Option<String> {
         return None;
     }
     Some(text.chars().take(240).collect())
+}
+
+fn extract_error_message_from_response_preview(bytes: &[u8]) -> Option<String> {
+    extract_error_message_from_response(bytes).or_else(|| summarize_plaintext_upstream_error(bytes))
+}
+
+fn response_capture_info_with_reason(reason: impl Into<String>) -> ResponseCaptureInfo {
+    ResponseCaptureInfo {
+        model: None,
+        usage: ParsedUsage::default(),
+        usage_missing_reason: Some(reason.into()),
+        service_tier: None,
+        stream_terminal_event: None,
+        upstream_error_code: None,
+        upstream_error_message: None,
+        upstream_request_id: None,
+    }
+}
+
+fn merge_response_capture_reason(
+    response_info: &mut ResponseCaptureInfo,
+    reason: impl Into<String>,
+) {
+    let reason = reason.into();
+    let combined_reason = if let Some(existing) = response_info.usage_missing_reason.take() {
+        format!("{reason};{existing}")
+    } else {
+        reason
+    };
+    response_info.usage_missing_reason = Some(combined_reason);
+}
+
+fn wrap_decoded_response_reader(
+    mut reader: Box<dyn Read + Send>,
+    content_encoding: Option<&str>,
+) -> std::result::Result<Box<dyn Read + Send>, String> {
+    let encodings = parse_content_encodings(content_encoding);
+    for encoding in encodings.iter().rev() {
+        reader = match encoding.as_str() {
+            "identity" => reader,
+            "gzip" | "x-gzip" => Box::new(GzDecoder::new(reader)),
+            "br" => Box::new(BrotliDecompressor::new(reader, 4096)),
+            "deflate" => Box::new(ZlibDecoder::new(reader)),
+            other => return Err(format!("unsupported_content_encoding:{other}")),
+        };
+    }
+    Ok(reader)
+}
+
+fn open_decoded_response_reader(
+    path: &Path,
+    content_encoding: Option<&str>,
+) -> std::result::Result<Box<dyn Read + Send>, String> {
+    let file = fs::File::open(path).map_err(|err| err.to_string())?;
+    wrap_decoded_response_reader(Box::new(file), content_encoding)
+}
+
+fn parse_nonstream_response_payload_from_raw_file(
+    target: ProxyCaptureTarget,
+    path: &Path,
+    content_encoding: Option<&str>,
+) -> std::result::Result<ResponseCaptureInfo, String> {
+    let mut reader = open_decoded_response_reader(path, content_encoding)?;
+    let mut decoded = Vec::new();
+    reader
+        .by_ref()
+        .take((BOUNDED_NON_STREAM_RESPONSE_PARSE_LIMIT_BYTES + 1) as u64)
+        .read_to_end(&mut decoded)
+        .map_err(|err| err.to_string())?;
+    if decoded.len() > BOUNDED_NON_STREAM_RESPONSE_PARSE_LIMIT_BYTES {
+        return Ok(response_capture_info_with_reason(
+            PROXY_USAGE_MISSING_NON_STREAM_PARSE_SKIPPED,
+        ));
+    }
+    Ok(parse_target_response_payload(target, &decoded, false, None))
+}
+
+fn parse_target_response_payload_from_raw_file(
+    target: ProxyCaptureTarget,
+    path: &Path,
+    is_stream_hint: bool,
+    content_encoding: Option<&str>,
+) -> std::result::Result<ResponseCaptureInfo, String> {
+    if is_stream_hint {
+        let reader = open_decoded_response_reader(path, content_encoding)?;
+        parse_stream_response_payload_from_reader(reader).map_err(|err| err.to_string())
+    } else {
+        parse_nonstream_response_payload_from_raw_file(target, path, content_encoding)
+    }
+}
+
+fn parse_target_response_payload_from_capture(
+    target: ProxyCaptureTarget,
+    resp_raw: &RawPayloadMeta,
+    preview_bytes: &[u8],
+    is_stream_hint: bool,
+    content_encoding: Option<&str>,
+) -> ResponseCaptureInfo {
+    if let Some(path) = resp_raw.path.as_deref() {
+        let path = PathBuf::from(path);
+        match parse_target_response_payload_from_raw_file(
+            target,
+            &path,
+            is_stream_hint,
+            content_encoding,
+        ) {
+            Ok(response_info) => response_info,
+            Err(reason) => {
+                let mut response_info = parse_target_response_payload(
+                    target,
+                    preview_bytes,
+                    is_stream_hint,
+                    content_encoding,
+                );
+                merge_response_capture_reason(&mut response_info, reason);
+                response_info
+            }
+        }
+    } else {
+        parse_target_response_payload(target, preview_bytes, is_stream_hint, content_encoding)
+    }
 }
 
 fn summarize_pool_upstream_http_failure(
