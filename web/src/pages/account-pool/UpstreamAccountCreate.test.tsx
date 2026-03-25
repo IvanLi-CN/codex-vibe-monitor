@@ -1775,6 +1775,120 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     });
   });
 
+  it("does not copy a cached single oauth url after a non-retryable sync failure", async () => {
+    vi.useFakeTimers();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const originalClipboard = navigator.clipboard;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText,
+      },
+    });
+    const updateOauthLogin = vi
+      .fn()
+      .mockRejectedValue(new Error("Request failed: 409 duplicate displayName"));
+    const getLoginSession = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    mockUpstreamAccounts({ updateOauthLogin, getLoginSession });
+    render();
+
+    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth");
+    await flushAsync();
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+
+    setInputValue('input[name="oauthDisplayName"]', "Duplicate OAuth");
+    await flushAsync();
+    clickButton(/Copy OAuth URL/i);
+    await flushAsync();
+
+    expect(updateOauthLogin).toHaveBeenCalled();
+    expect(writeText).not.toHaveBeenCalled();
+    expect(pageTextContent()).toContain("Request failed: 409 duplicate displayName");
+
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: originalClipboard,
+    });
+  });
+
+  it("does not send groupNote while syncing pending oauth metadata for an existing group", async () => {
+    vi.useFakeTimers();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const originalClipboard = navigator.clipboard;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText,
+      },
+    });
+    const updateOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      updatedAt: "2026-03-13T10:01:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    const getLoginSession = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      updatedAt: "2026-03-13T10:01:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    mockUpstreamAccounts({
+      groups: [{ groupName: "prod", note: "Saved note" }],
+      updateOauthLogin,
+      getLoginSession,
+    });
+    render();
+
+    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth");
+    await flushAsync();
+    setComboboxValue('input[name="oauthGroupName"]', "prod");
+    await flushAsync();
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+
+    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth Retry");
+    await flushAsync();
+    clickButton(/Copy OAuth URL/i);
+    await flushAsync();
+
+    expect(updateOauthLogin).toHaveBeenCalled();
+    expect(updateOauthLogin.mock.calls[0]?.[1]).toEqual({
+      displayName: "Fresh OAuth Retry",
+      groupName: "prod",
+      note: "",
+      tagIds: [],
+      isMother: false,
+      mailboxSessionId: "",
+      mailboxAddress: "",
+    });
+    expect(writeText).toHaveBeenCalledWith(
+      "https://auth.openai.com/authorize?login=1",
+    );
+
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: originalClipboard,
+    });
+  });
+
   it("dispatches an unload keepalive even while oauth metadata sync is already in flight", async () => {
     vi.useFakeTimers();
     let resolveFirstSync:
@@ -2916,6 +3030,60 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(writeText).toHaveBeenCalledWith(
       "https://auth.openai.com/authorize?login=1",
     );
+
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: originalClipboard,
+    });
+  });
+
+  it("does not copy a cached batch oauth url after a non-retryable sync failure", async () => {
+    vi.useFakeTimers();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const originalClipboard = navigator.clipboard;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText,
+      },
+    });
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    const updateOauthLogin = vi
+      .fn()
+      .mockRejectedValue(new Error("Request failed: 422 invalid tags"));
+    const getLoginSession = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    mockUpstreamAccounts({ beginOauthLogin, updateOauthLogin, getLoginSession });
+    render("/account-pool/upstream-accounts/new?mode=batchOauth");
+
+    setInputValue('input[name^="batchOauthDisplayName-"]', "Row One");
+    await flushAsync();
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+
+    setInputValue('input[name^="batchOauthDisplayName-"]', "Row One Retry");
+    await flushAsync();
+    clickButton(/Copy OAuth URL/i);
+    await flushAsync();
+
+    expect(updateOauthLogin).toHaveBeenCalled();
+    expect(writeText).not.toHaveBeenCalled();
+    expect(pageTextContent()).toContain("Request failed: 422 invalid tags");
 
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,

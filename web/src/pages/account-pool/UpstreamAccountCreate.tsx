@@ -609,6 +609,7 @@ function buildOauthLoginSessionUpdatePayload({
   groupName,
   note,
   groupNote,
+  includeGroupNote,
   tagIds,
   isMother,
   mailboxSession,
@@ -617,6 +618,7 @@ function buildOauthLoginSessionUpdatePayload({
   groupName: string;
   note: string;
   groupNote: string;
+  includeGroupNote: boolean;
   tagIds: number[];
   isMother: boolean;
   mailboxSession: OauthMailboxSessionSupported | null;
@@ -626,7 +628,9 @@ function buildOauthLoginSessionUpdatePayload({
     displayName: displayName.trim(),
     groupName: normalizedGroupName,
     note: note.trim(),
-    ...(normalizedGroupName ? { groupNote: groupNote.trim() } : {}),
+    ...(normalizedGroupName && includeGroupNote
+      ? { groupNote: groupNote.trim() }
+      : {}),
     tagIds,
     isMother,
     mailboxSessionId: mailboxSession?.sessionId ?? "",
@@ -1435,6 +1439,7 @@ export default function UpstreamAccountCreatePage() {
   );
   const singleOauthSessionSnapshot = useMemo(() => {
     if (isRelinking || session?.status !== "pending") return null;
+    const normalizedGroupName = normalizeGroupName(oauthGroupName);
     return buildPendingOauthSessionSnapshot(
       session.loginId,
       buildOauthLoginSessionUpdatePayload({
@@ -1442,6 +1447,9 @@ export default function UpstreamAccountCreatePage() {
         groupName: oauthGroupName,
         note: oauthNote,
         groupNote: resolvePendingGroupNoteForName(oauthGroupName),
+        includeGroupNote: Boolean(
+          normalizedGroupName && !isExistingGroup(groups, normalizedGroupName),
+        ),
         tagIds: oauthTagIds,
         isMother: oauthIsMother,
         mailboxSession: activeOauthMailboxSession,
@@ -1456,6 +1464,7 @@ export default function UpstreamAccountCreatePage() {
     oauthNote,
     oauthTagIds,
     isRelinking,
+    groups,
     resolvePendingGroupNoteForName,
     session?.loginId,
     session?.status,
@@ -1465,6 +1474,7 @@ export default function UpstreamAccountCreatePage() {
     const snapshots: Record<string, PendingOauthSessionSnapshot> = {};
     for (const row of batchRows) {
       if (row.session?.status !== "pending") continue;
+      const normalizedGroupName = normalizeGroupName(row.groupName);
       snapshots[row.session.loginId] = buildPendingOauthSessionSnapshot(
         row.session.loginId,
         buildOauthLoginSessionUpdatePayload({
@@ -1472,6 +1482,9 @@ export default function UpstreamAccountCreatePage() {
           groupName: row.groupName,
           note: row.note,
           groupNote: resolvePendingGroupNoteForName(row.groupName),
+          includeGroupNote: Boolean(
+            normalizedGroupName && !isExistingGroup(groups, normalizedGroupName),
+          ),
           tagIds: batchTagIds,
           isMother: row.isMother,
           mailboxSession: row.mailboxSession,
@@ -1480,7 +1493,7 @@ export default function UpstreamAccountCreatePage() {
       );
     }
     return snapshots;
-  }, [batchRows, batchTagIds, resolvePendingGroupNoteForName]);
+  }, [batchRows, batchTagIds, groups, resolvePendingGroupNoteForName]);
   singleOauthSessionSnapshotRef.current = singleOauthSessionSnapshot;
   batchOauthSessionSnapshotsRef.current = batchOauthSessionSnapshots;
   const getActivePendingOauthSessionSnapshots = useCallback(() => {
@@ -3274,11 +3287,15 @@ export default function UpstreamAccountCreatePage() {
     setOauthDuplicateWarning(null);
     setBusyAction("oauth-generate");
     try {
+      const normalizedGroupName = normalizeGroupName(oauthGroupName);
       const oauthLoginSessionPayload = buildOauthLoginSessionUpdatePayload({
         displayName: oauthDisplayName,
         groupName: oauthGroupName,
         note: oauthNote,
         groupNote: resolvePendingGroupNoteForName(oauthGroupName),
+        includeGroupNote: Boolean(
+          normalizedGroupName && !isExistingGroup(groups, normalizedGroupName),
+        ),
         tagIds: oauthTagIds,
         isMother: oauthIsMother,
         mailboxSession: activeOauthMailboxSession,
@@ -3331,7 +3348,10 @@ export default function UpstreamAccountCreatePage() {
         return;
       }
       authUrlToCopy = latestSession.authUrl;
-    } catch {
+    } catch (err) {
+      if (!shouldRetryPendingOauthSessionSync(err)) {
+        return;
+      }
       // Fall back to the last known pending auth URL on transient sync failures.
     }
     const result = await copyText(authUrlToCopy, {
@@ -3653,11 +3673,15 @@ export default function UpstreamAccountCreatePage() {
     }));
 
     try {
+      const normalizedGroupName = normalizeGroupName(row.groupName);
       const oauthLoginSessionPayload = buildOauthLoginSessionUpdatePayload({
         displayName: row.displayName,
         groupName: row.groupName,
         note: row.note,
         groupNote: resolvePendingGroupNoteForName(row.groupName),
+        includeGroupNote: Boolean(
+          normalizedGroupName && !isExistingGroup(groups, normalizedGroupName),
+        ),
         tagIds: batchTagIds,
         isMother: row.isMother,
         mailboxSession: row.mailboxSession,
@@ -3723,7 +3747,10 @@ export default function UpstreamAccountCreatePage() {
         return;
       }
       authUrlToCopy = latestSession.authUrl;
-    } catch {
+    } catch (err) {
+      if (!shouldRetryPendingOauthSessionSync(err)) {
+        return;
+      }
       // Fall back to the last known pending auth URL on transient sync failures.
     }
 
