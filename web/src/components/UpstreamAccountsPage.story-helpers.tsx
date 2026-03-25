@@ -1143,6 +1143,8 @@ function createStore(): StoryStore {
   const tagFilterStory = storyId?.endsWith('--tag-filter-all-match') === true
   const availabilityBadgeStory =
     storyId?.endsWith('--availability-badges') === true
+  const oauthRetryTerminalStateStory =
+    storyId?.endsWith('--oauth-retry-terminal-state') === true
   const quotaExhaustedOauthStory =
     storyId?.endsWith('--quota-exhausted-oauth') === true
   const denseRosterStory =
@@ -1511,10 +1513,81 @@ function createStore(): StoryStore {
         }),
       ]
     : []
+  const oauthRetryTerminalStateAccounts = oauthRetryTerminalStateStory
+    ? [
+        createOauthAccount(401, {
+          displayName: 'Retry refresh failure settled as needs reauth',
+          groupName: 'production',
+          isMother: false,
+          status: 'needs_reauth',
+          displayStatus: 'needs_reauth',
+          enableStatus: 'enabled',
+          workStatus: 'idle',
+          healthStatus: 'needs_reauth',
+          syncState: 'idle',
+          planType: 'team',
+          email: 'retry-needs-reauth@example.com',
+          chatgptAccountId: 'org_retry_terminal',
+          chatgptUserId: 'user_retry_terminal',
+          lastSuccessfulSyncAt: '2026-03-25T01:40:00.000Z',
+          lastActivityAt: '2026-03-25T02:01:00.000Z',
+          lastError:
+            'upstream usage snapshot request returned 403 Forbidden: Authentication token has been invalidated, please sign in again',
+          lastErrorAt: '2026-03-25T02:04:00.000Z',
+          lastAction: 'sync_failed',
+          lastActionSource: 'sync_maintenance',
+          lastActionReasonCode: 'reauth_required',
+          lastActionReasonMessage:
+            'upstream usage snapshot request returned 403 Forbidden: Authentication token has been invalidated, please sign in again',
+          lastActionAt: '2026-03-25T02:04:00.000Z',
+          lastActionHttpStatus: 403,
+          primaryWindow: buildWindow(
+            52,
+            300,
+            '52% used',
+            '5h rolling window',
+            '2026-03-25T06:40:00.000Z',
+          ),
+          secondaryWindow: buildWindow(
+            40,
+            10080,
+            '40% used',
+            '7d rolling window',
+            '2026-04-01T00:00:00.000Z',
+          ),
+          tags: pickStoryTags('vip', 'canary'),
+          note: 'Retry-after-refresh failure should settle into a terminal state instead of showing syncing forever.',
+          recentActions: [
+            buildRecentAction(
+              9201,
+              '2026-03-25T02:04:00.000Z',
+              'sync_failed',
+              'sync_maintenance',
+              'reauth_required',
+              'upstream usage snapshot request returned 403 Forbidden: Authentication token has been invalidated, please sign in again',
+              'upstream_http_auth',
+              403,
+            ),
+            buildRecentAction(
+              9200,
+              '2026-03-25T01:40:00.000Z',
+              'sync_succeeded',
+              'sync_manual',
+              'sync_ok',
+              'Manual sync refreshed the access token and capability snapshot.',
+              null,
+              null,
+            ),
+          ],
+        }),
+      ]
+    : []
   const operationalRosterAccounts = compactStory
     ? []
     : buildOperationalRosterAccounts(denseRosterStory ? 3 : 1)
-  const storyAccounts = quotaExhaustedOauthStory
+  const storyAccounts = oauthRetryTerminalStateStory
+    ? oauthRetryTerminalStateAccounts
+    : quotaExhaustedOauthStory
     ? quotaExhaustedOauthAccounts
     : availabilityBadgeStory
       ? availabilityBadgeAccounts

@@ -6360,13 +6360,27 @@ async fn sync_oauth_account(
                     latest_row = load_upstream_account_row(&state.pool, row.id)
                         .await?
                         .ok_or_else(|| anyhow!("account disappeared during retry refresh"))?;
-                    fetch_usage_snapshot(
+                    match fetch_usage_snapshot(
                         &state.http_clients.shared,
                         &state.config,
                         &refreshed.access_token,
                         latest_row.chatgpt_account_id.as_deref(),
                     )
-                    .await?
+                    .await
+                    {
+                        Ok(snapshot) => snapshot,
+                        Err(retry_err) => {
+                            record_classified_account_sync_failure(
+                                &state.pool,
+                                row.id,
+                                &row.kind,
+                                sync_source,
+                                &retry_err.to_string(),
+                            )
+                            .await?;
+                            return Ok(());
+                        }
+                    }
                 }
                 Err(refresh_err) if is_reauth_error(&refresh_err) => {
                     record_account_sync_failure(
@@ -6383,26 +6397,12 @@ async fn sync_oauth_account(
                     return Ok(());
                 }
                 Err(refresh_err) => {
-                    let (disposition, reason_code, next_status, http_status, failure_kind) =
-                        classify_sync_failure(&row.kind, &refresh_err.to_string());
-                    let next_status = match disposition {
-                        UpstreamAccountFailureDisposition::HardUnavailable => {
-                            next_status.unwrap_or(UPSTREAM_ACCOUNT_STATUS_ERROR)
-                        }
-                        UpstreamAccountFailureDisposition::RateLimited
-                        | UpstreamAccountFailureDisposition::Retryable => {
-                            UPSTREAM_ACCOUNT_STATUS_ACTIVE
-                        }
-                    };
-                    record_account_sync_failure(
+                    record_classified_account_sync_failure(
                         &state.pool,
                         row.id,
+                        &row.kind,
                         sync_source,
-                        next_status,
                         &refresh_err.to_string(),
-                        reason_code,
-                        http_status,
-                        failure_kind,
                     )
                     .await?;
                     return Ok(());
@@ -6410,24 +6410,12 @@ async fn sync_oauth_account(
             }
         }
         Err(err) => {
-            let (disposition, reason_code, next_status, http_status, failure_kind) =
-                classify_sync_failure(&row.kind, &err.to_string());
-            let next_status = match disposition {
-                UpstreamAccountFailureDisposition::HardUnavailable => {
-                    next_status.unwrap_or(UPSTREAM_ACCOUNT_STATUS_ERROR)
-                }
-                UpstreamAccountFailureDisposition::RateLimited
-                | UpstreamAccountFailureDisposition::Retryable => UPSTREAM_ACCOUNT_STATUS_ACTIVE,
-            };
-            record_account_sync_failure(
+            record_classified_account_sync_failure(
                 &state.pool,
                 row.id,
+                &row.kind,
                 sync_source,
-                next_status,
                 &err.to_string(),
-                reason_code,
-                http_status,
-                failure_kind,
             )
             .await?;
             return Ok(());
@@ -10018,16 +10006,16 @@ fn derive_upstream_account_health_status(
     ) {
         return UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL;
     }
+    if status == UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH
+        || is_explicit_reauth_error_message(error_message)
+    {
+        return UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH;
+    }
     if is_upstream_unavailable_error_message(error_message) {
         return UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE;
     }
     if is_upstream_rejected_error_message(error_message) {
         return UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED;
-    }
-    if status == UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH
-        || is_explicit_reauth_error_message(error_message)
-    {
-        return UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH;
     }
     if status == UPSTREAM_ACCOUNT_STATUS_ERROR
         || is_bridge_error_message(error_message)
@@ -10831,6 +10819,35 @@ async fn record_account_sync_failure(
     )
     .await?;
     Ok(())
+}
+
+async fn record_classified_account_sync_failure(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    account_kind: &str,
+    source: &str,
+    error_message: &str,
+) -> Result<()> {
+    let (disposition, reason_code, next_status, http_status, failure_kind) =
+        classify_sync_failure(account_kind, error_message);
+    let next_status = match disposition {
+        UpstreamAccountFailureDisposition::HardUnavailable => {
+            next_status.unwrap_or(UPSTREAM_ACCOUNT_STATUS_ERROR)
+        }
+        UpstreamAccountFailureDisposition::RateLimited
+        | UpstreamAccountFailureDisposition::Retryable => UPSTREAM_ACCOUNT_STATUS_ACTIVE,
+    };
+    record_account_sync_failure(
+        pool,
+        account_id,
+        source,
+        next_status,
+        error_message,
+        reason_code,
+        http_status,
+        failure_kind,
+    )
+    .await
 }
 
 async fn record_account_update_action(
@@ -14320,7 +14337,37 @@ mod tests {
         base_url: &str,
         maintenance_parallelism: usize,
     ) -> Arc<AppState> {
-        let config = usage_snapshot_test_config(base_url, "codex-vibe-monitor/test");
+        test_app_state_with_upstream_endpoints_and_parallelism(
+            base_url,
+            DEFAULT_UPSTREAM_ACCOUNTS_OAUTH_ISSUER,
+            "codex-vibe-monitor/test",
+            maintenance_parallelism,
+        )
+        .await
+    }
+
+    async fn test_app_state_with_usage_and_oauth_base(
+        usage_base_url: &str,
+        oauth_issuer: &str,
+    ) -> Arc<AppState> {
+        test_app_state_with_upstream_endpoints_and_parallelism(
+            usage_base_url,
+            oauth_issuer,
+            UPSTREAM_USAGE_BROWSER_USER_AGENT,
+            DEFAULT_UPSTREAM_ACCOUNTS_MAINTENANCE_PARALLELISM,
+        )
+        .await
+    }
+
+    async fn test_app_state_with_upstream_endpoints_and_parallelism(
+        usage_base_url: &str,
+        oauth_issuer: &str,
+        user_agent: &str,
+        maintenance_parallelism: usize,
+    ) -> Arc<AppState> {
+        let mut config = usage_snapshot_test_config(usage_base_url, user_agent);
+        config.upstream_accounts_oauth_issuer =
+            Url::parse(oauth_issuer).expect("valid oauth issuer");
         let http_clients = HttpClients::build(&config).expect("build http clients");
         let (broadcaster, _) = broadcast::channel(8);
         Arc::new(AppState {
@@ -14550,6 +14597,86 @@ mod tests {
         });
 
         (format!("http://{addr}/backend-api"), server)
+    }
+
+    #[derive(Clone)]
+    struct SequencedOauthSyncServerState {
+        usage_responses: Arc<Mutex<std::collections::VecDeque<(StatusCode, String)>>>,
+        usage_requests: Arc<AtomicUsize>,
+        token_requests: Arc<AtomicUsize>,
+        token_response: Arc<String>,
+    }
+
+    async fn spawn_sequenced_oauth_sync_server(
+        usage_responses: Vec<(StatusCode, serde_json::Value)>,
+        token_response: serde_json::Value,
+    ) -> (
+        String,
+        String,
+        Arc<AtomicUsize>,
+        Arc<AtomicUsize>,
+        JoinHandle<()>,
+    ) {
+        async fn usage_handler(
+            State(state): State<SequencedOauthSyncServerState>,
+        ) -> (StatusCode, String) {
+            state.usage_requests.fetch_add(1, Ordering::SeqCst);
+            let mut responses = state.usage_responses.lock().await;
+            responses.pop_front().unwrap_or_else(|| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    json!({
+                        "error": {
+                            "message": "unexpected extra usage request"
+                        }
+                    })
+                    .to_string(),
+                )
+            })
+        }
+
+        async fn token_handler(
+            State(state): State<SequencedOauthSyncServerState>,
+        ) -> (StatusCode, String) {
+            state.token_requests.fetch_add(1, Ordering::SeqCst);
+            (StatusCode::OK, (*state.token_response).clone())
+        }
+
+        let usage_responses = usage_responses
+            .into_iter()
+            .map(|(status, body)| (status, body.to_string()))
+            .collect::<std::collections::VecDeque<_>>();
+        let usage_requests = Arc::new(AtomicUsize::new(0));
+        let token_requests = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .route("/backend-api/wham/usage", get(usage_handler))
+            .route("/oauth/token", post(token_handler))
+            .with_state(SequencedOauthSyncServerState {
+                usage_responses: Arc::new(Mutex::new(usage_responses)),
+                usage_requests: usage_requests.clone(),
+                token_requests: token_requests.clone(),
+                token_response: Arc::new(token_response.to_string()),
+            });
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind sequenced oauth sync server");
+        let addr = listener
+            .local_addr()
+            .expect("sequenced oauth sync server addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve sequenced oauth sync server");
+        });
+        let origin = format!("http://{addr}");
+
+        (
+            format!("{origin}/backend-api"),
+            origin,
+            usage_requests,
+            token_requests,
+            server,
+        )
     }
 
     #[derive(Clone)]
@@ -17034,6 +17161,279 @@ mod tests {
             after.last_action.as_deref(),
             Some(UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED)
         );
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn oauth_sync_retry_after_refresh_settles_to_needs_reauth_without_stale_syncing() {
+        let (usage_base_url, oauth_issuer, usage_requests, token_requests, server) =
+            spawn_sequenced_oauth_sync_server(
+                vec![
+                    (
+                        StatusCode::UNAUTHORIZED,
+                        json!({
+                            "error": {
+                                "message": "Session cookie expired during usage snapshot"
+                            }
+                        }),
+                    ),
+                    (
+                        StatusCode::FORBIDDEN,
+                        json!({
+                            "error": {
+                                "message": "Authentication token has been invalidated, please sign in again"
+                            }
+                        }),
+                    ),
+                ],
+                json!({
+                    "access_token": "refreshed-access-token",
+                    "refresh_token": "refresh-token-rotated",
+                    "id_token": test_id_token(
+                        "reauth-required@example.com",
+                        Some("org_retry_reauth"),
+                        Some("user_retry_reauth"),
+                        Some("team"),
+                    ),
+                    "token_type": "Bearer",
+                    "expires_in": 3600
+                }),
+            )
+            .await;
+        let state = test_app_state_with_usage_and_oauth_base(&usage_base_url, &oauth_issuer).await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Retry Needs Reauth OAuth",
+            "reauth-required@example.com",
+            "org_retry_reauth",
+            "user_retry_reauth",
+        )
+        .await;
+        let row = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth row")
+            .expect("oauth row exists");
+
+        sync_oauth_account(&state, &row, SyncCause::Maintenance)
+            .await
+            .expect("sync oauth account");
+
+        let after = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth row after retry failure")
+            .expect("oauth row exists after retry failure");
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH);
+        assert!(after.last_synced_at.is_some());
+        assert!(after.last_successful_sync_at.is_none());
+        assert_eq!(
+            after.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_SYNC_FAILED)
+        );
+        assert_eq!(
+            after.last_action_reason_code.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED)
+        );
+        assert_eq!(after.last_action_http_status, Some(403));
+        assert_eq!(
+            after.last_error.as_deref(),
+            Some(
+                "usage endpoint returned 403 Forbidden: Authentication token has been invalidated, please sign in again"
+            )
+        );
+        assert!(after.last_action_at.is_some());
+
+        let decrypted = decrypt_credentials(
+            crypto_key,
+            after
+                .encrypted_credentials
+                .as_deref()
+                .expect("encrypted oauth credentials"),
+        )
+        .expect("decrypt refreshed credentials");
+        let StoredCredentials::Oauth(credentials) = decrypted else {
+            panic!("unexpected credential kind after refresh")
+        };
+        assert_eq!(credentials.access_token, "refreshed-access-token");
+        assert_eq!(credentials.refresh_token, "refresh-token-rotated");
+
+        let summary = build_summary_from_row(
+            &after,
+            None,
+            after.last_activity_at.clone(),
+            vec![],
+            None,
+            0,
+            Utc::now(),
+        );
+        assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH);
+        assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH);
+        assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH);
+        assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_IDLE);
+        assert_eq!(summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
+
+        let detail = load_upstream_account_detail(&state.pool, account_id)
+            .await
+            .expect("load detail export")
+            .expect("detail export exists");
+        assert_eq!(
+            detail.summary.display_status,
+            UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH
+        );
+        assert_eq!(detail.summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
+        assert_eq!(
+            detail
+                .recent_actions
+                .first()
+                .map(|event| event.action.as_str()),
+            Some(UPSTREAM_ACCOUNT_ACTION_SYNC_FAILED)
+        );
+        assert_eq!(
+            detail
+                .recent_actions
+                .first()
+                .and_then(|event| event.reason_code.as_deref()),
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED)
+        );
+        assert_eq!(usage_requests.load(Ordering::SeqCst), 2);
+        assert_eq!(token_requests.load(Ordering::SeqCst), 1);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn oauth_sync_retry_after_refresh_records_non_auth_terminal_failure_without_stale_syncing()
+     {
+        let (usage_base_url, oauth_issuer, usage_requests, token_requests, server) =
+            spawn_sequenced_oauth_sync_server(
+                vec![
+                    (
+                        StatusCode::UNAUTHORIZED,
+                        json!({
+                            "error": {
+                                "message": "Session cookie expired during usage snapshot"
+                            }
+                        }),
+                    ),
+                    (
+                        StatusCode::BAD_GATEWAY,
+                        json!({
+                            "error": {
+                                "message": "gateway temporarily unavailable"
+                            }
+                        }),
+                    ),
+                ],
+                json!({
+                    "access_token": "refreshed-temporary-token",
+                    "refresh_token": "refresh-token-rotated",
+                    "id_token": test_id_token(
+                        "transport-failure@example.com",
+                        Some("org_retry_gateway"),
+                        Some("user_retry_gateway"),
+                        Some("team"),
+                    ),
+                    "token_type": "Bearer",
+                    "expires_in": 3600
+                }),
+            )
+            .await;
+        let state = test_app_state_with_usage_and_oauth_base(&usage_base_url, &oauth_issuer).await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Retry Gateway Failure OAuth",
+            "transport-failure@example.com",
+            "org_retry_gateway",
+            "user_retry_gateway",
+        )
+        .await;
+        let row = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth row")
+            .expect("oauth row exists");
+
+        sync_oauth_account(&state, &row, SyncCause::Maintenance)
+            .await
+            .expect("sync oauth account");
+
+        let after = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth row after gateway failure")
+            .expect("oauth row exists after gateway failure");
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert!(after.last_synced_at.is_some());
+        assert!(after.last_successful_sync_at.is_none());
+        assert_eq!(
+            after.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_SYNC_FAILED)
+        );
+        assert_eq!(
+            after.last_action_reason_code.as_deref(),
+            Some("upstream_http_5xx")
+        );
+        assert_eq!(after.last_action_http_status, Some(502));
+        assert_eq!(
+            after.last_error.as_deref(),
+            Some("usage endpoint returned 502 Bad Gateway: gateway temporarily unavailable")
+        );
+        assert!(after.last_action_at.is_some());
+
+        let summary = build_summary_from_row(
+            &after,
+            None,
+            after.last_activity_at.clone(),
+            vec![],
+            None,
+            0,
+            Utc::now(),
+        );
+        assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert_eq!(
+            summary.display_status,
+            UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE
+        );
+        assert_eq!(
+            summary.health_status,
+            UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE
+        );
+        assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_IDLE);
+        assert_eq!(summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
+
+        let detail = load_upstream_account_detail(&state.pool, account_id)
+            .await
+            .expect("load detail export")
+            .expect("detail export exists");
+        assert_eq!(
+            detail.summary.display_status,
+            UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE
+        );
+        assert_eq!(detail.summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
+        assert_eq!(
+            detail
+                .recent_actions
+                .first()
+                .map(|event| event.action.as_str()),
+            Some(UPSTREAM_ACCOUNT_ACTION_SYNC_FAILED)
+        );
+        assert_eq!(
+            detail
+                .recent_actions
+                .first()
+                .and_then(|event| event.http_status),
+            Some(502)
+        );
+        assert_eq!(usage_requests.load(Ordering::SeqCst), 2);
+        assert_eq!(token_requests.load(Ordering::SeqCst), 1);
         server.abort();
     }
 
