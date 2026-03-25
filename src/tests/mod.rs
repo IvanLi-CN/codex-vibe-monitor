@@ -30547,6 +30547,248 @@ async fn materialize_historical_rollups_marks_batches_and_prune_removes_files() 
 }
 
 #[tokio::test]
+async fn materialize_historical_rollups_keeps_existing_rollups_if_replay_fails() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("historical-rollup-materialize-atomic").await;
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days((config.invocation_max_days + 2) as i64))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived local hour");
+    let archived_occurred_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(10))
+            .expect("valid archived occurred_at"),
+    );
+    let bucket_start_epoch =
+        invocation_bucket_start_epoch(&archived_occurred_at).expect("invocation bucket epoch");
+    let missing_archive_path =
+        archive_batch_file_path(&config, "codex_invocations", &archived_occurred_at[..7])
+            .expect("resolve missing archive path");
+
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0, 0, ?8)
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind(7_i64)
+    .bind(6_i64)
+    .bind(1_i64)
+    .bind(77_i64)
+    .bind(7.7_f64)
+    .bind("[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]")
+    .execute(&pool)
+    .await
+    .expect("seed existing invocation rollup");
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))
+        "#,
+    )
+    .bind("codex_invocations")
+    .bind(&archived_occurred_at[..7])
+    .bind(missing_archive_path.to_string_lossy().to_string())
+    .bind("deadbeef")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&archived_occurred_at)
+    .bind(&archived_occurred_at)
+    .execute(&pool)
+    .await
+    .expect("insert missing archive manifest");
+
+    let err = materialize_historical_rollups(&pool, false)
+        .await
+        .expect_err("materialization should fail when archive file is missing");
+    assert!(
+        err.to_string().contains("missing"),
+        "error should mention missing archive file: {err:#}"
+    );
+
+    let total_count: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly WHERE source = ?1",
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load retained invocation rollup total");
+    assert_eq!(
+        total_count, 7,
+        "failed materialization must keep prior rollups"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn recompute_invocation_hourly_rollups_merges_archive_rows_for_bucket() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("historical-rollup-recompute-archive-merge").await;
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days((config.invocation_max_days + 2) as i64))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived local hour");
+    let archived_occurred_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(10))
+            .expect("valid archived occurred_at"),
+    );
+    let live_occurred_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(20))
+            .expect("valid live occurred_at"),
+    );
+    seed_invocation_archive_batch(
+        &pool,
+        &config,
+        "historical-rollup-recompute-archive-merge",
+        &[(
+            1_i64,
+            "historical-rollup-recompute-archive-merge-archived",
+            archived_occurred_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            12_i64,
+            0.12_f64,
+            Some(120.0),
+        )],
+    )
+    .await;
+    insert_retention_invocation(
+        &pool,
+        "historical-rollup-recompute-archive-merge-live",
+        &live_occurred_at,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"promptCacheKey\":\"live-key\"}"),
+        "{}",
+        None,
+        None,
+        Some(5),
+        Some(0.5),
+    )
+    .await;
+
+    materialize_historical_rollups(&pool, false)
+        .await
+        .expect("materialize historical rollups with mixed archive/live bucket");
+
+    let live_id: i64 =
+        sqlx::query_scalar("SELECT id FROM codex_invocations WHERE invoke_id = ?1 LIMIT 1")
+            .bind("historical-rollup-recompute-archive-merge-live")
+            .fetch_one(&pool)
+            .await
+            .expect("load live invocation id");
+    let bucket_start_epoch =
+        invocation_bucket_start_epoch(&live_occurred_at).expect("invocation bucket epoch");
+    for target in INVOCATION_HOURLY_ROLLUP_TARGETS {
+        sqlx::query(
+            r#"
+            INSERT INTO hourly_rollup_materialized_buckets (
+                target,
+                bucket_start_epoch,
+                source,
+                materialized_at
+            )
+            VALUES (?1, ?2, ?3, datetime('now'))
+            ON CONFLICT(target, bucket_start_epoch, source) DO UPDATE SET
+                materialized_at = datetime('now')
+            "#,
+        )
+        .bind(target)
+        .bind(bucket_start_epoch)
+        .bind(SOURCE_PROXY)
+        .execute(&pool)
+        .await
+        .expect("seed materialized bucket marker");
+    }
+
+    let before = sqlx::query_as::<_, StatsRow>(
+        r#"
+        SELECT
+            COALESCE(SUM(total_count), 0) AS total_count,
+            COALESCE(SUM(success_count), 0) AS success_count,
+            COALESCE(SUM(failure_count), 0) AS failure_count,
+            COALESCE(SUM(total_cost), 0.0) AS total_cost,
+            COALESCE(SUM(total_tokens), 0) AS total_tokens
+        FROM invocation_rollup_hourly
+        WHERE bucket_start_epoch = ?1 AND source = ?2
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load pre-recompute bucket totals");
+    assert_eq!(before.total_count, 2);
+    assert_eq!(before.total_tokens, 17);
+    assert_f64_close(before.total_cost, 0.62);
+
+    let mut tx = pool.begin().await.expect("begin recompute tx");
+    sqlx::query("UPDATE codex_invocations SET total_tokens = ?1, cost = ?2 WHERE id = ?3")
+        .bind(15_i64)
+        .bind(1.5_f64)
+        .bind(live_id)
+        .execute(tx.as_mut())
+        .await
+        .expect("update live invocation before recompute");
+    recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &[live_id])
+        .await
+        .expect("recompute invocation hourly rollups");
+    tx.commit().await.expect("commit recompute tx");
+
+    let after = sqlx::query_as::<_, StatsRow>(
+        r#"
+        SELECT
+            COALESCE(SUM(total_count), 0) AS total_count,
+            COALESCE(SUM(success_count), 0) AS success_count,
+            COALESCE(SUM(failure_count), 0) AS failure_count,
+            COALESCE(SUM(total_cost), 0.0) AS total_cost,
+            COALESCE(SUM(total_tokens), 0) AS total_tokens
+        FROM invocation_rollup_hourly
+        WHERE bucket_start_epoch = ?1 AND source = ?2
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load post-recompute bucket totals");
+    assert_eq!(after.total_count, 2);
+    assert_eq!(after.success_count, Some(2));
+    assert_eq!(after.failure_count, Some(0));
+    assert_eq!(after.total_tokens, 27);
+    assert_f64_close(after.total_cost, 1.62);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_archives_and_cleans_up_pool_upstream_request_attempts() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("retention-pool-attempts").await;
