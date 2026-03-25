@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.25.8",
+  "base_stable_version": "1.25.7",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-25T22:18:58Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.25.8",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "70291a6291fc2f0c447303e0f2c3daaf574a8630",
+  "pr_number": 237,
+  "pr_title": "fix(account-pool): keep pending oauth urls while editing metadata",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.25.8",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.25.8,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "b7f518380c75c25c424060380eff112f254a7b12",
+  "type_label": "type:patch"
+}
