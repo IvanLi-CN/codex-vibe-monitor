@@ -3,6 +3,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeAll, describe, expect, it } from 'vitest'
 import { InlineChartTooltipSurface } from './ui/inline-chart-tooltip'
+import { floatingSurfaceStyle } from './ui/floating-surface'
 import { useInlineChartInteraction } from './ui/use-inline-chart-interaction'
 
 class MockPointerEvent extends MouseEvent {
@@ -206,7 +207,11 @@ describe('Live inline chart tooltip interactions', () => {
   })
 
   it('exposes the active tooltip content to assistive technologies', () => {
-    render(<TooltipHarness />)
+    render(
+      <div data-theme="vibe-dark">
+        <TooltipHarness />
+      </div>,
+    )
 
     const surface = document.querySelector('[data-testid="tooltip-surface"]') as HTMLElement
     const container = document.querySelector('[aria-label="Harness tooltip chart"]') as HTMLElement
@@ -228,6 +233,13 @@ describe('Live inline chart tooltip interactions', () => {
     expect(tooltip).not.toBeNull()
     expect(tooltip?.textContent).toContain('Window B')
     expect(tooltip?.getAttribute('aria-hidden')).toBe('false')
+    expect(tooltip?.getAttribute('data-theme')).toBe('vibe-dark')
+    expect(tooltip?.style.backgroundColor).toBe(
+      floatingSurfaceStyle('neutral', 'vibe-dark').backgroundColor,
+    )
+    expect(tooltip?.style.backdropFilter).toBe(
+      floatingSurfaceStyle('neutral', 'vibe-dark').backdropFilter,
+    )
     expect(liveRegion?.getAttribute('aria-live')).toBe('polite')
     expect(liveRegion?.textContent).toContain('Failure 1')
     expect(describedBy).toContain(liveRegion?.id ?? '')

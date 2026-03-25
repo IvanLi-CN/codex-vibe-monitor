@@ -2367,6 +2367,22 @@ fn cleanup_temp_test_dir(path: &Path) {
     let _ = fs::remove_dir_all(path);
 }
 
+#[cfg(unix)]
+fn current_process_rss_kib() -> Option<u64> {
+    let output = std::process::Command::new("ps")
+        .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout)
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()
+}
+
 fn shanghai_local_days_ago(days: i64, hour: u32, minute: u32, second: u32) -> String {
     let now_local = Utc::now().with_timezone(&Shanghai);
     let naive = (now_local.date_naive() - ChronoDuration::days(days))
@@ -5855,6 +5871,88 @@ async fn test_upstream_responses_gzip_stream() -> impl IntoResponse {
     )
 }
 
+fn less_compressible_test_string(target_len: usize) -> String {
+    use std::fmt::Write as _;
+
+    let mut text = String::with_capacity(target_len);
+    let mut value = 0x1234_abcd_u32;
+    while text.len() < target_len {
+        value = value.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        let _ = write!(&mut text, "{value:08x}");
+    }
+    text.truncate(target_len);
+    text
+}
+
+async fn test_upstream_responses_gzip_stream_without_event_stream_header() -> impl IntoResponse {
+    let payload = [
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_test_no_ct\",\"model\":\"gpt-5.3-codex\",\"status\":\"in_progress\"}}\n\n",
+        "event: response.completed\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test_no_ct\",\"model\":\"gpt-5.3-codex\",\"status\":\"completed\",\"usage\":{\"input_tokens\":19,\"output_tokens\":6,\"total_tokens\":25}}}\n\n",
+    ]
+    .concat();
+
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder
+        .write_all(payload.as_bytes())
+        .expect("write gzip payload without event-stream header");
+    let compressed = encoder
+        .finish()
+        .expect("finish gzip payload without event-stream header");
+
+    (
+        StatusCode::OK,
+        [(
+            http_header::CONTENT_ENCODING,
+            HeaderValue::from_static("gzip"),
+        )],
+        Body::from(compressed),
+    )
+}
+
+async fn test_upstream_responses_large_gzip_stream_without_event_stream_header() -> impl IntoResponse
+{
+    let large_delta = less_compressible_test_string(RAW_RESPONSE_PREVIEW_LIMIT * 8);
+    let payload = [
+        "event: response.created\n".to_string(),
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_test_no_ct_large\",\"model\":\"gpt-5.3-codex\",\"status\":\"in_progress\"}}\n\n".to_string(),
+        format!(
+            "event: response.output_text.delta\n\
+             data: {}\n\n",
+            serde_json::to_string(&json!({
+                "type": "response.output_text.delta",
+                "delta": large_delta,
+            }))
+            .expect("serialize large gzip delta payload")
+        ),
+        "event: response.completed\n".to_string(),
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test_no_ct_large\",\"model\":\"gpt-5.3-codex\",\"status\":\"completed\",\"usage\":{\"input_tokens\":23,\"output_tokens\":7,\"total_tokens\":30}}}\n\n".to_string(),
+    ]
+    .concat();
+
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder
+        .write_all(payload.as_bytes())
+        .expect("write large gzip payload without event-stream header");
+    let compressed = encoder
+        .finish()
+        .expect("finish large gzip payload without event-stream header");
+    assert!(
+        compressed.len() > RAW_RESPONSE_PREVIEW_LIMIT,
+        "large gzip payload should exceed preview cap"
+    );
+
+    (
+        StatusCode::OK,
+        [(
+            http_header::CONTENT_ENCODING,
+            HeaderValue::from_static("gzip"),
+        )],
+        Body::from(compressed),
+    )
+}
+
 async fn test_upstream_responses_slow_success_stream() -> impl IntoResponse {
     let first = concat!(
         "event: response.created\n",
@@ -5877,6 +5975,130 @@ async fn test_upstream_responses_slow_success_stream() -> impl IntoResponse {
             _ => None,
         }
     });
+
+    (
+        StatusCode::OK,
+        [(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("text/event-stream"),
+        )],
+        Body::from_stream(chunks),
+    )
+}
+
+async fn test_upstream_responses_large_stream() -> impl IntoResponse {
+    let large_delta = "x".repeat(RAW_RESPONSE_PREVIEW_LIMIT + 8 * 1024);
+    let first = concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_large_test\",\"model\":\"gpt-5.4\",\"status\":\"in_progress\"}}\n\n",
+    );
+    let second = format!(
+        "event: response.output_text.delta\n\
+         data: {}\n\n",
+        serde_json::to_string(&json!({
+            "type": "response.output_text.delta",
+            "delta": large_delta,
+        }))
+        .expect("serialize large delta payload")
+    );
+    let third = concat!(
+        "event: response.completed\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_large_test\",\"model\":\"gpt-5.4\",\"status\":\"completed\",\"service_tier\":\"priority\",\"usage\":{\"input_tokens\":42,\"output_tokens\":13,\"total_tokens\":55}}}\n\n",
+    );
+    let chunks = stream::iter(vec![
+        Ok::<_, Infallible>(Bytes::from_static(first.as_bytes())),
+        Ok::<_, Infallible>(Bytes::from(second)),
+        Ok::<_, Infallible>(Bytes::from_static(third.as_bytes())),
+    ]);
+
+    (
+        StatusCode::OK,
+        [(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("text/event-stream"),
+        )],
+        Body::from_stream(chunks),
+    )
+}
+
+async fn test_upstream_responses_large_terminal_stream() -> impl IntoResponse {
+    let large_terminal_text =
+        less_compressible_test_string(STREAM_RESPONSE_LINE_BUFFER_LIMIT + 64 * 1024);
+    let first = concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_large_terminal_test\",\"model\":\"gpt-5.4\",\"status\":\"in_progress\"}}\n\n",
+    );
+    let second = format!(
+        "event: response.completed\n\
+         data: {}\n\n",
+        serde_json::to_string(&json!({
+            "type": "response.completed",
+            "response": {
+                "id": "resp_large_terminal_test",
+                "model": "gpt-5.4",
+                "status": "completed",
+                "service_tier": "priority",
+                "usage": {
+                    "input_tokens": 77,
+                    "output_tokens": 19,
+                    "total_tokens": 96,
+                },
+                "output": [{
+                    "type": "output_text",
+                    "text": large_terminal_text,
+                }],
+            },
+        }))
+        .expect("serialize large terminal payload")
+    );
+    assert!(
+        second.len() > STREAM_RESPONSE_LINE_BUFFER_LIMIT,
+        "terminal SSE event should exceed the hot-path line buffer limit"
+    );
+    let chunks = stream::iter(vec![
+        Ok::<_, Infallible>(Bytes::from_static(first.as_bytes())),
+        Ok::<_, Infallible>(Bytes::from(second)),
+    ]);
+
+    (
+        StatusCode::OK,
+        [(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("text/event-stream"),
+        )],
+        Body::from_stream(chunks),
+    )
+}
+
+async fn test_upstream_responses_oversized_delta_stream() -> impl IntoResponse {
+    let oversized_delta =
+        less_compressible_test_string(STREAM_RESPONSE_LINE_BUFFER_LIMIT + 64 * 1024);
+    let first = concat!(
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_oversized_delta_test\",\"model\":\"gpt-5.4\",\"status\":\"in_progress\"}}\n\n",
+    );
+    let second = format!(
+        "event: response.output_text.delta\n\
+         data: {}\n\n",
+        serde_json::to_string(&json!({
+            "type": "response.output_text.delta",
+            "delta": oversized_delta,
+        }))
+        .expect("serialize oversized delta payload")
+    );
+    assert!(
+        second.len() > STREAM_RESPONSE_LINE_BUFFER_LIMIT,
+        "oversized SSE delta should exceed the hot-path line buffer limit"
+    );
+    let third = concat!(
+        "event: response.completed\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_oversized_delta_test\",\"model\":\"gpt-5.4\",\"status\":\"completed\",\"service_tier\":\"priority\",\"usage\":{\"input_tokens\":61,\"output_tokens\":17,\"total_tokens\":78}}}\n\n",
+    );
+    let chunks = stream::iter(vec![
+        Ok::<_, Infallible>(Bytes::from_static(first.as_bytes())),
+        Ok::<_, Infallible>(Bytes::from(second)),
+        Ok::<_, Infallible>(Bytes::from_static(third.as_bytes())),
+    ]);
 
     (
         StatusCode::OK,
@@ -5919,6 +6141,40 @@ async fn test_upstream_responses_failed_stream() -> impl IntoResponse {
     )
 }
 
+async fn test_upstream_responses_large_json_error() -> impl IntoResponse {
+    let message = format!(
+        "validation failed: {} tail-marker",
+        "x".repeat(RAW_RESPONSE_PREVIEW_LIMIT + 8 * 1024)
+    );
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({
+            "error": {
+                "code": "invalid_request_error",
+                "message": message
+            }
+        })),
+    )
+        .into_response()
+}
+
+async fn test_upstream_responses_large_prefixed_json_error() -> impl IntoResponse {
+    let oversized_detail =
+        less_compressible_test_string(BOUNDED_NON_STREAM_RESPONSE_PARSE_LIMIT_BYTES + 8 * 1024);
+    let body = format!(
+        r#"{{"error":{{"code":"invalid_request_error","message":"prefix metadata should survive"}},"service_tier":"priority","detail":"{}"}}"#,
+        oversized_detail
+    );
+    (
+        StatusCode::BAD_REQUEST,
+        [(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )],
+        Body::from(body),
+    )
+}
+
 async fn test_upstream_responses(uri: Uri) -> Response {
     if uri
         .query()
@@ -5929,9 +6185,56 @@ async fn test_upstream_responses(uri: Uri) -> Response {
             .into_response()
     } else if uri
         .query()
+        .is_some_and(|query| query.contains("mode=json-error"))
+    {
+        test_upstream_responses_large_json_error()
+            .await
+            .into_response()
+    } else if uri
+        .query()
+        .is_some_and(|query| query.contains("mode=large-prefixed-json-error"))
+    {
+        test_upstream_responses_large_prefixed_json_error()
+            .await
+            .into_response()
+    } else if uri
+        .query()
         .is_some_and(|query| query.contains("mode=slow-success"))
     {
         test_upstream_responses_slow_success_stream()
+            .await
+            .into_response()
+    } else if uri
+        .query()
+        .is_some_and(|query| query.contains("mode=large-stream"))
+    {
+        test_upstream_responses_large_stream().await.into_response()
+    } else if uri
+        .query()
+        .is_some_and(|query| query.contains("mode=large-terminal-stream"))
+    {
+        test_upstream_responses_large_terminal_stream()
+            .await
+            .into_response()
+    } else if uri
+        .query()
+        .is_some_and(|query| query.contains("mode=oversized-delta-stream"))
+    {
+        test_upstream_responses_oversized_delta_stream()
+            .await
+            .into_response()
+    } else if uri
+        .query()
+        .is_some_and(|query| query.contains("mode=gzip-large-no-content-type"))
+    {
+        test_upstream_responses_large_gzip_stream_without_event_stream_header()
+            .await
+            .into_response()
+    } else if uri
+        .query()
+        .is_some_and(|query| query.contains("mode=gzip-no-content-type"))
+    {
+        test_upstream_responses_gzip_stream_without_event_stream_header()
             .await
             .into_response()
     } else if uri.query().is_some_and(|query| query.contains("mode=gzip")) {
@@ -5973,6 +6276,33 @@ async fn test_upstream_responses_compact(uri: Uri) -> impl IntoResponse {
         tokio::time::sleep(Duration::from_millis(250)).await;
     }
 
+    if uri
+        .query()
+        .is_some_and(|query| query.contains("mode=large-json"))
+    {
+        return (
+            StatusCode::OK,
+            Json(json!({
+                "id": "resp_compact_large",
+                "object": "response.compaction",
+                "service_tier": "priority",
+                "output": [
+                    {
+                        "id": "cmp_large_001",
+                        "type": "compaction",
+                        "encrypted_content": "z".repeat(BOUNDED_NON_STREAM_RESPONSE_PARSE_LIMIT_BYTES + 8 * 1024)
+                    }
+                ],
+                "usage": {
+                    "input_tokens": 201,
+                    "output_tokens": 99,
+                    "total_tokens": 300
+                }
+            })),
+        )
+            .into_response();
+    }
+
     (
         StatusCode::OK,
         Json(json!({
@@ -5998,6 +6328,7 @@ async fn test_upstream_responses_compact(uri: Uri) -> impl IntoResponse {
             }
         })),
     )
+        .into_response()
 }
 
 async fn test_upstream_models(uri: Uri) -> impl IntoResponse {
@@ -20128,6 +20459,40 @@ fn parse_target_response_payload_detects_sse_without_request_stream_hint() {
 }
 
 #[test]
+fn parse_target_response_payload_from_raw_file_falls_back_to_raw_deflate_streams() {
+    let raw = [
+        "event: response.completed",
+        r#"data: {"type":"response.completed","response":{"model":"gpt-5.3-codex","usage":{"input_tokens":17,"output_tokens":4,"total_tokens":21}}}"#,
+        "",
+    ]
+    .join("\n");
+
+    let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
+    encoder
+        .write_all(raw.as_bytes())
+        .expect("write raw deflate stream");
+    let compressed = encoder.finish().expect("finish raw deflate stream");
+
+    let temp_dir = make_temp_test_dir("raw-deflate-response");
+    let raw_path = temp_dir.join("response.bin");
+    fs::write(&raw_path, compressed).expect("write raw deflate response payload");
+
+    let parsed = parse_target_response_payload_from_raw_file(
+        ProxyCaptureTarget::Responses,
+        &raw_path,
+        true,
+        Some("deflate"),
+    )
+    .expect("parse raw deflate response payload");
+
+    assert_eq!(parsed.model.as_deref(), Some("gpt-5.3-codex"));
+    assert_eq!(parsed.usage.total_tokens, Some(21));
+    assert!(parsed.usage_missing_reason.is_none());
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[test]
 fn parse_target_response_payload_reads_service_tier_from_response_object() {
     let raw = json!({
         "id": "resp_json_1",
@@ -20250,7 +20615,6 @@ async fn proxy_capture_target_extracts_usage_from_gzip_response_stream() {
     assert_eq!(row.output_tokens, Some(3));
     assert_eq!(row.cache_input_tokens, Some(2));
     assert_eq!(row.total_tokens, Some(15));
-
     let payload: Value = serde_json::from_str(row.payload.as_deref().unwrap_or("{}"))
         .expect("decode payload summary");
     assert_eq!(payload["endpoint"], "/v1/responses");
@@ -20263,6 +20627,982 @@ async fn proxy_capture_target_extracts_usage_from_gzip_response_stream() {
     );
 
     upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_capture_target_gzip_stream_without_event_stream_header_still_extracts_usage() {
+    #[derive(sqlx::FromRow)]
+    struct PersistedUsageRow {
+        status: Option<String>,
+        input_tokens: Option<i64>,
+        output_tokens: Option<i64>,
+        total_tokens: Option<i64>,
+    }
+
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(
+            "/v1/responses?mode=gzip-no-content-type"
+                .parse()
+                .expect("valid uri"),
+        ),
+        Method::POST,
+        HeaderMap::new(),
+        Body::from(r#"{"model":"gpt-5.3-codex","stream":true,"input":"hello"}"#),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read proxy response body");
+
+    let mut row: Option<PersistedUsageRow> = None;
+    for _ in 0..50 {
+        row = sqlx::query_as::<_, PersistedUsageRow>(
+            r#"
+            SELECT
+                status,
+                input_tokens,
+                output_tokens,
+                total_tokens
+            FROM codex_invocations
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .fetch_optional(&state.pool)
+        .await
+        .expect("query gzip stream usage row without event-stream header");
+        if row
+            .as_ref()
+            .is_some_and(|record| record.total_tokens.is_some())
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let row = row.expect("gzip stream usage row should exist");
+    assert_eq!(row.status.as_deref(), Some("success"));
+    assert_eq!(row.input_tokens, Some(19));
+    assert_eq!(row.output_tokens, Some(6));
+    assert_eq!(row.total_tokens, Some(25));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_capture_target_large_gzip_stream_without_event_stream_header_still_extracts_usage() {
+    #[derive(sqlx::FromRow)]
+    struct PersistedUsageRow {
+        status: Option<String>,
+        input_tokens: Option<i64>,
+        output_tokens: Option<i64>,
+        total_tokens: Option<i64>,
+    }
+
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let raw_dir = make_temp_test_dir("proxy-large-gzip-stream-no-content-type");
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.proxy_raw_dir = raw_dir.clone();
+    let state = test_state_from_config(config, true).await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(
+            "/v1/responses?mode=gzip-large-no-content-type"
+                .parse()
+                .expect("valid uri"),
+        ),
+        Method::POST,
+        HeaderMap::new(),
+        Body::from(r#"{"model":"gpt-5.3-codex","stream":true,"input":"hello"}"#),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read proxy response body");
+
+    let mut row: Option<PersistedUsageRow> = None;
+    for _ in 0..50 {
+        row = sqlx::query_as::<_, PersistedUsageRow>(
+            r#"
+            SELECT
+                status,
+                input_tokens,
+                output_tokens,
+                total_tokens
+            FROM codex_invocations
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .fetch_optional(&state.pool)
+        .await
+        .expect("query large gzip stream usage row without event-stream header");
+        if row
+            .as_ref()
+            .is_some_and(|record| record.total_tokens.is_some())
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let row = row.expect("large gzip stream usage row should exist");
+    assert_eq!(row.status.as_deref(), Some("success"));
+    assert_eq!(row.input_tokens, Some(23));
+    assert_eq!(row.output_tokens, Some(7));
+    assert_eq!(row.total_tokens, Some(30));
+
+    upstream_handle.abort();
+    cleanup_temp_test_dir(&raw_dir);
+}
+
+#[tokio::test]
+async fn proxy_capture_target_large_stream_keeps_preview_bounded_and_parses_from_raw_file() {
+    #[derive(sqlx::FromRow)]
+    struct PersistedLargeRow {
+        status: Option<String>,
+        input_tokens: Option<i64>,
+        output_tokens: Option<i64>,
+        total_tokens: Option<i64>,
+        raw_response: String,
+        response_raw_path: Option<String>,
+        response_raw_size: Option<i64>,
+        payload: Option<String>,
+    }
+
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let raw_dir = make_temp_test_dir("proxy-large-stream-raw");
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.proxy_raw_dir = raw_dir.clone();
+    let state = test_state_from_config(config, true).await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(
+            "/v1/responses?mode=large-stream"
+                .parse()
+                .expect("valid uri"),
+        ),
+        Method::POST,
+        HeaderMap::new(),
+        Body::from(r#"{"model":"gpt-5.4","stream":true,"input":"hello"}"#),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read proxy response body");
+    let body_text = String::from_utf8(body.to_vec()).expect("stream body should be utf8");
+    assert!(body_text.contains("response.completed"));
+
+    let mut row: Option<PersistedLargeRow> = None;
+    for _ in 0..50 {
+        row = sqlx::query_as::<_, PersistedLargeRow>(
+            r#"
+            SELECT
+                status,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                raw_response,
+                response_raw_path,
+                response_raw_size,
+                payload
+            FROM codex_invocations
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .fetch_optional(&state.pool)
+        .await
+        .expect("query large stream capture row");
+        if row
+            .as_ref()
+            .is_some_and(|record| record.total_tokens.is_some())
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let row = row.expect("large stream capture row should exist");
+    assert_eq!(row.status.as_deref(), Some("success"));
+    assert_eq!(row.input_tokens, Some(42));
+    assert_eq!(row.output_tokens, Some(13));
+    assert_eq!(row.total_tokens, Some(55));
+    assert_eq!(row.raw_response.len(), RAW_RESPONSE_PREVIEW_LIMIT);
+    assert!(
+        !row.raw_response.contains("response.completed"),
+        "preview should not contain the terminal event once the delta exceeds the preview budget"
+    );
+    assert!(
+        row.response_raw_size
+            .is_some_and(|size| size > RAW_RESPONSE_PREVIEW_LIMIT as i64)
+    );
+
+    let response_raw_path = row
+        .response_raw_path
+        .as_deref()
+        .expect("response raw path should be persisted");
+    let raw_bytes =
+        read_proxy_raw_bytes(response_raw_path, None).expect("read persisted large response raw");
+    let raw_text = String::from_utf8(raw_bytes).expect("raw response should remain utf8");
+    assert!(raw_text.contains("response.completed"));
+    assert!(raw_text.len() > row.raw_response.len());
+
+    let payload: Value = serde_json::from_str(row.payload.as_deref().unwrap_or("{}"))
+        .expect("decode persisted payload summary");
+    assert!(payload["usageMissingReason"].is_null());
+    assert_eq!(payload["serviceTier"].as_str(), Some("priority"));
+
+    upstream_handle.abort();
+    cleanup_temp_test_dir(&raw_dir);
+}
+
+#[tokio::test]
+async fn proxy_capture_target_large_stream_terminal_event_reparses_from_raw_file() {
+    #[derive(sqlx::FromRow)]
+    struct PersistedLargeTerminalRow {
+        status: Option<String>,
+        input_tokens: Option<i64>,
+        output_tokens: Option<i64>,
+        total_tokens: Option<i64>,
+        response_raw_path: Option<String>,
+        payload: Option<String>,
+    }
+
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let raw_dir = make_temp_test_dir("proxy-large-terminal-stream-raw");
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.proxy_raw_dir = raw_dir.clone();
+    let state = test_state_from_config(config, true).await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(
+            "/v1/responses?mode=large-terminal-stream"
+                .parse()
+                .expect("valid uri"),
+        ),
+        Method::POST,
+        HeaderMap::new(),
+        Body::from(r#"{"model":"gpt-5.4","stream":true,"input":"hello"}"#),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read proxy response body");
+    let body_text = String::from_utf8(body.to_vec()).expect("stream body should be utf8");
+    assert!(body_text.contains("response.completed"));
+
+    let mut row: Option<PersistedLargeTerminalRow> = None;
+    for _ in 0..50 {
+        row = sqlx::query_as::<_, PersistedLargeTerminalRow>(
+            r#"
+            SELECT
+                status,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                response_raw_path,
+                payload
+            FROM codex_invocations
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .fetch_optional(&state.pool)
+        .await
+        .expect("query large terminal stream capture row");
+        if row
+            .as_ref()
+            .is_some_and(|record| record.total_tokens.is_some())
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let row = row.expect("large terminal stream capture row should exist");
+    assert_eq!(row.status.as_deref(), Some("success"));
+    assert_eq!(row.input_tokens, Some(77));
+    assert_eq!(row.output_tokens, Some(19));
+    assert_eq!(row.total_tokens, Some(96));
+    assert!(
+        row.response_raw_path.is_some(),
+        "full raw response should be stored"
+    );
+
+    let payload: Value = serde_json::from_str(row.payload.as_deref().unwrap_or("{}"))
+        .expect("decode large terminal payload summary");
+    assert_eq!(payload["serviceTier"], "priority");
+    assert!(payload["usageMissingReason"].is_null());
+
+    upstream_handle.abort();
+    cleanup_temp_test_dir(&raw_dir);
+}
+
+#[tokio::test]
+async fn proxy_capture_target_oversized_stream_keeps_live_metadata_when_raw_file_is_truncated() {
+    #[derive(sqlx::FromRow)]
+    struct PersistedOversizedRow {
+        status: Option<String>,
+        input_tokens: Option<i64>,
+        output_tokens: Option<i64>,
+        total_tokens: Option<i64>,
+        response_raw_truncated: i64,
+        response_raw_truncated_reason: Option<String>,
+        payload: Option<String>,
+    }
+
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let raw_dir = make_temp_test_dir("proxy-oversized-stream-truncated-raw");
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.proxy_raw_dir = raw_dir.clone();
+    config.proxy_raw_max_bytes = Some(24 * 1024);
+    let state = test_state_from_config(config, true).await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(
+            "/v1/responses?mode=oversized-delta-stream"
+                .parse()
+                .expect("valid uri"),
+        ),
+        Method::POST,
+        HeaderMap::new(),
+        Body::from(r#"{"model":"gpt-5.4","stream":true,"input":"hello"}"#),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read proxy response body");
+    let body_text = String::from_utf8(body.to_vec()).expect("stream body should be utf8");
+    assert!(body_text.contains("response.completed"));
+
+    let mut row: Option<PersistedOversizedRow> = None;
+    for _ in 0..50 {
+        row = sqlx::query_as::<_, PersistedOversizedRow>(
+            r#"
+            SELECT
+                status,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                response_raw_truncated,
+                response_raw_truncated_reason,
+                payload
+            FROM codex_invocations
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .fetch_optional(&state.pool)
+        .await
+        .expect("query oversized stream capture row");
+        if row
+            .as_ref()
+            .is_some_and(|record| record.total_tokens.is_some())
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let row = row.expect("oversized stream capture row should exist");
+    assert_eq!(row.status.as_deref(), Some("success"));
+    assert_eq!(row.input_tokens, Some(61));
+    assert_eq!(row.output_tokens, Some(17));
+    assert_eq!(row.total_tokens, Some(78));
+    assert_eq!(row.response_raw_truncated, 1);
+    assert_eq!(
+        row.response_raw_truncated_reason.as_deref(),
+        Some("max_bytes_exceeded")
+    );
+
+    let payload: Value = serde_json::from_str(row.payload.as_deref().unwrap_or("{}"))
+        .expect("decode oversized stream payload summary");
+    assert_eq!(payload["serviceTier"], "priority");
+    assert!(payload["usageMissingReason"].is_null());
+
+    upstream_handle.abort();
+    cleanup_temp_test_dir(&raw_dir);
+}
+
+#[tokio::test]
+async fn proxy_capture_target_large_stream_keeps_usage_when_response_raw_is_truncated() {
+    #[derive(sqlx::FromRow)]
+    struct PersistedLargeRow {
+        status: Option<String>,
+        input_tokens: Option<i64>,
+        output_tokens: Option<i64>,
+        total_tokens: Option<i64>,
+        raw_response: String,
+        response_raw_path: Option<String>,
+        response_raw_size: Option<i64>,
+        response_raw_truncated: i64,
+        response_raw_truncated_reason: Option<String>,
+        payload: Option<String>,
+    }
+
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let raw_dir = make_temp_test_dir("proxy-large-stream-raw-truncated");
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.proxy_raw_dir = raw_dir.clone();
+    config.proxy_raw_max_bytes = Some(8 * 1024);
+    let state = test_state_from_config(config, true).await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(
+            "/v1/responses?mode=large-stream"
+                .parse()
+                .expect("valid uri"),
+        ),
+        Method::POST,
+        HeaderMap::new(),
+        Body::from(r#"{"model":"gpt-5.4","stream":true,"input":"hello"}"#),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read proxy response body");
+    let body_text = String::from_utf8(body.to_vec()).expect("stream body should be utf8");
+    assert!(body_text.contains("response.completed"));
+
+    let mut row: Option<PersistedLargeRow> = None;
+    for _ in 0..50 {
+        row = sqlx::query_as::<_, PersistedLargeRow>(
+            r#"
+            SELECT
+                status,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                raw_response,
+                response_raw_path,
+                response_raw_size,
+                response_raw_truncated,
+                response_raw_truncated_reason,
+                payload
+            FROM codex_invocations
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .fetch_optional(&state.pool)
+        .await
+        .expect("query truncated large stream capture row");
+        if row
+            .as_ref()
+            .is_some_and(|record| record.total_tokens.is_some())
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let row = row.expect("truncated large stream capture row should exist");
+    assert_eq!(row.status.as_deref(), Some("success"));
+    assert_eq!(row.input_tokens, Some(42));
+    assert_eq!(row.output_tokens, Some(13));
+    assert_eq!(row.total_tokens, Some(55));
+    assert_eq!(row.raw_response.len(), RAW_RESPONSE_PREVIEW_LIMIT);
+    assert_eq!(row.response_raw_truncated, 1);
+    assert_eq!(
+        row.response_raw_truncated_reason.as_deref(),
+        Some("max_bytes_exceeded")
+    );
+    assert!(
+        row.response_raw_size.is_some_and(|size| size > 8 * 1024),
+        "response raw size should still reflect the full upstream stream"
+    );
+
+    let response_raw_path = row
+        .response_raw_path
+        .as_deref()
+        .expect("response raw path should be persisted");
+    let raw_bytes =
+        read_proxy_raw_bytes(response_raw_path, None).expect("read truncated response raw");
+    assert!(
+        raw_bytes.len() <= 8 * 1024,
+        "persisted raw bytes should respect the configured storage cap"
+    );
+    let raw_text = String::from_utf8(raw_bytes).expect("truncated raw response should remain utf8");
+    assert!(
+        !raw_text.contains("response.completed"),
+        "persisted raw bytes should be truncated before the terminal event"
+    );
+
+    let payload: Value = serde_json::from_str(row.payload.as_deref().unwrap_or("{}"))
+        .expect("decode persisted payload summary");
+    assert!(payload["usageMissingReason"].is_null());
+    assert_eq!(payload["serviceTier"].as_str(), Some("priority"));
+
+    upstream_handle.abort();
+    cleanup_temp_test_dir(&raw_dir);
+}
+
+#[tokio::test]
+async fn proxy_capture_target_stream_request_json_error_uses_nonstream_parse_fallback() {
+    #[derive(sqlx::FromRow)]
+    struct PersistedErrorRow {
+        status: Option<String>,
+        error_message: Option<String>,
+        response_raw_truncated: i64,
+        payload: Option<String>,
+    }
+
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let raw_dir = make_temp_test_dir("proxy-stream-json-error");
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.proxy_raw_dir = raw_dir.clone();
+    config.proxy_raw_max_bytes = Some(128);
+    let state = test_state_from_config(config, true).await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses?mode=json-error".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::new(),
+        Body::from(r#"{"model":"gpt-5.4","stream":true,"input":"hello"}"#),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let _ = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read json error response body");
+
+    let mut row: Option<PersistedErrorRow> = None;
+    for _ in 0..50 {
+        row = sqlx::query_as::<_, PersistedErrorRow>(
+            r#"
+            SELECT
+                status,
+                error_message,
+                response_raw_truncated,
+                payload
+            FROM codex_invocations
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .fetch_optional(&state.pool)
+        .await
+        .expect("query json error capture row");
+        if row
+            .as_ref()
+            .and_then(|record| record.error_message.as_deref())
+            .is_some()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let row = row.expect("json error capture row should exist");
+    assert_eq!(row.status.as_deref(), Some("http_400"));
+    assert_eq!(row.response_raw_truncated, 1);
+    assert!(
+        row.error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("tail-marker")),
+        "stream request should keep the full JSON error message even when raw storage truncates"
+    );
+
+    let payload: Value = serde_json::from_str(row.payload.as_deref().unwrap_or("{}"))
+        .expect("decode json error payload");
+    assert_eq!(
+        payload["upstreamErrorCode"].as_str(),
+        Some("invalid_request_error")
+    );
+    assert!(
+        payload["upstreamErrorMessage"]
+            .as_str()
+            .is_some_and(|message| message.contains("tail-marker")),
+        "payload should preserve the full upstream error message"
+    );
+
+    upstream_handle.abort();
+    cleanup_temp_test_dir(&raw_dir);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+#[ignore = "manual RSS soak harness for large proxy response capture"]
+async fn proxy_capture_target_large_stream_soak_keeps_rss_within_stable_window() {
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let raw_dir = make_temp_test_dir("proxy-large-stream-soak");
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.proxy_raw_dir = raw_dir.clone();
+    let state = test_state_from_config(config, true).await;
+
+    let mut rss_samples = Vec::new();
+    for iteration in 0..8_i64 {
+        let response = proxy_openai_v1(
+            State(state.clone()),
+            OriginalUri(
+                "/v1/responses?mode=large-stream"
+                    .parse()
+                    .expect("valid uri"),
+            ),
+            Method::POST,
+            HeaderMap::new(),
+            Body::from(r#"{"model":"gpt-5.4","stream":true,"input":"hello"}"#),
+        )
+        .await;
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let _ = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read proxy response body");
+        wait_for_codex_invocations(&state.pool, iteration + 1).await;
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        if let Some(rss_kib) = current_process_rss_kib() {
+            rss_samples.push(rss_kib);
+        }
+    }
+
+    eprintln!("large-stream-soak rss_kib={rss_samples:?}");
+    assert!(
+        rss_samples.len() >= 4,
+        "RSS harness should collect multiple samples"
+    );
+    let steady_state = &rss_samples[3..];
+    let min_rss = *steady_state
+        .iter()
+        .min()
+        .expect("steady-state RSS should have a minimum");
+    let max_rss = *steady_state
+        .iter()
+        .max()
+        .expect("steady-state RSS should have a maximum");
+    assert!(
+        max_rss.saturating_sub(min_rss) < 128 * 1024,
+        "steady-state RSS window too wide: min={min_rss}KiB max={max_rss}KiB"
+    );
+
+    upstream_handle.abort();
+    cleanup_temp_test_dir(&raw_dir);
+}
+
+#[tokio::test]
+async fn proxy_capture_target_large_nonstream_json_skips_bounded_parse_and_keeps_full_raw_file() {
+    #[derive(sqlx::FromRow)]
+    struct PersistedCompactRow {
+        status: Option<String>,
+        input_tokens: Option<i64>,
+        output_tokens: Option<i64>,
+        total_tokens: Option<i64>,
+        raw_response: String,
+        response_raw_path: Option<String>,
+        response_raw_size: Option<i64>,
+        payload: Option<String>,
+    }
+
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let raw_dir = make_temp_test_dir("proxy-large-json-raw");
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.proxy_raw_dir = raw_dir.clone();
+    let state = test_state_from_config(config, true).await;
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.1-codex-max",
+        "previous_response_id": "resp_prev_large",
+        "input": [{ "role": "user", "content": "compact this thread" }]
+    }))
+    .expect("serialize compact request body");
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(
+            "/v1/responses/compact?mode=large-json"
+                .parse()
+                .expect("valid compact uri"),
+        ),
+        Method::POST,
+        HeaderMap::new(),
+        Body::from(request_body),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read compact proxy response body");
+
+    let mut row: Option<PersistedCompactRow> = None;
+    for _ in 0..50 {
+        row = sqlx::query_as::<_, PersistedCompactRow>(
+            r#"
+            SELECT
+                status,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                raw_response,
+                response_raw_path,
+                response_raw_size,
+                payload
+            FROM codex_invocations
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .fetch_optional(&state.pool)
+        .await
+        .expect("query large compact capture row");
+        if row.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let row = row.expect("large compact capture row should exist");
+    assert_eq!(row.status.as_deref(), Some("success"));
+    assert!(row.input_tokens.is_none());
+    assert!(row.output_tokens.is_none());
+    assert!(row.total_tokens.is_none());
+    assert_eq!(row.raw_response.len(), RAW_RESPONSE_PREVIEW_LIMIT);
+    assert!(
+        row.response_raw_size
+            .is_some_and(|size| size > BOUNDED_NON_STREAM_RESPONSE_PARSE_LIMIT_BYTES as i64)
+    );
+
+    let payload: Value = serde_json::from_str(row.payload.as_deref().unwrap_or("{}"))
+        .expect("decode payload summary");
+    assert!(
+        payload["usageMissingReason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains(PROXY_USAGE_MISSING_NON_STREAM_PARSE_SKIPPED))
+    );
+
+    let response_raw_path = row
+        .response_raw_path
+        .as_deref()
+        .expect("response raw path should be persisted");
+    let raw_bytes =
+        read_proxy_raw_bytes(response_raw_path, None).expect("read large compact raw response");
+    let raw_text = String::from_utf8(raw_bytes).expect("raw compact response should be utf8");
+    assert!(raw_text.contains("\"total_tokens\":300"));
+
+    upstream_handle.abort();
+    cleanup_temp_test_dir(&raw_dir);
+}
+
+#[tokio::test]
+async fn proxy_capture_target_large_nonstream_json_error_preserves_prefixed_metadata() {
+    #[derive(sqlx::FromRow)]
+    struct PersistedErrorRow {
+        status: Option<String>,
+        error_message: Option<String>,
+        payload: Option<String>,
+    }
+
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let raw_dir = make_temp_test_dir("proxy-large-prefixed-json-error");
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.proxy_raw_dir = raw_dir.clone();
+    let state = test_state_from_config(config, true).await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(
+            "/v1/responses?mode=large-prefixed-json-error"
+                .parse()
+                .expect("valid uri"),
+        ),
+        Method::POST,
+        HeaderMap::new(),
+        Body::from(r#"{"model":"gpt-5.4","stream":false,"input":"hello"}"#),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let _ = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read large prefixed json error response body");
+
+    let mut row: Option<PersistedErrorRow> = None;
+    for _ in 0..50 {
+        row = sqlx::query_as::<_, PersistedErrorRow>(
+            r#"
+            SELECT
+                status,
+                error_message,
+                payload
+            FROM codex_invocations
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .fetch_optional(&state.pool)
+        .await
+        .expect("query large prefixed json error row");
+        if row
+            .as_ref()
+            .and_then(|record| record.error_message.as_deref())
+            .is_some()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let row = row.expect("large prefixed json error row should exist");
+    assert_eq!(row.status.as_deref(), Some("http_400"));
+    assert!(
+        row.error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("prefix metadata should survive"))
+    );
+
+    let payload: Value = serde_json::from_str(row.payload.as_deref().unwrap_or("{}"))
+        .expect("decode large prefixed json error payload summary");
+    assert_eq!(payload["serviceTier"].as_str(), Some("priority"));
+    assert!(
+        payload["usageMissingReason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains(PROXY_USAGE_MISSING_NON_STREAM_PARSE_SKIPPED))
+    );
+
+    upstream_handle.abort();
+    cleanup_temp_test_dir(&raw_dir);
+}
+
+#[tokio::test]
+async fn proxy_capture_target_nonstream_usage_survives_response_raw_truncation() {
+    #[derive(sqlx::FromRow)]
+    struct PersistedCompactRow {
+        status: Option<String>,
+        input_tokens: Option<i64>,
+        output_tokens: Option<i64>,
+        total_tokens: Option<i64>,
+        response_raw_path: Option<String>,
+        response_raw_size: Option<i64>,
+        response_raw_truncated: i64,
+        response_raw_truncated_reason: Option<String>,
+        payload: Option<String>,
+    }
+
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let raw_dir = make_temp_test_dir("proxy-compact-truncated-raw");
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.proxy_raw_dir = raw_dir.clone();
+    config.proxy_raw_max_bytes = Some(96);
+    let state = test_state_from_config(config, true).await;
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.1-codex-max",
+        "previous_response_id": "resp_prev_truncated",
+        "input": [{ "role": "user", "content": "compact this thread" }]
+    }))
+    .expect("serialize compact request body");
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses/compact".parse().expect("valid compact uri")),
+        Method::POST,
+        HeaderMap::new(),
+        Body::from(request_body),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read compact proxy response body");
+
+    let mut row: Option<PersistedCompactRow> = None;
+    for _ in 0..50 {
+        row = sqlx::query_as::<_, PersistedCompactRow>(
+            r#"
+            SELECT
+                status,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                response_raw_path,
+                response_raw_size,
+                response_raw_truncated,
+                response_raw_truncated_reason,
+                payload
+            FROM codex_invocations
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .fetch_optional(&state.pool)
+        .await
+        .expect("query truncated compact capture row");
+        if row.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let row = row.expect("truncated compact capture row should exist");
+
+    assert_eq!(row.status.as_deref(), Some("success"));
+    assert_eq!(row.input_tokens, Some(139));
+    assert_eq!(row.output_tokens, Some(438));
+    assert_eq!(row.total_tokens, Some(577));
+    assert_eq!(row.response_raw_truncated, 1);
+    assert_eq!(
+        row.response_raw_truncated_reason.as_deref(),
+        Some("max_bytes_exceeded")
+    );
+    assert!(
+        row.response_raw_size.is_some_and(|size| size > 96),
+        "stored raw size should still reflect the full response length"
+    );
+
+    let response_raw_path = row
+        .response_raw_path
+        .as_deref()
+        .expect("response raw path should be persisted");
+    let raw_bytes =
+        read_proxy_raw_bytes(response_raw_path, None).expect("read truncated compact raw response");
+    assert!(
+        raw_bytes.len() <= 96,
+        "persisted compact raw bytes should respect the configured cap"
+    );
+
+    let payload: Value = serde_json::from_str(row.payload.as_deref().unwrap_or("{}"))
+        .expect("decode payload summary");
+    assert!(payload["usageMissingReason"].is_null());
+
+    upstream_handle.abort();
+    cleanup_temp_test_dir(&raw_dir);
 }
 
 #[tokio::test]

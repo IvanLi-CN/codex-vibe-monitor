@@ -1,8 +1,8 @@
 import { useLayoutEffect, useState } from 'react'
-import type { BubbleTheme } from './bubble'
+import type { FloatingSurfaceTheme } from './floating-surface'
 
 export function usePortaledTheme(anchor: HTMLElement | null) {
-  const [theme, setTheme] = useState<BubbleTheme>(() => {
+  const [theme, setTheme] = useState<FloatingSurfaceTheme>(() => {
     if (typeof document === 'undefined') {
       return undefined
     }
