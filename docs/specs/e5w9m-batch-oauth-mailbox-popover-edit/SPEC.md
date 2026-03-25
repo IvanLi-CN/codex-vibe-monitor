@@ -19,7 +19,7 @@
 - 单账号 OAuth 邮箱区把 `Use address` / `Generate` 改成 icon 按钮，并且只让当前执行中的动作显示 spin，另一个按钮仅禁用不转圈。
 - 批量 OAuth 行级邮箱 chip 新增悬浮气泡编辑入口：默认气泡展示 `Edit mailbox` icon，进入编辑态后在同一气泡内完成邮箱地址输入、提交与取消。
 - 批量邮箱提交沿用现有 `POST /api/pool/upstream-accounts/oauth/mailbox-sessions { emailAddress }` 契约；受支持地址继续启用验证码/邀请增强，不支持地址保留降级提示但不阻断 OAuth 主流程。
-- 当批量行已经生成过 OAuth URL 且邮箱绑定发生变化时，前端必须清空旧 callback / login session，要求该行重新生成 OAuth URL。
+- 当批量行已经生成过 OAuth URL 且邮箱绑定发生变化时，前端必须保留现有 pending OAuth URL，并把新的邮箱绑定状态同步回当前 login session metadata。
 
 ### Non-goals
 
@@ -44,12 +44,11 @@
 - 批量手动附着受支持邮箱成功后：
   - 更新 `mailboxSessionId + mailboxAddress` 绑定；
   - 清空旧邮箱状态摘要；
-  - 若该行已有 pending OAuth URL，则清空 callback / session 并提示重新生成。
+  - 若该行已有 pending OAuth URL，则同步更新该行当前 login session metadata，不清空 callback / session。
 - 批量手动附着返回 `supported=false` 时：
   - 保留用户输入值；
   - 清空 `mailboxSession`，禁用验证码/邀请增强；
-  - 若之前没有邮箱会话绑定，则保持当前 OAuth URL 可继续使用；
-  - 若之前已有邮箱会话绑定，则该行改为需要重新生成 OAuth URL。
+  - 无论之前是否已有邮箱会话绑定，都保持当前 pending OAuth URL 可继续使用，并把 login session metadata 更新为最新绑定状态。
 
 ## 验收标准
 
@@ -57,7 +56,7 @@
 - Given 批量 OAuth 某行已有邮箱 chip，When 用户 hover 该 chip，Then 气泡内可见 `Edit mailbox` icon，点击后进入编辑态并显示输入框与提交/取消 icon。
 - Given 批量 OAuth 某行提交一个受支持邮箱地址，When 提交成功，Then 该行后续生成 OAuth URL 时会带上新的 `mailboxSessionId + mailboxAddress`。
 - Given 批量 OAuth 某行提交一个不支持读取的邮箱地址，When 提交成功，Then 该行保留输入地址并显示降级提示，但不阻断没有邮箱绑定的 OAuth URL 继续使用。
-- Given 批量 OAuth 某行已经生成过 OAuth URL 且随后改绑到新的受支持邮箱，When 绑定成功，Then 旧 OAuth URL 不再可复制/提交，用户必须重新生成。
+- Given 批量 OAuth 某行已经生成过 OAuth URL 且随后改绑到新的受支持邮箱，When 绑定成功，Then 该行继续复用当前 pending OAuth URL，并把新的邮箱绑定写回 login session metadata。
 
 ## 质量门槛
 
@@ -104,6 +103,7 @@
 
 - 主要变更位于 `web/src/pages/account-pool/UpstreamAccountCreate.tsx`、`web/src/components/account-pool/OauthMailboxChip.tsx`、`web/src/i18n/translations.ts` 与相应的 Storybook / Vitest 文件。
 - 本增量显式覆盖 `m7a9k` 中“批量 OAuth 不扩展手动邮箱输入”的旧边界；单账号邮箱契约与服务端 `mailboxAddress` 语义保持不变。
+- `j86ms` 进一步显式替换本 spec 中“邮箱编辑导致 pending OAuth URL 失效”的旧边界，改为 pending login session metadata live sync。
 
 ## 变更记录（Change log）
 

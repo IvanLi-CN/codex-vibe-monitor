@@ -12,6 +12,7 @@ import type {
   PoolRoutingSettings,
   PoolRoutingTimeoutSettings,
   TagSummary,
+  UpdateOauthLoginSessionPayload,
   UpdatePoolRoutingSettingsPayload,
   UpdateUpstreamAccountGroupPayload,
   UpdateUpstreamAccountPayload,
@@ -39,6 +40,9 @@ type StoryStore = {
       isMother?: boolean
       note?: string
       groupNote?: string
+      tagIds?: number[]
+      mailboxSessionId?: string
+      mailboxAddress?: string
       state?: string
     }
   >
@@ -2100,7 +2104,10 @@ export function StorybookUpstreamAccountsMock({
           groupName?: string
           note?: string
           groupNote?: string
+          tagIds?: number[]
           isMother?: boolean
+          mailboxSessionId?: string
+          mailboxAddress?: string
         }>(init?.body, {})
         const loginId = `login_${Date.now()}`
         const redirectUri = `http://localhost:431${String(store.nextId).slice(-1)}/oauth/callback`
@@ -2118,6 +2125,9 @@ export function StorybookUpstreamAccountsMock({
           isMother: body.isMother,
           note: body.note,
           groupNote: body.groupNote,
+          tagIds: Array.isArray(body.tagIds) ? body.tagIds : [],
+          mailboxSessionId: body.mailboxSessionId,
+          mailboxAddress: body.mailboxAddress,
           state,
         }
         store.sessions[loginId] = session
@@ -2254,6 +2264,22 @@ export function StorybookUpstreamAccountsMock({
       const loginSessionMatch = path.match(
         /^\/api\/pool\/upstream-accounts\/oauth\/login-sessions\/([^/]+)$/,
       )
+      if (loginSessionMatch && method === 'PATCH') {
+        const loginId = decodeURIComponent(loginSessionMatch[1])
+        const session = store.sessions[loginId]
+        if (!session)
+          return jsonResponse({ message: 'missing mock session' }, 404)
+        const body = parseBody<UpdateOauthLoginSessionPayload>(init?.body, {})
+        session.displayName = body.displayName?.trim() || undefined
+        session.groupName = body.groupName?.trim() || undefined
+        session.note = body.note?.trim() || undefined
+        session.groupNote = body.groupNote?.trim() || undefined
+        session.tagIds = Array.isArray(body.tagIds) ? body.tagIds : []
+        session.isMother = body.isMother === true
+        session.mailboxSessionId = body.mailboxSessionId?.trim() || undefined
+        session.mailboxAddress = body.mailboxAddress?.trim() || undefined
+        return jsonResponse(clone(session))
+      }
       if (loginSessionMatch && method === 'GET') {
         const loginId = decodeURIComponent(loginSessionMatch[1])
         const session = store.sessions[loginId]

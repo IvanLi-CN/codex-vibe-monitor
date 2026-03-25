@@ -30,6 +30,59 @@ export const Ready: Story = {
   },
 }
 
+export const PendingDefaultGroupSync: Story = {
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts/new',
+        search: '?mode=batchOauth',
+        state: {
+          draft: {
+            batchOauth: {
+              rows: [
+                {
+                  id: 'row-1',
+                  displayName: 'Batch Pending Sync',
+                },
+                {
+                  id: 'row-2',
+                  displayName: 'Batch Follower',
+                },
+              ],
+            },
+          },
+        },
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const doc = canvasElement.ownerDocument
+    const defaultGroupTrigger = canvas.getAllByRole('combobox')[0]
+
+    await userEvent.click(canvas.getByRole('button', { name: /generate oauth url/i }))
+    await expect(canvas.getByRole('button', { name: /copy oauth url/i })).toBeEnabled()
+    await userEvent.click(defaultGroupTrigger)
+
+    const searchInput = doc.body.querySelector('[cmdk-input]')
+    if (!(searchInput instanceof HTMLInputElement)) {
+      throw new Error('missing default group combobox search input')
+    }
+    await userEvent.type(searchInput, 'launch-team')
+
+    const createOption = Array.from(doc.body.querySelectorAll('[cmdk-item]')).find((candidate) =>
+      (candidate.textContent || '').toLowerCase().includes('launch-team'),
+    )
+    if (!(createOption instanceof HTMLElement)) {
+      throw new Error('missing create option for launch-team')
+    }
+    await userEvent.click(createOption)
+
+    await expect(canvas.getByRole('button', { name: /copy oauth url/i })).toBeEnabled()
+    await expect(canvas.queryByText(/generate a fresh oauth url for this row/i)).not.toBeInTheDocument()
+  },
+}
+
 export const MailboxGenerated: Story = {
   render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new?mode=batchOauth" />,
   play: async ({ canvasElement }) => {

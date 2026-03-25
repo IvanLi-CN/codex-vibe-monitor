@@ -19,6 +19,7 @@ import {
   importValidatedOauthAccounts,
   reloginUpstreamAccount,
   syncUpstreamAccount,
+  updateOauthLoginSession,
   updateUpstreamAccountGroup,
   updatePoolRoutingSettings,
   updateUpstreamAccount,
@@ -41,6 +42,7 @@ import {
   type PoolRoutingSettings,
   type UpstreamAccountListMetrics,
   type UpstreamAccountGroupSummary,
+  type UpdateOauthLoginSessionPayload,
   type UpdatePoolRoutingSettingsPayload,
   type UpdateUpstreamAccountGroupPayload,
   type UpdateUpstreamAccountPayload,
@@ -282,6 +284,17 @@ export function useUpstreamAccounts(query: FetchUpstreamAccountsQuery = DEFAULT_
     return fetchOauthLoginSession(loginId)
   }, [])
 
+  const updateOauthLogin = useCallback(
+    async (
+      loginId: string,
+      payload: UpdateOauthLoginSessionPayload,
+      baseUpdatedAt?: string | null,
+    ): Promise<LoginSessionStatusResponse> => {
+      return updateOauthLoginSession(loginId, payload, baseUpdatedAt)
+    },
+    [],
+  )
+
   const beginOauthMailboxSession = useCallback(async (): Promise<OauthMailboxSession> => {
     const response = await createOauthMailboxSession()
     setListError(null)
@@ -517,6 +530,7 @@ export function useUpstreamAccounts(query: FetchUpstreamAccountsQuery = DEFAULT_
     beginOauthLogin,
     beginRelogin,
     getLoginSession,
+    updateOauthLogin,
     beginOauthMailboxSession,
     beginOauthMailboxSessionForAddress,
     getOauthMailboxStatuses,

@@ -2,6 +2,8 @@ import { getBrowserTimeZone } from "./timeZone";
 
 const rawBase = import.meta.env.VITE_API_BASE_URL ?? "";
 const API_BASE = rawBase.endsWith("/") ? rawBase.slice(0, -1) : rawBase;
+const OAUTH_LOGIN_SESSION_BASE_UPDATED_AT_HEADER =
+  "X-Codex-Login-Session-Base-Updated-At";
 const FORWARD_PROXY_VALIDATION_TIMEOUT_MS = 5_000;
 const FORWARD_PROXY_SUBSCRIPTION_VALIDATION_TIMEOUT_MS = 60_000;
 const FORWARD_PROXY_HISTORY_DAY_MS = 86_400_000;
@@ -49,6 +51,21 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   }
 
   return JSON.parse(rawText) as T;
+}
+
+async function ensureJsonRequestOk(response: Response): Promise<void> {
+  if (response.ok) {
+    return;
+  }
+
+  const rawText = await response.text();
+  const compactText = rawText.replace(/\s+/g, " ").trim();
+  const detail = (compactText || response.statusText || "").slice(0, 220);
+  throw new Error(
+    detail
+      ? `Request failed: ${response.status} ${detail}`
+      : `Request failed: ${response.status}`,
+  );
 }
 
 function parseForwardProxyHistoryRangeSeconds(range: string): number | null {
@@ -1836,8 +1853,10 @@ export interface LoginSessionStatusResponse {
   authUrl?: string | null;
   redirectUri?: string | null;
   expiresAt: string;
+  updatedAt?: string | null;
   accountId?: number | null;
   error?: string | null;
+  syncApplied?: boolean | null;
 }
 
 export type OauthMailboxSession =
@@ -1891,6 +1910,39 @@ export interface CreateOauthLoginSessionPayload {
   isMother?: boolean;
   mailboxSessionId?: string;
   mailboxAddress?: string;
+}
+
+export interface UpdateOauthLoginSessionPayload {
+  displayName?: string;
+  groupName?: string;
+  note?: string;
+  groupNote?: string;
+  tagIds?: number[];
+  isMother?: boolean;
+  mailboxSessionId?: string;
+  mailboxAddress?: string;
+}
+
+function withOauthLoginSessionBaseUpdatedAtHeader(
+  baseUpdatedAt: string | null | undefined,
+  init: RequestInit,
+): RequestInit {
+  const normalizedBaseUpdatedAt = baseUpdatedAt?.trim();
+  if (!normalizedBaseUpdatedAt) {
+    return init;
+  }
+  const headers = new Headers(init.headers);
+  if (!headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+  headers.set(
+    OAUTH_LOGIN_SESSION_BASE_UPDATED_AT_HEADER,
+    normalizedBaseUpdatedAt,
+  );
+  return {
+    ...init,
+    headers,
+  };
 }
 
 export interface CompleteOauthLoginSessionPayload {
@@ -2512,8 +2564,11 @@ function normalizeLoginSessionStatusResponse(
     redirectUri:
       typeof payload.redirectUri === "string" ? payload.redirectUri : null,
     expiresAt,
+    updatedAt: typeof payload.updatedAt === "string" ? payload.updatedAt : null,
     accountId: accountId == null ? null : accountId,
     error: typeof payload.error === "string" ? payload.error : null,
+    syncApplied:
+      typeof payload.syncApplied === "boolean" ? payload.syncApplied : null,
   };
 }
 
@@ -3346,6 +3401,42 @@ export async function fetchOauthLoginSession(
     `/api/pool/upstream-accounts/oauth/login-sessions/${encodeURIComponent(loginId)}`,
   );
   return normalizeLoginSessionStatusResponse(response);
+}
+
+export async function updateOauthLoginSession(
+  loginId: string,
+  payload: UpdateOauthLoginSessionPayload,
+  baseUpdatedAt?: string | null,
+): Promise<LoginSessionStatusResponse> {
+  const response = await fetchJson<unknown>(
+    `/api/pool/upstream-accounts/oauth/login-sessions/${encodeURIComponent(loginId)}`,
+    withOauthLoginSessionBaseUpdatedAtHeader(baseUpdatedAt, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    }),
+  );
+  return normalizeLoginSessionStatusResponse(response);
+}
+
+export async function updateOauthLoginSessionKeepalive(
+  loginId: string,
+  payload: UpdateOauthLoginSessionPayload,
+  baseUpdatedAt?: string | null,
+): Promise<void> {
+  const response = await fetch(
+    withBase(
+      `/api/pool/upstream-accounts/oauth/login-sessions/${encodeURIComponent(loginId)}`,
+    ),
+    withOauthLoginSessionBaseUpdatedAtHeader(baseUpdatedAt, {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(payload),
+      keepalive: true,
+    }),
+  );
+  await ensureJsonRequestOk(response);
 }
 
 export async function reloginUpstreamAccount(

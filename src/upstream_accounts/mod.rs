@@ -114,6 +114,7 @@ const LOGIN_SESSION_STATUS_PENDING: &str = "pending";
 const LOGIN_SESSION_STATUS_COMPLETED: &str = "completed";
 const LOGIN_SESSION_STATUS_FAILED: &str = "failed";
 const LOGIN_SESSION_STATUS_EXPIRED: &str = "expired";
+const LOGIN_SESSION_BASE_UPDATED_AT_HEADER: &str = "x-codex-login-session-base-updated-at";
 const IMPORT_VALIDATION_STATUS_OK: &str = "ok";
 const IMPORT_VALIDATION_STATUS_OK_EXHAUSTED: &str = "ok_exhausted";
 const IMPORT_VALIDATION_STATUS_INVALID: &str = "invalid";
@@ -1129,8 +1130,11 @@ pub(crate) struct LoginSessionStatusResponse {
     auth_url: Option<String>,
     redirect_uri: Option<String>,
     expires_at: String,
+    updated_at: String,
     account_id: Option<i64>,
     error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sync_applied: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1206,6 +1210,31 @@ pub(crate) struct CompleteOauthLoginSessionRequest {
     mailbox_session_id: Option<String>,
     #[serde(alias = "generatedMailboxAddress")]
     mailbox_address: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpdateOauthLoginSessionRequest {
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    display_name: OptionalField<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    group_name: OptionalField<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    note: OptionalField<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    group_note: OptionalField<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    tag_ids: OptionalField<Vec<i64>>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    is_mother: OptionalField<bool>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    mailbox_session_id: OptionalField<String>,
+    #[serde(
+        default,
+        alias = "generatedMailboxAddress",
+        deserialize_with = "deserialize_optional_field"
+    )]
+    mailbox_address: OptionalField<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -2021,7 +2050,7 @@ struct UpstreamAccountSampleRow {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, FromRow)]
+#[derive(Debug, Clone, FromRow)]
 struct OauthLoginSessionRow {
     login_id: String,
     account_id: Option<i64>,
@@ -4768,8 +4797,10 @@ pub(crate) async fn create_oauth_login_session(
         auth_url: Some(auth_url),
         redirect_uri: Some(redirect_uri),
         expires_at: expires_at_iso,
+        updated_at: now_iso,
         account_id: payload.account_id,
         error: None,
+        sync_applied: None,
     }))
 }
 
@@ -4785,6 +4816,315 @@ pub(crate) async fn get_oauth_login_session(
         .map_err(internal_error_tuple)?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "login session not found".to_string()))?;
     Ok(Json(login_session_to_response(&session)))
+}
+
+pub(crate) async fn update_oauth_login_session(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(login_id): AxumPath<String>,
+    Json(payload): Json<UpdateOauthLoginSessionRequest>,
+) -> Result<Json<LoginSessionStatusResponse>, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin account writes are forbidden".to_string(),
+        ));
+    }
+    state.upstream_accounts.require_crypto_key()?;
+
+    expire_pending_login_sessions(&state.pool)
+        .await
+        .map_err(internal_error_tuple)?;
+
+    let mut tx = state
+        .pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(internal_error_tuple)?;
+    let session = load_login_session_by_login_id_with_executor(&mut *tx, &login_id)
+        .await
+        .map_err(internal_error_tuple)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "login session not found".to_string()))?;
+    let requested_base_updated_at = headers
+        .get(LOGIN_SESSION_BASE_UPDATED_AT_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let completed_race_repair_requested = session.status == LOGIN_SESSION_STATUS_COMPLETED
+        && session.account_id.is_some()
+        && session
+            .consumed_at
+            .as_deref()
+            .is_some_and(|value| value != session.updated_at)
+        && requested_base_updated_at
+            .as_deref()
+            .is_some_and(|value| value == session.updated_at);
+    // Completed-session repairs are only valid for create-account sessions that
+    // still preserve their last pending baseline after callback completion.
+    // Relogin sessions advance updated_at when they complete, so they never
+    // qualify for this narrow repair path.
+    let allows_completed_race_repair = if completed_race_repair_requested {
+        let account_id = session.account_id.ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                "completed session account is missing".to_string(),
+            )
+        })?;
+        let account = load_upstream_account_row_conn(tx.as_mut(), account_id)
+            .await
+            .map_err(internal_error_tuple)?
+            .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
+        let current_group_note =
+            load_group_note_snapshot_conn(tx.as_mut(), session.group_name.as_deref(), None)
+                .await
+                .map_err(internal_error_tuple)?;
+        let current_tag_ids = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT tag_id
+            FROM pool_upstream_account_tags
+            WHERE account_id = ?1
+            ORDER BY tag_id ASC
+            "#,
+        )
+        .bind(account_id)
+        .fetch_all(tx.as_mut())
+        .await
+        .map_err(internal_error_tuple)?;
+        session.display_name.as_deref() == Some(account.display_name.as_str())
+            && session.group_name == account.group_name
+            && session.note == account.note
+            && session.group_note == current_group_note
+            && (session.is_mother != 0) == (account.is_mother != 0)
+            && parse_tag_ids_json(session.tag_ids_json.as_deref()) == current_tag_ids
+    } else {
+        false
+    };
+    if session.status != LOGIN_SESSION_STATUS_PENDING && !allows_completed_race_repair {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            if session.status == LOGIN_SESSION_STATUS_EXPIRED {
+                "The login session has expired. Please create a new authorization link.".to_string()
+            } else {
+                "This login session can no longer be edited.".to_string()
+            },
+        ));
+    }
+    if session.account_id.is_some() && session.status == LOGIN_SESSION_STATUS_PENDING {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "This login session belongs to an existing account and cannot be edited.".to_string(),
+        ));
+    }
+    if session.status == LOGIN_SESSION_STATUS_PENDING {
+        if let Some(requested_base_updated_at) = requested_base_updated_at.as_deref() {
+            if requested_base_updated_at != session.updated_at {
+                tx.commit().await.map_err(internal_error_tuple)?;
+                return Ok(Json(login_session_to_response_with_sync_applied(
+                    &session, false,
+                )));
+            }
+        }
+    }
+
+    let UpdateOauthLoginSessionRequest {
+        display_name: requested_display_name,
+        group_name: requested_group_name,
+        note: requested_note,
+        group_note: requested_group_note,
+        tag_ids: requested_tag_ids,
+        is_mother: requested_is_mother,
+        mailbox_session_id: requested_mailbox_session_id,
+        mailbox_address: requested_mailbox_address,
+    } = payload;
+    let requested_group_name_was_updated = !matches!(requested_group_name, OptionalField::Missing);
+    let requested_group_note_was_updated = !matches!(requested_group_note, OptionalField::Missing);
+
+    let display_name = match requested_display_name {
+        OptionalField::Missing => session.display_name.clone(),
+        OptionalField::Null => None,
+        OptionalField::Value(value) => normalize_optional_text(Some(value)),
+    };
+    let group_name = match requested_group_name {
+        OptionalField::Missing => session.group_name.clone(),
+        OptionalField::Null => None,
+        OptionalField::Value(value) => normalize_optional_text(Some(value)),
+    };
+    let note = match requested_note {
+        OptionalField::Missing => session.note.clone(),
+        OptionalField::Null => None,
+        OptionalField::Value(value) => normalize_optional_text(Some(value)),
+    };
+    let requested_group_note_missing = matches!(requested_group_note, OptionalField::Missing);
+    let mut normalized_group_note = match requested_group_note {
+        OptionalField::Missing => session.group_note.clone(),
+        OptionalField::Null => None,
+        OptionalField::Value(value) => normalize_optional_text(Some(value)),
+    };
+    let group_name_changed = group_name.as_deref() != session.group_name.as_deref();
+    if requested_group_name_was_updated
+        && (group_name.is_none() || (requested_group_note_missing && group_name_changed))
+    {
+        normalized_group_note = None;
+    }
+    let mailbox_session_id = match requested_mailbox_session_id {
+        OptionalField::Missing => session.mailbox_session_id.clone(),
+        OptionalField::Null => None,
+        OptionalField::Value(value) => normalize_optional_text(Some(value)),
+    };
+    let mailbox_address = match requested_mailbox_address {
+        OptionalField::Missing => session.mailbox_address.clone(),
+        OptionalField::Null => None,
+        OptionalField::Value(value) => normalize_optional_text(Some(value)),
+    };
+    let requested_tag_ids = match requested_tag_ids {
+        OptionalField::Missing => parse_tag_ids_json(session.tag_ids_json.as_deref()),
+        OptionalField::Null => Vec::new(),
+        OptionalField::Value(value) => value,
+    };
+    let tag_ids = validate_tag_ids(&state.pool, &requested_tag_ids).await?;
+    let is_mother = match requested_is_mother {
+        OptionalField::Missing => session.is_mother != 0,
+        OptionalField::Null => false,
+        OptionalField::Value(value) => value,
+    };
+    validate_mailbox_binding(
+        &state.pool,
+        mailbox_session_id.as_deref(),
+        mailbox_address.as_deref(),
+    )
+    .await?;
+    validate_group_note_target(group_name.as_deref(), normalized_group_note.is_some())?;
+    let tag_ids_json = encode_tag_ids_json(&tag_ids).map_err(internal_error_tuple)?;
+
+    if display_name.as_deref() != session.display_name.as_deref() {
+        if let Some(display_name) = display_name.as_deref() {
+            ensure_display_name_available(&mut *tx, display_name, session.account_id).await?;
+        }
+    }
+
+    let stored_group_note = if let Some(group_name) = group_name.as_deref() {
+        if normalized_group_note.is_some()
+            && group_has_accounts_conn(tx.as_mut(), group_name)
+                .await
+                .map_err(internal_error_tuple)?
+        {
+            None
+        } else {
+            normalized_group_note.clone()
+        }
+    } else {
+        None
+    };
+    if allows_completed_race_repair {
+        let account_id = session.account_id.ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                "completed session account is missing".to_string(),
+            )
+        })?;
+        apply_oauth_login_session_metadata_to_account_with_executor(
+            &mut tx,
+            account_id,
+            display_name.clone(),
+            group_name.clone(),
+            note.clone(),
+            normalized_group_note.clone(),
+            requested_group_note_was_updated,
+            is_mother,
+            &tag_ids,
+        )
+        .await?;
+        let completed_group_note_snapshot = load_group_note_snapshot_conn(
+            tx.as_mut(),
+            group_name.as_deref(),
+            normalized_group_note.as_deref(),
+        )
+        .await
+        .map_err(internal_error_tuple)?;
+        let now_iso = next_login_session_updated_at(Some(&session.updated_at));
+        sqlx::query(
+            r#"
+            UPDATE pool_oauth_login_sessions
+            SET display_name = ?2,
+                group_name = ?3,
+                is_mother = ?4,
+                note = ?5,
+                tag_ids_json = ?6,
+                group_note = ?7,
+                mailbox_session_id = ?8,
+                generated_mailbox_address = ?9,
+                updated_at = ?10
+            WHERE login_id = ?1
+            "#,
+        )
+        .bind(&login_id)
+        .bind(display_name)
+        .bind(group_name)
+        .bind(if is_mother { 1 } else { 0 })
+        .bind(note)
+        .bind(&tag_ids_json)
+        .bind(completed_group_note_snapshot)
+        .bind(mailbox_session_id)
+        .bind(mailbox_address)
+        .bind(&now_iso)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal_error_tuple)?;
+        let updated = load_login_session_by_login_id_with_executor(&mut *tx, &login_id)
+            .await
+            .map_err(internal_error_tuple)?
+            .ok_or_else(|| (StatusCode::NOT_FOUND, "login session not found".to_string()))?;
+        tx.commit().await.map_err(internal_error_tuple)?;
+        return Ok(Json(login_session_to_response_with_sync_applied(
+            &updated, true,
+        )));
+    }
+    let now_iso = next_login_session_updated_at(Some(&session.updated_at));
+    let result = sqlx::query(
+        r#"
+        UPDATE pool_oauth_login_sessions
+        SET display_name = ?2,
+            group_name = ?3,
+            is_mother = ?4,
+            note = ?5,
+            tag_ids_json = ?6,
+            group_note = ?7,
+            mailbox_session_id = ?8,
+            generated_mailbox_address = ?9,
+            updated_at = ?10
+        WHERE login_id = ?1
+          AND (?11 IS NULL OR updated_at = ?11)
+        "#,
+    )
+    .bind(&login_id)
+    .bind(display_name)
+    .bind(group_name)
+    .bind(if is_mother { 1 } else { 0 })
+    .bind(note)
+    .bind(tag_ids_json)
+    .bind(stored_group_note)
+    .bind(mailbox_session_id)
+    .bind(mailbox_address)
+    .bind(&now_iso)
+    .bind(requested_base_updated_at.as_deref())
+    .execute(&mut *tx)
+    .await
+    .map_err(internal_error_tuple)?;
+    let updated = load_login_session_by_login_id_with_executor(&mut *tx, &login_id)
+        .await
+        .map_err(internal_error_tuple)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "login session not found".to_string()))?;
+    if result.rows_affected() == 0 {
+        tx.commit().await.map_err(internal_error_tuple)?;
+        return Ok(Json(login_session_to_response_with_sync_applied(
+            &updated, false,
+        )));
+    }
+    tx.commit().await.map_err(internal_error_tuple)?;
+    Ok(Json(login_session_to_response_with_sync_applied(
+        &updated, true,
+    )))
 }
 
 pub(crate) async fn oauth_callback(
@@ -5206,6 +5546,85 @@ async fn update_upstream_account_inner(
     Ok(detail)
 }
 
+async fn apply_oauth_login_session_metadata_to_account_with_executor(
+    tx: &mut Transaction<'_, Sqlite>,
+    account_id: i64,
+    display_name: Option<String>,
+    group_name: Option<String>,
+    note: Option<String>,
+    group_note: Option<String>,
+    group_note_was_requested: bool,
+    is_mother: bool,
+    tag_ids: &[i64],
+) -> Result<(), (StatusCode, String)> {
+    let row = load_upstream_account_row_conn(tx.as_mut(), account_id)
+        .await
+        .map_err(internal_error_tuple)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
+    let previous_group_name = row.group_name.clone();
+    let next_display_name = display_name.unwrap_or(row.display_name);
+    ensure_display_name_available(tx.as_mut(), &next_display_name, Some(account_id)).await?;
+
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET display_name = ?2,
+            group_name = ?3,
+            is_mother = ?4,
+            note = ?5,
+            updated_at = ?6
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .bind(&next_display_name)
+    .bind(&group_name)
+    .bind(if is_mother { 1 } else { 0 })
+    .bind(&note)
+    .bind(&now_iso)
+    .execute(tx.as_mut())
+    .await
+    .map_err(internal_error_tuple)?;
+
+    if group_note_was_requested {
+        if previous_group_name == group_name {
+            if let Some(group_name) = group_name.as_deref()
+                && group_account_count_conn(tx.as_mut(), group_name)
+                    .await
+                    .map_err(internal_error_tuple)?
+                    == 1
+            {
+                save_group_note_record_conn(tx.as_mut(), group_name, group_note)
+                    .await
+                    .map_err(internal_error_tuple)?;
+            }
+        } else {
+            save_group_note_after_account_write(
+                tx.as_mut(),
+                group_name.as_deref(),
+                group_note,
+                true,
+                false,
+            )
+            .await
+            .map_err(internal_error_tuple)?;
+        }
+    }
+    if previous_group_name != group_name {
+        cleanup_orphaned_group_note(tx.as_mut(), previous_group_name.as_deref())
+            .await
+            .map_err(internal_error_tuple)?;
+    }
+    apply_mother_assignment(tx, account_id, group_name.as_deref(), is_mother)
+        .await
+        .map_err(internal_error_tuple)?;
+    sync_account_tag_links_with_executor(tx.as_mut(), account_id, tag_ids)
+        .await
+        .map_err(internal_error_tuple)?;
+    Ok(())
+}
+
 pub(crate) async fn delete_upstream_account(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -5568,9 +5987,23 @@ async fn persist_oauth_callback_inner(
     )
     .await
     .map_err(internal_error_tuple)?;
-    complete_login_session_with_executor(&mut *tx, &session.login_id, account_id)
-        .await
-        .map_err(internal_error_tuple)?;
+    let completed_group_note_snapshot = load_group_note_snapshot_conn(
+        tx.as_mut(),
+        session.group_name.as_deref(),
+        session.group_note.as_deref(),
+    )
+    .await
+    .map_err(internal_error_tuple)?;
+    complete_login_session_with_executor(
+        &mut *tx,
+        &session.login_id,
+        account_id,
+        completed_group_note_snapshot,
+        &session.updated_at,
+        session.account_id.is_none(),
+    )
+    .await
+    .map_err(internal_error_tuple)?;
     tx.commit().await.map_err(internal_error_tuple)?;
     Ok(account_id)
 }
@@ -8511,25 +8944,71 @@ async fn complete_login_session_with_executor(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     login_id: &str,
     account_id: i64,
+    group_note_snapshot: Option<String>,
+    previous_updated_at: &str,
+    preserve_pending_updated_at: bool,
 ) -> Result<()> {
-    let now_iso = format_utc_iso(Utc::now());
+    let consumed_at = next_login_session_updated_at(Some(previous_updated_at));
+    let completed_updated_at = if preserve_pending_updated_at {
+        previous_updated_at.to_string()
+    } else {
+        consumed_at.clone()
+    };
     sqlx::query(
         r#"
         UPDATE pool_oauth_login_sessions
         SET status = ?2,
             account_id = ?3,
-            consumed_at = ?4,
-            updated_at = ?4
+            group_note = ?4,
+            updated_at = ?5,
+            consumed_at = ?6
         WHERE login_id = ?1
         "#,
     )
     .bind(login_id)
     .bind(LOGIN_SESSION_STATUS_COMPLETED)
     .bind(account_id)
-    .bind(&now_iso)
+    .bind(group_note_snapshot)
+    .bind(&completed_updated_at)
+    .bind(&consumed_at)
     .execute(executor)
     .await?;
     Ok(())
+}
+
+async fn load_group_note_snapshot_conn(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    group_name: Option<&str>,
+    fallback_note: Option<&str>,
+) -> Result<Option<String>> {
+    let Some(group_name) = group_name else {
+        return Ok(None);
+    };
+    let group_note = sqlx::query_scalar::<_, Option<String>>(
+        r#"
+        SELECT note
+        FROM pool_upstream_account_group_notes
+        WHERE group_name = ?1
+        "#,
+    )
+    .bind(group_name)
+    .fetch_optional(executor)
+    .await?
+    .flatten();
+    Ok(group_note.or_else(|| fallback_note.map(str::to_string)))
+}
+
+fn next_login_session_updated_at(previous_updated_at: Option<&str>) -> String {
+    let mut next_updated_at =
+        parse_rfc3339_utc(&Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+            .unwrap_or_else(Utc::now);
+    if let Some(previous_updated_at) = previous_updated_at
+        && let Some(previous_updated_at) = parse_rfc3339_utc(previous_updated_at)
+        && next_updated_at <= previous_updated_at
+    {
+        next_updated_at = previous_updated_at + ChronoDuration::milliseconds(1);
+    }
+    next_updated_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 async fn fail_login_session_with_executor(
@@ -8598,9 +9077,20 @@ fn login_session_to_response(row: &OauthLoginSessionRow) -> LoginSessionStatusRe
             None
         },
         expires_at: row.expires_at.clone(),
+        updated_at: row.updated_at.clone(),
         account_id: row.account_id,
         error: row.error_message.clone(),
+        sync_applied: None,
     }
+}
+
+fn login_session_to_response_with_sync_applied(
+    row: &OauthLoginSessionRow,
+    sync_applied: bool,
+) -> LoginSessionStatusResponse {
+    let mut response = login_session_to_response(row);
+    response.sync_applied = Some(sync_applied);
+    response
 }
 
 #[derive(Debug, Clone)]
@@ -14816,6 +15306,55 @@ mod tests {
         format!("{encoded}.{body}.{encoded}")
     }
 
+    fn test_tag_routing_rule() -> TagRoutingRule {
+        TagRoutingRule {
+            guard_enabled: false,
+            lookback_hours: None,
+            max_conversations: None,
+            allow_cut_out: true,
+            allow_cut_in: true,
+        }
+    }
+
+    async fn insert_test_oauth_mailbox_session(
+        pool: &SqlitePool,
+        session_id: &str,
+        email_address: &str,
+        source: &str,
+    ) {
+        let now_iso = format_utc_iso(Utc::now());
+        let expires_at = format_utc_iso(Utc::now() + ChronoDuration::days(1));
+        let domain = email_address
+            .split('@')
+            .nth(1)
+            .unwrap_or("mail-tw.707079.xyz");
+        sqlx::query(
+            r#"
+            INSERT INTO pool_oauth_mailbox_sessions (
+                session_id, remote_email_id, email_address, email_domain, mailbox_source,
+                latest_code_value, latest_code_source, latest_code_updated_at,
+                invite_subject, invite_copy_value, invite_copy_label, invite_updated_at,
+                invited, last_message_id, created_at, updated_at, expires_at
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5,
+                NULL, NULL, NULL,
+                NULL, NULL, NULL, NULL,
+                0, NULL, ?6, ?6, ?7
+            )
+            "#,
+        )
+        .bind(session_id)
+        .bind(format!("remote-{session_id}"))
+        .bind(email_address)
+        .bind(domain)
+        .bind(source)
+        .bind(&now_iso)
+        .bind(&expires_at)
+        .execute(pool)
+        .await
+        .expect("insert oauth mailbox session");
+    }
+
     async fn insert_api_key_account(pool: &SqlitePool, display_name: &str) -> i64 {
         let now_iso = format_utc_iso(Utc::now());
         sqlx::query_scalar::<_, i64>(
@@ -18675,6 +19214,1403 @@ mod tests {
             .await
             .expect("resolve pool account");
         assert!(matches!(resolution, PoolAccountResolution::RateLimited));
+    }
+
+    #[tokio::test]
+    async fn update_oauth_login_session_preserves_pending_url_and_persists_metadata() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let tag_id = insert_tag(&state.pool, "pending-sync", &test_tag_routing_rule())
+            .await
+            .expect("insert tag")
+            .summary
+            .id;
+        insert_test_oauth_mailbox_session(
+            &state.pool,
+            "mailbox-session-1",
+            "pending-sync@mail-tw.707079.xyz",
+            OAUTH_MAILBOX_SOURCE_ATTACHED,
+        )
+        .await;
+
+        let created = create_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(CreateOauthLoginSessionRequest {
+                display_name: Some("Original Pending".to_string()),
+                group_name: Some("alpha".to_string()),
+                note: Some("before".to_string()),
+                group_note: Some("alpha note".to_string()),
+                account_id: None,
+                tag_ids: vec![],
+                is_mother: Some(false),
+                mailbox_session_id: None,
+                mailbox_address: None,
+            }),
+        )
+        .await
+        .expect("create oauth login session")
+        .0;
+
+        let updated = update_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            AxumPath(created.login_id.clone()),
+            Json(UpdateOauthLoginSessionRequest {
+                display_name: OptionalField::Value("Updated Pending".to_string()),
+                group_name: OptionalField::Value("beta".to_string()),
+                note: OptionalField::Value("after".to_string()),
+                group_note: OptionalField::Value("beta shared".to_string()),
+                tag_ids: OptionalField::Value(vec![tag_id]),
+                is_mother: OptionalField::Value(true),
+                mailbox_session_id: OptionalField::Value("mailbox-session-1".to_string()),
+                mailbox_address: OptionalField::Value(
+                    "pending-sync@mail-tw.707079.xyz".to_string(),
+                ),
+            }),
+        )
+        .await
+        .expect("update oauth login session")
+        .0;
+
+        assert_eq!(updated.login_id, created.login_id);
+        assert_eq!(updated.auth_url, created.auth_url);
+        assert_eq!(updated.redirect_uri, created.redirect_uri);
+        assert_eq!(updated.expires_at, created.expires_at);
+
+        let stored = load_login_session_by_login_id(&state.pool, &updated.login_id)
+            .await
+            .expect("load stored login session")
+            .expect("stored login session should exist");
+        assert_eq!(stored.display_name.as_deref(), Some("Updated Pending"));
+        assert_eq!(stored.group_name.as_deref(), Some("beta"));
+        assert_eq!(stored.note.as_deref(), Some("after"));
+        assert_eq!(stored.group_note.as_deref(), Some("beta shared"));
+        assert_eq!(stored.is_mother, 1);
+        assert_eq!(
+            parse_tag_ids_json(stored.tag_ids_json.as_deref()),
+            vec![tag_id]
+        );
+        assert_eq!(
+            stored.mailbox_session_id.as_deref(),
+            Some("mailbox-session-1")
+        );
+        assert_eq!(
+            stored.mailbox_address.as_deref(),
+            Some("pending-sync@mail-tw.707079.xyz")
+        );
+    }
+
+    #[tokio::test]
+    async fn update_oauth_login_session_ignores_stale_baseline_updates() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let created = create_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(CreateOauthLoginSessionRequest {
+                display_name: Some("Ordered Pending".to_string()),
+                group_name: Some("alpha".to_string()),
+                note: Some("before".to_string()),
+                group_note: Some("alpha note".to_string()),
+                account_id: None,
+                tag_ids: vec![],
+                is_mother: Some(false),
+                mailbox_session_id: None,
+                mailbox_address: None,
+            }),
+        )
+        .await
+        .expect("create oauth login session")
+        .0;
+
+        let mut newer_headers = HeaderMap::new();
+        newer_headers.insert(
+            LOGIN_SESSION_BASE_UPDATED_AT_HEADER,
+            header::HeaderValue::from_str(&created.updated_at).expect("valid updated_at header"),
+        );
+        let newer = update_oauth_login_session(
+            State(state.clone()),
+            newer_headers,
+            AxumPath(created.login_id.clone()),
+            Json(UpdateOauthLoginSessionRequest {
+                display_name: OptionalField::Value("Newest Pending".to_string()),
+                group_name: OptionalField::Value("beta".to_string()),
+                note: OptionalField::Value("newest note".to_string()),
+                group_note: OptionalField::Value("beta note".to_string()),
+                tag_ids: OptionalField::Value(vec![]),
+                is_mother: OptionalField::Value(true),
+                mailbox_session_id: OptionalField::Missing,
+                mailbox_address: OptionalField::Missing,
+            }),
+        )
+        .await
+        .expect("apply newer oauth login session update")
+        .0;
+        assert_ne!(newer.updated_at, created.updated_at);
+        let newer_updated_at = newer.updated_at.clone();
+
+        let mut stale_headers = HeaderMap::new();
+        stale_headers.insert(
+            LOGIN_SESSION_BASE_UPDATED_AT_HEADER,
+            header::HeaderValue::from_str(&created.updated_at).expect("valid updated_at header"),
+        );
+        let stale = update_oauth_login_session(
+            State(state.clone()),
+            stale_headers,
+            AxumPath(created.login_id.clone()),
+            Json(UpdateOauthLoginSessionRequest {
+                display_name: OptionalField::Value("Stale Pending".to_string()),
+                group_name: OptionalField::Value("gamma".to_string()),
+                note: OptionalField::Value("stale note".to_string()),
+                group_note: OptionalField::Value("gamma note".to_string()),
+                tag_ids: OptionalField::Value(vec![]),
+                is_mother: OptionalField::Value(false),
+                mailbox_session_id: OptionalField::Missing,
+                mailbox_address: OptionalField::Missing,
+            }),
+        )
+        .await
+        .expect("stale oauth login session update should be ignored")
+        .0;
+
+        assert_eq!(stale.login_id, created.login_id);
+        assert_eq!(stale.updated_at, newer_updated_at);
+
+        let stored = load_login_session_by_login_id(&state.pool, &created.login_id)
+            .await
+            .expect("load stored login session")
+            .expect("stored login session should exist");
+        assert_eq!(stored.display_name.as_deref(), Some("Newest Pending"));
+        assert_eq!(stored.group_name.as_deref(), Some("beta"));
+        assert_eq!(stored.note.as_deref(), Some("newest note"));
+        assert_eq!(stored.group_note.as_deref(), Some("beta note"));
+        assert_eq!(stored.is_mother, 1);
+        assert_eq!(stored.updated_at, newer_updated_at);
+    }
+
+    #[tokio::test]
+    async fn update_oauth_login_session_preserves_omitted_fields() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let tag_id = insert_tag(&state.pool, "partial-sync", &test_tag_routing_rule())
+            .await
+            .expect("insert tag")
+            .summary
+            .id;
+        insert_test_oauth_mailbox_session(
+            &state.pool,
+            "mailbox-session-partial",
+            "partial-sync@mail-tw.707079.xyz",
+            OAUTH_MAILBOX_SOURCE_ATTACHED,
+        )
+        .await;
+
+        let created = create_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(CreateOauthLoginSessionRequest {
+                display_name: Some("Keep Me".to_string()),
+                group_name: Some("partial-group".to_string()),
+                note: Some("before partial patch".to_string()),
+                group_note: Some("partial draft note".to_string()),
+                account_id: None,
+                tag_ids: vec![tag_id],
+                is_mother: Some(true),
+                mailbox_session_id: Some("mailbox-session-partial".to_string()),
+                mailbox_address: Some("partial-sync@mail-tw.707079.xyz".to_string()),
+            }),
+        )
+        .await
+        .expect("create oauth login session")
+        .0;
+
+        let updated = update_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            AxumPath(created.login_id.clone()),
+            Json(UpdateOauthLoginSessionRequest {
+                display_name: OptionalField::Missing,
+                group_name: OptionalField::Missing,
+                note: OptionalField::Value("after partial patch".to_string()),
+                group_note: OptionalField::Missing,
+                tag_ids: OptionalField::Missing,
+                is_mother: OptionalField::Missing,
+                mailbox_session_id: OptionalField::Missing,
+                mailbox_address: OptionalField::Missing,
+            }),
+        )
+        .await
+        .expect("update oauth login session")
+        .0;
+
+        assert_eq!(updated.login_id, created.login_id);
+        assert_eq!(updated.auth_url, created.auth_url);
+        assert_eq!(updated.redirect_uri, created.redirect_uri);
+        assert_eq!(updated.expires_at, created.expires_at);
+
+        let stored = load_login_session_by_login_id(&state.pool, &updated.login_id)
+            .await
+            .expect("load stored login session")
+            .expect("stored login session should exist");
+        assert_eq!(stored.display_name.as_deref(), Some("Keep Me"));
+        assert_eq!(stored.group_name.as_deref(), Some("partial-group"));
+        assert_eq!(stored.note.as_deref(), Some("after partial patch"));
+        assert_eq!(stored.group_note.as_deref(), Some("partial draft note"));
+        assert_eq!(stored.is_mother, 1);
+        assert_eq!(
+            parse_tag_ids_json(stored.tag_ids_json.as_deref()),
+            vec![tag_id]
+        );
+        assert_eq!(
+            stored.mailbox_session_id.as_deref(),
+            Some("mailbox-session-partial")
+        );
+        assert_eq!(
+            stored.mailbox_address.as_deref(),
+            Some("partial-sync@mail-tw.707079.xyz")
+        );
+    }
+
+    #[tokio::test]
+    async fn update_oauth_login_session_clears_omitted_group_note_when_group_changes() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let created = create_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(CreateOauthLoginSessionRequest {
+                display_name: Some("Move Draft Group".to_string()),
+                group_name: Some("before-group".to_string()),
+                note: Some("before note".to_string()),
+                group_note: Some("before draft note".to_string()),
+                account_id: None,
+                tag_ids: vec![],
+                is_mother: Some(false),
+                mailbox_session_id: None,
+                mailbox_address: None,
+            }),
+        )
+        .await
+        .expect("create oauth login session")
+        .0;
+
+        let updated = update_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            AxumPath(created.login_id.clone()),
+            Json(UpdateOauthLoginSessionRequest {
+                display_name: OptionalField::Missing,
+                group_name: OptionalField::Value("after-group".to_string()),
+                note: OptionalField::Missing,
+                group_note: OptionalField::Missing,
+                tag_ids: OptionalField::Missing,
+                is_mother: OptionalField::Missing,
+                mailbox_session_id: OptionalField::Missing,
+                mailbox_address: OptionalField::Missing,
+            }),
+        )
+        .await
+        .expect("update oauth login session")
+        .0;
+
+        assert_eq!(updated.login_id, created.login_id);
+        assert_eq!(updated.auth_url, created.auth_url);
+        assert_eq!(updated.redirect_uri, created.redirect_uri);
+        assert_eq!(updated.expires_at, created.expires_at);
+
+        let stored = load_login_session_by_login_id(&state.pool, &updated.login_id)
+            .await
+            .expect("load stored login session")
+            .expect("stored login session should exist");
+        assert_eq!(stored.group_name.as_deref(), Some("after-group"));
+        assert_eq!(stored.group_note, None);
+        assert_eq!(stored.note.as_deref(), Some("before note"));
+    }
+
+    #[tokio::test]
+    async fn update_oauth_login_session_clears_group_note_when_group_is_removed() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let created = create_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(CreateOauthLoginSessionRequest {
+                display_name: Some("Clear Group Note".to_string()),
+                group_name: Some("draft-group".to_string()),
+                note: Some("before clearing group".to_string()),
+                group_note: Some("draft group note".to_string()),
+                account_id: None,
+                tag_ids: vec![],
+                is_mother: Some(false),
+                mailbox_session_id: None,
+                mailbox_address: None,
+            }),
+        )
+        .await
+        .expect("create oauth login session")
+        .0;
+
+        let updated = update_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            AxumPath(created.login_id.clone()),
+            Json(UpdateOauthLoginSessionRequest {
+                display_name: OptionalField::Missing,
+                group_name: OptionalField::Value(String::new()),
+                note: OptionalField::Missing,
+                group_note: OptionalField::Missing,
+                tag_ids: OptionalField::Missing,
+                is_mother: OptionalField::Missing,
+                mailbox_session_id: OptionalField::Missing,
+                mailbox_address: OptionalField::Missing,
+            }),
+        )
+        .await
+        .expect("update oauth login session")
+        .0;
+
+        assert_eq!(updated.login_id, created.login_id);
+
+        let stored = load_login_session_by_login_id(&state.pool, &updated.login_id)
+            .await
+            .expect("load stored login session")
+            .expect("stored login session should exist");
+        assert_eq!(stored.group_name, None);
+        assert_eq!(stored.group_note, None);
+        assert_eq!(stored.note.as_deref(), Some("before clearing group"));
+    }
+
+    #[tokio::test]
+    async fn updated_oauth_login_session_metadata_is_used_when_callback_persists_account() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let tag_id = insert_tag(&state.pool, "callback-sync", &test_tag_routing_rule())
+            .await
+            .expect("insert tag")
+            .summary
+            .id;
+        insert_test_oauth_mailbox_session(
+            &state.pool,
+            "mailbox-session-2",
+            "callback-sync@mail-tw.707079.xyz",
+            OAUTH_MAILBOX_SOURCE_ATTACHED,
+        )
+        .await;
+
+        let created = create_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(CreateOauthLoginSessionRequest {
+                display_name: Some("Before Patch".to_string()),
+                group_name: Some("old-group".to_string()),
+                note: Some("before note".to_string()),
+                group_note: Some("old group note".to_string()),
+                account_id: None,
+                tag_ids: vec![],
+                is_mother: Some(false),
+                mailbox_session_id: None,
+                mailbox_address: None,
+            }),
+        )
+        .await
+        .expect("create oauth login session")
+        .0;
+
+        let _ = update_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            AxumPath(created.login_id.clone()),
+            Json(UpdateOauthLoginSessionRequest {
+                display_name: OptionalField::Value("After Patch".to_string()),
+                group_name: OptionalField::Value("new-group".to_string()),
+                note: OptionalField::Value("after note".to_string()),
+                group_note: OptionalField::Value("draft group note".to_string()),
+                tag_ids: OptionalField::Value(vec![tag_id]),
+                is_mother: OptionalField::Value(true),
+                mailbox_session_id: OptionalField::Value("mailbox-session-2".to_string()),
+                mailbox_address: OptionalField::Value(
+                    "callback-sync@mail-tw.707079.xyz".to_string(),
+                ),
+            }),
+        )
+        .await
+        .expect("update oauth login session");
+
+        let updated_session = load_login_session_by_login_id(&state.pool, &created.login_id)
+            .await
+            .expect("load updated session")
+            .expect("updated session should exist");
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let encrypted_credentials = encrypt_credentials(
+            crypto_key,
+            &StoredCredentials::Oauth(StoredOauthCredentials {
+                access_token: "callback-access".to_string(),
+                refresh_token: "callback-refresh".to_string(),
+                id_token: test_id_token(
+                    "callback@example.com",
+                    Some("org_callback"),
+                    Some("user_callback"),
+                    Some("team"),
+                ),
+                token_type: Some("Bearer".to_string()),
+            }),
+        )
+        .expect("encrypt oauth credentials");
+        let account_id = persist_oauth_callback_inner(
+            state.as_ref(),
+            PersistOauthCallbackInput {
+                display_name: updated_session
+                    .display_name
+                    .clone()
+                    .expect("display name should be stored"),
+                session: updated_session.clone(),
+                claims: test_claims(
+                    "callback@example.com",
+                    Some("org_callback"),
+                    Some("user_callback"),
+                ),
+                encrypted_credentials,
+                token_expires_at: "2026-04-01T00:00:00Z".to_string(),
+            },
+        )
+        .await
+        .expect("persist oauth callback");
+
+        let account = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth account row")
+            .expect("oauth account should exist");
+        assert_eq!(account.display_name, "After Patch");
+        assert_eq!(account.group_name.as_deref(), Some("new-group"));
+        assert_eq!(account.note.as_deref(), Some("after note"));
+        assert_eq!(account.is_mother, 1);
+
+        let account_tag_ids = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT tag_id
+            FROM pool_upstream_account_tags
+            WHERE account_id = ?1
+            ORDER BY tag_id ASC
+            "#,
+        )
+        .bind(account_id)
+        .fetch_all(&state.pool)
+        .await
+        .expect("load oauth account tags");
+        assert_eq!(account_tag_ids, vec![tag_id]);
+
+        let group_note = sqlx::query_scalar::<_, Option<String>>(
+            r#"
+            SELECT note
+            FROM pool_upstream_account_group_notes
+            WHERE group_name = ?1
+            "#,
+        )
+        .bind("new-group")
+        .fetch_one(&state.pool)
+        .await
+        .expect("load group note");
+        assert_eq!(group_note.as_deref(), Some("draft group note"));
+
+        let completed_session = load_login_session_by_login_id(&state.pool, &created.login_id)
+            .await
+            .expect("load completed session")
+            .expect("completed session should exist");
+        assert_eq!(completed_session.status, LOGIN_SESSION_STATUS_COMPLETED);
+        assert_eq!(completed_session.account_id, Some(account_id));
+    }
+
+    #[tokio::test]
+    async fn update_oauth_login_session_repairs_completed_callback_race_with_latest_metadata() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let tag_id = insert_tag(&state.pool, "callback-race-sync", &test_tag_routing_rule())
+            .await
+            .expect("insert tag")
+            .summary
+            .id;
+
+        let created = create_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(CreateOauthLoginSessionRequest {
+                display_name: Some("Race Before".to_string()),
+                group_name: Some("race-group".to_string()),
+                note: Some("before note".to_string()),
+                group_note: Some("before group note".to_string()),
+                account_id: None,
+                tag_ids: vec![],
+                is_mother: Some(false),
+                mailbox_session_id: None,
+                mailbox_address: None,
+            }),
+        )
+        .await
+        .expect("create oauth login session")
+        .0;
+
+        let pending_session = load_login_session_by_login_id(&state.pool, &created.login_id)
+            .await
+            .expect("load pending session")
+            .expect("pending session should exist");
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let encrypted_credentials = encrypt_credentials(
+            crypto_key,
+            &StoredCredentials::Oauth(StoredOauthCredentials {
+                access_token: "race-access".to_string(),
+                refresh_token: "race-refresh".to_string(),
+                id_token: test_id_token(
+                    "race@example.com",
+                    Some("org_race"),
+                    Some("user_race"),
+                    Some("team"),
+                ),
+                token_type: Some("Bearer".to_string()),
+            }),
+        )
+        .expect("encrypt oauth credentials");
+        let account_id = persist_oauth_callback_inner(
+            state.as_ref(),
+            PersistOauthCallbackInput {
+                display_name: pending_session
+                    .display_name
+                    .clone()
+                    .expect("display name should be stored"),
+                session: pending_session,
+                claims: test_claims("race@example.com", Some("org_race"), Some("user_race")),
+                encrypted_credentials,
+                token_expires_at: "2026-04-01T00:00:00Z".to_string(),
+            },
+        )
+        .await
+        .expect("persist oauth callback");
+
+        let mut repair_headers = HeaderMap::new();
+        repair_headers.insert(
+            LOGIN_SESSION_BASE_UPDATED_AT_HEADER,
+            header::HeaderValue::from_str(&created.updated_at).expect("valid updated_at header"),
+        );
+        let repaired = update_oauth_login_session(
+            State(state.clone()),
+            repair_headers,
+            AxumPath(created.login_id.clone()),
+            Json(UpdateOauthLoginSessionRequest {
+                display_name: OptionalField::Value("Race After".to_string()),
+                group_name: OptionalField::Value("race-group".to_string()),
+                note: OptionalField::Value("after note".to_string()),
+                group_note: OptionalField::Value("after group note".to_string()),
+                tag_ids: OptionalField::Value(vec![tag_id]),
+                is_mother: OptionalField::Value(true),
+                mailbox_session_id: OptionalField::Missing,
+                mailbox_address: OptionalField::Missing,
+            }),
+        )
+        .await
+        .expect("repair completed callback race")
+        .0;
+
+        assert_eq!(repaired.login_id, created.login_id);
+        assert_eq!(repaired.status, LOGIN_SESSION_STATUS_COMPLETED);
+        assert_eq!(repaired.account_id, Some(account_id));
+        assert!(repaired.auth_url.is_none());
+        assert!(repaired.redirect_uri.is_none());
+
+        let account = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load repaired account row")
+            .expect("oauth account should exist");
+        assert_eq!(account.display_name, "Race After");
+        assert_eq!(account.group_name.as_deref(), Some("race-group"));
+        assert_eq!(account.note.as_deref(), Some("after note"));
+        assert_eq!(account.is_mother, 1);
+
+        let account_tag_ids = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT tag_id
+            FROM pool_upstream_account_tags
+            WHERE account_id = ?1
+            ORDER BY tag_id ASC
+            "#,
+        )
+        .bind(account_id)
+        .fetch_all(&state.pool)
+        .await
+        .expect("load repaired oauth account tags");
+        assert_eq!(account_tag_ids, vec![tag_id]);
+
+        let group_note = sqlx::query_scalar::<_, Option<String>>(
+            r#"
+            SELECT note
+            FROM pool_upstream_account_group_notes
+            WHERE group_name = ?1
+            "#,
+        )
+        .bind("race-group")
+        .fetch_one(&state.pool)
+        .await
+        .expect("load repaired group note");
+        assert_eq!(group_note.as_deref(), Some("after group note"));
+
+        let completed_session = load_login_session_by_login_id(&state.pool, &created.login_id)
+            .await
+            .expect("reload completed session")
+            .expect("completed session should still exist");
+        assert_ne!(completed_session.updated_at, created.updated_at);
+        assert!(completed_session.consumed_at.is_some());
+
+        let mut second_repair_headers = HeaderMap::new();
+        second_repair_headers.insert(
+            LOGIN_SESSION_BASE_UPDATED_AT_HEADER,
+            header::HeaderValue::from_str(&repaired.updated_at).expect("valid updated_at header"),
+        );
+        let second_repair = update_oauth_login_session(
+            State(state.clone()),
+            second_repair_headers,
+            AxumPath(created.login_id.clone()),
+            Json(UpdateOauthLoginSessionRequest {
+                display_name: OptionalField::Value("Race Final".to_string()),
+                group_name: OptionalField::Missing,
+                note: OptionalField::Missing,
+                group_note: OptionalField::Missing,
+                tag_ids: OptionalField::Missing,
+                is_mother: OptionalField::Missing,
+                mailbox_session_id: OptionalField::Missing,
+                mailbox_address: OptionalField::Missing,
+            }),
+        )
+        .await
+        .expect("repair completed callback race again with omitted fields")
+        .0;
+
+        let repaired_again = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load twice repaired account row")
+            .expect("oauth account should still exist");
+        assert_eq!(repaired_again.display_name, "Race Final");
+        assert_eq!(repaired_again.group_name.as_deref(), Some("race-group"));
+        assert_eq!(repaired_again.note.as_deref(), Some("after note"));
+        assert_eq!(repaired_again.is_mother, 1);
+
+        let account_tag_ids = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT tag_id
+            FROM pool_upstream_account_tags
+            WHERE account_id = ?1
+            ORDER BY tag_id ASC
+            "#,
+        )
+        .bind(account_id)
+        .fetch_all(&state.pool)
+        .await
+        .expect("load twice repaired oauth account tags");
+        assert_eq!(account_tag_ids, vec![tag_id]);
+
+        let second_group_note = sqlx::query_scalar::<_, Option<String>>(
+            r#"
+            SELECT note
+            FROM pool_upstream_account_group_notes
+            WHERE group_name = ?1
+            "#,
+        )
+        .bind("race-group")
+        .fetch_one(&state.pool)
+        .await
+        .expect("load twice repaired group note");
+        assert_eq!(second_group_note.as_deref(), Some("after group note"));
+
+        let repaired_session = load_login_session_by_login_id(&state.pool, &created.login_id)
+            .await
+            .expect("reload repaired session after second patch")
+            .expect("repaired session should still exist");
+        assert_eq!(repaired_session.display_name.as_deref(), Some("Race Final"));
+        assert_eq!(repaired_session.group_name.as_deref(), Some("race-group"));
+        assert_eq!(repaired_session.note.as_deref(), Some("after note"));
+        assert_eq!(
+            parse_tag_ids_json(repaired_session.tag_ids_json.as_deref()),
+            vec![tag_id]
+        );
+        assert_ne!(second_repair.updated_at, repaired.updated_at);
+    }
+
+    #[tokio::test]
+    async fn update_oauth_login_session_rejects_stale_completed_race_repairs() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let created = create_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(CreateOauthLoginSessionRequest {
+                display_name: Some("Race Before".to_string()),
+                group_name: Some("race-group".to_string()),
+                note: Some("before note".to_string()),
+                group_note: Some("before group note".to_string()),
+                account_id: None,
+                tag_ids: vec![],
+                is_mother: Some(false),
+                mailbox_session_id: None,
+                mailbox_address: None,
+            }),
+        )
+        .await
+        .expect("create oauth login session")
+        .0;
+
+        let pending_session = load_login_session_by_login_id(&state.pool, &created.login_id)
+            .await
+            .expect("load pending session")
+            .expect("pending session should exist");
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let encrypted_credentials = encrypt_credentials(
+            crypto_key,
+            &StoredCredentials::Oauth(StoredOauthCredentials {
+                access_token: "race-access".to_string(),
+                refresh_token: "race-refresh".to_string(),
+                id_token: test_id_token(
+                    "race@example.com",
+                    Some("org_race"),
+                    Some("user_race"),
+                    Some("team"),
+                ),
+                token_type: Some("Bearer".to_string()),
+            }),
+        )
+        .expect("encrypt oauth credentials");
+        let account_id = persist_oauth_callback_inner(
+            state.as_ref(),
+            PersistOauthCallbackInput {
+                display_name: pending_session
+                    .display_name
+                    .clone()
+                    .expect("display name should be stored"),
+                session: pending_session,
+                claims: test_claims("race@example.com", Some("org_race"), Some("user_race")),
+                encrypted_credentials,
+                token_expires_at: "2026-04-01T00:00:00Z".to_string(),
+            },
+        )
+        .await
+        .expect("persist oauth callback");
+
+        let completed_session = load_login_session_by_login_id(&state.pool, &created.login_id)
+            .await
+            .expect("load completed session")
+            .expect("completed session should exist");
+        assert_eq!(completed_session.updated_at, created.updated_at);
+        assert!(completed_session.consumed_at.is_some());
+
+        let mut first_headers = HeaderMap::new();
+        first_headers.insert(
+            LOGIN_SESSION_BASE_UPDATED_AT_HEADER,
+            header::HeaderValue::from_str(&created.updated_at).expect("valid updated_at header"),
+        );
+        let first_repair = update_oauth_login_session(
+            State(state.clone()),
+            first_headers,
+            AxumPath(created.login_id.clone()),
+            Json(UpdateOauthLoginSessionRequest {
+                display_name: OptionalField::Value("Race Latest".to_string()),
+                group_name: OptionalField::Value("race-group".to_string()),
+                note: OptionalField::Value("latest note".to_string()),
+                group_note: OptionalField::Value("latest group note".to_string()),
+                tag_ids: OptionalField::Value(vec![]),
+                is_mother: OptionalField::Value(true),
+                mailbox_session_id: OptionalField::Missing,
+                mailbox_address: OptionalField::Missing,
+            }),
+        )
+        .await
+        .expect("apply latest repair")
+        .0;
+
+        assert_ne!(first_repair.updated_at, created.updated_at);
+        assert_eq!(first_repair.account_id, Some(account_id));
+
+        let mut stale_headers = HeaderMap::new();
+        stale_headers.insert(
+            LOGIN_SESSION_BASE_UPDATED_AT_HEADER,
+            header::HeaderValue::from_str(&created.updated_at).expect("valid updated_at header"),
+        );
+        let stale_err = update_oauth_login_session(
+            State(state.clone()),
+            stale_headers,
+            AxumPath(created.login_id.clone()),
+            Json(UpdateOauthLoginSessionRequest {
+                display_name: OptionalField::Value("Race Stale".to_string()),
+                group_name: OptionalField::Value("stale-group".to_string()),
+                note: OptionalField::Value("stale note".to_string()),
+                group_note: OptionalField::Value("stale group note".to_string()),
+                tag_ids: OptionalField::Value(vec![]),
+                is_mother: OptionalField::Value(false),
+                mailbox_session_id: OptionalField::Missing,
+                mailbox_address: OptionalField::Missing,
+            }),
+        )
+        .await
+        .expect_err("reject stale repair");
+        assert_eq!(stale_err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            stale_err.1,
+            "This login session can no longer be edited.".to_string()
+        );
+
+        let account = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load account after stale repair rejection")
+            .expect("oauth account should exist");
+        assert_eq!(account.display_name, "Race Latest");
+        assert_eq!(account.group_name.as_deref(), Some("race-group"));
+        assert_eq!(account.note.as_deref(), Some("latest note"));
+        assert_eq!(account.is_mother, 1);
+    }
+
+    #[tokio::test]
+    async fn update_oauth_login_session_rejects_completed_repairs_after_group_note_changes() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let created = create_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(CreateOauthLoginSessionRequest {
+                display_name: Some("Race Before".to_string()),
+                group_name: Some("race-group".to_string()),
+                note: Some("before note".to_string()),
+                group_note: Some("before group note".to_string()),
+                account_id: None,
+                tag_ids: vec![],
+                is_mother: Some(false),
+                mailbox_session_id: None,
+                mailbox_address: None,
+            }),
+        )
+        .await
+        .expect("create oauth login session")
+        .0;
+
+        let pending_session = load_login_session_by_login_id(&state.pool, &created.login_id)
+            .await
+            .expect("load pending session")
+            .expect("pending session should exist");
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let encrypted_credentials = encrypt_credentials(
+            crypto_key,
+            &StoredCredentials::Oauth(StoredOauthCredentials {
+                access_token: "race-access".to_string(),
+                refresh_token: "race-refresh".to_string(),
+                id_token: test_id_token(
+                    "race@example.com",
+                    Some("org_race"),
+                    Some("user_race"),
+                    Some("team"),
+                ),
+                token_type: Some("Bearer".to_string()),
+            }),
+        )
+        .expect("encrypt oauth credentials");
+        let account_id = persist_oauth_callback_inner(
+            state.as_ref(),
+            PersistOauthCallbackInput {
+                display_name: pending_session
+                    .display_name
+                    .clone()
+                    .expect("display name should be stored"),
+                session: pending_session,
+                claims: test_claims("race@example.com", Some("org_race"), Some("user_race")),
+                encrypted_credentials,
+                token_expires_at: "2026-04-01T00:00:00Z".to_string(),
+            },
+        )
+        .await
+        .expect("persist oauth callback");
+
+        let completed_session = load_login_session_by_login_id(&state.pool, &created.login_id)
+            .await
+            .expect("load completed session")
+            .expect("completed session should exist");
+        assert_eq!(completed_session.updated_at, created.updated_at);
+
+        let mut conn = state.pool.acquire().await.expect("acquire group note conn");
+        save_group_note_record_conn(
+            &mut conn,
+            "race-group",
+            Some("manual latest group note".to_string()),
+        )
+        .await
+        .expect("save manual latest group note");
+        drop(conn);
+
+        let mut repair_headers = HeaderMap::new();
+        repair_headers.insert(
+            LOGIN_SESSION_BASE_UPDATED_AT_HEADER,
+            header::HeaderValue::from_str(&created.updated_at).expect("valid updated_at header"),
+        );
+        let repair_err = update_oauth_login_session(
+            State(state.clone()),
+            repair_headers,
+            AxumPath(created.login_id.clone()),
+            Json(UpdateOauthLoginSessionRequest {
+                display_name: OptionalField::Value("Race Latest".to_string()),
+                group_name: OptionalField::Value("race-group".to_string()),
+                note: OptionalField::Value("latest note".to_string()),
+                group_note: OptionalField::Value("latest group note".to_string()),
+                tag_ids: OptionalField::Value(vec![]),
+                is_mother: OptionalField::Value(true),
+                mailbox_session_id: OptionalField::Missing,
+                mailbox_address: OptionalField::Missing,
+            }),
+        )
+        .await
+        .expect_err("reject repair after group note changes");
+        assert_eq!(repair_err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            repair_err.1,
+            "This login session can no longer be edited.".to_string()
+        );
+
+        let account = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load account after repair rejection")
+            .expect("oauth account should exist");
+        assert_eq!(account.display_name, "Race Before");
+        assert_eq!(account.group_name.as_deref(), Some("race-group"));
+        assert_eq!(account.note.as_deref(), Some("before note"));
+
+        let group_note = sqlx::query_scalar::<_, Option<String>>(
+            r#"
+            SELECT note
+            FROM pool_upstream_account_group_notes
+            WHERE group_name = ?1
+            "#,
+        )
+        .bind("race-group")
+        .fetch_one(&state.pool)
+        .await
+        .expect("load preserved group note");
+        assert_eq!(group_note.as_deref(), Some("manual latest group note"));
+    }
+
+    #[tokio::test]
+    async fn update_oauth_login_session_rejects_completed_repairs_after_account_changes() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let created = create_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(CreateOauthLoginSessionRequest {
+                display_name: Some("Race Before".to_string()),
+                group_name: Some("race-group".to_string()),
+                note: Some("before note".to_string()),
+                group_note: Some("before group note".to_string()),
+                account_id: None,
+                tag_ids: vec![],
+                is_mother: Some(false),
+                mailbox_session_id: None,
+                mailbox_address: None,
+            }),
+        )
+        .await
+        .expect("create oauth login session")
+        .0;
+
+        let pending_session = load_login_session_by_login_id(&state.pool, &created.login_id)
+            .await
+            .expect("load pending session")
+            .expect("pending session should exist");
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let encrypted_credentials = encrypt_credentials(
+            crypto_key,
+            &StoredCredentials::Oauth(StoredOauthCredentials {
+                access_token: "race-access".to_string(),
+                refresh_token: "race-refresh".to_string(),
+                id_token: test_id_token(
+                    "race@example.com",
+                    Some("org_race"),
+                    Some("user_race"),
+                    Some("team"),
+                ),
+                token_type: Some("Bearer".to_string()),
+            }),
+        )
+        .expect("encrypt oauth credentials");
+        let account_id = persist_oauth_callback_inner(
+            state.as_ref(),
+            PersistOauthCallbackInput {
+                display_name: pending_session
+                    .display_name
+                    .clone()
+                    .expect("display name should be stored"),
+                session: pending_session,
+                claims: test_claims("race@example.com", Some("org_race"), Some("user_race")),
+                encrypted_credentials,
+                token_expires_at: "2026-04-01T00:00:00Z".to_string(),
+            },
+        )
+        .await
+        .expect("persist oauth callback");
+
+        let completed_session = load_login_session_by_login_id(&state.pool, &created.login_id)
+            .await
+            .expect("load completed session")
+            .expect("completed session should exist");
+        let consumed_at = completed_session
+            .consumed_at
+            .clone()
+            .expect("completed session should record consumed_at");
+        let newer_account_updated_at = next_login_session_updated_at(Some(consumed_at.as_str()));
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET display_name = ?2,
+                note = ?3,
+                updated_at = ?4
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .bind("Manual Latest")
+        .bind("manual latest note")
+        .bind(&newer_account_updated_at)
+        .execute(&state.pool)
+        .await
+        .expect("simulate newer account edit");
+
+        let mut repair_headers = HeaderMap::new();
+        repair_headers.insert(
+            LOGIN_SESSION_BASE_UPDATED_AT_HEADER,
+            header::HeaderValue::from_str(&created.updated_at).expect("valid updated_at header"),
+        );
+        let repair_err = update_oauth_login_session(
+            State(state.clone()),
+            repair_headers,
+            AxumPath(created.login_id.clone()),
+            Json(UpdateOauthLoginSessionRequest {
+                display_name: OptionalField::Value("Race Stale".to_string()),
+                group_name: OptionalField::Value("stale-group".to_string()),
+                note: OptionalField::Value("stale note".to_string()),
+                group_note: OptionalField::Value("stale group note".to_string()),
+                tag_ids: OptionalField::Value(vec![]),
+                is_mother: OptionalField::Value(false),
+                mailbox_session_id: OptionalField::Missing,
+                mailbox_address: OptionalField::Missing,
+            }),
+        )
+        .await
+        .expect_err("reject completed repair after account changes");
+        assert_eq!(repair_err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            repair_err.1,
+            "This login session can no longer be edited.".to_string()
+        );
+
+        let account = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load account after rejecting stale completed repair")
+            .expect("oauth account should exist");
+        assert_eq!(account.display_name, "Manual Latest");
+        assert_eq!(account.group_name.as_deref(), Some("race-group"));
+        assert_eq!(account.note.as_deref(), Some("manual latest note"));
+        assert_eq!(account.updated_at, newer_account_updated_at);
+    }
+
+    #[tokio::test]
+    async fn update_oauth_login_session_rejects_completed_failed_and_expired_sessions() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let update_payload = || UpdateOauthLoginSessionRequest {
+            display_name: OptionalField::Value("Edited Session".to_string()),
+            group_name: OptionalField::Value("edited-group".to_string()),
+            note: OptionalField::Value("edited note".to_string()),
+            group_note: OptionalField::Value("edited group note".to_string()),
+            tag_ids: OptionalField::Value(vec![]),
+            is_mother: OptionalField::Value(false),
+            mailbox_session_id: OptionalField::Missing,
+            mailbox_address: OptionalField::Missing,
+        };
+
+        let completed = create_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(CreateOauthLoginSessionRequest {
+                display_name: Some("Completed Session".to_string()),
+                group_name: Some("completed-group".to_string()),
+                note: None,
+                group_note: None,
+                account_id: None,
+                tag_ids: vec![],
+                is_mother: Some(false),
+                mailbox_session_id: None,
+                mailbox_address: None,
+            }),
+        )
+        .await
+        .expect("create completed session seed")
+        .0;
+        sqlx::query("UPDATE pool_oauth_login_sessions SET status = ?2 WHERE login_id = ?1")
+            .bind(&completed.login_id)
+            .bind(LOGIN_SESSION_STATUS_COMPLETED)
+            .execute(&state.pool)
+            .await
+            .expect("mark session completed");
+        let completed_err = update_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            AxumPath(completed.login_id.clone()),
+            Json(update_payload()),
+        )
+        .await
+        .expect_err("completed session should reject edits");
+        assert_eq!(completed_err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            completed_err.1,
+            "This login session can no longer be edited."
+        );
+
+        let failed = create_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(CreateOauthLoginSessionRequest {
+                display_name: Some("Failed Session".to_string()),
+                group_name: Some("failed-group".to_string()),
+                note: None,
+                group_note: None,
+                account_id: None,
+                tag_ids: vec![],
+                is_mother: Some(false),
+                mailbox_session_id: None,
+                mailbox_address: None,
+            }),
+        )
+        .await
+        .expect("create failed session seed")
+        .0;
+        sqlx::query("UPDATE pool_oauth_login_sessions SET status = ?2 WHERE login_id = ?1")
+            .bind(&failed.login_id)
+            .bind(LOGIN_SESSION_STATUS_FAILED)
+            .execute(&state.pool)
+            .await
+            .expect("mark session failed");
+        let failed_err = update_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            AxumPath(failed.login_id.clone()),
+            Json(update_payload()),
+        )
+        .await
+        .expect_err("failed session should reject edits");
+        assert_eq!(failed_err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(failed_err.1, "This login session can no longer be edited.");
+
+        let expired = create_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(CreateOauthLoginSessionRequest {
+                display_name: Some("Expired Session".to_string()),
+                group_name: Some("expired-group".to_string()),
+                note: None,
+                group_note: None,
+                account_id: None,
+                tag_ids: vec![],
+                is_mother: Some(false),
+                mailbox_session_id: None,
+                mailbox_address: None,
+            }),
+        )
+        .await
+        .expect("create expired session seed")
+        .0;
+        sqlx::query("UPDATE pool_oauth_login_sessions SET expires_at = ?2 WHERE login_id = ?1")
+            .bind(&expired.login_id)
+            .bind("2020-01-01T00:00:00Z")
+            .execute(&state.pool)
+            .await
+            .expect("expire session");
+        let expired_err = update_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            AxumPath(expired.login_id.clone()),
+            Json(update_payload()),
+        )
+        .await
+        .expect_err("expired session should reject edits");
+        assert_eq!(expired_err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            expired_err.1,
+            "The login session has expired. Please create a new authorization link."
+        );
+
+        let expired_session = load_login_session_by_login_id(&state.pool, &expired.login_id)
+            .await
+            .expect("load expired session")
+            .expect("expired session should exist");
+        assert_eq!(expired_session.status, LOGIN_SESSION_STATUS_EXPIRED);
+    }
+
+    #[tokio::test]
+    async fn update_oauth_login_session_rejects_relogin_sessions() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let account_id = insert_oauth_account(&state.pool, "Relogin Target").await;
+        let relogin = create_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(CreateOauthLoginSessionRequest {
+                display_name: None,
+                group_name: None,
+                note: None,
+                group_note: None,
+                account_id: Some(account_id),
+                tag_ids: vec![],
+                is_mother: Some(false),
+                mailbox_session_id: None,
+                mailbox_address: None,
+            }),
+        )
+        .await
+        .expect("create relogin session")
+        .0;
+
+        let err = update_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            AxumPath(relogin.login_id.clone()),
+            Json(UpdateOauthLoginSessionRequest {
+                display_name: OptionalField::Value("Edited Relogin".to_string()),
+                group_name: OptionalField::Missing,
+                note: OptionalField::Missing,
+                group_note: OptionalField::Missing,
+                tag_ids: OptionalField::Value(vec![]),
+                is_mother: OptionalField::Value(false),
+                mailbox_session_id: OptionalField::Missing,
+                mailbox_address: OptionalField::Missing,
+            }),
+        )
+        .await
+        .expect_err("relogin session should reject edits");
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            err.1,
+            "This login session belongs to an existing account and cannot be edited."
+        );
+    }
+
+    #[tokio::test]
+    async fn update_oauth_login_session_rejects_completed_relogin_repairs() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let account_id = insert_oauth_account(&state.pool, "Relogin Target").await;
+        let relogin = create_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(CreateOauthLoginSessionRequest {
+                display_name: None,
+                group_name: None,
+                note: None,
+                group_note: None,
+                account_id: Some(account_id),
+                tag_ids: vec![],
+                is_mother: Some(false),
+                mailbox_session_id: None,
+                mailbox_address: None,
+            }),
+        )
+        .await
+        .expect("create relogin session")
+        .0;
+
+        let pending_session = load_login_session_by_login_id(&state.pool, &relogin.login_id)
+            .await
+            .expect("load relogin session")
+            .expect("relogin session should exist");
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let encrypted_credentials = encrypt_credentials(
+            crypto_key,
+            &StoredCredentials::Oauth(StoredOauthCredentials {
+                access_token: "relogin-access".to_string(),
+                refresh_token: "relogin-refresh".to_string(),
+                id_token: test_id_token(
+                    "relogin@example.com",
+                    Some("org_relogin"),
+                    Some("user_relogin"),
+                    Some("team"),
+                ),
+                token_type: Some("Bearer".to_string()),
+            }),
+        )
+        .expect("encrypt oauth credentials");
+        let completed_account_id = persist_oauth_callback_inner(
+            state.as_ref(),
+            PersistOauthCallbackInput {
+                display_name: "Relogin Target".to_string(),
+                session: pending_session,
+                claims: test_claims(
+                    "relogin@example.com",
+                    Some("org_relogin"),
+                    Some("user_relogin"),
+                ),
+                encrypted_credentials,
+                token_expires_at: "2026-04-01T00:00:00Z".to_string(),
+            },
+        )
+        .await
+        .expect("persist relogin callback");
+        assert_eq!(completed_account_id, account_id);
+
+        let completed_session = load_login_session_by_login_id(&state.pool, &relogin.login_id)
+            .await
+            .expect("load completed relogin session")
+            .expect("completed relogin session should exist");
+        assert_eq!(completed_session.status, LOGIN_SESSION_STATUS_COMPLETED);
+        assert_eq!(
+            completed_session.updated_at,
+            completed_session.consumed_at.clone().unwrap()
+        );
+
+        let mut repair_headers = HeaderMap::new();
+        repair_headers.insert(
+            LOGIN_SESSION_BASE_UPDATED_AT_HEADER,
+            header::HeaderValue::from_str(&relogin.updated_at).expect("valid updated_at header"),
+        );
+        let err = update_oauth_login_session(
+            State(state.clone()),
+            repair_headers,
+            AxumPath(relogin.login_id.clone()),
+            Json(UpdateOauthLoginSessionRequest {
+                display_name: OptionalField::Value("Edited Relogin".to_string()),
+                group_name: OptionalField::Value("edited-group".to_string()),
+                note: OptionalField::Value("edited note".to_string()),
+                group_note: OptionalField::Value("edited group note".to_string()),
+                tag_ids: OptionalField::Value(vec![]),
+                is_mother: OptionalField::Value(true),
+                mailbox_session_id: OptionalField::Missing,
+                mailbox_address: OptionalField::Missing,
+            }),
+        )
+        .await
+        .expect_err("completed relogin repair should be rejected");
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            err.1,
+            "This login session can no longer be edited.".to_string()
+        );
+
+        let account = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load relogin target after rejected repair")
+            .expect("relogin target should exist");
+        assert_eq!(account.display_name, "Relogin Target");
+        assert_ne!(account.group_name.as_deref(), Some("edited-group"));
+        assert_ne!(account.note.as_deref(), Some("edited note"));
     }
 
     #[tokio::test]
