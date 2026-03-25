@@ -1597,6 +1597,9 @@ export default function UpstreamAccountCreatePage() {
               currentRecord.failedSignature = null;
             }
             applyPendingOauthSessionStatus(loginId, nextSession);
+            if (nextSession.status === "completed" && nextSession.accountId) {
+              emitUpstreamAccountsChanged();
+            }
             clearPendingOauthSessionSyncError(loginId);
           })
           .catch(async (err) => {
@@ -1749,11 +1752,14 @@ export default function UpstreamAccountCreatePage() {
       if (record.syncedSignature === snapshot.signature) {
         return;
       }
-      const request = snapshot.baseUpdatedAt
+      const keepaliveBaseUpdatedAt = record.inFlight
+        ? null
+        : snapshot.baseUpdatedAt;
+      const request = keepaliveBaseUpdatedAt
         ? updateOauthLoginSessionKeepalive(
             loginId,
             snapshot.payload,
-            snapshot.baseUpdatedAt,
+            keepaliveBaseUpdatedAt,
           )
         : updateOauthLoginSessionKeepalive(loginId, snapshot.payload);
       void request.catch(() => undefined);
