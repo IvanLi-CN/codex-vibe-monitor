@@ -90,6 +90,49 @@ export const MailboxPopoverEdit: Story = {
   },
 }
 
+export const MailboxPopoverAutoCreate: Story = {
+  render: () => {
+    const mailboxSession = createMailboxSession('story-mailbox-batch-autocreate', 'batch-edit@mail-tw.707079.xyz')
+    return (
+      <AccountPoolStoryRouter
+        initialEntry={{
+          pathname: '/account-pool/upstream-accounts/new',
+          search: '?mode=batchOauth',
+          state: {
+            draft: {
+              batchOauth: {
+                rows: [
+                  {
+                    id: 'row-1',
+                    displayName: 'Batch Auto-create Mailbox',
+                    groupName: 'production',
+                    mailboxSession,
+                    mailboxInput: mailboxSession.emailAddress,
+                  },
+                ],
+              },
+            },
+          },
+        }}
+      />
+    )
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const mailboxChip = canvas.getByRole('button', { name: /copy mailbox/i })
+    await userEvent.hover(mailboxChip)
+    await expect(within(document.body).getByRole('button', { name: /edit mailbox/i })).toBeInTheDocument()
+    await userEvent.click(within(document.body).getByRole('button', { name: /edit mailbox/i }))
+    const editorInput = within(document.body).getByRole('textbox', { name: /mailbox address/i })
+    const submitButton = within(document.body).getByRole('button', { name: /submit mailbox/i })
+    await userEvent.clear(editorInput)
+    await userEvent.type(editorInput, 'finance.lab.d5r@mail-tw.707079.xyz')
+    await userEvent.click(submitButton)
+    await expect(canvas.getByText(/finance\.lab\.d5r@mail-tw\.707079\.xyz/i)).toBeInTheDocument()
+    await expect(canvas.getByText(/generated mailbox/i)).toBeInTheDocument()
+  },
+}
+
 export const MailboxAttachFlow: Story = {
   render: () => (
     <AccountPoolStoryRouter

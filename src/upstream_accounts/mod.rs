@@ -4371,13 +4371,7 @@ pub(crate) async fn create_oauth_mailbox_session(
         let moemail_config = moemail_get_config(&state.http_clients.shared, config)
             .await
             .map_err(internal_error_tuple)?;
-        let supported_domains = moemail_config
-            .email_domains
-            .unwrap_or_default()
-            .split(',')
-            .map(|value| value.trim().to_ascii_lowercase())
-            .filter(|value| !value.is_empty())
-            .collect::<HashSet<_>>();
+        let supported_domains = moemail_supported_domains(&moemail_config);
         let email_domain = manual_email_address
             .split('@')
             .nth(1)
@@ -4389,17 +4383,61 @@ pub(crate) async fn create_oauth_mailbox_session(
                 "unsupported_domain",
             )));
         }
-        let remote_mailbox = moemail_list_emails(&state.http_clients.shared, config)
+        let existing_remote_mailbox = moemail_list_emails(&state.http_clients.shared, config)
             .await
             .map_err(internal_error_tuple)?
             .into_iter()
             .find(|item| {
                 normalize_mailbox_address(&item.address) == Some(manual_email_address.clone())
             });
-        let Some(remote_mailbox) = remote_mailbox else {
-            return Ok(Json(oauth_mailbox_session_unsupported_response(
-                manual_email_address,
-                "not_readable",
+        let Some(remote_mailbox) = existing_remote_mailbox else {
+            let generated = moemail_create_email_for_address(
+                &state.http_clients.shared,
+                config,
+                &manual_email_address,
+            )
+            .await
+            .map_err(internal_error_tuple)?;
+            let email_address = generated.email.trim().to_string();
+            let email_domain = email_address
+                .split('@')
+                .nth(1)
+                .unwrap_or(config.default_domain.as_str())
+                .to_string();
+            let session_id = random_hex(16)?;
+            let now = Utc::now();
+            let expires_at = now
+                + ChronoDuration::seconds(
+                    DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_SESSION_TTL_SECS as i64,
+                );
+            let now_iso = format_utc_iso(now);
+            let expires_at_iso = format_utc_iso(expires_at);
+            sqlx::query(
+                r#"
+                INSERT INTO pool_oauth_mailbox_sessions (
+                    session_id, remote_email_id, email_address, email_domain, mailbox_source, latest_code_value,
+                    latest_code_source, latest_code_updated_at, invite_subject, invite_copy_value,
+                    invite_copy_label, invite_updated_at, invited, last_message_id, created_at, updated_at,
+                    expires_at
+                ) VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?6, ?6, ?7)
+                "#,
+            )
+            .bind(&session_id)
+            .bind(&generated.id)
+            .bind(&email_address)
+            .bind(&email_domain)
+            .bind(OAUTH_MAILBOX_SOURCE_GENERATED)
+            .bind(&now_iso)
+            .bind(&expires_at_iso)
+            .execute(&state.pool)
+            .await
+            .map_err(internal_error_tuple)?;
+
+            return Ok(Json(oauth_mailbox_session_supported_response(
+                session_id,
+                email_address,
+                expires_at_iso,
+                OAUTH_MAILBOX_SOURCE_GENERATED,
             )));
         };
         let mut remote_messages = match moemail_list_messages_for_attach(
@@ -8785,6 +8823,45 @@ fn normalize_mailbox_address(value: &str) -> Option<String> {
     Some(trimmed.to_ascii_lowercase())
 }
 
+fn normalize_mailbox_domain(value: &str) -> Option<String> {
+    let trimmed = value
+        .trim()
+        .trim_matches(|ch: char| ch.is_whitespace() || ch == '"' || ch == '\'');
+    if trimmed.is_empty() {
+        return None;
+    }
+    let without_prefix = trimmed.trim_start_matches('@');
+    let domain_like = without_prefix
+        .rsplit_once('@')
+        .map(|(_, domain)| domain)
+        .unwrap_or(without_prefix)
+        .trim()
+        .trim_start_matches('@')
+        .trim_end_matches('.');
+    if domain_like.is_empty() {
+        return None;
+    }
+    Some(domain_like.to_ascii_lowercase())
+}
+
+fn moemail_supported_domains(payload: &MoeMailConfigPayload) -> HashSet<String> {
+    payload
+        .email_domains
+        .as_deref()
+        .unwrap_or_default()
+        .split(|ch: char| matches!(ch, ',' | ';' | '\n' | '\r'))
+        .filter_map(normalize_mailbox_domain)
+        .collect()
+}
+
+fn mailbox_local_part(value: &str) -> Option<&str> {
+    let (local_part, domain) = value.split_once('@')?;
+    if local_part.is_empty() || domain.is_empty() {
+        return None;
+    }
+    Some(local_part)
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum RequestedManualMailboxAddress {
     Missing,
@@ -9356,6 +9433,46 @@ async fn moemail_create_email(
     config: &UpstreamAccountsMoeMailConfig,
 ) -> Result<MoeMailGenerateEmailPayload> {
     let local_name = generate_mailbox_local_name().map_err(|(_, message)| anyhow!(message))?;
+    moemail_create_email_with_name_and_domain(client, config, &local_name, &config.default_domain)
+        .await
+}
+
+async fn moemail_create_email_for_address(
+    client: &Client,
+    config: &UpstreamAccountsMoeMailConfig,
+    email_address: &str,
+) -> Result<MoeMailGenerateEmailPayload> {
+    let requested_email = normalize_mailbox_address(email_address)
+        .ok_or_else(|| anyhow!("manual moemail address must not be blank"))?;
+    let requested_domain = normalize_mailbox_domain(&requested_email)
+        .ok_or_else(|| anyhow!("manual moemail domain is invalid"))?;
+    let requested_local = mailbox_local_part(&requested_email)
+        .ok_or_else(|| anyhow!("manual moemail local part is invalid"))?;
+    let generated = moemail_create_email_with_name_and_domain(
+        client,
+        config,
+        requested_local,
+        &requested_domain,
+    )
+    .await?;
+    let generated_email = normalize_mailbox_address(&generated.email)
+        .ok_or_else(|| anyhow!("generated moemail address must not be blank"))?;
+    if generated_email != requested_email {
+        bail!(
+            "generated moemail address {} does not match requested {}",
+            generated.email,
+            requested_email
+        );
+    }
+    Ok(generated)
+}
+
+async fn moemail_create_email_with_name_and_domain(
+    client: &Client,
+    config: &UpstreamAccountsMoeMailConfig,
+    local_name: &str,
+    domain: &str,
+) -> Result<MoeMailGenerateEmailPayload> {
     let response = client
         .post(
             config
@@ -9367,7 +9484,7 @@ async fn moemail_create_email(
         .json(&json!({
             "name": local_name,
             "expiryTime": DEFAULT_UPSTREAM_ACCOUNTS_MAILBOX_SESSION_TTL_SECS * 1000,
-            "domain": config.default_domain,
+            "domain": domain,
         }))
         .send()
         .await
@@ -12515,6 +12632,7 @@ pub(crate) async fn resolve_pool_account_for_request(
                     }
                     sticky_route_excluded_by_route_key = true;
                     sticky_route_was_excluded = true;
+                    saw_non_rate_limited_routing_candidate = true;
                 }
                 if !sticky_route_was_excluded {
                     saw_non_rate_limited_routing_candidate = true;
@@ -12573,6 +12691,7 @@ pub(crate) async fn resolve_pool_account_for_request(
         }
         if let Some(account) = prepare_pool_account(state, &row).await? {
             if excluded_upstream_route_keys.contains(&account.upstream_route_key()) {
+                saw_non_rate_limited_routing_candidate = true;
                 continue;
             }
             return Ok(PoolAccountResolution::Resolved(account));
@@ -13575,10 +13694,10 @@ fn decrypt_secret_value(key: &[u8; 32], payload: &str) -> Result<String> {
 mod tests {
     use super::*;
     use axum::{
-        Router,
+        Json, Router,
         extract::State,
         http::{HeaderMap, StatusCode},
-        routing::get,
+        routing::{get, post},
     };
     use sqlx::SqlitePool;
     use std::{
@@ -14466,6 +14585,186 @@ mod tests {
                 ),
             ),
         })
+    }
+
+    #[derive(Clone)]
+    struct MoeMailStubState {
+        email_domains: String,
+        emails: Arc<Mutex<Vec<(String, String, Option<String>)>>>,
+        generated_requests: Arc<Mutex<Vec<(String, String)>>>,
+        deleted_ids: Arc<Mutex<Vec<String>>>,
+        next_generated_id: Arc<AtomicUsize>,
+    }
+
+    struct MoeMailTestHarness {
+        state: Arc<AppState>,
+        stub: MoeMailStubState,
+        server: tokio::task::JoinHandle<()>,
+    }
+
+    impl MoeMailTestHarness {
+        fn abort(self) {
+            self.server.abort();
+        }
+    }
+
+    async fn spawn_moemail_test_harness(
+        email_domains: &str,
+        emails: Vec<(String, String, Option<String>)>,
+    ) -> MoeMailTestHarness {
+        #[derive(Deserialize)]
+        #[serde(rename_all = "camelCase")]
+        struct GenerateRequest {
+            name: String,
+            domain: String,
+        }
+
+        async fn config_handler(
+            State(state): State<MoeMailStubState>,
+        ) -> axum::Json<serde_json::Value> {
+            axum::Json(json!({
+                "defaultRole": "DUKE",
+                "emailDomains": state.email_domains,
+                "maxEmails": "20",
+            }))
+        }
+
+        async fn list_emails_handler(
+            State(state): State<MoeMailStubState>,
+        ) -> axum::Json<serde_json::Value> {
+            let emails = state.emails.lock().await.clone();
+            axum::Json(json!({
+                "emails": emails.into_iter().map(|(id, address, expires_at)| json!({
+                    "id": id,
+                    "address": address,
+                    "expiresAt": expires_at,
+                })).collect::<Vec<_>>(),
+                "nextCursor": null,
+            }))
+        }
+
+        async fn create_email_handler(
+            State(state): State<MoeMailStubState>,
+            axum::Json(payload): axum::Json<GenerateRequest>,
+        ) -> axum::Json<serde_json::Value> {
+            let index = state
+                .next_generated_id
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                + 1;
+            let email = format!("{}@{}", payload.name, payload.domain);
+            let id = format!("generated_{index}");
+            state
+                .generated_requests
+                .lock()
+                .await
+                .push((payload.name.clone(), payload.domain.clone()));
+            state
+                .emails
+                .lock()
+                .await
+                .push((id.clone(), email.clone(), None));
+            axum::Json(json!({ "id": id, "email": email }))
+        }
+
+        async fn messages_handler() -> axum::Json<serde_json::Value> {
+            axum::Json(json!({ "messages": [] }))
+        }
+
+        async fn delete_email_handler(
+            State(state): State<MoeMailStubState>,
+            axum::extract::Path(email_id): axum::extract::Path<String>,
+        ) -> axum::Json<serde_json::Value> {
+            state.deleted_ids.lock().await.push(email_id.clone());
+            state
+                .emails
+                .lock()
+                .await
+                .retain(|(existing_id, _, _)| existing_id != &email_id);
+            axum::Json(json!({ "success": true }))
+        }
+
+        let stub = MoeMailStubState {
+            email_domains: email_domains.to_string(),
+            emails: Arc::new(Mutex::new(emails)),
+            generated_requests: Arc::new(Mutex::new(Vec::new())),
+            deleted_ids: Arc::new(Mutex::new(Vec::new())),
+            next_generated_id: Arc::new(AtomicUsize::new(0)),
+        };
+        let app = Router::new()
+            .route("/api/config", get(config_handler))
+            .route("/api/emails", get(list_emails_handler))
+            .route("/api/emails/generate", post(create_email_handler))
+            .route(
+                "/api/emails/:email_id",
+                get(messages_handler).delete(delete_email_handler),
+            )
+            .with_state(stub.clone());
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind moemail test listener");
+        let addr = listener.local_addr().expect("moemail listener addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve moemail test app");
+        });
+
+        let mut config = usage_snapshot_test_config(
+            "https://chatgpt.com/backend-api",
+            "codex-vibe-monitor/test",
+        );
+        config.upstream_accounts_moemail = Some(UpstreamAccountsMoeMailConfig {
+            base_url: Url::parse(&format!("http://{addr}")).expect("valid moemail test url"),
+            api_key: "test-moemail-key".to_string(),
+            default_domain: "mail-tw.707079.xyz".to_string(),
+        });
+        let http_clients = HttpClients::build(&config).expect("build http clients");
+        let (broadcaster, _) = broadcast::channel(8);
+        let state = Arc::new(AppState {
+            config,
+            pool: test_pool().await,
+            http_clients,
+            broadcaster,
+            broadcast_state_cache: Arc::new(Mutex::new(BroadcastStateCache {
+                summaries: HashMap::new(),
+                quota: None,
+            })),
+            proxy_summary_quota_broadcast_seq: Arc::new(AtomicU64::new(0)),
+            proxy_summary_quota_broadcast_running: Arc::new(AtomicBool::new(false)),
+            proxy_summary_quota_broadcast_handle: Arc::new(Mutex::new(Vec::new())),
+            startup_ready: Arc::new(AtomicBool::new(true)),
+            shutdown: CancellationToken::new(),
+            semaphore: Arc::new(Semaphore::new(4)),
+            proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
+            proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
+            forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
+                ForwardProxySettings::default(),
+                Vec::new(),
+            ))),
+            xray_supervisor: Arc::new(Mutex::new(XraySupervisor::new(
+                "xray".to_string(),
+                PathBuf::from("target/xray-supervisor-tests"),
+            ))),
+            forward_proxy_settings_update_lock: Arc::new(Mutex::new(())),
+            forward_proxy_subscription_refresh_lock: Arc::new(Mutex::new(())),
+            pricing_settings_update_lock: Arc::new(Mutex::new(())),
+            pricing_catalog: Arc::new(RwLock::new(PricingCatalog::default())),
+            prompt_cache_conversation_cache: Arc::new(Mutex::new(
+                PromptCacheConversationsCacheState {
+                    entries: HashMap::new(),
+                    in_flight: HashMap::new(),
+                },
+            )),
+            maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
+            hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
+            upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
+        });
+
+        MoeMailTestHarness {
+            state,
+            stub,
+            server,
+        }
     }
 
     fn test_claims_with_plan_type(
@@ -19400,6 +19699,37 @@ mod tests {
     }
 
     #[test]
+    fn normalize_mailbox_domain_accepts_common_moemail_variants() {
+        assert_eq!(
+            normalize_mailbox_domain("MAIL-TW.707079.XYZ"),
+            Some("mail-tw.707079.xyz".to_string())
+        );
+        assert_eq!(
+            normalize_mailbox_domain("@mail-tw.707079.xyz"),
+            Some("mail-tw.707079.xyz".to_string())
+        );
+        assert_eq!(
+            normalize_mailbox_domain("finance.lab.d5r@mail-tw.707079.xyz"),
+            Some("mail-tw.707079.xyz".to_string())
+        );
+        assert_eq!(normalize_mailbox_domain("   "), None);
+    }
+
+    #[test]
+    fn moemail_supported_domains_normalize_config_tokens() {
+        let payload = MoeMailConfigPayload {
+            email_domains: Some(
+                "mail-tw.707079.xyz, @MAIL-US.707079.XYZ ; finance.lab.d5r@mail-eu.707079.xyz"
+                    .to_string(),
+            ),
+        };
+        let domains = moemail_supported_domains(&payload);
+        assert!(domains.contains("mail-tw.707079.xyz"));
+        assert!(domains.contains("mail-us.707079.xyz"));
+        assert!(domains.contains("mail-eu.707079.xyz"));
+    }
+
+    #[test]
     fn requested_manual_mailbox_address_distinguishes_missing_from_blank_input() {
         assert!(matches!(
             requested_manual_mailbox_address(None),
@@ -19498,6 +19828,216 @@ mod tests {
         assert!(!moemail_attach_status_is_not_readable(
             reqwest::StatusCode::GATEWAY_TIMEOUT
         ));
+    }
+
+    #[tokio::test]
+    async fn create_oauth_mailbox_session_accepts_supported_domain_variants_for_existing_mailbox() {
+        let harness = spawn_moemail_test_harness(
+            "@MAIL-TW.707079.XYZ, mail-us.707079.xyz",
+            vec![(
+                "email_existing".to_string(),
+                "finance.lab.d5r@mail-tw.707079.xyz".to_string(),
+                Some("2026-03-20T12:50:00.000Z".to_string()),
+            )],
+        )
+        .await;
+        let payload: CreateOauthMailboxSessionRequest = serde_json::from_value(json!({
+            "emailAddress": "finance.lab.d5r@mail-tw.707079.xyz"
+        }))
+        .expect("deserialize mailbox request");
+
+        let Json(response) = create_oauth_mailbox_session(
+            State(harness.state.clone()),
+            HeaderMap::new(),
+            Json(payload),
+        )
+        .await
+        .expect("create mailbox session");
+
+        assert!(response.supported);
+        assert_eq!(response.email_address, "finance.lab.d5r@mail-tw.707079.xyz");
+        assert_eq!(
+            response.source.as_deref(),
+            Some(OAUTH_MAILBOX_SOURCE_ATTACHED)
+        );
+        let session_id = response.session_id.expect("session id");
+        let row = load_oauth_mailbox_session(&harness.state.pool, &session_id)
+            .await
+            .expect("load mailbox session")
+            .expect("stored mailbox session");
+        assert_eq!(
+            row.mailbox_source.as_deref(),
+            Some(OAUTH_MAILBOX_SOURCE_ATTACHED)
+        );
+        assert!(
+            harness.stub.generated_requests.lock().await.is_empty(),
+            "existing readable mailbox should not be recreated"
+        );
+
+        harness.abort();
+    }
+
+    #[tokio::test]
+    async fn create_oauth_mailbox_session_creates_missing_supported_mailbox() {
+        let harness = spawn_moemail_test_harness("@mail-tw.707079.xyz", Vec::new()).await;
+        let payload: CreateOauthMailboxSessionRequest = serde_json::from_value(json!({
+            "emailAddress": "finance.lab.d5r@mail-tw.707079.xyz"
+        }))
+        .expect("deserialize mailbox request");
+
+        let Json(response) = create_oauth_mailbox_session(
+            State(harness.state.clone()),
+            HeaderMap::new(),
+            Json(payload),
+        )
+        .await
+        .expect("create mailbox session");
+
+        assert!(response.supported);
+        assert_eq!(response.email_address, "finance.lab.d5r@mail-tw.707079.xyz");
+        assert_eq!(
+            response.source.as_deref(),
+            Some(OAUTH_MAILBOX_SOURCE_GENERATED)
+        );
+        let generated_requests = harness.stub.generated_requests.lock().await.clone();
+        assert_eq!(
+            generated_requests,
+            vec![(
+                "finance.lab.d5r".to_string(),
+                "mail-tw.707079.xyz".to_string()
+            )]
+        );
+        let session_id = response.session_id.expect("session id");
+        let row = load_oauth_mailbox_session(&harness.state.pool, &session_id)
+            .await
+            .expect("load mailbox session")
+            .expect("stored mailbox session");
+        assert_eq!(
+            row.mailbox_source.as_deref(),
+            Some(OAUTH_MAILBOX_SOURCE_GENERATED)
+        );
+        assert_eq!(row.email_address, "finance.lab.d5r@mail-tw.707079.xyz");
+
+        harness.abort();
+    }
+
+    #[tokio::test]
+    async fn create_oauth_mailbox_session_rejects_true_unsupported_domains() {
+        let harness = spawn_moemail_test_harness("mail-us.707079.xyz", Vec::new()).await;
+        let payload: CreateOauthMailboxSessionRequest = serde_json::from_value(json!({
+            "emailAddress": "finance.lab.d5r@mail-tw.707079.xyz"
+        }))
+        .expect("deserialize mailbox request");
+
+        let Json(response) = create_oauth_mailbox_session(
+            State(harness.state.clone()),
+            HeaderMap::new(),
+            Json(payload),
+        )
+        .await
+        .expect("create mailbox session");
+
+        assert!(!response.supported);
+        assert_eq!(response.reason.as_deref(), Some("unsupported_domain"));
+        assert!(
+            harness.stub.generated_requests.lock().await.is_empty(),
+            "unsupported domains must not trigger remote mailbox creation"
+        );
+
+        harness.abort();
+    }
+
+    #[tokio::test]
+    async fn delete_oauth_mailbox_session_deletes_remote_for_generated_manual_mailbox() {
+        let harness = spawn_moemail_test_harness("@mail-tw.707079.xyz", Vec::new()).await;
+        let payload: CreateOauthMailboxSessionRequest = serde_json::from_value(json!({
+            "emailAddress": "finance.lab.d5r@mail-tw.707079.xyz"
+        }))
+        .expect("deserialize mailbox request");
+        let Json(created) = create_oauth_mailbox_session(
+            State(harness.state.clone()),
+            HeaderMap::new(),
+            Json(payload),
+        )
+        .await
+        .expect("create mailbox session");
+        let session_id = created.session_id.expect("session id");
+        let row = load_oauth_mailbox_session(&harness.state.pool, &session_id)
+            .await
+            .expect("load mailbox session")
+            .expect("stored mailbox session");
+
+        let status = delete_oauth_mailbox_session(
+            State(harness.state.clone()),
+            HeaderMap::new(),
+            AxumPath(session_id.clone()),
+        )
+        .await
+        .expect("delete mailbox session");
+
+        assert_eq!(status, StatusCode::NO_CONTENT);
+        assert_eq!(
+            harness.stub.deleted_ids.lock().await.clone(),
+            vec![row.remote_email_id]
+        );
+        assert!(
+            load_oauth_mailbox_session(&harness.state.pool, &session_id)
+                .await
+                .expect("load mailbox session after delete")
+                .is_none()
+        );
+
+        harness.abort();
+    }
+
+    #[tokio::test]
+    async fn cleanup_expired_oauth_mailbox_sessions_deletes_remote_for_generated_manual_mailbox() {
+        let harness = spawn_moemail_test_harness(
+            "@mail-tw.707079.xyz",
+            vec![(
+                "generated_1".to_string(),
+                "finance.lab.d5r@mail-tw.707079.xyz".to_string(),
+                None,
+            )],
+        )
+        .await;
+        sqlx::query(
+            r#"
+            INSERT INTO pool_oauth_mailbox_sessions (
+                session_id, remote_email_id, email_address, email_domain, mailbox_source,
+                latest_code_value, latest_code_source, latest_code_updated_at, invite_subject,
+                invite_copy_value, invite_copy_label, invite_updated_at, invited, last_message_id,
+                created_at, updated_at, expires_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 0, NULL, ?6, ?6, ?7)
+            "#,
+        )
+        .bind("expired_manual_generated")
+        .bind("generated_1")
+        .bind("finance.lab.d5r@mail-tw.707079.xyz")
+        .bind("mail-tw.707079.xyz")
+        .bind(OAUTH_MAILBOX_SOURCE_GENERATED)
+        .bind("2026-03-17T00:00:00Z")
+        .bind("2026-03-17T00:01:00Z")
+        .execute(&harness.state.pool)
+        .await
+        .expect("insert expired mailbox session");
+
+        cleanup_expired_oauth_mailbox_sessions(harness.state.as_ref())
+            .await
+            .expect("cleanup expired mailbox sessions");
+
+        assert_eq!(
+            harness.stub.deleted_ids.lock().await.clone(),
+            vec!["generated_1".to_string()]
+        );
+        assert!(
+            load_oauth_mailbox_session(&harness.state.pool, "expired_manual_generated")
+                .await
+                .expect("load cleaned mailbox session")
+                .is_none()
+        );
+
+        harness.abort();
     }
 
     #[test]

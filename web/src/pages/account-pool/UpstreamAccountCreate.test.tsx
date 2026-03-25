@@ -919,6 +919,106 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     });
   });
 
+  it("auto-creates a supported mailbox from the batch popover editor when moemail is missing it", async () => {
+    const beginOauthMailboxSessionForAddress = vi.fn().mockResolvedValue({
+      supported: true,
+      sessionId: "mailbox-generated-row-1",
+      emailAddress: "finance.lab.d5r@mail-tw.707079.xyz",
+      expiresAt: "2026-04-13T10:00:00.000Z",
+      source: "generated",
+    });
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-batch-generated-mailbox",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=batch-generated-mailbox",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    mockUpstreamAccounts({
+      beginOauthMailboxSessionForAddress,
+      beginOauthLogin,
+    });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            rows: [
+              {
+                id: "row-1",
+                displayName: "Batch Row",
+                groupName: "prod",
+                mailboxSession: {
+                  supported: true,
+                  sessionId: "mailbox-original-row-1",
+                  emailAddress: "original-batch@mail-tw.707079.xyz",
+                  expiresAt: "2026-04-13T10:00:00.000Z",
+                  source: "generated",
+                },
+                mailboxInput: "original-batch@mail-tw.707079.xyz",
+              },
+            ],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    const mailboxChip = findBodyButton(/Copy mailbox/i);
+    expect(mailboxChip).toBeInstanceOf(HTMLButtonElement);
+    act(() => {
+      mailboxChip?.dispatchEvent(
+        new MouseEvent("mouseenter", { bubbles: true }),
+      );
+      mailboxChip?.dispatchEvent(
+        new MouseEvent("mouseover", { bubbles: true }),
+      );
+    });
+    await flushAsync();
+
+    const editMailboxButton = document.body.querySelector(
+      'button[title="Edit mailbox"]',
+    );
+    if (!(editMailboxButton instanceof HTMLButtonElement)) {
+      throw new Error("missing edit mailbox button");
+    }
+    act(() => {
+      editMailboxButton.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await flushAsync();
+    setBodyInputValue(
+      'input[name="batchOauthMailboxEditor-row-1"]',
+      "finance.lab.d5r@mail-tw.707079.xyz",
+    );
+    clickBodyButton(/Submit mailbox/i);
+    await flushAsync();
+
+    expect(beginOauthMailboxSessionForAddress).toHaveBeenCalledWith(
+      "finance.lab.d5r@mail-tw.707079.xyz",
+    );
+    expect(host?.textContent).toContain("finance.lab.d5r@mail-tw.707079.xyz");
+    expect(host?.textContent).toContain("Generated mailbox");
+
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+
+    expect(beginOauthLogin).toHaveBeenCalledWith({
+      displayName: "Batch Row",
+      groupName: "prod",
+      note: undefined,
+      tagIds: [],
+      groupNote: undefined,
+      isMother: false,
+      mailboxSessionId: "mailbox-generated-row-1",
+      mailboxAddress: "finance.lab.d5r@mail-tw.707079.xyz",
+    });
+  });
+
   it("keeps batch oauth actions available when the edited mailbox is unsupported", async () => {
     const beginOauthLogin = vi.fn().mockResolvedValue({
       loginId: "login-batch-unsupported",
@@ -1797,6 +1897,58 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     });
     expect(host?.textContent).toContain("manual-existing@mail-tw.707079.xyz");
     expect(host?.textContent).toContain("Attached mailbox");
+    expect(findButton(/Generate OAuth URL/i)?.disabled).toBe(false);
+  });
+
+  it("auto-creates a supported manual mailbox address when moemail is missing it", async () => {
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    const beginOauthMailboxSessionForAddress = vi.fn().mockResolvedValue({
+      supported: true,
+      sessionId: "mailbox-generated-9",
+      emailAddress: "finance.lab.d5r@mail-tw.707079.xyz",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      source: "generated",
+    });
+    mockUpstreamAccounts({
+      beginOauthLogin,
+      beginOauthMailboxSessionForAddress,
+    });
+    render("/account-pool/upstream-accounts/new?mode=oauth");
+
+    setInputValue(
+      'input[name="oauthMailboxInput"]',
+      "finance.lab.d5r@mail-tw.707079.xyz",
+    );
+    await flushAsync();
+    clickButton(/Use address/i);
+    await flushAsync();
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+
+    expect(beginOauthMailboxSessionForAddress).toHaveBeenCalledWith(
+      "finance.lab.d5r@mail-tw.707079.xyz",
+    );
+    expect(beginOauthLogin).toHaveBeenCalledWith({
+      displayName: "finance.lab.d5r@mail-tw.707079.xyz",
+      groupName: undefined,
+      note: undefined,
+      groupNote: undefined,
+      accountId: undefined,
+      tagIds: [],
+      isMother: false,
+      mailboxSessionId: "mailbox-generated-9",
+      mailboxAddress: "finance.lab.d5r@mail-tw.707079.xyz",
+    });
+    expect(host?.textContent).toContain("finance.lab.d5r@mail-tw.707079.xyz");
+    expect(host?.textContent).toContain("Generated mailbox");
     expect(findButton(/Generate OAuth URL/i)?.disabled).toBe(false);
   });
 
