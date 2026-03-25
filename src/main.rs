@@ -631,7 +631,7 @@ async fn run_startup_persistent_prep_inner(
     if include_hourly_rollup_bootstrap {
         bootstrap_hourly_rollups(pool).await?;
     }
-    let historical_rollup_snapshot = load_historical_rollup_backfill_snapshot(pool).await?;
+    let historical_rollup_snapshot = load_historical_rollup_backfill_snapshot(pool, config).await?;
 
     Ok(StartupPersistentPrepSummary {
         refreshed_manifest_batches: manifest_refresh.refreshed_batches,
@@ -829,8 +829,8 @@ async fn run_cli_command(
                 );
             }
             MaintenanceCommand::MaterializeHistoricalRollups(opts) => {
-                let summary = materialize_historical_rollups(pool, opts.dry_run).await?;
-                let snapshot = load_historical_rollup_backfill_snapshot(pool).await?;
+                let summary = materialize_historical_rollups(pool, config, opts.dry_run).await?;
+                let snapshot = load_historical_rollup_backfill_snapshot(pool, config).await?;
                 info!(
                     dry_run = opts.dry_run,
                     ?summary,
@@ -840,7 +840,7 @@ async fn run_cli_command(
             }
             MaintenanceCommand::PruneLegacyArchiveBatches(opts) => {
                 let summary = prune_legacy_archive_batches(pool, config, opts.dry_run).await?;
-                let snapshot = load_historical_rollup_backfill_snapshot(pool).await?;
+                let snapshot = load_historical_rollup_backfill_snapshot(pool, config).await?;
                 info!(
                     dry_run = opts.dry_run,
                     ?summary,
@@ -4284,6 +4284,7 @@ async fn cleanup_expired_archive_batches(
 
 #[derive(Debug, FromRow)]
 struct HistoricalRollupPendingArchiveBatchRow {
+    dataset: String,
     month_key: String,
     coverage_start_at: Option<String>,
     coverage_end_at: Option<String>,
@@ -4369,21 +4370,38 @@ fn historical_rollup_materialized_bucket_targets() -> [&'static str; 7] {
     ]
 }
 
-async fn load_latest_materialized_rollup_bucket_epoch(pool: &Pool<Sqlite>) -> Result<Option<i64>> {
-    let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT MAX(bucket_start_epoch) FROM hourly_rollup_materialized_buckets WHERE target IN (",
-    );
-    {
-        let mut separated = query.separated(", ");
-        for target in historical_rollup_materialized_bucket_targets() {
-            separated.push_bind(target);
-        }
-    }
-    query.push(")");
-    Ok(query
-        .build_query_scalar::<Option<i64>>()
-        .fetch_one(pool)
-        .await?)
+async fn load_latest_materialized_legacy_invocation_rollup_bucket_epoch(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+) -> Result<Option<i64>> {
+    let invocation_archive_cutoff = shanghai_local_cutoff_string(config.invocation_max_days);
+    let latest_coverage_end_at: Option<String> = sqlx::query_scalar(
+        r#"
+        SELECT MAX(coverage_end_at)
+        FROM archive_batches
+        WHERE dataset = 'codex_invocations'
+          AND status = ?1
+          AND historical_rollups_materialized_at IS NOT NULL
+          AND coverage_end_at IS NOT NULL
+          AND coverage_end_at < ?2
+        "#,
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(invocation_archive_cutoff)
+    .fetch_one(pool)
+    .await?;
+
+    Ok(latest_coverage_end_at.and_then(|coverage_end_at| {
+        parse_shanghai_local_naive(&coverage_end_at)
+            .ok()
+            .and_then(|naive| {
+                let bucket_start_epoch =
+                    align_bucket_epoch(local_naive_to_utc(naive, Shanghai).timestamp(), 3_600, 0);
+                Utc.timestamp_opt(bucket_start_epoch, 0)
+                    .single()
+                    .map(|_| bucket_start_epoch)
+            })
+    }))
 }
 
 async fn count_materialized_historical_rollup_buckets(pool: &Pool<Sqlite>) -> Result<i64> {
@@ -4402,9 +4420,10 @@ async fn count_materialized_historical_rollup_buckets(pool: &Pool<Sqlite>) -> Re
 
 pub(crate) async fn load_historical_rollup_backfill_snapshot(
     pool: &Pool<Sqlite>,
+    config: &AppConfig,
 ) -> Result<HistoricalRollupBackfillSnapshot> {
     let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT month_key, coverage_start_at, coverage_end_at \
+        "SELECT dataset, month_key, coverage_start_at, coverage_end_at \
          FROM archive_batches WHERE status = ",
     );
     query.push_bind(ARCHIVE_STATUS_COMPLETED);
@@ -4425,13 +4444,17 @@ pub(crate) async fn load_historical_rollup_backfill_snapshot(
         .map(estimate_historical_rollup_pending_bucket_count)
         .sum::<u64>();
     let legacy_archive_pending = pending_rows.len() as u64;
-    let last_materialized_hour = load_latest_materialized_rollup_bucket_epoch(pool)
-        .await?
-        .and_then(|epoch| Utc.timestamp_opt(epoch, 0).single())
-        .map(format_utc_iso);
+    let legacy_invocation_pending = pending_rows
+        .iter()
+        .any(|row| row.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS);
+    let last_materialized_hour =
+        load_latest_materialized_legacy_invocation_rollup_bucket_epoch(pool, config)
+            .await?
+            .and_then(|epoch| Utc.timestamp_opt(epoch, 0).single())
+            .map(format_utc_iso);
     let alert_level = if legacy_archive_pending == 0 {
         HistoricalRollupBackfillAlertLevel::None
-    } else if last_materialized_hour.is_none() {
+    } else if legacy_invocation_pending {
         HistoricalRollupBackfillAlertLevel::Critical
     } else {
         HistoricalRollupBackfillAlertLevel::Warn
@@ -4447,10 +4470,11 @@ pub(crate) async fn load_historical_rollup_backfill_snapshot(
 
 async fn materialize_historical_rollups(
     pool: &Pool<Sqlite>,
+    config: &AppConfig,
     dry_run: bool,
 ) -> Result<HistoricalRollupMaterializationSummary> {
     let scanned_archive_batches = count_historical_rollup_archive_batches(pool, false).await?;
-    let pending_snapshot = load_historical_rollup_backfill_snapshot(pool).await?;
+    let pending_snapshot = load_historical_rollup_backfill_snapshot(pool, config).await?;
     if dry_run {
         return Ok(HistoricalRollupMaterializationSummary {
             scanned_archive_batches: scanned_archive_batches as usize,
@@ -4458,10 +4482,8 @@ async fn materialize_historical_rollups(
             materialized_bucket_count: pending_snapshot.pending_buckets as usize,
             materialized_invocation_batches: 0,
             materialized_forward_proxy_batches: 0,
-            last_materialized_bucket_start_epoch: load_latest_materialized_rollup_bucket_epoch(
-                pool,
-            )
-            .await?,
+            last_materialized_bucket_start_epoch:
+                load_latest_materialized_legacy_invocation_rollup_bucket_epoch(pool, config).await?,
         });
     }
 
@@ -4495,8 +4517,8 @@ async fn materialize_historical_rollups(
             as usize,
         materialized_invocation_batches: materialized_invocation_batches as usize,
         materialized_forward_proxy_batches: materialized_forward_proxy_batches as usize,
-        last_materialized_bucket_start_epoch: load_latest_materialized_rollup_bucket_epoch(pool)
-            .await?,
+        last_materialized_bucket_start_epoch:
+            load_latest_materialized_legacy_invocation_rollup_bucket_epoch(pool, config).await?,
     })
 }
 

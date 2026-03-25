@@ -35,16 +35,6 @@ pub(crate) struct StatsDeltaRecord {
 }
 
 #[derive(Debug, FromRow)]
-pub(crate) struct InvocationRollupRecord {
-    pub(crate) stats_date: String,
-    pub(crate) total_count: i64,
-    pub(crate) success_count: i64,
-    pub(crate) failure_count: i64,
-    pub(crate) total_tokens: i64,
-    pub(crate) total_cost: f64,
-}
-
-#[derive(Debug, FromRow)]
 pub(crate) struct InvocationHourlyRollupRecord {
     pub(crate) bucket_start_epoch: i64,
     pub(crate) total_count: i64,
@@ -706,82 +696,6 @@ pub(crate) async fn query_invocation_totals(
     Ok(StatsTotals::from(
         query_stats_row(pool, filter, source_scope).await?,
     ))
-}
-
-pub(crate) async fn query_invocation_rollup_totals(
-    pool: &Pool<Sqlite>,
-    source_scope: InvocationSourceScope,
-) -> Result<StatsTotals> {
-    let row = match source_scope {
-        InvocationSourceScope::ProxyOnly => {
-            sqlx::query_as::<_, StatsRow>(
-                r#"
-                SELECT
-                    COALESCE(SUM(total_count), 0) AS total_count,
-                    COALESCE(SUM(success_count), 0) AS success_count,
-                    COALESCE(SUM(failure_count), 0) AS failure_count,
-                    COALESCE(SUM(total_cost), 0.0) AS total_cost,
-                    COALESCE(SUM(total_tokens), 0) AS total_tokens
-                FROM invocation_rollup_daily
-                WHERE source = ?1
-                "#,
-            )
-            .bind(SOURCE_PROXY)
-            .fetch_one(pool)
-            .await?
-        }
-        InvocationSourceScope::All => {
-            sqlx::query_as::<_, StatsRow>(
-                r#"
-                SELECT
-                    COALESCE(SUM(total_count), 0) AS total_count,
-                    COALESCE(SUM(success_count), 0) AS success_count,
-                    COALESCE(SUM(failure_count), 0) AS failure_count,
-                    COALESCE(SUM(total_cost), 0.0) AS total_cost,
-                    COALESCE(SUM(total_tokens), 0) AS total_tokens
-                FROM invocation_rollup_daily
-                "#,
-            )
-            .fetch_one(pool)
-            .await?
-        }
-    };
-    Ok(StatsTotals::from(row))
-}
-
-pub(crate) async fn query_invocation_rollup_daily_range(
-    pool: &Pool<Sqlite>,
-    start_date: NaiveDate,
-    end_date: NaiveDate,
-    source_scope: InvocationSourceScope,
-) -> Result<Vec<InvocationRollupRecord>> {
-    let mut query = QueryBuilder::new(
-        r#"
-        SELECT
-            stats_date,
-            total_count,
-            success_count,
-            failure_count,
-            total_tokens,
-            total_cost
-        FROM invocation_rollup_daily
-        WHERE stats_date >=
-        "#,
-    );
-    query.push_bind(start_date.to_string());
-    query
-        .push(" AND stats_date <= ")
-        .push_bind(end_date.to_string());
-    if source_scope == InvocationSourceScope::ProxyOnly {
-        query.push(" AND source = ").push_bind(SOURCE_PROXY);
-    }
-    query.push(" ORDER BY stats_date ASC");
-
-    query
-        .build_query_as::<InvocationRollupRecord>()
-        .fetch_all(pool)
-        .await
-        .map_err(Into::into)
 }
 
 pub(crate) async fn query_invocation_hourly_rollup_totals(

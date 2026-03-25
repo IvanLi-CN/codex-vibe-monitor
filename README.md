@@ -254,7 +254,7 @@ cargo run -- maintenance prune-legacy-archive-batches --dry-run
 cargo run -- maintenance prune-legacy-archive-batches
 ```
 
-- 正常服务启动会在 startup backfill 后台维护里自动补齐仍缺失的 `codex_invocations` archive upstream-activity manifest，并只把主库 live tail sync 到 hourly rollups；若 `maintenance.historicalRollupBackfill.legacyArchivePending > 0`，需要显式执行 `maintenance materialize-historical-rollups` 才会把 legacy archive 物化进主库统计表。
+- 正常服务启动会在 startup backfill 后台维护里自动补齐仍缺失的 `codex_invocations` archive upstream-activity manifest，并只把主库 live tail sync 到 hourly rollups；若 `maintenance.historicalRollupBackfill.legacyArchivePending > 0`，需要显式执行 `maintenance materialize-historical-rollups` 才会把 legacy archive 物化进主库统计表。在 legacy `codex_invocations` 仍未完成物化前，`maintenance.historicalRollupBackfill.alertLevel` 会保持 `critical`。
 - `maintenance prune-legacy-archive-batches` 只会删除已经完成历史物化的 backup-only archive；`codex_invocations` 仍存在 upstream activity backlog 时会保守跳过，避免过早删掉 manifest 依赖。
 - `maintenance ... --dry-run` 与 `--retention-run-once --retention-dry-run` 不会再顺手执行 archive TTL 回填、manifest rebuild 或历史 rollup 物化，便于先做真正只读的容量预演。
 
@@ -269,7 +269,7 @@ cargo run -- maintenance prune-legacy-archive-batches
 - `GET /api/invocations?limit=&model=&status=`：最新记录列表（`limit` 上限由 `LIST_LIMIT_MAX` 控制）；每条记录额外返回 `detailLevel`、`detailPrunedAt`、`detailPruneReason`，用于标记在线明细是否仍完整。超过在线窗口的明细不再承诺在线可回查。
 - `GET /api/stats`：全量聚合统计；长期 totals 读取永久在线 hourly rollups，并补上尚未 sync 的 live tail。响应可选附带 `maintenance.rawCompressionBacklog`、`maintenance.startupBackfill` 与 `maintenance.historicalRollupBackfill`，用于观测 raw backlog、archive manifest backfill 与 legacy archive 物化状态。
 - `GET /api/stats/summary?window=<all|current|1d|6h|30m>&limit=N`：窗口统计；`window=all` 与历史长窗口都通过 hourly rollups 保持在线连续。
-- `GET /api/stats/timeseries?range=1d&bucket=1h&settlement_hour=0`：时间序列（区间与桶宽支持 `m/h/d/mo`）；跨过 raw retention 后仍支持小时级历史查询。
+- `GET /api/stats/timeseries?range=1d&bucket=1h&settlement_hour=0`：时间序列（区间与桶宽支持 `m/h/d/mo`）；跨过 raw retention 后，小时级历史查询与按天聚合都会从永久在线 hourly rollups 聚合。
 - `GET /api/stats/forward-proxy/timeseries?range=30d&bucket=1h`：forward proxy 历史小时时序，返回每个 proxy 的 request buckets 与 weight buckets。
 - `GET /api/stats/perf`：代理链路阶段耗时统计（count/avg/P50/P90/P99/max）。
 - `GET /api/quota/latest`：数据库中最近一次历史配额快照（服务不会再主动抓取新的 XYAI quota）。

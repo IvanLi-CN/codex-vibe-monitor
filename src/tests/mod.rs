@@ -27260,6 +27260,83 @@ async fn timeseries_hourly_backed_ignores_missing_exact_archive_batch() {
 }
 
 #[tokio::test]
+async fn timeseries_daily_backed_ignores_pruned_legacy_archive_batch_files() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_day_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived local day");
+    let archived_occurred_at = format_naive(
+        archived_day_local
+            .checked_add_signed(ChronoDuration::minutes(10))
+            .expect("valid archived occurred_at"),
+    );
+    let archive_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "timeseries-daily-pruned-legacy-archive",
+        &[(
+            1_i64,
+            "timeseries-daily-pruned-legacy-archive",
+            archived_occurred_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            12_i64,
+            0.12_f64,
+            Some(120.0),
+        )],
+    )
+    .await;
+
+    materialize_historical_rollups(&state.pool, &state.config, false)
+        .await
+        .expect("materialize legacy historical rollups");
+    prune_legacy_archive_batches(&state.pool, &state.config, false)
+        .await
+        .expect("prune legacy archive files after materialization");
+    assert!(
+        !archive_path.exists(),
+        "legacy archive file should be removed after prune"
+    );
+
+    let Json(response) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "30d".to_string(),
+            bucket: Some("1d".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("daily timeseries should read materialized hourly history");
+    assert_eq!(
+        response
+            .points
+            .iter()
+            .map(|point| point.total_count)
+            .sum::<i64>(),
+        1
+    );
+    let expected_date = archived_day_local.date();
+    let point = response
+        .points
+        .iter()
+        .find(|point| shanghai_bucket_date(&point.bucket_start) == expected_date)
+        .expect("archived day should remain queryable after prune");
+    assert_eq!(point.total_count, 1);
+    assert_eq!(point.success_count, 1);
+    assert_eq!(point.failure_count, 0);
+    assert_eq!(point.total_tokens, 12);
+    assert_f64_close(point.total_cost, 0.12);
+}
+
+#[tokio::test]
 async fn timeseries_hourly_historical_non_hour_aligned_timezones_are_rejected() {
     let mut config = test_config();
     config.openai_upstream_base_url =
@@ -30536,19 +30613,19 @@ async fn materialize_historical_rollups_marks_batches_and_prune_removes_files() 
     )
     .await;
 
-    let snapshot_before = load_historical_rollup_backfill_snapshot(&pool)
+    let snapshot_before = load_historical_rollup_backfill_snapshot(&pool, &config)
         .await
         .expect("load historical rollup backlog before materialization");
     assert_eq!(snapshot_before.legacy_archive_pending, 1);
     assert!(snapshot_before.pending_buckets >= 1);
 
-    let dry_run_summary = materialize_historical_rollups(&pool, true)
+    let dry_run_summary = materialize_historical_rollups(&pool, &config, true)
         .await
         .expect("dry-run materialize historical rollups");
     assert_eq!(dry_run_summary.scanned_archive_batches, 1);
     assert_eq!(dry_run_summary.materialized_archive_batches, 1);
 
-    let summary = materialize_historical_rollups(&pool, false)
+    let summary = materialize_historical_rollups(&pool, &config, false)
         .await
         .expect("materialize historical rollups");
     assert_eq!(summary.materialized_invocation_batches, 1);
@@ -30571,7 +30648,7 @@ async fn materialize_historical_rollups_marks_batches_and_prune_removes_files() 
     .expect("load archive batch materialized timestamp");
     assert!(materialized_at.is_some());
 
-    let snapshot_after = load_historical_rollup_backfill_snapshot(&pool)
+    let snapshot_after = load_historical_rollup_backfill_snapshot(&pool, &config)
         .await
         .expect("load historical rollup backlog after materialization");
     assert_eq!(snapshot_after.legacy_archive_pending, 0);
@@ -30596,6 +30673,66 @@ async fn materialize_historical_rollups_marks_batches_and_prune_removes_files() 
         .await
         .expect("count remaining archive batches after prune");
     assert_eq!(remaining_batches, 0);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn historical_rollup_backfill_stays_critical_until_legacy_invocations_materialized() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("historical-rollup-backfill-critical").await;
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days((config.invocation_max_days + 2) as i64))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived local hour");
+    let archived_occurred_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(10))
+            .expect("valid archived occurred_at"),
+    );
+    seed_invocation_archive_batch(
+        &pool,
+        &config,
+        "historical-rollup-backfill-critical",
+        &[(
+            1_i64,
+            "historical-rollup-backfill-critical",
+            archived_occurred_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            12_i64,
+            0.12_f64,
+            Some(120.0),
+        )],
+    )
+    .await;
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_materialized_buckets (
+            target,
+            bucket_start_epoch,
+            source,
+            materialized_at
+        )
+        VALUES (?1, ?2, ?3, datetime('now'))
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
+    .bind(align_bucket_epoch(Utc::now().timestamp(), 3_600, 0))
+    .bind(SOURCE_PROXY)
+    .execute(&pool)
+    .await
+    .expect("seed unrelated materialized bucket marker");
+
+    let snapshot = load_historical_rollup_backfill_snapshot(&pool, &config)
+        .await
+        .expect("load historical rollup backlog snapshot");
+    assert_eq!(snapshot.legacy_archive_pending, 1);
+    assert!(snapshot.last_materialized_hour.is_none());
+    assert_eq!(
+        snapshot.alert_level,
+        HistoricalRollupBackfillAlertLevel::Critical
+    );
 
     cleanup_temp_test_dir(&temp_dir);
 }
@@ -30756,7 +30893,7 @@ async fn materialize_historical_rollups_keeps_existing_rollups_if_replay_fails()
     .await
     .expect("insert missing archive manifest");
 
-    let err = materialize_historical_rollups(&pool, false)
+    let err = materialize_historical_rollups(&pool, &config, false)
         .await
         .expect_err("materialization should fail when archive file is missing");
     assert!(
