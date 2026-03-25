@@ -294,3 +294,31 @@ export const QuotaExhaustedOauth: Story = {
     ).not.toBeInTheDocument()
   },
 }
+
+export const OauthRetryTerminalState: Story = {
+  render: () => (
+    <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />
+  ),
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const row = await documentScope.findByRole('button', {
+      name: /Retry refresh failure settled as needs reauth/i,
+    })
+
+    await expect(row).toHaveTextContent(/需要重新授权|Needs reauth/i)
+    await expect(row).not.toHaveTextContent(/同步中|Syncing/i)
+
+    await userEvent.click(row)
+
+    const dialog = await documentScope.findByRole('dialog', {
+      name: /Retry refresh failure settled as needs reauth/i,
+    })
+    await expect(dialog).toHaveTextContent(/需要重新授权|Needs reauth/i)
+    await expect(dialog).not.toHaveTextContent(/同步中|Syncing/i)
+    await expect(
+      await documentScope.findByText(
+        /Authentication token has been invalidated, please sign in again/i,
+      ),
+    ).toBeInTheDocument()
+  },
+}
