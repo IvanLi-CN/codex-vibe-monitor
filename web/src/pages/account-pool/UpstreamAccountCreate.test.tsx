@@ -1476,6 +1476,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
 
     setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth Renamed");
+    expect(updateOauthLogin).not.toHaveBeenCalled();
     await flushSessionSyncDebounce();
 
     expect(host?.textContent).not.toContain("Generate a fresh OAuth URL");
@@ -1542,6 +1543,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       await Promise.resolve();
     });
     await flushAsync();
+    await flushSessionSyncDebounce();
 
     expect(updateOauthLogin).toHaveBeenCalledTimes(1);
     expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
@@ -1556,7 +1558,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(updateOauthLogin.mock.lastCall?.[1]).not.toHaveProperty("groupNote");
   });
 
-  it("starts pending single oauth metadata sync immediately while typing", async () => {
+  it("starts pending single oauth metadata sync after the debounce window while typing", async () => {
     vi.useFakeTimers();
     const updateOauthLogin = vi.fn().mockResolvedValue({
       loginId: "login-1",
@@ -1577,6 +1579,8 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth Immediate");
     await flushAsync();
+    expect(updateOauthLogin).not.toHaveBeenCalled();
+    await flushSessionSyncDebounce();
 
     expect(updateOauthLogin).toHaveBeenCalledTimes(1);
     expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
@@ -1618,7 +1622,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth Copied");
     await flushAsync();
-    expect(updateOauthLogin).toHaveBeenCalledTimes(1);
+    expect(updateOauthLogin).not.toHaveBeenCalled();
 
     clickButton(/Copy OAuth URL/i);
     await flushAsync();
@@ -1690,6 +1694,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       },
     });
     await flushAsync();
+    await flushSessionSyncDebounce();
 
     expect(updateOauthLogin).toHaveBeenCalledTimes(1);
 
@@ -1709,6 +1714,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
   });
 
   it("uses the latest pending session updatedAt as the next oauth sync baseline", async () => {
+    vi.useFakeTimers();
     const beginOauthLogin = vi.fn().mockResolvedValue({
       loginId: "login-1",
       status: "pending",
@@ -1751,11 +1757,11 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth A");
     await flushAsync();
-    await flushAsync();
+    await flushSessionSyncDebounce();
 
     setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth B");
     await flushAsync();
-    await flushAsync();
+    await flushSessionSyncDebounce();
 
     expect(updateOauthLogin).toHaveBeenNthCalledWith(1, "login-1", {
       displayName: "Fresh OAuth A",
@@ -1821,6 +1827,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       },
     });
     await flushAsync();
+    await flushSessionSyncDebounce();
 
     expect(updateOauthLogin).toHaveBeenCalledTimes(1);
 
@@ -1933,6 +1940,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       },
     });
     await flushAsync();
+    await flushSessionSyncDebounce();
 
     expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
       displayName: "Fresh OAuth",
@@ -1987,6 +1995,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       },
     });
     await flushAsync();
+    await flushSessionSyncDebounce();
 
     expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
       displayName: "Fresh OAuth",
@@ -2194,11 +2203,14 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       },
     });
     await flushAsync();
+    await flushSessionSyncDebounce();
 
     expect(updateOauthLogin).toHaveBeenCalledTimes(1);
 
     setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth Retry");
     await flushAsync();
+    expect(updateOauthLogin).toHaveBeenCalledTimes(1);
+    await flushSessionSyncDebounce();
     expect(updateOauthLogin).toHaveBeenCalledTimes(2);
 
     await flushSessionSyncRetry();

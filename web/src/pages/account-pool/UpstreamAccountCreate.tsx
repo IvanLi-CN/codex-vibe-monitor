@@ -111,6 +111,7 @@ type GroupNoteEditorState = {
 type MailboxCopyTone = "idle" | "copied" | "manual";
 const MAILBOX_REFRESH_INTERVAL_MS = 5_000;
 const MAILBOX_REFRESH_TICK_MS = 1_000;
+const OAUTH_SESSION_SYNC_DEBOUNCE_MS = 300;
 const OAUTH_SESSION_SYNC_RETRY_MS = 1_000;
 const IMPORTED_OAUTH_DUPLICATE_DETAIL =
   "duplicate credential in current import selection";
@@ -1828,7 +1829,12 @@ export default function UpstreamAccountCreatePage() {
         window.clearTimeout(existing.timerId);
         existing.timerId = null;
       }
-      void runPendingOauthSessionSync(snapshot.loginId).catch(() => undefined);
+      existing.timerId = window.setTimeout(() => {
+        const currentRecord = pendingOauthSessionSyncRef.current[snapshot.loginId];
+        if (!currentRecord) return;
+        currentRecord.timerId = null;
+        void runPendingOauthSessionSync(snapshot.loginId).catch(() => undefined);
+      }, OAUTH_SESSION_SYNC_DEBOUNCE_MS);
     }
 
     for (const [loginId, record] of Object.entries(pendingOauthSessionSyncRef.current)) {
