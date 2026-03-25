@@ -79,6 +79,13 @@ const labels = {
       route_cooldown_started: 'Route cooldown',
       sync_failed: 'Sync failed',
     })[action ?? ''] ?? action ?? null,
+  compactSupport: (item: UpstreamAccountSummary) =>
+    item.compactSupport?.status === 'supported'
+      ? 'Compact available'
+      : item.compactSupport?.status === 'unsupported'
+        ? 'Compact unsupported'
+        : null,
+  compactSupportHint: (item: UpstreamAccountSummary) => item.compactSupport?.reason ?? null,
   actionSource: (source?: string | null) =>
     ({
       call: 'Call',
@@ -542,5 +549,114 @@ describe('UpstreamAccountsTable', () => {
       trigger.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' }))
     })
     expect(onSelect).toHaveBeenCalledWith(11)
+  })
+
+  it('attaches compact-support and folded-tag titles directly to badge elements', () => {
+    renderInteractiveTable([
+      {
+        id: 11,
+        kind: 'oauth_codex',
+        provider: 'codex',
+        displayName: 'Codex Pro - Tokyo enterprise rotation account with a deliberately long roster title',
+        groupName: 'production-apac-primary-operators',
+        isMother: true,
+        status: 'active',
+        displayStatus: 'active',
+        enabled: true,
+        enableStatus: 'enabled',
+        workStatus: 'working',
+        healthStatus: 'normal',
+        syncState: 'idle',
+        planType: 'team',
+        compactSupport: {
+          status: 'unsupported',
+          observedAt: '2026-03-16T02:06:00.000Z',
+          reason: 'Compact preview channel unavailable',
+        },
+        lastSuccessfulSyncAt: '2026-03-16T01:55:00.000Z',
+        lastActivityAt: '2026-03-16T02:05:00.000Z',
+        primaryWindow: {
+          usedPercent: 42,
+          usedText: '42 requests',
+          limitText: '120 requests',
+          resetsAt: '2026-03-16T06:55:00.000Z',
+          windowDurationMins: 300,
+        },
+        secondaryWindow: {
+          usedPercent: 12,
+          usedText: '12 requests',
+          limitText: '500 requests',
+          resetsAt: '2026-03-18T00:00:00.000Z',
+          windowDurationMins: 10080,
+        },
+        credits: null,
+        localLimits: null,
+        duplicateInfo: null,
+        tags,
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
+    ])
+
+    const badges = Array.from(
+      document.body.querySelectorAll<HTMLElement>('div.inline-flex.items-center.rounded-full.border'),
+    )
+    const compactSupportBadge = badges.find((node) => node.textContent?.trim() === 'Compact unsupported')
+    const overflowBadge = badges.find((node) => node.textContent?.trim() === '+2')
+
+    expect(compactSupportBadge?.getAttribute('title')).toBe('Compact preview channel unavailable')
+    expect(overflowBadge?.getAttribute('title')).toBe('sticky-pool, rotating')
+    expect(
+      document.body.querySelector('span[title="Compact preview channel unavailable"]'),
+    ).toBeNull()
+    expect(document.body.querySelector('span[title="sticky-pool, rotating"]')).toBeNull()
+  })
+
+  it('omits compact-supported badges from the roster chips', () => {
+    const html = renderTable([
+      {
+        id: 12,
+        kind: 'api_key_codex',
+        provider: 'codex',
+        displayName: 'Team key - staging',
+        groupName: 'staging',
+        isMother: false,
+        status: 'active',
+        displayStatus: 'active',
+        enabled: true,
+        enableStatus: 'enabled',
+        workStatus: 'idle',
+        healthStatus: 'normal',
+        syncState: 'idle',
+        compactSupport: {
+          status: 'supported',
+          observedAt: '2026-03-16T02:06:00.000Z',
+          reason: 'Observed success for /v1/responses/compact.',
+        },
+        planType: 'local',
+        lastSuccessfulSyncAt: '2026-03-16T01:55:00.000Z',
+        lastActivityAt: '2026-03-16T02:05:00.000Z',
+        primaryWindow: {
+          usedPercent: 0,
+          usedText: '0 requests',
+          limitText: '120 requests',
+          resetsAt: '2026-03-16T06:55:00.000Z',
+          windowDurationMins: 300,
+        },
+        secondaryWindow: {
+          usedPercent: 0,
+          usedText: '0 requests',
+          limitText: '500 requests',
+          resetsAt: '2026-03-18T00:00:00.000Z',
+          windowDurationMins: 10080,
+        },
+        credits: null,
+        localLimits: null,
+        duplicateInfo: null,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
+    ])
+
+    expect(html).not.toContain('Compact available')
   })
 })

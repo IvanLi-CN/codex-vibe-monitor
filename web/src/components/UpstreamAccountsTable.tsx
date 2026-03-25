@@ -284,9 +284,7 @@ function renderTagOverflowBadge(
         'aria-label': labels.hiddenTagsA11y(overflowCount, hiddenNames),
       }}
     >
-      <span title={hiddenNames}>
-        {compactBadge(`+${overflowCount}`, 'secondary')}
-      </span>
+      {compactBadge(`+${overflowCount}`, 'secondary', { title: hiddenNames })}
     </Tooltip>
   )
 }
@@ -620,14 +618,15 @@ export function UpstreamAccountsTable({
                           })
                           : null}
                         {compactBadge(kindLabel(item, labels), 'secondary')}
-                        {labels.compactSupport?.(item) ? (
-                          <span title={labels.compactSupportHint?.(item) ?? undefined}>
-                            {compactBadge(
-                              labels.compactSupport(item) ?? '',
-                              item.compactSupport?.status === 'unsupported' ? 'warning' : 'info',
-                            )}
-                          </span>
-                        ) : null}
+                        {item.compactSupport?.status === 'unsupported' && labels.compactSupport?.(item)
+                          ? compactBadge(
+                            labels.compactSupport(item) ?? '',
+                            'warning',
+                            {
+                              title: labels.compactSupportHint?.(item) ?? undefined,
+                            },
+                          )
+                          : null}
                         {item.planType && planBadge
                           ? compactBadge(item.planType, planBadge.variant, {
                             className: planBadge.className,

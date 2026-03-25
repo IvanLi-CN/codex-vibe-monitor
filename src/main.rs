@@ -294,6 +294,8 @@ const FORWARD_PROXY_FAILURE_STREAM_ERROR: &str = "stream_error";
 const FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429: &str = "upstream_http_429";
 const FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED: &str =
     "upstream_http_429_quota_exhausted";
+const PROXY_FAILURE_UPSTREAM_USAGE_SNAPSHOT_QUOTA_EXHAUSTED: &str =
+    "upstream_usage_snapshot_quota_exhausted";
 const FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX: &str = "upstream_http_5xx";
 const PROXY_FAILURE_UPSTREAM_HTTP_402: &str = "upstream_http_402";
 const PROXY_FAILURE_UPSTREAM_HTTP_AUTH: &str = "upstream_http_auth";
@@ -9582,6 +9584,7 @@ pub(crate) struct PoolUpstreamResponse {
     pub(crate) response: ProxyUpstreamResponseBody,
     pub(crate) oauth_responses_debug: Option<oauth_bridge::OauthResponsesDebugInfo>,
     pub(crate) connect_latency_ms: f64,
+    pub(crate) attempt_started_at_utc: DateTime<Utc>,
     pub(crate) first_byte_latency_ms: f64,
     pub(crate) first_chunk: Option<Bytes>,
     pub(crate) pending_attempt_record: Option<PendingPoolAttemptRecord>,
@@ -10819,6 +10822,7 @@ async fn send_pool_request_with_failover(
                 return Err(final_error);
             };
             let same_account_retry_index = i64::from(same_account_attempt) + 1;
+            let attempt_started_at_utc = Utc::now();
             let connect_started = Instant::now();
             let attempt_started_at: String;
             let attempt_index: i64;
@@ -11597,6 +11601,7 @@ async fn send_pool_request_with_failover(
                 response,
                 oauth_responses_debug,
                 connect_latency_ms,
+                attempt_started_at_utc,
                 first_byte_latency_ms: elapsed_ms(first_byte_started),
                 first_chunk,
                 pending_attempt_record: pending_attempt_record.map(|mut pending| {
@@ -11974,6 +11979,7 @@ async fn proxy_openai_v1_via_pool(
                     }
                     let replay_status_rx = replayable.status_rx.clone();
                     let replay_cancel = replayable.cancel.clone();
+                    let attempt_started_at_utc = Utc::now();
                     let connect_started = Instant::now();
                     let attempt_total_timeout_started_at = ensure_pool_total_timeout_started_at(
                         responses_total_timeout,
@@ -12129,6 +12135,7 @@ async fn proxy_openai_v1_via_pool(
                                     response,
                                     oauth_responses_debug,
                                     connect_latency_ms,
+                                    attempt_started_at_utc,
                                     first_byte_latency_ms: elapsed_ms(first_byte_started),
                                     first_chunk,
                                     pending_attempt_record: None,
@@ -12223,6 +12230,7 @@ async fn proxy_openai_v1_via_pool(
                     ),
                 );
 
+                let attempt_started_at_utc = Utc::now();
                 let connect_started = Instant::now();
                 let attempt_total_timeout_started_at = ensure_pool_total_timeout_started_at(
                     responses_total_timeout,
@@ -12345,6 +12353,7 @@ async fn proxy_openai_v1_via_pool(
                                     response,
                                     oauth_responses_debug: None,
                                     connect_latency_ms,
+                                    attempt_started_at_utc,
                                     first_byte_latency_ms: elapsed_ms(first_byte_started),
                                     first_chunk,
                                     pending_attempt_record: None,
@@ -12475,6 +12484,7 @@ async fn proxy_openai_v1_via_pool(
     };
 
     let account = upstream.account;
+    let upstream_attempt_started_at_utc = upstream.attempt_started_at_utc;
     let upstream_invoke_id = upstream
         .pending_attempt_record
         .as_ref()
@@ -12523,6 +12533,7 @@ async fn proxy_openai_v1_via_pool(
         if let Err(route_err) = record_pool_route_success(
             &state.pool,
             account.account_id,
+            upstream_attempt_started_at_utc,
             sticky_key.as_deref(),
             upstream_invoke_id.as_deref(),
         )
@@ -12542,6 +12553,7 @@ async fn proxy_openai_v1_via_pool(
     let state_for_record = state.clone();
     let sticky_key_for_record = sticky_key.clone();
     let invoke_id_for_record = upstream_invoke_id.clone();
+    let upstream_attempt_started_at_utc_for_record = upstream_attempt_started_at_utc;
     tokio::spawn(async move {
         let mut forwarded_chunks = 0usize;
         let mut forwarded_bytes = 0usize;
@@ -12596,6 +12608,7 @@ async fn proxy_openai_v1_via_pool(
         } else if let Err(route_err) = record_pool_route_success(
             &state_for_record.pool,
             account.account_id,
+            upstream_attempt_started_at_utc_for_record,
             sticky_key_for_record.as_deref(),
             invoke_id_for_record.as_deref(),
         )
@@ -13539,6 +13552,7 @@ async fn proxy_openai_v1_capture_target(
         pending_pool_attempt_record,
         pending_pool_attempt_summary,
         upstream_attempt_started_at,
+        upstream_attempt_started_at_utc,
         upstream_response,
     ) = if pool_route_active {
         match send_pool_request_with_failover(
@@ -13569,6 +13583,7 @@ async fn proxy_openai_v1_capture_target(
                 response.pending_attempt_record,
                 response.attempt_summary,
                 None,
+                Some(response.attempt_started_at_utc),
                 response.response,
             ),
             Err(err) => {
@@ -13721,6 +13736,7 @@ async fn proxy_openai_v1_capture_target(
                 None,
                 PoolAttemptSummary::default(),
                 Some(response.attempt_started_at),
+                None,
                 response.response,
             ),
             Err(err) => {
@@ -14035,6 +14051,7 @@ async fn proxy_openai_v1_capture_target(
     let prefetched_first_chunk_for_task = prefetched_first_chunk;
     let prefetched_ttfb_ms_for_task = prefetched_ttfb_ms;
     let upstream_attempt_started_at_for_task = upstream_attempt_started_at;
+    let upstream_attempt_started_at_utc_for_task = upstream_attempt_started_at_utc;
     let first_byte_timeout_for_task = first_byte_timeout;
     let stream_timeout_for_task = stream_timeout;
     let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(16);
@@ -14338,6 +14355,7 @@ async fn proxy_openai_v1_capture_target(
                     record_pool_route_success(
                         &state_for_task.pool,
                         account.account_id,
+                        upstream_attempt_started_at_utc_for_task.unwrap_or_else(Utc::now),
                         sticky_key_for_task.as_deref(),
                         None,
                     )

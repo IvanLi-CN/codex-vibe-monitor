@@ -680,13 +680,67 @@ describe("UpstreamAccountsPage duplicates", () => {
     );
   });
 
+  it("renders proactive sync hard-unavailable actions with translated reason labels", async () => {
+    mockAccountsPage({
+      selectedSummary: {
+        status: "error",
+        displayStatus: "error_other",
+        healthStatus: "error_other",
+        workStatus: "rate_limited",
+        lastAction: "sync_hard_unavailable",
+        lastActionSource: "sync_maintenance",
+        lastActionReasonCode: "usage_snapshot_exhausted",
+        lastActionReasonMessage:
+          "latest usage snapshot already shows an exhausted upstream usage limit window",
+        lastActionHttpStatus: null,
+      },
+      detail: {
+        status: "error",
+        displayStatus: "error_other",
+        healthStatus: "error_other",
+        workStatus: "rate_limited",
+        lastAction: "sync_hard_unavailable",
+        lastActionSource: "sync_maintenance",
+        lastActionReasonCode: "usage_snapshot_exhausted",
+        lastActionReasonMessage:
+          "latest usage snapshot already shows an exhausted upstream usage limit window",
+        lastActionHttpStatus: null,
+        recentActions: [
+          {
+            id: 91,
+            occurredAt: "2026-03-25T00:12:00.000Z",
+            action: "sync_hard_unavailable",
+            source: "sync_maintenance",
+            reasonCode: "usage_snapshot_exhausted",
+            reasonMessage:
+              "latest usage snapshot already shows an exhausted upstream usage limit window",
+            httpStatus: null,
+            failureKind: "upstream_usage_snapshot_quota_exhausted",
+            invokeId: null,
+            stickyKey: null,
+            createdAt: "2026-03-25T00:12:00.000Z",
+          },
+        ],
+      },
+    });
+    render("/account-pool/upstream-accounts");
+
+    clickFirstRosterRow();
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Sync marked unavailable");
+    expect(document.body.textContent).toContain("Maintenance sync");
+    expect(document.body.textContent).toContain(
+      "Latest usage snapshot already shows an exhausted limit window",
+    );
+  });
+
   it("shows compact support state and saves routing timeouts", async () => {
     const saveRouting = vi.fn().mockResolvedValue(undefined);
     const { compactSupport, routingTimeouts } = mockAccountsPage({ saveRouting });
     render("/account-pool/upstream-accounts");
 
     expect(document.body.textContent).toContain("Compact unsupported");
-    expect(document.body.textContent).toContain("300s");
 
     clickFirstRosterRow();
     await flushAsync();
@@ -717,6 +771,44 @@ describe("UpstreamAccountsPage duplicates", () => {
     });
   });
 
+  it("keeps the routing card summary-only while the dialog still exposes advanced fields", async () => {
+    mockAccountsPage({
+      routing: {
+        writesEnabled: true,
+        apiKeyConfigured: true,
+        maskedApiKey: "pool-live••••",
+        timeouts: {
+          responsesFirstByteTimeoutSecs: 120,
+          compactFirstByteTimeoutSecs: 300,
+          responsesStreamTimeoutSecs: 300,
+          compactStreamTimeoutSecs: 300,
+        },
+      },
+    });
+    render("/account-pool/upstream-accounts");
+
+    expect(document.body.textContent).toContain("Current pool API key");
+    expect(document.body.textContent).toContain("pool-live••••");
+    expect(document.body.textContent).not.toContain("Priority sync interval");
+    expect(document.body.textContent).not.toContain("Secondary sync interval");
+    expect(document.body.textContent).not.toContain("Priority available account cap");
+    expect(document.body.textContent).not.toContain("Standard response first byte timeout");
+    expect(document.body.textContent).not.toContain("Compact response first byte timeout");
+    expect(document.body.textContent).not.toContain("Standard stream completion timeout");
+    expect(document.body.textContent).not.toContain("Compact stream completion timeout");
+
+    clickButton(/Edit routing settings/i);
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Priority sync interval");
+    expect(document.body.textContent).toContain("Secondary sync interval");
+    expect(document.body.textContent).toContain("Priority available account cap");
+    expect(document.body.textContent).toContain("Standard response first byte timeout");
+    expect(document.body.textContent).toContain("Compact response first byte timeout");
+    expect(document.body.textContent).toContain("Standard stream completion timeout");
+    expect(document.body.textContent).toContain("Compact stream completion timeout");
+  });
+
   it("rejects non-integer routing timeout edits before saving", async () => {
     const saveRouting = vi.fn().mockResolvedValue(undefined);
     mockAccountsPage({ saveRouting });
@@ -742,6 +834,50 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect((editButton as HTMLButtonElement).disabled).toBe(true);
   });
 
+  it("keeps routing settings inspectable in read-only mode", async () => {
+    mockAccountsPage({
+      routing: {
+        writesEnabled: false,
+        apiKeyConfigured: true,
+        maskedApiKey: "pool-live••••",
+        timeouts: {
+          responsesFirstByteTimeoutSecs: 120,
+          compactFirstByteTimeoutSecs: 300,
+          responsesStreamTimeoutSecs: 300,
+          compactStreamTimeoutSecs: 300,
+        },
+      },
+    });
+    render("/account-pool/upstream-accounts");
+
+    const editButton = clickButton(/Edit routing settings/i);
+    expect(editButton.disabled).toBe(false);
+    await flushAsync();
+    await flushTimers();
+
+    const compactInput = document.body.querySelector(
+      'input[name="compactFirstByteTimeoutSecs"]',
+    );
+    expect(compactInput).toBeInstanceOf(HTMLInputElement);
+    expect((compactInput as HTMLInputElement).disabled).toBe(true);
+
+    const apiKeyInput = document.body.querySelector('input[name="poolRoutingSecret"]');
+    expect(apiKeyInput).toBeInstanceOf(HTMLInputElement);
+    expect((apiKeyInput as HTMLInputElement).disabled).toBe(true);
+
+    const generateButton = findButton(/Generate/i);
+    if (!(generateButton instanceof HTMLButtonElement)) {
+      throw new Error("missing generate button");
+    }
+    expect(generateButton.disabled).toBe(true);
+
+    const saveButton = findButton(/Save settings/i);
+    if (!(saveButton instanceof HTMLButtonElement)) {
+      throw new Error("missing save button");
+    }
+    expect(saveButton.disabled).toBe(true);
+  });
+
   it("preserves unsaved routing edits while the dialog is open during refresh", async () => {
     mockAccountsPage();
     render("/account-pool/upstream-accounts");
@@ -758,6 +894,117 @@ describe("UpstreamAccountsPage duplicates", () => {
     );
     expect(compactInput).toBeInstanceOf(HTMLInputElement);
     expect((compactInput as HTMLInputElement).value).toBe("420");
+  });
+
+  it("disables routing saves when the dialog becomes read-only during refresh", async () => {
+    mockAccountsPage();
+    render("/account-pool/upstream-accounts");
+
+    clickButton(/Edit routing settings/i);
+    setInputValue('input[name="compactFirstByteTimeoutSecs"]', "420");
+
+    mockAccountsPage({
+      routing: {
+        writesEnabled: false,
+        apiKeyConfigured: false,
+        maskedApiKey: null,
+        timeouts: {
+          responsesFirstByteTimeoutSecs: 120,
+          compactFirstByteTimeoutSecs: 300,
+          responsesStreamTimeoutSecs: 300,
+          compactStreamTimeoutSecs: 300,
+        },
+      },
+    });
+    rerender("/account-pool/upstream-accounts");
+    await flushAsync();
+    await flushTimers();
+
+    const compactInput = document.body.querySelector(
+      'input[name="compactFirstByteTimeoutSecs"]',
+    );
+    expect(compactInput).toBeInstanceOf(HTMLInputElement);
+    expect((compactInput as HTMLInputElement).value).toBe("300");
+    expect((compactInput as HTMLInputElement).disabled).toBe(true);
+
+    const saveButton = findButton(/Save settings/i);
+    if (!(saveButton instanceof HTMLButtonElement)) {
+      throw new Error("missing save button");
+    }
+    expect(saveButton.disabled).toBe(true);
+  });
+
+  it("resyncs inspect-only routing drafts before writes are re-enabled", async () => {
+    mockAccountsPage({
+      routing: {
+        writesEnabled: false,
+        apiKeyConfigured: true,
+        maskedApiKey: "pool-live••••",
+        timeouts: {
+          responsesFirstByteTimeoutSecs: 120,
+          compactFirstByteTimeoutSecs: 300,
+          responsesStreamTimeoutSecs: 300,
+          compactStreamTimeoutSecs: 300,
+        },
+      },
+    });
+    render("/account-pool/upstream-accounts");
+
+    clickButton(/Edit routing settings/i);
+    await flushAsync();
+    await flushTimers();
+
+    mockAccountsPage({
+      routing: {
+        writesEnabled: true,
+        apiKeyConfigured: true,
+        maskedApiKey: "pool-next••••",
+        timeouts: {
+          responsesFirstByteTimeoutSecs: 150,
+          compactFirstByteTimeoutSecs: 360,
+          responsesStreamTimeoutSecs: 330,
+          compactStreamTimeoutSecs: 360,
+        },
+      },
+    });
+    rerender("/account-pool/upstream-accounts");
+    await flushAsync();
+    await flushTimers();
+
+    const compactInput = document.body.querySelector(
+      'input[name="compactFirstByteTimeoutSecs"]',
+    );
+    expect(compactInput).toBeInstanceOf(HTMLInputElement);
+    expect((compactInput as HTMLInputElement).value).toBe("360");
+    expect((compactInput as HTMLInputElement).disabled).toBe(false);
+
+    const saveButton = findButton(/Save settings/i);
+    if (!(saveButton instanceof HTMLButtonElement)) {
+      throw new Error("missing save button");
+    }
+    expect(saveButton.disabled).toBe(true);
+  });
+
+  it("closes the routing dialog when routing settings disappear during refresh", async () => {
+    mockAccountsPage();
+    render("/account-pool/upstream-accounts");
+
+    clickButton(/Edit routing settings/i);
+    await flushAsync();
+    await flushTimers();
+
+    expect(
+      document.body.querySelector('input[name="compactFirstByteTimeoutSecs"]'),
+    ).toBeInstanceOf(HTMLInputElement);
+
+    mockAccountsPage({ routing: null });
+    rerender("/account-pool/upstream-accounts");
+    await flushAsync();
+    await flushTimers();
+
+    expect(
+      document.body.querySelector('input[name="compactFirstByteTimeoutSecs"]'),
+    ).toBeNull();
   });
 
   it("passes all-match tag filters to the roster hook", () => {

@@ -826,6 +826,8 @@ const baseTranslations = {
       "Route cooldown",
     "accountPool.upstreamAccounts.latestAction.actions.route_hard_unavailable":
       "Hard unavailable",
+    "accountPool.upstreamAccounts.latestAction.actions.sync_hard_unavailable":
+      "Sync marked unavailable",
     "accountPool.upstreamAccounts.latestAction.actions.sync_succeeded":
       "Sync succeeded",
     "accountPool.upstreamAccounts.latestAction.actions.sync_recovery_blocked":
@@ -851,6 +853,8 @@ const baseTranslations = {
       "Account settings were updated",
     "accountPool.upstreamAccounts.latestAction.reasons.sync_error":
       "Sync failed",
+    "accountPool.upstreamAccounts.latestAction.reasons.usage_snapshot_exhausted":
+      "Latest usage snapshot already shows an exhausted limit window",
     "accountPool.upstreamAccounts.latestAction.reasons.quota_still_exhausted":
       "Fresh usage snapshot still shows an exhausted limit window",
     "accountPool.upstreamAccounts.latestAction.reasons.recovery_unconfirmed_manual_required":
@@ -2230,6 +2234,8 @@ const baseTranslations = {
       "进入冷却",
     "accountPool.upstreamAccounts.latestAction.actions.route_hard_unavailable":
       "标记为硬失效",
+    "accountPool.upstreamAccounts.latestAction.actions.sync_hard_unavailable":
+      "同步标记为不可用",
     "accountPool.upstreamAccounts.latestAction.actions.sync_succeeded":
       "同步成功",
     "accountPool.upstreamAccounts.latestAction.actions.sync_recovery_blocked":
@@ -2253,6 +2259,8 @@ const baseTranslations = {
       "账号设置已更新",
     "accountPool.upstreamAccounts.latestAction.reasons.sync_error":
       "同步失败",
+    "accountPool.upstreamAccounts.latestAction.reasons.usage_snapshot_exhausted":
+      "最新额度快照已经显示限制窗口耗尽",
     "accountPool.upstreamAccounts.latestAction.reasons.quota_still_exhausted":
       "最新额度快照仍显示限制窗口已耗尽",
     "accountPool.upstreamAccounts.latestAction.reasons.recovery_unconfirmed_manual_required":
