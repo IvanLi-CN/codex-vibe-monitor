@@ -27455,7 +27455,7 @@ async fn timeseries_hourly_backed_bucket_stays_available_across_archive_boundary
 }
 
 #[tokio::test]
-async fn summary_hourly_backed_since_uses_hour_bucket_accuracy_for_archived_history() {
+async fn summary_hourly_backed_since_omits_pre_cutoff_partial_archived_hours() {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -27528,11 +27528,11 @@ async fn summary_hourly_backed_since_uses_hour_bucket_accuracy_for_archived_hist
             .await
             .expect("load exact archived summary totals");
 
-    assert_eq!(totals.total_count, 2);
-    assert_eq!(totals.success_count, 2);
+    assert_eq!(totals.total_count, 0);
+    assert_eq!(totals.success_count, 0);
     assert_eq!(totals.failure_count, 0);
-    assert_eq!(totals.total_tokens, 20);
-    assert_f64_close(totals.total_cost, 0.2);
+    assert_eq!(totals.total_tokens, 0);
+    assert_f64_close(totals.total_cost, 0.0);
 }
 
 #[tokio::test]
@@ -27607,7 +27607,7 @@ async fn collect_summary_snapshots_uses_hourly_backed_duration_windows() {
 }
 
 #[tokio::test]
-async fn timeseries_hourly_backed_preserves_archived_partial_hour_bucket_accuracy() {
+async fn timeseries_hourly_backed_omits_pre_cutoff_partial_archived_hours() {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -27712,15 +27712,15 @@ async fn timeseries_hourly_backed_preserves_archived_partial_hour_bucket_accurac
         .iter()
         .find(|point| point.bucket_start == format_utc_iso(bucket_start))
         .expect("archived hour bucket should remain visible");
-    assert_eq!(point.total_count, 2);
-    assert_eq!(point.success_count, 2);
+    assert_eq!(point.total_count, 0);
+    assert_eq!(point.success_count, 0);
     assert_eq!(point.failure_count, 0);
-    assert_eq!(point.total_tokens, 20);
-    assert_f64_close(point.total_cost, 0.2);
+    assert_eq!(point.total_tokens, 0);
+    assert_f64_close(point.total_cost, 0.0);
 }
 
 #[tokio::test]
-async fn hourly_backed_summary_preserves_pre_cutoff_partial_hour_rollups() {
+async fn hourly_backed_summary_omits_pre_cutoff_partial_hour_rollups() {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -27783,11 +27783,11 @@ async fn hourly_backed_summary_preserves_pre_cutoff_partial_hour_rollups() {
             .await
             .expect("load summary totals across retention cutoff");
 
-    assert_eq!(totals.total_count, 1);
-    assert_eq!(totals.success_count, 1);
+    assert_eq!(totals.total_count, 0);
+    assert_eq!(totals.success_count, 0);
     assert_eq!(totals.failure_count, 0);
-    assert_eq!(totals.total_tokens, 12);
-    assert_f64_close(totals.total_cost, 0.12);
+    assert_eq!(totals.total_tokens, 0);
+    assert_f64_close(totals.total_cost, 0.0);
 }
 
 #[tokio::test]
@@ -27847,7 +27847,7 @@ async fn invocation_hourly_rollup_ignores_null_status_for_success_failure_counts
 }
 
 #[tokio::test]
-async fn hourly_timeseries_preserves_pre_cutoff_partial_hour_rollups() {
+async fn hourly_timeseries_omits_pre_cutoff_partial_hour_rollups() {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -27937,11 +27937,11 @@ async fn hourly_timeseries_preserves_pre_cutoff_partial_hour_rollups() {
         .iter()
         .find(|point| point.bucket_start == format_utc_iso(bucket_start))
         .expect("pre-cutoff bucket should remain visible");
-    assert_eq!(point.total_count, 1);
+    assert_eq!(point.total_count, 0);
     assert_eq!(point.success_count, 0);
     assert_eq!(point.failure_count, 0);
-    assert_eq!(point.total_tokens, 5);
-    assert_f64_close(point.total_cost, 0.05);
+    assert_eq!(point.total_tokens, 0);
+    assert_f64_close(point.total_cost, 0.0);
 }
 
 #[tokio::test]
@@ -30342,9 +30342,10 @@ async fn cleanup_expired_invocation_archive_batches_removes_manifest_rows() {
             status,
             coverage_start_at,
             coverage_end_at,
+            historical_rollups_materialized_at,
             created_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'), ?10)
         "#,
     )
     .bind(1_i64)
@@ -30412,9 +30413,10 @@ async fn backfill_invocation_archive_expiries_uses_coverage_end_at() {
             status,
             coverage_start_at,
             coverage_end_at,
+            historical_rollups_materialized_at,
             created_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'), ?10)
         "#,
     )
     .bind(1_i64)
@@ -30452,6 +30454,70 @@ async fn backfill_invocation_archive_expiries_uses_coverage_end_at() {
             .await
             .expect("load archive expiry");
     assert_eq!(actual.as_deref(), Some(expected.as_str()));
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn pending_legacy_invocation_archives_do_not_expire_before_materialization() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("archive-expiry-pending-legacy").await;
+    config.invocation_archive_ttl_days = 0;
+    let coverage_end_at = shanghai_local_days_ago(120, 8, 0, 0);
+    let archive_path = temp_dir.join("pending-legacy.sqlite.gz");
+    write_gzip_test_file(&archive_path, b"pending-legacy");
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            id,
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'))
+        "#,
+    )
+    .bind(1_i64)
+    .bind("codex_invocations")
+    .bind(&coverage_end_at[..7])
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind("deadbeef")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&coverage_end_at)
+    .bind(&coverage_end_at)
+    .execute(&pool)
+    .await
+    .expect("insert pending legacy archive batch");
+
+    let updated = backfill_invocation_archive_expiries(&pool, &config)
+        .await
+        .expect("backfill should skip pending legacy archive");
+    assert_eq!(updated, 0);
+
+    let dry_run_deleted = cleanup_expired_archive_batches(&pool, &config, true)
+        .await
+        .expect("dry-run should also skip pending legacy archive");
+    assert_eq!(dry_run_deleted, 0);
+
+    let deleted = cleanup_expired_archive_batches(&pool, &config, false)
+        .await
+        .expect("cleanup should keep pending legacy archive");
+    assert_eq!(deleted, 0);
+    assert!(archive_path.exists());
+
+    let remaining_batches: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM archive_batches")
+        .fetch_one(&pool)
+        .await
+        .expect("count remaining pending legacy batches");
+    assert_eq!(remaining_batches, 1);
 
     cleanup_temp_test_dir(&temp_dir);
 }
@@ -30673,6 +30739,19 @@ async fn materialize_historical_rollups_marks_batches_and_prune_removes_files() 
         .await
         .expect("count remaining archive batches after prune");
     assert_eq!(remaining_batches, 0);
+
+    let rerun_summary = materialize_historical_rollups(&pool, &config, false)
+        .await
+        .expect("rerun materialize historical rollups after prune");
+    assert_eq!(rerun_summary.materialized_invocation_batches, 0);
+    let rerun_total_count: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly WHERE source = ?1",
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load hourly totals after rerun");
+    assert_eq!(rerun_total_count, 1);
 
     cleanup_temp_test_dir(&temp_dir);
 }

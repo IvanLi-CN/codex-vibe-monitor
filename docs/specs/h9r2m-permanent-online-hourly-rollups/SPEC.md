@@ -63,7 +63,7 @@
 ### 查询层
 
 - `/api/stats/summary` 的 `window=all` 读取 `invocation_rollup_hourly`，只补尚未 sync 的 live tail。
-- `/api/stats/timeseries` 改为 rollup-first：历史窗口直接读取 hourly rollups，再按请求 bucket 重新聚合；超过在线保留窗后不再为了补首尾碎片回读 archive exact rows。
+- `/api/stats/timeseries` 改为 rollup-first：历史窗口直接读取 hourly rollups，再按请求 bucket 重新聚合；超过在线保留窗后不再为了补首尾碎片回读 archive exact rows，archived 边界的 partial hour 统一按“只保留完整小时桶”处理，避免高估 totals。
 - `/api/stats/errors` 与 `/api/stats/failures/summary` 对超出 raw retention 的范围读取 `invocation_failure_rollup_hourly`。
 - `/api/stats/perf` 对超出 raw retention 的范围读取 `proxy_perf_stage_hourly`，使用 mergeable histogram 近似 `p50/p90/p99`。
 - prompt cache 与 sticky key 的 aggregate totals 改为读取对应 hourly rollups；最近 24h request trace 仍读取 raw rows。

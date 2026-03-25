@@ -4065,6 +4065,7 @@ async fn backfill_invocation_archive_expiries(
           AND status = ?1
           AND coverage_end_at IS NOT NULL
           AND archive_expires_at IS NULL
+          AND historical_rollups_materialized_at IS NOT NULL
         "#,
     )
     .bind(ARCHIVE_STATUS_COMPLETED)
@@ -4206,6 +4207,8 @@ struct ArchiveBatchCleanupCandidate {
     id: i64,
     dataset: String,
     file_path: String,
+    historical_rollups_materialized_at: Option<String>,
+    coverage_end_at: Option<String>,
 }
 
 async fn cleanup_expired_archive_batches(
@@ -4217,9 +4220,10 @@ async fn cleanup_expired_archive_batches(
         backfill_invocation_archive_expiries(pool, config).await?;
     }
     let cutoff = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+    let invocation_archive_cutoff = shanghai_local_cutoff_string(config.invocation_max_days);
     let candidates = sqlx::query_as::<_, ArchiveBatchCleanupCandidate>(
         r#"
-        SELECT id, dataset, file_path
+        SELECT id, dataset, file_path, historical_rollups_materialized_at, coverage_end_at
         FROM archive_batches
         WHERE status = ?1
           AND archive_expires_at IS NOT NULL
@@ -4232,19 +4236,37 @@ async fn cleanup_expired_archive_batches(
     .fetch_all(pool)
     .await?;
 
+    let mut eligible_candidates = Vec::new();
+    for candidate in candidates {
+        if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS {
+            if candidate.historical_rollups_materialized_at.is_none() {
+                continue;
+            }
+            if candidate
+                .coverage_end_at
+                .as_deref()
+                .map(|coverage_end_at| coverage_end_at >= invocation_archive_cutoff.as_str())
+                .unwrap_or(true)
+            {
+                continue;
+            }
+        }
+        eligible_candidates.push(candidate);
+    }
+
     if dry_run {
-        for candidate in &candidates {
+        for candidate in &eligible_candidates {
             info!(
                 dataset = candidate.dataset,
                 file_path = candidate.file_path,
                 "retention dry-run planned archive batch cleanup"
             );
         }
-        return Ok(candidates.len());
+        return Ok(eligible_candidates.len());
     }
 
     let mut deleted = 0usize;
-    for candidate in candidates {
+    for candidate in eligible_candidates {
         match fs::remove_file(&candidate.file_path) {
             Ok(_) => {}
             Err(err) if err.kind() == io::ErrorKind::NotFound => {}
@@ -4488,9 +4510,6 @@ async fn materialize_historical_rollups(
     }
 
     let mut tx = pool.begin().await?;
-    reset_invocation_hourly_rollups_tx(tx.as_mut()).await?;
-    reset_forward_proxy_attempt_hourly_rollups_tx(tx.as_mut()).await?;
-
     let materialized_invocation_batches =
         replay_invocation_archives_into_hourly_rollups_tx(tx.as_mut()).await?;
     let materialized_forward_proxy_batches =
@@ -6671,65 +6690,6 @@ async fn replay_live_forward_proxy_attempt_hourly_rollups_tx(
     save_hourly_rollup_live_progress_tx(tx, HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS, last_id)
         .await?;
     Ok(rows.len() as u64)
-}
-
-async fn reset_invocation_hourly_rollups_tx(tx: &mut SqliteConnection) -> Result<()> {
-    for table in INVOCATION_HOURLY_ROLLUP_TARGETS {
-        sqlx::query(&format!("DELETE FROM {table}"))
-            .execute(&mut *tx)
-            .await?;
-    }
-
-    let mut replay_query =
-        QueryBuilder::<Sqlite>::new("DELETE FROM hourly_rollup_archive_replay WHERE dataset = ");
-    replay_query
-        .push_bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
-        .push(" AND target IN (");
-    {
-        let mut separated = replay_query.separated(", ");
-        for target in INVOCATION_HOURLY_ROLLUP_TARGETS {
-            separated.push_bind(target);
-        }
-    }
-    replay_query.push(")");
-    replay_query.build().execute(&mut *tx).await?;
-
-    sqlx::query("DELETE FROM hourly_rollup_live_progress WHERE dataset = ?1")
-        .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
-        .execute(&mut *tx)
-        .await?;
-    let mut materialized_query = QueryBuilder::<Sqlite>::new(
-        "DELETE FROM hourly_rollup_materialized_buckets WHERE target IN (",
-    );
-    {
-        let mut separated = materialized_query.separated(", ");
-        for target in INVOCATION_HOURLY_ROLLUP_TARGETS {
-            separated.push_bind(target);
-        }
-    }
-    materialized_query.push(")");
-    materialized_query.build().execute(&mut *tx).await?;
-    Ok(())
-}
-
-async fn reset_forward_proxy_attempt_hourly_rollups_tx(tx: &mut SqliteConnection) -> Result<()> {
-    sqlx::query("DELETE FROM forward_proxy_attempt_hourly")
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("DELETE FROM hourly_rollup_live_progress WHERE dataset = ?1")
-        .bind(HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("DELETE FROM hourly_rollup_archive_replay WHERE dataset = ?1 AND target = ?2")
-        .bind(HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS)
-        .bind(HOURLY_ROLLUP_TARGET_FORWARD_PROXY_ATTEMPTS)
-        .execute(&mut *tx)
-        .await?;
-    sqlx::query("DELETE FROM hourly_rollup_materialized_buckets WHERE target = ?1")
-        .bind(HOURLY_ROLLUP_TARGET_FORWARD_PROXY_ATTEMPTS)
-        .execute(&mut *tx)
-        .await?;
-    Ok(())
 }
 
 async fn sync_hourly_rollups_from_live_tables(pool: &Pool<Sqlite>) -> Result<()> {
