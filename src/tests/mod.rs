@@ -30583,6 +30583,98 @@ async fn pending_legacy_forward_proxy_archives_do_not_expire_before_materializat
 }
 
 #[tokio::test]
+async fn prune_legacy_archive_batches_keeps_missing_invocation_manifest_while_backfill_pending() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("prune-missing-invocation-manifest-pending").await;
+    let missing_archive_path = temp_dir.join("missing-manifest.sqlite.gz");
+    let coverage_end_at =
+        shanghai_local_days_ago((config.invocation_max_days + 30) as i64, 9, 0, 0);
+    let created_at = format_utc_iso(Utc::now());
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind(771_i64)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Pending manifest account")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&pool)
+    .await
+    .expect("insert pending manifest account");
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            id,
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'))
+        "#,
+    )
+    .bind(1_i64)
+    .bind("codex_invocations")
+    .bind(&coverage_end_at[..7])
+    .bind(missing_archive_path.to_string_lossy().to_string())
+    .bind("deadbeef")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&coverage_end_at)
+    .bind(&coverage_end_at)
+    .execute(&pool)
+    .await
+    .expect("insert missing invocation archive metadata");
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batch_upstream_activity (archive_batch_id, account_id, last_activity_at)
+        VALUES (?1, ?2, ?3)
+        "#,
+    )
+    .bind(1_i64)
+    .bind(771_i64)
+    .bind(&coverage_end_at)
+    .execute(&pool)
+    .await
+    .expect("insert pending manifest row");
+
+    let prune_summary = prune_legacy_archive_batches(&pool, &config, false)
+        .await
+        .expect("prune should keep missing invocation manifest metadata while pending");
+    assert_eq!(prune_summary.deleted_archive_batches, 0);
+    assert_eq!(prune_summary.skipped_unmaterialized_batches, 1);
+
+    let remaining_batches: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM archive_batches")
+        .fetch_one(&pool)
+        .await
+        .expect("count remaining archive batches");
+    assert_eq!(remaining_batches, 1);
+    let remaining_manifest_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM archive_batch_upstream_activity")
+            .fetch_one(&pool)
+            .await
+            .expect("count remaining manifest rows");
+    assert_eq!(remaining_manifest_rows, 1);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_prune_preserves_upstream_account_id_for_archive_manifest() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("prune-preserve-upstream-account").await;
@@ -30907,6 +30999,123 @@ async fn materialize_historical_rollups_skips_already_materialized_batches() {
     .await
     .expect("load invocation rollup total count after skipped replay");
     assert_eq!(total_count, 1);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn materialize_historical_rollups_marks_replayed_batches_as_materialized() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("historical-rollup-mark-replayed").await;
+    let old_invocation = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 9, 0, 0);
+    let old_attempt = parse_to_utc_datetime(&utc_naive_from_shanghai_local_days_ago(
+        (config.forward_proxy_attempts_retention_days + 2) as i64,
+        7,
+        0,
+        0,
+    ))
+    .expect("parse old forward proxy attempt timestamp");
+
+    insert_retention_invocation(
+        &pool,
+        "historical-rollup-mark-replayed",
+        &old_invocation,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"promptCacheKey\":\"replayed\",\"upstreamAccountId\":17,\"upstreamAccountName\":\"Replay\",\"stickyKey\":\"sticky-replayed\"}"),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(42),
+        Some(0.42),
+    )
+    .await;
+    seed_forward_proxy_attempt_at(&pool, "proxy-replayed", old_attempt, true).await;
+
+    sync_hourly_rollups_from_live_tables(&pool)
+        .await
+        .expect("seed live hourly rollups before retention");
+    let retention = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("archive old rows before materialize");
+    assert_eq!(retention.invocation_rows_archived, 1);
+    assert_eq!(retention.forward_proxy_attempt_rows_archived, 1);
+
+    sqlx::query("UPDATE archive_batches SET historical_rollups_materialized_at = NULL")
+        .execute(&pool)
+        .await
+        .expect("clear materialized markers to mimic pre-upgrade replay state");
+
+    let invocation_archive_path: String = sqlx::query_scalar(
+        "SELECT file_path FROM archive_batches WHERE dataset = 'codex_invocations' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load invocation archive path");
+    for target in [
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
+        HOURLY_ROLLUP_TARGET_PROXY_PERF,
+        HOURLY_ROLLUP_TARGET_PROMPT_CACHE,
+        HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS,
+        HOURLY_ROLLUP_TARGET_STICKY_KEYS,
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, replayed_at)
+            VALUES (?1, ?2, ?3, datetime('now'))
+            "#,
+        )
+        .bind(target)
+        .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+        .bind(&invocation_archive_path)
+        .execute(&pool)
+        .await
+        .expect("insert invocation replay marker");
+    }
+
+    let forward_proxy_archive_path: String = sqlx::query_scalar(
+        "SELECT file_path FROM archive_batches WHERE dataset = 'forward_proxy_attempts' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load forward-proxy archive path");
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, replayed_at)
+        VALUES (?1, ?2, ?3, datetime('now'))
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_TARGET_FORWARD_PROXY_ATTEMPTS)
+    .bind(HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS)
+    .bind(&forward_proxy_archive_path)
+    .execute(&pool)
+    .await
+    .expect("insert forward-proxy replay marker");
+
+    let snapshot_before = load_historical_rollup_backfill_snapshot(&pool, &config)
+        .await
+        .expect("load snapshot before marking replayed batches");
+    assert_eq!(snapshot_before.legacy_archive_pending, 2);
+
+    let materialize = materialize_historical_rollups(&pool, &config, false)
+        .await
+        .expect("materialize should only mark replayed batches");
+    assert_eq!(materialize.materialized_invocation_batches, 0);
+    assert_eq!(materialize.materialized_forward_proxy_batches, 0);
+
+    let materialized_batches: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM archive_batches WHERE historical_rollups_materialized_at IS NOT NULL",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count replayed batches marked materialized");
+    assert_eq!(materialized_batches, 2);
+
+    let snapshot_after = load_historical_rollup_backfill_snapshot(&pool, &config)
+        .await
+        .expect("load snapshot after marking replayed batches");
+    assert_eq!(snapshot_after.legacy_archive_pending, 0);
 
     cleanup_temp_test_dir(&temp_dir);
 }

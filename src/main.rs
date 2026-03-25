@@ -4582,11 +4582,12 @@ async fn prune_legacy_archive_batches(
     for candidate in candidates {
         let file_missing = !Path::new(&candidate.file_path).exists();
 
-        if !file_missing
-            && (candidate.historical_rollups_materialized_at.is_none()
-                || (candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS
-                    && pending_account_count > 0))
-        {
+        if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS && pending_account_count > 0 {
+            summary.skipped_unmaterialized_batches += 1;
+            continue;
+        }
+
+        if !file_missing && candidate.historical_rollups_materialized_at.is_none() {
             summary.skipped_unmaterialized_batches += 1;
             continue;
         }
@@ -6760,6 +6761,13 @@ async fn replay_invocation_archives_into_hourly_rollups_tx(
             }
         }
         if pending_targets.is_empty() {
+            mark_archive_batch_historical_rollups_materialized_tx(
+                tx,
+                HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                &archive_file.month_key,
+                &archive_file.file_path,
+            )
+            .await?;
             continue;
         }
 
@@ -6881,6 +6889,13 @@ async fn replay_forward_proxy_archives_into_hourly_rollups_tx(
         )
         .await?
         {
+            mark_archive_batch_historical_rollups_materialized_tx(
+                tx,
+                HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS,
+                &archive_file.month_key,
+                &archive_file.file_path,
+            )
+            .await?;
             continue;
         }
 
