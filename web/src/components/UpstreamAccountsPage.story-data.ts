@@ -8,7 +8,7 @@ export function createPendingSession(loginId: string): LoginSessionStatusRespons
     status: 'pending',
     authUrl: `https://auth.openai.com/authorize?login_id=${loginId}`,
     redirectUri: 'http://localhost:1455/auth/callback',
-    expiresAt: '2026-03-11T13:30:00.000Z',
+    expiresAt: '2027-03-11T13:30:00.000Z',
     accountId: null,
     error: null,
   }

@@ -4617,6 +4617,25 @@ export default function UpstreamAccountCreatePage() {
                                                 row.mailboxEditorError != null,
                                             }}
                                           />
+                                          {row.mailboxSession ? (
+                                            <Badge
+                                              variant={
+                                                row.mailboxSession.source ===
+                                                "attached"
+                                                  ? "secondary"
+                                                  : "success"
+                                              }
+                                            >
+                                              {row.mailboxSession.source ===
+                                              "attached"
+                                                ? t(
+                                                    "accountPool.upstreamAccounts.oauth.mailboxAttached",
+                                                  )
+                                                : t(
+                                                    "accountPool.upstreamAccounts.oauth.mailboxGenerated",
+                                                  )}
+                                            </Badge>
+                                          ) : null}
                                           <Tooltip
                                             content={buildActionTooltip(
                                               t(
