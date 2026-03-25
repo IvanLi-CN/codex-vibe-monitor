@@ -1211,17 +1211,26 @@ pub(crate) struct CompleteOauthLoginSessionRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpdateOauthLoginSessionRequest {
-    display_name: Option<String>,
-    group_name: Option<String>,
-    note: Option<String>,
-    group_note: Option<String>,
-    #[serde(default)]
-    tag_ids: Vec<i64>,
-    #[serde(default)]
-    is_mother: bool,
-    mailbox_session_id: Option<String>,
-    #[serde(alias = "generatedMailboxAddress")]
-    mailbox_address: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    display_name: OptionalField<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    group_name: OptionalField<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    note: OptionalField<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    group_note: OptionalField<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    tag_ids: OptionalField<Vec<i64>>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    is_mother: OptionalField<bool>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    mailbox_session_id: OptionalField<String>,
+    #[serde(
+        default,
+        alias = "generatedMailboxAddress",
+        deserialize_with = "deserialize_optional_field"
+    )]
+    mailbox_address: OptionalField<String>,
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -4821,23 +4830,6 @@ pub(crate) async fn update_oauth_login_session(
         .await
         .map_err(internal_error_tuple)?;
 
-    let display_name = normalize_optional_text(payload.display_name);
-    let group_name = normalize_optional_text(payload.group_name);
-    let note = normalize_optional_text(payload.note);
-    let requested_group_note = payload.group_note;
-    let normalized_group_note = normalize_optional_text(requested_group_note.clone());
-    let mailbox_session_id = normalize_optional_text(payload.mailbox_session_id);
-    let mailbox_address = normalize_optional_text(payload.mailbox_address);
-    validate_mailbox_binding(
-        &state.pool,
-        mailbox_session_id.as_deref(),
-        mailbox_address.as_deref(),
-    )
-    .await?;
-    let tag_ids = validate_tag_ids(&state.pool, &payload.tag_ids).await?;
-    let tag_ids_json = encode_tag_ids_json(&tag_ids).map_err(internal_error_tuple)?;
-    validate_group_note_target(group_name.as_deref(), normalized_group_note.is_some())?;
-
     let mut tx = state
         .pool
         .begin_with("BEGIN IMMEDIATE")
@@ -4864,22 +4856,82 @@ pub(crate) async fn update_oauth_login_session(
         ));
     }
 
-    if let Some(display_name) = display_name.as_deref() {
-        ensure_display_name_available(&mut *tx, display_name, session.account_id).await?;
+    let UpdateOauthLoginSessionRequest {
+        display_name: requested_display_name,
+        group_name: requested_group_name,
+        note: requested_note,
+        group_note: requested_group_note,
+        tag_ids: requested_tag_ids,
+        is_mother: requested_is_mother,
+        mailbox_session_id: requested_mailbox_session_id,
+        mailbox_address: requested_mailbox_address,
+    } = payload;
+
+    let display_name = match requested_display_name {
+        OptionalField::Missing => session.display_name.clone(),
+        OptionalField::Null => None,
+        OptionalField::Value(value) => normalize_optional_text(Some(value)),
+    };
+    let group_name = match requested_group_name {
+        OptionalField::Missing => session.group_name.clone(),
+        OptionalField::Null => None,
+        OptionalField::Value(value) => normalize_optional_text(Some(value)),
+    };
+    let note = match requested_note {
+        OptionalField::Missing => session.note.clone(),
+        OptionalField::Null => None,
+        OptionalField::Value(value) => normalize_optional_text(Some(value)),
+    };
+    let normalized_group_note = match requested_group_note {
+        OptionalField::Missing => session.group_note.clone(),
+        OptionalField::Null => None,
+        OptionalField::Value(value) => normalize_optional_text(Some(value)),
+    };
+    let mailbox_session_id = match requested_mailbox_session_id {
+        OptionalField::Missing => session.mailbox_session_id.clone(),
+        OptionalField::Null => None,
+        OptionalField::Value(value) => normalize_optional_text(Some(value)),
+    };
+    let mailbox_address = match requested_mailbox_address {
+        OptionalField::Missing => session.mailbox_address.clone(),
+        OptionalField::Null => None,
+        OptionalField::Value(value) => normalize_optional_text(Some(value)),
+    };
+    let requested_tag_ids = match requested_tag_ids {
+        OptionalField::Missing => parse_tag_ids_json(session.tag_ids_json.as_deref()),
+        OptionalField::Null => Vec::new(),
+        OptionalField::Value(value) => value,
+    };
+    let tag_ids = validate_tag_ids(&state.pool, &requested_tag_ids).await?;
+    let is_mother = match requested_is_mother {
+        OptionalField::Missing => session.is_mother != 0,
+        OptionalField::Null => false,
+        OptionalField::Value(value) => value,
+    };
+    validate_mailbox_binding(
+        &state.pool,
+        mailbox_session_id.as_deref(),
+        mailbox_address.as_deref(),
+    )
+    .await?;
+    validate_group_note_target(group_name.as_deref(), normalized_group_note.is_some())?;
+    let tag_ids_json = encode_tag_ids_json(&tag_ids).map_err(internal_error_tuple)?;
+
+    if display_name.as_deref() != session.display_name.as_deref() {
+        if let Some(display_name) = display_name.as_deref() {
+            ensure_display_name_available(&mut *tx, display_name, session.account_id).await?;
+        }
     }
 
-    let stored_group_note = if requested_group_note.is_some() {
-        if let Some(group_name) = group_name.as_deref() {
-            if !group_has_accounts_conn(tx.as_mut(), group_name)
+    let stored_group_note = if let Some(group_name) = group_name.as_deref() {
+        if normalized_group_note.is_some()
+            && group_has_accounts_conn(tx.as_mut(), group_name)
                 .await
                 .map_err(internal_error_tuple)?
-            {
-                normalized_group_note
-            } else {
-                None
-            }
-        } else {
+        {
             None
+        } else {
+            normalized_group_note
         }
     } else {
         None
@@ -4903,7 +4955,7 @@ pub(crate) async fn update_oauth_login_session(
     .bind(&login_id)
     .bind(display_name)
     .bind(group_name)
-    .bind(if payload.is_mother { 1 } else { 0 })
+    .bind(if is_mother { 1 } else { 0 })
     .bind(note)
     .bind(tag_ids_json)
     .bind(stored_group_note)
@@ -18900,14 +18952,16 @@ mod tests {
             HeaderMap::new(),
             AxumPath(created.login_id.clone()),
             Json(UpdateOauthLoginSessionRequest {
-                display_name: Some("Updated Pending".to_string()),
-                group_name: Some("beta".to_string()),
-                note: Some("after".to_string()),
-                group_note: Some("beta shared".to_string()),
-                tag_ids: vec![tag_id],
-                is_mother: true,
-                mailbox_session_id: Some("mailbox-session-1".to_string()),
-                mailbox_address: Some("pending-sync@mail-tw.707079.xyz".to_string()),
+                display_name: OptionalField::Value("Updated Pending".to_string()),
+                group_name: OptionalField::Value("beta".to_string()),
+                note: OptionalField::Value("after".to_string()),
+                group_note: OptionalField::Value("beta shared".to_string()),
+                tag_ids: OptionalField::Value(vec![tag_id]),
+                is_mother: OptionalField::Value(true),
+                mailbox_session_id: OptionalField::Value("mailbox-session-1".to_string()),
+                mailbox_address: OptionalField::Value(
+                    "pending-sync@mail-tw.707079.xyz".to_string(),
+                ),
             }),
         )
         .await
@@ -18939,6 +18993,88 @@ mod tests {
         assert_eq!(
             stored.mailbox_address.as_deref(),
             Some("pending-sync@mail-tw.707079.xyz")
+        );
+    }
+
+    #[tokio::test]
+    async fn update_oauth_login_session_preserves_omitted_fields() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let tag_id = insert_tag(&state.pool, "partial-sync", &test_tag_routing_rule())
+            .await
+            .expect("insert tag")
+            .summary
+            .id;
+        insert_test_oauth_mailbox_session(
+            &state.pool,
+            "mailbox-session-partial",
+            "partial-sync@mail-tw.707079.xyz",
+            OAUTH_MAILBOX_SOURCE_ATTACHED,
+        )
+        .await;
+
+        let created = create_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(CreateOauthLoginSessionRequest {
+                display_name: Some("Keep Me".to_string()),
+                group_name: Some("partial-group".to_string()),
+                note: Some("before partial patch".to_string()),
+                group_note: Some("partial draft note".to_string()),
+                account_id: None,
+                tag_ids: vec![tag_id],
+                is_mother: Some(true),
+                mailbox_session_id: Some("mailbox-session-partial".to_string()),
+                mailbox_address: Some("partial-sync@mail-tw.707079.xyz".to_string()),
+            }),
+        )
+        .await
+        .expect("create oauth login session")
+        .0;
+
+        let updated = update_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            AxumPath(created.login_id.clone()),
+            Json(UpdateOauthLoginSessionRequest {
+                display_name: OptionalField::Missing,
+                group_name: OptionalField::Missing,
+                note: OptionalField::Value("after partial patch".to_string()),
+                group_note: OptionalField::Missing,
+                tag_ids: OptionalField::Missing,
+                is_mother: OptionalField::Missing,
+                mailbox_session_id: OptionalField::Missing,
+                mailbox_address: OptionalField::Missing,
+            }),
+        )
+        .await
+        .expect("update oauth login session")
+        .0;
+
+        assert_eq!(updated.login_id, created.login_id);
+        assert_eq!(updated.auth_url, created.auth_url);
+        assert_eq!(updated.redirect_uri, created.redirect_uri);
+        assert_eq!(updated.expires_at, created.expires_at);
+
+        let stored = load_login_session_by_login_id(&state.pool, &updated.login_id)
+            .await
+            .expect("load stored login session")
+            .expect("stored login session should exist");
+        assert_eq!(stored.display_name.as_deref(), Some("Keep Me"));
+        assert_eq!(stored.group_name.as_deref(), Some("partial-group"));
+        assert_eq!(stored.note.as_deref(), Some("after partial patch"));
+        assert_eq!(stored.group_note.as_deref(), Some("partial draft note"));
+        assert_eq!(stored.is_mother, 1);
+        assert_eq!(
+            parse_tag_ids_json(stored.tag_ids_json.as_deref()),
+            vec![tag_id]
+        );
+        assert_eq!(
+            stored.mailbox_session_id.as_deref(),
+            Some("mailbox-session-partial")
+        );
+        assert_eq!(
+            stored.mailbox_address.as_deref(),
+            Some("partial-sync@mail-tw.707079.xyz")
         );
     }
 
@@ -18982,14 +19118,16 @@ mod tests {
             HeaderMap::new(),
             AxumPath(created.login_id.clone()),
             Json(UpdateOauthLoginSessionRequest {
-                display_name: Some("After Patch".to_string()),
-                group_name: Some("new-group".to_string()),
-                note: Some("after note".to_string()),
-                group_note: Some("draft group note".to_string()),
-                tag_ids: vec![tag_id],
-                is_mother: true,
-                mailbox_session_id: Some("mailbox-session-2".to_string()),
-                mailbox_address: Some("callback-sync@mail-tw.707079.xyz".to_string()),
+                display_name: OptionalField::Value("After Patch".to_string()),
+                group_name: OptionalField::Value("new-group".to_string()),
+                note: OptionalField::Value("after note".to_string()),
+                group_note: OptionalField::Value("draft group note".to_string()),
+                tag_ids: OptionalField::Value(vec![tag_id]),
+                is_mother: OptionalField::Value(true),
+                mailbox_session_id: OptionalField::Value("mailbox-session-2".to_string()),
+                mailbox_address: OptionalField::Value(
+                    "callback-sync@mail-tw.707079.xyz".to_string(),
+                ),
             }),
         )
         .await
@@ -19087,14 +19225,14 @@ mod tests {
     async fn update_oauth_login_session_rejects_completed_failed_and_expired_sessions() {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
         let update_payload = || UpdateOauthLoginSessionRequest {
-            display_name: Some("Edited Session".to_string()),
-            group_name: Some("edited-group".to_string()),
-            note: Some("edited note".to_string()),
-            group_note: Some("edited group note".to_string()),
-            tag_ids: vec![],
-            is_mother: false,
-            mailbox_session_id: None,
-            mailbox_address: None,
+            display_name: OptionalField::Value("Edited Session".to_string()),
+            group_name: OptionalField::Value("edited-group".to_string()),
+            note: OptionalField::Value("edited note".to_string()),
+            group_note: OptionalField::Value("edited group note".to_string()),
+            tag_ids: OptionalField::Value(vec![]),
+            is_mother: OptionalField::Value(false),
+            mailbox_session_id: OptionalField::Missing,
+            mailbox_address: OptionalField::Missing,
         };
 
         let completed = create_oauth_login_session(
@@ -19243,14 +19381,14 @@ mod tests {
             HeaderMap::new(),
             AxumPath(relogin.login_id.clone()),
             Json(UpdateOauthLoginSessionRequest {
-                display_name: Some("Edited Relogin".to_string()),
-                group_name: None,
-                note: None,
-                group_note: None,
-                tag_ids: vec![],
-                is_mother: false,
-                mailbox_session_id: None,
-                mailbox_address: None,
+                display_name: OptionalField::Value("Edited Relogin".to_string()),
+                group_name: OptionalField::Missing,
+                note: OptionalField::Missing,
+                group_note: OptionalField::Missing,
+                tag_ids: OptionalField::Value(vec![]),
+                is_mother: OptionalField::Value(false),
+                mailbox_session_id: OptionalField::Missing,
+                mailbox_address: OptionalField::Missing,
             }),
         )
         .await
