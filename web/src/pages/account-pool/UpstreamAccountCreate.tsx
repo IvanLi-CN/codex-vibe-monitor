@@ -597,11 +597,12 @@ function buildOauthLoginSessionUpdatePayload({
   isMother: boolean;
   mailboxSession: OauthMailboxSessionSupported | null;
 }): UpdateOauthLoginSessionPayload {
+  const normalizedGroupName = groupName.trim();
   return {
     displayName: displayName.trim(),
-    groupName: groupName.trim(),
+    groupName: normalizedGroupName,
     note: note.trim(),
-    groupNote: groupNote.trim(),
+    ...(normalizedGroupName ? { groupNote: groupNote.trim() } : {}),
     tagIds,
     isMother,
     mailboxSessionId: mailboxSession?.sessionId ?? "",

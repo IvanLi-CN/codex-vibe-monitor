@@ -4836,7 +4836,7 @@ pub(crate) async fn update_oauth_login_session(
     .await?;
     let tag_ids = validate_tag_ids(&state.pool, &payload.tag_ids).await?;
     let tag_ids_json = encode_tag_ids_json(&tag_ids).map_err(internal_error_tuple)?;
-    validate_group_note_target(group_name.as_deref(), requested_group_note.is_some())?;
+    validate_group_note_target(group_name.as_deref(), normalized_group_note.is_some())?;
 
     let mut tx = state
         .pool
@@ -4855,6 +4855,12 @@ pub(crate) async fn update_oauth_login_session(
             } else {
                 "This login session can no longer be edited.".to_string()
             },
+        ));
+    }
+    if session.account_id.is_some() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "This login session belongs to an existing account and cannot be edited.".to_string(),
         ));
     }
 
@@ -19207,6 +19213,53 @@ mod tests {
             .expect("load expired session")
             .expect("expired session should exist");
         assert_eq!(expired_session.status, LOGIN_SESSION_STATUS_EXPIRED);
+    }
+
+    #[tokio::test]
+    async fn update_oauth_login_session_rejects_relogin_sessions() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let account_id = insert_oauth_account(&state.pool, "Relogin Target").await;
+        let relogin = create_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(CreateOauthLoginSessionRequest {
+                display_name: None,
+                group_name: None,
+                note: None,
+                group_note: None,
+                account_id: Some(account_id),
+                tag_ids: vec![],
+                is_mother: Some(false),
+                mailbox_session_id: None,
+                mailbox_address: None,
+            }),
+        )
+        .await
+        .expect("create relogin session")
+        .0;
+
+        let err = update_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            AxumPath(relogin.login_id.clone()),
+            Json(UpdateOauthLoginSessionRequest {
+                display_name: Some("Edited Relogin".to_string()),
+                group_name: None,
+                note: None,
+                group_note: None,
+                tag_ids: vec![],
+                is_mother: false,
+                mailbox_session_id: None,
+                mailbox_address: None,
+            }),
+        )
+        .await
+        .expect_err("relogin session should reject edits");
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            err.1,
+            "This login session belongs to an existing account and cannot be edited."
+        );
     }
 
     #[tokio::test]

@@ -697,12 +697,12 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
       displayName: "Row One",
       groupName: "",
       note: "Needs a new login",
-      groupNote: "",
       tagIds: [],
       isMother: false,
       mailboxSessionId: "",
       mailboxAddress: "",
     });
+    expect(updateOauthLogin.mock.lastCall?.[1]).not.toHaveProperty("groupNote");
   }, 10_000);
 
   it("completes one row without leaving the batch page", async () => {
@@ -1327,12 +1327,12 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
       displayName: "Batch Row",
       groupName: "",
       note: "",
-      groupNote: "",
       tagIds: [],
       isMother: false,
       mailboxSessionId: "mailbox-attached-row-1",
       mailboxAddress: "edited-batch@mail-tw.707079.xyz",
     });
+    expect(updateOauthLogin.mock.lastCall?.[1]).not.toHaveProperty("groupNote");
   });
 });
 
@@ -1470,12 +1470,12 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       displayName: "Fresh OAuth Renamed",
       groupName: "",
       note: "",
-      groupNote: "",
       tagIds: [],
       isMother: false,
       mailboxSessionId: "",
       mailboxAddress: "",
     });
+    expect(updateOauthLogin.mock.lastCall?.[1]).not.toHaveProperty("groupNote");
   });
 
   it("flushes the latest single oauth metadata before completing immediately after an edit", async () => {
@@ -1533,12 +1533,12 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       displayName: "Fresh OAuth Renamed",
       groupName: "",
       note: "",
-      groupNote: "",
       tagIds: [],
       isMother: false,
       mailboxSessionId: "",
       mailboxAddress: "",
     });
+    expect(updateOauthLogin.mock.lastCall?.[1]).not.toHaveProperty("groupNote");
     expect(completeOauthLogin).toHaveBeenCalledWith("login-1", {
       callbackUrl: "http://localhost:1455/oauth/callback?code=test",
       mailboxSessionId: undefined,
@@ -1977,12 +1977,12 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
       displayName: "mailbox-1@example.com",
       groupName: "",
       note: "",
-      groupNote: "",
       tagIds: [],
       isMother: false,
       mailboxSessionId: "",
       mailboxAddress: "",
     });
+    expect(updateOauthLogin.mock.lastCall?.[1]).not.toHaveProperty("groupNote");
   });
 
   it("keeps a pending oauth url while clearing mailbox binding after the input diverges", async () => {
@@ -2043,12 +2043,12 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
       displayName: "Mailbox Bound",
       groupName: "",
       note: "",
-      groupNote: "",
       tagIds: [],
       isMother: false,
       mailboxSessionId: "",
       mailboxAddress: "",
     });
+    expect(updateOauthLogin.mock.lastCall?.[1]).not.toHaveProperty("groupNote");
   });
 
   it("keeps the pending oauth url when an unsupported mailbox attach falls back", async () => {
