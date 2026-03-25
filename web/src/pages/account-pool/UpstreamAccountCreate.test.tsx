@@ -1663,7 +1663,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     });
   });
 
-  it("does not dispatch a duplicate keepalive while oauth metadata sync is already in flight", async () => {
+  it("dispatches an unload keepalive even while oauth metadata sync is already in flight", async () => {
     vi.useFakeTimers();
     let resolveFirstSync:
       | ((value: LoginSessionStatusResponse) => void)
@@ -1706,7 +1706,18 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     });
     await flushAsync();
 
-    expect(apiMocks.updateOauthLoginSessionKeepalive).not.toHaveBeenCalled();
+    expect(apiMocks.updateOauthLoginSessionKeepalive).toHaveBeenCalledWith(
+      "login-1",
+      {
+        displayName: "Fresh OAuth Latest",
+        groupName: "",
+        note: "",
+        tagIds: [],
+        isMother: false,
+        mailboxSessionId: "",
+        mailboxAddress: "",
+      },
+    );
 
     if (!resolveFirstSync) {
       throw new Error("missing oauth sync resolver");

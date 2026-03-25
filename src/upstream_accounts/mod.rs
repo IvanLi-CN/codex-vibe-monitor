@@ -4851,11 +4851,16 @@ pub(crate) async fn update_oauth_login_session(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
-    // Completed-session repairs are only valid for the last pending baseline that
-    // lost the race to callback completion. Once a repair lands, newer updates must
-    // advance the session baseline so older in-flight PATCHes cannot replay.
+    // Completed-session repairs are only valid for create-account sessions that
+    // still preserve their last pending baseline after callback completion.
+    // Relogin sessions advance updated_at when they complete, so they never
+    // qualify for this narrow repair path.
     let allows_completed_race_repair = session.status == LOGIN_SESSION_STATUS_COMPLETED
         && session.account_id.is_some()
+        && session
+            .consumed_at
+            .as_deref()
+            .is_some_and(|value| value != session.updated_at)
         && requested_base_updated_at
             .as_deref()
             .is_some_and(|value| value == session.updated_at);
@@ -5924,6 +5929,7 @@ async fn persist_oauth_callback_inner(
         &session.login_id,
         account_id,
         &session.updated_at,
+        session.account_id.is_none(),
     )
     .await
     .map_err(internal_error_tuple)?;
@@ -8868,21 +8874,29 @@ async fn complete_login_session_with_executor(
     login_id: &str,
     account_id: i64,
     previous_updated_at: &str,
+    preserve_pending_updated_at: bool,
 ) -> Result<()> {
-    let now_iso = next_login_session_updated_at(Some(previous_updated_at));
+    let consumed_at = next_login_session_updated_at(Some(previous_updated_at));
+    let completed_updated_at = if preserve_pending_updated_at {
+        previous_updated_at.to_string()
+    } else {
+        consumed_at.clone()
+    };
     sqlx::query(
         r#"
         UPDATE pool_oauth_login_sessions
         SET status = ?2,
             account_id = ?3,
-            consumed_at = ?4
+            updated_at = ?4,
+            consumed_at = ?5
         WHERE login_id = ?1
         "#,
     )
     .bind(login_id)
     .bind(LOGIN_SESSION_STATUS_COMPLETED)
     .bind(account_id)
-    .bind(&now_iso)
+    .bind(&completed_updated_at)
+    .bind(&consumed_at)
     .execute(executor)
     .await?;
     Ok(())
@@ -20005,6 +20019,118 @@ mod tests {
             err.1,
             "This login session belongs to an existing account and cannot be edited."
         );
+    }
+
+    #[tokio::test]
+    async fn update_oauth_login_session_rejects_completed_relogin_repairs() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let account_id = insert_oauth_account(&state.pool, "Relogin Target").await;
+        let relogin = create_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(CreateOauthLoginSessionRequest {
+                display_name: None,
+                group_name: None,
+                note: None,
+                group_note: None,
+                account_id: Some(account_id),
+                tag_ids: vec![],
+                is_mother: Some(false),
+                mailbox_session_id: None,
+                mailbox_address: None,
+            }),
+        )
+        .await
+        .expect("create relogin session")
+        .0;
+
+        let pending_session = load_login_session_by_login_id(&state.pool, &relogin.login_id)
+            .await
+            .expect("load relogin session")
+            .expect("relogin session should exist");
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let encrypted_credentials = encrypt_credentials(
+            crypto_key,
+            &StoredCredentials::Oauth(StoredOauthCredentials {
+                access_token: "relogin-access".to_string(),
+                refresh_token: "relogin-refresh".to_string(),
+                id_token: test_id_token(
+                    "relogin@example.com",
+                    Some("org_relogin"),
+                    Some("user_relogin"),
+                    Some("team"),
+                ),
+                token_type: Some("Bearer".to_string()),
+            }),
+        )
+        .expect("encrypt oauth credentials");
+        let completed_account_id = persist_oauth_callback_inner(
+            state.as_ref(),
+            PersistOauthCallbackInput {
+                display_name: "Relogin Target".to_string(),
+                session: pending_session,
+                claims: test_claims(
+                    "relogin@example.com",
+                    Some("org_relogin"),
+                    Some("user_relogin"),
+                ),
+                encrypted_credentials,
+                token_expires_at: "2026-04-01T00:00:00Z".to_string(),
+            },
+        )
+        .await
+        .expect("persist relogin callback");
+        assert_eq!(completed_account_id, account_id);
+
+        let completed_session = load_login_session_by_login_id(&state.pool, &relogin.login_id)
+            .await
+            .expect("load completed relogin session")
+            .expect("completed relogin session should exist");
+        assert_eq!(completed_session.status, LOGIN_SESSION_STATUS_COMPLETED);
+        assert_eq!(
+            completed_session.updated_at,
+            completed_session.consumed_at.clone().unwrap()
+        );
+
+        let mut repair_headers = HeaderMap::new();
+        repair_headers.insert(
+            LOGIN_SESSION_BASE_UPDATED_AT_HEADER,
+            header::HeaderValue::from_str(&relogin.updated_at).expect("valid updated_at header"),
+        );
+        let err = update_oauth_login_session(
+            State(state.clone()),
+            repair_headers,
+            AxumPath(relogin.login_id.clone()),
+            Json(UpdateOauthLoginSessionRequest {
+                display_name: OptionalField::Value("Edited Relogin".to_string()),
+                group_name: OptionalField::Value("edited-group".to_string()),
+                note: OptionalField::Value("edited note".to_string()),
+                group_note: OptionalField::Value("edited group note".to_string()),
+                tag_ids: OptionalField::Value(vec![]),
+                is_mother: OptionalField::Value(true),
+                mailbox_session_id: OptionalField::Missing,
+                mailbox_address: OptionalField::Missing,
+            }),
+        )
+        .await
+        .expect_err("completed relogin repair should be rejected");
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            err.1,
+            "This login session can no longer be edited.".to_string()
+        );
+
+        let account = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load relogin target after rejected repair")
+            .expect("relogin target should exist");
+        assert_eq!(account.display_name, "Relogin Target");
+        assert_ne!(account.group_name.as_deref(), Some("edited-group"));
+        assert_ne!(account.note.as_deref(), Some("edited note"));
     }
 
     #[tokio::test]

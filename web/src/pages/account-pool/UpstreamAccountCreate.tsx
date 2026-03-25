@@ -1743,7 +1743,10 @@ export default function UpstreamAccountCreatePage() {
         window.clearTimeout(record.timerId);
         record.timerId = null;
       }
-      if (record.syncedSignature === snapshot.signature || record.inFlight) {
+      // Unload keepalive must still send the latest metadata even when a normal
+      // sync request is already in flight because browsers may cancel that
+      // request during navigation.
+      if (record.syncedSignature === snapshot.signature) {
         return;
       }
       const request = snapshot.baseUpdatedAt
