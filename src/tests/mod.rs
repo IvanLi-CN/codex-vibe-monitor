@@ -5970,12 +5970,36 @@ async fn test_upstream_responses_failed_stream() -> impl IntoResponse {
     )
 }
 
+async fn test_upstream_responses_large_json_error() -> impl IntoResponse {
+    let message = format!(
+        "validation failed: {} tail-marker",
+        "x".repeat(RAW_RESPONSE_PREVIEW_LIMIT + 8 * 1024)
+    );
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({
+            "error": {
+                "code": "invalid_request_error",
+                "message": message
+            }
+        })),
+    )
+        .into_response()
+}
+
 async fn test_upstream_responses(uri: Uri) -> Response {
     if uri
         .query()
         .is_some_and(|query| query.contains("mode=response_failed"))
     {
         test_upstream_responses_failed_stream()
+            .await
+            .into_response()
+    } else if uri
+        .query()
+        .is_some_and(|query| query.contains("mode=json-error"))
+    {
+        test_upstream_responses_large_json_error()
             .await
             .into_response()
     } else if uri
@@ -20564,6 +20588,92 @@ async fn proxy_capture_target_large_stream_keeps_usage_when_response_raw_is_trun
         .expect("decode persisted payload summary");
     assert!(payload["usageMissingReason"].is_null());
     assert_eq!(payload["serviceTier"].as_str(), Some("priority"));
+
+    upstream_handle.abort();
+    cleanup_temp_test_dir(&raw_dir);
+}
+
+#[tokio::test]
+async fn proxy_capture_target_stream_request_json_error_uses_nonstream_parse_fallback() {
+    #[derive(sqlx::FromRow)]
+    struct PersistedErrorRow {
+        status: Option<String>,
+        error_message: Option<String>,
+        response_raw_truncated: i64,
+        payload: Option<String>,
+    }
+
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let raw_dir = make_temp_test_dir("proxy-stream-json-error");
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.proxy_raw_dir = raw_dir.clone();
+    config.proxy_raw_max_bytes = Some(128);
+    let state = test_state_from_config(config, true).await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses?mode=json-error".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::new(),
+        Body::from(r#"{"model":"gpt-5.4","stream":true,"input":"hello"}"#),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let _ = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read json error response body");
+
+    let mut row: Option<PersistedErrorRow> = None;
+    for _ in 0..50 {
+        row = sqlx::query_as::<_, PersistedErrorRow>(
+            r#"
+            SELECT
+                status,
+                error_message,
+                response_raw_truncated,
+                payload
+            FROM codex_invocations
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .fetch_optional(&state.pool)
+        .await
+        .expect("query json error capture row");
+        if row
+            .as_ref()
+            .and_then(|record| record.error_message.as_deref())
+            .is_some()
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let row = row.expect("json error capture row should exist");
+    assert_eq!(row.status.as_deref(), Some("http_400"));
+    assert_eq!(row.response_raw_truncated, 1);
+    assert!(
+        row.error_message
+            .as_deref()
+            .is_some_and(|message| message.contains("tail-marker")),
+        "stream request should keep the full JSON error message even when raw storage truncates"
+    );
+
+    let payload: Value = serde_json::from_str(row.payload.as_deref().unwrap_or("{}"))
+        .expect("decode json error payload");
+    assert_eq!(
+        payload["upstreamErrorCode"].as_str(),
+        Some("invalid_request_error")
+    );
+    assert!(
+        payload["upstreamErrorMessage"]
+            .as_str()
+            .is_some_and(|message| message.contains("tail-marker")),
+        "payload should preserve the full upstream error message"
+    );
 
     upstream_handle.abort();
     cleanup_temp_test_dir(&raw_dir);

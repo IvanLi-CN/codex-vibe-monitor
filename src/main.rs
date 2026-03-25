@@ -14077,10 +14077,9 @@ async fn proxy_openai_v1_capture_target(
         let mut response_raw_writer =
             StreamingRawPayloadWriter::new(&state_for_task.config, &invoke_id_for_task, "response");
         let mut stream_response_parser = StreamResponsePayloadChunkParser::default();
-        let mut nonstream_parse_buffer =
-            (!request_info_for_task.is_stream && !response_is_event_stream_for_task).then(|| {
-                BoundedResponseParseBuffer::new(BOUNDED_NON_STREAM_RESPONSE_PARSE_LIMIT_BYTES)
-            });
+        let mut nonstream_parse_buffer = (!response_is_event_stream_for_task).then(|| {
+            BoundedResponseParseBuffer::new(BOUNDED_NON_STREAM_RESPONSE_PARSE_LIMIT_BYTES)
+        });
         let mut stream_error: Option<String> = None;
         let mut downstream_closed = false;
         let mut forwarded_chunks = 0usize;
@@ -14281,9 +14280,8 @@ async fn proxy_openai_v1_capture_target(
         let raw_response_preview = response_preview.into_preview();
         let (streamed_response_info, streamed_response_saw_fields) =
             stream_response_parser.finish();
-        let response_is_stream_hint = request_info_for_task.is_stream
-            || response_is_event_stream_for_task
-            || response_payload_looks_like_sse(&preview_bytes);
+        let response_is_stream_hint =
+            response_is_event_stream_for_task || response_payload_looks_like_sse(&preview_bytes);
         let resp_parse_started = Instant::now();
         let mut response_info = if response_is_stream_hint && streamed_response_saw_fields {
             streamed_response_info
