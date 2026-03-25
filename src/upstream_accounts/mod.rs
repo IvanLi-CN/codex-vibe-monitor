@@ -4950,12 +4950,16 @@ pub(crate) async fn update_oauth_login_session(
         OptionalField::Null => None,
         OptionalField::Value(value) => normalize_optional_text(Some(value)),
     };
+    let requested_group_note_missing = matches!(requested_group_note, OptionalField::Missing);
     let mut normalized_group_note = match requested_group_note {
         OptionalField::Missing => session.group_note.clone(),
         OptionalField::Null => None,
         OptionalField::Value(value) => normalize_optional_text(Some(value)),
     };
-    if requested_group_name_was_updated && group_name.is_none() {
+    let group_name_changed = group_name.as_deref() != session.group_name.as_deref();
+    if requested_group_name_was_updated
+        && (group_name.is_none() || (requested_group_note_missing && group_name_changed))
+    {
         normalized_group_note = None;
     }
     let mailbox_session_id = match requested_mailbox_session_id {
@@ -8950,7 +8954,9 @@ async fn complete_login_session_with_executor(
 }
 
 fn next_login_session_updated_at(previous_updated_at: Option<&str>) -> String {
-    let mut next_updated_at = Utc::now();
+    let mut next_updated_at =
+        parse_rfc3339_utc(&Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+            .unwrap_or_else(Utc::now);
     if let Some(previous_updated_at) = previous_updated_at
         && let Some(previous_updated_at) = parse_rfc3339_utc(previous_updated_at)
         && next_updated_at <= previous_updated_at
@@ -19416,6 +19422,61 @@ mod tests {
             stored.mailbox_address.as_deref(),
             Some("partial-sync@mail-tw.707079.xyz")
         );
+    }
+
+    #[tokio::test]
+    async fn update_oauth_login_session_clears_omitted_group_note_when_group_changes() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let created = create_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(CreateOauthLoginSessionRequest {
+                display_name: Some("Move Draft Group".to_string()),
+                group_name: Some("before-group".to_string()),
+                note: Some("before note".to_string()),
+                group_note: Some("before draft note".to_string()),
+                account_id: None,
+                tag_ids: vec![],
+                is_mother: Some(false),
+                mailbox_session_id: None,
+                mailbox_address: None,
+            }),
+        )
+        .await
+        .expect("create oauth login session")
+        .0;
+
+        let updated = update_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            AxumPath(created.login_id.clone()),
+            Json(UpdateOauthLoginSessionRequest {
+                display_name: OptionalField::Missing,
+                group_name: OptionalField::Value("after-group".to_string()),
+                note: OptionalField::Missing,
+                group_note: OptionalField::Missing,
+                tag_ids: OptionalField::Missing,
+                is_mother: OptionalField::Missing,
+                mailbox_session_id: OptionalField::Missing,
+                mailbox_address: OptionalField::Missing,
+            }),
+        )
+        .await
+        .expect("update oauth login session")
+        .0;
+
+        assert_eq!(updated.login_id, created.login_id);
+        assert_eq!(updated.auth_url, created.auth_url);
+        assert_eq!(updated.redirect_uri, created.redirect_uri);
+        assert_eq!(updated.expires_at, created.expires_at);
+
+        let stored = load_login_session_by_login_id(&state.pool, &updated.login_id)
+            .await
+            .expect("load stored login session")
+            .expect("stored login session should exist");
+        assert_eq!(stored.group_name.as_deref(), Some("after-group"));
+        assert_eq!(stored.group_note, None);
+        assert_eq!(stored.note.as_deref(), Some("before note"));
     }
 
     #[tokio::test]

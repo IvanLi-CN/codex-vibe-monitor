@@ -3318,15 +3318,22 @@ export default function UpstreamAccountCreatePage() {
   const handleCopyOauthUrl = async () => {
     if (!session?.authUrl) return;
     setActionError(null);
+    let latestSession: LoginSessionStatusResponse;
     try {
       await flushPendingOauthSessionSync(
         session.loginId,
         singleOauthSessionSnapshot,
       );
+      latestSession = await getLoginSession(session.loginId);
+      applyPendingOauthSessionStatus(session.loginId, latestSession);
     } catch {
       return;
     }
-    const result = await copyText(session.authUrl, {
+    if (latestSession.status !== "pending" || !latestSession.authUrl) {
+      setManualCopyOpen(false);
+      return;
+    }
+    const result = await copyText(latestSession.authUrl, {
       preferExecCommand: true,
     });
     if (result.ok) {
@@ -3702,16 +3709,24 @@ export default function UpstreamAccountCreatePage() {
       actionError: null,
     }));
 
+    let latestSession: LoginSessionStatusResponse;
     try {
       await flushPendingOauthSessionSync(
         row.session.loginId,
         batchOauthSessionSnapshots[row.session.loginId] ?? null,
       );
+      latestSession = await getLoginSession(row.session.loginId);
+      applyPendingOauthSessionStatus(row.session.loginId, latestSession);
     } catch {
       return;
     }
 
-    const result = await copyText(row.session.authUrl, {
+    if (latestSession.status !== "pending" || !latestSession.authUrl) {
+      setBatchManualCopyRowId((current) => (current === rowId ? null : current));
+      return;
+    }
+
+    const result = await copyText(latestSession.authUrl, {
       preferExecCommand: true,
     });
 
