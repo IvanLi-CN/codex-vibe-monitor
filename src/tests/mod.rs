@@ -27835,6 +27835,218 @@ async fn hourly_backed_summary_omits_pre_cutoff_partial_hour_rollups() {
 }
 
 #[tokio::test]
+async fn hourly_backed_summary_trims_crs_totals_to_effective_proxy_range() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 0;
+    config.crs_stats = Some(CrsStatsConfig {
+        base_url: Url::parse("https://crs.example.com/").expect("valid crs base url"),
+        api_id: "test-api".to_string(),
+        period: "daily".to_string(),
+        poll_interval: Duration::from_secs(3600),
+    });
+    let state = test_state_from_config(config, true).await;
+
+    let pre_cutoff_local = start_of_local_day(Utc::now(), Shanghai)
+        .with_timezone(&Shanghai)
+        .naive_local()
+        - ChronoDuration::minutes(15);
+    let captured_at = local_naive_to_utc(pre_cutoff_local, Shanghai);
+    let stats_date = captured_at
+        .with_timezone(&Shanghai)
+        .date_naive()
+        .to_string();
+    sqlx::query(
+        r#"
+        INSERT INTO stats_source_deltas (
+            source,
+            period,
+            stats_date,
+            captured_at,
+            captured_at_epoch,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "#,
+    )
+    .bind(SOURCE_CRS)
+    .bind("daily")
+    .bind(&stats_date)
+    .bind(format_utc_iso(captured_at))
+    .bind(captured_at.timestamp())
+    .bind(3_i64)
+    .bind(2_i64)
+    .bind(1_i64)
+    .bind(300_i64)
+    .bind(0.9_f64)
+    .execute(&state.pool)
+    .await
+    .expect("insert pre-cutoff crs delta");
+
+    let start = local_naive_to_utc(pre_cutoff_local - ChronoDuration::minutes(15), Shanghai);
+    let totals =
+        query_hourly_backed_summary_since(state.as_ref(), start, InvocationSourceScope::All)
+            .await
+            .expect("load summary totals across retention cutoff with crs");
+
+    assert_eq!(totals.total_count, 0);
+    assert_eq!(totals.success_count, 0);
+    assert_eq!(totals.failure_count, 0);
+    assert_eq!(totals.total_tokens, 0);
+    assert_f64_close(totals.total_cost, 0.0);
+}
+
+#[tokio::test]
+async fn hourly_timeseries_trims_crs_deltas_to_effective_proxy_range() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 0;
+    config.crs_stats = Some(CrsStatsConfig {
+        base_url: Url::parse("https://crs.example.com/").expect("valid crs base url"),
+        api_id: "test-api".to_string(),
+        period: "daily".to_string(),
+        poll_interval: Duration::from_secs(3600),
+    });
+    let state = test_state_from_config(config, true).await;
+
+    let cutoff_local = start_of_local_day(Utc::now(), Shanghai)
+        .with_timezone(&Shanghai)
+        .naive_local();
+    let pre_cutoff_captured_at =
+        local_naive_to_utc(cutoff_local - ChronoDuration::minutes(15), Shanghai);
+    let post_cutoff_captured_at =
+        local_naive_to_utc(cutoff_local + ChronoDuration::minutes(5), Shanghai);
+    for (captured_at, total_count, success_count, failure_count, total_tokens, total_cost) in [
+        (
+            pre_cutoff_captured_at,
+            3_i64,
+            2_i64,
+            1_i64,
+            300_i64,
+            0.9_f64,
+        ),
+        (
+            post_cutoff_captured_at,
+            2_i64,
+            2_i64,
+            0_i64,
+            200_i64,
+            0.4_f64,
+        ),
+    ] {
+        let stats_date = captured_at
+            .with_timezone(&Shanghai)
+            .date_naive()
+            .to_string();
+        sqlx::query(
+            r#"
+            INSERT INTO stats_source_deltas (
+                source,
+                period,
+                stats_date,
+                captured_at,
+                captured_at_epoch,
+                total_count,
+                success_count,
+                failure_count,
+                total_tokens,
+                total_cost
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "#,
+        )
+        .bind(SOURCE_CRS)
+        .bind("daily")
+        .bind(&stats_date)
+        .bind(format_utc_iso(captured_at))
+        .bind(captured_at.timestamp())
+        .bind(total_count)
+        .bind(success_count)
+        .bind(failure_count)
+        .bind(total_tokens)
+        .bind(total_cost)
+        .execute(&state.pool)
+        .await
+        .expect("insert crs delta around retention cutoff");
+    }
+
+    let start = local_naive_to_utc(cutoff_local - ChronoDuration::minutes(30), Shanghai);
+    let end = local_naive_to_utc(cutoff_local + ChronoDuration::minutes(10), Shanghai);
+    let Json(response) = fetch_timeseries_from_hourly_rollups(
+        state.clone(),
+        TimeseriesQuery {
+            range: "ignored".to_string(),
+            bucket: Some("1h".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        },
+        Shanghai,
+        InvocationSourceScope::All,
+        RangeWindow {
+            start,
+            end,
+            display_end: end,
+            duration: end - start,
+        },
+        TimeseriesBucketSelection {
+            bucket_seconds: 3_600,
+            effective_bucket: "1h".to_string(),
+            available_buckets: vec!["1h".to_string()],
+            bucket_limited_to_daily: false,
+        },
+    )
+    .await
+    .expect("fetch hourly-backed timeseries with crs trim across retention cutoff");
+
+    assert_eq!(
+        response
+            .points
+            .iter()
+            .map(|point| point.total_count)
+            .sum::<i64>(),
+        2
+    );
+    assert_eq!(
+        response
+            .points
+            .iter()
+            .map(|point| point.success_count)
+            .sum::<i64>(),
+        2
+    );
+    assert_eq!(
+        response
+            .points
+            .iter()
+            .map(|point| point.failure_count)
+            .sum::<i64>(),
+        0
+    );
+    assert_eq!(
+        response
+            .points
+            .iter()
+            .map(|point| point.total_tokens)
+            .sum::<i64>(),
+        200
+    );
+    assert_f64_close(
+        response
+            .points
+            .iter()
+            .map(|point| point.total_cost)
+            .sum::<f64>(),
+        0.4,
+    );
+}
+
+#[tokio::test]
 async fn invocation_hourly_rollup_ignores_null_status_for_success_failure_counts() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

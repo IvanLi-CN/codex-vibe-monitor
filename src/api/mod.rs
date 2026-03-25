@@ -1581,6 +1581,33 @@ fn build_hourly_rollup_exact_range_plan(
     Ok(plan)
 }
 
+fn effective_range_for_hourly_rollup_plan(
+    plan: &HourlyRollupExactRangePlan,
+) -> Result<Option<ExactUtcRange>, ApiError> {
+    let mut range: Option<ExactUtcRange> = None;
+    if let Some((start_epoch, end_epoch)) = plan.full_hour_range {
+        let start = Utc
+            .timestamp_opt(start_epoch, 0)
+            .single()
+            .ok_or_else(|| ApiError::from(anyhow!("invalid effective range start epoch")))?;
+        let end = Utc
+            .timestamp_opt(end_epoch, 0)
+            .single()
+            .ok_or_else(|| ApiError::from(anyhow!("invalid effective range end epoch")))?;
+        range = Some(ExactUtcRange { start, end });
+    }
+    for exact_range in &plan.live_exact_ranges {
+        range = Some(match range {
+            Some(existing) => ExactUtcRange {
+                start: existing.start.min(exact_range.start),
+                end: existing.end.max(exact_range.end),
+            },
+            None => *exact_range,
+        });
+    }
+    Ok(range.filter(|value| value.start < value.end))
+}
+
 async fn load_pool_attempt_account_names(
     pool: &Pool<Sqlite>,
     records: &mut [ApiPoolUpstreamRequestAttempt],
@@ -1822,7 +1849,17 @@ pub(crate) async fn query_hourly_backed_summary_since_with_config(
         add_invocation_record_to_summary_totals(&mut totals, record);
     }
     let relay_totals =
-        query_crs_totals(pool, relay, &StatsFilter::Since(start), source_scope).await?;
+        if let Some(effective_range) = effective_range_for_hourly_rollup_plan(&range_plan)? {
+            query_crs_totals(
+                pool,
+                relay,
+                &StatsFilter::Since(effective_range.start),
+                source_scope,
+            )
+            .await?
+        } else {
+            StatsTotals::default()
+        };
     Ok(totals.add(relay_totals))
 }
 
@@ -2807,8 +2844,15 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
 
     let relay_deltas = if source_scope == InvocationSourceScope::All
         && let Some(relay) = state.config.crs_stats.as_ref()
+        && let Some(effective_range) = effective_range_for_hourly_rollup_plan(&range_plan)?
     {
-        query_crs_deltas(&state.pool, relay, start_epoch, end_epoch).await?
+        query_crs_deltas(
+            &state.pool,
+            relay,
+            effective_range.start.timestamp(),
+            effective_range.end.timestamp(),
+        )
+        .await?
     } else {
         Vec::new()
     };
