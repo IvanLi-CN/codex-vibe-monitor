@@ -110,6 +110,7 @@ type GroupNoteEditorState = {
 type MailboxCopyTone = "idle" | "copied" | "manual";
 const MAILBOX_REFRESH_INTERVAL_MS = 5_000;
 const MAILBOX_REFRESH_TICK_MS = 1_000;
+const OAUTH_SESSION_SYNC_DEBOUNCE_MS = 250;
 const IMPORTED_OAUTH_DUPLICATE_DETAIL =
   "duplicate credential in current import selection";
 
@@ -620,6 +621,36 @@ function buildPendingOauthSessionSnapshot(
     payload,
     signature: JSON.stringify(payload),
   };
+}
+
+function areOauthSessionTagListsEqual(
+  left: number[] | undefined,
+  right: number[] | undefined,
+) {
+  const normalizedLeft = left ?? [];
+  const normalizedRight = right ?? [];
+  return (
+    normalizedLeft.length === normalizedRight.length &&
+    normalizedLeft.every((value, index) => value === normalizedRight[index])
+  );
+}
+
+function shouldDebouncePendingOauthSessionSync(
+  previousSnapshot: PendingOauthSessionSnapshot | null,
+  nextSnapshot: PendingOauthSessionSnapshot,
+) {
+  if (!previousSnapshot) return false;
+  return (
+    previousSnapshot.payload.isMother === nextSnapshot.payload.isMother &&
+    previousSnapshot.payload.mailboxSessionId ===
+      nextSnapshot.payload.mailboxSessionId &&
+    previousSnapshot.payload.mailboxAddress ===
+      nextSnapshot.payload.mailboxAddress &&
+    areOauthSessionTagListsEqual(
+      previousSnapshot.payload.tagIds,
+      nextSnapshot.payload.tagIds,
+    )
+  );
 }
 
 function applyBatchMotherDraftRules(
@@ -1604,9 +1635,25 @@ export default function UpstreamAccountCreatePage() {
       storePendingOauthSessionSnapshot,
     ],
   );
+  const flushAllPendingOauthSessionSync = useCallback(() => {
+    if (!writesEnabled) return;
+    Object.keys(pendingOauthSessionSyncRef.current).forEach((loginId) => {
+      void flushPendingOauthSessionSync(loginId).catch(() => undefined);
+    });
+  }, [flushPendingOauthSessionSync, writesEnabled]);
   useEffect(() => {
     singleOauthSessionSnapshotRef.current = singleOauthSessionSnapshot;
     batchOauthSessionSnapshotsRef.current = batchOauthSessionSnapshots;
+
+    if (!writesEnabled) {
+      for (const record of Object.values(pendingOauthSessionSyncRef.current)) {
+        if (record.timerId != null) {
+          window.clearTimeout(record.timerId);
+          record.timerId = null;
+        }
+      }
+      return;
+    }
 
     const activeSnapshots = [
       ...(singleOauthSessionSnapshot ? [singleOauthSessionSnapshot] : []),
@@ -1616,6 +1663,7 @@ export default function UpstreamAccountCreatePage() {
 
     for (const snapshot of activeSnapshots) {
       let existing = pendingOauthSessionSyncRef.current[snapshot.loginId];
+      const previousSnapshot = existing?.lastSnapshot ?? null;
       if (!existing) {
         const shouldStartUnsynced =
           restoredPendingOauthLoginIdsRef.current.delete(snapshot.loginId);
@@ -1634,6 +1682,10 @@ export default function UpstreamAccountCreatePage() {
           lastSnapshot: snapshot,
         };
       }
+      const shouldDebounce = shouldDebouncePendingOauthSessionSync(
+        previousSnapshot,
+        snapshot,
+      );
       existing.pendingSignature = snapshot.signature;
       existing.lastSnapshot = snapshot;
       if (existing.syncedSignature === snapshot.signature) {
@@ -1654,6 +1706,18 @@ export default function UpstreamAccountCreatePage() {
         window.clearTimeout(existing.timerId);
         existing.timerId = null;
       }
+      if (shouldDebounce) {
+        existing.timerId = window.setTimeout(() => {
+          const currentRecord =
+            pendingOauthSessionSyncRef.current[snapshot.loginId];
+          if (!currentRecord) return;
+          currentRecord.timerId = null;
+          void runPendingOauthSessionSync(snapshot.loginId).catch(
+            () => undefined,
+          );
+        }, OAUTH_SESSION_SYNC_DEBOUNCE_MS);
+        continue;
+      }
       void runPendingOauthSessionSync(snapshot.loginId).catch(() => undefined);
     }
 
@@ -1669,7 +1733,30 @@ export default function UpstreamAccountCreatePage() {
     batchOauthSessionSnapshots,
     runPendingOauthSessionSync,
     singleOauthSessionSnapshot,
+    writesEnabled,
   ]);
+  useEffect(() => {
+    if (!writesEnabled) return;
+
+    const flushPendingSync = () => {
+      flushAllPendingOauthSessionSync();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        flushPendingSync();
+      }
+    };
+
+    window.addEventListener("blur", flushPendingSync);
+    window.addEventListener("pagehide", flushPendingSync);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    return () => {
+      window.removeEventListener("blur", flushPendingSync);
+      window.removeEventListener("pagehide", flushPendingSync);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [flushAllPendingOauthSessionSync, writesEnabled]);
   const formatDuplicateReasons = (
     duplicateInfo?: UpstreamAccountDuplicateInfo | null,
   ) => {

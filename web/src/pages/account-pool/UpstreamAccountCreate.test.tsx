@@ -1480,6 +1480,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
   });
 
   it("syncs edits made while oauth url generation is still in flight", async () => {
+    vi.useFakeTimers();
     let resolveBeginOauthLogin:
       | ((value: LoginSessionStatusResponse) => void)
       | undefined;
@@ -1542,7 +1543,8 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(updateOauthLogin.mock.lastCall?.[1]).not.toHaveProperty("groupNote");
   });
 
-  it("syncs pending single oauth metadata immediately while typing", async () => {
+  it("debounces pending single oauth metadata while typing", async () => {
+    vi.useFakeTimers();
     const updateOauthLogin = vi.fn().mockResolvedValue({
       loginId: "login-1",
       status: "pending",
@@ -1562,31 +1564,16 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth A");
     await flushAsync();
-    expect(updateOauthLogin).toHaveBeenCalledTimes(1);
-    expect(updateOauthLogin).toHaveBeenLastCalledWith("login-1", {
-      displayName: "Fresh OAuth A",
-      groupName: "",
-      note: "",
-      tagIds: [],
-      isMother: false,
-      mailboxSessionId: "",
-      mailboxAddress: "",
-    });
     setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth AB");
     await flushAsync();
-    expect(updateOauthLogin).toHaveBeenCalledTimes(2);
-    expect(updateOauthLogin).toHaveBeenLastCalledWith("login-1", {
-      displayName: "Fresh OAuth AB",
-      groupName: "",
-      note: "",
-      tagIds: [],
-      isMother: false,
-      mailboxSessionId: "",
-      mailboxAddress: "",
-    });
     setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth ABC");
     await flushAsync();
-    expect(updateOauthLogin).toHaveBeenCalledTimes(3);
+
+    expect(updateOauthLogin).not.toHaveBeenCalled();
+
+    await flushSessionSyncDebounce();
+
+    expect(updateOauthLogin).toHaveBeenCalledTimes(1);
     expect(updateOauthLogin).toHaveBeenLastCalledWith("login-1", {
       displayName: "Fresh OAuth ABC",
       groupName: "",
@@ -1600,6 +1587,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
   });
 
   it("coalesces pending single oauth sync requests while an earlier patch is in flight", async () => {
+    vi.useFakeTimers();
     let resolveFirstSync:
       | ((value: LoginSessionStatusResponse) => void)
       | undefined;
@@ -1647,6 +1635,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     await flushAsync();
     setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth AB");
     await flushAsync();
+    await flushSessionSyncDebounce();
 
     expect(updateOauthLogin).toHaveBeenCalledTimes(1);
 
@@ -1680,6 +1669,39 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       mailboxAddress: "",
     });
     expect(updateOauthLogin.mock.lastCall?.[1]).not.toHaveProperty("groupNote");
+  });
+
+  it("does not auto-sync pending oauth drafts when writes are disabled", async () => {
+    vi.useFakeTimers();
+    const updateOauthLogin = vi.fn();
+    mockUpstreamAccounts({ updateOauthLogin, writesEnabled: false });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      state: {
+        draft: {
+          oauth: {
+            displayName: "Read Only OAuth",
+            session: {
+              loginId: "login-read-only",
+              status: "pending",
+              authUrl: "https://auth.openai.com/authorize?login=read-only",
+              redirectUri: "http://localhost:1455/oauth/callback",
+              expiresAt: "2026-03-13T10:00:00.000Z",
+              accountId: null,
+              error: null,
+            },
+            sessionHint: "OAuth URL ready",
+          },
+        },
+      },
+    });
+
+    await flushAsync();
+    await flushSessionSyncDebounce();
+    await flushAsync();
+
+    expect(updateOauthLogin).not.toHaveBeenCalled();
+    expect(host?.textContent).not.toContain("cross-origin account writes are forbidden");
   });
 
   it("refreshes a dead pending single oauth session after metadata sync fails", async () => {
@@ -1863,6 +1885,8 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth Duplicate");
     await flushAsync();
+    await flushSessionSyncDebounce();
+    await flushAsync();
 
     expect(updateOauthLogin).toHaveBeenCalledTimes(2);
     expect(updateOauthLogin).toHaveBeenLastCalledWith("login-1", {
@@ -1874,9 +1898,6 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       mailboxSessionId: "",
       mailboxAddress: "",
     });
-
-    await flushSessionSyncDebounce();
-    await flushAsync();
 
     expect(updateOauthLogin).toHaveBeenCalledTimes(2);
     expect(getLoginSession).toHaveBeenCalledTimes(2);
