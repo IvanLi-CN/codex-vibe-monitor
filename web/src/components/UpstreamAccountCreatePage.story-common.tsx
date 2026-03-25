@@ -35,7 +35,7 @@ export function createCompletedSession(loginId: string, accountId: number): Logi
     status: 'completed',
     authUrl: null,
     redirectUri: null,
-    expiresAt: '2026-03-11T13:30:00.000Z',
+    expiresAt: '2027-03-11T13:30:00.000Z',
     accountId,
     error: null,
   }
@@ -46,7 +46,7 @@ export function createMailboxSession(sessionId: string, emailAddress: string): O
     supported: true,
     sessionId,
     emailAddress,
-    expiresAt: '2026-03-20T12:50:00.000Z',
+    expiresAt: '2027-03-20T12:50:00.000Z',
     source: 'generated',
   }
 }

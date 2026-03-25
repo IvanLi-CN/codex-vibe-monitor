@@ -132,8 +132,16 @@ export type StoryInitialEntry =
     }
 
 const now = '2026-03-17T12:30:00.000Z'
-const storyFutureExpiresAt = '2026-03-20T12:50:00.000Z'
-const storyFutureLoginExpiresAt = '2026-03-20T12:40:00.000Z'
+const storyFutureExpiresAt = '2027-03-20T12:50:00.000Z'
+const storyFutureLoginExpiresAt = '2027-03-20T12:40:00.000Z'
+const storyExistingRemoteMailboxes = new Set([
+  'manual-existing@mail-tw.707079.xyz',
+  'flow-oauth@mail-tw.707079.xyz',
+  'pending-oauth@mail-tw.707079.xyz',
+  'flow-batch@mail-tw.707079.xyz',
+  'pending-batch@mail-tw.707079.xyz',
+  'edited-batch@mail-tw.707079.xyz',
+])
 const defaultRoutingMaintenance: PoolRoutingMaintenanceSettings = {
   primarySyncIntervalSecs: 300,
   secondarySyncIntervalSecs: 1800,
@@ -254,6 +262,15 @@ function buildRecentAction(
     stickyKey: null,
     createdAt: occurredAt,
   }
+}
+
+function storyHasExistingMailboxAddress(store: StoryStore, requestedAddress: string) {
+  if (storyExistingRemoteMailboxes.has(requestedAddress)) {
+    return true
+  }
+  return Object.values(store.mailboxStatuses).some(
+    (status) => status.emailAddress.trim().toLowerCase() === requestedAddress,
+  )
 }
 
 function buildHistory(seed = 0) {
@@ -2090,6 +2107,10 @@ export function StorybookUpstreamAccountsMock({
               201,
             )
           }
+          const existingRemoteMailbox = storyHasExistingMailboxAddress(
+            store,
+            requestedAddress,
+          )
           const nextMailboxId = store.nextMailboxId++
           const sessionId = `mailbox_${nextMailboxId}`
           const expiresAt = storyFutureExpiresAt
@@ -2107,7 +2128,7 @@ export function StorybookUpstreamAccountsMock({
               sessionId,
               emailAddress: requestedAddress,
               expiresAt,
-              source: 'attached',
+              source: existingRemoteMailbox ? 'attached' : 'generated',
             },
             201,
           )

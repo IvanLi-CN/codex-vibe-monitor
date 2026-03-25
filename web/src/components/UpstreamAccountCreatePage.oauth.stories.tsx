@@ -174,6 +174,21 @@ export const ReauthManualMailboxAttached: Story = {
   },
 }
 
+export const ManualMailboxAutoCreated: Story = {
+  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const mailboxInput = canvas.getByPlaceholderText(/enter a supported mailbox address/i)
+    await userEvent.clear(mailboxInput)
+    await userEvent.type(mailboxInput, 'finance.lab.d5r@mail-tw.707079.xyz')
+    await userEvent.click(canvas.getByRole('button', { name: /use address/i }))
+    await expect(canvas.getByText(/finance\.lab\.d5r@mail-tw\.707079\.xyz/i)).toBeInTheDocument()
+    await expect(canvas.getByText(/generated mailbox/i)).toBeInTheDocument()
+    await userEvent.click(canvas.getByRole('button', { name: /generate oauth url/i }))
+    await expect(canvas.getByRole('button', { name: /copy oauth url/i })).toBeEnabled()
+  },
+}
+
 export const MailboxReady: Story = {
   render: () => {
     const mailboxSession = createMailboxSession('story-mailbox-oauth-ready', 'oauth-ready@mail-tw.707079.xyz')
