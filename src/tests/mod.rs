@@ -30576,13 +30576,13 @@ async fn materialize_historical_rollups_marks_batches_and_prune_removes_files() 
         .expect("load historical rollup backlog after materialization");
     assert_eq!(snapshot_after.legacy_archive_pending, 0);
 
-    let prune_dry_run = prune_legacy_archive_batches(&pool, true)
+    let prune_dry_run = prune_legacy_archive_batches(&pool, &config, true)
         .await
         .expect("dry-run prune legacy archive batches");
     assert_eq!(prune_dry_run.deleted_archive_batches, 1);
     assert!(archive_path.exists(), "dry-run should keep archive file");
 
-    let prune_summary = prune_legacy_archive_batches(&pool, false)
+    let prune_summary = prune_legacy_archive_batches(&pool, &config, false)
         .await
         .expect("prune legacy archive batches");
     assert_eq!(prune_summary.deleted_archive_batches, 1);
@@ -30596,6 +30596,86 @@ async fn materialize_historical_rollups_marks_batches_and_prune_removes_files() 
         .await
         .expect("count remaining archive batches after prune");
     assert_eq!(remaining_batches, 0);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn prune_legacy_archive_batches_keeps_detail_prune_backups_within_live_window() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("historical-rollup-prune-detail-backup").await;
+    let pruned_occurred_at = shanghai_local_days_ago(
+        (config.invocation_success_full_days + 5)
+            .try_into()
+            .expect("detail prune age should fit in i64"),
+        14,
+        0,
+        0,
+    );
+    insert_retention_invocation(
+        &pool,
+        "historical-rollup-prune-detail-backup",
+        &pruned_occurred_at,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"promptCacheKey\":\"detail-backup\"}"),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(11),
+        Some(0.11),
+    )
+    .await;
+
+    run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run retention detail prune");
+
+    let (archive_path, materialized_at, detail_level): (String, Option<String>, String) =
+        sqlx::query_as(
+            r#"
+            SELECT b.file_path, b.historical_rollups_materialized_at, i.detail_level
+            FROM archive_batches AS b
+            JOIN codex_invocations AS i
+              ON i.invoke_id = ?1
+            WHERE b.dataset = 'codex_invocations'
+            ORDER BY b.id DESC
+            LIMIT 1
+            "#,
+        )
+        .bind("historical-rollup-prune-detail-backup")
+        .fetch_one(&pool)
+        .await
+        .expect("load detail prune archive metadata");
+    assert_eq!(detail_level, DETAIL_LEVEL_STRUCTURED_ONLY);
+    assert!(
+        materialized_at.is_some(),
+        "detail-prune archive still participates in rollup materialization"
+    );
+    assert!(
+        Path::new(&archive_path).exists(),
+        "detail backup archive should exist"
+    );
+
+    let prune_dry_run = prune_legacy_archive_batches(&pool, &config, true)
+        .await
+        .expect("dry-run prune should retain detail backup archive");
+    assert_eq!(prune_dry_run.deleted_archive_batches, 0);
+    assert_eq!(prune_dry_run.skipped_retained_batches, 1);
+    assert!(
+        Path::new(&archive_path).exists(),
+        "dry-run should not remove archive"
+    );
+
+    let prune_summary = prune_legacy_archive_batches(&pool, &config, false)
+        .await
+        .expect("prune should keep detail backup archive");
+    assert_eq!(prune_summary.deleted_archive_batches, 0);
+    assert_eq!(prune_summary.skipped_retained_batches, 1);
+    assert!(
+        Path::new(&archive_path).exists(),
+        "detail backup archive must remain"
+    );
 
     cleanup_temp_test_dir(&temp_dir);
 }

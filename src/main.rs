@@ -839,7 +839,7 @@ async fn run_cli_command(
                 );
             }
             MaintenanceCommand::PruneLegacyArchiveBatches(opts) => {
-                let summary = prune_legacy_archive_batches(pool, opts.dry_run).await?;
+                let summary = prune_legacy_archive_batches(pool, config, opts.dry_run).await?;
                 let snapshot = load_historical_rollup_backfill_snapshot(pool).await?;
                 info!(
                     dry_run = opts.dry_run,
@@ -2386,6 +2386,8 @@ struct ArchiveBatchFileRow {
     _id: i64,
     month_key: String,
     file_path: String,
+    coverage_start_at: Option<String>,
+    coverage_end_at: Option<String>,
 }
 
 #[derive(Debug, FromRow)]
@@ -2438,6 +2440,7 @@ pub(crate) struct LegacyArchivePruneSummary {
     scanned_archive_batches: usize,
     deleted_archive_batches: usize,
     skipped_unmaterialized_batches: usize,
+    skipped_retained_batches: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -4292,6 +4295,7 @@ struct LegacyArchivePruneCandidateRow {
     dataset: String,
     file_path: String,
     historical_rollups_materialized_at: Option<String>,
+    coverage_end_at: Option<String>,
 }
 
 fn estimate_historical_rollup_pending_bucket_count(
@@ -4498,10 +4502,11 @@ async fn materialize_historical_rollups(
 
 async fn prune_legacy_archive_batches(
     pool: &Pool<Sqlite>,
+    config: &AppConfig,
     dry_run: bool,
 ) -> Result<LegacyArchivePruneSummary> {
     let mut query = QueryBuilder::<Sqlite>::new(
-        "SELECT id, dataset, file_path, historical_rollups_materialized_at \
+        "SELECT id, dataset, file_path, historical_rollups_materialized_at, coverage_end_at \
          FROM archive_batches WHERE status = ",
     );
     query.push_bind(ARCHIVE_STATUS_COMPLETED);
@@ -4519,6 +4524,7 @@ async fn prune_legacy_archive_batches(
         .await?;
 
     let pending_account_count = count_upstream_accounts_missing_last_activity(pool).await?;
+    let invocation_archive_cutoff = shanghai_local_cutoff_string(config.invocation_max_days);
     let mut summary = LegacyArchivePruneSummary {
         scanned_archive_batches: candidates.len(),
         ..LegacyArchivePruneSummary::default()
@@ -4529,6 +4535,17 @@ async fn prune_legacy_archive_batches(
             || (candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS && pending_account_count > 0)
         {
             summary.skipped_unmaterialized_batches += 1;
+            continue;
+        }
+
+        if candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS
+            && candidate
+                .coverage_end_at
+                .as_deref()
+                .map(|coverage_end_at| coverage_end_at >= invocation_archive_cutoff.as_str())
+                .unwrap_or(true)
+        {
+            summary.skipped_retained_batches += 1;
             continue;
         }
 
@@ -5390,6 +5407,28 @@ async fn mark_archive_batch_historical_rollups_materialized_tx(
     .bind(dataset)
     .bind(month_key)
     .bind(file_path)
+    .execute(&mut *tx)
+    .await?;
+    Ok(())
+}
+
+async fn update_archive_batch_coverage_bounds_tx(
+    tx: &mut SqliteConnection,
+    archive_batch_id: i64,
+    coverage_start_at: Option<&str>,
+    coverage_end_at: Option<&str>,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        UPDATE archive_batches
+        SET coverage_start_at = COALESCE(coverage_start_at, ?2),
+            coverage_end_at = COALESCE(coverage_end_at, ?3)
+        WHERE id = ?1
+        "#,
+    )
+    .bind(archive_batch_id)
+    .bind(coverage_start_at)
+    .bind(coverage_end_at)
     .execute(&mut *tx)
     .await?;
     Ok(())
@@ -6692,7 +6731,7 @@ async fn replay_invocation_archives_into_hourly_rollups_tx(
 ) -> Result<u64> {
     let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
         r#"
-        SELECT id AS _id, month_key, file_path
+        SELECT id AS _id, month_key, file_path, coverage_start_at, coverage_end_at
         FROM archive_batches
         WHERE dataset = 'codex_invocations' AND status = ?1
         ORDER BY month_key ASC, created_at ASC, id ASC
@@ -6781,6 +6820,18 @@ async fn replay_invocation_archives_into_hourly_rollups_tx(
         archive_pool.close().await;
         drop(temp_cleanup);
 
+        if archive_file.coverage_start_at.is_none() || archive_file.coverage_end_at.is_none() {
+            let coverage_start_at = rows.iter().map(|row| row.occurred_at.as_str()).min();
+            let coverage_end_at = rows.iter().map(|row| row.occurred_at.as_str()).max();
+            update_archive_batch_coverage_bounds_tx(
+                tx,
+                archive_file._id,
+                coverage_start_at,
+                coverage_end_at,
+            )
+            .await?;
+        }
+
         upsert_invocation_hourly_rollups_tx(tx, &rows, &pending_targets).await?;
         mark_invocation_hourly_rollup_buckets_materialized_tx(tx, &rows).await?;
         mark_archive_batch_historical_rollups_materialized_tx(
@@ -6810,7 +6861,7 @@ async fn replay_forward_proxy_archives_into_hourly_rollups_tx(
 ) -> Result<u64> {
     let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
         r#"
-        SELECT id AS _id, month_key, file_path
+        SELECT id AS _id, month_key, file_path, coverage_start_at, coverage_end_at
         FROM archive_batches
         WHERE dataset = 'forward_proxy_attempts' AND status = ?1
         ORDER BY month_key ASC, created_at ASC, id ASC
@@ -6871,6 +6922,18 @@ async fn replay_forward_proxy_archives_into_hourly_rollups_tx(
         .await?;
         archive_pool.close().await;
         drop(temp_cleanup);
+
+        if archive_file.coverage_start_at.is_none() || archive_file.coverage_end_at.is_none() {
+            let coverage_start_at = rows.iter().map(|row| row.occurred_at.as_str()).min();
+            let coverage_end_at = rows.iter().map(|row| row.occurred_at.as_str()).max();
+            update_archive_batch_coverage_bounds_tx(
+                tx,
+                archive_file._id,
+                coverage_start_at,
+                coverage_end_at,
+            )
+            .await?;
+        }
 
         upsert_forward_proxy_attempt_hourly_rollups_tx(tx, &rows).await?;
         mark_forward_proxy_hourly_rollup_buckets_materialized_tx(tx, &rows).await?;
