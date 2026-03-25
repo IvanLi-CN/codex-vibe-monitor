@@ -1478,6 +1478,74 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     });
   });
 
+  it("flushes the latest single oauth metadata before completing immediately after an edit", async () => {
+    vi.useFakeTimers();
+    const updateOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    const completeOauthLogin = vi.fn().mockResolvedValue({
+      id: 41,
+      displayName: "Fresh OAuth Renamed",
+    });
+    mockUpstreamAccounts({ updateOauthLogin, completeOauthLogin });
+    render();
+
+    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth");
+    await flushAsync();
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+    setInputValue(
+      'textarea[name="oauthCallbackUrl"]',
+      "http://localhost:1455/oauth/callback?code=test",
+    );
+    await flushAsync();
+
+    const displayNameInput = host?.querySelector('input[name="oauthDisplayName"]');
+    const completeButton = findButton(/Complete OAuth login/i);
+    if (!(displayNameInput instanceof HTMLInputElement) || !completeButton) {
+      throw new Error("missing single oauth controls");
+    }
+    const setter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    if (!setter) {
+      throw new Error("missing native input setter");
+    }
+
+    await act(async () => {
+      setter.call(displayNameInput, "Fresh OAuth Renamed");
+      displayNameInput.dispatchEvent(new Event("input", { bubbles: true }));
+      displayNameInput.dispatchEvent(new Event("change", { bubbles: true }));
+      completeButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await flushAsync();
+
+    expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
+      displayName: "Fresh OAuth Renamed",
+      groupName: "",
+      note: "",
+      groupNote: "",
+      tagIds: [],
+      isMother: false,
+      mailboxSessionId: "",
+      mailboxAddress: "",
+    });
+    expect(completeOauthLogin).toHaveBeenCalledWith("login-1", {
+      callbackUrl: "http://localhost:1455/oauth/callback?code=test",
+      mailboxSessionId: undefined,
+      mailboxAddress: undefined,
+    });
+  });
+
   it("keeps pending batch oauth sessions when a draft group note changes", async () => {
     vi.useFakeTimers();
     const beginOauthLogin = vi.fn().mockResolvedValue({

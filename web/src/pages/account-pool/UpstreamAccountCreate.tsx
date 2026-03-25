@@ -1400,6 +1400,16 @@ export default function UpstreamAccountCreatePage() {
     }
     return batchOauthSessionSnapshotsRef.current[loginId] ?? null;
   }, []);
+  const storePendingOauthSessionSnapshot = useCallback(
+    (snapshot: PendingOauthSessionSnapshot) => {
+      if (session?.loginId === snapshot.loginId) {
+        singleOauthSessionSnapshotRef.current = snapshot;
+        return;
+      }
+      batchOauthSessionSnapshotsRef.current[snapshot.loginId] = snapshot;
+    },
+    [session?.loginId],
+  );
   const setPendingOauthSessionSyncError = useCallback((loginId: string, message: string) => {
     if (singleOauthSessionSnapshotRef.current?.loginId === loginId) {
       setActionError(message);
@@ -1508,8 +1518,14 @@ export default function UpstreamAccountCreatePage() {
     ],
   );
   const flushPendingOauthSessionSync = useCallback(
-    async (loginId: string | null | undefined) => {
+    async (
+      loginId: string | null | undefined,
+      snapshotOverride?: PendingOauthSessionSnapshot | null,
+    ) => {
       if (!loginId) return;
+      if (snapshotOverride && snapshotOverride.loginId === loginId) {
+        storePendingOauthSessionSnapshot(snapshotOverride);
+      }
       const snapshot = getPendingOauthSessionSnapshot(loginId);
       if (!snapshot) return;
       let record = pendingOauthSessionSyncRef.current[loginId];
@@ -1531,13 +1547,20 @@ export default function UpstreamAccountCreatePage() {
         await record.inFlight;
       }
       record = pendingOauthSessionSyncRef.current[loginId];
+      if (snapshotOverride && snapshotOverride.loginId === loginId) {
+        storePendingOauthSessionSnapshot(snapshotOverride);
+      }
       const latestSnapshot = getPendingOauthSessionSnapshot(loginId);
       if (!record || !latestSnapshot) return;
       if (record.syncedSignature !== latestSnapshot.signature) {
         await runPendingOauthSessionSync(loginId);
       }
     },
-    [getPendingOauthSessionSnapshot, runPendingOauthSessionSync],
+    [
+      getPendingOauthSessionSnapshot,
+      runPendingOauthSessionSync,
+      storePendingOauthSessionSnapshot,
+    ],
   );
   useEffect(() => {
     singleOauthSessionSnapshotRef.current = singleOauthSessionSnapshot;
@@ -2964,7 +2987,10 @@ export default function UpstreamAccountCreatePage() {
     setActionError(null);
     setBusyAction("oauth-complete");
     try {
-      await flushPendingOauthSessionSync(session.loginId);
+      await flushPendingOauthSessionSync(
+        session.loginId,
+        singleOauthSessionSnapshot,
+      );
       const detail = await completeOauthLogin(session.loginId, {
         callbackUrl: oauthCallbackUrl.trim(),
         mailboxSessionId: activeOauthMailboxSession?.sessionId,
@@ -3332,7 +3358,10 @@ export default function UpstreamAccountCreatePage() {
     }));
 
     try {
-      await flushPendingOauthSessionSync(row.session.loginId);
+      await flushPendingOauthSessionSync(
+        row.session.loginId,
+        batchOauthSessionSnapshots[row.session.loginId] ?? null,
+      );
       const detail = await completeOauthLogin(row.session.loginId, {
         callbackUrl: row.callbackUrl.trim(),
         mailboxSessionId: row.mailboxSession?.sessionId,
