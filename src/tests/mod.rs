@@ -27451,11 +27451,11 @@ async fn summary_hourly_backed_since_uses_hour_bucket_accuracy_for_archived_hist
             .await
             .expect("load exact archived summary totals");
 
-    assert_eq!(totals.total_count, 0);
-    assert_eq!(totals.success_count, 0);
+    assert_eq!(totals.total_count, 2);
+    assert_eq!(totals.success_count, 2);
     assert_eq!(totals.failure_count, 0);
-    assert_eq!(totals.total_tokens, 0);
-    assert_f64_close(totals.total_cost, 0.0);
+    assert_eq!(totals.total_tokens, 20);
+    assert_f64_close(totals.total_cost, 0.2);
 }
 
 #[tokio::test]
@@ -27530,7 +27530,7 @@ async fn collect_summary_snapshots_uses_hourly_backed_duration_windows() {
 }
 
 #[tokio::test]
-async fn timeseries_hourly_backed_omits_archived_partial_hour_exact_rows() {
+async fn timeseries_hourly_backed_preserves_archived_partial_hour_bucket_accuracy() {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -27630,11 +27630,20 @@ async fn timeseries_hourly_backed_omits_archived_partial_hour_exact_rows() {
     .await
     .expect("fetch exact archived timeseries");
 
-    assert!(response.points.iter().all(|point| point.total_count == 0));
+    let point = response
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(bucket_start))
+        .expect("archived hour bucket should remain visible");
+    assert_eq!(point.total_count, 2);
+    assert_eq!(point.success_count, 2);
+    assert_eq!(point.failure_count, 0);
+    assert_eq!(point.total_tokens, 20);
+    assert_f64_close(point.total_cost, 0.2);
 }
 
 #[tokio::test]
-async fn hourly_backed_summary_omits_pre_cutoff_partial_hour_rows() {
+async fn hourly_backed_summary_preserves_pre_cutoff_partial_hour_rollups() {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -27673,17 +27682,35 @@ async fn hourly_backed_summary_omits_pre_cutoff_partial_hour_rows() {
     .await
     .expect("insert pre-cutoff live exact row");
 
+    let bucket_start_epoch =
+        invocation_bucket_start_epoch(&occurred_at).expect("derive pre-cutoff bucket epoch");
+    let bucket_start = Utc
+        .timestamp_opt(bucket_start_epoch, 0)
+        .single()
+        .expect("valid pre-cutoff bucket start");
+    insert_invocation_hourly_rollup_bucket(
+        &state.pool,
+        bucket_start,
+        SOURCE_PROXY,
+        1,
+        1,
+        0,
+        12,
+        0.12,
+    )
+    .await;
+
     let start = local_naive_to_utc(pre_cutoff_local - ChronoDuration::minutes(15), Shanghai);
     let totals =
         query_hourly_backed_summary_since(state.as_ref(), start, InvocationSourceScope::ProxyOnly)
             .await
             .expect("load summary totals across retention cutoff");
 
-    assert_eq!(totals.total_count, 0);
-    assert_eq!(totals.success_count, 0);
+    assert_eq!(totals.total_count, 1);
+    assert_eq!(totals.success_count, 1);
     assert_eq!(totals.failure_count, 0);
-    assert_eq!(totals.total_tokens, 0);
-    assert_f64_close(totals.total_cost, 0.0);
+    assert_eq!(totals.total_tokens, 12);
+    assert_f64_close(totals.total_cost, 0.12);
 }
 
 #[tokio::test]
@@ -27743,7 +27770,7 @@ async fn invocation_hourly_rollup_ignores_null_status_for_success_failure_counts
 }
 
 #[tokio::test]
-async fn hourly_timeseries_omits_pre_cutoff_partial_hour_rows() {
+async fn hourly_timeseries_preserves_pre_cutoff_partial_hour_rollups() {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -27782,6 +27809,24 @@ async fn hourly_timeseries_omits_pre_cutoff_partial_hour_rows() {
     .await
     .expect("insert null-status exact row");
 
+    let bucket_start_epoch =
+        invocation_bucket_start_epoch(&occurred_at).expect("derive pre-cutoff bucket epoch");
+    let bucket_start = Utc
+        .timestamp_opt(bucket_start_epoch, 0)
+        .single()
+        .expect("valid pre-cutoff bucket start");
+    insert_invocation_hourly_rollup_bucket(
+        &state.pool,
+        bucket_start,
+        SOURCE_PROXY,
+        1,
+        0,
+        0,
+        5,
+        0.05,
+    )
+    .await;
+
     let start = local_naive_to_utc(pre_cutoff_local - ChronoDuration::minutes(15), Shanghai);
     let end = local_naive_to_utc(pre_cutoff_local + ChronoDuration::minutes(15), Shanghai);
     let Json(response) = fetch_timeseries_from_hourly_rollups(
@@ -27810,7 +27855,16 @@ async fn hourly_timeseries_omits_pre_cutoff_partial_hour_rows() {
     .await
     .expect("fetch exact hourly timeseries");
 
-    assert!(response.points.iter().all(|point| point.total_count == 0));
+    let point = response
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(bucket_start))
+        .expect("pre-cutoff bucket should remain visible");
+    assert_eq!(point.total_count, 1);
+    assert_eq!(point.success_count, 0);
+    assert_eq!(point.failure_count, 0);
+    assert_eq!(point.total_tokens, 5);
+    assert_f64_close(point.total_cost, 0.05);
 }
 
 #[tokio::test]
@@ -30646,42 +30700,17 @@ async fn materialize_historical_rollups_keeps_existing_rollups_if_replay_fails()
 }
 
 #[tokio::test]
-async fn recompute_invocation_hourly_rollups_merges_archive_rows_for_bucket() {
+async fn recompute_invocation_hourly_rollups_ignores_archive_manifests_for_live_buckets() {
     let (pool, config, temp_dir) =
-        retention_test_pool_and_config("historical-rollup-recompute-archive-merge").await;
-    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
-        - ChronoDuration::days((config.invocation_max_days + 2) as i64))
-    .and_hms_opt(8, 0, 0)
-    .expect("valid archived local hour");
-    let archived_occurred_at = format_naive(
-        archived_hour_local
-            .checked_add_signed(ChronoDuration::minutes(10))
-            .expect("valid archived occurred_at"),
-    );
-    let live_occurred_at = format_naive(
-        archived_hour_local
-            .checked_add_signed(ChronoDuration::minutes(20))
-            .expect("valid live occurred_at"),
-    );
-    seed_invocation_archive_batch(
-        &pool,
-        &config,
-        "historical-rollup-recompute-archive-merge",
-        &[(
-            1_i64,
-            "historical-rollup-recompute-archive-merge-archived",
-            archived_occurred_at.as_str(),
-            SOURCE_PROXY,
-            "success",
-            12_i64,
-            0.12_f64,
-            Some(120.0),
-        )],
-    )
-    .await;
+        retention_test_pool_and_config("historical-rollup-recompute-live-only").await;
+    let live_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days((config.invocation_success_full_days + 5) as i64))
+    .and_hms_opt(9, 20, 0)
+    .expect("valid live historical local hour");
+    let live_occurred_at = format_naive(live_local);
     insert_retention_invocation(
         &pool,
-        "historical-rollup-recompute-archive-merge-live",
+        "historical-rollup-recompute-live-only",
         &live_occurred_at,
         SOURCE_PROXY,
         "success",
@@ -30694,60 +30723,45 @@ async fn recompute_invocation_hourly_rollups_merges_archive_rows_for_bucket() {
     )
     .await;
 
-    materialize_historical_rollups(&pool, false)
-        .await
-        .expect("materialize historical rollups with mixed archive/live bucket");
-
     let live_id: i64 =
         sqlx::query_scalar("SELECT id FROM codex_invocations WHERE invoke_id = ?1 LIMIT 1")
-            .bind("historical-rollup-recompute-archive-merge-live")
+            .bind("historical-rollup-recompute-live-only")
             .fetch_one(&pool)
             .await
             .expect("load live invocation id");
     let bucket_start_epoch =
         invocation_bucket_start_epoch(&live_occurred_at).expect("invocation bucket epoch");
-    for target in INVOCATION_HOURLY_ROLLUP_TARGETS {
-        sqlx::query(
-            r#"
-            INSERT INTO hourly_rollup_materialized_buckets (
-                target,
-                bucket_start_epoch,
-                source,
-                materialized_at
-            )
-            VALUES (?1, ?2, ?3, datetime('now'))
-            ON CONFLICT(target, bucket_start_epoch, source) DO UPDATE SET
-                materialized_at = datetime('now')
-            "#,
-        )
-        .bind(target)
-        .bind(bucket_start_epoch)
-        .bind(SOURCE_PROXY)
-        .execute(&pool)
-        .await
-        .expect("seed materialized bucket marker");
-    }
-
-    let before = sqlx::query_as::<_, StatsRow>(
+    let missing_archive_path =
+        archive_batch_file_path(&config, "codex_invocations", &live_occurred_at[..7])
+            .expect("resolve missing archive path");
+    sqlx::query(
         r#"
-        SELECT
-            COALESCE(SUM(total_count), 0) AS total_count,
-            COALESCE(SUM(success_count), 0) AS success_count,
-            COALESCE(SUM(failure_count), 0) AS failure_count,
-            COALESCE(SUM(total_cost), 0.0) AS total_cost,
-            COALESCE(SUM(total_tokens), 0) AS total_tokens
-        FROM invocation_rollup_hourly
-        WHERE bucket_start_epoch = ?1 AND source = ?2
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            historical_rollups_materialized_at,
+            coverage_start_at,
+            coverage_end_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'), ?7, ?8, datetime('now'))
         "#,
     )
-    .bind(bucket_start_epoch)
-    .bind(SOURCE_PROXY)
-    .fetch_one(&pool)
+    .bind("codex_invocations")
+    .bind(&live_occurred_at[..7])
+    .bind(missing_archive_path.to_string_lossy().to_string())
+    .bind("deadbeef")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&live_occurred_at)
+    .bind(&live_occurred_at)
+    .execute(&pool)
     .await
-    .expect("load pre-recompute bucket totals");
-    assert_eq!(before.total_count, 2);
-    assert_eq!(before.total_tokens, 17);
-    assert_f64_close(before.total_cost, 0.62);
+    .expect("insert missing archive manifest for same live month");
 
     let mut tx = pool.begin().await.expect("begin recompute tx");
     sqlx::query("UPDATE codex_invocations SET total_tokens = ?1, cost = ?2 WHERE id = ?3")
@@ -30759,7 +30773,7 @@ async fn recompute_invocation_hourly_rollups_merges_archive_rows_for_bucket() {
         .expect("update live invocation before recompute");
     recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &[live_id])
         .await
-        .expect("recompute invocation hourly rollups");
+        .expect("recompute invocation hourly rollups without archive dependency");
     tx.commit().await.expect("commit recompute tx");
 
     let after = sqlx::query_as::<_, StatsRow>(
@@ -30779,11 +30793,11 @@ async fn recompute_invocation_hourly_rollups_merges_archive_rows_for_bucket() {
     .fetch_one(&pool)
     .await
     .expect("load post-recompute bucket totals");
-    assert_eq!(after.total_count, 2);
-    assert_eq!(after.success_count, Some(2));
+    assert_eq!(after.total_count, 1);
+    assert_eq!(after.success_count, Some(1));
     assert_eq!(after.failure_count, Some(0));
-    assert_eq!(after.total_tokens, 27);
-    assert_f64_close(after.total_cost, 1.62);
+    assert_eq!(after.total_tokens, 15);
+    assert_f64_close(after.total_cost, 1.5);
 
     cleanup_temp_test_dir(&temp_dir);
 }

@@ -6392,116 +6392,6 @@ async fn load_live_invocation_hourly_rows_for_bucket_epochs_tx(
         .collect())
 }
 
-async fn load_archive_invocation_hourly_rows_for_bucket_epochs_tx(
-    tx: &mut SqliteConnection,
-    bucket_epochs: &[i64],
-) -> Result<Vec<InvocationHourlySourceRecord>> {
-    if bucket_epochs.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let bucket_epoch_set = bucket_epochs.iter().copied().collect::<HashSet<_>>();
-    let month_keys = bucket_epochs
-        .iter()
-        .map(|bucket_epoch| {
-            Utc.timestamp_opt(*bucket_epoch, 0)
-                .single()
-                .ok_or_else(|| anyhow!("invalid invocation bucket epoch"))
-                .map(|bucket_start| {
-                    bucket_start
-                        .with_timezone(&Shanghai)
-                        .format("%Y-%m")
-                        .to_string()
-                })
-        })
-        .collect::<Result<HashSet<_>>>()?;
-    let archive_files = {
-        let mut query = QueryBuilder::<Sqlite>::new(
-            "SELECT id AS _id, month_key, file_path FROM archive_batches \
-             WHERE dataset = ",
-        );
-        query
-            .push_bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
-            .push(" AND status = ")
-            .push_bind(ARCHIVE_STATUS_COMPLETED)
-            .push(" AND month_key IN (");
-        {
-            let mut separated = query.separated(", ");
-            for month_key in &month_keys {
-                separated.push_bind(month_key);
-            }
-        }
-        query
-            .push(") ORDER BY month_key ASC, created_at ASC, id ASC")
-            .build_query_as::<ArchiveBatchFileRow>()
-            .fetch_all(&mut *tx)
-            .await?
-    };
-
-    let mut rows = Vec::new();
-    for archive_file in archive_files {
-        let archive_path = PathBuf::from(&archive_file.file_path);
-        if !archive_path.exists() {
-            return Err(anyhow!(
-                "required codex_invocations archive batch is missing for hourly rollup recompute: {}",
-                archive_path.display()
-            ));
-        }
-        let temp_path = PathBuf::from(format!(
-            "{}.{}.sqlite",
-            archive_path.display(),
-            retention_temp_suffix()
-        ));
-        if temp_path.exists() {
-            let _ = fs::remove_file(&temp_path);
-        }
-        let temp_cleanup = TempSqliteCleanup(temp_path.clone());
-        inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
-        let archive_pool = SqlitePoolOptions::new()
-            .max_connections(1)
-            .connect(&sqlite_url_for_path(&temp_path))
-            .await
-            .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
-        let archive_rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(
-            r#"
-            SELECT
-                id,
-                occurred_at,
-                source,
-                status,
-                total_tokens,
-                cost,
-                error_message,
-                failure_kind,
-                failure_class,
-                is_actionable,
-                payload,
-                t_total_ms,
-                t_req_read_ms,
-                t_req_parse_ms,
-                t_upstream_connect_ms,
-                t_upstream_ttfb_ms,
-                t_upstream_stream_ms,
-                t_resp_parse_ms,
-                t_persist_ms
-            FROM codex_invocations
-            ORDER BY id ASC
-            "#,
-        )
-        .fetch_all(&archive_pool)
-        .await?;
-        archive_pool.close().await;
-        drop(temp_cleanup);
-        rows.extend(archive_rows.into_iter().filter(|row| {
-            invocation_bucket_start_epoch(&row.occurred_at)
-                .map(|bucket_epoch| bucket_epoch_set.contains(&bucket_epoch))
-                .unwrap_or(false)
-        }));
-    }
-
-    Ok(rows)
-}
-
 async fn recompute_invocation_hourly_rollups_for_ids_tx(
     tx: &mut SqliteConnection,
     ids: &[i64],
@@ -6549,9 +6439,7 @@ async fn recompute_invocation_hourly_rollups_for_ids_tx(
         delete_hourly_rollup_rows_for_bucket_epochs_tx(tx, table, &bucket_epochs).await?;
     }
 
-    let mut rows =
-        load_archive_invocation_hourly_rows_for_bucket_epochs_tx(tx, &bucket_epochs).await?;
-    rows.extend(load_live_invocation_hourly_rows_for_bucket_epochs_tx(tx, &bucket_epochs).await?);
+    let rows = load_live_invocation_hourly_rows_for_bucket_epochs_tx(tx, &bucket_epochs).await?;
     upsert_invocation_hourly_rollups_tx(tx, &rows, &INVOCATION_HOURLY_ROLLUP_TARGETS).await?;
     Ok(())
 }

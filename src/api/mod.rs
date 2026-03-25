@@ -1556,8 +1556,18 @@ fn build_hourly_rollup_exact_range_plan(
     let mut plan = HourlyRollupExactRangePlan::default();
     let start_epoch = start.timestamp();
     let end_epoch = end.timestamp();
-    let full_hour_start_epoch = ceil_hour_epoch(start_epoch);
-    let full_hour_end_epoch = align_bucket_epoch(end_epoch, 3_600, 0);
+    // Historical ranges are only guaranteed at hour-bucket accuracy. Round the archived side
+    // outward to preserve the first/last pre-cutoff hour, while keeping live-side edges exact.
+    let full_hour_start_epoch = if start < raw_cutoff {
+        align_bucket_epoch(start_epoch, 3_600, 0)
+    } else {
+        ceil_hour_epoch(start_epoch)
+    };
+    let full_hour_end_epoch = if end <= raw_cutoff {
+        ceil_hour_epoch(end_epoch)
+    } else {
+        align_bucket_epoch(end_epoch, 3_600, 0)
+    };
     let full_hour_start = Utc
         .timestamp_opt(full_hour_start_epoch, 0)
         .single()
