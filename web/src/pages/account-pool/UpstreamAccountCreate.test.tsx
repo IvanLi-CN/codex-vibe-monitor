@@ -1736,6 +1736,66 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     }
   });
 
+  it("dispatches a keepalive for pending oauth metadata when the create page unmounts", async () => {
+    vi.useFakeTimers();
+    const updateOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      updatedAt: "2026-03-13T09:56:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    mockUpstreamAccounts({ updateOauthLogin });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      state: {
+        draft: {
+          oauth: {
+            displayName: "Fresh OAuth",
+            session: {
+              loginId: "login-1",
+              status: "pending",
+              authUrl: "https://auth.openai.com/authorize?login=1",
+              redirectUri: "http://localhost:1455/oauth/callback",
+              expiresAt: "2026-03-13T10:00:00.000Z",
+              updatedAt: "2026-03-13T09:55:00.000Z",
+              accountId: null,
+              error: null,
+            },
+            sessionHint: "OAuth URL ready",
+          },
+        },
+      },
+    });
+
+    await flushAsync();
+    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth Unmount");
+    await flushAsync();
+    expect(updateOauthLogin).not.toHaveBeenCalled();
+
+    act(() => {
+      root?.unmount();
+      root = null;
+    });
+
+    expect(apiMocks.updateOauthLoginSessionKeepalive).toHaveBeenCalledWith(
+      "login-1",
+      {
+        displayName: "Fresh OAuth Unmount",
+        groupName: "",
+        note: "",
+        tagIds: [],
+        isMother: false,
+        mailboxSessionId: "",
+        mailboxAddress: "",
+      },
+      "2026-03-13T09:55:00.000Z",
+    );
+  });
+
   it("emits an upstream account refresh when metadata sync finishes after callback completion", async () => {
     vi.useFakeTimers();
     const updateOauthLogin = vi.fn().mockResolvedValue({
@@ -1774,6 +1834,54 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     await flushSessionSyncDebounce();
 
     expect(updateOauthLogin).toHaveBeenCalled();
+    expect(upstreamAccountsEventMocks.emitUpstreamAccountsChanged).toHaveBeenCalledTimes(
+      1,
+    );
+  });
+
+  it("keeps the sync validation error visible when oauth completion races with a rejected metadata sync", async () => {
+    vi.useFakeTimers();
+    const updateOauthLogin = vi
+      .fn()
+      .mockRejectedValue(new Error("Display name must be unique."));
+    const getLoginSession = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "completed",
+      authUrl: null,
+      redirectUri: null,
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: 41,
+      error: null,
+    });
+    mockUpstreamAccounts({ updateOauthLogin, getLoginSession });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      state: {
+        draft: {
+          oauth: {
+            displayName: "Fresh OAuth",
+            session: {
+              loginId: "login-1",
+              status: "pending",
+              authUrl: "https://auth.openai.com/authorize?login=1",
+              redirectUri: "http://localhost:1455/oauth/callback",
+              expiresAt: "2026-03-13T10:00:00.000Z",
+              accountId: null,
+              error: null,
+            },
+            sessionHint: "OAuth URL ready",
+          },
+        },
+      },
+    });
+
+    await flushAsync();
+    setInputValue('input[name="oauthDisplayName"]', "Taken OAuth Name");
+    await flushAsync();
+    await flushSessionSyncDebounce();
+
+    expect(getLoginSession).toHaveBeenCalledWith("login-1");
+    expect(document.body.textContent).toContain("Display name must be unique.");
     expect(upstreamAccountsEventMocks.emitUpstreamAccountsChanged).toHaveBeenCalledTimes(
       1,
     );
@@ -2025,7 +2133,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     );
   });
 
-  it("does not surface a sync error after the oauth session already completed", async () => {
+  it("keeps the sync error visible after the oauth session already completed", async () => {
     vi.useFakeTimers();
     const updateOauthLogin = vi
       .fn()
@@ -2073,7 +2181,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       mailboxAddress: "",
     });
     expect(getLoginSession).toHaveBeenCalledWith("login-1");
-    expect(host?.textContent).not.toContain(
+    expect(host?.textContent).toContain(
       "This login session can no longer be edited.",
     );
     expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(true);

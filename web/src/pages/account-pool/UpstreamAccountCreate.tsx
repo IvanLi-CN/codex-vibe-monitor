@@ -1263,6 +1263,9 @@ export default function UpstreamAccountCreatePage() {
   const createdPendingOauthSessionSignaturesRef = useRef<
     Record<string, string>
   >({});
+  const dispatchAllPendingOauthSessionKeepaliveSyncRef = useRef<() => void>(
+    () => undefined,
+  );
   const restoredPendingOauthLoginIdsRef = useRef(
     new Set<string>([
       ...(draft?.oauth?.session?.status === "pending"
@@ -1327,6 +1330,7 @@ export default function UpstreamAccountCreatePage() {
   ]);
   useEffect(() => {
     return () => {
+      dispatchAllPendingOauthSessionKeepaliveSyncRef.current();
       if (oauthMailboxToneResetRef.current != null) {
         window.clearTimeout(oauthMailboxToneResetRef.current);
       }
@@ -1620,11 +1624,18 @@ export default function UpstreamAccountCreatePage() {
             if (latestSession && latestSession.status !== "pending") {
               const latestRecord = pendingOauthSessionSyncRef.current[loginId];
               if (latestRecord) {
-                latestRecord.failedSignature = null;
-                latestRecord.syncedSignature = signature;
+                latestRecord.failedSignature = signature;
+                latestRecord.syncedSignature = null;
               }
               applyPendingOauthSessionStatus(loginId, latestSession);
-              clearPendingOauthSessionSyncError(loginId);
+              if (latestSession.accountId) {
+                emitUpstreamAccountsChanged();
+              }
+              setPendingOauthSessionSyncError(
+                loginId,
+                latestSession.error ??
+                  (err instanceof Error ? err.message : String(err)),
+              );
               return;
             }
             if (shouldRetryPendingOauthSessionSync(err)) {
@@ -1779,6 +1790,10 @@ export default function UpstreamAccountCreatePage() {
       dispatchPendingOauthSessionKeepaliveSync(loginId);
     });
   }, [dispatchPendingOauthSessionKeepaliveSync, writesEnabled]);
+  useEffect(() => {
+    dispatchAllPendingOauthSessionKeepaliveSyncRef.current =
+      dispatchAllPendingOauthSessionKeepaliveSync;
+  }, [dispatchAllPendingOauthSessionKeepaliveSync]);
   useEffect(() => {
     singleOauthSessionSnapshotRef.current = singleOauthSessionSnapshot;
     batchOauthSessionSnapshotsRef.current = batchOauthSessionSnapshots;
