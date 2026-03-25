@@ -261,6 +261,14 @@ async function flushTimers() {
   });
 }
 
+async function flushSessionSyncDebounce() {
+  await act(async () => {
+    vi.advanceTimersByTime(300);
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
 async function setFileInputFiles(input: HTMLInputElement, files: File[]) {
   Object.defineProperty(input, "files", {
     configurable: true,
@@ -504,6 +512,15 @@ function mockUpstreamAccounts(
       accountId: null,
       error: null,
     }),
+    updateOauthLogin: vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    }),
     completeOauthLogin: vi
       .fn()
       .mockResolvedValue({ id: 41, displayName: "Row One" }),
@@ -632,7 +649,8 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     expect(updatedGroupInputs[5]?.value).toBe("prod");
   }, 10_000);
 
-  it("clears a pending row session when metadata changes", async () => {
+  it("keeps a pending row session while syncing metadata changes", async () => {
+    vi.useFakeTimers();
     const beginOauthLogin = vi.fn().mockResolvedValue({
       loginId: "login-1",
       status: "pending",
@@ -642,7 +660,16 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
       accountId: null,
       error: null,
     });
-    mockUpstreamAccounts({ beginOauthLogin });
+    const updateOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    mockUpstreamAccounts({ beginOauthLogin, updateOauthLogin });
     render("/account-pool/upstream-accounts/new?mode=batchOauth");
 
     setInputValue('input[name^="batchOauthDisplayName-"]', "Row One");
@@ -662,11 +689,20 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
 
     clickButton(/Expand note/i);
     setInputValue('input[name^="batchOauthNote-"]', "Needs a new login");
+    await flushSessionSyncDebounce();
 
-    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(true);
-    expect(host?.textContent).toContain(
-      "Metadata changed. Generate a fresh OAuth URL for this row before completing login.",
-    );
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
+    expect(host?.textContent).not.toContain("Generate a fresh OAuth URL");
+    expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
+      displayName: "Row One",
+      groupName: "",
+      note: "Needs a new login",
+      groupNote: "",
+      tagIds: [],
+      isMother: false,
+      mailboxSessionId: "",
+      mailboxAddress: "",
+    });
   }, 10_000);
 
   it("completes one row without leaving the batch page", async () => {
@@ -1193,7 +1229,8 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     expect(host?.textContent).not.toContain("edited-batch@mail-tw.707079.xyz");
   });
 
-  it("invalidates an existing batch oauth URL after attaching a new supported mailbox", async () => {
+  it("keeps an existing batch oauth URL after attaching a new supported mailbox", async () => {
+    vi.useFakeTimers();
     const beginOauthMailboxSessionForAddress = vi.fn().mockResolvedValue({
       supported: true,
       sessionId: "mailbox-attached-row-1",
@@ -1201,7 +1238,19 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
       expiresAt: "2026-04-13T10:00:00.000Z",
       source: "attached",
     });
-    mockUpstreamAccounts({ beginOauthMailboxSessionForAddress });
+    const updateOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-existing-row-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=existing-row-1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    mockUpstreamAccounts({
+      beginOauthMailboxSessionForAddress,
+      updateOauthLogin,
+    });
     render({
       pathname: "/account-pool/upstream-accounts/new",
       search: "?mode=batchOauth",
@@ -1271,15 +1320,19 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     );
     clickBodyButton(/Submit mailbox/i);
     await flushAsync();
+    await flushSessionSyncDebounce();
 
-    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(true);
-    expect(
-      (
-        host?.querySelector(
-          'input[name="batchOauthCallbackUrl-row-1"]',
-        ) as HTMLInputElement | null
-      )?.value,
-    ).toBe("");
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
+    expect(updateOauthLogin).toHaveBeenCalledWith("login-existing-row-1", {
+      displayName: "Batch Row",
+      groupName: "",
+      note: "",
+      groupNote: "",
+      tagIds: [],
+      isMother: false,
+      mailboxSessionId: "mailbox-attached-row-1",
+      mailboxAddress: "edited-batch@mail-tw.707079.xyz",
+    });
   });
 });
 
@@ -1378,7 +1431,8 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(beginOauthLogin).not.toHaveBeenCalled();
   });
 
-  it("invalidates a pending single oauth session when metadata changes", async () => {
+  it("keeps a pending single oauth session while syncing metadata changes", async () => {
+    vi.useFakeTimers();
     const beginOauthLogin = vi.fn().mockResolvedValue({
       loginId: "login-1",
       status: "pending",
@@ -1388,7 +1442,16 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       accountId: null,
       error: null,
     });
-    mockUpstreamAccounts({ beginOauthLogin });
+    const updateOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    mockUpstreamAccounts({ beginOauthLogin, updateOauthLogin });
     render();
 
     setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth");
@@ -1399,14 +1462,24 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
 
     setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth Renamed");
-    await flushAsync();
+    await flushSessionSyncDebounce();
 
-    expect(host?.textContent).toContain("Generate a fresh OAuth URL");
-    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(true);
-    expect(findButton(/Complete OAuth login/i)?.disabled).toBe(true);
+    expect(host?.textContent).not.toContain("Generate a fresh OAuth URL");
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
+    expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
+      displayName: "Fresh OAuth Renamed",
+      groupName: "",
+      note: "",
+      groupNote: "",
+      tagIds: [],
+      isMother: false,
+      mailboxSessionId: "",
+      mailboxAddress: "",
+    });
   });
 
-  it("invalidates pending batch oauth sessions when a draft group note changes", async () => {
+  it("keeps pending batch oauth sessions when a draft group note changes", async () => {
+    vi.useFakeTimers();
     const beginOauthLogin = vi.fn().mockResolvedValue({
       loginId: "login-1",
       status: "pending",
@@ -1416,7 +1489,16 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       accountId: null,
       error: null,
     });
-    mockUpstreamAccounts({ beginOauthLogin });
+    const updateOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    mockUpstreamAccounts({ beginOauthLogin, updateOauthLogin });
     render("/account-pool/upstream-accounts/new?mode=batchOauth");
 
     setComboboxValue('input[name="batchOauthDefaultGroupName"]', "new-team");
@@ -1439,11 +1521,19 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     setFieldValue(updatedGroupNoteField, "Updated draft shared note");
     clickBodyButton(/Save changes/i);
     await flushAsync();
+    await flushSessionSyncDebounce();
 
-    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(true);
-    expect(host?.textContent).toContain(
-      "Metadata changed. Generate a fresh OAuth URL for this row before completing login.",
-    );
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
+    expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
+      displayName: "",
+      groupName: "new-team",
+      note: "",
+      groupNote: "Updated draft shared note",
+      tagIds: [],
+      isMother: false,
+      mailboxSessionId: "",
+      mailboxAddress: "",
+    });
   });
 
   it("blocks creating an API key account when the display name already exists", async () => {
@@ -1780,7 +1870,8 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     expect(host?.textContent).toContain("temp-user-2@example.com");
   });
 
-  it("invalidates a mailbox-bound oauth session when the mailbox draft changes", async () => {
+  it("keeps a pending oauth url when the mailbox draft changes before attach", async () => {
+    vi.useFakeTimers();
     const beginOauthLogin = vi.fn().mockResolvedValue({
       loginId: "login-1",
       status: "pending",
@@ -1790,7 +1881,16 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
       accountId: null,
       error: null,
     });
-    mockUpstreamAccounts({ beginOauthLogin });
+    const updateOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    mockUpstreamAccounts({ beginOauthLogin, updateOauthLogin });
     render("/account-pool/upstream-accounts/new?mode=oauth");
 
     clickButton(/Generate/i);
@@ -1799,12 +1899,88 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     await flushAsync();
 
     setInputValue('input[name="oauthMailboxInput"]', "new-target@example.com");
-    await flushAsync();
+    await flushSessionSyncDebounce();
 
-    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(true);
-    expect(host?.textContent).toContain(
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
+    expect(host?.textContent).not.toContain(
       "Generate a fresh OAuth URL before completing login.",
     );
+    expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
+      displayName: "mailbox-1@example.com",
+      groupName: "",
+      note: "",
+      groupNote: "",
+      tagIds: [],
+      isMother: false,
+      mailboxSessionId: "",
+      mailboxAddress: "",
+    });
+  });
+
+  it("keeps a pending oauth url while clearing mailbox binding after the input diverges", async () => {
+    vi.useFakeTimers();
+    const updateOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-mailbox-bound",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=mailbox-bound",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    mockUpstreamAccounts({ updateOauthLogin });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=oauth",
+      state: {
+        draft: {
+          oauth: {
+            displayName: "Mailbox Bound",
+            mailboxSession: {
+              supported: true,
+              sessionId: "mailbox-attached-9",
+              emailAddress: "manual-existing@mail-tw.707079.xyz",
+              expiresAt: "2026-03-13T10:00:00.000Z",
+              source: "attached",
+            },
+            mailboxInput: "manual-existing@mail-tw.707079.xyz",
+            session: {
+              loginId: "login-mailbox-bound",
+              status: "pending",
+              authUrl:
+                "https://auth.openai.com/authorize?login=mailbox-bound",
+              redirectUri: "http://localhost:1455/oauth/callback",
+              expiresAt: "2026-03-13T10:00:00.000Z",
+              accountId: null,
+              error: null,
+            },
+            sessionHint: "OAuth URL ready",
+          },
+        },
+      },
+    });
+
+    await flushAsync();
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
+
+    setInputValue('input[name="oauthMailboxInput"]', "different@example.com");
+    await flushSessionSyncDebounce();
+
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
+    expect(host?.textContent).not.toContain(
+      "Generate a fresh OAuth URL before completing login.",
+    );
+    expect(host?.textContent).not.toContain("Attached mailbox");
+    expect(updateOauthLogin).toHaveBeenCalledWith("login-mailbox-bound", {
+      displayName: "Mailbox Bound",
+      groupName: "",
+      note: "",
+      groupNote: "",
+      tagIds: [],
+      isMother: false,
+      mailboxSessionId: "",
+      mailboxAddress: "",
+    });
   });
 
   it("keeps the pending oauth url when an unsupported mailbox attach falls back", async () => {

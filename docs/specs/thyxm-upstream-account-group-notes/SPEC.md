@@ -33,7 +33,7 @@
 
 - 新增独立分组备注表，按标准化后的 `group_name` 存储共享备注与时间戳；只有存在至少一个账号引用该分组时才允许保留记录。
 - `GET /api/pool/upstream-accounts` 响应新增 `groups[]`，每项至少包含 `groupName` 与 `note`。
-- `POST /api/pool/upstream-accounts/oauth/login-sessions`、`POST /api/pool/upstream-accounts/api-keys`、`PATCH /api/pool/upstream-accounts/:id` 新增可选 `groupNote`，仅用于“当前还不存在实际账号的新分组草稿”随首次落库一起持久化；若提交瞬间分组其实已经存在，后端必须忽略该草稿但继续完成账号操作；已存在分组的显式备注编辑必须使用专门的组备注保存接口。
+- `POST /api/pool/upstream-accounts/oauth/login-sessions`、`PATCH /api/pool/upstream-accounts/oauth/login-sessions/:loginId`、`POST /api/pool/upstream-accounts/api-keys`、`PATCH /api/pool/upstream-accounts/:id` 新增可选 `groupNote`，仅用于“当前还不存在实际账号的新分组草稿”随首次落库一起持久化；若提交瞬间分组其实已经存在，后端必须忽略该草稿但继续完成账号操作；已存在分组的显式备注编辑必须使用专门的组备注保存接口。
 - 新增 `PUT /api/pool/upstream-account-groups/:groupName`，仅用于已存在分组的即时备注保存；若分组当前没有账号引用则返回明确错误。
 
 ### 生命周期
@@ -109,3 +109,4 @@
 - 2026-03-14: 创建增量 spec，冻结上游账号分组共享备注的数据模型、交互边界与验收标准。
 - 2026-03-14: 完成后端组备注持久化、前端复用弹窗与批量/单账号/API Key/详情编辑入口接入，并通过本地自动化验证与浏览器 smoke。
 - 2026-03-14: 补充 Storybook 视觉证据，覆盖复用组备注弹窗、详情抽屉入口，以及批量 OAuth 行内组备注按钮位置。
+- 2026-03-25: `j86ms` 为 pending OAuth login session 补齐 `PATCH` metadata sync，新增账号页中的分组备注草稿编辑不再要求重新生成 OAuth URL。

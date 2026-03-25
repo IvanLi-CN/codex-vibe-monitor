@@ -30,6 +30,37 @@ export const Ready: Story = {
   },
 }
 
+export const PendingMetadataSync: Story = {
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts/new',
+        state: {
+          draft: {
+            oauth: {
+              displayName: 'Pending OAuth Sync',
+              groupName: 'staging',
+              note: 'Before metadata edit',
+            },
+          },
+        },
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const displayName = canvas.getByLabelText(/display name/i)
+
+    await userEvent.click(canvas.getByRole('button', { name: /generate oauth url/i }))
+    await expect(canvas.getByRole('button', { name: /copy oauth url/i })).toBeEnabled()
+    await userEvent.clear(displayName)
+    await userEvent.type(displayName, 'Pending OAuth Sync Updated')
+
+    await expect(canvas.getByRole('button', { name: /copy oauth url/i })).toBeEnabled()
+    await expect(canvas.queryByText(/generate a fresh oauth url/i)).not.toBeInTheDocument()
+  },
+}
+
 export const MailboxGenerated: Story = {
   render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new" />,
   play: async ({ canvasElement }) => {

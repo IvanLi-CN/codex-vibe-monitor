@@ -44,7 +44,7 @@
 - 单账号 OAuth 新增页与 reauth 页的邮箱区域改为“可编辑邮箱输入 + `Use address` + `Generate`”双入口。
 - 当 `Use address` 成功附着可读邮箱时，页面显示附着成功的邮箱 chip 与 `attached` 来源标识；验证码、邀请态、复制按钮与状态轮询继续生效。
 - 当手动输入返回 `supported=false` 时，页面保留输入值并显示明确说明；验证码 / 邀请态区禁用，但“生成 OAuth 链接”和“完成登录”按钮仍可继续使用。
-- 当输入值与当前已附着 / 已生成的邮箱地址不一致时，页面应清空本地邮箱会话与相关增强状态，避免把旧邮箱结果误用到新地址。
+- 当输入值与当前已附着 / 已生成的邮箱地址不一致时，页面应清空本地邮箱会话与相关增强状态，避免把旧邮箱结果误用到新地址；若此时已有 pending OAuth URL，则由 `j86ms` 定义的 login-session metadata sync 更新绑定状态，不再强制重新生成 URL。
 
 ### 状态机与契约
 
@@ -75,6 +75,7 @@
 - Rust 侧在 `src/upstream_accounts/mod.rs` 扩展邮箱会话创建入口、MoeMail config/emails 列表读取、`mailbox_source` 持久化与 `mailboxAddress` 绑定兼容。
 - Web 侧在 `web/src/lib/api.ts`、`web/src/hooks/useUpstreamAccounts.ts` 与 `web/src/pages/account-pool/UpstreamAccountCreate.tsx` 对齐联合类型、手动附着入口与单账号 OAuth UI。
 - Storybook、文案与 Vitest 场景同步覆盖支持 / 不支持 / attached / generated 路径。
+- `j86ms` 进一步把新增账号页中的 pending OAuth login session 升级为可热更新 metadata 的会话，替换“邮箱草稿变化会强制失效 OAuth URL”的旧边界。
 
 ## 验证结果
 

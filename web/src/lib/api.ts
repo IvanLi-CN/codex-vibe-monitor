@@ -1893,6 +1893,17 @@ export interface CreateOauthLoginSessionPayload {
   mailboxAddress?: string;
 }
 
+export interface UpdateOauthLoginSessionPayload {
+  displayName?: string;
+  groupName?: string;
+  note?: string;
+  groupNote?: string;
+  tagIds?: number[];
+  isMother?: boolean;
+  mailboxSessionId?: string;
+  mailboxAddress?: string;
+}
+
 export interface CompleteOauthLoginSessionPayload {
   callbackUrl: string;
   mailboxSessionId?: string;
@@ -3344,6 +3355,20 @@ export async function fetchOauthLoginSession(
 ): Promise<LoginSessionStatusResponse> {
   const response = await fetchJson<unknown>(
     `/api/pool/upstream-accounts/oauth/login-sessions/${encodeURIComponent(loginId)}`,
+  );
+  return normalizeLoginSessionStatusResponse(response);
+}
+
+export async function updateOauthLoginSession(
+  loginId: string,
+  payload: UpdateOauthLoginSessionPayload,
+): Promise<LoginSessionStatusResponse> {
+  const response = await fetchJson<unknown>(
+    `/api/pool/upstream-accounts/oauth/login-sessions/${encodeURIComponent(loginId)}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    },
   );
   return normalizeLoginSessionStatusResponse(response);
 }

@@ -1208,6 +1208,22 @@ pub(crate) struct CompleteOauthLoginSessionRequest {
     mailbox_address: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UpdateOauthLoginSessionRequest {
+    display_name: Option<String>,
+    group_name: Option<String>,
+    note: Option<String>,
+    group_note: Option<String>,
+    #[serde(default)]
+    tag_ids: Vec<i64>,
+    #[serde(default)]
+    is_mother: bool,
+    mailbox_session_id: Option<String>,
+    #[serde(alias = "generatedMailboxAddress")]
+    mailbox_address: Option<String>,
+}
+
 #[derive(Debug, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CreateOauthMailboxSessionRequest {
@@ -2021,7 +2037,7 @@ struct UpstreamAccountSampleRow {
 }
 
 #[allow(dead_code)]
-#[derive(Debug, FromRow)]
+#[derive(Debug, Clone, FromRow)]
 struct OauthLoginSessionRow {
     login_id: String,
     account_id: Option<i64>,
@@ -4785,6 +4801,118 @@ pub(crate) async fn get_oauth_login_session(
         .map_err(internal_error_tuple)?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "login session not found".to_string()))?;
     Ok(Json(login_session_to_response(&session)))
+}
+
+pub(crate) async fn update_oauth_login_session(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    AxumPath(login_id): AxumPath<String>,
+    Json(payload): Json<UpdateOauthLoginSessionRequest>,
+) -> Result<Json<LoginSessionStatusResponse>, (StatusCode, String)> {
+    if !is_same_origin_settings_write(&headers) {
+        return Err((
+            StatusCode::FORBIDDEN,
+            "cross-origin account writes are forbidden".to_string(),
+        ));
+    }
+    state.upstream_accounts.require_crypto_key()?;
+
+    expire_pending_login_sessions(&state.pool)
+        .await
+        .map_err(internal_error_tuple)?;
+
+    let display_name = normalize_optional_text(payload.display_name);
+    let group_name = normalize_optional_text(payload.group_name);
+    let note = normalize_optional_text(payload.note);
+    let requested_group_note = payload.group_note;
+    let normalized_group_note = normalize_optional_text(requested_group_note.clone());
+    let mailbox_session_id = normalize_optional_text(payload.mailbox_session_id);
+    let mailbox_address = normalize_optional_text(payload.mailbox_address);
+    validate_mailbox_binding(
+        &state.pool,
+        mailbox_session_id.as_deref(),
+        mailbox_address.as_deref(),
+    )
+    .await?;
+    let tag_ids = validate_tag_ids(&state.pool, &payload.tag_ids).await?;
+    let tag_ids_json = encode_tag_ids_json(&tag_ids).map_err(internal_error_tuple)?;
+    validate_group_note_target(group_name.as_deref(), requested_group_note.is_some())?;
+
+    let mut tx = state
+        .pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(internal_error_tuple)?;
+    let session = load_login_session_by_login_id_with_executor(&mut *tx, &login_id)
+        .await
+        .map_err(internal_error_tuple)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "login session not found".to_string()))?;
+    if session.status != LOGIN_SESSION_STATUS_PENDING {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            if session.status == LOGIN_SESSION_STATUS_EXPIRED {
+                "The login session has expired. Please create a new authorization link.".to_string()
+            } else {
+                "This login session can no longer be edited.".to_string()
+            },
+        ));
+    }
+
+    if let Some(display_name) = display_name.as_deref() {
+        ensure_display_name_available(&mut *tx, display_name, session.account_id).await?;
+    }
+
+    let stored_group_note = if requested_group_note.is_some() {
+        if let Some(group_name) = group_name.as_deref() {
+            if !group_has_accounts_conn(tx.as_mut(), group_name)
+                .await
+                .map_err(internal_error_tuple)?
+            {
+                normalized_group_note
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        UPDATE pool_oauth_login_sessions
+        SET display_name = ?2,
+            group_name = ?3,
+            is_mother = ?4,
+            note = ?5,
+            tag_ids_json = ?6,
+            group_note = ?7,
+            mailbox_session_id = ?8,
+            generated_mailbox_address = ?9,
+            updated_at = ?10
+        WHERE login_id = ?1
+        "#,
+    )
+    .bind(&login_id)
+    .bind(display_name)
+    .bind(group_name)
+    .bind(if payload.is_mother { 1 } else { 0 })
+    .bind(note)
+    .bind(tag_ids_json)
+    .bind(stored_group_note)
+    .bind(mailbox_session_id)
+    .bind(mailbox_address)
+    .bind(&now_iso)
+    .execute(&mut *tx)
+    .await
+    .map_err(internal_error_tuple)?;
+    let updated = load_login_session_by_login_id_with_executor(&mut *tx, &login_id)
+        .await
+        .map_err(internal_error_tuple)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "login session not found".to_string()))?;
+    tx.commit().await.map_err(internal_error_tuple)?;
+    Ok(Json(login_session_to_response(&updated)))
 }
 
 pub(crate) async fn oauth_callback(
@@ -14816,6 +14944,55 @@ mod tests {
         format!("{encoded}.{body}.{encoded}")
     }
 
+    fn test_tag_routing_rule() -> TagRoutingRule {
+        TagRoutingRule {
+            guard_enabled: false,
+            lookback_hours: None,
+            max_conversations: None,
+            allow_cut_out: true,
+            allow_cut_in: true,
+        }
+    }
+
+    async fn insert_test_oauth_mailbox_session(
+        pool: &SqlitePool,
+        session_id: &str,
+        email_address: &str,
+        source: &str,
+    ) {
+        let now_iso = format_utc_iso(Utc::now());
+        let expires_at = format_utc_iso(Utc::now() + ChronoDuration::days(1));
+        let domain = email_address
+            .split('@')
+            .nth(1)
+            .unwrap_or("mail-tw.707079.xyz");
+        sqlx::query(
+            r#"
+            INSERT INTO pool_oauth_mailbox_sessions (
+                session_id, remote_email_id, email_address, email_domain, mailbox_source,
+                latest_code_value, latest_code_source, latest_code_updated_at,
+                invite_subject, invite_copy_value, invite_copy_label, invite_updated_at,
+                invited, last_message_id, created_at, updated_at, expires_at
+            ) VALUES (
+                ?1, ?2, ?3, ?4, ?5,
+                NULL, NULL, NULL,
+                NULL, NULL, NULL, NULL,
+                0, NULL, ?6, ?6, ?7
+            )
+            "#,
+        )
+        .bind(session_id)
+        .bind(format!("remote-{session_id}"))
+        .bind(email_address)
+        .bind(domain)
+        .bind(source)
+        .bind(&now_iso)
+        .bind(&expires_at)
+        .execute(pool)
+        .await
+        .expect("insert oauth mailbox session");
+    }
+
     async fn insert_api_key_account(pool: &SqlitePool, display_name: &str) -> i64 {
         let now_iso = format_utc_iso(Utc::now());
         sqlx::query_scalar::<_, i64>(
@@ -18675,6 +18852,361 @@ mod tests {
             .await
             .expect("resolve pool account");
         assert!(matches!(resolution, PoolAccountResolution::RateLimited));
+    }
+
+    #[tokio::test]
+    async fn update_oauth_login_session_preserves_pending_url_and_persists_metadata() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let tag_id = insert_tag(&state.pool, "pending-sync", &test_tag_routing_rule())
+            .await
+            .expect("insert tag")
+            .summary
+            .id;
+        insert_test_oauth_mailbox_session(
+            &state.pool,
+            "mailbox-session-1",
+            "pending-sync@mail-tw.707079.xyz",
+            OAUTH_MAILBOX_SOURCE_ATTACHED,
+        )
+        .await;
+
+        let created = create_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(CreateOauthLoginSessionRequest {
+                display_name: Some("Original Pending".to_string()),
+                group_name: Some("alpha".to_string()),
+                note: Some("before".to_string()),
+                group_note: Some("alpha note".to_string()),
+                account_id: None,
+                tag_ids: vec![],
+                is_mother: Some(false),
+                mailbox_session_id: None,
+                mailbox_address: None,
+            }),
+        )
+        .await
+        .expect("create oauth login session")
+        .0;
+
+        let updated = update_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            AxumPath(created.login_id.clone()),
+            Json(UpdateOauthLoginSessionRequest {
+                display_name: Some("Updated Pending".to_string()),
+                group_name: Some("beta".to_string()),
+                note: Some("after".to_string()),
+                group_note: Some("beta shared".to_string()),
+                tag_ids: vec![tag_id],
+                is_mother: true,
+                mailbox_session_id: Some("mailbox-session-1".to_string()),
+                mailbox_address: Some("pending-sync@mail-tw.707079.xyz".to_string()),
+            }),
+        )
+        .await
+        .expect("update oauth login session")
+        .0;
+
+        assert_eq!(updated.login_id, created.login_id);
+        assert_eq!(updated.auth_url, created.auth_url);
+        assert_eq!(updated.redirect_uri, created.redirect_uri);
+        assert_eq!(updated.expires_at, created.expires_at);
+
+        let stored = load_login_session_by_login_id(&state.pool, &updated.login_id)
+            .await
+            .expect("load stored login session")
+            .expect("stored login session should exist");
+        assert_eq!(stored.display_name.as_deref(), Some("Updated Pending"));
+        assert_eq!(stored.group_name.as_deref(), Some("beta"));
+        assert_eq!(stored.note.as_deref(), Some("after"));
+        assert_eq!(stored.group_note.as_deref(), Some("beta shared"));
+        assert_eq!(stored.is_mother, 1);
+        assert_eq!(
+            parse_tag_ids_json(stored.tag_ids_json.as_deref()),
+            vec![tag_id]
+        );
+        assert_eq!(
+            stored.mailbox_session_id.as_deref(),
+            Some("mailbox-session-1")
+        );
+        assert_eq!(
+            stored.mailbox_address.as_deref(),
+            Some("pending-sync@mail-tw.707079.xyz")
+        );
+    }
+
+    #[tokio::test]
+    async fn updated_oauth_login_session_metadata_is_used_when_callback_persists_account() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let tag_id = insert_tag(&state.pool, "callback-sync", &test_tag_routing_rule())
+            .await
+            .expect("insert tag")
+            .summary
+            .id;
+        insert_test_oauth_mailbox_session(
+            &state.pool,
+            "mailbox-session-2",
+            "callback-sync@mail-tw.707079.xyz",
+            OAUTH_MAILBOX_SOURCE_ATTACHED,
+        )
+        .await;
+
+        let created = create_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(CreateOauthLoginSessionRequest {
+                display_name: Some("Before Patch".to_string()),
+                group_name: Some("old-group".to_string()),
+                note: Some("before note".to_string()),
+                group_note: Some("old group note".to_string()),
+                account_id: None,
+                tag_ids: vec![],
+                is_mother: Some(false),
+                mailbox_session_id: None,
+                mailbox_address: None,
+            }),
+        )
+        .await
+        .expect("create oauth login session")
+        .0;
+
+        let _ = update_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            AxumPath(created.login_id.clone()),
+            Json(UpdateOauthLoginSessionRequest {
+                display_name: Some("After Patch".to_string()),
+                group_name: Some("new-group".to_string()),
+                note: Some("after note".to_string()),
+                group_note: Some("draft group note".to_string()),
+                tag_ids: vec![tag_id],
+                is_mother: true,
+                mailbox_session_id: Some("mailbox-session-2".to_string()),
+                mailbox_address: Some("callback-sync@mail-tw.707079.xyz".to_string()),
+            }),
+        )
+        .await
+        .expect("update oauth login session");
+
+        let updated_session = load_login_session_by_login_id(&state.pool, &created.login_id)
+            .await
+            .expect("load updated session")
+            .expect("updated session should exist");
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let encrypted_credentials = encrypt_credentials(
+            crypto_key,
+            &StoredCredentials::Oauth(StoredOauthCredentials {
+                access_token: "callback-access".to_string(),
+                refresh_token: "callback-refresh".to_string(),
+                id_token: test_id_token(
+                    "callback@example.com",
+                    Some("org_callback"),
+                    Some("user_callback"),
+                    Some("team"),
+                ),
+                token_type: Some("Bearer".to_string()),
+            }),
+        )
+        .expect("encrypt oauth credentials");
+        let account_id = persist_oauth_callback_inner(
+            state.as_ref(),
+            PersistOauthCallbackInput {
+                display_name: updated_session
+                    .display_name
+                    .clone()
+                    .expect("display name should be stored"),
+                session: updated_session.clone(),
+                claims: test_claims(
+                    "callback@example.com",
+                    Some("org_callback"),
+                    Some("user_callback"),
+                ),
+                encrypted_credentials,
+                token_expires_at: "2026-04-01T00:00:00Z".to_string(),
+            },
+        )
+        .await
+        .expect("persist oauth callback");
+
+        let account = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth account row")
+            .expect("oauth account should exist");
+        assert_eq!(account.display_name, "After Patch");
+        assert_eq!(account.group_name.as_deref(), Some("new-group"));
+        assert_eq!(account.note.as_deref(), Some("after note"));
+        assert_eq!(account.is_mother, 1);
+
+        let account_tag_ids = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT tag_id
+            FROM pool_upstream_account_tags
+            WHERE account_id = ?1
+            ORDER BY tag_id ASC
+            "#,
+        )
+        .bind(account_id)
+        .fetch_all(&state.pool)
+        .await
+        .expect("load oauth account tags");
+        assert_eq!(account_tag_ids, vec![tag_id]);
+
+        let group_note = sqlx::query_scalar::<_, Option<String>>(
+            r#"
+            SELECT note
+            FROM pool_upstream_account_group_notes
+            WHERE group_name = ?1
+            "#,
+        )
+        .bind("new-group")
+        .fetch_one(&state.pool)
+        .await
+        .expect("load group note");
+        assert_eq!(group_note.as_deref(), Some("draft group note"));
+
+        let completed_session = load_login_session_by_login_id(&state.pool, &created.login_id)
+            .await
+            .expect("load completed session")
+            .expect("completed session should exist");
+        assert_eq!(completed_session.status, LOGIN_SESSION_STATUS_COMPLETED);
+        assert_eq!(completed_session.account_id, Some(account_id));
+    }
+
+    #[tokio::test]
+    async fn update_oauth_login_session_rejects_completed_failed_and_expired_sessions() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let update_payload = || UpdateOauthLoginSessionRequest {
+            display_name: Some("Edited Session".to_string()),
+            group_name: Some("edited-group".to_string()),
+            note: Some("edited note".to_string()),
+            group_note: Some("edited group note".to_string()),
+            tag_ids: vec![],
+            is_mother: false,
+            mailbox_session_id: None,
+            mailbox_address: None,
+        };
+
+        let completed = create_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(CreateOauthLoginSessionRequest {
+                display_name: Some("Completed Session".to_string()),
+                group_name: Some("completed-group".to_string()),
+                note: None,
+                group_note: None,
+                account_id: None,
+                tag_ids: vec![],
+                is_mother: Some(false),
+                mailbox_session_id: None,
+                mailbox_address: None,
+            }),
+        )
+        .await
+        .expect("create completed session seed")
+        .0;
+        sqlx::query("UPDATE pool_oauth_login_sessions SET status = ?2 WHERE login_id = ?1")
+            .bind(&completed.login_id)
+            .bind(LOGIN_SESSION_STATUS_COMPLETED)
+            .execute(&state.pool)
+            .await
+            .expect("mark session completed");
+        let completed_err = update_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            AxumPath(completed.login_id.clone()),
+            Json(update_payload()),
+        )
+        .await
+        .expect_err("completed session should reject edits");
+        assert_eq!(completed_err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            completed_err.1,
+            "This login session can no longer be edited."
+        );
+
+        let failed = create_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(CreateOauthLoginSessionRequest {
+                display_name: Some("Failed Session".to_string()),
+                group_name: Some("failed-group".to_string()),
+                note: None,
+                group_note: None,
+                account_id: None,
+                tag_ids: vec![],
+                is_mother: Some(false),
+                mailbox_session_id: None,
+                mailbox_address: None,
+            }),
+        )
+        .await
+        .expect("create failed session seed")
+        .0;
+        sqlx::query("UPDATE pool_oauth_login_sessions SET status = ?2 WHERE login_id = ?1")
+            .bind(&failed.login_id)
+            .bind(LOGIN_SESSION_STATUS_FAILED)
+            .execute(&state.pool)
+            .await
+            .expect("mark session failed");
+        let failed_err = update_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            AxumPath(failed.login_id.clone()),
+            Json(update_payload()),
+        )
+        .await
+        .expect_err("failed session should reject edits");
+        assert_eq!(failed_err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(failed_err.1, "This login session can no longer be edited.");
+
+        let expired = create_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(CreateOauthLoginSessionRequest {
+                display_name: Some("Expired Session".to_string()),
+                group_name: Some("expired-group".to_string()),
+                note: None,
+                group_note: None,
+                account_id: None,
+                tag_ids: vec![],
+                is_mother: Some(false),
+                mailbox_session_id: None,
+                mailbox_address: None,
+            }),
+        )
+        .await
+        .expect("create expired session seed")
+        .0;
+        sqlx::query("UPDATE pool_oauth_login_sessions SET expires_at = ?2 WHERE login_id = ?1")
+            .bind(&expired.login_id)
+            .bind("2020-01-01T00:00:00Z")
+            .execute(&state.pool)
+            .await
+            .expect("expire session");
+        let expired_err = update_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            AxumPath(expired.login_id.clone()),
+            Json(update_payload()),
+        )
+        .await
+        .expect_err("expired session should reject edits");
+        assert_eq!(expired_err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            expired_err.1,
+            "The login session has expired. Please create a new authorization link."
+        );
+
+        let expired_session = load_login_session_by_login_id(&state.pool, &expired.login_id)
+            .await
+            .expect("load expired session")
+            .expect("expired session should exist");
+        assert_eq!(expired_session.status, LOGIN_SESSION_STATUS_EXPIRED);
     }
 
     #[tokio::test]
