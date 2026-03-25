@@ -112,7 +112,7 @@ type GroupNoteEditorState = {
 type MailboxCopyTone = "idle" | "copied" | "manual";
 const MAILBOX_REFRESH_INTERVAL_MS = 5_000;
 const MAILBOX_REFRESH_TICK_MS = 1_000;
-const OAUTH_SESSION_SYNC_DEBOUNCE_MS = 250;
+const OAUTH_SESSION_SYNC_RETRY_MS = 1_000;
 const IMPORTED_OAUTH_DUPLICATE_DETAIL =
   "duplicate credential in current import selection";
 
@@ -650,34 +650,9 @@ function nextPendingOauthSessionUpdatedAt(
   return new Date(nextTimestamp).toISOString();
 }
 
-function areOauthSessionTagListsEqual(
-  left: number[] | undefined,
-  right: number[] | undefined,
-) {
-  const normalizedLeft = left ?? [];
-  const normalizedRight = right ?? [];
-  return (
-    normalizedLeft.length === normalizedRight.length &&
-    normalizedLeft.every((value, index) => value === normalizedRight[index])
-  );
-}
-
-function shouldDebouncePendingOauthSessionSync(
-  previousSnapshot: PendingOauthSessionSnapshot | null,
-  nextSnapshot: PendingOauthSessionSnapshot,
-) {
-  if (!previousSnapshot) return false;
-  return (
-    previousSnapshot.payload.isMother === nextSnapshot.payload.isMother &&
-    previousSnapshot.payload.mailboxSessionId ===
-      nextSnapshot.payload.mailboxSessionId &&
-    previousSnapshot.payload.mailboxAddress ===
-      nextSnapshot.payload.mailboxAddress &&
-    areOauthSessionTagListsEqual(
-      previousSnapshot.payload.tagIds,
-      nextSnapshot.payload.tagIds,
-    )
-  );
+function shouldRetryPendingOauthSessionSync(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return !/^Request failed: (400|401|403|404|409|410|422)\b/.test(message);
 }
 
 function applyBatchMotherDraftRules(
@@ -1592,6 +1567,10 @@ export default function UpstreamAccountCreatePage() {
             const currentRecord = pendingOauthSessionSyncRef.current[loginId];
             if (currentRecord) {
               currentRecord.failedSignature = signature;
+              if (currentRecord.timerId != null) {
+                window.clearTimeout(currentRecord.timerId);
+                currentRecord.timerId = null;
+              }
             }
             let latestSession: LoginSessionStatusResponse | null = null;
             try {
@@ -1610,6 +1589,19 @@ export default function UpstreamAccountCreatePage() {
               applyPendingOauthSessionStatus(loginId, latestSession);
               clearPendingOauthSessionSyncError(loginId);
               return;
+            }
+            if (shouldRetryPendingOauthSessionSync(err)) {
+              const latestRecord = pendingOauthSessionSyncRef.current[loginId];
+              if (latestRecord?.failedSignature === signature) {
+                latestRecord.timerId = window.setTimeout(() => {
+                  const retryRecord = pendingOauthSessionSyncRef.current[loginId];
+                  if (!retryRecord) return;
+                  retryRecord.timerId = null;
+                  void runPendingOauthSessionSync(loginId, {
+                    force: true,
+                  }).catch(() => undefined);
+                }, OAUTH_SESSION_SYNC_RETRY_MS);
+              }
             }
             setPendingOauthSessionSyncError(
               loginId,
@@ -1770,7 +1762,6 @@ export default function UpstreamAccountCreatePage() {
 
     for (const snapshot of activeSnapshots) {
       let existing = pendingOauthSessionSyncRef.current[snapshot.loginId];
-      const previousSnapshot = existing?.lastSnapshot ?? null;
       if (!existing) {
         const shouldStartUnsynced =
           restoredPendingOauthLoginIdsRef.current.delete(snapshot.loginId);
@@ -1790,10 +1781,6 @@ export default function UpstreamAccountCreatePage() {
           lastUpdatedAt: snapshot.baseUpdatedAt,
         };
       }
-      const shouldDebounce = shouldDebouncePendingOauthSessionSync(
-        previousSnapshot,
-        snapshot,
-      );
       existing.pendingSignature = snapshot.signature;
       existing.lastSnapshot = snapshot;
       if (existing.syncedSignature === snapshot.signature) {
@@ -1804,27 +1791,11 @@ export default function UpstreamAccountCreatePage() {
         continue;
       }
       if (existing.failedSignature === snapshot.signature) {
-        if (existing.timerId != null) {
-          window.clearTimeout(existing.timerId);
-          existing.timerId = null;
-        }
         continue;
       }
       if (existing.timerId != null) {
         window.clearTimeout(existing.timerId);
         existing.timerId = null;
-      }
-      if (shouldDebounce) {
-        existing.timerId = window.setTimeout(() => {
-          const currentRecord =
-            pendingOauthSessionSyncRef.current[snapshot.loginId];
-          if (!currentRecord) return;
-          currentRecord.timerId = null;
-          void runPendingOauthSessionSync(snapshot.loginId).catch(
-            () => undefined,
-          );
-        }, OAUTH_SESSION_SYNC_DEBOUNCE_MS);
-        continue;
       }
       void runPendingOauthSessionSync(snapshot.loginId).catch(() => undefined);
     }

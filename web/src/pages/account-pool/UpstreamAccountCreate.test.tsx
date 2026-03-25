@@ -275,6 +275,14 @@ async function flushSessionSyncDebounce() {
   });
 }
 
+async function flushSessionSyncRetry() {
+  await act(async () => {
+    vi.advanceTimersByTime(1_100);
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
 async function setFileInputFiles(input: HTMLInputElement, files: File[]) {
   Object.defineProperty(input, "files", {
     configurable: true,
@@ -1548,7 +1556,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(updateOauthLogin.mock.lastCall?.[1]).not.toHaveProperty("groupNote");
   });
 
-  it("debounces pending single oauth metadata while typing", async () => {
+  it("starts pending single oauth metadata sync immediately while typing", async () => {
     vi.useFakeTimers();
     const updateOauthLogin = vi.fn().mockResolvedValue({
       loginId: "login-1",
@@ -1567,20 +1575,12 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     clickButton(/Generate OAuth URL/i);
     await flushAsync();
 
-    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth A");
+    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth Immediate");
     await flushAsync();
-    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth AB");
-    await flushAsync();
-    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth ABC");
-    await flushAsync();
-
-    expect(updateOauthLogin).not.toHaveBeenCalled();
-
-    await flushSessionSyncDebounce();
 
     expect(updateOauthLogin).toHaveBeenCalledTimes(1);
-    expect(updateOauthLogin).toHaveBeenLastCalledWith("login-1", {
-      displayName: "Fresh OAuth ABC",
+    expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
+      displayName: "Fresh OAuth Immediate",
       groupName: "",
       note: "",
       tagIds: [],
@@ -1591,17 +1591,23 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(updateOauthLogin.mock.lastCall?.[1]).not.toHaveProperty("groupNote");
   });
 
-  it("flushes pending single oauth metadata before copying the oauth url", async () => {
+  it("waits for the latest single oauth metadata sync before copying the oauth url", async () => {
     vi.useFakeTimers();
-    const updateOauthLogin = vi.fn().mockResolvedValue({
-      loginId: "login-1",
-      status: "pending",
-      authUrl: "https://auth.openai.com/authorize?login=1",
-      redirectUri: "http://localhost:1455/oauth/callback",
-      expiresAt: "2026-03-13T10:00:00.000Z",
-      accountId: null,
-      error: null,
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const originalClipboard = navigator.clipboard;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText,
+      },
     });
+    let resolveSync:
+      | ((value: LoginSessionStatusResponse) => void)
+      | undefined;
+    const firstSync = new Promise<LoginSessionStatusResponse>((resolve) => {
+      resolveSync = resolve;
+    });
+    const updateOauthLogin = vi.fn().mockReturnValueOnce(firstSync);
     mockUpstreamAccounts({ updateOauthLogin });
     render();
 
@@ -1612,7 +1618,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth Copied");
     await flushAsync();
-    expect(updateOauthLogin).not.toHaveBeenCalled();
+    expect(updateOauthLogin).toHaveBeenCalledTimes(1);
 
     clickButton(/Copy OAuth URL/i);
     await flushAsync();
@@ -1627,6 +1633,30 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       mailboxAddress: "",
     });
     expect(updateOauthLogin.mock.lastCall?.[1]).not.toHaveProperty("groupNote");
+    expect(writeText).not.toHaveBeenCalled();
+
+    if (!resolveSync) {
+      throw new Error("missing oauth sync resolver");
+    }
+    resolveSync({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    await flushAsync();
+
+    expect(writeText).toHaveBeenCalledWith(
+      "https://auth.openai.com/authorize?login=1",
+    );
+
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: originalClipboard,
+    });
   });
 
   it("dispatches a keepalive sync for the latest oauth metadata on pagehide", async () => {
@@ -2006,11 +2036,29 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     );
   });
 
-  it("does not retry an unchanged failed single oauth sync on rerender", async () => {
+  it("retries an unchanged failed single oauth sync after a transient error", async () => {
     vi.useFakeTimers();
     const updateOauthLogin = vi
       .fn()
-      .mockRejectedValue(new Error("Display name must be unique."));
+      .mockResolvedValueOnce({
+        loginId: "login-1",
+        status: "pending",
+        authUrl: "https://auth.openai.com/authorize?login=1",
+        redirectUri: "http://localhost:1455/oauth/callback",
+        expiresAt: "2026-03-13T10:00:00.000Z",
+        accountId: null,
+        error: null,
+      })
+      .mockRejectedValueOnce(new Error("network dropped"))
+      .mockResolvedValueOnce({
+        loginId: "login-1",
+        status: "pending",
+        authUrl: "https://auth.openai.com/authorize?login=1",
+        redirectUri: "http://localhost:1455/oauth/callback",
+        expiresAt: "2026-03-13T10:00:00.000Z",
+        accountId: null,
+        error: null,
+      });
     const getLoginSession = vi.fn().mockResolvedValue({
       loginId: "login-1",
       status: "pending",
@@ -2043,14 +2091,18 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     });
     await flushAsync();
 
-    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth Duplicate");
+    expect(updateOauthLogin).toHaveBeenCalledTimes(1);
+
+    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth Retry");
     await flushAsync();
-    await flushSessionSyncDebounce();
+    expect(updateOauthLogin).toHaveBeenCalledTimes(2);
+
+    await flushSessionSyncRetry();
     await flushAsync();
 
-    expect(updateOauthLogin).toHaveBeenCalledTimes(2);
+    expect(updateOauthLogin).toHaveBeenCalledTimes(3);
     expect(updateOauthLogin).toHaveBeenLastCalledWith("login-1", {
-      displayName: "Fresh OAuth Duplicate",
+      displayName: "Fresh OAuth Retry",
       groupName: "",
       note: "",
       tagIds: [],
@@ -2059,8 +2111,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       mailboxAddress: "",
     });
 
-    expect(updateOauthLogin).toHaveBeenCalledTimes(2);
-    expect(getLoginSession).toHaveBeenCalledTimes(2);
+    expect(getLoginSession).toHaveBeenCalledTimes(1);
   });
 
   it("retries the latest single oauth metadata after a stale sync fails during completion", async () => {
