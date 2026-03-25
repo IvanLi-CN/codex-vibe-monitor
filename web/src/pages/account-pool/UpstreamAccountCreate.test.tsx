@@ -3134,6 +3134,39 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(navigateMock).not.toHaveBeenCalled();
   });
 
+  it("clears a completed single oauth session after edits so a fresh url can be regenerated", async () => {
+    const completeOauthLogin = vi.fn().mockResolvedValue({
+      id: 41,
+      displayName: "Fresh OAuth",
+      duplicateInfo: {
+        peerAccountIds: [5],
+        reasons: ["sharedChatgptAccountId"],
+      },
+    });
+    mockUpstreamAccounts({ completeOauthLogin });
+    render();
+
+    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth");
+    await flushAsync();
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+    setInputValue(
+      'textarea[name="oauthCallbackUrl"]',
+      "http://localhost:1455/oauth/callback?code=test",
+    );
+    await flushAsync();
+    clickButton(/Complete OAuth login/i);
+    await flushAsync();
+
+    expect(findButton(/Generate OAuth URL/i)?.disabled).toBe(true);
+
+    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth Retry");
+    await flushAsync();
+
+    expect(findButton(/Generate OAuth URL/i)?.disabled).toBe(false);
+    expect(pageTextContent()).toContain("Generate a fresh OAuth URL");
+  });
+
   it("refreshes the single oauth session after a server-side completion failure", async () => {
     const getLoginSession = vi.fn().mockResolvedValue({
       loginId: "login-1",

@@ -595,7 +595,12 @@ function invalidatePendingSingleOauthSession(
   setOauthDuplicateWarning: (value: DuplicateWarningState | null) => void,
   regenerateRequiredLabel: string,
 ) {
-  if (!currentSession || currentSession.status !== "pending") return;
+  if (
+    !currentSession ||
+    (currentSession.status !== "pending" && currentSession.status !== "completed")
+  ) {
+    return;
+  }
   setSession(null);
   setSessionHint(regenerateRequiredLabel);
   setOauthCallbackUrl("");
@@ -1423,6 +1428,17 @@ export default function UpstreamAccountCreatePage() {
     if (!isRelinking) return;
     invalidateCurrentSingleOauthSession();
   }, [invalidateCurrentSingleOauthSession, isRelinking]);
+  const invalidateCompletedSingleOauthRetrySession = useCallback(() => {
+    if (isRelinking || session?.status !== "completed") return;
+    invalidateCurrentSingleOauthSession();
+  }, [invalidateCurrentSingleOauthSession, isRelinking, session?.status]);
+  const invalidateSingleOauthSessionForMetadataEdit = useCallback(() => {
+    invalidateRelinkPendingOauthSession();
+    invalidateCompletedSingleOauthRetrySession();
+  }, [
+    invalidateCompletedSingleOauthRetrySession,
+    invalidateRelinkPendingOauthSession,
+  ]);
   const invalidateRelinkPendingOauthSessionForMailboxChange = useCallback(
     (nextInput: string) => {
       if (!isRelinking || !activeOauthMailboxSession) return;
@@ -2348,8 +2364,7 @@ export default function UpstreamAccountCreatePage() {
     const normalizedGroupName = normalizeGroupName(groupNoteEditor.groupName);
     if (!normalizedGroupName) return;
     const normalizedNote = groupNoteEditor.note.trim();
-    const shouldInvalidateRelinkSessionForDraftGroup =
-      isRelinking &&
+    const shouldInvalidateSingleOauthSessionForDraftGroup =
       normalizeGroupName(oauthGroupName) === normalizedGroupName &&
       resolvePendingGroupNoteForName(oauthGroupName).trim() !== normalizedNote;
     setGroupNoteError(null);
@@ -2363,8 +2378,8 @@ export default function UpstreamAccountCreatePage() {
         }
         return next;
       });
-      if (shouldInvalidateRelinkSessionForDraftGroup) {
-        invalidateRelinkPendingOauthSession();
+      if (shouldInvalidateSingleOauthSessionForDraftGroup) {
+        invalidateSingleOauthSessionForMetadataEdit();
       }
       setGroupNoteEditor((current) => ({ ...current, open: false }));
       return;
@@ -4334,7 +4349,7 @@ export default function UpstreamAccountCreatePage() {
                         onChange={(event) => {
                           setOauthDisplayName(event.target.value);
                           setActionError(null);
-                          invalidateRelinkPendingOauthSession();
+                          invalidateSingleOauthSessionForMetadataEdit();
                         }}
                       />
                       {oauthDisplayNameConflict ? (
@@ -4553,7 +4568,7 @@ export default function UpstreamAccountCreatePage() {
                         onValueChange={(value) => {
                           setOauthGroupName(value);
                           setActionError(null);
-                          invalidateRelinkPendingOauthSession();
+                          invalidateSingleOauthSessionForMetadataEdit();
                         }}
                         className="min-w-0 flex-1"
                       />
@@ -4594,7 +4609,7 @@ export default function UpstreamAccountCreatePage() {
                     onToggle={() => {
                       setOauthIsMother((current) => !current);
                       setActionError(null);
-                      invalidateRelinkPendingOauthSession();
+                      invalidateSingleOauthSessionForMetadataEdit();
                     }}
                   />
                   <label className="field">
@@ -4608,7 +4623,7 @@ export default function UpstreamAccountCreatePage() {
                       onChange={(event) => {
                         setOauthNote(event.target.value);
                         setActionError(null);
-                        invalidateRelinkPendingOauthSession();
+                        invalidateSingleOauthSessionForMetadataEdit();
                       }}
                     />
                   </label>
@@ -4621,7 +4636,7 @@ export default function UpstreamAccountCreatePage() {
                     onChange={(nextTagIds) => {
                       setOauthTagIds(nextTagIds);
                       setActionError(null);
-                      invalidateRelinkPendingOauthSession();
+                      invalidateSingleOauthSessionForMetadataEdit();
                     }}
                     onCreateTag={handleCreateTag}
                     onUpdateTag={updateTag}
