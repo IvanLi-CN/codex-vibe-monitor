@@ -1521,6 +1521,64 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(updateOauthLogin.mock.lastCall?.[1]).not.toHaveProperty("groupNote");
   });
 
+  it("refreshes a dead pending single oauth session after metadata sync fails", async () => {
+    vi.useFakeTimers();
+    const updateOauthLogin = vi
+      .fn()
+      .mockRejectedValue(new Error("This login session can no longer be edited."));
+    const getLoginSession = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "expired",
+      authUrl: null,
+      redirectUri: null,
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: "The login session has expired. Please create a new authorization link.",
+    });
+    mockUpstreamAccounts({ updateOauthLogin, getLoginSession });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      state: {
+        draft: {
+          oauth: {
+            displayName: "Fresh OAuth",
+            session: {
+              loginId: "login-1",
+              status: "pending",
+              authUrl: "https://auth.openai.com/authorize?login=1",
+              redirectUri: "http://localhost:1455/oauth/callback",
+              expiresAt: "2026-03-13T10:00:00.000Z",
+              accountId: null,
+              error: null,
+            },
+            sessionHint: "OAuth URL ready",
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth Renamed");
+    await flushSessionSyncDebounce();
+    await flushAsync();
+
+    expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
+      displayName: "Fresh OAuth Renamed",
+      groupName: "",
+      note: "",
+      tagIds: [],
+      isMother: false,
+      mailboxSessionId: "",
+      mailboxAddress: "",
+    });
+    expect(getLoginSession).toHaveBeenCalledWith("login-1");
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(true);
+    expect(findButton(/Complete OAuth login/i)?.disabled).toBe(true);
+    expect(host?.textContent).toContain(
+      "The login session has expired. Please create a new authorization link.",
+    );
+  });
+
   it("flushes the latest single oauth metadata before completing immediately after an edit", async () => {
     vi.useFakeTimers();
     const updateOauthLogin = vi.fn().mockResolvedValue({

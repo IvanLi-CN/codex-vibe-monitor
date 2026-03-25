@@ -1521,10 +1521,20 @@ export default function UpstreamAccountCreatePage() {
           applyPendingOauthSessionStatus(loginId, nextSession);
           clearPendingOauthSessionSyncError(loginId);
         })
-        .catch((err) => {
+        .catch(async (err) => {
+          let latestSession: LoginSessionStatusResponse | null = null;
+          try {
+            latestSession = await getLoginSession(loginId);
+          } catch {
+            latestSession = null;
+          }
+          if (latestSession && latestSession.status !== "pending") {
+            applyPendingOauthSessionStatus(loginId, latestSession);
+          }
           setPendingOauthSessionSyncError(
             loginId,
-            err instanceof Error ? err.message : String(err),
+            latestSession?.error ??
+              (err instanceof Error ? err.message : String(err)),
           );
           throw err;
         })
@@ -1541,6 +1551,7 @@ export default function UpstreamAccountCreatePage() {
       applyPendingOauthSessionStatus,
       clearPendingOauthSessionSyncError,
       getPendingOauthSessionSnapshot,
+      getLoginSession,
       setPendingOauthSessionSyncError,
       updateOauthLogin,
     ],
