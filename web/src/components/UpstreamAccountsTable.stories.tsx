@@ -218,6 +218,73 @@ const labels = {
   latestActionFieldMessage: 'Message',
 }
 
+const chineseLabels = {
+  ...labels,
+  selectPage: '选择当前页',
+  selectRow: (name: string) => `选择 ${name}`,
+  account: '账号',
+  sync: '同步 / 调用',
+  lastSuccess: '最近成功同步',
+  lastCall: '最近调用',
+  latestAction: '最近动作',
+  windows: '窗口',
+  never: '从未',
+  unknown: '未知',
+  unavailable: '不可用',
+  oauth: 'OAuth',
+  apiKey: 'API Key',
+  duplicate: '重复',
+  mother: '母号',
+  workStatus: (status: string) =>
+    ({
+      working: '工作中',
+      idle: '空闲',
+      rate_limited: '限流中',
+    })[status] ?? status,
+  workStatusCount: (count: number) => `工作中 ${count}`,
+  enableStatus: (status: string) =>
+    ({
+      enabled: '启用',
+      disabled: '停用',
+    })[status] ?? status,
+  healthStatus: (status: string) =>
+    ({
+      normal: '正常',
+      needs_reauth: '重新授权',
+      upstream_unavailable: '上游不可用',
+      upstream_rejected: '上游拒绝',
+      error_other: '其他错误',
+      error: '错误',
+    })[status] ?? status,
+  syncState: (status: string) =>
+    ({
+      idle: '同步空闲',
+      syncing: '同步中',
+    })[status] ?? status,
+  action: (action?: string | null) =>
+    ({
+      route_hard_unavailable: '硬拒绝',
+      route_cooldown_started: '冷却开始',
+      sync_failed: '同步失败',
+    })[action ?? ''] ?? action ?? null,
+  actionSource: (source?: string | null) =>
+    ({
+      call: '调用',
+      sync_maintenance: '维护同步',
+    })[source ?? ''] ?? source ?? null,
+  actionReason: (reason?: string | null) =>
+    ({
+      upstream_http_429_quota_exhausted: '周限额耗尽',
+      reauth_required: '需要重新授权',
+    })[reason ?? ''] ?? reason ?? null,
+  latestActionFieldAction: '动作',
+  latestActionFieldSource: '来源',
+  latestActionFieldReason: '原因',
+  latestActionFieldHttpStatus: '状态码',
+  latestActionFieldOccurredAt: '发生时间',
+  latestActionFieldMessage: '消息',
+}
+
 const meta = {
   title: 'Account Pool/Components/Upstream Accounts Table',
   component: UpstreamAccountsTable,
@@ -256,6 +323,24 @@ export const Default: Story = {}
 export const NeedsAttentionSelected: Story = {
   args: {
     selectedId: 12,
+  },
+}
+
+export const MotherBadgeContrastDark: Story = {
+  args: {
+    items: [items[0]],
+    selectedId: 11,
+    labels: chineseLabels,
+  },
+  globals: {
+    themeMode: 'dark',
+  },
+  parameters: {
+    docs: {
+      description: {
+        story: '暗色列表行中的母号 badge 回归基线，覆盖与启用/同步等同排标签并列时的可辨识度。',
+      },
+    },
   },
 }
 
