@@ -727,6 +727,8 @@ describe("UpstreamAccountsPage duplicates", () => {
 
     clickFirstRosterRow();
     await flushAsync();
+    clickTab(/Health & events/i);
+    await flushAsync();
 
     expect(document.body.textContent).toContain("Sync marked unavailable");
     expect(document.body.textContent).toContain("Maintenance sync");
