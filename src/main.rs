@@ -14280,6 +14280,7 @@ async fn proxy_openai_v1_capture_target(
         let preview_bytes = response_preview.as_slice().to_vec();
         let raw_response_preview = response_preview.into_preview();
         let streamed_response_outcome = stream_response_parser.finish();
+        let streamed_response_info = streamed_response_outcome.response_info.clone();
         let preview_looks_like_sse = response_payload_looks_like_sse_after_decode(
             &preview_bytes,
             upstream_content_encoding_for_task.as_deref(),
@@ -14367,6 +14368,9 @@ async fn proxy_openai_v1_capture_target(
                 }
             }
         };
+        if response_is_stream_hint && streamed_response_outcome.discarded_oversized_line {
+            fill_missing_response_capture_info(&mut response_info, &streamed_response_info);
+        }
         let t_resp_parse_ms = elapsed_ms(resp_parse_started);
 
         if response_info.model.is_none() {
@@ -15289,16 +15293,30 @@ fn parse_target_response_payload(
                     upstream_request_id: extract_upstream_request_id(&value),
                 }
             }
-            Err(_) => ResponseCaptureInfo {
-                model: None,
-                usage: ParsedUsage::default(),
-                usage_missing_reason: Some("response_not_json".to_string()),
-                service_tier: None,
-                stream_terminal_event: None,
-                upstream_error_code: None,
-                upstream_error_message: None,
-                upstream_request_id: None,
-            },
+            Err(_) => {
+                let model = extract_partial_json_model(parse_bytes);
+                let service_tier = extract_partial_json_service_tier(parse_bytes);
+                let upstream_error_code = extract_partial_json_string_field(parse_bytes, &["code"]);
+                let upstream_error_message =
+                    extract_partial_json_string_field(parse_bytes, &["message"]);
+                let upstream_request_id =
+                    extract_partial_json_string_field(parse_bytes, &["request_id", "requestId"])
+                        .or_else(|| {
+                            upstream_error_message
+                                .as_deref()
+                                .and_then(extract_request_id_from_message)
+                        });
+                ResponseCaptureInfo {
+                    model,
+                    usage: ParsedUsage::default(),
+                    usage_missing_reason: Some("response_not_json".to_string()),
+                    service_tier,
+                    stream_terminal_event: None,
+                    upstream_error_code,
+                    upstream_error_message,
+                    upstream_request_id,
+                }
+            }
         }
     };
 
@@ -15840,6 +15858,26 @@ fn extract_model_from_payload(value: &Value) -> Option<String> {
                 .and_then(|v| v.as_str())
                 .map(|v| v.to_string())
         })
+}
+
+fn extract_partial_json_string_field(bytes: &[u8], keys: &[&str]) -> Option<String> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    keys.iter().find_map(|key| {
+        let pattern = format!(r#""{}"\s*:\s*"((?:\\.|[^"\\])*)""#, regex::escape(key));
+        let regex = Regex::new(&pattern).ok()?;
+        let captures = regex.captures(text)?;
+        let value = captures.get(1)?.as_str();
+        serde_json::from_str::<String>(&format!("\"{value}\"")).ok()
+    })
+}
+
+fn extract_partial_json_model(bytes: &[u8]) -> Option<String> {
+    extract_partial_json_string_field(bytes, &["model"])
+}
+
+fn extract_partial_json_service_tier(bytes: &[u8]) -> Option<String> {
+    extract_partial_json_string_field(bytes, &["service_tier", "serviceTier"])
+        .and_then(|value| normalize_service_tier(&value))
 }
 
 fn normalize_service_tier(value: &str) -> Option<String> {
@@ -17068,11 +17106,15 @@ impl BoundedResponseParseBuffer {
         target: ProxyCaptureTarget,
         content_encoding: Option<&str>,
     ) -> ResponseCaptureInfo {
+        let mut response_info =
+            parse_target_response_payload(target, &self.bytes, false, content_encoding);
         if self.exceeded_limit {
-            response_capture_info_with_reason(PROXY_USAGE_MISSING_NON_STREAM_PARSE_SKIPPED)
-        } else {
-            parse_target_response_payload(target, &self.bytes, false, content_encoding)
+            merge_response_capture_reason(
+                &mut response_info,
+                PROXY_USAGE_MISSING_NON_STREAM_PARSE_SKIPPED,
+            );
         }
+        response_info
     }
 }
 
@@ -17237,19 +17279,6 @@ fn extract_error_message_from_response_preview(bytes: &[u8]) -> Option<String> {
     extract_error_message_from_response(bytes).or_else(|| summarize_plaintext_upstream_error(bytes))
 }
 
-fn response_capture_info_with_reason(reason: impl Into<String>) -> ResponseCaptureInfo {
-    ResponseCaptureInfo {
-        model: None,
-        usage: ParsedUsage::default(),
-        usage_missing_reason: Some(reason.into()),
-        service_tier: None,
-        stream_terminal_event: None,
-        upstream_error_code: None,
-        upstream_error_message: None,
-        upstream_request_id: None,
-    }
-}
-
 fn merge_response_capture_reason(
     response_info: &mut ResponseCaptureInfo,
     reason: impl Into<String>,
@@ -17261,6 +17290,62 @@ fn merge_response_capture_reason(
         reason
     };
     response_info.usage_missing_reason = Some(combined_reason);
+}
+
+fn parsed_usage_has_values(usage: &ParsedUsage) -> bool {
+    usage.total_tokens.is_some()
+        || usage.input_tokens.is_some()
+        || usage.output_tokens.is_some()
+        || usage.cache_input_tokens.is_some()
+        || usage.reasoning_tokens.is_some()
+}
+
+fn fill_missing_parsed_usage(primary: &mut ParsedUsage, fallback: &ParsedUsage) {
+    if primary.input_tokens.is_none() {
+        primary.input_tokens = fallback.input_tokens;
+    }
+    if primary.output_tokens.is_none() {
+        primary.output_tokens = fallback.output_tokens;
+    }
+    if primary.cache_input_tokens.is_none() {
+        primary.cache_input_tokens = fallback.cache_input_tokens;
+    }
+    if primary.reasoning_tokens.is_none() {
+        primary.reasoning_tokens = fallback.reasoning_tokens;
+    }
+    if primary.total_tokens.is_none() {
+        primary.total_tokens = fallback.total_tokens;
+    }
+}
+
+fn fill_missing_response_capture_info(
+    response_info: &mut ResponseCaptureInfo,
+    fallback: &ResponseCaptureInfo,
+) {
+    if response_info.model.is_none() {
+        response_info.model = fallback.model.clone();
+    }
+    fill_missing_parsed_usage(&mut response_info.usage, &fallback.usage);
+    if parsed_usage_has_values(&response_info.usage) {
+        response_info.usage_missing_reason = None;
+    } else if response_info.usage_missing_reason.is_none() {
+        response_info.usage_missing_reason = fallback.usage_missing_reason.clone();
+    }
+    if response_info.service_tier.is_none() {
+        response_info.service_tier = fallback.service_tier.clone();
+    }
+    if response_info.stream_terminal_event.is_none() {
+        response_info.stream_terminal_event = fallback.stream_terminal_event.clone();
+    }
+    if response_info.upstream_error_code.is_none() {
+        response_info.upstream_error_code = fallback.upstream_error_code.clone();
+    }
+    if response_info.upstream_error_message.is_none() {
+        response_info.upstream_error_message = fallback.upstream_error_message.clone();
+    }
+    if response_info.upstream_request_id.is_none() {
+        response_info.upstream_request_id = fallback.upstream_request_id.clone();
+    }
 }
 
 fn deflate_stream_uses_zlib_wrapper(header: &[u8]) -> bool {
@@ -17322,9 +17407,13 @@ fn parse_nonstream_response_payload_from_raw_file(
         .read_to_end(&mut decoded)
         .map_err(|err| err.to_string())?;
     if decoded.len() > BOUNDED_NON_STREAM_RESPONSE_PARSE_LIMIT_BYTES {
-        return Ok(response_capture_info_with_reason(
+        decoded.truncate(BOUNDED_NON_STREAM_RESPONSE_PARSE_LIMIT_BYTES);
+        let mut response_info = parse_target_response_payload(target, &decoded, false, None);
+        merge_response_capture_reason(
+            &mut response_info,
             PROXY_USAGE_MISSING_NON_STREAM_PARSE_SKIPPED,
-        ));
+        );
+        return Ok(response_info);
     }
     Ok(parse_target_response_payload(target, &decoded, false, None))
 }
