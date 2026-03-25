@@ -51,7 +51,7 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions},
 };
 use std::fs;
-use std::io::{self, Read, Write};
+use std::io::{self, BufRead, Read, Write};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
@@ -129,6 +129,7 @@ const DEFAULT_PROXY_RAW_HOT_SECS: u64 = 24 * 60 * 60;
 const RAW_RESPONSE_PREVIEW_LIMIT: usize = 16 * 1024;
 const BOUNDED_NON_STREAM_RESPONSE_PARSE_LIMIT_BYTES: usize = 256 * 1024;
 const STREAM_RESPONSE_LINE_BUFFER_LIMIT: usize = 256 * 1024;
+const RAW_FILE_STREAM_RESPONSE_LINE_BUFFER_LIMIT: usize = 8 * 1024 * 1024;
 const PROXY_USAGE_MISSING_NON_STREAM_PARSE_SKIPPED: &str =
     "non_stream_response_parse_skipped_body_too_large";
 const RAW_CODEC_IDENTITY: &str = "identity";
@@ -14278,16 +14279,43 @@ async fn proxy_openai_v1_capture_target(
         let resp_raw = response_raw_writer.finish().await;
         let preview_bytes = response_preview.as_slice().to_vec();
         let raw_response_preview = response_preview.into_preview();
-        let (streamed_response_info, streamed_response_saw_fields) =
-            stream_response_parser.finish();
-        let response_is_stream_hint = response_is_event_stream_for_task
-            || response_payload_looks_like_sse_after_decode(
-                &preview_bytes,
-                upstream_content_encoding_for_task.as_deref(),
-            );
+        let streamed_response_outcome = stream_response_parser.finish();
+        let preview_looks_like_sse = response_payload_looks_like_sse_after_decode(
+            &preview_bytes,
+            upstream_content_encoding_for_task.as_deref(),
+        );
+        let response_is_stream_hint = if response_is_event_stream_for_task
+            || streamed_response_outcome.saw_stream_fields
+            || preview_looks_like_sse
+        {
+            true
+        } else if resp_raw.path.is_some()
+            && (upstream_content_encoding_for_task.is_some()
+                || preview_bytes.len() == RAW_RESPONSE_PREVIEW_LIMIT)
+        {
+            tokio::task::spawn_blocking({
+                let resp_raw_for_hint = resp_raw.clone();
+                let preview_bytes_for_hint = preview_bytes.clone();
+                let upstream_content_encoding_for_hint = upstream_content_encoding_for_task.clone();
+                move || {
+                    response_payload_looks_like_sse_from_capture(
+                        &resp_raw_for_hint,
+                        &preview_bytes_for_hint,
+                        upstream_content_encoding_for_hint.as_deref(),
+                    )
+                }
+            })
+            .await
+            .unwrap_or(false)
+        } else {
+            false
+        };
         let resp_parse_started = Instant::now();
-        let mut response_info = if response_is_stream_hint && streamed_response_saw_fields {
-            streamed_response_info
+        let mut response_info = if response_is_stream_hint
+            && streamed_response_outcome.saw_stream_fields
+            && !streamed_response_outcome.discarded_oversized_line
+        {
+            streamed_response_outcome.response_info
         } else if !response_is_stream_hint {
             nonstream_parse_buffer
                 .take()
@@ -15313,6 +15341,41 @@ fn response_payload_looks_like_sse_after_decode(
     response_payload_looks_like_sse(decoded.as_ref())
 }
 
+fn response_payload_looks_like_sse_from_raw_file(
+    path: &Path,
+    content_encoding: Option<&str>,
+) -> std::result::Result<bool, String> {
+    let mut reader = open_decoded_response_reader(path, content_encoding)?;
+    let mut decoded_prefix = Vec::new();
+    reader
+        .by_ref()
+        .take((RAW_RESPONSE_PREVIEW_LIMIT + 1) as u64)
+        .read_to_end(&mut decoded_prefix)
+        .map_err(|err| err.to_string())?;
+    Ok(response_payload_looks_like_sse(&decoded_prefix))
+}
+
+fn response_payload_looks_like_sse_from_capture(
+    resp_raw: &RawPayloadMeta,
+    preview_bytes: &[u8],
+    content_encoding: Option<&str>,
+) -> bool {
+    if response_payload_looks_like_sse_after_decode(preview_bytes, content_encoding) {
+        return true;
+    }
+
+    if preview_bytes.len() < RAW_RESPONSE_PREVIEW_LIMIT && content_encoding.is_none() {
+        return false;
+    }
+
+    let Some(path) = resp_raw.path.as_deref() else {
+        return false;
+    };
+
+    response_payload_looks_like_sse_from_raw_file(&PathBuf::from(path), content_encoding)
+        .unwrap_or(false)
+}
+
 fn decode_response_payload_for_parse<'a>(
     bytes: &'a [u8],
     content_encoding: Option<&str>,
@@ -15415,14 +15478,37 @@ impl StreamResponsePayloadParser {
     }
 }
 
-#[derive(Default)]
+struct StreamResponsePayloadParseOutcome {
+    response_info: ResponseCaptureInfo,
+    saw_stream_fields: bool,
+    discarded_oversized_line: bool,
+}
+
 struct StreamResponsePayloadChunkParser {
     parser: StreamResponsePayloadParser,
     line_buffer: Vec<u8>,
     discarding_oversized_line: bool,
+    line_buffer_limit: usize,
+    discarded_oversized_line: bool,
+}
+
+impl Default for StreamResponsePayloadChunkParser {
+    fn default() -> Self {
+        Self::with_line_buffer_limit(STREAM_RESPONSE_LINE_BUFFER_LIMIT)
+    }
 }
 
 impl StreamResponsePayloadChunkParser {
+    fn with_line_buffer_limit(line_buffer_limit: usize) -> Self {
+        Self {
+            parser: StreamResponsePayloadParser::default(),
+            line_buffer: Vec::new(),
+            discarding_oversized_line: false,
+            line_buffer_limit,
+            discarded_oversized_line: false,
+        }
+    }
+
     fn line_bytes_look_like_stream_field(line: &[u8]) -> bool {
         let decoded = String::from_utf8_lossy(line);
         let trimmed = decoded.trim_start();
@@ -15446,6 +15532,7 @@ impl StreamResponsePayloadChunkParser {
             self.parser.saw_stream_fields = true;
         }
         self.parser.parse_error_seen = true;
+        self.discarded_oversized_line = true;
         self.line_buffer.clear();
         self.discarding_oversized_line = true;
     }
@@ -15458,8 +15545,7 @@ impl StreamResponsePayloadChunkParser {
             return;
         }
 
-        if self.line_buffer.len().saturating_add(segment.len()) > STREAM_RESPONSE_LINE_BUFFER_LIMIT
-        {
+        if self.line_buffer.len().saturating_add(segment.len()) > self.line_buffer_limit {
             self.start_discarding_oversized_line();
             if ends_line {
                 self.discarding_oversized_line = false;
@@ -15490,27 +15576,32 @@ impl StreamResponsePayloadChunkParser {
         }
     }
 
-    fn finish(mut self) -> (ResponseCaptureInfo, bool) {
+    fn finish(mut self) -> StreamResponsePayloadParseOutcome {
         if self.discarding_oversized_line {
             self.parser.parse_error_seen = true;
         } else {
             self.flush_line();
         }
-        let saw_stream_fields = self.parser.saw_stream_fields;
-        (self.parser.finish(), saw_stream_fields)
+        StreamResponsePayloadParseOutcome {
+            saw_stream_fields: self.parser.saw_stream_fields,
+            discarded_oversized_line: self.discarded_oversized_line,
+            response_info: self.parser.finish(),
+        }
     }
 }
 
 fn parse_stream_response_payload(bytes: &[u8]) -> ResponseCaptureInfo {
     let mut parser = StreamResponsePayloadChunkParser::default();
     parser.ingest_bytes(bytes);
-    parser.finish().0
+    parser.finish().response_info
 }
 
 fn parse_stream_response_payload_from_reader<R: Read>(
     reader: R,
 ) -> io::Result<ResponseCaptureInfo> {
-    let mut parser = StreamResponsePayloadChunkParser::default();
+    let mut parser = StreamResponsePayloadChunkParser::with_line_buffer_limit(
+        RAW_FILE_STREAM_RESPONSE_LINE_BUFFER_LIMIT,
+    );
     let mut reader = io::BufReader::new(reader);
     let mut chunk = [0_u8; 8192];
     loop {
@@ -15520,7 +15611,7 @@ fn parse_stream_response_payload_from_reader<R: Read>(
         }
         parser.ingest_bytes(&chunk[..read]);
     }
-    Ok(parser.finish().0)
+    Ok(parser.finish().response_info)
 }
 
 fn extract_stream_payload_type(value: &Value) -> Option<String> {
@@ -17172,6 +17263,19 @@ fn merge_response_capture_reason(
     response_info.usage_missing_reason = Some(combined_reason);
 }
 
+fn deflate_stream_uses_zlib_wrapper(header: &[u8]) -> bool {
+    if header.len() < 2 {
+        return true;
+    }
+
+    let cmf = header[0];
+    let flg = header[1];
+    let method = cmf & 0x0f;
+    let window_bits = cmf >> 4;
+    let header_word = (u16::from(cmf) << 8) | u16::from(flg);
+    method == 8 && window_bits <= 7 && header_word % 31 == 0
+}
+
 fn wrap_decoded_response_reader(
     mut reader: Box<dyn Read + Send>,
     content_encoding: Option<&str>,
@@ -17182,7 +17286,15 @@ fn wrap_decoded_response_reader(
             "identity" => reader,
             "gzip" | "x-gzip" => Box::new(GzDecoder::new(reader)),
             "br" => Box::new(BrotliDecompressor::new(reader, 4096)),
-            "deflate" => Box::new(ZlibDecoder::new(reader)),
+            "deflate" => {
+                let mut buffered = io::BufReader::new(reader);
+                let header = buffered.fill_buf().map_err(|err| err.to_string())?;
+                if deflate_stream_uses_zlib_wrapper(header) {
+                    Box::new(ZlibDecoder::new(buffered))
+                } else {
+                    Box::new(DeflateDecoder::new(buffered))
+                }
+            }
             other => return Err(format!("unsupported_content_encoding:{other}")),
         };
     }
@@ -17223,19 +17335,6 @@ fn parse_target_response_payload_from_raw_file(
     is_stream_hint: bool,
     content_encoding: Option<&str>,
 ) -> std::result::Result<ResponseCaptureInfo, String> {
-    if parse_content_encodings(content_encoding)
-        .iter()
-        .any(|encoding| encoding == "deflate")
-    {
-        let bytes = fs::read(path).map_err(|err| err.to_string())?;
-        return Ok(parse_target_response_payload(
-            target,
-            &bytes,
-            is_stream_hint,
-            content_encoding,
-        ));
-    }
-
     if is_stream_hint {
         let reader = open_decoded_response_reader(path, content_encoding)?;
         parse_stream_response_payload_from_reader(reader).map_err(|err| err.to_string())
