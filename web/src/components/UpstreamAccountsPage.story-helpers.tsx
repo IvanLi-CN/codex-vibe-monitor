@@ -85,14 +85,38 @@ const storyTagMap = {
   burstSafe: compactDefaultTags[1],
   prodApac: compactDefaultTags[2],
   stickyPool: compactDefaultTags[3],
-  priority: { id: 20, name: 'priority-route', routingRule: defaultEffectiveRoutingRule },
-  analytics: { id: 21, name: 'analytics', routingRule: defaultEffectiveRoutingRule },
-  fallback: { id: 22, name: 'fallback', routingRule: defaultEffectiveRoutingRule },
-  sandbox: { id: 23, name: 'sandbox', routingRule: defaultEffectiveRoutingRule },
-  reporting: { id: 24, name: 'reporting', routingRule: defaultEffectiveRoutingRule },
+  priority: {
+    id: 20,
+    name: 'priority-route',
+    routingRule: defaultEffectiveRoutingRule,
+  },
+  analytics: {
+    id: 21,
+    name: 'analytics',
+    routingRule: defaultEffectiveRoutingRule,
+  },
+  fallback: {
+    id: 22,
+    name: 'fallback',
+    routingRule: defaultEffectiveRoutingRule,
+  },
+  sandbox: {
+    id: 23,
+    name: 'sandbox',
+    routingRule: defaultEffectiveRoutingRule,
+  },
+  reporting: {
+    id: 24,
+    name: 'reporting',
+    routingRule: defaultEffectiveRoutingRule,
+  },
   rescue: { id: 25, name: 'rescue', routingRule: defaultEffectiveRoutingRule },
   canary: { id: 26, name: 'canary', routingRule: defaultEffectiveRoutingRule },
-  overflow: { id: 27, name: 'overflow', routingRule: defaultEffectiveRoutingRule },
+  overflow: {
+    id: 27,
+    name: 'overflow',
+    routingRule: defaultEffectiveRoutingRule,
+  },
   batch: { id: 28, name: 'batch', routingRule: defaultEffectiveRoutingRule },
   emea: { id: 29, name: 'emea', routingRule: defaultEffectiveRoutingRule },
 } as const
@@ -191,7 +215,13 @@ function atMinuteOffset(minutes: number) {
   return new Date(Date.parse(now) + minutes * 60_000).toISOString()
 }
 
-function buildWindow(percent: number, durationMins: number, usedText: string, limitText: string, resetsAt: string) {
+function buildWindow(
+  percent: number,
+  durationMins: number,
+  usedText: string,
+  limitText: string,
+  resetsAt: string,
+) {
   return {
     usedPercent: percent,
     usedText,
@@ -201,9 +231,36 @@ function buildWindow(percent: number, durationMins: number, usedText: string, li
   }
 }
 
+function buildRecentAction(
+  id: number,
+  occurredAt: string,
+  action: string,
+  source: string,
+  reasonCode?: string | null,
+  reasonMessage?: string | null,
+  failureKind?: string | null,
+  httpStatus?: number | null,
+) {
+  return {
+    id,
+    occurredAt,
+    action,
+    source,
+    reasonCode: reasonCode ?? null,
+    reasonMessage: reasonMessage ?? null,
+    httpStatus: httpStatus ?? null,
+    failureKind: failureKind ?? null,
+    invokeId: null,
+    stickyKey: null,
+    createdAt: occurredAt,
+  }
+}
+
 function buildHistory(seed = 0) {
   return Array.from({ length: 7 }, (_, index) => ({
-    capturedAt: new Date(Date.parse('2026-03-05T00:00:00.000Z') + index * 12 * 3600_000).toISOString(),
+    capturedAt: new Date(
+      Date.parse('2026-03-05T00:00:00.000Z') + index * 12 * 3600_000,
+    ).toISOString(),
     primaryUsedPercent: Math.min(96, 18 + seed + index * 7),
     secondaryUsedPercent: Math.min(88, 8 + seed / 2 + index * 3),
     creditsBalance: (18.5 - index * 0.9).toFixed(2),
@@ -233,7 +290,12 @@ function buildOauthUsage(primaryPercent: number, secondaryPercent: number) {
   }
 }
 
-function buildApiKeyUsage(primaryUsed: number, secondaryUsed: number, primaryLimit = 120, secondaryLimit = 500) {
+function buildApiKeyUsage(
+  primaryUsed: number,
+  secondaryUsed: number,
+  primaryLimit = 120,
+  secondaryLimit = 500,
+) {
   return {
     primaryWindow: buildWindow(
       Math.round((primaryUsed / primaryLimit) * 100),
@@ -266,41 +328,197 @@ function buildOperationalRosterAccounts(replicaCount = 1) {
     planType?: string | null
     tagKeys: StoryTagKey[]
   }> = [
-    { id: 108, kind: 'oauth_codex', displayName: 'Codex Pro - Seoul', groupName: 'production-apac', planType: 'team', tagKeys: ['vip', 'prodApac', 'priority'] },
-    { id: 109, kind: 'api_key_codex', displayName: 'Team key - analytics', groupName: 'analytics', planType: 'local', tagKeys: ['analytics', 'reporting'] },
-    { id: 110, kind: 'oauth_codex', displayName: 'Codex Pro - Berlin', groupName: 'production-emea', planType: 'team', tagKeys: ['priority', 'emea'] },
-    { id: 111, kind: 'api_key_codex', displayName: 'Overflow key - queue burst', groupName: 'overflow', planType: 'local', tagKeys: ['overflow', 'burstSafe', 'fallback'] },
-    { id: 112, kind: 'oauth_codex', displayName: 'Codex Pro - Sydney', groupName: 'production-apac', planType: 'pro', tagKeys: ['prodApac', 'stickyPool'] },
-    { id: 113, kind: 'api_key_codex', displayName: 'Sandbox key - canary', groupName: 'sandbox', planType: 'local', tagKeys: ['sandbox', 'canary'] },
-    { id: 114, kind: 'oauth_codex', displayName: 'Codex Pro - Toronto', groupName: 'enterprise-ops', planType: 'enterprise', tagKeys: ['priority', 'reporting'] },
-    { id: 115, kind: 'api_key_codex', displayName: 'Research key - evals', groupName: 'experiments', planType: 'local', tagKeys: ['analytics', 'sandbox'] },
-    { id: 116, kind: 'oauth_codex', displayName: 'Codex Pro - London', groupName: 'production-emea', planType: 'team', tagKeys: ['vip', 'emea'] },
-    { id: 117, kind: 'api_key_codex', displayName: 'Night shift key', groupName: 'night-ops', planType: 'local', tagKeys: ['fallback', 'overflow'] },
-    { id: 118, kind: 'oauth_codex', displayName: 'Codex Pro - Mumbai', groupName: 'production-apac', planType: 'team', tagKeys: ['prodApac', 'burstSafe'] },
-    { id: 119, kind: 'api_key_codex', displayName: 'Support key - rescue', groupName: 'rescue', planType: 'local', tagKeys: ['rescue', 'fallback'] },
-    { id: 120, kind: 'oauth_codex', displayName: 'Codex Pro - Paris', groupName: 'production-emea', planType: 'pro', tagKeys: ['priority', 'emea'] },
-    { id: 121, kind: 'api_key_codex', displayName: 'Batch runner key', groupName: 'batch-ops', planType: 'local', tagKeys: ['batch', 'reporting'] },
-    { id: 122, kind: 'oauth_codex', displayName: 'Codex Pro - Sao Paulo', groupName: 'latam', planType: 'team', tagKeys: ['vip', 'priority'] },
-    { id: 123, kind: 'api_key_codex', displayName: 'Queue key - overflow west', groupName: 'overflow', planType: 'local', tagKeys: ['overflow', 'burstSafe'] },
-    { id: 124, kind: 'oauth_codex', displayName: 'Codex Pro - Frankfurt', groupName: 'production-emea', planType: 'team', tagKeys: ['stickyPool', 'emea'] },
-    { id: 125, kind: 'api_key_codex', displayName: 'Staging key - eu', groupName: 'staging-eu', planType: 'local', tagKeys: ['canary', 'fallback'] },
-    { id: 126, kind: 'oauth_codex', displayName: 'Codex Pro - Austin', groupName: null, planType: 'pro', tagKeys: ['vip'] },
-    { id: 127, kind: 'api_key_codex', displayName: 'Migration key - ops', groupName: 'ops', planType: 'local', tagKeys: ['batch', 'reporting'] },
-    { id: 128, kind: 'oauth_codex', displayName: 'Codex Pro - Melbourne', groupName: 'production-apac', planType: 'team', tagKeys: ['prodApac', 'priority'] },
-    { id: 129, kind: 'api_key_codex', displayName: 'Fallback key - sandbox east', groupName: 'sandbox', planType: 'local', tagKeys: ['sandbox', 'fallback'] },
+    {
+      id: 108,
+      kind: 'oauth_codex',
+      displayName: 'Codex Pro - Seoul',
+      groupName: 'production-apac',
+      planType: 'team',
+      tagKeys: ['vip', 'prodApac', 'priority'],
+    },
+    {
+      id: 109,
+      kind: 'api_key_codex',
+      displayName: 'Team key - analytics',
+      groupName: 'analytics',
+      planType: 'local',
+      tagKeys: ['analytics', 'reporting'],
+    },
+    {
+      id: 110,
+      kind: 'oauth_codex',
+      displayName: 'Codex Pro - Berlin',
+      groupName: 'production-emea',
+      planType: 'team',
+      tagKeys: ['priority', 'emea'],
+    },
+    {
+      id: 111,
+      kind: 'api_key_codex',
+      displayName: 'Overflow key - queue burst',
+      groupName: 'overflow',
+      planType: 'local',
+      tagKeys: ['overflow', 'burstSafe', 'fallback'],
+    },
+    {
+      id: 112,
+      kind: 'oauth_codex',
+      displayName: 'Codex Pro - Sydney',
+      groupName: 'production-apac',
+      planType: 'pro',
+      tagKeys: ['prodApac', 'stickyPool'],
+    },
+    {
+      id: 113,
+      kind: 'api_key_codex',
+      displayName: 'Sandbox key - canary',
+      groupName: 'sandbox',
+      planType: 'local',
+      tagKeys: ['sandbox', 'canary'],
+    },
+    {
+      id: 114,
+      kind: 'oauth_codex',
+      displayName: 'Codex Pro - Toronto',
+      groupName: 'enterprise-ops',
+      planType: 'enterprise',
+      tagKeys: ['priority', 'reporting'],
+    },
+    {
+      id: 115,
+      kind: 'api_key_codex',
+      displayName: 'Research key - evals',
+      groupName: 'experiments',
+      planType: 'local',
+      tagKeys: ['analytics', 'sandbox'],
+    },
+    {
+      id: 116,
+      kind: 'oauth_codex',
+      displayName: 'Codex Pro - London',
+      groupName: 'production-emea',
+      planType: 'team',
+      tagKeys: ['vip', 'emea'],
+    },
+    {
+      id: 117,
+      kind: 'api_key_codex',
+      displayName: 'Night shift key',
+      groupName: 'night-ops',
+      planType: 'local',
+      tagKeys: ['fallback', 'overflow'],
+    },
+    {
+      id: 118,
+      kind: 'oauth_codex',
+      displayName: 'Codex Pro - Mumbai',
+      groupName: 'production-apac',
+      planType: 'team',
+      tagKeys: ['prodApac', 'burstSafe'],
+    },
+    {
+      id: 119,
+      kind: 'api_key_codex',
+      displayName: 'Support key - rescue',
+      groupName: 'rescue',
+      planType: 'local',
+      tagKeys: ['rescue', 'fallback'],
+    },
+    {
+      id: 120,
+      kind: 'oauth_codex',
+      displayName: 'Codex Pro - Paris',
+      groupName: 'production-emea',
+      planType: 'pro',
+      tagKeys: ['priority', 'emea'],
+    },
+    {
+      id: 121,
+      kind: 'api_key_codex',
+      displayName: 'Batch runner key',
+      groupName: 'batch-ops',
+      planType: 'local',
+      tagKeys: ['batch', 'reporting'],
+    },
+    {
+      id: 122,
+      kind: 'oauth_codex',
+      displayName: 'Codex Pro - Sao Paulo',
+      groupName: 'latam',
+      planType: 'team',
+      tagKeys: ['vip', 'priority'],
+    },
+    {
+      id: 123,
+      kind: 'api_key_codex',
+      displayName: 'Queue key - overflow west',
+      groupName: 'overflow',
+      planType: 'local',
+      tagKeys: ['overflow', 'burstSafe'],
+    },
+    {
+      id: 124,
+      kind: 'oauth_codex',
+      displayName: 'Codex Pro - Frankfurt',
+      groupName: 'production-emea',
+      planType: 'team',
+      tagKeys: ['stickyPool', 'emea'],
+    },
+    {
+      id: 125,
+      kind: 'api_key_codex',
+      displayName: 'Staging key - eu',
+      groupName: 'staging-eu',
+      planType: 'local',
+      tagKeys: ['canary', 'fallback'],
+    },
+    {
+      id: 126,
+      kind: 'oauth_codex',
+      displayName: 'Codex Pro - Austin',
+      groupName: null,
+      planType: 'pro',
+      tagKeys: ['vip'],
+    },
+    {
+      id: 127,
+      kind: 'api_key_codex',
+      displayName: 'Migration key - ops',
+      groupName: 'ops',
+      planType: 'local',
+      tagKeys: ['batch', 'reporting'],
+    },
+    {
+      id: 128,
+      kind: 'oauth_codex',
+      displayName: 'Codex Pro - Melbourne',
+      groupName: 'production-apac',
+      planType: 'team',
+      tagKeys: ['prodApac', 'priority'],
+    },
+    {
+      id: 129,
+      kind: 'api_key_codex',
+      displayName: 'Fallback key - sandbox east',
+      groupName: 'sandbox',
+      planType: 'local',
+      tagKeys: ['sandbox', 'fallback'],
+    },
   ]
 
-  const specs = Array.from({ length: Math.max(1, replicaCount) }, (_, replicaIndex) =>
-    baseSpecs.map((spec, baseIndex) => ({
-      ...spec,
-      id: spec.id + replicaIndex * 100,
-      displayName:
-        replicaIndex === 0
-          ? spec.displayName
-          : `${spec.displayName} · lane ${replicaIndex + 1}`,
-      replicaIndex,
-      baseIndex,
-    })),
+  const specs = Array.from(
+    { length: Math.max(1, replicaCount) },
+    (_, replicaIndex) =>
+      baseSpecs.map((spec, baseIndex) => ({
+        ...spec,
+        id: spec.id + replicaIndex * 100,
+        displayName:
+          replicaIndex === 0
+            ? spec.displayName
+            : `${spec.displayName} · lane ${replicaIndex + 1}`,
+        replicaIndex,
+        baseIndex,
+      })),
   ).flat()
 
   return specs.map((spec, index) => {
@@ -314,18 +532,11 @@ function buildOperationalRosterAccounts(replicaCount = 1) {
       lastSyncedAt: atMinuteOffset(-(index * 17 + 8)),
       lastSuccessfulSyncAt: atMinuteOffset(-(index * 17 + 10)),
       lastActivityAt: atMinuteOffset(-(index * 13 + 4)),
-      email:
-        spec.kind === 'oauth_codex'
-          ? `mock-${spec.id}@example.com`
-          : null,
+      email: spec.kind === 'oauth_codex' ? `mock-${spec.id}@example.com` : null,
       chatgptAccountId:
-        spec.kind === 'oauth_codex'
-          ? `org_mock_${spec.id}`
-          : null,
+        spec.kind === 'oauth_codex' ? `org_mock_${spec.id}` : null,
       chatgptUserId:
-        spec.kind === 'oauth_codex'
-          ? `user_mock_${spec.id}`
-          : null,
+        spec.kind === 'oauth_codex' ? `user_mock_${spec.id}` : null,
       maskedApiKey:
         spec.kind === 'api_key_codex'
           ? `sk-live••••••${String(spec.id).padStart(4, '0').slice(-4)}`
@@ -510,7 +721,10 @@ function buildOperationalRosterAccounts(replicaCount = 1) {
 
     return spec.kind === 'oauth_codex'
       ? createOauthAccount(spec.id, { ...commonOverrides, ...statusOverrides })
-      : createApiKeyAccount(spec.id, { ...commonOverrides, ...statusOverrides })
+      : createApiKeyAccount(spec.id, {
+          ...commonOverrides,
+          ...statusOverrides,
+        })
   })
 }
 
@@ -523,13 +737,24 @@ function normalizeGroupName(value?: string | null) {
   return trimmed || null
 }
 
-function storyEnableStatus(item: Pick<UpstreamAccountSummary, 'enableStatus' | 'enabled' | 'displayStatus'>) {
-  if (typeof item.enableStatus === 'string' && item.enableStatus) return item.enableStatus
-  return item.enabled === false || item.displayStatus === 'disabled' ? 'disabled' : 'enabled'
+function storyEnableStatus(
+  item: Pick<
+    UpstreamAccountSummary,
+    'enableStatus' | 'enabled' | 'displayStatus'
+  >,
+) {
+  if (typeof item.enableStatus === 'string' && item.enableStatus)
+    return item.enableStatus
+  return item.enabled === false || item.displayStatus === 'disabled'
+    ? 'disabled'
+    : 'enabled'
 }
 
 function storyHealthStatus(
-  item: Pick<UpstreamAccountSummary, 'healthStatus' | 'displayStatus' | 'status'>,
+  item: Pick<
+    UpstreamAccountSummary,
+    'healthStatus' | 'displayStatus' | 'status'
+  >,
 ) {
   const legacyStatus = item.displayStatus ?? item.status ?? 'error_other'
   if (
@@ -544,14 +769,24 @@ function storyHealthStatus(
   return 'normal'
 }
 
-function storySyncState(item: Pick<UpstreamAccountSummary, 'syncState' | 'displayStatus' | 'status'>) {
-  return item.status === 'syncing' || item.displayStatus === 'syncing' ? 'syncing' : 'idle'
+function storySyncState(
+  item: Pick<UpstreamAccountSummary, 'syncState' | 'displayStatus' | 'status'>,
+) {
+  return item.status === 'syncing' || item.displayStatus === 'syncing'
+    ? 'syncing'
+    : 'idle'
 }
 
 function storyWorkStatus(
   item: Pick<
     UpstreamAccountSummary,
-    'workStatus' | 'enableStatus' | 'enabled' | 'displayStatus' | 'status' | 'healthStatus' | 'syncState'
+    | 'workStatus'
+    | 'enableStatus'
+    | 'enabled'
+    | 'displayStatus'
+    | 'status'
+    | 'healthStatus'
+    | 'syncState'
   >,
   healthStatus: string,
   syncState: string,
@@ -559,16 +794,24 @@ function storyWorkStatus(
   if (storyEnableStatus(item) === 'disabled') return 'idle'
   if (syncState === 'syncing') return 'idle'
   if (healthStatus !== 'normal') return 'idle'
-  return typeof item.workStatus === 'string' && item.workStatus ? item.workStatus : 'idle'
+  return typeof item.workStatus === 'string' && item.workStatus
+    ? item.workStatus
+    : 'idle'
 }
 
 function storyDisplayStatus(
   item: Pick<
     UpstreamAccountSummary,
-    'displayStatus' | 'healthStatus' | 'syncState' | 'enableStatus' | 'enabled' | 'status'
+    | 'displayStatus'
+    | 'healthStatus'
+    | 'syncState'
+    | 'enableStatus'
+    | 'enabled'
+    | 'status'
   >,
 ) {
-  if (typeof item.displayStatus === 'string' && item.displayStatus) return item.displayStatus
+  if (typeof item.displayStatus === 'string' && item.displayStatus)
+    return item.displayStatus
   if (storyEnableStatus(item) === 'disabled') return 'disabled'
   if (storySyncState(item) === 'syncing') return 'syncing'
   const healthStatus = storyHealthStatus(item)
@@ -576,7 +819,9 @@ function storyDisplayStatus(
   return 'active'
 }
 
-function withDerivedStatusFields<T extends UpstreamAccountDetail>(detail: T): T {
+function withDerivedStatusFields<T extends UpstreamAccountDetail>(
+  detail: T,
+): T {
   const enableStatus = storyEnableStatus(detail)
   const healthStatus = storyHealthStatus(detail)
   const syncState = storySyncState(detail)
@@ -644,18 +889,28 @@ function listTagSummaries(store: StoryStore): TagSummary[] {
 }
 
 function filterAccountsForQuery(store: StoryStore, url: URL) {
-  const groupSearch = (url.searchParams.get('groupSearch') || '').trim().toLowerCase()
+  const groupSearch = (url.searchParams.get('groupSearch') || '')
+    .trim()
+    .toLowerCase()
   const groupUngrouped = url.searchParams.get('groupUngrouped') === 'true'
-  const tagIds = url.searchParams.getAll('tagIds').map((value) => Number(value)).filter(Number.isFinite)
+  const tagIds = url.searchParams
+    .getAll('tagIds')
+    .map((value) => Number(value))
+    .filter(Number.isFinite)
   const workStatus = (url.searchParams.get('workStatus') || '').trim()
   const enableStatus = (url.searchParams.get('enableStatus') || '').trim()
   const healthStatus = (url.searchParams.get('healthStatus') || '').trim()
 
   return store.accounts.filter((account) => {
-    const normalizedGroup = normalizeGroupName(account.groupName)?.toLowerCase() ?? ''
+    const normalizedGroup =
+      normalizeGroupName(account.groupName)?.toLowerCase() ?? ''
     const derivedHealthStatus = storyHealthStatus(account)
     const derivedSyncState = storySyncState(account)
-    const derivedWorkStatus = storyWorkStatus(account, derivedHealthStatus, derivedSyncState)
+    const derivedWorkStatus = storyWorkStatus(
+      account,
+      derivedHealthStatus,
+      derivedSyncState,
+    )
     const matchesGroup = groupUngrouped
       ? !normalizeGroupName(account.groupName)
       : groupSearch
@@ -663,7 +918,8 @@ function filterAccountsForQuery(store: StoryStore, url: URL) {
         : true
     if (!matchesGroup) return false
     if (workStatus && derivedWorkStatus !== workStatus) return false
-    if (enableStatus && storyEnableStatus(account) !== enableStatus) return false
+    if (enableStatus && storyEnableStatus(account) !== enableStatus)
+      return false
     if (healthStatus && derivedHealthStatus !== healthStatus) return false
     if (tagIds.length === 0) return true
     const accountTagIds = new Set(account.tags.map((tag) => tag.id))
@@ -671,7 +927,10 @@ function filterAccountsForQuery(store: StoryStore, url: URL) {
   })
 }
 
-function createOauthAccount(id: number, overrides?: Partial<UpstreamAccountDetail>): UpstreamAccountDetail {
+function createOauthAccount(
+  id: number,
+  overrides?: Partial<UpstreamAccountDetail>,
+): UpstreamAccountDetail {
   const detail: UpstreamAccountDetail = {
     id,
     kind: 'oauth_codex',
@@ -698,8 +957,20 @@ function createOauthAccount(id: number, overrides?: Partial<UpstreamAccountDetai
     tokenExpiresAt: '2026-03-12T12:30:00.000Z',
     lastError: null,
     lastErrorAt: null,
-    primaryWindow: buildWindow(64, 300, '64% used', '5h rolling window', '2026-03-11T14:00:00.000Z'),
-    secondaryWindow: buildWindow(22, 10080, '22% used', '7d rolling window', '2026-03-18T00:00:00.000Z'),
+    primaryWindow: buildWindow(
+      64,
+      300,
+      '64% used',
+      '5h rolling window',
+      '2026-03-11T14:00:00.000Z',
+    ),
+    secondaryWindow: buildWindow(
+      22,
+      10080,
+      '22% used',
+      '7d rolling window',
+      '2026-03-18T00:00:00.000Z',
+    ),
     credits: {
       hasCredits: true,
       unlimited: false,
@@ -708,7 +979,8 @@ function createOauthAccount(id: number, overrides?: Partial<UpstreamAccountDetai
     compactSupport: {
       status: 'unsupported',
       observedAt: '2026-03-17T12:18:00.000Z',
-      reason: 'No available channel for model gpt-5.4-openai-compact under group default.',
+      reason:
+        'No available channel for model gpt-5.4-openai-compact under group default.',
     },
     localLimits: {
       primaryLimit: null,
@@ -725,10 +997,14 @@ function createOauthAccount(id: number, overrides?: Partial<UpstreamAccountDetai
     ...detail,
     ...overrides,
     history: overrides?.history ?? detail.history,
+    recentActions: overrides?.recentActions ?? detail.recentActions,
   })
 }
 
-function createApiKeyAccount(id: number, overrides?: Partial<UpstreamAccountDetail>): UpstreamAccountDetail {
+function createApiKeyAccount(
+  id: number,
+  overrides?: Partial<UpstreamAccountDetail>,
+): UpstreamAccountDetail {
   const primaryLimit = overrides?.localLimits?.primaryLimit ?? 120
   const secondaryLimit = overrides?.localLimits?.secondaryLimit ?? 500
   const limitUnit = overrides?.localLimits?.limitUnit ?? 'requests'
@@ -759,8 +1035,20 @@ function createApiKeyAccount(id: number, overrides?: Partial<UpstreamAccountDeta
     tokenExpiresAt: null,
     lastError: null,
     lastErrorAt: null,
-    primaryWindow: buildWindow(0, 300, `0 ${limitUnit}`, `${primaryLimit} ${limitUnit}`, '2026-03-11T14:00:00.000Z'),
-    secondaryWindow: buildWindow(0, 10080, `0 ${limitUnit}`, `${secondaryLimit} ${limitUnit}`, '2026-03-18T00:00:00.000Z'),
+    primaryWindow: buildWindow(
+      0,
+      300,
+      `0 ${limitUnit}`,
+      `${primaryLimit} ${limitUnit}`,
+      '2026-03-11T14:00:00.000Z',
+    ),
+    secondaryWindow: buildWindow(
+      0,
+      10080,
+      `0 ${limitUnit}`,
+      `${secondaryLimit} ${limitUnit}`,
+      '2026-03-18T00:00:00.000Z',
+    ),
     credits: {
       hasCredits: false,
       unlimited: false,
@@ -791,6 +1079,7 @@ function createApiKeyAccount(id: number, overrides?: Partial<UpstreamAccountDeta
     ...detail,
     ...overrides,
     history: overrides?.history ?? detail.history,
+    recentActions: overrides?.recentActions ?? detail.recentActions,
   })
 }
 
@@ -820,6 +1109,13 @@ function toSummary(detail: UpstreamAccountDetail): UpstreamAccountSummary {
     activeConversationCount: normalized.activeConversationCount ?? 0,
     lastError: normalized.lastError,
     lastErrorAt: normalized.lastErrorAt,
+    lastAction: normalized.lastAction,
+    lastActionSource: normalized.lastActionSource,
+    lastActionReasonCode: normalized.lastActionReasonCode,
+    lastActionReasonMessage: normalized.lastActionReasonMessage,
+    lastActionHttpStatus: normalized.lastActionHttpStatus,
+    lastActionInvokeId: normalized.lastActionInvokeId,
+    lastActionAt: normalized.lastActionAt,
     tokenExpiresAt: normalized.tokenExpiresAt,
     primaryWindow: normalized.primaryWindow,
     secondaryWindow: normalized.secondaryWindow,
@@ -845,7 +1141,10 @@ function createStore(): StoryStore {
     storyId?.endsWith('--duplicate-oauth-detail') === true
   const compactStory = storyId?.endsWith('--compact-long-labels') === true
   const tagFilterStory = storyId?.endsWith('--tag-filter-all-match') === true
-  const availabilityBadgeStory = storyId?.endsWith('--availability-badges') === true
+  const availabilityBadgeStory =
+    storyId?.endsWith('--availability-badges') === true
+  const quotaExhaustedOauthStory =
+    storyId?.endsWith('--quota-exhausted-oauth') === true
   const denseRosterStory =
     storyId?.endsWith('--dense-roster') === true ||
     storyId?.endsWith('--operational') === true ||
@@ -877,7 +1176,8 @@ function createStore(): StoryStore {
         }
       : compactStory
         ? {
-            displayName: 'Codex Pro - Tokyo enterprise rotation account with a deliberately long roster title',
+            displayName:
+              'Codex Pro - Tokyo enterprise rotation account with a deliberately long roster title',
             groupName: 'production-apac-primary-operators',
             tags: [
               compactDefaultTags[0],
@@ -890,38 +1190,38 @@ function createStore(): StoryStore {
           ? {
               tags: [
                 compactDefaultTags[0],
-                compactDefaultTags[1],
-                compactDefaultTags[2],
-              ],
-            }
-          : undefined),
+              compactDefaultTags[1],
+              compactDefaultTags[2],
+            ],
+          }
+        : undefined),
   })
-  const apiKey = createApiKeyAccount(102, compactStory
-    ? {
-        enabled: false,
-        enableStatus: 'disabled',
-        workStatus: 'idle',
-        healthStatus: 'normal',
-        syncState: 'idle',
-        status: 'disabled',
-        displayStatus: 'disabled',
-        lastError: null,
-        lastErrorAt: null,
-        tags: [
-          compactDefaultTags[0],
-          compactDefaultTags[1],
-          compactDefaultTags[2],
-          compactDefaultTags[3],
-        ],
-      }
-    : tagFilterStory
+  const apiKey = createApiKeyAccount(
+    102,
+    compactStory
       ? {
+          enabled: false,
+          enableStatus: 'disabled',
+          workStatus: 'idle',
+          healthStatus: 'normal',
+          syncState: 'idle',
+          status: 'disabled',
+          displayStatus: 'disabled',
+          lastError: null,
+          lastErrorAt: null,
           tags: [
             compactDefaultTags[0],
+            compactDefaultTags[1],
+            compactDefaultTags[2],
             compactDefaultTags[3],
           ],
         }
-    : undefined)
+      : tagFilterStory
+        ? {
+            tags: [compactDefaultTags[0], compactDefaultTags[3]],
+          }
+        : undefined,
+  )
   const duplicateOauth = duplicateStory
     ? createOauthAccount(103, {
         displayName: 'Codex Pro - Seoul',
@@ -951,12 +1251,28 @@ function createStore(): StoryStore {
           planType: 'team',
           lastSuccessfulSyncAt: '2026-03-11T20:10:00.000Z',
           lastActivityAt: '2026-03-11T20:08:00.000Z',
-          primaryWindow: buildWindow(71, 300, '71% used', '5h rolling window', '2026-03-11T22:10:00.000Z'),
-          secondaryWindow: buildWindow(100, 10080, '100% used', '7d rolling window', '2026-03-18T08:00:00.000Z'),
+          primaryWindow: buildWindow(
+            71,
+            300,
+            '71% used',
+            '5h rolling window',
+            '2026-03-11T22:10:00.000Z',
+          ),
+          secondaryWindow: buildWindow(
+            100,
+            10080,
+            '100% used',
+            '7d rolling window',
+            '2026-03-18T08:00:00.000Z',
+          ),
           tags: [
             compactDefaultTags[0],
             compactDefaultTags[1],
-            { id: 7, name: 'weekly-cap', routingRule: defaultEffectiveRoutingRule },
+            {
+              id: 7,
+              name: 'weekly-cap',
+              routingRule: defaultEffectiveRoutingRule,
+            },
           ],
           note: 'Weekly window is fully exhausted while the 5h window still has room.',
         }),
@@ -973,12 +1289,32 @@ function createStore(): StoryStore {
           planType: 'team',
           lastSuccessfulSyncAt: '2026-03-11T19:58:00.000Z',
           lastActivityAt: '2026-03-11T19:56:00.000Z',
-          primaryWindow: buildWindow(100, 300, '100% used', '5h rolling window', '2026-03-11T21:42:00.000Z'),
-          secondaryWindow: buildWindow(46, 10080, '46% used', '7d rolling window', '2026-03-18T08:00:00.000Z'),
+          primaryWindow: buildWindow(
+            100,
+            300,
+            '100% used',
+            '5h rolling window',
+            '2026-03-11T21:42:00.000Z',
+          ),
+          secondaryWindow: buildWindow(
+            46,
+            10080,
+            '46% used',
+            '7d rolling window',
+            '2026-03-18T08:00:00.000Z',
+          ),
           tags: [
             compactDefaultTags[0],
-            { id: 8, name: 'burst-limit', routingRule: defaultEffectiveRoutingRule },
-            { id: 9, name: 'warm-spare', routingRule: defaultEffectiveRoutingRule },
+            {
+              id: 8,
+              name: 'burst-limit',
+              routingRule: defaultEffectiveRoutingRule,
+            },
+            {
+              id: 9,
+              name: 'warm-spare',
+              routingRule: defaultEffectiveRoutingRule,
+            },
           ],
           note: 'Burst traffic consumed the full 5h budget.',
         }),
@@ -995,11 +1331,31 @@ function createStore(): StoryStore {
           planType: 'local',
           lastSuccessfulSyncAt: '2026-03-11T19:42:00.000Z',
           lastActivityAt: '2026-03-11T20:18:00.000Z',
-          primaryWindow: buildWindow(93, 300, '112 requests', '120 requests', '2026-03-11T21:30:00.000Z'),
-          secondaryWindow: buildWindow(100, 10080, '500 requests', '500 requests', '2026-03-18T08:00:00.000Z'),
+          primaryWindow: buildWindow(
+            93,
+            300,
+            '112 requests',
+            '120 requests',
+            '2026-03-11T21:30:00.000Z',
+          ),
+          secondaryWindow: buildWindow(
+            100,
+            10080,
+            '500 requests',
+            '500 requests',
+            '2026-03-18T08:00:00.000Z',
+          ),
           tags: [
-            { id: 10, name: 'overflow', routingRule: defaultEffectiveRoutingRule },
-            { id: 11, name: 'weekly-redline', routingRule: defaultEffectiveRoutingRule },
+            {
+              id: 10,
+              name: 'overflow',
+              routingRule: defaultEffectiveRoutingRule,
+            },
+            {
+              id: 11,
+              name: 'weekly-redline',
+              routingRule: defaultEffectiveRoutingRule,
+            },
             compactDefaultTags[1],
           ],
           note: 'Fallback key with the weekly allowance fully consumed.',
@@ -1017,11 +1373,31 @@ function createStore(): StoryStore {
           planType: 'local',
           lastSuccessfulSyncAt: '2026-03-11T18:55:00.000Z',
           lastActivityAt: '2026-03-11T19:14:00.000Z',
-          primaryWindow: buildWindow(100, 300, '120 requests', '120 requests', '2026-03-11T20:40:00.000Z'),
-          secondaryWindow: buildWindow(100, 10080, '500 requests', '500 requests', '2026-03-18T08:00:00.000Z'),
+          primaryWindow: buildWindow(
+            100,
+            300,
+            '120 requests',
+            '120 requests',
+            '2026-03-11T20:40:00.000Z',
+          ),
+          secondaryWindow: buildWindow(
+            100,
+            10080,
+            '500 requests',
+            '500 requests',
+            '2026-03-18T08:00:00.000Z',
+          ),
           tags: [
-            { id: 12, name: 'rescue', routingRule: defaultEffectiveRoutingRule },
-            { id: 13, name: 'manual-drain', routingRule: defaultEffectiveRoutingRule },
+            {
+              id: 12,
+              name: 'rescue',
+              routingRule: defaultEffectiveRoutingRule,
+            },
+            {
+              id: 13,
+              name: 'manual-drain',
+              routingRule: defaultEffectiveRoutingRule,
+            },
           ],
           note: 'Emergency key where both local placeholder windows are exhausted.',
         }),
@@ -1066,18 +1442,93 @@ function createStore(): StoryStore {
         }),
       ]
     : []
-  const operationalRosterAccounts = compactStory ? [] : buildOperationalRosterAccounts(denseRosterStory ? 3 : 1)
-  const storyAccounts = availabilityBadgeStory
-    ? availabilityBadgeAccounts
-    : [
-        oauth,
-        ...(duplicateOauth ? [duplicateOauth] : []),
-        apiKey,
-        ...compactExtraAccounts,
-        ...operationalRosterAccounts,
+  const quotaExhaustedOauthAccounts = quotaExhaustedOauthStory
+    ? [
+        createOauthAccount(301, {
+          displayName: 'Quota exhausted OAuth routing state',
+          groupName: 'production',
+          isMother: false,
+          status: 'error',
+          displayStatus: 'active',
+          enableStatus: 'enabled',
+          workStatus: 'rate_limited',
+          healthStatus: 'normal',
+          syncState: 'idle',
+          planType: 'team',
+          email: 'tokyo@example.com',
+          chatgptAccountId: 'org_tokyo',
+          chatgptUserId: 'user_tokyo',
+          lastSuccessfulSyncAt: '2026-03-24T19:52:00.000Z',
+          lastActivityAt: '2026-03-25T00:31:43.000Z',
+          lastError:
+            'oauth_upstream_rejected_request: pool upstream responded with 429: The usage limit has been reached',
+          lastErrorAt: '2026-03-25T00:31:43.000Z',
+          lastAction: 'sync_recovery_blocked',
+          lastActionSource: 'sync_maintenance',
+          lastActionReasonCode: 'quota_still_exhausted',
+          lastActionReasonMessage:
+            'latest usage snapshot still shows an exhausted upstream usage limit window',
+          lastActionAt: '2026-03-25T02:00:27.000Z',
+          lastActionHttpStatus: null,
+          primaryWindow: buildWindow(
+            100,
+            300,
+            '100% used',
+            '5h rolling window',
+            '2026-03-31T00:06:33.000Z',
+          ),
+          secondaryWindow: buildWindow(
+            64,
+            10080,
+            '64% used',
+            '7d rolling window',
+            '2026-04-01T00:06:33.000Z',
+          ),
+          tags: pickStoryTags('vip', 'prodApac', 'priority'),
+          note: 'Quota exhausted OAuth account should stay visible as rate limited, not upstream rejected.',
+          recentActions: [
+            buildRecentAction(
+              9101,
+              '2026-03-25T02:00:27.000Z',
+              'sync_recovery_blocked',
+              'sync_maintenance',
+              'quota_still_exhausted',
+              'latest usage snapshot still shows an exhausted upstream usage limit window',
+              'upstream_http_429_quota_exhausted',
+              null,
+            ),
+            buildRecentAction(
+              9100,
+              '2026-03-25T00:31:43.000Z',
+              'route_hard_unavailable',
+              'call',
+              'upstream_http_429_quota_exhausted',
+              'oauth_upstream_rejected_request: pool upstream responded with 429: The usage limit has been reached',
+              'upstream_http_429_quota_exhausted',
+              429,
+            ),
+          ],
+        }),
       ]
+    : []
+  const operationalRosterAccounts = compactStory
+    ? []
+    : buildOperationalRosterAccounts(denseRosterStory ? 3 : 1)
+  const storyAccounts = quotaExhaustedOauthStory
+    ? quotaExhaustedOauthAccounts
+    : availabilityBadgeStory
+      ? availabilityBadgeAccounts
+      : [
+          oauth,
+          ...(duplicateOauth ? [duplicateOauth] : []),
+          apiKey,
+          ...compactExtraAccounts,
+          ...operationalRosterAccounts,
+        ]
   const accounts = storyAccounts.map(toSummary)
-  const details = Object.fromEntries(storyAccounts.map((account) => [account.id, account]))
+  const details = Object.fromEntries(
+    storyAccounts.map((account) => [account.id, account]),
+  )
   return {
     writesEnabled: true,
     routing: {
@@ -1092,13 +1543,18 @@ function createStore(): StoryStore {
       staging: 'Staging fallback group note.',
       'production-apac-weekly': 'Weekly cap watch list.',
       'production-apac-burst': 'Burst-heavy rotation group.',
-      'production-apac': 'APAC production roster for regional failover and premium traffic.',
-      'production-emea': 'EMEA production roster with mixed OAuth and API key coverage.',
+      'production-apac':
+        'APAC production roster for regional failover and premium traffic.',
+      'production-emea':
+        'EMEA production roster with mixed OAuth and API key coverage.',
       analytics: 'Analytics workloads with lower latency sensitivity.',
-      overflow: 'Overflow keys reserved for burst absorption and emergency routing.',
+      overflow:
+        'Overflow keys reserved for burst absorption and emergency routing.',
       sandbox: 'Sandbox and canary accounts used for smoke traffic.',
-      'enterprise-ops': 'Enterprise workspace accounts for higher-tier traffic.',
-      experiments: 'Evaluation and research traffic that can tolerate instability.',
+      'enterprise-ops':
+        'Enterprise workspace accounts for higher-tier traffic.',
+      experiments:
+        'Evaluation and research traffic that can tolerate instability.',
       'night-ops': 'Night shift routing accounts for off-hours coverage.',
       'batch-ops': 'Batch processing keys used by scheduled jobs.',
       latam: 'LATAM fallback coverage for regional traffic.',
@@ -1124,7 +1580,12 @@ function maskApiKey(value: string) {
 }
 
 function buildStickyRequestPoints(
-  points: Array<{ occurredAt: string; requestTokens: number; status?: string; isSuccess?: boolean }>,
+  points: Array<{
+    occurredAt: string
+    requestTokens: number
+    status?: string
+    isSuccess?: boolean
+  }>,
 ) {
   let cumulativeTokens = 0
   return points.map((point) => {
@@ -1151,9 +1612,18 @@ function buildStickyConversations(accountId: number) {
             createdAt: '2026-03-13T04:01:20.000Z',
             lastActivityAt: '2026-03-13T04:03:02.000Z',
             last24hRequests: buildStickyRequestPoints([
-              { occurredAt: '2026-03-12T10:15:00.000Z', requestTokens: 102_440 },
-              { occurredAt: '2026-03-12T18:20:00.000Z', requestTokens: 154_380 },
-              { occurredAt: '2026-03-13T04:03:02.000Z', requestTokens: 198_350 },
+              {
+                occurredAt: '2026-03-12T10:15:00.000Z',
+                requestTokens: 102_440,
+              },
+              {
+                occurredAt: '2026-03-12T18:20:00.000Z',
+                requestTokens: 154_380,
+              },
+              {
+                occurredAt: '2026-03-13T04:03:02.000Z',
+                requestTokens: 198_350,
+              },
             ]),
           },
           {
@@ -1164,9 +1634,18 @@ function buildStickyConversations(accountId: number) {
             createdAt: '2026-03-13T03:59:52.000Z',
             lastActivityAt: '2026-03-13T04:06:08.000Z',
             last24hRequests: buildStickyRequestPoints([
-              { occurredAt: '2026-03-12T12:10:00.000Z', requestTokens: 140_000 },
-              { occurredAt: '2026-03-12T20:45:00.000Z', requestTokens: 212_875 },
-              { occurredAt: '2026-03-13T04:06:08.000Z', requestTokens: 276_300 },
+              {
+                occurredAt: '2026-03-12T12:10:00.000Z',
+                requestTokens: 140_000,
+              },
+              {
+                occurredAt: '2026-03-12T20:45:00.000Z',
+                requestTokens: 212_875,
+              },
+              {
+                occurredAt: '2026-03-13T04:06:08.000Z',
+                requestTokens: 276_300,
+              },
             ]),
           },
           {
@@ -1177,9 +1656,18 @@ function buildStickyConversations(accountId: number) {
             createdAt: '2026-03-13T03:57:28.000Z',
             lastActivityAt: '2026-03-13T04:00:52.000Z',
             last24hRequests: buildStickyRequestPoints([
-              { occurredAt: '2026-03-12T09:00:00.000Z', requestTokens: 120_000 },
-              { occurredAt: '2026-03-12T21:40:00.000Z', requestTokens: 131_400 },
-              { occurredAt: '2026-03-13T04:00:52.000Z', requestTokens: 146_799 },
+              {
+                occurredAt: '2026-03-12T09:00:00.000Z',
+                requestTokens: 120_000,
+              },
+              {
+                occurredAt: '2026-03-12T21:40:00.000Z',
+                requestTokens: 131_400,
+              },
+              {
+                occurredAt: '2026-03-13T04:00:52.000Z',
+                requestTokens: 146_799,
+              },
             ]),
           },
           {
@@ -1190,10 +1678,22 @@ function buildStickyConversations(accountId: number) {
             createdAt: '2026-03-13T03:55:36.000Z',
             lastActivityAt: '2026-03-13T04:01:05.000Z',
             last24hRequests: buildStickyRequestPoints([
-              { occurredAt: '2026-03-12T08:25:00.000Z', requestTokens: 330_000 },
-              { occurredAt: '2026-03-12T17:15:00.000Z', requestTokens: 445_120 },
-              { occurredAt: '2026-03-13T01:48:00.000Z', requestTokens: 268_624 },
-              { occurredAt: '2026-03-13T04:01:05.000Z', requestTokens: 258_500 },
+              {
+                occurredAt: '2026-03-12T08:25:00.000Z',
+                requestTokens: 330_000,
+              },
+              {
+                occurredAt: '2026-03-12T17:15:00.000Z',
+                requestTokens: 445_120,
+              },
+              {
+                occurredAt: '2026-03-13T01:48:00.000Z',
+                requestTokens: 268_624,
+              },
+              {
+                occurredAt: '2026-03-13T04:01:05.000Z',
+                requestTokens: 258_500,
+              },
             ]),
           },
           {
@@ -1204,10 +1704,24 @@ function buildStickyConversations(accountId: number) {
             createdAt: '2026-03-13T03:51:19.000Z',
             lastActivityAt: '2026-03-13T03:54:08.000Z',
             last24hRequests: buildStickyRequestPoints([
-              { occurredAt: '2026-03-12T07:52:00.000Z', requestTokens: 281_000 },
-              { occurredAt: '2026-03-12T13:04:00.000Z', requestTokens: 309_447 },
-              { occurredAt: '2026-03-12T23:15:00.000Z', requestTokens: 334_000 },
-              { occurredAt: '2026-03-13T03:54:08.000Z', requestTokens: 365_000, status: 'failed', isSuccess: false },
+              {
+                occurredAt: '2026-03-12T07:52:00.000Z',
+                requestTokens: 281_000,
+              },
+              {
+                occurredAt: '2026-03-12T13:04:00.000Z',
+                requestTokens: 309_447,
+              },
+              {
+                occurredAt: '2026-03-12T23:15:00.000Z',
+                requestTokens: 334_000,
+              },
+              {
+                occurredAt: '2026-03-13T03:54:08.000Z',
+                requestTokens: 365_000,
+                status: 'failed',
+                isSuccess: false,
+              },
             ]),
           },
           {
@@ -1218,10 +1732,22 @@ function buildStickyConversations(accountId: number) {
             createdAt: '2026-03-13T03:48:11.000Z',
             lastActivityAt: '2026-03-13T03:56:06.000Z',
             last24hRequests: buildStickyRequestPoints([
-              { occurredAt: '2026-03-12T06:18:00.000Z', requestTokens: 640_000 },
-              { occurredAt: '2026-03-12T11:42:00.000Z', requestTokens: 722_516 },
-              { occurredAt: '2026-03-12T19:36:00.000Z', requestTokens: 841_900 },
-              { occurredAt: '2026-03-13T03:56:06.000Z', requestTokens: 1_037_246 },
+              {
+                occurredAt: '2026-03-12T06:18:00.000Z',
+                requestTokens: 640_000,
+              },
+              {
+                occurredAt: '2026-03-12T11:42:00.000Z',
+                requestTokens: 722_516,
+              },
+              {
+                occurredAt: '2026-03-12T19:36:00.000Z',
+                requestTokens: 841_900,
+              },
+              {
+                occurredAt: '2026-03-13T03:56:06.000Z',
+                requestTokens: 1_037_246,
+              },
             ]),
           },
           {
@@ -1232,10 +1758,22 @@ function buildStickyConversations(accountId: number) {
             createdAt: '2026-03-13T03:45:33.000Z',
             lastActivityAt: '2026-03-13T03:53:28.000Z',
             last24hRequests: buildStickyRequestPoints([
-              { occurredAt: '2026-03-12T05:10:00.000Z', requestTokens: 340_000 },
-              { occurredAt: '2026-03-12T15:10:00.000Z', requestTokens: 462_400 },
-              { occurredAt: '2026-03-12T22:00:00.000Z', requestTokens: 299_561 },
-              { occurredAt: '2026-03-13T03:53:28.000Z', requestTokens: 354_000 },
+              {
+                occurredAt: '2026-03-12T05:10:00.000Z',
+                requestTokens: 340_000,
+              },
+              {
+                occurredAt: '2026-03-12T15:10:00.000Z',
+                requestTokens: 462_400,
+              },
+              {
+                occurredAt: '2026-03-12T22:00:00.000Z',
+                requestTokens: 299_561,
+              },
+              {
+                occurredAt: '2026-03-13T03:53:28.000Z',
+                requestTokens: 354_000,
+              },
             ]),
           },
         ]
@@ -1309,12 +1847,28 @@ function syncLocalWindows(detail: UpstreamAccountDetail) {
   const limitUnit = detail.localLimits?.limitUnit ?? 'requests'
   return withDerivedStatusFields({
     ...detail,
-    primaryWindow: buildWindow(0, 300, `0 ${limitUnit}`, `${primaryLimit} ${limitUnit}`, '2026-03-11T14:00:00.000Z'),
-    secondaryWindow: buildWindow(0, 10080, `0 ${limitUnit}`, `${secondaryLimit} ${limitUnit}`, '2026-03-18T00:00:00.000Z'),
+    primaryWindow: buildWindow(
+      0,
+      300,
+      `0 ${limitUnit}`,
+      `${primaryLimit} ${limitUnit}`,
+      '2026-03-11T14:00:00.000Z',
+    ),
+    secondaryWindow: buildWindow(
+      0,
+      10080,
+      `0 ${limitUnit}`,
+      `${secondaryLimit} ${limitUnit}`,
+      '2026-03-18T00:00:00.000Z',
+    ),
   })
 }
 
-export function StorybookUpstreamAccountsMock({ children }: { children: ReactNode }) {
+export function StorybookUpstreamAccountsMock({
+  children,
+}: {
+  children: ReactNode
+}) {
   const storeRef = useRef<StoryStore>(createStore())
   const originalFetchRef = useRef<typeof window.fetch | null>(null)
   const installedRef = useRef(false)
@@ -1324,8 +1878,15 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
     originalFetchRef.current = window.fetch.bind(window)
 
     const mockedFetch: typeof window.fetch = async (input, init) => {
-      const method = (init?.method || (input instanceof Request ? input.method : 'GET')).toUpperCase()
-      const inputUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
+      const method = (
+        init?.method || (input instanceof Request ? input.method : 'GET')
+      ).toUpperCase()
+      const inputUrl =
+        typeof input === 'string'
+          ? input
+          : input instanceof URL
+            ? input.toString()
+            : input.url
       const parsedUrl = new URL(inputUrl, window.location.origin)
       const path = parsedUrl.pathname
       const storyId = currentStoryId()
@@ -1334,18 +1895,24 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
       if (path === '/api/pool/upstream-accounts' && method === 'GET') {
         const filteredItems = filterAccountsForQuery(store, parsedUrl)
         const rawPageSize = Number(parsedUrl.searchParams.get('pageSize') || 20)
-        const requestedPageSize = Number.isFinite(rawPageSize) && rawPageSize > 0 ? rawPageSize : 20
+        const requestedPageSize =
+          Number.isFinite(rawPageSize) && rawPageSize > 0 ? rawPageSize : 20
         const total = filteredItems.length
         const pageCount = Math.max(1, Math.ceil(total / requestedPageSize))
         const rawPage = Number(parsedUrl.searchParams.get('page') || 1)
-        const requestedPage = Number.isFinite(rawPage) && rawPage > 0 ? rawPage : 1
+        const requestedPage =
+          Number.isFinite(rawPage) && rawPage > 0 ? rawPage : 1
         const page = Math.min(requestedPage, pageCount)
         const start = (page - 1) * requestedPageSize
-        const pageItems = filteredItems.slice(start, start + requestedPageSize).map((item) => clone(item))
+        const pageItems = filteredItems
+          .slice(start, start + requestedPageSize)
+          .map((item) => clone(item))
         const payload: UpstreamAccountListResponse = {
           writesEnabled: store.writesEnabled,
           groups: listGroupSummaries(store),
-          hasUngroupedAccounts: store.accounts.some((account) => !normalizeGroupName(account.groupName)),
+          hasUngroupedAccounts: store.accounts.some(
+            (account) => !normalizeGroupName(account.groupName),
+          ),
           routing: clone(store.routing),
           items: pageItems,
           total,
@@ -1353,14 +1920,18 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
           pageSize: requestedPageSize,
           metrics: {
             total,
-            oauth: filteredItems.filter((item) => item.kind === 'oauth_codex').length,
-            apiKey: filteredItems.filter((item) => item.kind === 'api_key_codex').length,
+            oauth: filteredItems.filter((item) => item.kind === 'oauth_codex')
+              .length,
+            apiKey: filteredItems.filter(
+              (item) => item.kind === 'api_key_codex',
+            ).length,
             attention: filteredItems.filter((item) => {
               const derivedHealthStatus = storyHealthStatus(item)
               const derivedSyncState = storySyncState(item)
               return (
-                derivedHealthStatus !== 'normal'
-                || storyWorkStatus(item, derivedHealthStatus, derivedSyncState) === 'rate_limited'
+                derivedHealthStatus !== 'normal' ||
+                storyWorkStatus(item, derivedHealthStatus, derivedSyncState) ===
+                  'rate_limited'
               )
             }).length,
           },
@@ -1430,8 +2001,17 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
         return jsonResponse(clone(store.routing))
       }
 
-      if (path === '/api/pool/upstream-accounts/oauth/login-sessions' && method === 'POST') {
-        const body = parseBody<{ displayName?: string; groupName?: string; note?: string; groupNote?: string; isMother?: boolean }>(init?.body, {})
+      if (
+        path === '/api/pool/upstream-accounts/oauth/login-sessions' &&
+        method === 'POST'
+      ) {
+        const body = parseBody<{
+          displayName?: string
+          groupName?: string
+          note?: string
+          groupNote?: string
+          isMother?: boolean
+        }>(init?.body, {})
         const loginId = `login_${Date.now()}`
         const redirectUri = `http://localhost:431${String(store.nextId).slice(-1)}/oauth/callback`
         const state = `state_${loginId}`
@@ -1454,20 +2034,32 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
         return jsonResponse(clone(session), 201)
       }
 
-      if (path === '/api/pool/upstream-accounts/oauth/mailbox-sessions' && method === 'POST') {
+      if (
+        path === '/api/pool/upstream-accounts/oauth/mailbox-sessions' &&
+        method === 'POST'
+      ) {
         const body = parseBody<{ emailAddress?: string }>(init?.body, {})
         const requestedAddress = body.emailAddress?.trim().toLowerCase() ?? ''
         const shouldDelayMailboxAttach =
-          storyId === 'account-pool-pages-upstream-account-create-oauth--mailbox-attach-flow' ||
-          storyId === 'account-pool-pages-upstream-account-create-oauth--mailbox-attach-pending' ||
-          storyId === 'account-pool-pages-upstream-account-create-batch-oauth--mailbox-attach-flow' ||
-          storyId === 'account-pool-pages-upstream-account-create-batch-oauth--mailbox-popover-edit' ||
-          storyId === 'account-pool-pages-upstream-account-create-batch-oauth--mailbox-attach-pending'
+          storyId ===
+            'account-pool-pages-upstream-account-create-oauth--mailbox-attach-flow' ||
+          storyId ===
+            'account-pool-pages-upstream-account-create-oauth--mailbox-attach-pending' ||
+          storyId ===
+            'account-pool-pages-upstream-account-create-batch-oauth--mailbox-attach-flow' ||
+          storyId ===
+            'account-pool-pages-upstream-account-create-batch-oauth--mailbox-popover-edit' ||
+          storyId ===
+            'account-pool-pages-upstream-account-create-batch-oauth--mailbox-attach-pending'
         const shouldDelayMailboxGenerate =
-          storyId === 'account-pool-pages-upstream-account-create-oauth--mailbox-generate-flow' ||
-          storyId === 'account-pool-pages-upstream-account-create-oauth--mailbox-generate-pending' ||
-          storyId === 'account-pool-pages-upstream-account-create-batch-oauth--mailbox-generate-flow' ||
-          storyId === 'account-pool-pages-upstream-account-create-batch-oauth--mailbox-generate-pending'
+          storyId ===
+            'account-pool-pages-upstream-account-create-oauth--mailbox-generate-flow' ||
+          storyId ===
+            'account-pool-pages-upstream-account-create-oauth--mailbox-generate-pending' ||
+          storyId ===
+            'account-pool-pages-upstream-account-create-batch-oauth--mailbox-generate-flow' ||
+          storyId ===
+            'account-pool-pages-upstream-account-create-batch-oauth--mailbox-generate-pending'
         if (requestedAddress && shouldDelayMailboxAttach) {
           await wait(900)
         }
@@ -1485,7 +2077,9 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
               201,
             )
           }
-          const isSupportedDomain = requestedAddress.endsWith('@mail-tw.707079.xyz')
+          const isSupportedDomain = requestedAddress.endsWith(
+            '@mail-tw.707079.xyz',
+          )
           if (!isSupportedDomain) {
             return jsonResponse(
               {
@@ -1542,7 +2136,10 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
         )
       }
 
-      if (path === '/api/pool/upstream-accounts/oauth/mailbox-sessions/status' && method === 'POST') {
+      if (
+        path === '/api/pool/upstream-accounts/oauth/mailbox-sessions/status' &&
+        method === 'POST'
+      ) {
         const body = parseBody<{ sessionIds?: string[] }>(init?.body, {})
         const sessionIds = Array.isArray(body.sessionIds) ? body.sessionIds : []
         const items = sessionIds
@@ -1551,40 +2148,61 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
         return jsonResponse({ items })
       }
 
-      const mailboxSessionMatch = path.match(/^\/api\/pool\/upstream-accounts\/oauth\/mailbox-sessions\/([^/]+)$/)
+      const mailboxSessionMatch = path.match(
+        /^\/api\/pool\/upstream-accounts\/oauth\/mailbox-sessions\/([^/]+)$/,
+      )
       if (mailboxSessionMatch && method === 'DELETE') {
         const sessionId = decodeURIComponent(mailboxSessionMatch[1])
         delete store.mailboxStatuses[sessionId]
         return noContent()
       }
 
-      const loginSessionMatch = path.match(/^\/api\/pool\/upstream-accounts\/oauth\/login-sessions\/([^/]+)$/)
+      const loginSessionMatch = path.match(
+        /^\/api\/pool\/upstream-accounts\/oauth\/login-sessions\/([^/]+)$/,
+      )
       if (loginSessionMatch && method === 'GET') {
         const loginId = decodeURIComponent(loginSessionMatch[1])
         const session = store.sessions[loginId]
-        if (!session) return jsonResponse({ message: 'missing mock session' }, 404)
+        if (!session)
+          return jsonResponse({ message: 'missing mock session' }, 404)
         return jsonResponse(clone(session))
       }
 
-      const completeLoginSessionMatch = path.match(/^\/api\/pool\/upstream-accounts\/oauth\/login-sessions\/([^/]+)\/complete$/)
+      const completeLoginSessionMatch = path.match(
+        /^\/api\/pool\/upstream-accounts\/oauth\/login-sessions\/([^/]+)\/complete$/,
+      )
       if (completeLoginSessionMatch && method === 'POST') {
         const loginId = decodeURIComponent(completeLoginSessionMatch[1])
         const session = store.sessions[loginId]
-        if (!session) return jsonResponse({ message: 'missing mock session' }, 404)
-        const body = parseBody<CompleteOauthLoginSessionPayload>(init?.body, { callbackUrl: '' })
+        if (!session)
+          return jsonResponse({ message: 'missing mock session' }, 404)
+        const body = parseBody<CompleteOauthLoginSessionPayload>(init?.body, {
+          callbackUrl: '',
+        })
         const callbackUrl = body.callbackUrl.trim()
-        if (!callbackUrl || !session.state || !callbackUrl.includes(session.state)) {
+        if (
+          !callbackUrl ||
+          !session.state ||
+          !callbackUrl.includes(session.state)
+        ) {
           session.status = 'failed'
-          session.error = 'Mock callback URL does not contain the expected state token.'
+          session.error =
+            'Mock callback URL does not contain the expected state token.'
           return jsonResponse({ message: session.error }, 400)
         }
         const nextId = session.accountId ?? store.nextId++
         const existing = store.details[nextId]
         const detail = createOauthAccount(nextId, {
-          displayName: session.displayName || existing?.displayName || 'Codex Pro - New login',
+          displayName:
+            session.displayName ||
+            existing?.displayName ||
+            'Codex Pro - New login',
           groupName: session.groupName ?? existing?.groupName ?? 'default',
           isMother: session.isMother ?? existing?.isMother ?? false,
-          note: session.note ?? existing?.note ?? 'Freshly connected from Storybook OAuth mock.',
+          note:
+            session.note ??
+            existing?.note ??
+            'Freshly connected from Storybook OAuth mock.',
         })
         const normalizedGroupName = normalizeGroupName(detail.groupName)
         if (normalizedGroupName && session.groupNote?.trim()) {
@@ -1592,7 +2210,10 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
         }
         store.details[nextId] = detail
         const summary = toSummary(detail)
-        store.accounts = [summary, ...store.accounts.filter((item) => item.id !== nextId)]
+        store.accounts = [
+          summary,
+          ...store.accounts.filter((item) => item.id !== nextId),
+        ]
         session.accountId = nextId
         session.status = 'completed'
         session.authUrl = null
@@ -1601,7 +2222,10 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
         return jsonResponse(clone(detail))
       }
 
-      if (path === '/api/pool/upstream-accounts/api-keys' && method === 'POST') {
+      if (
+        path === '/api/pool/upstream-accounts/api-keys' &&
+        method === 'POST'
+      ) {
         const body = parseBody<CreateApiKeyAccountPayload>(init?.body, {
           displayName: 'New API key',
           apiKey: 'sk-storybook-key',
@@ -1630,7 +2254,9 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
         return jsonResponse(clone(synced), 201)
       }
 
-      const reloginMatch = path.match(/^\/api\/pool\/upstream-accounts\/(\d+)\/oauth\/relogin$/)
+      const reloginMatch = path.match(
+        /^\/api\/pool\/upstream-accounts\/(\d+)\/oauth\/relogin$/,
+      )
       if (reloginMatch && method === 'POST') {
         const accountId = Number(reloginMatch[1])
         const state = `state_relogin_${accountId}`
@@ -1648,11 +2274,14 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
         return jsonResponse(clone(session), 201)
       }
 
-      const syncMatch = path.match(/^\/api\/pool\/upstream-accounts\/(\d+)\/sync$/)
+      const syncMatch = path.match(
+        /^\/api\/pool\/upstream-accounts\/(\d+)\/sync$/,
+      )
       if (syncMatch && method === 'POST') {
         const accountId = Number(syncMatch[1])
         const detail = store.details[accountId]
-        if (!detail) return jsonResponse({ message: 'missing mock account' }, 404)
+        if (!detail)
+          return jsonResponse({ message: 'missing mock account' }, 404)
         const updated = syncLocalWindows({
           ...detail,
           status: 'active',
@@ -1662,7 +2291,9 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
           lastErrorAt: null,
         })
         store.details[accountId] = updated
-        store.accounts = store.accounts.map((item) => (item.id === accountId ? toSummary(updated) : item))
+        store.accounts = store.accounts.map((item) =>
+          item.id === accountId ? toSummary(updated) : item,
+        )
         return jsonResponse(clone(updated))
       }
 
@@ -1670,11 +2301,14 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
       if (detailMatch && method === 'GET') {
         const accountId = Number(detailMatch[1])
         const detail = store.details[accountId]
-        if (!detail) return jsonResponse({ message: 'missing mock account' }, 404)
+        if (!detail)
+          return jsonResponse({ message: 'missing mock account' }, 404)
         return jsonResponse(clone(detail))
       }
 
-      const stickyMatch = path.match(/^\/api\/pool\/upstream-accounts\/(\d+)\/sticky-keys$/)
+      const stickyMatch = path.match(
+        /^\/api\/pool\/upstream-accounts\/(\d+)\/sticky-keys$/,
+      )
       if (stickyMatch && method === 'GET') {
         const accountId = Number(stickyMatch[1])
         return jsonResponse(buildStickyConversations(accountId))
@@ -1683,7 +2317,8 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
       if (detailMatch && method === 'PATCH') {
         const accountId = Number(detailMatch[1])
         const detail = store.details[accountId]
-        if (!detail) return jsonResponse({ message: 'missing mock account' }, 404)
+        if (!detail)
+          return jsonResponse({ message: 'missing mock account' }, 404)
         const body = parseBody<UpdateUpstreamAccountPayload>(init?.body, {})
         const updated = syncLocalWindows({
           ...detail,
@@ -1692,32 +2327,57 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
           isMother: body.isMother ?? detail.isMother,
           note: body.note ?? detail.note,
           upstreamBaseUrl:
-            detail.kind === 'api_key_codex' && Object.prototype.hasOwnProperty.call(body, 'upstreamBaseUrl')
-              ? body.upstreamBaseUrl ?? null
+            detail.kind === 'api_key_codex' &&
+            Object.prototype.hasOwnProperty.call(body, 'upstreamBaseUrl')
+              ? (body.upstreamBaseUrl ?? null)
               : detail.upstreamBaseUrl,
           enabled: body.enabled ?? detail.enabled,
-          status: body.enabled === false ? 'disabled' : detail.status === 'disabled' ? 'active' : detail.status,
-          maskedApiKey: body.apiKey ? maskApiKey(body.apiKey) : detail.maskedApiKey,
+          status:
+            body.enabled === false
+              ? 'disabled'
+              : detail.status === 'disabled'
+                ? 'active'
+                : detail.status,
+          maskedApiKey: body.apiKey
+            ? maskApiKey(body.apiKey)
+            : detail.maskedApiKey,
           localLimits:
             detail.kind === 'api_key_codex'
               ? {
-                  primaryLimit: body.localPrimaryLimit ?? detail.localLimits?.primaryLimit ?? 120,
-                  secondaryLimit: body.localSecondaryLimit ?? detail.localLimits?.secondaryLimit ?? 500,
-                  limitUnit: body.localLimitUnit ?? detail.localLimits?.limitUnit ?? 'requests',
+                  primaryLimit:
+                    body.localPrimaryLimit ??
+                    detail.localLimits?.primaryLimit ??
+                    120,
+                  secondaryLimit:
+                    body.localSecondaryLimit ??
+                    detail.localLimits?.secondaryLimit ??
+                    500,
+                  limitUnit:
+                    body.localLimitUnit ??
+                    detail.localLimits?.limitUnit ??
+                    'requests',
                 }
               : detail.localLimits,
         })
         store.details[accountId] = updated
-        store.accounts = store.accounts.map((item) => (item.id === accountId ? toSummary(updated) : item))
+        store.accounts = store.accounts.map((item) =>
+          item.id === accountId ? toSummary(updated) : item,
+        )
         return jsonResponse(clone(updated))
       }
 
-      const groupMatch = path.match(/^\/api\/pool\/upstream-accounts\/groups\/(.+)$/)
+      const groupMatch = path.match(
+        /^\/api\/pool\/upstream-accounts\/groups\/(.+)$/,
+      )
       if (groupMatch && method === 'PATCH') {
         const groupName = decodeURIComponent(groupMatch[1])
-        const body = parseBody<UpdateUpstreamAccountGroupPayload>(init?.body, {})
+        const body = parseBody<UpdateUpstreamAccountGroupPayload>(
+          init?.body,
+          {},
+        )
         const normalized = normalizeGroupName(groupName)
-        if (!normalized) return jsonResponse({ message: 'missing mock group' }, 404)
+        if (!normalized)
+          return jsonResponse({ message: 'missing mock group' }, 404)
         const note = body.note?.trim() ?? ''
         if (note) store.groupNotes[normalized] = note
         else delete store.groupNotes[normalized]
@@ -1728,10 +2388,13 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
         const accountId = Number(detailMatch[1])
         if (storyId?.endsWith('--delete-failure')) {
           return Promise.resolve(
-            new Response('error returned from database: (code: 5) database is locked', {
-              status: 500,
-              headers: { 'Content-Type': 'text/plain' },
-            }),
+            new Response(
+              'error returned from database: (code: 5) database is locked',
+              {
+                status: 500,
+                headers: { 'Content-Type': 'text/plain' },
+              },
+            ),
           )
         }
         delete store.details[accountId]
@@ -1757,7 +2420,11 @@ export function StorybookUpstreamAccountsMock({ children }: { children: ReactNod
   return <>{children}</>
 }
 
-export function AccountPoolStoryRouter({ initialEntry }: { initialEntry: StoryInitialEntry }) {
+export function AccountPoolStoryRouter({
+  initialEntry,
+}: {
+  initialEntry: StoryInitialEntry
+}) {
   const { themeMode } = useTheme()
   const isDark = themeMode === 'dark'
   return (
@@ -1772,8 +2439,14 @@ export function AccountPoolStoryRouter({ initialEntry }: { initialEntry: StoryIn
       <MemoryRouter initialEntries={[initialEntry]}>
         <Routes>
           <Route path="/account-pool" element={<AccountPoolLayout />}>
-            <Route path="upstream-accounts" element={<UpstreamAccountsPage />} />
-            <Route path="upstream-accounts/new" element={<UpstreamAccountCreatePage />} />
+            <Route
+              path="upstream-accounts"
+              element={<UpstreamAccountsPage />}
+            />
+            <Route
+              path="upstream-accounts/new"
+              element={<UpstreamAccountCreatePage />}
+            />
           </Route>
         </Routes>
       </MemoryRouter>

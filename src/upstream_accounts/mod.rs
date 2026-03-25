@@ -7974,6 +7974,7 @@ fn build_summary_from_row(
         row.last_error_at.as_deref(),
         row.last_route_failure_at.as_deref(),
         row.last_route_failure_kind.as_deref(),
+        row.last_action_reason_code.as_deref(),
     );
     let sync_state = derive_upstream_account_sync_state(row.enabled != 0, &row.status);
     let snapshot_exhausted = persisted_usage_sample_is_exhausted(sample);
@@ -7983,6 +7984,8 @@ fn build_summary_from_row(
         sync_state,
         snapshot_exhausted,
         row.cooldown_until.as_deref(),
+        row.last_error_at.as_deref(),
+        row.last_route_failure_at.as_deref(),
         row.last_route_failure_kind.as_deref(),
         row.last_action_reason_code.as_deref(),
         row.last_selected_at.as_deref(),
@@ -7995,6 +7998,7 @@ fn build_summary_from_row(
         row.last_error_at.as_deref(),
         row.last_route_failure_at.as_deref(),
         row.last_route_failure_kind.as_deref(),
+        row.last_action_reason_code.as_deref(),
     )
     .to_string();
     let compact_support = build_compact_support_state(row);
@@ -9989,6 +9993,7 @@ fn derive_upstream_account_health_status(
     last_error_at: Option<&str>,
     last_route_failure_at: Option<&str>,
     last_route_failure_kind: Option<&str>,
+    last_action_reason_code: Option<&str>,
 ) -> &'static str {
     if !enabled {
         return UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL;
@@ -10002,6 +10007,14 @@ fn derive_upstream_account_health_status(
         last_error_at,
         last_route_failure_at,
         last_route_failure_kind,
+    ) {
+        return UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL;
+    }
+    if upstream_account_rate_limit_state_is_current(
+        last_error_at,
+        last_route_failure_at,
+        last_route_failure_kind,
+        last_action_reason_code,
     ) {
         return UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL;
     }
@@ -10033,20 +10046,21 @@ fn is_transient_route_failure_error(
     if last_error_at.is_none() || last_error_at != last_route_failure_at {
         return false;
     }
-    matches!(
-        last_route_failure_kind
-            .map(str::trim)
-            .filter(|value| !value.is_empty()),
-        Some(
-            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429
-                | FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX
-                | FORWARD_PROXY_FAILURE_SEND_ERROR
-                | FORWARD_PROXY_FAILURE_HANDSHAKE_TIMEOUT
-                | FORWARD_PROXY_FAILURE_STREAM_ERROR
-                | PROXY_FAILURE_FAILED_CONTACT_UPSTREAM
-                | PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT
+    let failure_kind = last_route_failure_kind
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    route_failure_kind_is_rate_limited(failure_kind)
+        || matches!(
+            failure_kind,
+            Some(
+                FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX
+                    | FORWARD_PROXY_FAILURE_SEND_ERROR
+                    | FORWARD_PROXY_FAILURE_HANDSHAKE_TIMEOUT
+                    | FORWARD_PROXY_FAILURE_STREAM_ERROR
+                    | PROXY_FAILURE_FAILED_CONTACT_UPSTREAM
+                    | PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT
+            )
         )
-    )
 }
 
 fn derive_upstream_account_work_status(
@@ -10055,6 +10069,8 @@ fn derive_upstream_account_work_status(
     sync_state: &str,
     snapshot_exhausted: bool,
     cooldown_until: Option<&str>,
+    last_error_at: Option<&str>,
+    last_route_failure_at: Option<&str>,
     last_route_failure_kind: Option<&str>,
     last_action_reason_code: Option<&str>,
     last_selected_at: Option<&str>,
@@ -10064,8 +10080,12 @@ fn derive_upstream_account_work_status(
         return UPSTREAM_ACCOUNT_WORK_STATUS_IDLE;
     }
     if snapshot_exhausted
-        || route_failure_kind_is_quota_exhausted(last_route_failure_kind)
-        || account_reason_is_rate_limited(last_action_reason_code)
+        || upstream_account_quota_exhausted_state_is_current(
+            last_error_at,
+            last_route_failure_at,
+            last_route_failure_kind,
+            last_action_reason_code,
+        )
     {
         return UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED;
     }
@@ -10073,13 +10093,12 @@ fn derive_upstream_account_work_status(
         .and_then(parse_rfc3339_utc)
         .is_some_and(|until| {
             until > now
-                && (matches!(
+                && upstream_account_rate_limit_state_is_current(
+                    last_error_at,
+                    last_route_failure_at,
                     last_route_failure_kind,
-                    Some(
-                        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429
-                            | FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
-                    )
-                ) || account_reason_is_rate_limited(last_action_reason_code))
+                    last_action_reason_code,
+                )
         })
     {
         return UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED;
@@ -10104,6 +10123,7 @@ fn classify_upstream_account_display_status(
     last_error_at: Option<&str>,
     last_route_failure_at: Option<&str>,
     last_route_failure_kind: Option<&str>,
+    last_action_reason_code: Option<&str>,
 ) -> &'static str {
     let enable_status = derive_upstream_account_enable_status(enabled);
     if enable_status == UPSTREAM_ACCOUNT_ENABLE_STATUS_DISABLED {
@@ -10120,6 +10140,7 @@ fn classify_upstream_account_display_status(
         last_error_at,
         last_route_failure_at,
         last_route_failure_kind,
+        last_action_reason_code,
     );
     if health_status == UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL {
         return UPSTREAM_ACCOUNT_STATUS_ACTIVE;
@@ -10411,13 +10432,45 @@ fn classify_sync_failure(
 }
 
 fn account_reason_is_rate_limited(reason_code: Option<&str>) -> bool {
+    account_reason_is_quota_exhausted(reason_code)
+        || matches!(
+            reason_code,
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_RATE_LIMIT)
+        )
+}
+
+fn account_reason_is_quota_exhausted(reason_code: Option<&str>) -> bool {
     matches!(
         reason_code,
         Some(
-            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_RATE_LIMIT
-                | UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
                 | UPSTREAM_ACCOUNT_ACTION_REASON_USAGE_SNAPSHOT_EXHAUSTED
                 | UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED
+        )
+    )
+}
+
+fn account_reason_overrides_current_route_failure(reason_code: Option<&str>) -> bool {
+    matches!(
+        reason_code,
+        Some(
+            UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR
+                | UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE
+                | UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED
+                | UPSTREAM_ACCOUNT_ACTION_REASON_RECOVERY_UNCONFIRMED_MANUAL_REQUIRED
+        )
+    )
+}
+
+fn route_failure_kind_is_rate_limited(failure_kind: Option<&str>) -> bool {
+    matches!(
+        failure_kind
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+        Some(
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429
+                | FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
+                | PROXY_FAILURE_UPSTREAM_USAGE_SNAPSHOT_QUOTA_EXHAUSTED
         )
     )
 }
@@ -10432,6 +10485,61 @@ fn route_failure_kind_is_quota_exhausted(failure_kind: Option<&str>) -> bool {
                 | PROXY_FAILURE_UPSTREAM_USAGE_SNAPSHOT_QUOTA_EXHAUSTED
         )
     )
+}
+
+fn route_failure_is_current(
+    last_error_at: Option<&str>,
+    last_route_failure_at: Option<&str>,
+) -> bool {
+    last_error_at.is_some() && last_error_at == last_route_failure_at
+}
+
+fn current_route_failure_is_rate_limited(
+    last_error_at: Option<&str>,
+    last_route_failure_at: Option<&str>,
+    last_route_failure_kind: Option<&str>,
+) -> bool {
+    route_failure_is_current(last_error_at, last_route_failure_at)
+        && route_failure_kind_is_rate_limited(last_route_failure_kind)
+}
+
+fn current_route_failure_is_quota_exhausted(
+    last_error_at: Option<&str>,
+    last_route_failure_at: Option<&str>,
+    last_route_failure_kind: Option<&str>,
+) -> bool {
+    route_failure_is_current(last_error_at, last_route_failure_at)
+        && route_failure_kind_is_quota_exhausted(last_route_failure_kind)
+}
+
+fn upstream_account_rate_limit_state_is_current(
+    last_error_at: Option<&str>,
+    last_route_failure_at: Option<&str>,
+    last_route_failure_kind: Option<&str>,
+    last_action_reason_code: Option<&str>,
+) -> bool {
+    account_reason_is_rate_limited(last_action_reason_code)
+        || (!account_reason_overrides_current_route_failure(last_action_reason_code)
+            && current_route_failure_is_rate_limited(
+                last_error_at,
+                last_route_failure_at,
+                last_route_failure_kind,
+            ))
+}
+
+fn upstream_account_quota_exhausted_state_is_current(
+    last_error_at: Option<&str>,
+    last_route_failure_at: Option<&str>,
+    last_route_failure_kind: Option<&str>,
+    last_action_reason_code: Option<&str>,
+) -> bool {
+    account_reason_is_quota_exhausted(last_action_reason_code)
+        || (!account_reason_overrides_current_route_failure(last_action_reason_code)
+            && current_route_failure_is_quota_exhausted(
+                last_error_at,
+                last_route_failure_at,
+                last_route_failure_kind,
+            ))
 }
 
 fn route_failure_kind_requires_manual_api_key_recovery(failure_kind: Option<&str>) -> bool {
@@ -15919,6 +16027,292 @@ mod tests {
         assert_eq!(
             classification.failure_kind,
             FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
+        );
+    }
+
+    #[tokio::test]
+    async fn quota_exhausted_oauth_summary_and_detail_export_as_rate_limited() {
+        let pool = test_pool().await;
+        let account_id = insert_oauth_account(&pool, "Quota Exhausted OAuth").await;
+
+        record_pool_route_http_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            Some("sticky-quota-exhausted"),
+            StatusCode::TOO_MANY_REQUESTS,
+            "oauth_upstream_rejected_request: pool upstream responded with 429: The usage limit has been reached",
+            Some("invk_quota_exhausted"),
+        )
+        .await
+        .expect("record wrapped 429 route failure");
+
+        let route_failure_row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load route failure row")
+            .expect("route failure row exists");
+        record_account_sync_recovery_blocked(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
+            &route_failure_row.status,
+            UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED,
+            "latest usage snapshot still shows an exhausted upstream usage limit window",
+            route_failure_row.last_error.as_deref(),
+            route_failure_row.last_route_failure_kind.as_deref(),
+        )
+        .await
+        .expect("record blocked sync recovery");
+
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_account_limit_samples (
+                account_id, captured_at, limit_id, limit_name, plan_type,
+                primary_used_percent, primary_window_minutes, primary_resets_at,
+                secondary_used_percent, secondary_window_minutes, secondary_resets_at,
+                credits_has_credits, credits_unlimited, credits_balance
+            ) VALUES (
+                ?1, ?2, NULL, NULL, 'team',
+                100.0, 300, ?3,
+                64.0, 10080, ?4,
+                1, 0, '0.00'
+            )
+            "#,
+        )
+        .bind(account_id)
+        .bind("2026-03-24T18:00:27Z")
+        .bind("2026-03-30T16:06:33Z")
+        .bind("2026-04-01T00:00:00Z")
+        .execute(&pool)
+        .await
+        .expect("insert exhausted usage sample");
+
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load updated row")
+            .expect("updated row exists");
+        let latest = load_latest_usage_sample(&pool, account_id)
+            .await
+            .expect("load latest usage sample");
+        let summary = build_summary_from_row(
+            &row,
+            latest.as_ref(),
+            row.last_activity_at.clone(),
+            vec![],
+            None,
+            0,
+            Utc::now(),
+        );
+
+        assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
+        assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
+        assert_eq!(
+            summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+        );
+        assert_eq!(
+            summary.last_error.as_deref(),
+            Some(
+                "oauth_upstream_rejected_request: pool upstream responded with 429: The usage limit has been reached"
+            )
+        );
+        assert_eq!(
+            summary.last_action_reason_code.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED)
+        );
+        assert_eq!(
+            summary
+                .primary_window
+                .as_ref()
+                .map(|window| window.used_percent),
+            Some(100.0)
+        );
+        assert_eq!(
+            summary
+                .primary_window
+                .as_ref()
+                .and_then(|window| window.resets_at.as_deref()),
+            Some("2026-03-30T16:06:33Z")
+        );
+
+        let detail = load_upstream_account_detail(&pool, account_id)
+            .await
+            .expect("load detail export")
+            .expect("detail export exists");
+        assert_eq!(
+            detail.summary.display_status,
+            UPSTREAM_ACCOUNT_STATUS_ACTIVE
+        );
+        assert_eq!(
+            detail.summary.health_status,
+            UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL
+        );
+        assert_eq!(
+            detail.summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+        );
+        assert_eq!(
+            detail.summary.last_action_reason_code.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED)
+        );
+        assert_eq!(
+            detail
+                .recent_actions
+                .first()
+                .map(|event| event.action.as_str()),
+            Some(UPSTREAM_ACCOUNT_ACTION_SYNC_RECOVERY_BLOCKED)
+        );
+        assert_eq!(
+            detail
+                .recent_actions
+                .first()
+                .and_then(|event| event.reason_code.as_deref()),
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_QUOTA_STILL_EXHAUSTED)
+        );
+        assert_eq!(
+            detail
+                .recent_actions
+                .first()
+                .and_then(|event| event.failure_kind.as_deref()),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_quota_route_failure_does_not_hide_newer_sync_error() {
+        let pool = test_pool().await;
+        let account_id = insert_oauth_account(&pool, "Stale quota marker OAuth").await;
+
+        record_pool_route_http_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            Some("sticky-stale-quota"),
+            StatusCode::TOO_MANY_REQUESTS,
+            "oauth_upstream_rejected_request: pool upstream responded with 429: The usage limit has been reached",
+            Some("invk_stale_quota"),
+        )
+        .await
+        .expect("record stale wrapped 429 route failure");
+
+        record_account_sync_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            "usage snapshot parse error after refresh",
+            UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR,
+            None,
+            PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+        )
+        .await
+        .expect("record newer sync failure");
+
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load updated row")
+            .expect("updated row exists");
+        let summary = build_summary_from_row(
+            &row,
+            None,
+            row.last_activity_at.clone(),
+            vec![],
+            None,
+            0,
+            Utc::now(),
+        );
+
+        assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
+        assert_eq!(
+            summary.display_status,
+            UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER
+        );
+        assert_eq!(
+            summary.health_status,
+            UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER
+        );
+        assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_IDLE);
+        assert_eq!(
+            summary.last_action_reason_code.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR)
+        );
+        assert_eq!(
+            row.last_route_failure_kind.as_deref(),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+        );
+
+        let detail = load_upstream_account_detail(&pool, account_id)
+            .await
+            .expect("load detail export")
+            .expect("detail export exists");
+        assert_eq!(
+            detail.summary.display_status,
+            UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER
+        );
+        assert_eq!(
+            detail.summary.health_status,
+            UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER
+        );
+        assert_eq!(
+            detail.summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_IDLE
+        );
+    }
+
+    #[tokio::test]
+    async fn current_quota_route_failure_survives_informational_account_updates() {
+        let pool = test_pool().await;
+        let account_id = insert_oauth_account(&pool, "Quota exhausted after edit").await;
+
+        record_pool_route_http_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            Some("sticky-quota-after-edit"),
+            StatusCode::TOO_MANY_REQUESTS,
+            "oauth_upstream_rejected_request: pool upstream responded with 429: The usage limit has been reached",
+            Some("invk_quota_after_edit"),
+        )
+        .await
+        .expect("record wrapped 429 route failure before edit");
+
+        record_account_update_action(
+            &pool,
+            account_id,
+            "account settings were updated after the quota-exhausted failure",
+        )
+        .await
+        .expect("record account update action");
+
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load updated row")
+            .expect("updated row exists");
+        let summary = build_summary_from_row(
+            &row,
+            None,
+            row.last_activity_at.clone(),
+            vec![],
+            None,
+            0,
+            Utc::now(),
+        );
+
+        assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
+        assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
+        assert_eq!(
+            summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+        );
+        assert_eq!(
+            summary.last_action_reason_code.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_ACCOUNT_UPDATED)
+        );
+        assert_eq!(
+            row.last_route_failure_kind.as_deref(),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
         );
     }
 
