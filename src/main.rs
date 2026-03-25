@@ -2497,6 +2497,7 @@ struct InvocationHourlySourceRecord {
     occurred_at: String,
     source: String,
     status: Option<String>,
+    detail_level: String,
     total_tokens: Option<i64>,
     cost: Option<f64>,
     error_message: Option<String>,
@@ -3772,6 +3773,7 @@ async fn archive_old_invocations(
                     occurred_at: candidate.occurred_at.clone(),
                     source: candidate.source.clone(),
                     status: candidate.status.clone(),
+                    detail_level: DETAIL_LEVEL_FULL.to_string(),
                     total_tokens: None,
                     cost: None,
                     error_message: None,
@@ -6328,6 +6330,21 @@ async fn upsert_invocation_hourly_rollups_tx(
     Ok(())
 }
 
+fn invocation_archive_target_needs_full_payload(target: &str) -> bool {
+    matches!(
+        target,
+        HOURLY_ROLLUP_TARGET_PROMPT_CACHE
+            | HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS
+            | HOURLY_ROLLUP_TARGET_STICKY_KEYS
+    )
+}
+
+fn invocation_archive_has_pruned_success_details(rows: &[InvocationHourlySourceRecord]) -> bool {
+    rows.iter().any(|row| {
+        row.status.as_deref() == Some("success") && row.detail_level != DETAIL_LEVEL_FULL
+    })
+}
+
 async fn upsert_forward_proxy_attempt_hourly_rollups_tx(
     tx: &mut SqliteConnection,
     rows: &[ForwardProxyAttemptHourlySourceRecord],
@@ -6451,6 +6468,7 @@ async fn load_live_invocation_hourly_rows_for_bucket_epochs_tx(
             occurred_at,
             source,
             status,
+            detail_level,
             total_tokens,
             cost,
             error_message,
@@ -6547,6 +6565,7 @@ async fn replay_live_invocation_hourly_rollups(pool: &Pool<Sqlite>) -> Result<u6
             occurred_at,
             source,
             status,
+            detail_level,
             total_tokens,
             cost,
             error_message,
@@ -6596,6 +6615,7 @@ async fn replay_live_invocation_hourly_rollups_tx(tx: &mut SqliteConnection) -> 
             occurred_at,
             source,
             status,
+            detail_level,
             total_tokens,
             cost,
             error_message,
@@ -6741,6 +6761,7 @@ async fn replay_invocation_archives_into_hourly_rollups_tx(
 
     for archive_file in archive_files {
         let mut pending_targets = Vec::new();
+        let mut blocked_targets = Vec::new();
         for target in [
             HOURLY_ROLLUP_TARGET_INVOCATIONS,
             HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
@@ -6759,16 +6780,6 @@ async fn replay_invocation_archives_into_hourly_rollups_tx(
             {
                 pending_targets.push(target);
             }
-        }
-        if pending_targets.is_empty() {
-            mark_archive_batch_historical_rollups_materialized_tx(
-                tx,
-                HOURLY_ROLLUP_DATASET_INVOCATIONS,
-                &archive_file.month_key,
-                &archive_file.file_path,
-            )
-            .await?;
-            continue;
         }
 
         let archive_path = PathBuf::from(&archive_file.file_path);
@@ -6802,6 +6813,7 @@ async fn replay_invocation_archives_into_hourly_rollups_tx(
                 occurred_at,
                 source,
                 status,
+                detail_level,
                 total_tokens,
                 cost,
                 error_message,
@@ -6826,6 +6838,30 @@ async fn replay_invocation_archives_into_hourly_rollups_tx(
         archive_pool.close().await;
         drop(temp_cleanup);
 
+        let has_pruned_success_details = invocation_archive_has_pruned_success_details(&rows);
+        if has_pruned_success_details {
+            let mut replayable_targets = Vec::with_capacity(pending_targets.len());
+            for target in pending_targets {
+                if invocation_archive_target_needs_full_payload(target) {
+                    blocked_targets.push(target);
+                } else {
+                    replayable_targets.push(target);
+                }
+            }
+            pending_targets = replayable_targets;
+        }
+
+        if pending_targets.is_empty() && blocked_targets.is_empty() {
+            mark_archive_batch_historical_rollups_materialized_tx(
+                tx,
+                HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                &archive_file.month_key,
+                &archive_file.file_path,
+            )
+            .await?;
+            continue;
+        }
+
         if archive_file.coverage_start_at.is_none() || archive_file.coverage_end_at.is_none() {
             let coverage_start_at = rows.iter().map(|row| row.occurred_at.as_str()).min();
             let coverage_end_at = rows.iter().map(|row| row.occurred_at.as_str()).max();
@@ -6840,13 +6876,6 @@ async fn replay_invocation_archives_into_hourly_rollups_tx(
 
         upsert_invocation_hourly_rollups_tx(tx, &rows, &pending_targets).await?;
         mark_invocation_hourly_rollup_buckets_materialized_tx(tx, &rows).await?;
-        mark_archive_batch_historical_rollups_materialized_tx(
-            tx,
-            HOURLY_ROLLUP_DATASET_INVOCATIONS,
-            &archive_file.month_key,
-            &archive_file.file_path,
-        )
-        .await?;
         for target in pending_targets {
             mark_hourly_rollup_archive_replayed_tx(
                 tx,
@@ -6856,7 +6885,23 @@ async fn replay_invocation_archives_into_hourly_rollups_tx(
             )
             .await?;
         }
-        replayed += 1;
+        if blocked_targets.is_empty() {
+            mark_archive_batch_historical_rollups_materialized_tx(
+                tx,
+                HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                &archive_file.month_key,
+                &archive_file.file_path,
+            )
+            .await?;
+            replayed += 1;
+        } else {
+            warn!(
+                dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                file_path = archive_file.file_path,
+                blocked_targets = ?blocked_targets,
+                "legacy archive batch contains pruned success details; keeping historical rollup materialization pending for keyed conversation targets"
+            );
+        }
     }
 
     Ok(replayed)
@@ -19180,6 +19225,7 @@ async fn persist_proxy_capture_record(
             occurred_at: record.occurred_at.clone(),
             source: SOURCE_PROXY.to_string(),
             status: Some(record.status.clone()),
+            detail_level: DETAIL_LEVEL_FULL.to_string(),
             total_tokens: record.usage.total_tokens,
             cost: record.cost,
             error_message: record.error_message.clone(),

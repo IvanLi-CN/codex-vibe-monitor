@@ -26542,9 +26542,51 @@ async fn seed_invocation_archive_batch(
     batch_name: &str,
     rows: &[(i64, &str, &str, &str, &str, i64, f64, Option<f64>)],
 ) -> PathBuf {
+    let rows = rows
+        .iter()
+        .map(
+            |(id, invoke_id, occurred_at, source, status, total_tokens, cost, ttfb_ms)| {
+                SeedInvocationArchiveBatchRow {
+                    id: *id,
+                    invoke_id,
+                    occurred_at,
+                    source,
+                    status,
+                    total_tokens: *total_tokens,
+                    cost: *cost,
+                    ttfb_ms: *ttfb_ms,
+                    payload: Some("{}"),
+                    detail_level: DETAIL_LEVEL_FULL,
+                }
+            },
+        )
+        .collect::<Vec<_>>();
+    seed_invocation_archive_batch_with_details(pool, config, batch_name, &rows).await
+}
+
+#[derive(Clone, Copy)]
+struct SeedInvocationArchiveBatchRow<'a> {
+    id: i64,
+    invoke_id: &'a str,
+    occurred_at: &'a str,
+    source: &'a str,
+    status: &'a str,
+    total_tokens: i64,
+    cost: f64,
+    ttfb_ms: Option<f64>,
+    payload: Option<&'a str>,
+    detail_level: &'a str,
+}
+
+async fn seed_invocation_archive_batch_with_details(
+    pool: &SqlitePool,
+    config: &AppConfig,
+    batch_name: &str,
+    rows: &[SeedInvocationArchiveBatchRow<'_>],
+) -> PathBuf {
     let month_key = rows
         .first()
-        .map(|row| row.2[..7].to_string())
+        .map(|row| row.occurred_at[..7].to_string())
         .expect("archive batch rows should not be empty");
     let archive_path = archive_batch_file_path(config, "codex_invocations", &month_key)
         .expect("resolve invocation archive batch path");
@@ -26566,25 +26608,27 @@ async fn seed_invocation_archive_batch(
         .execute(&archive_pool)
         .await
         .expect("create invocation archive schema");
-    for (id, invoke_id, occurred_at, source, status, total_tokens, cost, ttfb_ms) in rows {
+    for row in rows {
         sqlx::query(
             r#"
             INSERT INTO codex_invocations (
-                id, invoke_id, occurred_at, source, status, total_tokens, cost, t_upstream_ttfb_ms, raw_response, created_at
+                id, invoke_id, occurred_at, source, status, total_tokens, cost, t_upstream_ttfb_ms, payload, detail_level, raw_response, created_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
             "#,
         )
-        .bind(*id)
-        .bind(*invoke_id)
-        .bind(*occurred_at)
-        .bind(*source)
-        .bind(*status)
-        .bind(*total_tokens)
-        .bind(*cost)
-        .bind(*ttfb_ms)
+        .bind(row.id)
+        .bind(row.invoke_id)
+        .bind(row.occurred_at)
+        .bind(row.source)
+        .bind(row.status)
+        .bind(row.total_tokens)
+        .bind(row.cost)
+        .bind(row.ttfb_ms)
+        .bind(row.payload)
+        .bind(row.detail_level)
         .bind("{}")
-        .bind(*occurred_at)
+        .bind(row.occurred_at)
         .execute(&archive_pool)
         .await
         .expect("insert invocation archive row");
@@ -27808,6 +27852,7 @@ async fn invocation_hourly_rollup_ignores_null_status_for_success_failure_counts
             occurred_at,
             source: SOURCE_PROXY.to_string(),
             status: None,
+            detail_level: DETAIL_LEVEL_FULL.to_string(),
             total_tokens: Some(7),
             cost: Some(0.07),
             error_message: None,
@@ -30999,6 +31044,90 @@ async fn materialize_historical_rollups_skips_already_materialized_batches() {
     .await
     .expect("load invocation rollup total count after skipped replay");
     assert_eq!(total_count, 1);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn materialize_historical_rollups_keeps_pruned_detail_archives_pending() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("historical-rollup-pruned-detail-pending").await;
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days((config.invocation_max_days + 2) as i64))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived local hour");
+    let archived_occurred_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(10))
+            .expect("valid archived occurred_at"),
+    );
+    let archive_path = seed_invocation_archive_batch_with_details(
+        &pool,
+        &config,
+        "historical-rollup-pruned-detail-pending",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1,
+            invoke_id: "historical-rollup-pruned-detail-pending",
+            occurred_at: archived_occurred_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 12,
+            cost: 0.12,
+            ttfb_ms: Some(120.0),
+            payload: Some(r#"{"upstreamAccountId":17}"#),
+            detail_level: DETAIL_LEVEL_STRUCTURED_ONLY,
+        }],
+    )
+    .await;
+
+    let summary = materialize_historical_rollups(&pool, &config, false)
+        .await
+        .expect("materialize historical rollups with pruned detail archive");
+    assert_eq!(summary.materialized_invocation_batches, 0);
+
+    let total_count: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly WHERE source = ?1",
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load invocation hourly total count after partial materialization");
+    assert_eq!(total_count, 1);
+
+    let keyed_replay_markers: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM hourly_rollup_archive_replay
+        WHERE dataset = 'codex_invocations'
+          AND file_path = ?1
+          AND target IN (?2, ?3, ?4)
+        "#,
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind(HOURLY_ROLLUP_TARGET_PROMPT_CACHE)
+    .bind(HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS)
+    .bind(HOURLY_ROLLUP_TARGET_STICKY_KEYS)
+    .fetch_one(&pool)
+    .await
+    .expect("load keyed replay markers");
+    assert_eq!(keyed_replay_markers, 0);
+
+    let materialized_at: Option<String> = sqlx::query_scalar(
+        "SELECT historical_rollups_materialized_at FROM archive_batches WHERE dataset = 'codex_invocations' LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load archive batch materialized timestamp for pruned detail archive");
+    assert!(materialized_at.is_none());
+
+    let snapshot = load_historical_rollup_backfill_snapshot(&pool, &config)
+        .await
+        .expect("load historical rollup snapshot after pruned detail materialization");
+    assert_eq!(snapshot.legacy_archive_pending, 1);
+    assert_eq!(
+        snapshot.alert_level,
+        HistoricalRollupBackfillAlertLevel::Critical
+    );
 
     cleanup_temp_test_dir(&temp_dir);
 }
