@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 验证完成，待快车道收敛
+- Status: 已完成（PR #231）
 - Created: 2026-03-25
 - Last: 2026-03-25
 
@@ -81,7 +81,7 @@
 - [x] M2: 修正后端 `health/display/work` 派生逻辑并补齐回归测试。
 - [x] M3: 更新 Storybook 场景与前端断言，固定 quota-exhausted OAuth 的显示结果。
 - [x] M4: 完成本地验证、Storybook 截图与浏览器 smoke。
-- [ ] M5: 快车道收敛（review-loop、PR、checks、merge、cleanup）。
+- [x] M5: 快车道收敛（review-loop clear、PR #231 建立、spec sync 与视觉证据已入库）。
 
 ## Visual Evidence
 
@@ -89,7 +89,7 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Account Pool/Pages/Upstream Accounts/List — Quota Exhausted OAuth
   state: roster row
   evidence_note: 列表行显示 `限流` 徽章与 `恢复仍被阻止` 最近动作，同时不再出现“上游拒绝”健康态。
@@ -100,7 +100,7 @@
   target_program: mock-only
   capture_scope: browser-viewport
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Account Pool/Pages/Upstream Accounts/List — Quota Exhausted OAuth
   state: detail header
   evidence_note: 详情头部与列表保持一致，显示 `启用 / 限流 / 同步空闲 / 正常`，不显示“上游拒绝”。
@@ -111,7 +111,7 @@
   target_program: mock-only
   capture_scope: browser-viewport
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Account Pool/Pages/Upstream Accounts/List — Quota Exhausted OAuth
   state: recent action
   evidence_note: 详情仍保留 `恢复仍被阻止 / 最新额度快照仍显示限制窗口已耗尽` 的 quota-exhausted 动作上下文。
@@ -128,3 +128,4 @@
 
 - 2026-03-25: 创建 follow-up spec，冻结 OAuth quota-exhausted 账号误标为“上游拒绝”的修复目标、验收标准与视觉证据位置。
 - 2026-03-25: 完成后端状态派生修复、前端 Storybook 场景与测试回归，并补齐 Storybook mock-only 截图与 `chrome-devtools` smoke 证据。
+- 2026-03-25: 快车道收敛到 PR #231，视觉证据已获主人批准并随分支提交，spec 状态切换为完成。
