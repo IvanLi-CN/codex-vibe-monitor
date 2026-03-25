@@ -1579,6 +1579,94 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     );
   });
 
+  it("syncs a restored pending oauth draft on first render", async () => {
+    vi.useFakeTimers();
+    const updateOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-restored-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=restored-1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    mockUpstreamAccounts({ updateOauthLogin });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      state: {
+        draft: {
+          oauth: {
+            displayName: "Restored OAuth Draft",
+            groupName: "restored-group",
+            note: "restored note",
+            session: {
+              loginId: "login-restored-1",
+              status: "pending",
+              authUrl: "https://auth.openai.com/authorize?login=restored-1",
+              redirectUri: "http://localhost:1455/oauth/callback",
+              expiresAt: "2026-03-13T10:00:00.000Z",
+              accountId: null,
+              error: null,
+            },
+            sessionHint: "OAuth URL ready",
+          },
+        },
+      },
+    });
+
+    await flushAsync();
+    await flushSessionSyncDebounce();
+    await flushAsync();
+
+    expect(updateOauthLogin).toHaveBeenCalledWith("login-restored-1", {
+      displayName: "Restored OAuth Draft",
+      groupName: "restored-group",
+      note: "restored note",
+      groupNote: "",
+      tagIds: [],
+      isMother: false,
+      mailboxSessionId: "",
+      mailboxAddress: "",
+    });
+  });
+
+  it("skips pending oauth live sync for relink sessions", async () => {
+    vi.useFakeTimers();
+    const updateOauthLogin = vi.fn();
+    mockUpstreamAccounts({ updateOauthLogin });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?accountId=5",
+      state: {
+        draft: {
+          oauth: {
+            displayName: "Relink Draft",
+            session: {
+              loginId: "login-relink-1",
+              status: "pending",
+              authUrl: "https://auth.openai.com/authorize?login=relink-1",
+              redirectUri: "http://localhost:1455/oauth/callback",
+              expiresAt: "2026-03-13T10:00:00.000Z",
+              accountId: 5,
+              error: null,
+            },
+            sessionHint: "OAuth URL ready",
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    setInputValue('input[name="oauthDisplayName"]', "Relink Draft Updated");
+    await flushSessionSyncDebounce();
+    await flushAsync();
+
+    expect(updateOauthLogin).not.toHaveBeenCalled();
+    expect(host?.textContent).not.toContain(
+      "This login session belongs to an existing account and cannot be edited.",
+    );
+  });
+
   it("does not retry an unchanged failed single oauth sync on rerender", async () => {
     vi.useFakeTimers();
     const updateOauthLogin = vi

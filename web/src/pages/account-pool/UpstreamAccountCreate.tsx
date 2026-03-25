@@ -1257,6 +1257,16 @@ export default function UpstreamAccountCreatePage() {
   const batchOauthSessionSnapshotsRef = useRef<
     Record<string, PendingOauthSessionSnapshot>
   >({});
+  const restoredPendingOauthLoginIdsRef = useRef(
+    new Set<string>([
+      ...(draft?.oauth?.session?.status === "pending"
+        ? [draft.oauth.session.loginId]
+        : []),
+      ...((draft?.batchOauth?.rows ?? []).flatMap((row) =>
+        row.session?.status === "pending" ? [row.session.loginId] : [],
+      )),
+    ]),
+  );
   const activeOauthMailboxSession = useMemo(
     () =>
       isSupportedMailboxSession(oauthMailboxSession) &&
@@ -1384,7 +1394,7 @@ export default function UpstreamAccountCreatePage() {
     return null;
   };
   const singleOauthSessionSnapshot = useMemo(() => {
-    if (session?.status !== "pending") return null;
+    if (isRelinking || session?.status !== "pending") return null;
     return buildPendingOauthSessionSnapshot(
       session.loginId,
       buildOauthLoginSessionUpdatePayload({
@@ -1404,6 +1414,7 @@ export default function UpstreamAccountCreatePage() {
     oauthIsMother,
     oauthNote,
     oauthTagIds,
+    isRelinking,
     resolvePendingGroupNoteForName,
     session?.loginId,
     session?.status,
@@ -1626,8 +1637,10 @@ export default function UpstreamAccountCreatePage() {
     for (const snapshot of activeSnapshots) {
       let existing = pendingOauthSessionSyncRef.current[snapshot.loginId];
       if (!existing) {
+        const shouldStartUnsynced =
+          restoredPendingOauthLoginIdsRef.current.delete(snapshot.loginId);
         existing = pendingOauthSessionSyncRef.current[snapshot.loginId] = {
-          syncedSignature: snapshot.signature,
+          syncedSignature: shouldStartUnsynced ? null : snapshot.signature,
           failedSignature: null,
           pendingSignature: snapshot.signature,
           timerId: null,
