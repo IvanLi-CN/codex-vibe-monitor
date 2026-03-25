@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.25.0",
+  "base_stable_version": "1.24.4",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-25T08:00:06Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.25.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "abb4044350a57ac70bade0ddb5deffaa829cd7fb",
+  "pr_number": 230,
+  "pr_title": "feat(web): group account detail drawers into tabs",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.25.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.25.0,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "d125cfe46105132e8daf5168a5b65b334f8b5670",
+  "type_label": "type:minor"
+}
