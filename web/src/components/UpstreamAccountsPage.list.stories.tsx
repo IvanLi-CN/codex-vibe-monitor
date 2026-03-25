@@ -38,15 +38,24 @@ async function chooseSelectOption(
   optionMatcher: RegExp,
 ) {
   const documentScope = within(canvasElement.ownerDocument.body)
-  const trigger = await documentScope.findByRole('combobox', { name: triggerMatcher })
+  const trigger = await documentScope.findByRole('combobox', {
+    name: triggerMatcher,
+  })
   await userEvent.click(trigger)
-  const option = await documentScope.findByRole('option', { name: optionMatcher })
+  const option = await documentScope.findByRole('option', {
+    name: optionMatcher,
+  })
   await userEvent.click(option)
 }
 
-async function clickCheckboxByLabel(canvasElement: HTMLElement, matcher: RegExp) {
+async function clickCheckboxByLabel(
+  canvasElement: HTMLElement,
+  matcher: RegExp,
+) {
   const documentScope = within(canvasElement.ownerDocument.body)
-  const checkbox = await documentScope.findByRole('checkbox', { name: matcher })
+  const checkbox = await documentScope.findByRole('checkbox', {
+    name: matcher,
+  })
   await userEvent.click(checkbox)
 }
 
@@ -120,7 +129,9 @@ export const Operational: Story = {
 }
 
 export const DenseRoster: Story = {
-  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
+  render: () => (
+    <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />
+  ),
   play: async ({ canvasElement, step }) => {
     await step('show more rows per page', async () => {
       await choosePageSize(canvasElement, 50)
@@ -156,32 +167,56 @@ export const CompactLongLabels: Story = {
 }
 
 export const StatusFilters: Story = {
-  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
+  render: () => (
+    <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />
+  ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await choosePageSize(canvasElement, 50)
-    await chooseSelectOption(canvasElement, /工作状态|work status/i, /限流|rate limited/i)
-    await chooseSelectOption(canvasElement, /启用状态|enable status/i, /启用|enabled/i)
-    await chooseSelectOption(canvasElement, /账号状态|account health/i, /正常|normal/i)
-    await expect(await canvas.findByText(/Team key - staging/i)).toBeInTheDocument()
-    await expect(canvas.queryByText(/Codex Pro - Tokyo/i)).not.toBeInTheDocument()
+    await chooseSelectOption(
+      canvasElement,
+      /工作状态|work status/i,
+      /限流|rate limited/i,
+    )
+    await chooseSelectOption(
+      canvasElement,
+      /启用状态|enable status/i,
+      /启用|enabled/i,
+    )
+    await chooseSelectOption(
+      canvasElement,
+      /账号状态|account health/i,
+      /正常|normal/i,
+    )
+    await expect(
+      await canvas.findByText(/Team key - staging/i),
+    ).toBeInTheDocument()
+    await expect(
+      canvas.queryByText(/Codex Pro - Tokyo/i),
+    ).not.toBeInTheDocument()
   },
 }
 
 export const BulkSelection: Story = {
-  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
+  render: () => (
+    <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />
+  ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await choosePageSize(canvasElement, 50)
     await clickCheckboxByLabel(canvasElement, /选择当前页|select current page/i)
     await expect(
-      await canvas.findByText(/已跨页选中 \d+ 个账号|\d+ accounts selected across pages/i),
+      await canvas.findByText(
+        /已跨页选中 \d+ 个账号|\d+ accounts selected across pages/i,
+      ),
     ).toBeInTheDocument()
   },
 }
 
 export const TagFilterAllMatch: Story = {
-  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
+  render: () => (
+    <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />
+  ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     const documentScope = within(canvasElement.ownerDocument.body)
@@ -192,12 +227,16 @@ export const TagFilterAllMatch: Story = {
     await userEvent.click(await documentScope.findByText(/^vip$/i))
     await userEvent.click(await documentScope.findByText(/^burst-safe$/i))
     await expect(canvas.getByText(/Codex Pro - Tokyo/i)).toBeInTheDocument()
-    await expect(canvas.queryByText(/Team key - staging/i)).not.toBeInTheDocument()
+    await expect(
+      canvas.queryByText(/Team key - staging/i),
+    ).not.toBeInTheDocument()
   },
 }
 
 export const AvailabilityBadges: Story = {
-  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
+  render: () => (
+    <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />
+  ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await choosePageSize(canvasElement, 50)
@@ -210,15 +249,48 @@ export const AvailabilityBadges: Story = {
     const idleRow = idleCell.closest('tr')
     await expect(idleRow).toHaveTextContent(/空闲|Idle/i)
 
-    const rateLimitedCell = await canvas.findByText(/Availability rate limited visible/i)
+    const rateLimitedCell = await canvas.findByText(
+      /Availability rate limited visible/i,
+    )
     const rateLimitedRow = rateLimitedCell.closest('tr')
     await expect(rateLimitedRow).toHaveTextContent(/限流|Rate limited/i)
     await expect(rateLimitedRow).not.toHaveTextContent(/工作 \d+|Working \d+/i)
     await expect(rateLimitedRow).not.toHaveTextContent(/空闲|Idle/i)
 
-    const unavailableCell = await canvas.findByText(/Availability unavailable hidden/i)
+    const unavailableCell = await canvas.findByText(
+      /Availability unavailable hidden/i,
+    )
     const unavailableRow = unavailableCell.closest('tr')
     await expect(unavailableRow).not.toHaveTextContent(/工作|Working/i)
     await expect(unavailableRow).not.toHaveTextContent(/空闲|Idle/i)
+  },
+}
+
+export const QuotaExhaustedOauth: Story = {
+  render: () => (
+    <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />
+  ),
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const row = await documentScope.findByRole('button', {
+      name: /Quota exhausted OAuth routing state/i,
+    })
+
+    await expect(row).toHaveTextContent(/限流|Rate limited/i)
+    await expect(row).not.toHaveTextContent(/上游拒绝|Upstream rejected/i)
+
+    await userEvent.click(row)
+
+    await expect(
+      await documentScope.findByText(/恢复仍被阻止|Recovery blocked/i),
+    ).toBeInTheDocument()
+    await expect(
+      await documentScope.findByText(
+        /最新额度快照仍显示限制窗口已耗尽|latest usage snapshot still shows an exhausted upstream usage limit window/i,
+      ),
+    ).toBeInTheDocument()
+    await expect(
+      documentScope.queryByText(/^上游拒绝$|^Upstream rejected$/i),
+    ).not.toBeInTheDocument()
   },
 }
