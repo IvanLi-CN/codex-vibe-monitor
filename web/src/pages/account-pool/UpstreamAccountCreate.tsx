@@ -75,7 +75,6 @@ import {
   normalizeImportedOauthValidationFailedEventPayload,
   normalizeImportedOauthValidationRowEventPayload,
   normalizeImportedOauthValidationSnapshotEventPayload,
-  setOauthLoginSessionOrderingToken,
   updateOauthLoginSessionKeepalive,
 } from "../../lib/api";
 import { copyText, selectAllReadonlyText } from "../../lib/clipboard";
@@ -130,7 +129,6 @@ type PendingOauthSessionSyncRecord = {
   timerId: number | null;
   inFlight: Promise<void> | null;
   lastSnapshot: PendingOauthSessionSnapshot | null;
-  lastUpdatedAt: string | null;
 };
 
 type BatchOauthRow = {
@@ -621,33 +619,16 @@ function buildPendingOauthSessionSnapshot(
   payload: UpdateOauthLoginSessionPayload,
   baseUpdatedAt?: string | null,
 ): PendingOauthSessionSnapshot {
+  const normalizedBaseUpdatedAt = baseUpdatedAt?.trim() || null;
   return {
     loginId,
     payload,
-    signature: JSON.stringify(payload),
-    baseUpdatedAt: baseUpdatedAt?.trim() || null,
+    signature: JSON.stringify({
+      payload,
+      baseUpdatedAt: normalizedBaseUpdatedAt,
+    }),
+    baseUpdatedAt: normalizedBaseUpdatedAt,
   };
-}
-
-function parsePendingOauthSessionUpdatedAt(
-  value: string | null | undefined,
-): number | null {
-  if (!value) return null;
-  const timestamp = Date.parse(value);
-  return Number.isFinite(timestamp) ? timestamp : null;
-}
-
-function nextPendingOauthSessionUpdatedAt(
-  ...values: Array<string | null | undefined>
-): string {
-  let nextTimestamp = Date.now();
-  values.forEach((value) => {
-    const parsed = parsePendingOauthSessionUpdatedAt(value);
-    if (parsed != null) {
-      nextTimestamp = Math.max(nextTimestamp, parsed + 1);
-    }
-  });
-  return new Date(nextTimestamp).toISOString();
 }
 
 function shouldRetryPendingOauthSessionSync(error: unknown) {
@@ -1424,6 +1405,7 @@ export default function UpstreamAccountCreatePage() {
     resolvePendingGroupNoteForName,
     session?.loginId,
     session?.status,
+    session?.updatedAt,
   ]);
   const batchOauthSessionSnapshots = useMemo(() => {
     const snapshots: Record<string, PendingOauthSessionSnapshot> = {};
@@ -1544,21 +1526,25 @@ export default function UpstreamAccountCreatePage() {
           continue;
         }
 
-        const { payload, signature } = snapshot;
-        const orderingUpdatedAt = nextPendingOauthSessionUpdatedAt(
-          record.lastUpdatedAt,
-          snapshot.baseUpdatedAt,
-        );
-        record.lastUpdatedAt = orderingUpdatedAt;
-        setOauthLoginSessionOrderingToken(loginId, orderingUpdatedAt);
-        const request = updateOauthLogin(loginId, payload)
+        const { payload, signature, baseUpdatedAt } = snapshot;
+        const request = (
+          baseUpdatedAt
+            ? updateOauthLogin(loginId, payload, baseUpdatedAt)
+            : updateOauthLogin(loginId, payload)
+        )
           .then((nextSession) => {
+            const nextSyncedSignature =
+              nextSession.syncApplied === false
+                ? null
+                : buildPendingOauthSessionSnapshot(
+                    loginId,
+                    payload,
+                    nextSession.updatedAt ?? baseUpdatedAt ?? null,
+                  ).signature;
             const currentRecord = pendingOauthSessionSyncRef.current[loginId];
             if (currentRecord) {
-              currentRecord.syncedSignature = signature;
+              currentRecord.syncedSignature = nextSyncedSignature;
               currentRecord.failedSignature = null;
-              currentRecord.lastUpdatedAt =
-                nextSession.updatedAt ?? orderingUpdatedAt;
             }
             applyPendingOauthSessionStatus(loginId, nextSession);
             clearPendingOauthSessionSyncError(loginId);
@@ -1583,8 +1569,6 @@ export default function UpstreamAccountCreatePage() {
               if (latestRecord) {
                 latestRecord.failedSignature = null;
                 latestRecord.syncedSignature = signature;
-                latestRecord.lastUpdatedAt =
-                  latestSession.updatedAt ?? orderingUpdatedAt;
               }
               applyPendingOauthSessionStatus(loginId, latestSession);
               clearPendingOauthSessionSyncError(loginId);
@@ -1650,7 +1634,6 @@ export default function UpstreamAccountCreatePage() {
           timerId: null,
           inFlight: null,
           lastSnapshot: snapshot,
-          lastUpdatedAt: snapshot.baseUpdatedAt,
         };
       }
       record.pendingSignature = snapshot.signature;
@@ -1702,7 +1685,6 @@ export default function UpstreamAccountCreatePage() {
           timerId: null,
           inFlight: null,
           lastSnapshot: snapshot,
-          lastUpdatedAt: snapshot.baseUpdatedAt,
         };
       }
       record.pendingSignature = snapshot.signature;
@@ -1711,16 +1693,17 @@ export default function UpstreamAccountCreatePage() {
         window.clearTimeout(record.timerId);
         record.timerId = null;
       }
-      if (record.syncedSignature === snapshot.signature) {
+      if (record.syncedSignature === snapshot.signature || record.inFlight) {
         return;
       }
-      const orderingUpdatedAt = nextPendingOauthSessionUpdatedAt(
-        record.lastUpdatedAt,
-        snapshot.baseUpdatedAt,
-      );
-      record.lastUpdatedAt = orderingUpdatedAt;
-      setOauthLoginSessionOrderingToken(loginId, orderingUpdatedAt);
-      void updateOauthLoginSessionKeepalive(loginId, snapshot.payload).catch(() => undefined);
+      const request = snapshot.baseUpdatedAt
+        ? updateOauthLoginSessionKeepalive(
+            loginId,
+            snapshot.payload,
+            snapshot.baseUpdatedAt,
+          )
+        : updateOauthLoginSessionKeepalive(loginId, snapshot.payload);
+      void request.catch(() => undefined);
     },
     [
       getPendingOauthSessionSnapshot,
@@ -1778,7 +1761,6 @@ export default function UpstreamAccountCreatePage() {
           timerId: null,
           inFlight: null,
           lastSnapshot: snapshot,
-          lastUpdatedAt: snapshot.baseUpdatedAt,
         };
       }
       existing.pendingSignature = snapshot.signature;

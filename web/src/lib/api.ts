@@ -2,12 +2,11 @@ import { getBrowserTimeZone } from "./timeZone";
 
 const rawBase = import.meta.env.VITE_API_BASE_URL ?? "";
 const API_BASE = rawBase.endsWith("/") ? rawBase.slice(0, -1) : rawBase;
-const OAUTH_LOGIN_SESSION_UPDATED_AT_HEADER =
-  "X-Codex-Login-Session-Updated-At";
+const OAUTH_LOGIN_SESSION_BASE_UPDATED_AT_HEADER =
+  "X-Codex-Login-Session-Base-Updated-At";
 const FORWARD_PROXY_VALIDATION_TIMEOUT_MS = 5_000;
 const FORWARD_PROXY_SUBSCRIPTION_VALIDATION_TIMEOUT_MS = 60_000;
 const FORWARD_PROXY_HISTORY_DAY_MS = 86_400_000;
-const oauthLoginSessionOrderingTokens = new Map<string, string>();
 export const DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS = {
   primarySyncIntervalSecs: 300,
   secondarySyncIntervalSecs: 1_800,
@@ -1857,6 +1856,7 @@ export interface LoginSessionStatusResponse {
   updatedAt?: string | null;
   accountId?: number | null;
   error?: string | null;
+  syncApplied?: boolean | null;
 }
 
 export type OauthMailboxSession =
@@ -1923,27 +1923,22 @@ export interface UpdateOauthLoginSessionPayload {
   mailboxAddress?: string;
 }
 
-export function setOauthLoginSessionOrderingToken(
-  loginId: string,
-  updatedAt: string,
-): void {
-  oauthLoginSessionOrderingTokens.set(loginId, updatedAt);
-}
-
-function withOauthLoginSessionOrderingHeader(
-  loginId: string,
+function withOauthLoginSessionBaseUpdatedAtHeader(
+  baseUpdatedAt: string | null | undefined,
   init: RequestInit,
 ): RequestInit {
-  const updatedAt = oauthLoginSessionOrderingTokens.get(loginId);
-  if (!updatedAt) {
+  const normalizedBaseUpdatedAt = baseUpdatedAt?.trim();
+  if (!normalizedBaseUpdatedAt) {
     return init;
   }
-  oauthLoginSessionOrderingTokens.delete(loginId);
   const headers = new Headers(init.headers);
   if (!headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
-  headers.set(OAUTH_LOGIN_SESSION_UPDATED_AT_HEADER, updatedAt);
+  headers.set(
+    OAUTH_LOGIN_SESSION_BASE_UPDATED_AT_HEADER,
+    normalizedBaseUpdatedAt,
+  );
   return {
     ...init,
     headers,
@@ -3409,10 +3404,11 @@ export async function fetchOauthLoginSession(
 export async function updateOauthLoginSession(
   loginId: string,
   payload: UpdateOauthLoginSessionPayload,
+  baseUpdatedAt?: string | null,
 ): Promise<LoginSessionStatusResponse> {
   const response = await fetchJson<unknown>(
     `/api/pool/upstream-accounts/oauth/login-sessions/${encodeURIComponent(loginId)}`,
-    withOauthLoginSessionOrderingHeader(loginId, {
+    withOauthLoginSessionBaseUpdatedAtHeader(baseUpdatedAt, {
       method: "PATCH",
       body: JSON.stringify(payload),
     }),
@@ -3423,12 +3419,13 @@ export async function updateOauthLoginSession(
 export async function updateOauthLoginSessionKeepalive(
   loginId: string,
   payload: UpdateOauthLoginSessionPayload,
+  baseUpdatedAt?: string | null,
 ): Promise<void> {
   const response = await fetch(
     withBase(
       `/api/pool/upstream-accounts/oauth/login-sessions/${encodeURIComponent(loginId)}`,
     ),
-    withOauthLoginSessionOrderingHeader(loginId, {
+    withOauthLoginSessionBaseUpdatedAtHeader(baseUpdatedAt, {
       method: "PATCH",
       headers: {
         "Content-Type": "application/json",

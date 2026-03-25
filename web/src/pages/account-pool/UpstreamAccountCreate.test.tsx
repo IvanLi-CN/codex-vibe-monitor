@@ -1659,7 +1659,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     });
   });
 
-  it("dispatches a keepalive sync for the latest oauth metadata on pagehide", async () => {
+  it("does not dispatch a duplicate keepalive while oauth metadata sync is already in flight", async () => {
     vi.useFakeTimers();
     let resolveFirstSync:
       | ((value: LoginSessionStatusResponse) => void)
@@ -1701,25 +1701,82 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     });
     await flushAsync();
 
-    expect(apiMocks.updateOauthLoginSessionKeepalive).toHaveBeenCalledWith(
-      "login-1",
-      {
-        displayName: "Fresh OAuth Latest",
-        groupName: "",
-        note: "",
-        tagIds: [],
-        isMother: false,
-        mailboxSessionId: "",
-        mailboxAddress: "",
-      },
-    );
-    expect(
-      apiMocks.updateOauthLoginSessionKeepalive.mock.lastCall?.[1],
-    ).not.toHaveProperty("groupNote");
+    expect(apiMocks.updateOauthLoginSessionKeepalive).not.toHaveBeenCalled();
 
     if (!resolveFirstSync) {
       throw new Error("missing oauth sync resolver");
     }
+  });
+
+  it("uses the latest pending session updatedAt as the next oauth sync baseline", async () => {
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      updatedAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    const updateOauthLogin = vi
+      .fn()
+      .mockResolvedValueOnce({
+        loginId: "login-1",
+        status: "pending",
+        authUrl: "https://auth.openai.com/authorize?login=1",
+        redirectUri: "http://localhost:1455/oauth/callback",
+        expiresAt: "2026-03-13T10:00:00.000Z",
+        updatedAt: "2026-03-13T10:01:00.000Z",
+        accountId: null,
+        error: null,
+      })
+      .mockResolvedValueOnce({
+        loginId: "login-1",
+        status: "pending",
+        authUrl: "https://auth.openai.com/authorize?login=1",
+        redirectUri: "http://localhost:1455/oauth/callback",
+        expiresAt: "2026-03-13T10:00:00.000Z",
+        updatedAt: "2026-03-13T10:02:00.000Z",
+        accountId: null,
+        error: null,
+      });
+    mockUpstreamAccounts({ beginOauthLogin, updateOauthLogin });
+    render();
+
+    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth");
+    await flushAsync();
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+
+    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth A");
+    await flushAsync();
+    await flushAsync();
+
+    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth B");
+    await flushAsync();
+    await flushAsync();
+
+    expect(updateOauthLogin).toHaveBeenNthCalledWith(1, "login-1", {
+      displayName: "Fresh OAuth A",
+      groupName: "",
+      note: "",
+      tagIds: [],
+      isMother: false,
+      mailboxSessionId: "",
+      mailboxAddress: "",
+    }, "2026-03-13T10:00:00.000Z");
+    expect(updateOauthLogin.mock.calls[0]?.[1]).not.toHaveProperty("groupNote");
+    expect(updateOauthLogin).toHaveBeenNthCalledWith(2, "login-1", {
+      displayName: "Fresh OAuth B",
+      groupName: "",
+      note: "",
+      tagIds: [],
+      isMother: false,
+      mailboxSessionId: "",
+      mailboxAddress: "",
+    }, "2026-03-13T10:01:00.000Z");
+    expect(updateOauthLogin.mock.calls[1]?.[1]).not.toHaveProperty("groupNote");
   });
 
   it("coalesces pending single oauth sync requests while an earlier patch is in flight", async () => {

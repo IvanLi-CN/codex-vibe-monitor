@@ -114,7 +114,7 @@ const LOGIN_SESSION_STATUS_PENDING: &str = "pending";
 const LOGIN_SESSION_STATUS_COMPLETED: &str = "completed";
 const LOGIN_SESSION_STATUS_FAILED: &str = "failed";
 const LOGIN_SESSION_STATUS_EXPIRED: &str = "expired";
-const LOGIN_SESSION_UPDATED_AT_HEADER: &str = "x-codex-login-session-updated-at";
+const LOGIN_SESSION_BASE_UPDATED_AT_HEADER: &str = "x-codex-login-session-base-updated-at";
 const IMPORT_VALIDATION_STATUS_OK: &str = "ok";
 const IMPORT_VALIDATION_STATUS_OK_EXHAUSTED: &str = "ok_exhausted";
 const IMPORT_VALIDATION_STATUS_INVALID: &str = "invalid";
@@ -1133,6 +1133,8 @@ pub(crate) struct LoginSessionStatusResponse {
     updated_at: String,
     account_id: Option<i64>,
     error: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    sync_applied: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -4798,6 +4800,7 @@ pub(crate) async fn create_oauth_login_session(
         updated_at: now_iso,
         account_id: payload.account_id,
         error: None,
+        sync_applied: None,
     }))
 }
 
@@ -4842,7 +4845,18 @@ pub(crate) async fn update_oauth_login_session(
         .await
         .map_err(internal_error_tuple)?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "login session not found".to_string()))?;
-    if session.status != LOGIN_SESSION_STATUS_PENDING {
+    let requested_base_updated_at = headers
+        .get(LOGIN_SESSION_BASE_UPDATED_AT_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let allows_completed_race_repair = session.status == LOGIN_SESSION_STATUS_COMPLETED
+        && session.account_id.is_some()
+        && requested_base_updated_at
+            .as_deref()
+            .is_some_and(|value| value != session.updated_at);
+    if session.status != LOGIN_SESSION_STATUS_PENDING && !allows_completed_race_repair {
         return Err((
             StatusCode::BAD_REQUEST,
             if session.status == LOGIN_SESSION_STATUS_EXPIRED {
@@ -4852,22 +4866,20 @@ pub(crate) async fn update_oauth_login_session(
             },
         ));
     }
-    if session.account_id.is_some() {
+    if session.account_id.is_some() && session.status == LOGIN_SESSION_STATUS_PENDING {
         return Err((
             StatusCode::BAD_REQUEST,
             "This login session belongs to an existing account and cannot be edited.".to_string(),
         ));
     }
-    let requested_updated_at = headers
-        .get(LOGIN_SESSION_UPDATED_AT_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string);
-    if let Some(requested_updated_at) = requested_updated_at.as_deref() {
-        if !mailbox_updated_at_is_newer_or_equal(requested_updated_at, &session.updated_at) {
-            tx.commit().await.map_err(internal_error_tuple)?;
-            return Ok(Json(login_session_to_response(&session)));
+    if session.status == LOGIN_SESSION_STATUS_PENDING {
+        if let Some(requested_base_updated_at) = requested_base_updated_at.as_deref() {
+            if requested_base_updated_at != session.updated_at {
+                tx.commit().await.map_err(internal_error_tuple)?;
+                return Ok(Json(login_session_to_response_with_sync_applied(
+                    &session, false,
+                )));
+            }
         }
     }
 
@@ -4882,6 +4894,7 @@ pub(crate) async fn update_oauth_login_session(
         mailbox_address: requested_mailbox_address,
     } = payload;
     let requested_group_name_was_updated = !matches!(requested_group_name, OptionalField::Missing);
+    let requested_group_note_was_updated = !matches!(requested_group_note, OptionalField::Missing);
 
     let display_name = match requested_display_name {
         OptionalField::Missing => session.display_name.clone(),
@@ -4950,13 +4963,54 @@ pub(crate) async fn update_oauth_login_session(
         {
             None
         } else {
-            normalized_group_note
+            normalized_group_note.clone()
         }
     } else {
         None
     };
-    let now_iso = requested_updated_at.unwrap_or_else(|| format_utc_iso(Utc::now()));
-    sqlx::query(
+    if allows_completed_race_repair {
+        let account_id = session.account_id.ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                "completed session account is missing".to_string(),
+            )
+        })?;
+        apply_oauth_login_session_metadata_to_account_with_executor(
+            &mut tx,
+            account_id,
+            display_name,
+            group_name,
+            note,
+            normalized_group_note,
+            requested_group_note_was_updated,
+            is_mother,
+            &tag_ids,
+        )
+        .await?;
+        let now_iso = next_login_session_updated_at(Some(&session.updated_at));
+        sqlx::query(
+            r#"
+            UPDATE pool_oauth_login_sessions
+            SET updated_at = ?2
+            WHERE login_id = ?1
+            "#,
+        )
+        .bind(&login_id)
+        .bind(&now_iso)
+        .execute(&mut *tx)
+        .await
+        .map_err(internal_error_tuple)?;
+        let updated = load_login_session_by_login_id_with_executor(&mut *tx, &login_id)
+            .await
+            .map_err(internal_error_tuple)?
+            .ok_or_else(|| (StatusCode::NOT_FOUND, "login session not found".to_string()))?;
+        tx.commit().await.map_err(internal_error_tuple)?;
+        return Ok(Json(login_session_to_response_with_sync_applied(
+            &updated, true,
+        )));
+    }
+    let now_iso = next_login_session_updated_at(Some(&session.updated_at));
+    let result = sqlx::query(
         r#"
         UPDATE pool_oauth_login_sessions
         SET display_name = ?2,
@@ -4969,6 +5023,7 @@ pub(crate) async fn update_oauth_login_session(
             generated_mailbox_address = ?9,
             updated_at = ?10
         WHERE login_id = ?1
+          AND (?11 IS NULL OR updated_at = ?11)
         "#,
     )
     .bind(&login_id)
@@ -4981,6 +5036,7 @@ pub(crate) async fn update_oauth_login_session(
     .bind(mailbox_session_id)
     .bind(mailbox_address)
     .bind(&now_iso)
+    .bind(requested_base_updated_at.as_deref())
     .execute(&mut *tx)
     .await
     .map_err(internal_error_tuple)?;
@@ -4988,8 +5044,16 @@ pub(crate) async fn update_oauth_login_session(
         .await
         .map_err(internal_error_tuple)?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "login session not found".to_string()))?;
+    if result.rows_affected() == 0 {
+        tx.commit().await.map_err(internal_error_tuple)?;
+        return Ok(Json(login_session_to_response_with_sync_applied(
+            &updated, false,
+        )));
+    }
     tx.commit().await.map_err(internal_error_tuple)?;
-    Ok(Json(login_session_to_response(&updated)))
+    Ok(Json(login_session_to_response_with_sync_applied(
+        &updated, true,
+    )))
 }
 
 pub(crate) async fn oauth_callback(
@@ -5411,6 +5475,85 @@ async fn update_upstream_account_inner(
     Ok(detail)
 }
 
+async fn apply_oauth_login_session_metadata_to_account_with_executor(
+    tx: &mut Transaction<'_, Sqlite>,
+    account_id: i64,
+    display_name: Option<String>,
+    group_name: Option<String>,
+    note: Option<String>,
+    group_note: Option<String>,
+    group_note_was_requested: bool,
+    is_mother: bool,
+    tag_ids: &[i64],
+) -> Result<(), (StatusCode, String)> {
+    let row = load_upstream_account_row_conn(tx.as_mut(), account_id)
+        .await
+        .map_err(internal_error_tuple)?
+        .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
+    let previous_group_name = row.group_name.clone();
+    let next_display_name = display_name.unwrap_or(row.display_name);
+    ensure_display_name_available(tx.as_mut(), &next_display_name, Some(account_id)).await?;
+
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET display_name = ?2,
+            group_name = ?3,
+            is_mother = ?4,
+            note = ?5,
+            updated_at = ?6
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .bind(&next_display_name)
+    .bind(&group_name)
+    .bind(if is_mother { 1 } else { 0 })
+    .bind(&note)
+    .bind(&now_iso)
+    .execute(tx.as_mut())
+    .await
+    .map_err(internal_error_tuple)?;
+
+    if group_note_was_requested {
+        if previous_group_name == group_name {
+            if let Some(group_name) = group_name.as_deref()
+                && group_account_count_conn(tx.as_mut(), group_name)
+                    .await
+                    .map_err(internal_error_tuple)?
+                    == 1
+            {
+                save_group_note_record_conn(tx.as_mut(), group_name, group_note)
+                    .await
+                    .map_err(internal_error_tuple)?;
+            }
+        } else {
+            save_group_note_after_account_write(
+                tx.as_mut(),
+                group_name.as_deref(),
+                group_note,
+                true,
+                false,
+            )
+            .await
+            .map_err(internal_error_tuple)?;
+        }
+    }
+    if previous_group_name != group_name {
+        cleanup_orphaned_group_note(tx.as_mut(), previous_group_name.as_deref())
+            .await
+            .map_err(internal_error_tuple)?;
+    }
+    apply_mother_assignment(tx, account_id, group_name.as_deref(), is_mother)
+        .await
+        .map_err(internal_error_tuple)?;
+    sync_account_tag_links_with_executor(tx.as_mut(), account_id, tag_ids)
+        .await
+        .map_err(internal_error_tuple)?;
+    Ok(())
+}
+
 pub(crate) async fn delete_upstream_account(
     State(state): State<Arc<AppState>>,
     headers: HeaderMap,
@@ -5773,9 +5916,14 @@ async fn persist_oauth_callback_inner(
     )
     .await
     .map_err(internal_error_tuple)?;
-    complete_login_session_with_executor(&mut *tx, &session.login_id, account_id)
-        .await
-        .map_err(internal_error_tuple)?;
+    complete_login_session_with_executor(
+        &mut *tx,
+        &session.login_id,
+        account_id,
+        &session.updated_at,
+    )
+    .await
+    .map_err(internal_error_tuple)?;
     tx.commit().await.map_err(internal_error_tuple)?;
     Ok(account_id)
 }
@@ -8716,8 +8864,9 @@ async fn complete_login_session_with_executor(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     login_id: &str,
     account_id: i64,
+    previous_updated_at: &str,
 ) -> Result<()> {
-    let now_iso = format_utc_iso(Utc::now());
+    let now_iso = next_login_session_updated_at(Some(previous_updated_at));
     sqlx::query(
         r#"
         UPDATE pool_oauth_login_sessions
@@ -8735,6 +8884,17 @@ async fn complete_login_session_with_executor(
     .execute(executor)
     .await?;
     Ok(())
+}
+
+fn next_login_session_updated_at(previous_updated_at: Option<&str>) -> String {
+    let mut next_updated_at = Utc::now();
+    if let Some(previous_updated_at) = previous_updated_at
+        && let Some(previous_updated_at) = parse_rfc3339_utc(previous_updated_at)
+        && next_updated_at <= previous_updated_at
+    {
+        next_updated_at = previous_updated_at + ChronoDuration::milliseconds(1);
+    }
+    next_updated_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }
 
 async fn fail_login_session_with_executor(
@@ -8806,7 +8966,17 @@ fn login_session_to_response(row: &OauthLoginSessionRow) -> LoginSessionStatusRe
         updated_at: row.updated_at.clone(),
         account_id: row.account_id,
         error: row.error_message.clone(),
+        sync_applied: None,
     }
+}
+
+fn login_session_to_response_with_sync_applied(
+    row: &OauthLoginSessionRow,
+    sync_applied: bool,
+) -> LoginSessionStatusResponse {
+    let mut response = login_session_to_response(row);
+    response.sync_applied = Some(sync_applied);
+    response
 }
 
 #[derive(Debug, Clone)]
@@ -19017,7 +19187,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_oauth_login_session_ignores_stale_ordering_updates() {
+    async fn update_oauth_login_session_ignores_stale_baseline_updates() {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
         let created = create_oauth_login_session(
             State(state.clone()),
@@ -19037,15 +19207,11 @@ mod tests {
         .await
         .expect("create oauth login session")
         .0;
-        let created_updated_at =
-            parse_rfc3339_utc(&created.updated_at).expect("created updated_at should parse");
-        let newer_updated_at = format_utc_iso(created_updated_at + ChronoDuration::seconds(2));
-        let stale_updated_at = format_utc_iso(created_updated_at + ChronoDuration::seconds(1));
 
         let mut newer_headers = HeaderMap::new();
         newer_headers.insert(
-            LOGIN_SESSION_UPDATED_AT_HEADER,
-            header::HeaderValue::from_str(&newer_updated_at).expect("valid updated_at header"),
+            LOGIN_SESSION_BASE_UPDATED_AT_HEADER,
+            header::HeaderValue::from_str(&created.updated_at).expect("valid updated_at header"),
         );
         let newer = update_oauth_login_session(
             State(state.clone()),
@@ -19065,12 +19231,13 @@ mod tests {
         .await
         .expect("apply newer oauth login session update")
         .0;
-        assert_eq!(newer.updated_at, newer_updated_at);
+        assert_ne!(newer.updated_at, created.updated_at);
+        let newer_updated_at = newer.updated_at.clone();
 
         let mut stale_headers = HeaderMap::new();
         stale_headers.insert(
-            LOGIN_SESSION_UPDATED_AT_HEADER,
-            header::HeaderValue::from_str(&stale_updated_at).expect("valid updated_at header"),
+            LOGIN_SESSION_BASE_UPDATED_AT_HEADER,
+            header::HeaderValue::from_str(&created.updated_at).expect("valid updated_at header"),
         );
         let stale = update_oauth_login_session(
             State(state.clone()),
@@ -19381,6 +19548,141 @@ mod tests {
             .expect("completed session should exist");
         assert_eq!(completed_session.status, LOGIN_SESSION_STATUS_COMPLETED);
         assert_eq!(completed_session.account_id, Some(account_id));
+    }
+
+    #[tokio::test]
+    async fn update_oauth_login_session_repairs_completed_callback_race_with_latest_metadata() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let tag_id = insert_tag(&state.pool, "callback-race-sync", &test_tag_routing_rule())
+            .await
+            .expect("insert tag")
+            .summary
+            .id;
+
+        let created = create_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(CreateOauthLoginSessionRequest {
+                display_name: Some("Race Before".to_string()),
+                group_name: Some("race-group".to_string()),
+                note: Some("before note".to_string()),
+                group_note: Some("before group note".to_string()),
+                account_id: None,
+                tag_ids: vec![],
+                is_mother: Some(false),
+                mailbox_session_id: None,
+                mailbox_address: None,
+            }),
+        )
+        .await
+        .expect("create oauth login session")
+        .0;
+
+        let pending_session = load_login_session_by_login_id(&state.pool, &created.login_id)
+            .await
+            .expect("load pending session")
+            .expect("pending session should exist");
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let encrypted_credentials = encrypt_credentials(
+            crypto_key,
+            &StoredCredentials::Oauth(StoredOauthCredentials {
+                access_token: "race-access".to_string(),
+                refresh_token: "race-refresh".to_string(),
+                id_token: test_id_token(
+                    "race@example.com",
+                    Some("org_race"),
+                    Some("user_race"),
+                    Some("team"),
+                ),
+                token_type: Some("Bearer".to_string()),
+            }),
+        )
+        .expect("encrypt oauth credentials");
+        let account_id = persist_oauth_callback_inner(
+            state.as_ref(),
+            PersistOauthCallbackInput {
+                display_name: pending_session
+                    .display_name
+                    .clone()
+                    .expect("display name should be stored"),
+                session: pending_session,
+                claims: test_claims("race@example.com", Some("org_race"), Some("user_race")),
+                encrypted_credentials,
+                token_expires_at: "2026-04-01T00:00:00Z".to_string(),
+            },
+        )
+        .await
+        .expect("persist oauth callback");
+
+        let mut repair_headers = HeaderMap::new();
+        repair_headers.insert(
+            LOGIN_SESSION_BASE_UPDATED_AT_HEADER,
+            header::HeaderValue::from_str(&created.updated_at).expect("valid updated_at header"),
+        );
+        let repaired = update_oauth_login_session(
+            State(state.clone()),
+            repair_headers,
+            AxumPath(created.login_id.clone()),
+            Json(UpdateOauthLoginSessionRequest {
+                display_name: OptionalField::Value("Race After".to_string()),
+                group_name: OptionalField::Value("race-group".to_string()),
+                note: OptionalField::Value("after note".to_string()),
+                group_note: OptionalField::Value("after group note".to_string()),
+                tag_ids: OptionalField::Value(vec![tag_id]),
+                is_mother: OptionalField::Value(true),
+                mailbox_session_id: OptionalField::Missing,
+                mailbox_address: OptionalField::Missing,
+            }),
+        )
+        .await
+        .expect("repair completed callback race")
+        .0;
+
+        assert_eq!(repaired.login_id, created.login_id);
+        assert_eq!(repaired.status, LOGIN_SESSION_STATUS_COMPLETED);
+        assert_eq!(repaired.account_id, Some(account_id));
+        assert!(repaired.auth_url.is_none());
+        assert!(repaired.redirect_uri.is_none());
+
+        let account = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load repaired account row")
+            .expect("oauth account should exist");
+        assert_eq!(account.display_name, "Race After");
+        assert_eq!(account.group_name.as_deref(), Some("race-group"));
+        assert_eq!(account.note.as_deref(), Some("after note"));
+        assert_eq!(account.is_mother, 1);
+
+        let account_tag_ids = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT tag_id
+            FROM pool_upstream_account_tags
+            WHERE account_id = ?1
+            ORDER BY tag_id ASC
+            "#,
+        )
+        .bind(account_id)
+        .fetch_all(&state.pool)
+        .await
+        .expect("load repaired oauth account tags");
+        assert_eq!(account_tag_ids, vec![tag_id]);
+
+        let group_note = sqlx::query_scalar::<_, Option<String>>(
+            r#"
+            SELECT note
+            FROM pool_upstream_account_group_notes
+            WHERE group_name = ?1
+            "#,
+        )
+        .bind("race-group")
+        .fetch_one(&state.pool)
+        .await
+        .expect("load repaired group note");
+        assert_eq!(group_note.as_deref(), Some("after group note"));
     }
 
     #[tokio::test]

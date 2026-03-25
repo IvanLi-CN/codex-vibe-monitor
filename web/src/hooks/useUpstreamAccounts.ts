@@ -285,8 +285,12 @@ export function useUpstreamAccounts(query: FetchUpstreamAccountsQuery = DEFAULT_
   }, [])
 
   const updateOauthLogin = useCallback(
-    async (loginId: string, payload: UpdateOauthLoginSessionPayload): Promise<LoginSessionStatusResponse> => {
-      return updateOauthLoginSession(loginId, payload)
+    async (
+      loginId: string,
+      payload: UpdateOauthLoginSessionPayload,
+      baseUpdatedAt?: string | null,
+    ): Promise<LoginSessionStatusResponse> => {
+      return updateOauthLoginSession(loginId, payload, baseUpdatedAt)
     },
     [],
   )
