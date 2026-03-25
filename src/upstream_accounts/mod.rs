@@ -10007,7 +10007,7 @@ fn derive_upstream_account_health_status(
         return UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL;
     }
     if status == UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH
-        || is_explicit_reauth_error_message(error_message)
+        || last_action_reason_code == Some(UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED)
     {
         return UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH;
     }
@@ -16385,6 +16385,61 @@ mod tests {
             detail.summary.work_status,
             UPSTREAM_ACCOUNT_WORK_STATUS_IDLE
         );
+    }
+
+    #[tokio::test]
+    async fn explicit_reauth_phrase_without_reauth_reason_does_not_force_needs_reauth() {
+        let pool = test_pool().await;
+        let account_id = insert_api_key_account(&pool, "API key rejected wording").await;
+        let now_iso = format_utc_iso(Utc::now());
+
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET status = ?2,
+                last_error = ?3,
+                last_error_at = ?4,
+                last_action = ?5,
+                last_action_source = ?6,
+                last_action_reason_code = ?7,
+                last_action_reason_message = ?3,
+                last_action_http_status = ?8,
+                last_action_at = ?4,
+                updated_at = ?4
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .bind(UPSTREAM_ACCOUNT_STATUS_ERROR)
+        .bind(
+            "pool upstream responded with 403: Authentication token has been invalidated, please sign in again",
+        )
+        .bind(&now_iso)
+        .bind(UPSTREAM_ACCOUNT_ACTION_SYNC_FAILED)
+        .bind(UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE)
+        .bind("upstream_http_403")
+        .bind(403)
+        .execute(&pool)
+        .await
+        .expect("seed non-reauth rejection state");
+
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load updated row")
+            .expect("updated row exists");
+        let summary = build_summary_from_row(
+            &row,
+            None,
+            row.last_activity_at.clone(),
+            vec![],
+            None,
+            0,
+            Utc::now(),
+        );
+
+        assert_ne!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH);
+        assert_ne!(summary.health_status, UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH);
+        assert_eq!(summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
     }
 
     #[tokio::test]
