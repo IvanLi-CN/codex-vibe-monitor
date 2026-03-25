@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 已实现，待 PR / CI 收敛
+- Status: 已完成（4/4）
 - Created: 2026-03-25
 - Last: 2026-03-25
 
@@ -225,7 +225,7 @@ None
 - [x] M1: 新建 spec、索引与视觉证据落点
 - [x] M2: 提取共享账号详情抽屉壳层并完成两套抽屉 tabs 重构
 - [x] M3: 补齐 Vitest 与 Storybook 覆盖
-- [ ] M4: 完成视觉证据提交授权、PR 收敛与 merge-ready 交付
+- [x] M4: 完成视觉证据提交授权、PR 收敛与 merge-ready 交付
 
 ## 方案概述（Approach, high-level）
 
@@ -245,6 +245,7 @@ None
 - 2026-03-25: 创建 spec，冻结共享抽屉壳层、tabs taxonomy、视觉证据与 fast-track merge-ready 收口标准。
 - 2026-03-25: 完成共享 drawer shell、号池详情 tabs、Invocation 只读详情 tabs、i18n、Vitest 与 Storybook 覆盖；本地定向 `vitest` 与 `web build` 已通过，并根据最新反馈把配额卡并回概览页签，等待重新抓取 mock-only 视觉证据。
 - 2026-03-25: 已按最新反馈重拍 mock-only 视觉证据，截图提交授权已获确认，进入 PR / CI 收敛阶段。
+- 2026-03-25: PR #230 已完成 labels、远端 checks 与 `codex review --base origin/main` 收敛，快车道终态更新为 merge-ready。
 
 ## 参考（References）
 
