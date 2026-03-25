@@ -72,6 +72,7 @@
   story_id_or_title: Account Pool/Pages/Upstream Account Create/OAuth — Manual Mailbox Auto Created
   state: manual mailbox auto-created
   evidence_note: 单账号 OAuth 手填 `finance.lab.d5r@mail-tw.707079.xyz` 后，页面显示生成邮箱标识并继续允许复制 OAuth 地址。
+  PR: include
   image:
   ![Single OAuth manual mailbox auto-created](./assets/oauth-manual-mailbox-auto-created.png)
 
@@ -83,6 +84,7 @@
   story_id_or_title: Account Pool/Pages/Upstream Account Create/Batch OAuth — Mailbox Popover Auto Create
   state: batch mailbox popover auto-created
   evidence_note: Batch OAuth 邮箱气泡编辑把地址改成 `finance.lab.d5r@mail-tw.707079.xyz` 后，行内显示生成邮箱标识，并保持 OAuth 地址生成功能可用。
+  PR: include
   image:
   ![Batch OAuth mailbox popover auto-create](./assets/batch-mailbox-popover-auto-create.png)
 
