@@ -122,6 +122,7 @@ type PendingOauthSessionSnapshot = {
 
 type PendingOauthSessionSyncRecord = {
   syncedSignature: string | null;
+  failedSignature: string | null;
   pendingSignature: string;
   timerId: number | null;
   inFlight: Promise<void> | null;
@@ -1517,11 +1518,16 @@ export default function UpstreamAccountCreatePage() {
           const currentRecord = pendingOauthSessionSyncRef.current[loginId];
           if (currentRecord) {
             currentRecord.syncedSignature = signature;
+            currentRecord.failedSignature = null;
           }
           applyPendingOauthSessionStatus(loginId, nextSession);
           clearPendingOauthSessionSyncError(loginId);
         })
         .catch(async (err) => {
+          const currentRecord = pendingOauthSessionSyncRef.current[loginId];
+          if (currentRecord) {
+            currentRecord.failedSignature = signature;
+          }
           let latestSession: LoginSessionStatusResponse | null = null;
           try {
             latestSession = await getLoginSession(loginId);
@@ -1571,6 +1577,7 @@ export default function UpstreamAccountCreatePage() {
       if (!record) {
         record = pendingOauthSessionSyncRef.current[loginId] = {
           syncedSignature: null,
+          failedSignature: null,
           pendingSignature: snapshot.signature,
           timerId: null,
           inFlight: null,
@@ -1584,7 +1591,11 @@ export default function UpstreamAccountCreatePage() {
         record.timerId = null;
       }
       if (record.inFlight) {
-        await record.inFlight;
+        try {
+          await record.inFlight;
+        } catch {
+          // Ignore stale failures so an explicit flush can retry the latest snapshot.
+        }
       }
       record = pendingOauthSessionSyncRef.current[loginId];
       if (snapshotOverride && snapshotOverride.loginId === loginId) {
@@ -1617,6 +1628,7 @@ export default function UpstreamAccountCreatePage() {
       if (!existing) {
         existing = pendingOauthSessionSyncRef.current[snapshot.loginId] = {
           syncedSignature: snapshot.signature,
+          failedSignature: null,
           pendingSignature: snapshot.signature,
           timerId: null,
           inFlight: null,
@@ -1630,6 +1642,13 @@ export default function UpstreamAccountCreatePage() {
       existing.pendingSignature = snapshot.signature;
       existing.lastSnapshot = snapshot;
       if (existing.syncedSignature === snapshot.signature) {
+        if (existing.timerId != null) {
+          window.clearTimeout(existing.timerId);
+          existing.timerId = null;
+        }
+        continue;
+      }
+      if (existing.failedSignature === snapshot.signature) {
         if (existing.timerId != null) {
           window.clearTimeout(existing.timerId);
           existing.timerId = null;

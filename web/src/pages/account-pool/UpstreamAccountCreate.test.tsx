@@ -1579,6 +1579,165 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     );
   });
 
+  it("does not retry an unchanged failed single oauth sync on rerender", async () => {
+    vi.useFakeTimers();
+    const updateOauthLogin = vi
+      .fn()
+      .mockRejectedValue(new Error("Display name must be unique."));
+    const getLoginSession = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    mockUpstreamAccounts({ updateOauthLogin, getLoginSession });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      state: {
+        draft: {
+          oauth: {
+            displayName: "Fresh OAuth",
+            session: {
+              loginId: "login-1",
+              status: "pending",
+              authUrl: "https://auth.openai.com/authorize?login=1",
+              redirectUri: "http://localhost:1455/oauth/callback",
+              expiresAt: "2026-03-13T10:00:00.000Z",
+              accountId: null,
+              error: null,
+            },
+            sessionHint: "OAuth URL ready",
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth Duplicate");
+    await flushSessionSyncDebounce();
+    await flushAsync();
+
+    expect(updateOauthLogin).toHaveBeenCalledTimes(1);
+
+    await flushSessionSyncDebounce();
+    await flushAsync();
+
+    expect(updateOauthLogin).toHaveBeenCalledTimes(1);
+    expect(getLoginSession).toHaveBeenCalledTimes(1);
+  });
+
+  it("retries the latest single oauth metadata after a stale sync fails during completion", async () => {
+    vi.useFakeTimers();
+    let rejectFirstSync: ((reason?: unknown) => void) | null = null;
+    const firstSync = new Promise<{
+      loginId: string;
+      status: string;
+      authUrl: string;
+      redirectUri: string;
+      expiresAt: string;
+      accountId: null;
+      error: null;
+    }>((_resolve, reject) => {
+      rejectFirstSync = reject;
+    });
+    const updateOauthLogin = vi
+      .fn()
+      .mockReturnValueOnce(firstSync)
+      .mockResolvedValueOnce({
+        loginId: "login-1",
+        status: "pending",
+        authUrl: "https://auth.openai.com/authorize?login=1",
+        redirectUri: "http://localhost:1455/oauth/callback",
+        expiresAt: "2026-03-13T10:00:00.000Z",
+        accountId: null,
+        error: null,
+      });
+    const completeOauthLogin = vi.fn().mockResolvedValue({
+      id: 41,
+      displayName: "Fresh OAuth Valid",
+    });
+    const getLoginSession = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    mockUpstreamAccounts({
+      updateOauthLogin,
+      completeOauthLogin,
+      getLoginSession,
+    });
+    render();
+
+    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth");
+    await flushAsync();
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+    setInputValue(
+      'textarea[name="oauthCallbackUrl"]',
+      "http://localhost:1455/oauth/callback?code=test",
+    );
+    await flushAsync();
+
+    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth Invalid");
+    await flushSessionSyncDebounce();
+    await flushAsync();
+
+    expect(updateOauthLogin).toHaveBeenCalledTimes(1);
+
+    const displayNameInput = host?.querySelector('input[name="oauthDisplayName"]');
+    const completeButton = findButton(/Complete OAuth login/i);
+    if (!(displayNameInput instanceof HTMLInputElement) || !completeButton) {
+      throw new Error("missing single oauth controls");
+    }
+    const setter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    if (!setter || !rejectFirstSync) {
+      throw new Error("missing retry controls");
+    }
+
+    await act(async () => {
+      setter.call(displayNameInput, "Fresh OAuth Valid");
+      displayNameInput.dispatchEvent(new Event("input", { bubbles: true }));
+      displayNameInput.dispatchEvent(new Event("change", { bubbles: true }));
+      completeButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      rejectFirstSync?.(new Error("Display name must be unique."));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await flushAsync();
+    await flushAsync();
+
+    expect(updateOauthLogin).toHaveBeenCalledTimes(2);
+    expect(updateOauthLogin).toHaveBeenNthCalledWith(2, "login-1", {
+      displayName: "Fresh OAuth Valid",
+      groupName: "",
+      note: "",
+      tagIds: [],
+      isMother: false,
+      mailboxSessionId: "",
+      mailboxAddress: "",
+    });
+    expect(completeOauthLogin).toHaveBeenCalledWith("login-1", {
+      callbackUrl: "http://localhost:1455/oauth/callback?code=test",
+      mailboxSessionId: undefined,
+      mailboxAddress: undefined,
+    });
+  });
+
   it("flushes the latest single oauth metadata before completing immediately after an edit", async () => {
     vi.useFakeTimers();
     const updateOauthLogin = vi.fn().mockResolvedValue({
