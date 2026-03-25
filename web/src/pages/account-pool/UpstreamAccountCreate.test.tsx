@@ -1728,6 +1728,53 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     });
   });
 
+  it("falls back to the cached single oauth url when sync refresh fails transiently", async () => {
+    vi.useFakeTimers();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const originalClipboard = navigator.clipboard;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText,
+      },
+    });
+    const updateOauthLogin = vi.fn().mockRejectedValue(new Error("network dropped"));
+    const getLoginSession = vi
+      .fn()
+      .mockRejectedValue(new Error("temporary status refresh failure"));
+    mockUpstreamAccounts({ updateOauthLogin, getLoginSession });
+    render();
+
+    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth");
+    await flushAsync();
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+
+    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth Retry");
+    await flushAsync();
+    clickButton(/Copy OAuth URL/i);
+    await flushAsync();
+
+    expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
+      displayName: "Fresh OAuth Retry",
+      groupName: "",
+      note: "",
+      tagIds: [],
+      isMother: false,
+      mailboxSessionId: "",
+      mailboxAddress: "",
+    });
+    expect(getLoginSession).toHaveBeenCalledWith("login-1");
+    expect(writeText).toHaveBeenCalledWith(
+      "https://auth.openai.com/authorize?login=1",
+    );
+
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: originalClipboard,
+    });
+  });
+
   it("dispatches an unload keepalive even while oauth metadata sync is already in flight", async () => {
     vi.useFakeTimers();
     let resolveFirstSync:
@@ -2813,6 +2860,62 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(getLoginSession).toHaveBeenCalledWith("login-1");
     expect(writeText).not.toHaveBeenCalled();
     expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(true);
+
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: originalClipboard,
+    });
+  });
+
+  it("falls back to the cached batch oauth url when sync refresh fails transiently", async () => {
+    vi.useFakeTimers();
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const originalClipboard = navigator.clipboard;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText,
+      },
+    });
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    const updateOauthLogin = vi.fn().mockRejectedValue(new Error("network dropped"));
+    const getLoginSession = vi
+      .fn()
+      .mockRejectedValue(new Error("temporary status refresh failure"));
+    mockUpstreamAccounts({ beginOauthLogin, updateOauthLogin, getLoginSession });
+    render("/account-pool/upstream-accounts/new?mode=batchOauth");
+
+    setInputValue('input[name^="batchOauthDisplayName-"]', "Row One");
+    await flushAsync();
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+
+    setInputValue('input[name^="batchOauthDisplayName-"]', "Row One Retry");
+    await flushAsync();
+    clickButton(/Copy OAuth URL/i);
+    await flushAsync();
+
+    expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
+      displayName: "Row One Retry",
+      groupName: "",
+      note: "",
+      tagIds: [],
+      isMother: false,
+      mailboxSessionId: "",
+      mailboxAddress: "",
+    });
+    expect(getLoginSession).toHaveBeenCalledWith("login-1");
+    expect(writeText).toHaveBeenCalledWith(
+      "https://auth.openai.com/authorize?login=1",
+    );
 
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
