@@ -1478,8 +1478,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(updateOauthLogin.mock.lastCall?.[1]).not.toHaveProperty("groupNote");
   });
 
-  it("debounces pending single oauth metadata sync while typing", async () => {
-    vi.useFakeTimers();
+  it("syncs pending single oauth metadata immediately while typing", async () => {
     const updateOauthLogin = vi.fn().mockResolvedValue({
       loginId: "login-1",
       status: "pending",
@@ -1499,17 +1498,32 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth A");
     await flushAsync();
+    expect(updateOauthLogin).toHaveBeenCalledTimes(1);
+    expect(updateOauthLogin).toHaveBeenLastCalledWith("login-1", {
+      displayName: "Fresh OAuth A",
+      groupName: "",
+      note: "",
+      tagIds: [],
+      isMother: false,
+      mailboxSessionId: "",
+      mailboxAddress: "",
+    });
     setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth AB");
     await flushAsync();
+    expect(updateOauthLogin).toHaveBeenCalledTimes(2);
+    expect(updateOauthLogin).toHaveBeenLastCalledWith("login-1", {
+      displayName: "Fresh OAuth AB",
+      groupName: "",
+      note: "",
+      tagIds: [],
+      isMother: false,
+      mailboxSessionId: "",
+      mailboxAddress: "",
+    });
     setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth ABC");
     await flushAsync();
-
-    expect(updateOauthLogin).not.toHaveBeenCalled();
-
-    await flushSessionSyncDebounce();
-
-    expect(updateOauthLogin).toHaveBeenCalledTimes(1);
-    expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
+    expect(updateOauthLogin).toHaveBeenCalledTimes(3);
+    expect(updateOauthLogin).toHaveBeenLastCalledWith("login-1", {
       displayName: "Fresh OAuth ABC",
       groupName: "",
       note: "",
@@ -1558,12 +1572,8 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     });
     await flushAsync();
 
-    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth Renamed");
-    await flushSessionSyncDebounce();
-    await flushAsync();
-
     expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
-      displayName: "Fresh OAuth Renamed",
+      displayName: "Fresh OAuth",
       groupName: "",
       note: "",
       tagIds: [],
@@ -1705,16 +1715,24 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     await flushAsync();
 
     setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth Duplicate");
+    await flushAsync();
+
+    expect(updateOauthLogin).toHaveBeenCalledTimes(2);
+    expect(updateOauthLogin).toHaveBeenLastCalledWith("login-1", {
+      displayName: "Fresh OAuth Duplicate",
+      groupName: "",
+      note: "",
+      tagIds: [],
+      isMother: false,
+      mailboxSessionId: "",
+      mailboxAddress: "",
+    });
+
     await flushSessionSyncDebounce();
     await flushAsync();
 
-    expect(updateOauthLogin).toHaveBeenCalledTimes(1);
-
-    await flushSessionSyncDebounce();
-    await flushAsync();
-
-    expect(updateOauthLogin).toHaveBeenCalledTimes(1);
-    expect(getLoginSession).toHaveBeenCalledTimes(1);
+    expect(updateOauthLogin).toHaveBeenCalledTimes(2);
+    expect(getLoginSession).toHaveBeenCalledTimes(2);
   });
 
   it("retries the latest single oauth metadata after a stale sync fails during completion", async () => {
