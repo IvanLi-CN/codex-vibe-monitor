@@ -1728,9 +1728,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
         mailboxSessionId: "",
         mailboxAddress: "",
       },
-    );
-    expect(apiMocks.updateOauthLoginSessionKeepalive.mock.calls[0]).toHaveLength(
-      2,
+      "2026-03-13T09:55:00.000Z",
     );
 
     if (!resolveFirstSync) {

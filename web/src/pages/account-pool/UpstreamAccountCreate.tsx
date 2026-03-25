@@ -1752,14 +1752,11 @@ export default function UpstreamAccountCreatePage() {
       if (record.syncedSignature === snapshot.signature) {
         return;
       }
-      const keepaliveBaseUpdatedAt = record.inFlight
-        ? null
-        : snapshot.baseUpdatedAt;
-      const request = keepaliveBaseUpdatedAt
+      const request = snapshot.baseUpdatedAt
         ? updateOauthLoginSessionKeepalive(
             loginId,
             snapshot.payload,
-            keepaliveBaseUpdatedAt,
+            snapshot.baseUpdatedAt,
           )
         : updateOauthLoginSessionKeepalive(loginId, snapshot.payload);
       void request.catch(() => undefined);

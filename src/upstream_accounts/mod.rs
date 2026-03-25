@@ -4986,10 +4986,10 @@ pub(crate) async fn update_oauth_login_session(
         apply_oauth_login_session_metadata_to_account_with_executor(
             &mut tx,
             account_id,
-            display_name,
-            group_name,
-            note,
-            normalized_group_note,
+            display_name.clone(),
+            group_name.clone(),
+            note.clone(),
+            normalized_group_note.clone(),
             requested_group_note_was_updated,
             is_mother,
             &tag_ids,
@@ -4999,11 +4999,27 @@ pub(crate) async fn update_oauth_login_session(
         sqlx::query(
             r#"
             UPDATE pool_oauth_login_sessions
-            SET updated_at = ?2
+            SET display_name = ?2,
+                group_name = ?3,
+                is_mother = ?4,
+                note = ?5,
+                tag_ids_json = ?6,
+                group_note = ?7,
+                mailbox_session_id = ?8,
+                generated_mailbox_address = ?9,
+                updated_at = ?10
             WHERE login_id = ?1
             "#,
         )
         .bind(&login_id)
+        .bind(display_name)
+        .bind(group_name)
+        .bind(if is_mother { 1 } else { 0 })
+        .bind(note)
+        .bind(&tag_ids_json)
+        .bind(stored_group_note)
+        .bind(mailbox_session_id)
+        .bind(mailbox_address)
         .bind(&now_iso)
         .execute(&mut *tx)
         .await
@@ -19706,6 +19722,79 @@ mod tests {
             .expect("completed session should still exist");
         assert_ne!(completed_session.updated_at, created.updated_at);
         assert!(completed_session.consumed_at.is_some());
+
+        let mut second_repair_headers = HeaderMap::new();
+        second_repair_headers.insert(
+            LOGIN_SESSION_BASE_UPDATED_AT_HEADER,
+            header::HeaderValue::from_str(&repaired.updated_at).expect("valid updated_at header"),
+        );
+        let second_repair = update_oauth_login_session(
+            State(state.clone()),
+            second_repair_headers,
+            AxumPath(created.login_id.clone()),
+            Json(UpdateOauthLoginSessionRequest {
+                display_name: OptionalField::Value("Race Final".to_string()),
+                group_name: OptionalField::Missing,
+                note: OptionalField::Missing,
+                group_note: OptionalField::Missing,
+                tag_ids: OptionalField::Missing,
+                is_mother: OptionalField::Missing,
+                mailbox_session_id: OptionalField::Missing,
+                mailbox_address: OptionalField::Missing,
+            }),
+        )
+        .await
+        .expect("repair completed callback race again with omitted fields")
+        .0;
+
+        let repaired_again = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load twice repaired account row")
+            .expect("oauth account should still exist");
+        assert_eq!(repaired_again.display_name, "Race Final");
+        assert_eq!(repaired_again.group_name.as_deref(), Some("race-group"));
+        assert_eq!(repaired_again.note.as_deref(), Some("after note"));
+        assert_eq!(repaired_again.is_mother, 1);
+
+        let account_tag_ids = sqlx::query_scalar::<_, i64>(
+            r#"
+            SELECT tag_id
+            FROM pool_upstream_account_tags
+            WHERE account_id = ?1
+            ORDER BY tag_id ASC
+            "#,
+        )
+        .bind(account_id)
+        .fetch_all(&state.pool)
+        .await
+        .expect("load twice repaired oauth account tags");
+        assert_eq!(account_tag_ids, vec![tag_id]);
+
+        let second_group_note = sqlx::query_scalar::<_, Option<String>>(
+            r#"
+            SELECT note
+            FROM pool_upstream_account_group_notes
+            WHERE group_name = ?1
+            "#,
+        )
+        .bind("race-group")
+        .fetch_one(&state.pool)
+        .await
+        .expect("load twice repaired group note");
+        assert_eq!(second_group_note.as_deref(), Some("after group note"));
+
+        let repaired_session = load_login_session_by_login_id(&state.pool, &created.login_id)
+            .await
+            .expect("reload repaired session after second patch")
+            .expect("repaired session should still exist");
+        assert_eq!(repaired_session.display_name.as_deref(), Some("Race Final"));
+        assert_eq!(repaired_session.group_name.as_deref(), Some("race-group"));
+        assert_eq!(repaired_session.note.as_deref(), Some("after note"));
+        assert_eq!(
+            parse_tag_ids_json(repaired_session.tag_ids_json.as_deref()),
+            vec![tag_id]
+        );
+        assert_ne!(second_repair.updated_at, repaired.updated_at);
     }
 
     #[tokio::test]
