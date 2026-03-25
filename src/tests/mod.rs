@@ -5871,6 +5871,33 @@ async fn test_upstream_responses_gzip_stream() -> impl IntoResponse {
     )
 }
 
+async fn test_upstream_responses_gzip_stream_without_event_stream_header() -> impl IntoResponse {
+    let payload = [
+        "event: response.created\n",
+        "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_test_no_ct\",\"model\":\"gpt-5.3-codex\",\"status\":\"in_progress\"}}\n\n",
+        "event: response.completed\n",
+        "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_test_no_ct\",\"model\":\"gpt-5.3-codex\",\"status\":\"completed\",\"usage\":{\"input_tokens\":19,\"output_tokens\":6,\"total_tokens\":25}}}\n\n",
+    ]
+    .concat();
+
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder
+        .write_all(payload.as_bytes())
+        .expect("write gzip payload without event-stream header");
+    let compressed = encoder
+        .finish()
+        .expect("finish gzip payload without event-stream header");
+
+    (
+        StatusCode::OK,
+        [(
+            http_header::CONTENT_ENCODING,
+            HeaderValue::from_static("gzip"),
+        )],
+        Body::from(compressed),
+    )
+}
+
 async fn test_upstream_responses_slow_success_stream() -> impl IntoResponse {
     let first = concat!(
         "event: response.created\n",
@@ -6014,6 +6041,13 @@ async fn test_upstream_responses(uri: Uri) -> Response {
         .is_some_and(|query| query.contains("mode=large-stream"))
     {
         test_upstream_responses_large_stream().await.into_response()
+    } else if uri
+        .query()
+        .is_some_and(|query| query.contains("mode=gzip-no-content-type"))
+    {
+        test_upstream_responses_gzip_stream_without_event_stream_header()
+            .await
+            .into_response()
     } else if uri.query().is_some_and(|query| query.contains("mode=gzip")) {
         test_upstream_responses_gzip_stream().await.into_response()
     } else if uri
@@ -20235,6 +20269,40 @@ fn parse_target_response_payload_detects_sse_without_request_stream_hint() {
 }
 
 #[test]
+fn parse_target_response_payload_from_raw_file_falls_back_to_raw_deflate_streams() {
+    let raw = [
+        "event: response.completed",
+        r#"data: {"type":"response.completed","response":{"model":"gpt-5.3-codex","usage":{"input_tokens":17,"output_tokens":4,"total_tokens":21}}}"#,
+        "",
+    ]
+    .join("\n");
+
+    let mut encoder = DeflateEncoder::new(Vec::new(), Compression::default());
+    encoder
+        .write_all(raw.as_bytes())
+        .expect("write raw deflate stream");
+    let compressed = encoder.finish().expect("finish raw deflate stream");
+
+    let temp_dir = make_temp_test_dir("raw-deflate-response");
+    let raw_path = temp_dir.join("response.bin");
+    fs::write(&raw_path, compressed).expect("write raw deflate response payload");
+
+    let parsed = parse_target_response_payload_from_raw_file(
+        ProxyCaptureTarget::Responses,
+        &raw_path,
+        true,
+        Some("deflate"),
+    )
+    .expect("parse raw deflate response payload");
+
+    assert_eq!(parsed.model.as_deref(), Some("gpt-5.3-codex"));
+    assert_eq!(parsed.usage.total_tokens, Some(21));
+    assert!(parsed.usage_missing_reason.is_none());
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[test]
 fn parse_target_response_payload_reads_service_tier_from_response_object() {
     let raw = json!({
         "id": "resp_json_1",
@@ -20367,6 +20435,74 @@ async fn proxy_capture_target_extracts_usage_from_gzip_response_stream() {
         payload["proxyWeightDelta"].is_number(),
         "proxy weight delta should be recorded for fresh proxy attempts"
     );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_capture_target_gzip_stream_without_event_stream_header_still_extracts_usage() {
+    #[derive(sqlx::FromRow)]
+    struct PersistedUsageRow {
+        status: Option<String>,
+        input_tokens: Option<i64>,
+        output_tokens: Option<i64>,
+        total_tokens: Option<i64>,
+    }
+
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(
+            "/v1/responses?mode=gzip-no-content-type"
+                .parse()
+                .expect("valid uri"),
+        ),
+        Method::POST,
+        HeaderMap::new(),
+        Body::from(r#"{"model":"gpt-5.3-codex","stream":true,"input":"hello"}"#),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read proxy response body");
+
+    let mut row: Option<PersistedUsageRow> = None;
+    for _ in 0..50 {
+        row = sqlx::query_as::<_, PersistedUsageRow>(
+            r#"
+            SELECT
+                status,
+                input_tokens,
+                output_tokens,
+                total_tokens
+            FROM codex_invocations
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .fetch_optional(&state.pool)
+        .await
+        .expect("query gzip stream usage row without event-stream header");
+        if row
+            .as_ref()
+            .is_some_and(|record| record.total_tokens.is_some())
+        {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let row = row.expect("gzip stream usage row should exist");
+    assert_eq!(row.status.as_deref(), Some("success"));
+    assert_eq!(row.input_tokens, Some(19));
+    assert_eq!(row.output_tokens, Some(6));
+    assert_eq!(row.total_tokens, Some(25));
 
     upstream_handle.abort();
 }

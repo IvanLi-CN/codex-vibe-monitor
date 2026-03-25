@@ -14280,8 +14280,11 @@ async fn proxy_openai_v1_capture_target(
         let raw_response_preview = response_preview.into_preview();
         let (streamed_response_info, streamed_response_saw_fields) =
             stream_response_parser.finish();
-        let response_is_stream_hint =
-            response_is_event_stream_for_task || response_payload_looks_like_sse(&preview_bytes);
+        let response_is_stream_hint = response_is_event_stream_for_task
+            || response_payload_looks_like_sse_after_decode(
+                &preview_bytes,
+                upstream_content_encoding_for_task.as_deref(),
+            );
         let resp_parse_started = Instant::now();
         let mut response_info = if response_is_stream_hint && streamed_response_saw_fields {
             streamed_response_info
@@ -15300,6 +15303,14 @@ fn response_payload_looks_like_sse(bytes: &[u8]) -> bool {
             }
         })
         .unwrap_or(false)
+}
+
+fn response_payload_looks_like_sse_after_decode(
+    bytes: &[u8],
+    content_encoding: Option<&str>,
+) -> bool {
+    let (decoded, _) = decode_response_payload_for_parse(bytes, content_encoding);
+    response_payload_looks_like_sse(decoded.as_ref())
 }
 
 fn decode_response_payload_for_parse<'a>(
@@ -17212,6 +17223,19 @@ fn parse_target_response_payload_from_raw_file(
     is_stream_hint: bool,
     content_encoding: Option<&str>,
 ) -> std::result::Result<ResponseCaptureInfo, String> {
+    if parse_content_encodings(content_encoding)
+        .iter()
+        .any(|encoding| encoding == "deflate")
+    {
+        let bytes = fs::read(path).map_err(|err| err.to_string())?;
+        return Ok(parse_target_response_payload(
+            target,
+            &bytes,
+            is_stream_hint,
+            content_encoding,
+        ));
+    }
+
     if is_stream_hint {
         let reader = open_decoded_response_reader(path, content_encoding)?;
         parse_stream_response_payload_from_reader(reader).map_err(|err| err.to_string())
