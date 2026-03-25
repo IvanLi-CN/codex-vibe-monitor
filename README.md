@@ -226,7 +226,7 @@ cargo run -- \
 - `forward_proxy_attempts` 与 `stats_source_snapshots` 只保留最近 30 个上海自然日在线明细；更老数据同样执行“先归档、再清理”。
 - `codex_quota_snapshots` 保留最近 30 天全量，更老日期在主库内压缩为“每个上海自然日最后一条”，被折叠掉的行进入离线归档。
 - `stats_source_deltas` 长期在线保留；`/api/stats`、`GET /api/stats/summary?window=all`、`GET /api/stats/timeseries` 等长期统计路径通过 hourly rollups 保证 totals 与小时趋势在 raw retention 之后仍连续在线可查。
-- 原始 payload / preview / raw file 只保证短期排障；长期依赖离线 archive 中的 SQLite 归档行，超窗 raw file 本体不保证继续可用，现有 Web UI 不提供 archived 明细在线浏览；orphan sweep 只清理超过宽限期的未引用文件。
+- 原始 payload / preview / raw file 只保证短期排障；超过在线窗口后，项目继续需要的历史能力只依赖主库统计表，不再让在线 API 回读 archive SQLite。archive 文件仅作为备份 / 导出产物；超窗 raw file 本体不保证继续可用，现有 Web UI 不提供 archived 明细在线浏览；orphan sweep 只清理超过宽限期的未引用文件。
 - 运维直接扫磁盘 raw 时，统一使用镜像内置命令：`docker exec ai-codex-vibe-monitor search-raw '<needle>'`。脚本默认按容器内的 `DATABASE_PATH + PROXY_RAW_DIR` 解析搜索根目录，同时搜索 `*.bin` 与 `*.bin.gz`；加 `--regex` 可切换为正则模式，`--root` 可显式覆写路径。
 
 首次清理建议先做 dry-run：
@@ -246,12 +246,17 @@ cargo run -- --retention-run-once
 ```bash
 cargo run -- maintenance archive-upstream-activity-manifest --dry-run
 cargo run -- maintenance archive-upstream-activity-manifest
+cargo run -- maintenance materialize-historical-rollups --dry-run
+cargo run -- maintenance materialize-historical-rollups
 cargo run -- maintenance raw-compression --dry-run
 cargo run -- maintenance raw-compression
+cargo run -- maintenance prune-legacy-archive-batches --dry-run
+cargo run -- maintenance prune-legacy-archive-batches
 ```
 
-- 正常服务启动会在 startup backfill 后台维护里自动补齐仍缺失的 `codex_invocations` archive upstream-activity manifest，并补做 archive TTL / hourly rollup warm-up；非 dry-run 的 `--retention-run-once` 仍会在前台同步完成这一步，因此升级后不需要额外手工触发一次才能让 `last_activity_at` archive backfill 恢复推进。
-- `maintenance ... --dry-run` 与 `--retention-run-once --retention-dry-run` 不会再顺手执行 archive TTL 回填、manifest rebuild 或 hourly rollup bootstrap，便于先做真正只读的容量预演。
+- 正常服务启动会在 startup backfill 后台维护里自动补齐仍缺失的 `codex_invocations` archive upstream-activity manifest，并只把主库 live tail sync 到 hourly rollups；若 `maintenance.historicalRollupBackfill.legacyArchivePending > 0`，需要显式执行 `maintenance materialize-historical-rollups` 才会把 legacy archive 物化进主库统计表。
+- `maintenance prune-legacy-archive-batches` 只会删除已经完成历史物化的 backup-only archive；`codex_invocations` 仍存在 upstream activity backlog 时会保守跳过，避免过早删掉 manifest 依赖。
+- `maintenance ... --dry-run` 与 `--retention-run-once --retention-dry-run` 不会再顺手执行 archive TTL 回填、manifest rebuild 或历史 rollup 物化，便于先做真正只读的容量预演。
 
 ## HTTP API 与 SSE
 
@@ -261,8 +266,8 @@ cargo run -- maintenance raw-compression
 - `GET /api/settings`：获取统一设置（`proxy + pricing`）。
 - `PUT /api/settings/proxy`：更新 `/v1/models` 劫持与上游合并开关状态（全局持久化）。
 - `PUT /api/settings/pricing`：更新价格目录（全量覆盖、全局持久化、实时生效于新请求成本估算）。
-- `GET /api/invocations?limit=&model=&status=`：最新记录列表（`limit` 上限由 `LIST_LIMIT_MAX` 控制）；每条记录额外返回 `detailLevel`、`detailPrunedAt`、`detailPruneReason`，用于标记在线明细是否仍完整。
-- `GET /api/stats`：全量聚合统计；长期 totals 读取永久在线 hourly rollups，并补上尚未 sync 的 live tail。响应可选附带 `maintenance.rawCompressionBacklog` 与 `maintenance.startupBackfill`，用于观测 raw backlog 与 archive backfill 状态。
+- `GET /api/invocations?limit=&model=&status=`：最新记录列表（`limit` 上限由 `LIST_LIMIT_MAX` 控制）；每条记录额外返回 `detailLevel`、`detailPrunedAt`、`detailPruneReason`，用于标记在线明细是否仍完整。超过在线窗口的明细不再承诺在线可回查。
+- `GET /api/stats`：全量聚合统计；长期 totals 读取永久在线 hourly rollups，并补上尚未 sync 的 live tail。响应可选附带 `maintenance.rawCompressionBacklog`、`maintenance.startupBackfill` 与 `maintenance.historicalRollupBackfill`，用于观测 raw backlog、archive manifest backfill 与 legacy archive 物化状态。
 - `GET /api/stats/summary?window=<all|current|1d|6h|30m>&limit=N`：窗口统计；`window=all` 与历史长窗口都通过 hourly rollups 保持在线连续。
 - `GET /api/stats/timeseries?range=1d&bucket=1h&settlement_hour=0`：时间序列（区间与桶宽支持 `m/h/d/mo`）；跨过 raw retention 后仍支持小时级历史查询。
 - `GET /api/stats/forward-proxy/timeseries?range=30d&bucket=1h`：forward proxy 历史小时时序，返回每个 proxy 的 request buckets 与 weight buckets。

@@ -2866,6 +2866,16 @@ async fn fetch_stats_exposes_maintenance_observability_fields() {
     );
     assert_eq!(startup_backfill.zero_update_streak, 0);
     assert!(startup_backfill.next_run_after.is_none());
+    let historical_rollup_backfill = maintenance
+        .historical_rollup_backfill
+        .expect("historical rollup backfill maintenance payload");
+    assert_eq!(historical_rollup_backfill.pending_buckets, 0);
+    assert_eq!(historical_rollup_backfill.legacy_archive_pending, 0);
+    assert!(historical_rollup_backfill.last_materialized_hour.is_none());
+    assert_eq!(
+        historical_rollup_backfill.alert_level,
+        HistoricalRollupBackfillAlertLevel::None
+    );
 }
 
 #[tokio::test]
@@ -27204,7 +27214,7 @@ async fn timeseries_hourly_backed_includes_crs_deltas() {
 }
 
 #[tokio::test]
-async fn timeseries_hourly_backed_fails_when_exact_archive_batch_is_missing() {
+async fn timeseries_hourly_backed_ignores_missing_exact_archive_batch() {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -27233,7 +27243,7 @@ async fn timeseries_hourly_backed_fails_when_exact_archive_batch_is_missing() {
     .await
     .expect("insert missing exact-range archive manifest");
 
-    let err = fetch_timeseries(
+    let Json(response) = fetch_timeseries(
         State(state),
         Query(TimeseriesQuery {
             range: "48h".to_string(),
@@ -27243,19 +27253,8 @@ async fn timeseries_hourly_backed_fails_when_exact_archive_batch_is_missing() {
         }),
     )
     .await
-    .expect_err("missing exact-range archive batch should fail timeseries");
-
-    match err {
-        ApiError::Internal(inner) => {
-            assert!(
-                inner
-                    .to_string()
-                    .contains("required codex_invocations archive batch is missing"),
-                "unexpected error message: {inner}"
-            );
-        }
-        other => panic!("unexpected error: {other:?}"),
-    }
+    .expect("missing exact-range archive batch should not fail timeseries");
+    assert!(response.points.iter().all(|point| point.total_count == 0));
 
     cleanup_temp_test_dir(&temp_dir);
 }
@@ -27379,7 +27378,7 @@ async fn timeseries_hourly_backed_bucket_stays_available_across_archive_boundary
 }
 
 #[tokio::test]
-async fn summary_hourly_backed_since_preserves_exact_archived_start_hour() {
+async fn summary_hourly_backed_since_uses_hour_bucket_accuracy_for_archived_history() {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -27452,11 +27451,11 @@ async fn summary_hourly_backed_since_preserves_exact_archived_start_hour() {
             .await
             .expect("load exact archived summary totals");
 
-    assert_eq!(totals.total_count, 1);
-    assert_eq!(totals.success_count, 1);
+    assert_eq!(totals.total_count, 0);
+    assert_eq!(totals.success_count, 0);
     assert_eq!(totals.failure_count, 0);
-    assert_eq!(totals.total_tokens, 10);
-    assert_f64_close(totals.total_cost, 0.1);
+    assert_eq!(totals.total_tokens, 0);
+    assert_f64_close(totals.total_cost, 0.0);
 }
 
 #[tokio::test]
@@ -27531,7 +27530,7 @@ async fn collect_summary_snapshots_uses_hourly_backed_duration_windows() {
 }
 
 #[tokio::test]
-async fn timeseries_hourly_backed_uses_exact_archived_partial_hour_records() {
+async fn timeseries_hourly_backed_omits_archived_partial_hour_exact_rows() {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -27631,29 +27630,11 @@ async fn timeseries_hourly_backed_uses_exact_archived_partial_hour_records() {
     .await
     .expect("fetch exact archived timeseries");
 
-    let bucket = response
-        .points
-        .iter()
-        .find(|point| point.total_count > 0)
-        .expect("should include exact archived bucket");
-    assert_eq!(bucket.total_count, 1);
-    assert_eq!(bucket.success_count, 1);
-    assert_eq!(bucket.failure_count, 0);
-    assert_eq!(bucket.total_tokens, 10);
-    assert_f64_close(bucket.total_cost, 0.1);
-    assert_eq!(bucket.first_byte_sample_count, 1);
-    assert_f64_close(
-        bucket.first_byte_avg_ms.expect("avg should be present"),
-        200.0,
-    );
-    assert_f64_close(
-        bucket.first_byte_p95_ms.expect("p95 should be present"),
-        200.0,
-    );
+    assert!(response.points.iter().all(|point| point.total_count == 0));
 }
 
 #[tokio::test]
-async fn hourly_backed_summary_reads_pre_cutoff_exact_rows_from_live_table() {
+async fn hourly_backed_summary_omits_pre_cutoff_partial_hour_rows() {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -27698,11 +27679,11 @@ async fn hourly_backed_summary_reads_pre_cutoff_exact_rows_from_live_table() {
             .await
             .expect("load summary totals across retention cutoff");
 
-    assert_eq!(totals.total_count, 1);
-    assert_eq!(totals.success_count, 1);
+    assert_eq!(totals.total_count, 0);
+    assert_eq!(totals.success_count, 0);
     assert_eq!(totals.failure_count, 0);
-    assert_eq!(totals.total_tokens, 12);
-    assert_f64_close(totals.total_cost, 0.12);
+    assert_eq!(totals.total_tokens, 0);
+    assert_f64_close(totals.total_cost, 0.0);
 }
 
 #[tokio::test]
@@ -27762,7 +27743,7 @@ async fn invocation_hourly_rollup_ignores_null_status_for_success_failure_counts
 }
 
 #[tokio::test]
-async fn hourly_timeseries_exact_rows_ignore_null_status_for_failure_counts() {
+async fn hourly_timeseries_omits_pre_cutoff_partial_hour_rows() {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -27829,16 +27810,7 @@ async fn hourly_timeseries_exact_rows_ignore_null_status_for_failure_counts() {
     .await
     .expect("fetch exact hourly timeseries");
 
-    let bucket = response
-        .points
-        .iter()
-        .find(|point| point.total_count > 0)
-        .expect("should include exact bucket");
-    assert_eq!(bucket.total_count, 1);
-    assert_eq!(bucket.success_count, 0);
-    assert_eq!(bucket.failure_count, 0);
-    assert_eq!(bucket.total_tokens, 5);
-    assert_f64_close(bucket.total_cost, 0.05);
+    assert!(response.points.iter().all(|point| point.total_count == 0));
 }
 
 #[tokio::test]
@@ -28939,7 +28911,7 @@ async fn retention_archives_into_legacy_pool_attempt_archive_batch_without_route
 }
 
 #[tokio::test]
-async fn fetch_invocation_pool_attempts_reads_archived_upstream_route_keys() {
+async fn fetch_invocation_pool_attempts_does_not_read_archived_records() {
     let temp_dir = make_temp_test_dir("api-pool-attempts-archive-route-key");
     let mut config = test_config();
     config.archive_dir = temp_dir.join("archives");
@@ -29073,12 +29045,7 @@ async fn fetch_invocation_pool_attempts_reads_archived_upstream_route_keys() {
     )
     .await
     .expect("fetch archived pool attempt records");
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].upstream_route_key.as_deref(), Some(route_key));
-    assert_eq!(
-        records[0].upstream_account_name.as_deref(),
-        Some("Archive account")
-    );
+    assert!(records.is_empty());
 
     cleanup_temp_test_dir(&temp_dir);
 }
@@ -30486,6 +30453,100 @@ async fn retention_archives_forward_proxy_attempts_and_stats_snapshots() {
 }
 
 #[tokio::test]
+async fn materialize_historical_rollups_marks_batches_and_prune_removes_files() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("historical-rollup-materialize-prune").await;
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days((config.invocation_max_days + 2) as i64))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived local hour");
+    let archived_occurred_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(10))
+            .expect("valid archived occurred_at"),
+    );
+    let archive_path = seed_invocation_archive_batch(
+        &pool,
+        &config,
+        "historical-rollup-materialize-prune",
+        &[(
+            1_i64,
+            "historical-rollup-materialize-prune",
+            archived_occurred_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            12_i64,
+            0.12_f64,
+            Some(120.0),
+        )],
+    )
+    .await;
+
+    let snapshot_before = load_historical_rollup_backfill_snapshot(&pool)
+        .await
+        .expect("load historical rollup backlog before materialization");
+    assert_eq!(snapshot_before.legacy_archive_pending, 1);
+    assert!(snapshot_before.pending_buckets >= 1);
+
+    let dry_run_summary = materialize_historical_rollups(&pool, true)
+        .await
+        .expect("dry-run materialize historical rollups");
+    assert_eq!(dry_run_summary.scanned_archive_batches, 1);
+    assert_eq!(dry_run_summary.materialized_archive_batches, 1);
+
+    let summary = materialize_historical_rollups(&pool, false)
+        .await
+        .expect("materialize historical rollups");
+    assert_eq!(summary.materialized_invocation_batches, 1);
+    assert_eq!(summary.materialized_forward_proxy_batches, 0);
+
+    let total_count: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly WHERE source = ?1",
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load materialized invocation hourly total count");
+    assert_eq!(total_count, 1);
+
+    let materialized_at: Option<String> = sqlx::query_scalar(
+        "SELECT historical_rollups_materialized_at FROM archive_batches WHERE dataset = 'codex_invocations' LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load archive batch materialized timestamp");
+    assert!(materialized_at.is_some());
+
+    let snapshot_after = load_historical_rollup_backfill_snapshot(&pool)
+        .await
+        .expect("load historical rollup backlog after materialization");
+    assert_eq!(snapshot_after.legacy_archive_pending, 0);
+
+    let prune_dry_run = prune_legacy_archive_batches(&pool, true)
+        .await
+        .expect("dry-run prune legacy archive batches");
+    assert_eq!(prune_dry_run.deleted_archive_batches, 1);
+    assert!(archive_path.exists(), "dry-run should keep archive file");
+
+    let prune_summary = prune_legacy_archive_batches(&pool, false)
+        .await
+        .expect("prune legacy archive batches");
+    assert_eq!(prune_summary.deleted_archive_batches, 1);
+    assert!(
+        !archive_path.exists(),
+        "pruned legacy archive file should be removed"
+    );
+
+    let remaining_batches: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM archive_batches")
+        .fetch_one(&pool)
+        .await
+        .expect("count remaining archive batches after prune");
+    assert_eq!(remaining_batches, 0);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_archives_and_cleans_up_pool_upstream_request_attempts() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("retention-pool-attempts").await;
@@ -30600,7 +30661,7 @@ async fn retention_archives_and_cleans_up_pool_upstream_request_attempts() {
 }
 
 #[tokio::test]
-async fn bootstrap_hourly_rollups_skips_batches_already_accounted_during_retention() {
+async fn bootstrap_hourly_rollups_keeps_retention_materialized_totals_unchanged() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("hourly-rollup-retention-accounted").await;
     let old_invocation = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 9, 0, 0);
@@ -30669,34 +30730,34 @@ async fn bootstrap_hourly_rollups_skips_batches_already_accounted_during_retenti
     assert_eq!(forward_proxy_total_before, 1);
     assert_eq!(forward_proxy_total_after, forward_proxy_total_before);
 
-    let invocation_marked_targets: HashSet<String> = sqlx::query_scalar(
-        "SELECT target FROM hourly_rollup_archive_replay WHERE dataset = 'codex_invocations'",
+    let invocation_materialized_batches: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM archive_batches WHERE dataset = 'codex_invocations' AND historical_rollups_materialized_at IS NOT NULL",
     )
-    .fetch_all(&pool)
-    .await
-    .expect("load invocation replay markers")
-    .into_iter()
-    .collect();
-    assert!(invocation_marked_targets.contains(HOURLY_ROLLUP_TARGET_INVOCATIONS));
-    assert!(invocation_marked_targets.contains(HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES));
-    assert!(invocation_marked_targets.contains(HOURLY_ROLLUP_TARGET_PROXY_PERF));
-    assert!(invocation_marked_targets.contains(HOURLY_ROLLUP_TARGET_PROMPT_CACHE));
-    assert!(invocation_marked_targets.contains(HOURLY_ROLLUP_TARGET_STICKY_KEYS));
-
-    let forward_proxy_marked: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE dataset = 'forward_proxy_attempts' AND target = ?1",
-    )
-    .bind(HOURLY_ROLLUP_TARGET_FORWARD_PROXY_ATTEMPTS)
     .fetch_one(&pool)
     .await
-    .expect("load forward proxy replay marker count");
-    assert_eq!(forward_proxy_marked, 1);
+    .expect("count materialized invocation archive batches");
+    assert_eq!(invocation_materialized_batches, 1);
+
+    let forward_proxy_materialized_batches: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM archive_batches WHERE dataset = 'forward_proxy_attempts' AND historical_rollups_materialized_at IS NOT NULL",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count materialized forward proxy archive batches");
+    assert_eq!(forward_proxy_materialized_batches, 1);
+
+    let replay_marker_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM hourly_rollup_archive_replay")
+            .fetch_one(&pool)
+            .await
+            .expect("count hourly rollup archive replay markers");
+    assert_eq!(replay_marker_count, 0);
 
     cleanup_temp_test_dir(&temp_dir);
 }
 
 #[tokio::test]
-async fn bootstrap_hourly_rollups_replays_only_missing_invocation_targets() {
+async fn bootstrap_hourly_rollups_ignores_missing_replay_markers() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("hourly-rollup-missing-invocation-target").await;
     let old_invocation = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 9, 0, 0);
@@ -30773,13 +30834,13 @@ async fn bootstrap_hourly_rollups_replays_only_missing_invocation_targets() {
 
     assert_eq!(invocation_total_before, 1);
     assert_eq!(invocation_total_after, invocation_total_before);
-    assert_eq!(repaired_marker_count, 1);
+    assert_eq!(repaired_marker_count, 0);
 
     cleanup_temp_test_dir(&temp_dir);
 }
 
 #[tokio::test]
-async fn bootstrap_hourly_rollups_fails_when_invocation_archive_batch_is_missing() {
+async fn bootstrap_hourly_rollups_ignores_missing_invocation_archive_batch() {
     let (pool, _config, temp_dir) =
         retention_test_pool_and_config("hourly-rollup-missing-invocation-archive").await;
     let missing_archive = temp_dir.join("missing-codex-invocations.sqlite.gz");
@@ -30801,24 +30862,15 @@ async fn bootstrap_hourly_rollups_fails_when_invocation_archive_batch_is_missing
     .await
     .expect("insert missing codex_invocations archive manifest");
 
-    let err = bootstrap_hourly_rollups(&pool)
+    bootstrap_hourly_rollups(&pool)
         .await
-        .expect_err("missing codex_invocations archive batch should fail bootstrap");
-    assert!(
-        err.to_string()
-            .contains("required codex_invocations archive batch is missing"),
-        "unexpected error: {err:#}"
-    );
-    assert!(
-        err.to_string().contains(&missing_archive_path),
-        "unexpected error: {err:#}"
-    );
+        .expect("missing codex_invocations archive batch should not affect bootstrap");
 
     cleanup_temp_test_dir(&temp_dir);
 }
 
 #[tokio::test]
-async fn bootstrap_hourly_rollups_fails_when_forward_proxy_archive_batch_is_missing() {
+async fn bootstrap_hourly_rollups_ignores_missing_forward_proxy_archive_batch() {
     let (pool, _config, temp_dir) =
         retention_test_pool_and_config("hourly-rollup-missing-forward-proxy-archive").await;
     let missing_archive = temp_dir.join("missing-forward-proxy-attempts.sqlite.gz");
@@ -30840,18 +30892,9 @@ async fn bootstrap_hourly_rollups_fails_when_forward_proxy_archive_batch_is_miss
     .await
     .expect("insert missing forward_proxy_attempts archive manifest");
 
-    let err = bootstrap_hourly_rollups(&pool)
+    bootstrap_hourly_rollups(&pool)
         .await
-        .expect_err("missing forward_proxy_attempts archive batch should fail bootstrap");
-    assert!(
-        err.to_string()
-            .contains("required forward_proxy_attempts archive batch is missing"),
-        "unexpected error: {err:#}"
-    );
-    assert!(
-        err.to_string().contains(&missing_archive_path),
-        "unexpected error: {err:#}"
-    );
+        .expect("missing forward_proxy_attempts archive batch should not affect bootstrap");
 
     cleanup_temp_test_dir(&temp_dir);
 }

@@ -555,6 +555,10 @@ enum MaintenanceCommand {
     RawCompression(MaintenanceDryRunArgs),
     /// Rebuild codex_invocations archive upstream-activity manifests.
     ArchiveUpstreamActivityManifest(MaintenanceDryRunArgs),
+    /// Materialize legacy archive-backed history into hourly rollup tables.
+    MaterializeHistoricalRollups(MaintenanceDryRunArgs),
+    /// Prune legacy archive batches that are no longer needed for online history.
+    PruneLegacyArchiveBatches(MaintenanceDryRunArgs),
 }
 
 #[derive(Args, Debug, Default)]
@@ -570,6 +574,7 @@ struct StartupPersistentPrepSummary {
     missing_manifest_files: usize,
     backfilled_archive_expiries: usize,
     bootstrapped_hourly_rollups: bool,
+    pending_historical_rollup_archive_batches: usize,
 }
 
 #[derive(Debug, Default)]
@@ -626,6 +631,7 @@ async fn run_startup_persistent_prep_inner(
     if include_hourly_rollup_bootstrap {
         bootstrap_hourly_rollups(pool).await?;
     }
+    let historical_rollup_snapshot = load_historical_rollup_backfill_snapshot(pool).await?;
 
     Ok(StartupPersistentPrepSummary {
         refreshed_manifest_batches: manifest_refresh.refreshed_batches,
@@ -633,6 +639,8 @@ async fn run_startup_persistent_prep_inner(
         missing_manifest_files: manifest_refresh.missing_files,
         backfilled_archive_expiries: archive_expiry_backfill_count,
         bootstrapped_hourly_rollups: include_hourly_rollup_bootstrap,
+        pending_historical_rollup_archive_batches: historical_rollup_snapshot.legacy_archive_pending
+            as usize,
     })
 }
 
@@ -696,8 +704,17 @@ async fn main() -> Result<()> {
             missing_manifest_files = prep_summary.missing_manifest_files,
             backfilled_archive_expiries = prep_summary.backfilled_archive_expiries,
             bootstrapped_hourly_rollups = prep_summary.bootstrapped_hourly_rollups,
+            pending_historical_rollup_archive_batches =
+                prep_summary.pending_historical_rollup_archive_batches,
             "startup persistent prep finished"
         );
+        if prep_summary.pending_historical_rollup_archive_batches > 0 {
+            warn!(
+                pending_historical_rollup_archive_batches =
+                    prep_summary.pending_historical_rollup_archive_batches,
+                "legacy archive batches still need historical rollup materialization"
+            );
+        }
     }
     if cli.retention_run_once && cli.command.is_some() {
         bail!("--retention-run-once cannot be combined with maintenance subcommands");
@@ -809,6 +826,26 @@ async fn run_cli_command(
                     dry_run = opts.dry_run,
                     ?summary,
                     "maintenance archive upstream activity manifest finished"
+                );
+            }
+            MaintenanceCommand::MaterializeHistoricalRollups(opts) => {
+                let summary = materialize_historical_rollups(pool, opts.dry_run).await?;
+                let snapshot = load_historical_rollup_backfill_snapshot(pool).await?;
+                info!(
+                    dry_run = opts.dry_run,
+                    ?summary,
+                    ?snapshot,
+                    "maintenance historical rollup materialization finished"
+                );
+            }
+            MaintenanceCommand::PruneLegacyArchiveBatches(opts) => {
+                let summary = prune_legacy_archive_batches(pool, opts.dry_run).await?;
+                let snapshot = load_historical_rollup_backfill_snapshot(pool).await?;
+                info!(
+                    dry_run = opts.dry_run,
+                    ?summary,
+                    ?snapshot,
+                    "maintenance legacy archive prune finished"
                 );
             }
         },
@@ -1761,20 +1798,9 @@ async fn run_startup_backfill_maintenance_pass(state: Arc<AppState>, cancel: &Ca
         }
     }
 
-    match invocation_hourly_rollup_rebuild_required(&state.pool).await {
-        Ok(true) => {
-            let _guard = state.hourly_rollup_sync_lock.lock().await;
-            if let Err(err) = sync_hourly_rollups_from_live_tables(&state.pool).await {
-                warn!(error = %err, "startup backfill failed to refresh invocation hourly rollups");
-            }
-        }
-        Ok(false) => {}
-        Err(err) => {
-            warn!(
-                error = %err,
-                "startup backfill failed to determine whether invocation hourly rollups need rebuilding"
-            );
-        }
+    let _guard = state.hourly_rollup_sync_lock.lock().await;
+    if let Err(err) = sync_hourly_rollups_from_live_tables(&state.pool).await {
+        warn!(error = %err, "startup backfill failed to refresh invocation hourly rollups");
     }
 }
 
@@ -2358,6 +2384,7 @@ struct InvocationRawCompressionFieldCandidate {
 #[derive(Debug, FromRow)]
 struct ArchiveBatchFileRow {
     _id: i64,
+    month_key: String,
     file_path: String,
 }
 
@@ -2388,9 +2415,43 @@ struct ArchiveBackfillSummary {
     waiting_for_manifest_backfill: bool,
 }
 
+#[allow(dead_code)]
+#[derive(Debug, Default)]
+pub(crate) struct HistoricalRollupMaterializationSummary {
+    scanned_archive_batches: usize,
+    materialized_archive_batches: usize,
+    materialized_bucket_count: usize,
+    materialized_invocation_batches: usize,
+    materialized_forward_proxy_batches: usize,
+    last_materialized_bucket_start_epoch: Option<i64>,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Default)]
+pub(crate) struct LegacyArchivePruneSummary {
+    scanned_archive_batches: usize,
+    deleted_archive_batches: usize,
+    skipped_unmaterialized_batches: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum HistoricalRollupBackfillAlertLevel {
+    None,
+    Warn,
+    Critical,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct HistoricalRollupBackfillSnapshot {
+    pub(crate) pending_buckets: u64,
+    pub(crate) legacy_archive_pending: u64,
+    pub(crate) last_materialized_hour: Option<String>,
+    pub(crate) alert_level: HistoricalRollupBackfillAlertLevel,
+}
+
 const HOURLY_ROLLUP_DATASET_INVOCATIONS: &str = "codex_invocations";
 const HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS: &str = "forward_proxy_attempts";
-const HOURLY_ROLLUP_REBUILD_REQUIRED_CURSOR: i64 = -1;
 const HOURLY_ROLLUP_TARGET_INVOCATIONS: &str = "invocation_rollup_hourly";
 const HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES: &str = "invocation_failure_rollup_hourly";
 const HOURLY_ROLLUP_TARGET_PROXY_PERF: &str = "proxy_perf_stage_hourly";
@@ -2399,6 +2460,10 @@ const HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS: &str =
     "prompt_cache_upstream_account_hourly";
 const HOURLY_ROLLUP_TARGET_STICKY_KEYS: &str = "upstream_sticky_key_hourly";
 const HOURLY_ROLLUP_TARGET_FORWARD_PROXY_ATTEMPTS: &str = "forward_proxy_attempt_hourly";
+const HISTORICAL_ROLLUP_ARCHIVE_DATASETS: [&str; 2] = [
+    HOURLY_ROLLUP_DATASET_INVOCATIONS,
+    HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS,
+];
 const INVOCATION_HOURLY_ROLLUP_TARGETS: [&str; 6] = [
     HOURLY_ROLLUP_TARGET_INVOCATIONS,
     HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
@@ -2415,6 +2480,7 @@ const PERF_STAGE_UPSTREAM_FIRST_BYTE: &str = "upstreamFirstByte";
 const PERF_STAGE_UPSTREAM_STREAM: &str = "upstreamStream";
 const PERF_STAGE_RESPONSE_PARSE: &str = "responseParse";
 const PERF_STAGE_PERSISTENCE: &str = "persistence";
+const HOURLY_ROLLUP_MATERIALIZED_SOURCE_NONE: &str = "";
 
 #[derive(Debug, Clone, FromRow)]
 struct InvocationHourlySourceRecord {
@@ -2525,6 +2591,7 @@ enum RawCompressionAlertLevel {
     Critical,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Default)]
 struct ArchiveManifestRefreshSummary {
     pending_batches: usize,
@@ -3541,6 +3608,13 @@ async fn prune_old_invocation_details(
             let pruned_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
             let mut tx = pool.begin().await?;
             upsert_archive_batch_manifest(tx.as_mut(), &archive_outcome).await?;
+            mark_archive_batch_historical_rollups_materialized_tx(
+                tx.as_mut(),
+                spec.dataset,
+                &archive_outcome.month_key,
+                &archive_outcome.file_path,
+            )
+            .await?;
             let mut query = QueryBuilder::<Sqlite>::new(
                 "UPDATE codex_invocations SET payload = CASE WHEN json_valid(payload) AND json_extract(payload, '$.upstreamAccountId') IS NOT NULL THEN json_object('upstreamAccountId', json_extract(payload, '$.upstreamAccountId')) ELSE NULL END, raw_response = '', request_raw_path = NULL, request_raw_codec = 'identity', request_raw_size = NULL, request_raw_truncated = 0, request_raw_truncated_reason = NULL, response_raw_path = NULL, response_raw_codec = 'identity', response_raw_size = NULL, response_raw_truncated = 0, response_raw_truncated_reason = NULL, detail_level = ",
             );
@@ -3682,6 +3756,30 @@ async fn archive_old_invocations(
                 .iter()
                 .map(|candidate| candidate.id)
                 .collect::<Vec<_>>();
+            let materialized_rows = group
+                .iter()
+                .map(|candidate| InvocationHourlySourceRecord {
+                    id: candidate.id,
+                    occurred_at: candidate.occurred_at.clone(),
+                    source: candidate.source.clone(),
+                    status: candidate.status.clone(),
+                    total_tokens: None,
+                    cost: None,
+                    error_message: None,
+                    failure_kind: None,
+                    failure_class: None,
+                    is_actionable: None,
+                    payload: None,
+                    t_total_ms: None,
+                    t_req_read_ms: None,
+                    t_req_parse_ms: None,
+                    t_upstream_connect_ms: None,
+                    t_upstream_ttfb_ms: None,
+                    t_upstream_stream_ms: None,
+                    t_resp_parse_ms: None,
+                    t_persist_ms: None,
+                })
+                .collect::<Vec<_>>();
             let mut archive_outcome =
                 archive_rows_into_month_batch(pool, config, spec, &month_key, &ids).await?;
             set_archive_batch_coverage_from_local_rows(
@@ -3700,6 +3798,14 @@ async fn archive_old_invocations(
             mark_retention_archived_hourly_rollup_targets_tx(
                 tx.as_mut(),
                 spec.dataset,
+                &materialized_rows,
+                &[],
+            )
+            .await?;
+            mark_archive_batch_historical_rollups_materialized_tx(
+                tx.as_mut(),
+                spec.dataset,
+                &archive_outcome.month_key,
                 &archive_outcome.file_path,
             )
             .await?;
@@ -3803,6 +3909,20 @@ async fn archive_timestamped_dataset(
                 .iter()
                 .map(|candidate| candidate.id)
                 .collect::<Vec<_>>();
+            let materialized_forward_proxy_rows = if spec.dataset == "forward_proxy_attempts" {
+                group
+                    .iter()
+                    .map(|candidate| ForwardProxyAttemptHourlySourceRecord {
+                        id: candidate.id,
+                        proxy_key: String::new(),
+                        occurred_at: candidate.timestamp_value.clone(),
+                        is_success: 0,
+                        latency_ms: None,
+                    })
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
             let mut archive_outcome =
                 archive_rows_into_month_batch(pool, config, spec, &month_key, &ids).await?;
             if spec.dataset == "pool_upstream_request_attempts" {
@@ -3826,6 +3946,14 @@ async fn archive_timestamped_dataset(
             mark_retention_archived_hourly_rollup_targets_tx(
                 tx.as_mut(),
                 spec.dataset,
+                &[],
+                &materialized_forward_proxy_rows,
+            )
+            .await?;
+            mark_archive_batch_historical_rollups_materialized_tx(
+                tx.as_mut(),
+                spec.dataset,
+                &archive_outcome.month_key,
                 &archive_outcome.file_path,
             )
             .await?;
@@ -4143,6 +4271,307 @@ async fn cleanup_expired_archive_batches(
     }
 
     Ok(deleted)
+}
+
+#[derive(Debug, FromRow)]
+struct HistoricalRollupPendingArchiveBatchRow {
+    month_key: String,
+    coverage_start_at: Option<String>,
+    coverage_end_at: Option<String>,
+}
+
+#[derive(Debug, FromRow)]
+struct LegacyArchivePruneCandidateRow {
+    id: i64,
+    dataset: String,
+    file_path: String,
+    historical_rollups_materialized_at: Option<String>,
+}
+
+fn estimate_historical_rollup_pending_bucket_count(
+    row: &HistoricalRollupPendingArchiveBatchRow,
+) -> u64 {
+    if let (Some(start), Some(end)) = (&row.coverage_start_at, &row.coverage_end_at)
+        && let (Ok(start_local), Ok(end_local)) = (
+            parse_shanghai_local_naive(start),
+            parse_shanghai_local_naive(end),
+        )
+    {
+        let start_utc = local_naive_to_utc(start_local, Shanghai);
+        let end_utc = local_naive_to_utc(end_local, Shanghai);
+        let secs = (end_utc.timestamp() - start_utc.timestamp()).max(0);
+        return ((secs + 3_599) / 3_600).max(1) as u64;
+    }
+
+    let Ok(start_date) = NaiveDate::parse_from_str(&format!("{}-01", row.month_key), "%Y-%m-%d")
+    else {
+        return 0;
+    };
+    let (next_year, next_month) = if start_date.month() == 12 {
+        (start_date.year() + 1, 1)
+    } else {
+        (start_date.year(), start_date.month() + 1)
+    };
+    let Some(next_month_date) = NaiveDate::from_ymd_opt(next_year, next_month, 1) else {
+        return 0;
+    };
+    let Some(start_naive) = start_date.and_hms_opt(0, 0, 0) else {
+        return 0;
+    };
+    let Some(end_naive) = next_month_date.and_hms_opt(0, 0, 0) else {
+        return 0;
+    };
+    let start_utc = local_naive_to_utc(start_naive, Shanghai);
+    let end_utc = local_naive_to_utc(end_naive, Shanghai);
+    ((end_utc.timestamp() - start_utc.timestamp()).max(0) / 3_600) as u64
+}
+
+async fn count_historical_rollup_archive_batches(
+    pool: &Pool<Sqlite>,
+    pending_only: bool,
+) -> Result<i64> {
+    let mut query =
+        QueryBuilder::<Sqlite>::new("SELECT COUNT(*) FROM archive_batches WHERE status = ");
+    query.push_bind(ARCHIVE_STATUS_COMPLETED);
+    query.push(" AND dataset IN (");
+    {
+        let mut separated = query.separated(", ");
+        for dataset in HISTORICAL_ROLLUP_ARCHIVE_DATASETS {
+            separated.push_bind(dataset);
+        }
+    }
+    query.push(")");
+    if pending_only {
+        query.push(" AND historical_rollups_materialized_at IS NULL");
+    }
+    Ok(query.build_query_scalar::<i64>().fetch_one(pool).await?)
+}
+
+fn historical_rollup_materialized_bucket_targets() -> [&'static str; 7] {
+    [
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
+        HOURLY_ROLLUP_TARGET_PROXY_PERF,
+        HOURLY_ROLLUP_TARGET_PROMPT_CACHE,
+        HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS,
+        HOURLY_ROLLUP_TARGET_STICKY_KEYS,
+        HOURLY_ROLLUP_TARGET_FORWARD_PROXY_ATTEMPTS,
+    ]
+}
+
+async fn load_latest_materialized_rollup_bucket_epoch(pool: &Pool<Sqlite>) -> Result<Option<i64>> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT MAX(bucket_start_epoch) FROM hourly_rollup_materialized_buckets WHERE target IN (",
+    );
+    {
+        let mut separated = query.separated(", ");
+        for target in historical_rollup_materialized_bucket_targets() {
+            separated.push_bind(target);
+        }
+    }
+    query.push(")");
+    Ok(query
+        .build_query_scalar::<Option<i64>>()
+        .fetch_one(pool)
+        .await?)
+}
+
+async fn count_materialized_historical_rollup_buckets(pool: &Pool<Sqlite>) -> Result<i64> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT COUNT(*) FROM hourly_rollup_materialized_buckets WHERE target IN (",
+    );
+    {
+        let mut separated = query.separated(", ");
+        for target in historical_rollup_materialized_bucket_targets() {
+            separated.push_bind(target);
+        }
+    }
+    query.push(")");
+    Ok(query.build_query_scalar::<i64>().fetch_one(pool).await?)
+}
+
+pub(crate) async fn load_historical_rollup_backfill_snapshot(
+    pool: &Pool<Sqlite>,
+) -> Result<HistoricalRollupBackfillSnapshot> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT month_key, coverage_start_at, coverage_end_at \
+         FROM archive_batches WHERE status = ",
+    );
+    query.push_bind(ARCHIVE_STATUS_COMPLETED);
+    query.push(" AND historical_rollups_materialized_at IS NULL AND dataset IN (");
+    {
+        let mut separated = query.separated(", ");
+        for dataset in HISTORICAL_ROLLUP_ARCHIVE_DATASETS {
+            separated.push_bind(dataset);
+        }
+    }
+    query.push(") ORDER BY month_key ASC, id ASC");
+    let pending_rows = query
+        .build_query_as::<HistoricalRollupPendingArchiveBatchRow>()
+        .fetch_all(pool)
+        .await?;
+    let pending_buckets = pending_rows
+        .iter()
+        .map(estimate_historical_rollup_pending_bucket_count)
+        .sum::<u64>();
+    let legacy_archive_pending = pending_rows.len() as u64;
+    let last_materialized_hour = load_latest_materialized_rollup_bucket_epoch(pool)
+        .await?
+        .and_then(|epoch| Utc.timestamp_opt(epoch, 0).single())
+        .map(format_utc_iso);
+    let alert_level = if legacy_archive_pending == 0 {
+        HistoricalRollupBackfillAlertLevel::None
+    } else if last_materialized_hour.is_none() {
+        HistoricalRollupBackfillAlertLevel::Critical
+    } else {
+        HistoricalRollupBackfillAlertLevel::Warn
+    };
+
+    Ok(HistoricalRollupBackfillSnapshot {
+        pending_buckets,
+        legacy_archive_pending,
+        last_materialized_hour,
+        alert_level,
+    })
+}
+
+async fn materialize_historical_rollups(
+    pool: &Pool<Sqlite>,
+    dry_run: bool,
+) -> Result<HistoricalRollupMaterializationSummary> {
+    let scanned_archive_batches = count_historical_rollup_archive_batches(pool, false).await?;
+    let pending_snapshot = load_historical_rollup_backfill_snapshot(pool).await?;
+    if dry_run {
+        return Ok(HistoricalRollupMaterializationSummary {
+            scanned_archive_batches: scanned_archive_batches as usize,
+            materialized_archive_batches: pending_snapshot.legacy_archive_pending as usize,
+            materialized_bucket_count: pending_snapshot.pending_buckets as usize,
+            materialized_invocation_batches: 0,
+            materialized_forward_proxy_batches: 0,
+            last_materialized_bucket_start_epoch: load_latest_materialized_rollup_bucket_epoch(
+                pool,
+            )
+            .await?,
+        });
+    }
+
+    let mut tx = pool.begin().await?;
+    reset_invocation_hourly_rollups_tx(tx.as_mut()).await?;
+    reset_forward_proxy_attempt_hourly_rollups_tx(tx.as_mut()).await?;
+    tx.commit().await?;
+
+    let materialized_invocation_batches =
+        replay_invocation_archives_into_hourly_rollups(pool).await?;
+    let materialized_forward_proxy_batches =
+        replay_forward_proxy_archives_into_hourly_rollups(pool).await?;
+    loop {
+        let updated = replay_live_invocation_hourly_rollups(pool).await?;
+        if updated == 0 {
+            break;
+        }
+    }
+    loop {
+        let updated = replay_live_forward_proxy_attempt_hourly_rollups(pool).await?;
+        if updated == 0 {
+            break;
+        }
+    }
+
+    Ok(HistoricalRollupMaterializationSummary {
+        scanned_archive_batches: scanned_archive_batches as usize,
+        materialized_archive_batches: (materialized_invocation_batches
+            + materialized_forward_proxy_batches) as usize,
+        materialized_bucket_count: count_materialized_historical_rollup_buckets(pool).await?
+            as usize,
+        materialized_invocation_batches: materialized_invocation_batches as usize,
+        materialized_forward_proxy_batches: materialized_forward_proxy_batches as usize,
+        last_materialized_bucket_start_epoch: load_latest_materialized_rollup_bucket_epoch(pool)
+            .await?,
+    })
+}
+
+async fn prune_legacy_archive_batches(
+    pool: &Pool<Sqlite>,
+    dry_run: bool,
+) -> Result<LegacyArchivePruneSummary> {
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT id, dataset, file_path, historical_rollups_materialized_at \
+         FROM archive_batches WHERE status = ",
+    );
+    query.push_bind(ARCHIVE_STATUS_COMPLETED);
+    query.push(" AND dataset IN (");
+    {
+        let mut separated = query.separated(", ");
+        for dataset in HISTORICAL_ROLLUP_ARCHIVE_DATASETS {
+            separated.push_bind(dataset);
+        }
+    }
+    query.push(") ORDER BY month_key ASC, id ASC");
+    let candidates = query
+        .build_query_as::<LegacyArchivePruneCandidateRow>()
+        .fetch_all(pool)
+        .await?;
+
+    let pending_account_count = count_upstream_accounts_missing_last_activity(pool).await?;
+    let mut summary = LegacyArchivePruneSummary {
+        scanned_archive_batches: candidates.len(),
+        ..LegacyArchivePruneSummary::default()
+    };
+
+    for candidate in candidates {
+        if candidate.historical_rollups_materialized_at.is_none()
+            || (candidate.dataset == HOURLY_ROLLUP_DATASET_INVOCATIONS && pending_account_count > 0)
+        {
+            summary.skipped_unmaterialized_batches += 1;
+            continue;
+        }
+
+        if dry_run {
+            info!(
+                dataset = candidate.dataset,
+                file_path = candidate.file_path,
+                "maintenance dry-run planned legacy archive prune"
+            );
+            summary.deleted_archive_batches += 1;
+            continue;
+        }
+
+        match fs::remove_file(&candidate.file_path) {
+            Ok(_) => {}
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => {
+                warn!(
+                    dataset = candidate.dataset,
+                    file_path = candidate.file_path,
+                    error = %err,
+                    "failed to remove legacy archive batch file; keeping metadata"
+                );
+                summary.skipped_unmaterialized_batches += 1;
+                continue;
+            }
+        }
+
+        let mut tx = pool.begin().await?;
+        sqlx::query("DELETE FROM archive_batch_upstream_activity WHERE archive_batch_id = ?1")
+            .bind(candidate.id)
+            .execute(tx.as_mut())
+            .await?;
+        sqlx::query(
+            "DELETE FROM hourly_rollup_archive_replay WHERE dataset = ?1 AND file_path = ?2",
+        )
+        .bind(&candidate.dataset)
+        .bind(&candidate.file_path)
+        .execute(tx.as_mut())
+        .await?;
+        sqlx::query("DELETE FROM archive_batches WHERE id = ?1")
+            .bind(candidate.id)
+            .execute(tx.as_mut())
+            .await?;
+        tx.commit().await?;
+        summary.deleted_archive_batches += 1;
+    }
+
+    Ok(summary)
 }
 
 async fn compact_old_quota_snapshots(
@@ -4921,22 +5350,134 @@ async fn write_archive_batch_upstream_activity(
 async fn mark_retention_archived_hourly_rollup_targets_tx(
     tx: &mut SqliteConnection,
     dataset: &str,
+    invocation_rows: &[InvocationHourlySourceRecord],
+    forward_proxy_rows: &[ForwardProxyAttemptHourlySourceRecord],
+) -> Result<()> {
+    match dataset {
+        "codex_invocations" => {
+            mark_invocation_hourly_rollup_buckets_materialized_tx(tx, invocation_rows).await?;
+        }
+        "forward_proxy_attempts" => {
+            mark_forward_proxy_hourly_rollup_buckets_materialized_tx(tx, forward_proxy_rows)
+                .await?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+async fn mark_archive_batch_historical_rollups_materialized_tx(
+    tx: &mut SqliteConnection,
+    dataset: &str,
+    month_key: &str,
     file_path: &str,
 ) -> Result<()> {
-    let targets: &[&str] = match dataset {
-        "codex_invocations" => &[
+    sqlx::query(
+        r#"
+        UPDATE archive_batches
+        SET historical_rollups_materialized_at = datetime('now')
+        WHERE dataset = ?1
+          AND month_key = ?2
+          AND file_path = ?3
+        "#,
+    )
+    .bind(dataset)
+    .bind(month_key)
+    .bind(file_path)
+    .execute(&mut *tx)
+    .await?;
+    Ok(())
+}
+
+async fn mark_hourly_rollup_bucket_materialized_tx(
+    tx: &mut SqliteConnection,
+    target: &str,
+    bucket_start_epoch: i64,
+    source: &str,
+) -> Result<()> {
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_materialized_buckets (
+            target,
+            bucket_start_epoch,
+            source,
+            materialized_at
+        )
+        VALUES (?1, ?2, ?3, datetime('now'))
+        ON CONFLICT(target, bucket_start_epoch, source) DO UPDATE SET
+            materialized_at = datetime('now')
+        "#,
+    )
+    .bind(target)
+    .bind(bucket_start_epoch)
+    .bind(source)
+    .execute(&mut *tx)
+    .await?;
+    Ok(())
+}
+
+async fn mark_invocation_hourly_rollup_buckets_materialized_tx(
+    tx: &mut SqliteConnection,
+    rows: &[InvocationHourlySourceRecord],
+) -> Result<()> {
+    let mut overall_targets = HashSet::new();
+    let mut sticky_targets = HashSet::new();
+    for row in rows {
+        let bucket_start_epoch = invocation_bucket_start_epoch(&row.occurred_at)?;
+        overall_targets.insert((bucket_start_epoch, row.source.clone()));
+        sticky_targets.insert(bucket_start_epoch);
+    }
+
+    for (bucket_start_epoch, source) in overall_targets {
+        for target in [
             HOURLY_ROLLUP_TARGET_INVOCATIONS,
             HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
-            HOURLY_ROLLUP_TARGET_PROXY_PERF,
             HOURLY_ROLLUP_TARGET_PROMPT_CACHE,
             HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS,
+        ] {
+            mark_hourly_rollup_bucket_materialized_tx(tx, target, bucket_start_epoch, &source)
+                .await?;
+        }
+        if source == SOURCE_PROXY {
+            mark_hourly_rollup_bucket_materialized_tx(
+                tx,
+                HOURLY_ROLLUP_TARGET_PROXY_PERF,
+                bucket_start_epoch,
+                SOURCE_PROXY,
+            )
+            .await?;
+        }
+    }
+
+    for bucket_start_epoch in sticky_targets {
+        mark_hourly_rollup_bucket_materialized_tx(
+            tx,
             HOURLY_ROLLUP_TARGET_STICKY_KEYS,
-        ],
-        "forward_proxy_attempts" => &[HOURLY_ROLLUP_TARGET_FORWARD_PROXY_ATTEMPTS],
-        _ => &[],
-    };
-    for target in targets {
-        mark_hourly_rollup_archive_replayed_tx(tx, target, dataset, file_path).await?;
+            bucket_start_epoch,
+            HOURLY_ROLLUP_MATERIALIZED_SOURCE_NONE,
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn mark_forward_proxy_hourly_rollup_buckets_materialized_tx(
+    tx: &mut SqliteConnection,
+    rows: &[ForwardProxyAttemptHourlySourceRecord],
+) -> Result<()> {
+    let mut buckets = HashSet::new();
+    for row in rows {
+        buckets.insert(forward_proxy_attempt_bucket_start_epoch(&row.occurred_at)?);
+    }
+    for bucket_start_epoch in buckets {
+        mark_hourly_rollup_bucket_materialized_tx(
+            tx,
+            HOURLY_ROLLUP_TARGET_FORWARD_PROXY_ATTEMPTS,
+            bucket_start_epoch,
+            HOURLY_ROLLUP_MATERIALIZED_SOURCE_NONE,
+        )
+        .await?;
     }
     Ok(())
 }
@@ -5693,6 +6234,183 @@ async fn upsert_forward_proxy_attempt_hourly_rollups_tx(
     Ok(())
 }
 
+async fn delete_hourly_rollup_rows_for_bucket_epochs_tx(
+    tx: &mut SqliteConnection,
+    table: &str,
+    bucket_epochs: &[i64],
+) -> Result<()> {
+    if bucket_epochs.is_empty() {
+        return Ok(());
+    }
+    let mut query =
+        QueryBuilder::<Sqlite>::new(format!("DELETE FROM {table} WHERE bucket_start_epoch IN ("));
+    {
+        let mut separated = query.separated(", ");
+        for bucket_epoch in bucket_epochs {
+            separated.push_bind(bucket_epoch);
+        }
+    }
+    query.push(")");
+    query.build().execute(&mut *tx).await?;
+    Ok(())
+}
+
+async fn load_materialized_invocation_bucket_epochs_tx(
+    tx: &mut SqliteConnection,
+    bucket_epochs: &[i64],
+) -> Result<HashSet<i64>> {
+    if bucket_epochs.is_empty() {
+        return Ok(HashSet::new());
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT DISTINCT bucket_start_epoch FROM hourly_rollup_materialized_buckets WHERE target IN (",
+    );
+    {
+        let mut separated = query.separated(", ");
+        for target in INVOCATION_HOURLY_ROLLUP_TARGETS {
+            separated.push_bind(target);
+        }
+    }
+    query.push(") AND bucket_start_epoch IN (");
+    {
+        let mut separated = query.separated(", ");
+        for bucket_epoch in bucket_epochs {
+            separated.push_bind(bucket_epoch);
+        }
+    }
+    query.push(")");
+
+    Ok(query
+        .build_query_scalar::<i64>()
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .collect())
+}
+
+async fn load_live_invocation_hourly_rows_for_bucket_epochs_tx(
+    tx: &mut SqliteConnection,
+    bucket_epochs: &[i64],
+) -> Result<Vec<InvocationHourlySourceRecord>> {
+    if bucket_epochs.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let min_bucket_epoch = *bucket_epochs
+        .iter()
+        .min()
+        .ok_or_else(|| anyhow!("missing minimum invocation bucket epoch"))?;
+    let max_bucket_epoch = *bucket_epochs
+        .iter()
+        .max()
+        .ok_or_else(|| anyhow!("missing maximum invocation bucket epoch"))?;
+    let min_bucket_start = Utc
+        .timestamp_opt(min_bucket_epoch, 0)
+        .single()
+        .ok_or_else(|| anyhow!("invalid minimum invocation bucket epoch"))?;
+    let max_bucket_end = Utc
+        .timestamp_opt(max_bucket_epoch + 3_600, 0)
+        .single()
+        .ok_or_else(|| anyhow!("invalid maximum invocation bucket epoch"))?;
+    let bucket_epoch_set = bucket_epochs.iter().copied().collect::<HashSet<_>>();
+
+    let rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(
+        "SELECT \
+            id,
+            occurred_at,
+            source,
+            status,
+            total_tokens,
+            cost,
+            error_message,
+            failure_kind,
+            failure_class,
+            is_actionable,
+            payload,
+            t_total_ms,
+            t_req_read_ms,
+            t_req_parse_ms,
+            t_upstream_connect_ms,
+            t_upstream_ttfb_ms,
+            t_upstream_stream_ms,
+            t_resp_parse_ms,
+            t_persist_ms
+         FROM codex_invocations
+         WHERE occurred_at >= ?1
+           AND occurred_at < ?2
+         ORDER BY id ASC",
+    )
+    .bind(db_occurred_at_lower_bound(min_bucket_start))
+    .bind(db_occurred_at_lower_bound(max_bucket_end))
+    .fetch_all(&mut *tx)
+    .await?;
+    Ok(rows
+        .into_iter()
+        .filter(|row| {
+            invocation_bucket_start_epoch(&row.occurred_at)
+                .map(|bucket_epoch| bucket_epoch_set.contains(&bucket_epoch))
+                .unwrap_or(false)
+        })
+        .collect())
+}
+
+async fn recompute_invocation_hourly_rollups_for_ids_tx(
+    tx: &mut SqliteConnection,
+    ids: &[i64],
+) -> Result<()> {
+    if ids.is_empty() {
+        return Ok(());
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT DISTINCT occurred_at FROM codex_invocations WHERE id IN (",
+    );
+    {
+        let mut separated = query.separated(", ");
+        for id in ids {
+            separated.push_bind(id);
+        }
+    }
+    query.push(")");
+    let occurred_rows = query
+        .build_query_scalar::<String>()
+        .fetch_all(&mut *tx)
+        .await?;
+    if occurred_rows.is_empty() {
+        return Ok(());
+    }
+
+    let mut bucket_epochs = occurred_rows
+        .iter()
+        .map(|occurred_at| invocation_bucket_start_epoch(occurred_at))
+        .collect::<Result<Vec<_>>>()?;
+    bucket_epochs.sort_unstable();
+    bucket_epochs.dedup();
+
+    let materialized_epochs =
+        load_materialized_invocation_bucket_epochs_tx(tx, &bucket_epochs).await?;
+    bucket_epochs.retain(|bucket_epoch| !materialized_epochs.contains(bucket_epoch));
+    if bucket_epochs.is_empty() {
+        return Ok(());
+    }
+
+    for table in [
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
+        HOURLY_ROLLUP_TARGET_PROXY_PERF,
+        HOURLY_ROLLUP_TARGET_PROMPT_CACHE,
+        HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS,
+        HOURLY_ROLLUP_TARGET_STICKY_KEYS,
+    ] {
+        delete_hourly_rollup_rows_for_bucket_epochs_tx(tx, table, &bucket_epochs).await?;
+    }
+
+    let rows = load_live_invocation_hourly_rows_for_bucket_epochs_tx(tx, &bucket_epochs).await?;
+    upsert_invocation_hourly_rollups_tx(tx, &rows, &INVOCATION_HOURLY_ROLLUP_TARGETS).await?;
+    Ok(())
+}
+
 async fn replay_live_invocation_hourly_rollups(pool: &Pool<Sqlite>) -> Result<u64> {
     let cursor_id =
         load_hourly_rollup_live_progress(pool, HOURLY_ROLLUP_DATASET_INVOCATIONS).await?;
@@ -5806,33 +6524,45 @@ async fn reset_invocation_hourly_rollups_tx(tx: &mut SqliteConnection) -> Result
         .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
         .execute(&mut *tx)
         .await?;
+    let mut materialized_query = QueryBuilder::<Sqlite>::new(
+        "DELETE FROM hourly_rollup_materialized_buckets WHERE target IN (",
+    );
+    {
+        let mut separated = materialized_query.separated(", ");
+        for target in INVOCATION_HOURLY_ROLLUP_TARGETS {
+            separated.push_bind(target);
+        }
+    }
+    materialized_query.push(")");
+    materialized_query.build().execute(&mut *tx).await?;
     Ok(())
 }
 
-async fn rebuild_invocation_hourly_rollups_from_sources(pool: &Pool<Sqlite>) -> Result<()> {
-    let mut tx = pool.begin().await?;
-    reset_invocation_hourly_rollups_tx(tx.as_mut()).await?;
-    tx.commit().await?;
-
-    replay_invocation_archives_into_hourly_rollups(pool).await?;
-    loop {
-        let updated = replay_live_invocation_hourly_rollups(pool).await?;
-        if updated == 0 {
-            break;
-        }
-    }
+async fn reset_forward_proxy_attempt_hourly_rollups_tx(tx: &mut SqliteConnection) -> Result<()> {
+    sqlx::query("DELETE FROM forward_proxy_attempt_hourly")
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM hourly_rollup_live_progress WHERE dataset = ?1")
+        .bind(HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM hourly_rollup_archive_replay WHERE dataset = ?1 AND target = ?2")
+        .bind(HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS)
+        .bind(HOURLY_ROLLUP_TARGET_FORWARD_PROXY_ATTEMPTS)
+        .execute(&mut *tx)
+        .await?;
+    sqlx::query("DELETE FROM hourly_rollup_materialized_buckets WHERE target = ?1")
+        .bind(HOURLY_ROLLUP_TARGET_FORWARD_PROXY_ATTEMPTS)
+        .execute(&mut *tx)
+        .await?;
     Ok(())
 }
 
 async fn sync_hourly_rollups_from_live_tables(pool: &Pool<Sqlite>) -> Result<()> {
-    if invocation_hourly_rollup_rebuild_required(pool).await? {
-        rebuild_invocation_hourly_rollups_from_sources(pool).await?;
-    } else {
-        loop {
-            let updated = replay_live_invocation_hourly_rollups(pool).await?;
-            if updated == 0 {
-                break;
-            }
+    loop {
+        let updated = replay_live_invocation_hourly_rollups(pool).await?;
+        if updated == 0 {
+            break;
         }
     }
     loop {
@@ -5847,7 +6577,7 @@ async fn sync_hourly_rollups_from_live_tables(pool: &Pool<Sqlite>) -> Result<()>
 async fn replay_invocation_archives_into_hourly_rollups(pool: &Pool<Sqlite>) -> Result<u64> {
     let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
         r#"
-        SELECT id AS _id, file_path
+        SELECT id AS _id, month_key, file_path
         FROM archive_batches
         WHERE dataset = 'codex_invocations' AND status = ?1
         ORDER BY month_key ASC, created_at ASC, id ASC
@@ -5938,6 +6668,14 @@ async fn replay_invocation_archives_into_hourly_rollups(pool: &Pool<Sqlite>) -> 
 
         let mut tx = pool.begin().await?;
         upsert_invocation_hourly_rollups_tx(tx.as_mut(), &rows, &pending_targets).await?;
+        mark_invocation_hourly_rollup_buckets_materialized_tx(tx.as_mut(), &rows).await?;
+        mark_archive_batch_historical_rollups_materialized_tx(
+            tx.as_mut(),
+            HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            &archive_file.month_key,
+            &archive_file.file_path,
+        )
+        .await?;
         for target in pending_targets {
             mark_hourly_rollup_archive_replayed_tx(
                 tx.as_mut(),
@@ -5957,7 +6695,7 @@ async fn replay_invocation_archives_into_hourly_rollups(pool: &Pool<Sqlite>) -> 
 async fn replay_forward_proxy_archives_into_hourly_rollups(pool: &Pool<Sqlite>) -> Result<u64> {
     let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
         r#"
-        SELECT id AS _id, file_path
+        SELECT id AS _id, month_key, file_path
         FROM archive_batches
         WHERE dataset = 'forward_proxy_attempts' AND status = ?1
         ORDER BY month_key ASC, created_at ASC, id ASC
@@ -6021,6 +6759,14 @@ async fn replay_forward_proxy_archives_into_hourly_rollups(pool: &Pool<Sqlite>) 
 
         let mut tx = pool.begin().await?;
         upsert_forward_proxy_attempt_hourly_rollups_tx(tx.as_mut(), &rows).await?;
+        mark_forward_proxy_hourly_rollup_buckets_materialized_tx(tx.as_mut(), &rows).await?;
+        mark_archive_batch_historical_rollups_materialized_tx(
+            tx.as_mut(),
+            HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS,
+            &archive_file.month_key,
+            &archive_file.file_path,
+        )
+        .await?;
         mark_hourly_rollup_archive_replayed_tx(
             tx.as_mut(),
             HOURLY_ROLLUP_TARGET_FORWARD_PROXY_ATTEMPTS,
@@ -6037,8 +6783,6 @@ async fn replay_forward_proxy_archives_into_hourly_rollups(pool: &Pool<Sqlite>) 
 
 async fn bootstrap_hourly_rollups(pool: &Pool<Sqlite>) -> Result<()> {
     sync_hourly_rollups_from_live_tables(pool).await?;
-    replay_invocation_archives_into_hourly_rollups(pool).await?;
-    replay_forward_proxy_archives_into_hourly_rollups(pool).await?;
     Ok(())
 }
 
@@ -7849,6 +8593,7 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
         ("coverage_end_at", "TEXT"),
         ("archive_expires_at", "TEXT"),
         ("upstream_activity_manifest_refreshed_at", "TEXT"),
+        ("historical_rollups_materialized_at", "TEXT"),
     ] {
         if !archive_batch_columns.contains(column) {
             let statement = format!("ALTER TABLE archive_batches ADD COLUMN {column} {ty}");
@@ -7878,6 +8623,16 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_archive_batches_invocation_manifest_pending")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_archive_batches_rollup_materialization
+        ON archive_batches (dataset, status, historical_rollups_materialized_at, month_key, id)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_archive_batches_rollup_materialization")?;
 
     sqlx::query(
         r#"
@@ -7912,6 +8667,31 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_archive_batch_upstream_activity_batch")?;
+
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS hourly_rollup_materialized_buckets (
+            target TEXT NOT NULL,
+            bucket_start_epoch INTEGER NOT NULL,
+            source TEXT NOT NULL DEFAULT '',
+            materialized_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (target, bucket_start_epoch, source)
+        )
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure hourly_rollup_materialized_buckets table existence")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_hourly_rollup_materialized_buckets_target_bucket
+        ON hourly_rollup_materialized_buckets (target, bucket_start_epoch)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_hourly_rollup_materialized_buckets_target_bucket")?;
 
     sqlx::query(
         r#"
@@ -16512,39 +17292,6 @@ async fn save_hourly_rollup_live_progress_tx(
     Ok(())
 }
 
-async fn mark_invocation_hourly_rollups_rebuild_required_tx(
-    tx: &mut SqliteConnection,
-) -> Result<()> {
-    sqlx::query(
-        r#"
-        INSERT INTO hourly_rollup_live_progress (dataset, cursor_id, updated_at)
-        VALUES (?1, ?2, datetime('now'))
-        ON CONFLICT(dataset) DO UPDATE SET
-            cursor_id = excluded.cursor_id,
-            updated_at = datetime('now')
-        "#,
-    )
-    .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
-    .bind(HOURLY_ROLLUP_REBUILD_REQUIRED_CURSOR)
-    .execute(&mut *tx)
-    .await?;
-    Ok(())
-}
-
-async fn mark_invocation_hourly_rollups_rebuild_required(pool: &Pool<Sqlite>) -> Result<()> {
-    let mut tx = pool.begin().await?;
-    mark_invocation_hourly_rollups_rebuild_required_tx(tx.as_mut()).await?;
-    tx.commit().await?;
-    Ok(())
-}
-
-async fn invocation_hourly_rollup_rebuild_required(pool: &Pool<Sqlite>) -> Result<bool> {
-    Ok(
-        load_hourly_rollup_live_progress(pool, HOURLY_ROLLUP_DATASET_INVOCATIONS).await?
-            == HOURLY_ROLLUP_REBUILD_REQUIRED_CURSOR,
-    )
-}
-
 async fn mark_hourly_rollup_archive_replayed_tx(
     tx: &mut SqliteConnection,
     target: &str,
@@ -18505,6 +19252,7 @@ async fn backfill_proxy_usage_tokens_from_cursor(
         if !updates.is_empty() {
             let mut tx = pool.begin().await?;
             let mut updated_this_batch = 0_u64;
+            let mut updated_ids = Vec::new();
             for update in updates {
                 let affected = sqlx::query(
                     r#"
@@ -18530,9 +19278,12 @@ async fn backfill_proxy_usage_tokens_from_cursor(
                 .await?
                 .rows_affected();
                 updated_this_batch += affected;
+                if affected > 0 {
+                    updated_ids.push(update.id);
+                }
             }
-            if updated_this_batch > 0 {
-                mark_invocation_hourly_rollups_rebuild_required_tx(tx.as_mut()).await?;
+            if !updated_ids.is_empty() {
+                recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &updated_ids).await?;
             }
             tx.commit().await?;
             summary.updated += updated_this_batch;
@@ -18743,6 +19494,7 @@ async fn backfill_proxy_missing_costs_from_cursor(
         if !updates.is_empty() {
             let mut tx = pool.begin().await?;
             let mut updated_this_batch = 0_u64;
+            let mut updated_ids = Vec::new();
             for update in updates {
                 let affected = sqlx::query(
                     r#"
@@ -18764,17 +19516,16 @@ async fn backfill_proxy_missing_costs_from_cursor(
                 .await?
                 .rows_affected();
                 updated_this_batch += affected;
+                if affected > 0 {
+                    updated_ids.push(update.id);
+                }
             }
-            if updated_this_batch > 0 {
-                mark_invocation_hourly_rollups_rebuild_required_tx(tx.as_mut()).await?;
+            if !updated_ids.is_empty() {
+                recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &updated_ids).await?;
             }
             tx.commit().await?;
             summary.updated += updated_this_batch;
         }
-    }
-
-    if summary.updated > 0 {
-        mark_invocation_hourly_rollups_rebuild_required(pool).await?;
     }
 
     Ok(BackfillBatchOutcome {
@@ -18907,6 +19658,7 @@ async fn backfill_proxy_prompt_cache_keys_from_cursor(
             break;
         }
 
+        let mut updates = Vec::new();
         for candidate in candidates {
             last_seen_id = candidate.id;
             summary.scanned += 1;
@@ -18948,41 +19700,51 @@ async fn backfill_proxy_prompt_cache_keys_from_cursor(
                 summary.skipped_missing_key += 1;
                 continue;
             };
-
-            let affected = sqlx::query(
-                r#"
-                UPDATE codex_invocations
-                SET payload = json_remove(
-                    json_set(
-                        CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,
-                        '$.promptCacheKey',
-                        ?1
-                    ),
-                    '$.codexSessionId'
-                )
-                WHERE id = ?2
-                  AND source = ?3
-                  AND request_raw_path IS NOT NULL
-                  AND (
-                    payload IS NULL
-                    OR NOT json_valid(payload)
-                    OR json_extract(payload, '$.promptCacheKey') IS NULL
-                    OR TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) = ''
-                  )
-                "#,
-            )
-            .bind(prompt_cache_key)
-            .bind(candidate.id)
-            .bind(SOURCE_PROXY)
-            .execute(pool)
-            .await?
-            .rows_affected();
-            summary.updated += affected;
+            updates.push((candidate.id, prompt_cache_key));
         }
-    }
 
-    if summary.updated > 0 {
-        mark_invocation_hourly_rollups_rebuild_required(pool).await?;
+        if !updates.is_empty() {
+            let mut tx = pool.begin().await?;
+            let mut updated_ids = Vec::new();
+            for (id, prompt_cache_key) in updates {
+                let affected = sqlx::query(
+                    r#"
+                    UPDATE codex_invocations
+                    SET payload = json_remove(
+                        json_set(
+                            CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,
+                            '$.promptCacheKey',
+                            ?1
+                        ),
+                        '$.codexSessionId'
+                    )
+                    WHERE id = ?2
+                      AND source = ?3
+                      AND request_raw_path IS NOT NULL
+                      AND (
+                        payload IS NULL
+                        OR NOT json_valid(payload)
+                        OR json_extract(payload, '$.promptCacheKey') IS NULL
+                        OR TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) = ''
+                      )
+                    "#,
+                )
+                .bind(prompt_cache_key)
+                .bind(id)
+                .bind(SOURCE_PROXY)
+                .execute(&mut *tx)
+                .await?
+                .rows_affected();
+                summary.updated += affected;
+                if affected > 0 {
+                    updated_ids.push(id);
+                }
+            }
+            if !updated_ids.is_empty() {
+                recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &updated_ids).await?;
+            }
+            tx.commit().await?;
+        }
     }
 
     Ok(BackfillBatchOutcome {
@@ -19709,7 +20471,7 @@ async fn backfill_failure_classification_from_cursor(
         summary.scanned += rows.len() as u64;
 
         let mut tx = pool.begin().await?;
-        let mut updated_this_batch = 0_u64;
+        let mut updated_ids = Vec::new();
         for row in rows {
             let existing_kind = row
                 .failure_kind
@@ -19773,7 +20535,9 @@ async fn backfill_failure_classification_from_cursor(
                 .await?
                 .rows_affected();
                 summary.updated += affected;
-                updated_this_batch += affected;
+                if affected > 0 {
+                    updated_ids.push(row.id);
+                }
                 continue;
             }
 
@@ -19811,10 +20575,12 @@ async fn backfill_failure_classification_from_cursor(
             .await?
             .rows_affected();
             summary.updated += affected;
-            updated_this_batch += affected;
+            if affected > 0 {
+                updated_ids.push(row.id);
+            }
         }
-        if updated_this_batch > 0 {
-            mark_invocation_hourly_rollups_rebuild_required_tx(tx.as_mut()).await?;
+        if !updated_ids.is_empty() {
+            recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &updated_ids).await?;
         }
         tx.commit().await?;
     }
