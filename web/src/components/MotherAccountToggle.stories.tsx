@@ -8,7 +8,10 @@ const noop = () => undefined
 function StorySurface({ children }: { children: ReactNode }) {
   return (
     <div className="min-h-screen bg-base-200 px-6 py-8 text-base-content">
-      <div className="mx-auto flex max-w-6xl flex-col gap-6 rounded-[1.75rem] border border-base-300/70 bg-base-100/50 p-6 shadow-sm">
+      <div
+        data-testid="mother-story-surface"
+        className="mx-auto flex max-w-6xl flex-col gap-6 rounded-[1.75rem] border border-base-300/70 bg-base-100/50 p-6 shadow-sm"
+      >
         {children}
       </div>
     </div>
@@ -27,10 +30,12 @@ function ThemePanel({
   return (
     <section
       data-theme={theme}
-      className="rounded-[1.5rem] border border-base-300/70 bg-base-200/82 p-5 text-base-content shadow-[0_18px_40px_rgba(15,23,42,0.14)]"
+      className="overflow-hidden rounded-[1.5rem] border border-base-300/70 bg-base-200 text-base-content shadow-[0_18px_40px_rgba(15,23,42,0.14)]"
     >
-      <div className="mb-4 text-xs font-semibold uppercase tracking-[0.16em] text-base-content/55">{title}</div>
-      {children}
+      <div className="border-b border-base-300/60 px-5 py-4 text-xs font-semibold uppercase tracking-[0.16em] text-base-content/55">
+        {title}
+      </div>
+      <div className="p-5">{children}</div>
     </section>
   )
 }
@@ -47,12 +52,12 @@ function OverviewGallery() {
             <div className="space-y-5">
               <div className="flex flex-wrap items-center gap-3">
                 <MotherAccountBadge label="母号" />
-                <div className="inline-flex rounded-full border border-base-300/75 bg-base-100/72 px-3 py-1.5 text-xs text-base-content/68">
+                <div className="inline-flex rounded-full border border-base-300/75 bg-base-100 px-3 py-1.5 text-xs text-base-content/68">
                   与普通状态标签并排时也能单独识别
                 </div>
               </div>
               <div className="grid gap-4">
-                <div className="rounded-[1.25rem] border border-base-300/70 bg-base-100/78 p-4">
+                <div className="rounded-[1.25rem] border border-base-300/70 bg-base-100 p-4">
                   <div className="mb-3 text-xs font-semibold uppercase tracking-[0.14em] text-base-content/52">
                     Checked Toggle
                   </div>
@@ -63,7 +68,7 @@ function OverviewGallery() {
                     onToggle={() => undefined}
                   />
                 </div>
-                <div className="rounded-[1.25rem] border border-base-300/70 bg-base-100/78 p-4">
+                <div className="rounded-[1.25rem] border border-base-300/70 bg-base-100 p-4">
                   <div className="mb-3 text-xs font-semibold uppercase tracking-[0.14em] text-base-content/52">
                     Batch Row Icon
                   </div>

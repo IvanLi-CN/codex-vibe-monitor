@@ -258,34 +258,12 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Account Pool / Components / Mother Account Toggle / Overview
   state: light-dark-gallery
   evidence_note: 验证母号 badge 与“设为母号”切换卡在 light/dark 两套主题下都保持 amber 语义，但文本、皇冠图标和 icon-only 状态具备足够对比度。
   image:
   ![Mother account toggle overview](./assets/mother-account-toggle-overview.png)
-
-- source_type: storybook_canvas
-  target_program: mock-only
-  capture_scope: element
-  sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
-  story_id_or_title: Account Pool / Pages / Upstream Accounts / Overlays / Detail Drawer
-  state: mother-contrast-dark
-  evidence_note: 验证 dark 主题下账号详情抽屉里的母号 badge 与“设为母号”切换卡不再出现深色文字压在深色 amber 底上的低对比问题。
-  image:
-  ![Upstream account detail drawer mother contrast dark](./assets/upstream-account-detail-drawer-mother-contrast-dark.png)
-
-- source_type: storybook_canvas
-  target_program: mock-only
-  capture_scope: element
-  sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
-  story_id_or_title: Account Pool / Components / Upstream Accounts Table / Mother Badge Contrast Dark
-  state: list-row-mother-badge-dark
-  evidence_note: 验证 dark 主题的账号列表行里，母号 badge 在与启用、工作状态、账号类型等紧邻标签并排时，仍保持清晰可辨且与同排 badge 的节奏一致。
-  image:
-  ![Upstream accounts table mother badge dark](./assets/upstream-accounts-table-mother-badge-dark.png)
 
 - source_type: storybook_canvas
   target_program: mock-only
