@@ -7969,6 +7969,7 @@ fn build_summary_from_row(
     let snapshot_exhausted = persisted_usage_sample_is_exhausted(sample);
     let work_status = derive_upstream_account_work_status(
         row.enabled != 0,
+        &row.status,
         health_status,
         sync_state,
         snapshot_exhausted,
@@ -10002,6 +10003,7 @@ fn derive_upstream_account_health_status(
         return UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL;
     }
     if upstream_account_rate_limit_state_is_current(
+        status.as_str(),
         last_error_at,
         last_route_failure_at,
         last_route_failure_kind,
@@ -10061,6 +10063,7 @@ fn is_transient_route_failure_error(
 
 fn derive_upstream_account_work_status(
     enabled: bool,
+    raw_status: &str,
     health_status: &str,
     sync_state: &str,
     snapshot_exhausted: bool,
@@ -10077,6 +10080,7 @@ fn derive_upstream_account_work_status(
     }
     if snapshot_exhausted
         || upstream_account_quota_exhausted_state_is_current(
+            raw_status,
             last_error_at,
             last_route_failure_at,
             last_route_failure_kind,
@@ -10090,6 +10094,7 @@ fn derive_upstream_account_work_status(
         .is_some_and(|until| {
             until > now
                 && upstream_account_rate_limit_state_is_current(
+                    raw_status,
                     last_error_at,
                     last_route_failure_at,
                     last_route_failure_kind,
@@ -10448,15 +10453,10 @@ fn account_reason_is_quota_exhausted(reason_code: Option<&str>) -> bool {
     )
 }
 
-fn account_reason_overrides_current_route_failure(reason_code: Option<&str>) -> bool {
+fn status_preserves_current_route_failure(raw_status: &str) -> bool {
     matches!(
-        reason_code,
-        Some(
-            UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR
-                | UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE
-                | UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED
-                | UPSTREAM_ACCOUNT_ACTION_REASON_RECOVERY_UNCONFIRMED_MANUAL_REQUIRED
-        )
+        raw_status.trim().to_ascii_lowercase().as_str(),
+        UPSTREAM_ACCOUNT_STATUS_ACTIVE | UPSTREAM_ACCOUNT_STATUS_SYNCING
     )
 }
 
@@ -10511,13 +10511,14 @@ fn current_route_failure_is_quota_exhausted(
 }
 
 fn upstream_account_rate_limit_state_is_current(
+    raw_status: &str,
     last_error_at: Option<&str>,
     last_route_failure_at: Option<&str>,
     last_route_failure_kind: Option<&str>,
     last_action_reason_code: Option<&str>,
 ) -> bool {
     account_reason_is_rate_limited(last_action_reason_code)
-        || (!account_reason_overrides_current_route_failure(last_action_reason_code)
+        || (status_preserves_current_route_failure(raw_status)
             && current_route_failure_is_rate_limited(
                 last_error_at,
                 last_route_failure_at,
@@ -10526,13 +10527,14 @@ fn upstream_account_rate_limit_state_is_current(
 }
 
 fn upstream_account_quota_exhausted_state_is_current(
+    raw_status: &str,
     last_error_at: Option<&str>,
     last_route_failure_at: Option<&str>,
     last_route_failure_kind: Option<&str>,
     last_action_reason_code: Option<&str>,
 ) -> bool {
     account_reason_is_quota_exhausted(last_action_reason_code)
-        || (!account_reason_overrides_current_route_failure(last_action_reason_code)
+        || (status_preserves_current_route_failure(raw_status)
             && current_route_failure_is_quota_exhausted(
                 last_error_at,
                 last_route_failure_at,
@@ -10802,10 +10804,6 @@ async fn record_account_sync_failure(
             last_synced_at = ?3,
             last_error = ?4,
             last_error_at = ?3,
-            last_route_failure_at = NULL,
-            last_route_failure_kind = NULL,
-            cooldown_until = NULL,
-            consecutive_route_failures = 0,
             updated_at = ?3
         WHERE id = ?1
         "#,
@@ -16378,8 +16376,10 @@ mod tests {
             summary.last_action_reason_code.as_deref(),
             Some(UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR)
         );
-        assert!(row.last_route_failure_kind.is_none());
-        assert!(row.cooldown_until.is_none());
+        assert_eq!(
+            row.last_route_failure_kind.as_deref(),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+        );
 
         let detail = load_upstream_account_detail(&pool, account_id)
             .await
@@ -17339,13 +17339,6 @@ mod tests {
             "user_retry_reauth",
         )
         .await;
-        seed_route_cooldown(
-            &state.pool,
-            account_id,
-            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
-            300,
-        )
-        .await;
         let row = load_upstream_account_row(&state.pool, account_id)
             .await
             .expect("load oauth row")
@@ -17378,9 +17371,6 @@ mod tests {
             )
         );
         assert!(after.last_action_at.is_some());
-        assert!(after.last_route_failure_kind.is_none());
-        assert!(after.cooldown_until.is_none());
-        assert_eq!(after.consecutive_route_failures, 0);
 
         let decrypted = decrypt_credentials(
             crypto_key,
@@ -17528,9 +17518,12 @@ mod tests {
             Some("usage endpoint returned 502 Bad Gateway: gateway temporarily unavailable")
         );
         assert!(after.last_action_at.is_some());
-        assert!(after.last_route_failure_kind.is_none());
-        assert!(after.cooldown_until.is_none());
-        assert_eq!(after.consecutive_route_failures, 0);
+        assert_eq!(
+            after.last_route_failure_kind.as_deref(),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
+        );
+        assert!(after.cooldown_until.is_some());
+        assert_eq!(after.consecutive_route_failures, 1);
 
         let summary = build_summary_from_row(
             &after,
@@ -17542,15 +17535,12 @@ mod tests {
             Utc::now(),
         );
         assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
+        assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
         assert_eq!(
-            summary.display_status,
-            UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE
+            summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
         );
-        assert_eq!(
-            summary.health_status,
-            UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE
-        );
-        assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_IDLE);
         assert_eq!(summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
 
         let detail = load_upstream_account_detail(&state.pool, account_id)
@@ -17559,7 +17549,11 @@ mod tests {
             .expect("detail export exists");
         assert_eq!(
             detail.summary.display_status,
-            UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE
+            UPSTREAM_ACCOUNT_STATUS_ACTIVE
+        );
+        assert_eq!(
+            detail.summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
         );
         assert_eq!(detail.summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
         assert_eq!(
