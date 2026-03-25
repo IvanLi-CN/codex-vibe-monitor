@@ -494,6 +494,10 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.allGuardsApply":
       "All active guards must pass",
     "accountPool.upstreamAccounts.detailTitle": "Account details",
+    "accountPool.upstreamAccounts.detailTabs.overview": "Overview",
+    "accountPool.upstreamAccounts.detailTabs.edit": "Edit",
+    "accountPool.upstreamAccounts.detailTabs.routing": "Routing",
+    "accountPool.upstreamAccounts.detailTabs.healthEvents": "Health & events",
     "accountPool.upstreamAccounts.identityUnavailable":
       "Identity is not available yet.",
     "accountPool.upstreamAccounts.noHistory": "No quota history yet.",
@@ -1459,6 +1463,8 @@ const baseTranslations = {
     "table.accountDrawer.healthTitle": "Health",
     "table.accountDrawer.healthDescription":
       "Recent sync, token, and error status for this upstream account.",
+    "table.accountDrawer.tabs.overview": "Overview",
+    "table.accountDrawer.tabs.health": "Health",
     "stats.cards.loadError": "Failed to load stats: {{error}}",
     "stats.cards.totalCalls": "Total calls",
     "stats.cards.success": "Success",
@@ -1924,6 +1930,10 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.allGuardsApply":
       "所有已开启的上限规则都会同时生效",
     "accountPool.upstreamAccounts.detailTitle": "账号详情",
+    "accountPool.upstreamAccounts.detailTabs.overview": "概览",
+    "accountPool.upstreamAccounts.detailTabs.edit": "编辑",
+    "accountPool.upstreamAccounts.detailTabs.routing": "路由",
+    "accountPool.upstreamAccounts.detailTabs.healthEvents": "健康与事件",
     "accountPool.upstreamAccounts.identityUnavailable":
       "暂时还没有可展示的身份信息。",
     "accountPool.upstreamAccounts.noHistory": "还没有额度历史。",
@@ -2841,6 +2851,8 @@ const baseTranslations = {
     "table.accountDrawer.healthTitle": "健康信息",
     "table.accountDrawer.healthDescription":
       "展示该上游账号最近同步、令牌与错误状态。",
+    "table.accountDrawer.tabs.overview": "概览",
+    "table.accountDrawer.tabs.health": "健康",
     "stats.cards.loadError": "加载统计失败：{{error}}",
     "stats.cards.totalCalls": "调用总数",
     "stats.cards.success": "成功",

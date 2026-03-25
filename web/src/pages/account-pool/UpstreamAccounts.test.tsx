@@ -218,6 +218,41 @@ function clickButton(matcher: RegExp) {
   return button;
 }
 
+function clickTab(matcher: RegExp) {
+  const tab = Array.from(document.body.querySelectorAll('[role="tab"]')).find(
+    (candidate) =>
+      candidate instanceof HTMLButtonElement &&
+      matcher.test(candidate.textContent || candidate.getAttribute('aria-label') || ''),
+  )
+  if (!(tab instanceof HTMLButtonElement)) {
+    throw new Error(`missing tab: ${matcher}`)
+  }
+  pressButton(tab)
+  return tab
+}
+
+function clickDrawerBackdrop() {
+  const overlay = document.body.querySelector('.drawer-shell')?.parentElement?.previousElementSibling
+  if (!(overlay instanceof HTMLElement)) {
+    throw new Error('missing drawer backdrop')
+  }
+  act(() => {
+    overlay.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+  return overlay
+}
+
+function clickDrawerGutter() {
+  const gutter = document.body.querySelector('.drawer-shell')?.parentElement
+  if (!(gutter instanceof HTMLElement)) {
+    throw new Error('missing drawer gutter')
+  }
+  act(() => {
+    gutter.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  })
+  return gutter
+}
+
 function clickFirstRosterRow() {
   const row = document.body.querySelector('tbody tr[role="button"]')
   if (!(row instanceof HTMLTableRowElement)) {
@@ -580,6 +615,8 @@ describe("UpstreamAccountsPage duplicates", () => {
 
     clickFirstRosterRow();
     await flushAsync();
+    clickTab(/Health & events/i);
+    await flushAsync();
 
     expect(document.body.textContent).toContain("Latest account action");
     expect(document.body.textContent).toContain("Hard unavailable");
@@ -632,6 +669,8 @@ describe("UpstreamAccountsPage duplicates", () => {
     render("/account-pool/upstream-accounts");
 
     clickFirstRosterRow();
+    await flushAsync();
+    clickTab(/Health & events/i);
     await flushAsync();
 
     expect(document.body.textContent).toContain("Recovery still blocked");
@@ -688,6 +727,8 @@ describe("UpstreamAccountsPage duplicates", () => {
 
     clickFirstRosterRow();
     await flushAsync();
+    clickTab(/Health & events/i);
+    await flushAsync();
 
     expect(document.body.textContent).toContain("Sync marked unavailable");
     expect(document.body.textContent).toContain("Maintenance sync");
@@ -704,6 +745,8 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect(document.body.textContent).toContain("Compact unsupported");
 
     clickFirstRosterRow();
+    await flushAsync();
+    clickTab(/Health & events/i);
     await flushAsync();
 
     expect(document.body.textContent).toContain("Compact support");
@@ -1309,12 +1352,13 @@ describe("UpstreamAccountsPage duplicates", () => {
     render("/account-pool/upstream-accounts");
 
     clickFirstRosterRow();
+    clickTab(/Edit/i);
     setInputValue('input[name="detailDisplayName"]', " another oauth ");
 
     expect(document.body.textContent).toContain("Display name must be unique.");
-    const saveButton = Array.from(
-      document.body.querySelectorAll("button"),
-    ).find((candidate) => /Save changes/i.test(candidate.textContent || ""));
+    const saveButton = Array.from(document.body.querySelectorAll("button")).find((candidate) =>
+      /Save changes/i.test(candidate.textContent || ""),
+    );
     expect(saveButton).toBeInstanceOf(HTMLButtonElement);
     expect((saveButton as HTMLButtonElement).disabled).toBe(true);
   });
@@ -1849,9 +1893,7 @@ describe("UpstreamAccountsPage sync state isolation", () => {
     clickButton(/Sync now/i);
     await flushAsync();
 
-    const closeButton = document.body.querySelector(
-      '.drawer-header button[type="button"]',
-    );
+    const closeButton = findButton(/Close details/i);
 
     expect(closeButton).toBeInstanceOf(HTMLButtonElement);
     expect((closeButton as HTMLButtonElement).disabled).toBe(false);
@@ -1863,6 +1905,50 @@ describe("UpstreamAccountsPage sync state isolation", () => {
 
     syncDeferred.resolve();
     await flushAsync();
+  });
+
+  it("closes the detail drawer when clicking the backdrop or gutter", async () => {
+    mockAccountsPage();
+    render();
+
+    clickFirstRosterRow();
+    await flushAsync();
+    clickDrawerBackdrop();
+    await flushAsync();
+
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+
+    clickFirstRosterRow();
+    await flushAsync();
+    clickDrawerGutter();
+    await flushAsync();
+
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("resets the active detail tab after closing and reopening the drawer", async () => {
+    mockAccountsPage();
+    render();
+
+    clickFirstRosterRow();
+    await flushAsync();
+    clickTab(/Health & events/i);
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Latest account action");
+    clickDrawerBackdrop();
+    await flushAsync();
+
+    clickFirstRosterRow();
+    await flushAsync();
+
+    const overviewTab = Array.from(document.body.querySelectorAll('[role="tab"]')).find((candidate) =>
+      /Overview/i.test(candidate.textContent || ''),
+    );
+    expect(overviewTab?.getAttribute('aria-selected')).toBe('true');
+    expect(document.body.textContent).toContain("Last successful sync");
+    expect(document.body.textContent).toContain("5h window");
+    expect(document.body.textContent).not.toContain("Latest account action");
   });
 
   it("keeps refresh enabled while an account action is pending", () => {
@@ -2122,6 +2208,7 @@ describe("UpstreamAccountsPage sync state isolation", () => {
 
     render();
     clickFirstRosterRow();
+    clickTab(/Edit/i);
     clickButton(/Save changes/i);
 
     const syncButton = document.body.querySelector(
@@ -2470,6 +2557,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
     render("/account-pool/upstream-accounts");
 
     clickFirstRosterRow();
+    clickTab(/Health & events/i);
     expect(document.body.textContent).toContain(
       "This OAuth account still shows a legacy bridge error",
     );
@@ -2550,6 +2638,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
     render("/account-pool/upstream-accounts");
 
     clickFirstRosterRow();
+    clickTab(/Health & events/i);
     expect(document.body.textContent).toContain(
       "This OAuth account needs a fresh sign-in",
     );
@@ -2624,6 +2713,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
     render("/account-pool/upstream-accounts");
 
     clickFirstRosterRow();
+    clickTab(/Health & events/i);
     expect(document.body.textContent).toContain(
       "The OAuth data plane rejected this request",
     );
@@ -2717,6 +2807,7 @@ describe("UpstreamAccountsPage api key details", () => {
     render();
 
     clickFirstRosterRow();
+    clickTab(/Edit/i);
     clickButton(/Save changes/i);
     await flushAsync();
     expect(saveAccount).toHaveBeenCalledWith(8, expect.any(Object));
@@ -2730,6 +2821,7 @@ describe("UpstreamAccountsPage api key details", () => {
     rerender();
     await flushAsync();
 
+    clickTab(/Edit/i);
     setInputValue('input[name="detailRotateApiKey"]', "sk-new-backup");
     saveRequest.resolve(detailFor(8, "Gateway Key", "https://proxy.example.com/gateway"));
     await flushAsync();
@@ -2831,6 +2923,7 @@ describe("UpstreamAccountsPage api key details", () => {
     render();
 
     clickFirstRosterRow();
+    clickTab(/Edit/i);
     setInputValue(
       'input[name="detailUpstreamBaseUrl"]',
       "https://proxy.example.com/gateway/v2",
@@ -2938,6 +3031,7 @@ describe("UpstreamAccountsPage api key details", () => {
     render();
 
     clickFirstRosterRow();
+    clickTab(/Edit/i);
     setInputValue('input[name="detailUpstreamBaseUrl"]', "");
     clickButton(/Save changes/i);
     await flushAsync();
@@ -3025,6 +3119,7 @@ describe("UpstreamAccountsPage api key details", () => {
     render();
 
     clickFirstRosterRow();
+    clickTab(/Edit/i);
     setInputValue(
       'input[name="detailUpstreamBaseUrl"]',
       "https://proxy.example.com/gateway?team=prod",
@@ -3653,6 +3748,9 @@ describe("UpstreamAccountsPage delete confirmation", () => {
     await flushAsync();
     await flushTimers();
 
+    clickTab(/Edit/i);
+    await flushAsync();
+    await flushTimers();
     clickButton(/^add tag$/i);
     await flushAsync();
     await flushTimers();
