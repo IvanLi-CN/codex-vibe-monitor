@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react'
-import { createPortal } from 'react-dom'
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
 import { AppIcon, type AppIconName } from '../../components/AppIcon'
+import { AccountDetailDrawerShell } from '../../components/AccountDetailDrawerShell'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
 import { Alert } from '../../components/ui/alert'
 import { Badge } from '../../components/ui/badge'
@@ -19,9 +19,9 @@ import { FloatingFieldError } from '../../components/ui/floating-field-error'
 import { FormFieldFeedback } from '../../components/ui/form-field-feedback'
 import { Input } from '../../components/ui/input'
 import { Popover, PopoverArrow, PopoverContent, PopoverTrigger } from '../../components/ui/popover'
-import { OverlayHostProvider } from '../../components/ui/overlay-host'
 import { formFieldSpanVariants } from '../../components/ui/form-control'
 import { SelectField } from '../../components/ui/select-field'
+import { SegmentedControl, SegmentedControlItem } from '../../components/ui/segmented-control'
 import { MotherAccountBadge, MotherAccountToggle } from '../../components/MotherAccountToggle'
 import { Spinner } from '../../components/ui/spinner'
 import { Switch } from '../../components/ui/switch'
@@ -138,6 +138,8 @@ type BusyActionState = {
   routing: boolean
   accountActions: Set<string>
 }
+
+type AccountDetailTab = 'overview' | 'edit' | 'routing' | 'healthEvents'
 
 function createBusyActionKey(type: AccountBusyActionType, accountId: number) {
   return `${type}:${accountId}`
@@ -453,114 +455,6 @@ function DetailField({ label, value }: { label: string; value: string }) {
       <p className="metric-label">{label}</p>
       <p className="mt-2 break-all text-sm text-base-content/80">{value || '—'}</p>
     </div>
-  )
-}
-
-function AccountDetailDrawer({
-  open,
-  title,
-  subtitle,
-  closeLabel,
-  closeDisabled = false,
-  autoFocusCloseButton = true,
-  onPortalContainerChange,
-  onClose,
-  children,
-}: {
-  open: boolean
-  title: string
-  subtitle?: string
-  closeLabel: string
-  closeDisabled?: boolean
-  autoFocusCloseButton?: boolean
-  onPortalContainerChange?: (node: HTMLElement | null) => void
-  onClose: () => void
-  children: ReactNode
-}) {
-  const closeButtonRef = useRef<HTMLButtonElement | null>(null)
-  const [sectionElement, setSectionElement] = useState<HTMLElement | null>(null)
-
-  const handleSectionRef = useCallback(
-    (node: HTMLElement | null) => {
-      setSectionElement(node)
-      onPortalContainerChange?.(node)
-    },
-    [onPortalContainerChange],
-  )
-
-  useEffect(() => {
-    if (!open || typeof document === 'undefined') return undefined
-
-    const previousOverflow = document.body.style.overflow
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        if (closeDisabled) return
-        onClose()
-      }
-    }
-
-    document.body.style.overflow = 'hidden'
-    document.addEventListener('keydown', handleKeyDown)
-    const focusTimer = autoFocusCloseButton
-      ? window.setTimeout(() => closeButtonRef.current?.focus(), 0)
-      : null
-
-    return () => {
-      if (focusTimer != null) {
-        window.clearTimeout(focusTimer)
-      }
-      document.body.style.overflow = previousOverflow
-      document.removeEventListener('keydown', handleKeyDown)
-    }
-  }, [autoFocusCloseButton, closeDisabled, onClose, open])
-
-  if (!open || typeof document === 'undefined') return null
-
-  return createPortal(
-    <div className="fixed inset-0 z-[70]">
-      <div
-        aria-hidden="true"
-        className="absolute inset-0 bg-neutral/50 backdrop-blur-sm"
-        onClick={closeDisabled ? undefined : onClose}
-      />
-      <div className="absolute inset-y-0 right-0 flex w-full justify-end pl-4 sm:pl-8">
-        <section
-          ref={handleSectionRef}
-          role="dialog"
-          aria-modal="true"
-          aria-labelledby="upstream-account-detail-title"
-          className="drawer-shell flex h-full w-full max-w-[60rem] flex-col"
-        >
-          <OverlayHostProvider value={sectionElement ?? undefined}>
-            <div className="drawer-header px-5 py-4 sm:px-6">
-              <div className="flex items-start justify-between gap-4">
-                <div className="min-w-0 space-y-1">
-                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary/75">
-                    {subtitle}
-                  </p>
-                  <h2 id="upstream-account-detail-title" className="truncate text-xl font-semibold text-base-content">
-                    {title}
-                  </h2>
-                </div>
-                <Button
-                  ref={closeButtonRef}
-                  type="button"
-                  variant="ghost"
-                  size="icon"
-                  onClick={onClose}
-                  disabled={closeDisabled}
-                >
-                  <AppIcon name="close" className="h-5 w-5" aria-hidden />
-                  <span className="sr-only">{closeLabel}</span>
-                </Button>
-              </div>
-            </div>
-            <div className="drawer-body min-h-0 flex-1 overflow-y-auto px-5 py-5 sm:px-6 sm:py-6">{children}</div>
-          </OverlayHostProvider>
-        </section>
-      </div>
-    </div>,
-    document.body,
   )
 }
 
@@ -947,8 +841,11 @@ export default function UpstreamAccountsPage() {
   const bulkSyncEventSourceRef = useRef<EventSource | null>(null)
   const deleteConfirmCancelRef = useRef<HTMLButtonElement | null>(null)
   const [detailDrawerPortalContainer, setDetailDrawerPortalContainer] = useState<HTMLElement | null>(null)
+  const [detailTab, setDetailTab] = useState<AccountDetailTab>('overview')
   const skipNextDeleteConfirmResetRef = useRef(false)
   const deleteConfirmTitleId = useId()
+  const detailDrawerTitleId = 'upstream-account-detail-title'
+  const detailDrawerTabsBaseId = useId()
   const selectedIdRef = useRef<number | null>(selectedId)
   const selectedAccountIdSet = useMemo(() => new Set(selectedAccountIds), [selectedAccountIds])
   const routingWritesEnabled = routing
@@ -1037,6 +934,16 @@ export default function UpstreamAccountsPage() {
       setIsDetailDrawerOpen(false)
     }
   }, [detail, selectedSummary])
+
+  useEffect(() => {
+    if (!isDetailDrawerOpen) {
+      setDetailTab('overview')
+    }
+  }, [isDetailDrawerOpen])
+
+  useEffect(() => {
+    setDetailTab('overview')
+  }, [selectedId])
 
   useEffect(() => {
     if (skipNextDeleteConfirmResetRef.current) {
@@ -1260,6 +1167,24 @@ export default function UpstreamAccountsPage() {
   const selectedDetail = detail?.id === selectedId ? detail : null
   const selected = selectedDetail ?? selectedSummary
   const selectedPlanBadge = upstreamPlanBadgeRecipe(selected?.planType)
+  const detailTabIds = {
+    overview: {
+      tab: `${detailDrawerTabsBaseId}-overview-tab`,
+      panel: `${detailDrawerTabsBaseId}-overview-panel`,
+    },
+    edit: {
+      tab: `${detailDrawerTabsBaseId}-edit-tab`,
+      panel: `${detailDrawerTabsBaseId}-edit-panel`,
+    },
+    routing: {
+      tab: `${detailDrawerTabsBaseId}-routing-tab`,
+      panel: `${detailDrawerTabsBaseId}-routing-panel`,
+    },
+    healthEvents: {
+      tab: `${detailDrawerTabsBaseId}-health-events-tab`,
+      panel: `${detailDrawerTabsBaseId}-health-events-panel`,
+    },
+  } as const
   const visibleAccountActionError =
     typeof selectedId === 'number' ? actionError.accountMessages[selectedId] ?? null : null
   const visibleRoutingError = actionError.routing
@@ -2537,31 +2462,18 @@ export default function UpstreamAccountsPage() {
         onSave={() => void handleSaveRouting()}
       />
 
-      <AccountDetailDrawer
-        open={Boolean(selected && isDetailDrawerOpen)}
-        title={selected?.displayName ?? t('accountPool.upstreamAccounts.detailTitle')}
-        subtitle={t('accountPool.upstreamAccounts.detailTitle')}
-        closeLabel={t('accountPool.upstreamAccounts.actions.closeDetails')}
-        closeDisabled={isBusyAction(busyAction, 'delete', selected?.id)}
-        autoFocusCloseButton={!isDeleteConfirmOpen}
-        onPortalContainerChange={setDetailDrawerPortalContainer}
-        onClose={handleCloseDetailDrawer}
-      >
-        {!selected ? (
-          <div className="flex min-h-[20rem] flex-col items-center justify-center rounded-[1.6rem] border border-dashed border-base-300/80 bg-base-100/45 px-6 text-center">
-            <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 text-primary">
-              <AppIcon name="account-details-outline" className="h-7 w-7" aria-hidden />
-            </div>
-            <h3 className="text-lg font-semibold">{t('accountPool.upstreamAccounts.detailEmptyTitle')}</h3>
-            <p className="mt-2 max-w-sm text-sm leading-6 text-base-content/65">
-              {t('accountPool.upstreamAccounts.detailEmptyDescription')}
-            </p>
-          </div>
-        ) : isDetailLoading && !selectedDetail ? (
-          <AccountDetailSkeleton />
-        ) : (
-          <>
-            <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+      {selected ? (
+        <AccountDetailDrawerShell
+          open={isDetailDrawerOpen}
+          labelledBy={detailDrawerTitleId}
+          closeLabel={t('accountPool.upstreamAccounts.actions.closeDetails')}
+          closeDisabled={isBusyAction(busyAction, 'delete', selected.id)}
+          autoFocusCloseButton={!isDeleteConfirmOpen}
+          onPortalContainerChange={setDetailDrawerPortalContainer}
+          onClose={handleCloseDetailDrawer}
+          shellClassName="max-w-[60rem]"
+          header={
+            <div className="space-y-4">
               <div className="space-y-3">
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge variant={enableStatusVariant(accountEnableStatus(selected))}>
@@ -2592,13 +2504,22 @@ export default function UpstreamAccountsPage() {
                     </Badge>
                   ) : null}
                   {selected.kind === 'api_key_codex' ? (
-                    <Badge variant="secondary">{t('accountPool.upstreamAccounts.apiKey.localPlaceholder')}</Badge>
+                    <Badge variant="secondary">
+                      {t('accountPool.upstreamAccounts.apiKey.localPlaceholder')}
+                    </Badge>
                   ) : null}
                 </div>
                 <div className="section-heading">
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary/75">
+                    {t('accountPool.upstreamAccounts.detailTitle')}
+                  </p>
                   <div className="flex flex-wrap items-center gap-2">
-                    <h3 className="section-title">{selected.displayName}</h3>
-                    {selected.isMother ? <MotherAccountBadge label={t('accountPool.upstreamAccounts.mother.badge')} /> : null}
+                    <h2 id={detailDrawerTitleId} className="section-title">
+                      {selected.displayName}
+                    </h2>
+                    {selected.isMother ? (
+                      <MotherAccountBadge label={t('accountPool.upstreamAccounts.mother.badge')} />
+                    ) : null}
                   </div>
                   <p className="section-description">
                     {selected.email ?? selected.maskedApiKey ?? t('accountPool.upstreamAccounts.identityUnavailable')}
@@ -2641,7 +2562,11 @@ export default function UpstreamAccountsPage() {
                     onClick={() => void handleOauthLogin(selected.id)}
                     disabled={hasBusyAccountAction(busyAction, selected.id) || !writesEnabled}
                   >
-                    {isBusyAction(busyAction, 'relogin', selected.id) ? <Spinner size="sm" className="mr-2" /> : <AppIcon name="login-variant" className="mr-2 h-4 w-4" aria-hidden />}
+                    {isBusyAction(busyAction, 'relogin', selected.id) ? (
+                      <Spinner size="sm" className="mr-2" />
+                    ) : (
+                      <AppIcon name="login-variant" className="mr-2 h-4 w-4" aria-hidden />
+                    )}
                     {t('accountPool.upstreamAccounts.actions.relogin')}
                   </Button>
                 ) : null}
@@ -2661,7 +2586,11 @@ export default function UpstreamAccountsPage() {
                       aria-expanded={isDeleteConfirmOpen}
                       aria-controls={isDeleteConfirmOpen ? deleteConfirmTitleId : undefined}
                     >
-                      {isBusyAction(busyAction, 'delete', selected.id) ? <Spinner size="sm" className="mr-2" /> : <AppIcon name="trash-can-outline" className="mr-2 h-4 w-4" aria-hidden />}
+                      {isBusyAction(busyAction, 'delete', selected.id) ? (
+                        <Spinner size="sm" className="mr-2" />
+                      ) : (
+                        <AppIcon name="trash-can-outline" className="mr-2 h-4 w-4" aria-hidden />
+                      )}
                       {t('accountPool.upstreamAccounts.actions.delete')}
                     </Button>
                   </PopoverTrigger>
@@ -2721,7 +2650,11 @@ export default function UpstreamAccountsPage() {
                 </Popover>
               </div>
             </div>
-
+          }
+        >
+          {isDetailLoading && !selectedDetail ? (
+            <AccountDetailSkeleton />
+          ) : (
             <div className="grid gap-5">
               {visibleAccountActionError ? (
                 <Alert variant="error">
@@ -2731,418 +2664,505 @@ export default function UpstreamAccountsPage() {
               ) : null}
               {selectedDetail ? (
                 <>
-                {selectedDetail.duplicateInfo ? (
-                  <Alert variant="warning">
-                    <AppIcon name="alert-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-                    <div>
-                      <p className="font-medium">
-                        {t('accountPool.upstreamAccounts.duplicate.badge')}
-                      </p>
-                      <p className="mt-1 text-sm text-warning/90">
-                        {t('accountPool.upstreamAccounts.duplicate.warningBody', {
-                          reasons: formatDuplicateReasons(selectedDetail.duplicateInfo),
-                          peers: selectedDetail.duplicateInfo.peerAccountIds.join(', '),
-                        })}
-                      </p>
-                    </div>
-                  </Alert>
-                ) : null}
-                <div className="metric-grid">
-                  <DetailField label={t('accountPool.upstreamAccounts.fields.groupName')} value={selectedDetail.groupName ?? ''} />
-                  <DetailField
-                    label={t('accountPool.upstreamAccounts.mother.fieldLabel')}
-                    value={selectedDetail.isMother ? t('accountPool.upstreamAccounts.mother.badge') : t('accountPool.upstreamAccounts.mother.notMother')}
-                  />
-                  <DetailField label={t('accountPool.upstreamAccounts.fields.email')} value={selectedDetail.email ?? ''} />
-                  <DetailField label={t('accountPool.upstreamAccounts.fields.accountId')} value={selectedDetail.chatgptAccountId ?? selectedDetail.maskedApiKey ?? ''} />
-                  <DetailField label={t('accountPool.upstreamAccounts.fields.userId')} value={selectedDetail.chatgptUserId ?? ''} />
-                  <DetailField label={t('accountPool.upstreamAccounts.fields.lastSuccessSync')} value={formatDateTime(selectedDetail.lastSuccessfulSyncAt)} />
-                </div>
+                  <SegmentedControl
+                    className="self-start"
+                    role="tablist"
+                    aria-label={t('accountPool.upstreamAccounts.detailTitle')}
+                  >
+                    <SegmentedControlItem
+                      id={detailTabIds.overview.tab}
+                      active={detailTab === 'overview'}
+                      role="tab"
+                      aria-selected={detailTab === 'overview'}
+                      aria-controls={detailTabIds.overview.panel}
+                      aria-pressed={detailTab === 'overview'}
+                      onClick={() => setDetailTab('overview')}
+                    >
+                      {t('accountPool.upstreamAccounts.detailTabs.overview')}
+                    </SegmentedControlItem>
+                    <SegmentedControlItem
+                      id={detailTabIds.edit.tab}
+                      active={detailTab === 'edit'}
+                      role="tab"
+                      aria-selected={detailTab === 'edit'}
+                      aria-controls={detailTabIds.edit.panel}
+                      aria-pressed={detailTab === 'edit'}
+                      onClick={() => setDetailTab('edit')}
+                    >
+                      {t('accountPool.upstreamAccounts.detailTabs.edit')}
+                    </SegmentedControlItem>
+                    <SegmentedControlItem
+                      id={detailTabIds.routing.tab}
+                      active={detailTab === 'routing'}
+                      role="tab"
+                      aria-selected={detailTab === 'routing'}
+                      aria-controls={detailTabIds.routing.panel}
+                      aria-pressed={detailTab === 'routing'}
+                      onClick={() => setDetailTab('routing')}
+                    >
+                      {t('accountPool.upstreamAccounts.detailTabs.routing')}
+                    </SegmentedControlItem>
+                    <SegmentedControlItem
+                      id={detailTabIds.healthEvents.tab}
+                      active={detailTab === 'healthEvents'}
+                      role="tab"
+                      aria-selected={detailTab === 'healthEvents'}
+                      aria-controls={detailTabIds.healthEvents.panel}
+                      aria-pressed={detailTab === 'healthEvents'}
+                      onClick={() => setDetailTab('healthEvents')}
+                    >
+                      {t('accountPool.upstreamAccounts.detailTabs.healthEvents')}
+                    </SegmentedControlItem>
+                  </SegmentedControl>
 
-                <Card className="border-base-300/80 bg-base-100/72">
-                  <CardHeader>
-                    <CardTitle>{t('accountPool.upstreamAccounts.editTitle')}</CardTitle>
-                    <CardDescription>{t('accountPool.upstreamAccounts.editDescription')}</CardDescription>
-                  </CardHeader>
-                  <CardContent className="grid gap-4 md:grid-cols-2">
-                  <label className="field md:col-span-2">
-                    <span className="field-label">{t('accountPool.upstreamAccounts.fields.displayName')}</span>
-                    <div className="relative">
-                      <Input
-                        name="detailDisplayName"
-                        value={draft.displayName}
-                        aria-invalid={detailDisplayNameConflict != null}
-                        onChange={(event) =>
-                          setDraft((current) => ({
-                            ...current,
-                            displayName: event.target.value,
-                          }))
-                        }
-                      />
-                      {detailDisplayNameConflict ? (
-                        <FloatingFieldError
-                          message={t(
-                            'accountPool.upstreamAccounts.validation.displayNameDuplicate',
-                          )}
-                        />
-                      ) : null}
-                    </div>
-                  </label>
-                  <label className="field md:col-span-2">
-                    <span className="field-label">{t('accountPool.upstreamAccounts.fields.groupName')}</span>
-                    <div className="flex items-center gap-2">
-                      <UpstreamAccountGroupCombobox
-                        name="detailGroupName"
-                        value={draft.groupName}
-                        suggestions={availableGroups.names}
-                        placeholder={t('accountPool.upstreamAccounts.fields.groupNamePlaceholder')}
-                        searchPlaceholder={t('accountPool.upstreamAccounts.fields.groupNameSearchPlaceholder')}
-                        emptyLabel={t('accountPool.upstreamAccounts.fields.groupNameEmpty')}
-                        createLabel={(value) => t('accountPool.upstreamAccounts.fields.groupNameUseValue', { value })}
-                        onValueChange={(value) => setDraft((current) => ({ ...current, groupName: value }))}
-                        className="min-w-0 flex-1"
-                      />
-                      <Button
-                        type="button"
-                        size="icon"
-                        variant={hasGroupNote(draft.groupName) ? 'secondary' : 'outline'}
-                        className="shrink-0 rounded-full"
-                        aria-label={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
-                        title={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
-                        onClick={() => openGroupNoteEditor(draft.groupName)}
-                        disabled={!writesEnabled || !normalizeGroupName(draft.groupName)}
-                      >
-                        <AppIcon name="file-document-edit-outline" className="h-4 w-4" aria-hidden />
-                      </Button>
-                    </div>
-                  </label>
-                  <div className="md:col-span-2">
-                    <MotherAccountToggle
-                      checked={draft.isMother}
-                      disabled={!writesEnabled}
-                      label={t('accountPool.upstreamAccounts.mother.toggleLabel')}
-                      description={t('accountPool.upstreamAccounts.mother.toggleDescription')}
-                      onToggle={() => setDraft((current) => ({ ...current, isMother: !current.isMother }))}
-                    />
-                  </div>
-                  <label className="field md:col-span-2">
-                    <span className="field-label">{t('accountPool.upstreamAccounts.fields.note')}</span>
-                      <textarea
-                        className="min-h-24 rounded-xl border border-base-300 bg-base-100 px-3 py-2 text-sm text-base-content shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100"
-                        name="detailNote"
-                        value={draft.note}
-                        onChange={(event) => setDraft((current) => ({ ...current, note: event.target.value }))}
-                      />
-                    </label>
-                    <div className="md:col-span-2">
-                      <AccountTagField
-                        tags={tagItems}
-                        selectedTagIds={draft.tagIds}
-                        writesEnabled={writesEnabled}
-                        pageCreatedTagIds={pageCreatedTagIds}
-                        labels={tagFieldLabels}
-                        onChange={(tagIds) => setDraft((current) => ({ ...current, tagIds }))}
-                        onCreateTag={handleCreateTag}
-                        onUpdateTag={updateTag}
-                        onDeleteTag={handleDeleteTag}
-                      />
-                    </div>
-                    {selectedDetail.kind === 'api_key_codex' ? (
-                      <>
-                        <label className="field">
-                          <span className="field-label">{t('accountPool.upstreamAccounts.fields.primaryLimit')}</span>
-                          <Input
-                            name="detailPrimaryLimit"
-                            value={draft.localPrimaryLimit}
-                            onChange={(event) => setDraft((current) => ({ ...current, localPrimaryLimit: event.target.value }))}
-                          />
-                        </label>
-                        <label className="field">
-                          <span className="field-label">{t('accountPool.upstreamAccounts.fields.secondaryLimit')}</span>
-                          <Input
-                            name="detailSecondaryLimit"
-                            value={draft.localSecondaryLimit}
-                            onChange={(event) => setDraft((current) => ({ ...current, localSecondaryLimit: event.target.value }))}
-                          />
-                        </label>
-                        <label className="field">
-                          <span className="field-label">{t('accountPool.upstreamAccounts.fields.limitUnit')}</span>
-                          <Input
-                            name="detailLimitUnit"
-                            value={draft.localLimitUnit}
-                            onChange={(event) => setDraft((current) => ({ ...current, localLimitUnit: event.target.value }))}
-                          />
-                        </label>
-                        <label className="field">
-                          <FormFieldFeedback
-                            label={t('accountPool.upstreamAccounts.fields.upstreamBaseUrl')}
-                            message={draftUpstreamBaseUrlError}
-                            messageClassName="md:max-w-[min(20rem,calc(100%-8rem))]"
-                          />
-                          <div className="relative">
-                            <Input
-                              name="detailUpstreamBaseUrl"
-                              value={draft.upstreamBaseUrl}
-                              onChange={(event) => setDraft((current) => ({ ...current, upstreamBaseUrl: event.target.value }))}
-                              placeholder={t('accountPool.upstreamAccounts.fields.upstreamBaseUrlPlaceholder')}
-                              aria-invalid={draftUpstreamBaseUrlError ? 'true' : 'false'}
-                              className={cn(draftUpstreamBaseUrlError ? 'border-error/70 focus-visible:ring-error' : '')}
-                            />
-                          </div>
-                        </label>
-                        <label className="field">
-                          <span className="field-label">{t('accountPool.upstreamAccounts.fields.rotateApiKey')}</span>
-                          <Input
-                            name="detailRotateApiKey"
-                            value={draft.apiKey}
-                            onChange={(event) => setDraft((current) => ({ ...current, apiKey: event.target.value }))}
-                            placeholder={t('accountPool.upstreamAccounts.fields.rotateApiKeyPlaceholder')}
-                          />
-                        </label>
-                      </>
-                    ) : null}
-                    <div className="md:col-span-2 flex justify-end">
-                      <Button
-                        type="button"
-                        onClick={() => void handleSave(selectedDetail)}
-                        disabled={
-                          hasBusyAccountAction(busyAction, selectedDetail.id) ||
-                          !writesEnabled ||
-                          detailDisplayNameConflict != null ||
-                          (selectedDetail.kind === 'api_key_codex' && Boolean(draftUpstreamBaseUrlError))
-                        }
-                      >
-                        {isBusyAction(busyAction, 'save', selectedDetail.id) ? <Spinner size="sm" className="mr-2" /> : <AppIcon name="content-save-outline" className="mr-2 h-4 w-4" aria-hidden />}
-                        {t('accountPool.upstreamAccounts.actions.save')}
-                      </Button>
-                    </div>
-                  </CardContent>
-                </Card>
-
-                <div className="grid gap-4 xl:grid-cols-2">
-                  <UpstreamAccountUsageCard
-                    title={t('accountPool.upstreamAccounts.primaryWindowLabel')}
-                    description={t('accountPool.upstreamAccounts.usage.primaryDescription')}
-                    window={selectedDetail.primaryWindow}
-                    history={selectedDetail.history}
-                    historyKey="primaryUsedPercent"
-                    emptyLabel={t('accountPool.upstreamAccounts.noHistory')}
-                    noteLabel={selectedDetail.kind === 'api_key_codex' ? t('accountPool.upstreamAccounts.apiKey.localPlaceholder') : undefined}
-                  />
-                  <UpstreamAccountUsageCard
-                    title={t('accountPool.upstreamAccounts.secondaryWindowLabel')}
-                    description={t('accountPool.upstreamAccounts.usage.secondaryDescription')}
-                    window={selectedDetail.secondaryWindow}
-                    history={selectedDetail.history}
-                    historyKey="secondaryUsedPercent"
-                    emptyLabel={t('accountPool.upstreamAccounts.noHistory')}
-                    noteLabel={selectedDetail.kind === 'api_key_codex' ? t('accountPool.upstreamAccounts.apiKey.localPlaceholder') : undefined}
-                    accentClassName="text-secondary"
-                  />
-                </div>
-
-                <EffectiveRoutingRuleCard
-                  rule={selectedDetail.effectiveRoutingRule}
-                  labels={{
-                    title: t('accountPool.upstreamAccounts.effectiveRule.title'),
-                    description: t('accountPool.upstreamAccounts.effectiveRule.description'),
-                    noTags: t('accountPool.upstreamAccounts.effectiveRule.noTags'),
-                    guardEnabled: t('accountPool.upstreamAccounts.effectiveRule.guardEnabled'),
-                    guardDisabled: t('accountPool.upstreamAccounts.effectiveRule.guardDisabled'),
-                    allowCutOut: t('accountPool.upstreamAccounts.effectiveRule.allowCutOut'),
-                    denyCutOut: t('accountPool.upstreamAccounts.effectiveRule.denyCutOut'),
-                    allowCutIn: t('accountPool.upstreamAccounts.effectiveRule.allowCutIn'),
-                    denyCutIn: t('accountPool.upstreamAccounts.effectiveRule.denyCutIn'),
-                    sourceTags: t('accountPool.upstreamAccounts.effectiveRule.sourceTags'),
-                    guardRule: (hours, count) => t('accountPool.upstreamAccounts.effectiveRule.guardRule', { hours, count }),
-                    allGuardsApply: t('accountPool.upstreamAccounts.effectiveRule.allGuardsApply'),
-                  }}
-                />
-
-                <Card className="border-base-300/80 bg-base-100/72">
-                  <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-                    <div>
-                      <CardTitle>{t('accountPool.upstreamAccounts.stickyConversations.title')}</CardTitle>
-                      <CardDescription>{t('accountPool.upstreamAccounts.stickyConversations.description')}</CardDescription>
-                    </div>
-                    <SelectField
-                      label={t('accountPool.upstreamAccounts.stickyConversations.limitLabel')}
-                      className="w-36"
-                      name="stickyConversationLimit"
-                      size="sm"
-                      value={String(stickyConversationLimit)}
-                      options={STICKY_CONVERSATION_LIMIT_OPTIONS.map((value) => ({
-                        value: String(value),
-                        label: t('accountPool.upstreamAccounts.stickyConversations.limitOption', { count: value }),
-                      }))}
-                      onValueChange={(value) => setStickyConversationLimit(Number(value))}
-                    />
-                  </CardHeader>
-                  <CardContent>
-                    <StickyKeyConversationTable
-                      stats={stickyConversationStats}
-                      isLoading={stickyConversationLoading}
-                      error={stickyConversationError}
-                    />
-                  </CardContent>
-                </Card>
-
-                <Card className="border-base-300/80 bg-base-100/72">
-                  <CardHeader>
-                    <CardTitle>{t('accountPool.upstreamAccounts.healthTitle')}</CardTitle>
-                    <CardDescription>{t('accountPool.upstreamAccounts.healthDescription')}</CardDescription>
-                  </CardHeader>
-                  <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                    <DetailField label={t('accountPool.upstreamAccounts.fields.lastSyncedAt')} value={formatDateTime(selectedDetail.lastSyncedAt)} />
-                    <DetailField label={t('accountPool.upstreamAccounts.fields.lastRefreshedAt')} value={formatDateTime(selectedDetail.lastRefreshedAt)} />
-                    <DetailField label={t('accountPool.upstreamAccounts.fields.tokenExpiresAt')} value={formatDateTime(selectedDetail.tokenExpiresAt)} />
-                    <DetailField
-                      label={t('accountPool.upstreamAccounts.fields.compactSupport')}
-                      value={
-                        selectedDetail.compactSupport?.status === 'supported'
-                          ? t('accountPool.upstreamAccounts.compactSupport.status.supported')
-                          : selectedDetail.compactSupport?.status === 'unsupported'
-                            ? t('accountPool.upstreamAccounts.compactSupport.status.unsupported')
-                            : t('accountPool.upstreamAccounts.compactSupport.status.unknown')
-                      }
-                    />
-                    <DetailField
-                      label={t('accountPool.upstreamAccounts.fields.credits')}
-                      value={selectedDetail.credits?.balance ? `${selectedDetail.credits.balance}` : selectedDetail.credits?.unlimited ? t('accountPool.upstreamAccounts.unlimited') : t('accountPool.upstreamAccounts.unavailable')}
-                    />
-                    <DetailField
-                      label={t('accountPool.upstreamAccounts.fields.compactObservedAt')}
-                      value={formatDateTime(selectedDetail.compactSupport?.observedAt)}
-                    />
-                    <DetailField
-                      label={t('accountPool.upstreamAccounts.fields.compactReason')}
-                      value={selectedDetail.compactSupport?.reason ?? t('accountPool.upstreamAccounts.unavailable')}
-                    />
-                    <div className="md:col-span-2 xl:col-span-4 rounded-[1.2rem] border border-base-300/80 bg-base-100/75 p-4">
-                      {selectedRecoveryHint ? (
-                        <Alert variant="warning" className="mb-4">
+                  {detailTab === 'overview' ? (
+                    <div
+                      id={detailTabIds.overview.panel}
+                      role="tabpanel"
+                      aria-labelledby={detailTabIds.overview.tab}
+                      className="grid gap-5"
+                    >
+                      {selectedDetail.duplicateInfo ? (
+                        <Alert variant="warning">
                           <AppIcon name="alert-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
                           <div>
-                            <p className="font-semibold text-warning">
-                              {t(selectedRecoveryHint.titleKey)}
+                            <p className="font-medium">
+                              {t('accountPool.upstreamAccounts.duplicate.badge')}
                             </p>
                             <p className="mt-1 text-sm text-warning/90">
-                              {t(selectedRecoveryHint.bodyKey)}
+                              {t('accountPool.upstreamAccounts.duplicate.warningBody', {
+                                reasons: formatDuplicateReasons(selectedDetail.duplicateInfo),
+                                peers: selectedDetail.duplicateInfo.peerAccountIds.join(', '),
+                              })}
                             </p>
                           </div>
                         </Alert>
                       ) : null}
-                      <p className="metric-label">{t('accountPool.upstreamAccounts.latestAction.title')}</p>
-                      {selectedDetail.lastAction ? (
-                        <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                          <DetailField
-                            label={t('accountPool.upstreamAccounts.latestAction.fields.action')}
-                            value={accountActionLabel(selectedDetail.lastAction) ?? t('accountPool.upstreamAccounts.latestAction.empty')}
-                          />
-                          <DetailField
-                            label={t('accountPool.upstreamAccounts.latestAction.fields.source')}
-                            value={
-                              accountActionSourceLabel(selectedDetail.lastActionSource)
-                              ?? t('accountPool.upstreamAccounts.latestAction.unknown')
-                            }
-                          />
-                          <DetailField
-                            label={t('accountPool.upstreamAccounts.latestAction.fields.reason')}
-                            value={
-                              accountActionReasonLabel(selectedDetail.lastActionReasonCode)
-                              ?? t('accountPool.upstreamAccounts.latestAction.unknown')
-                            }
-                          />
-                          <DetailField
-                            label={t('accountPool.upstreamAccounts.latestAction.fields.httpStatus')}
-                            value={
-                              Number.isFinite(selectedDetail.lastActionHttpStatus ?? NaN)
-                                ? `HTTP ${selectedDetail.lastActionHttpStatus}`
-                                : t('accountPool.upstreamAccounts.unavailable')
-                            }
-                          />
-                          <DetailField
-                            label={t('accountPool.upstreamAccounts.latestAction.fields.occurredAt')}
-                            value={formatDateTime(selectedDetail.lastActionAt)}
-                          />
-                          <DetailField
-                            label={t('accountPool.upstreamAccounts.latestAction.fields.invokeId')}
-                            value={selectedDetail.lastActionInvokeId ?? t('accountPool.upstreamAccounts.unavailable')}
-                          />
-                          <div className="metric-cell md:col-span-2 xl:col-span-3">
-                            <p className="metric-label">{t('accountPool.upstreamAccounts.latestAction.fields.message')}</p>
-                            <p className="mt-2 break-words text-sm leading-6 text-base-content/80">
-                              {selectedDetail.lastActionReasonMessage ?? selectedDetail.lastError ?? t('accountPool.upstreamAccounts.noError')}
-                            </p>
-                          </div>
-                        </div>
-                      ) : (
-                        <p className="mt-2 text-sm leading-6 text-base-content/75">
-                          {t('accountPool.upstreamAccounts.latestAction.empty')}
-                        </p>
-                      )}
-                    </div>
-                  </CardContent>
-                </Card>
-
-                <Card className="border-base-300/80 bg-base-100/72">
-                  <CardHeader>
-                    <CardTitle>{t('accountPool.upstreamAccounts.recentActions.title')}</CardTitle>
-                    <CardDescription>{t('accountPool.upstreamAccounts.recentActions.description')}</CardDescription>
-                  </CardHeader>
-                  <CardContent>
-                    {selectedRecentActions.length === 0 ? (
-                      <p className="text-sm leading-6 text-base-content/68">
-                        {t('accountPool.upstreamAccounts.recentActions.empty')}
-                      </p>
-                    ) : (
-                      <div className="space-y-2">
-                        {selectedRecentActions.map((actionEvent) => (
-                          <div
-                            key={actionEvent.id}
-                            className="rounded-[1rem] border border-base-300/70 bg-base-100/70 p-3"
-                          >
-                            <div className="flex flex-wrap items-center gap-2">
-                              <Badge variant="secondary">
-                                {accountActionLabel(actionEvent.action) ?? t('accountPool.upstreamAccounts.latestAction.unknown')}
-                              </Badge>
-                              <Badge variant="secondary">
-                                {accountActionSourceLabel(actionEvent.source) ?? t('accountPool.upstreamAccounts.latestAction.unknown')}
-                              </Badge>
-                              {actionEvent.reasonCode ? (
-                                <Badge variant="secondary">
-                                  {accountActionReasonLabel(actionEvent.reasonCode)}
-                                </Badge>
-                              ) : null}
-                              {Number.isFinite(actionEvent.httpStatus ?? NaN) ? (
-                                <Badge variant="secondary">{`HTTP ${actionEvent.httpStatus}`}</Badge>
-                              ) : null}
-                              <span className="text-xs text-base-content/55">
-                                {formatDateTime(actionEvent.occurredAt)}
-                              </span>
-                            </div>
-                            {actionEvent.reasonMessage ? (
-                              <p className="mt-2 text-sm leading-6 text-base-content/75">
-                                {actionEvent.reasonMessage}
-                              </p>
-                            ) : null}
-                            {actionEvent.invokeId ? (
-                              <p className="mt-2 text-xs text-base-content/55">
-                                {t('accountPool.upstreamAccounts.latestAction.fields.invokeId')}: {actionEvent.invokeId}
-                              </p>
-                            ) : null}
-                          </div>
-                        ))}
+                      <div className="metric-grid">
+                        <DetailField label={t('accountPool.upstreamAccounts.fields.groupName')} value={selectedDetail.groupName ?? ''} />
+                        <DetailField
+                          label={t('accountPool.upstreamAccounts.mother.fieldLabel')}
+                          value={selectedDetail.isMother ? t('accountPool.upstreamAccounts.mother.badge') : t('accountPool.upstreamAccounts.mother.notMother')}
+                        />
+                        <DetailField label={t('accountPool.upstreamAccounts.fields.email')} value={selectedDetail.email ?? ''} />
+                        <DetailField label={t('accountPool.upstreamAccounts.fields.accountId')} value={selectedDetail.chatgptAccountId ?? selectedDetail.maskedApiKey ?? ''} />
+                        <DetailField label={t('accountPool.upstreamAccounts.fields.userId')} value={selectedDetail.chatgptUserId ?? ''} />
+                        <DetailField label={t('accountPool.upstreamAccounts.fields.lastSuccessSync')} value={formatDateTime(selectedDetail.lastSuccessfulSyncAt)} />
                       </div>
-                    )}
-                  </CardContent>
-                </Card>
+                      <div className="grid gap-4 xl:grid-cols-2">
+                        <UpstreamAccountUsageCard
+                          title={t('accountPool.upstreamAccounts.primaryWindowLabel')}
+                          description={t('accountPool.upstreamAccounts.usage.primaryDescription')}
+                          window={selectedDetail.primaryWindow}
+                          history={selectedDetail.history}
+                          historyKey="primaryUsedPercent"
+                          emptyLabel={t('accountPool.upstreamAccounts.noHistory')}
+                          noteLabel={selectedDetail.kind === 'api_key_codex' ? t('accountPool.upstreamAccounts.apiKey.localPlaceholder') : undefined}
+                        />
+                        <UpstreamAccountUsageCard
+                          title={t('accountPool.upstreamAccounts.secondaryWindowLabel')}
+                          description={t('accountPool.upstreamAccounts.usage.secondaryDescription')}
+                          window={selectedDetail.secondaryWindow}
+                          history={selectedDetail.history}
+                          historyKey="secondaryUsedPercent"
+                          emptyLabel={t('accountPool.upstreamAccounts.noHistory')}
+                          noteLabel={selectedDetail.kind === 'api_key_codex' ? t('accountPool.upstreamAccounts.apiKey.localPlaceholder') : undefined}
+                          accentClassName="text-secondary"
+                        />
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {detailTab === 'edit' ? (
+                    <div
+                      id={detailTabIds.edit.panel}
+                      role="tabpanel"
+                      aria-labelledby={detailTabIds.edit.tab}
+                    >
+                      <Card className="border-base-300/80 bg-base-100/72">
+                        <CardHeader>
+                          <CardTitle>{t('accountPool.upstreamAccounts.editTitle')}</CardTitle>
+                          <CardDescription>{t('accountPool.upstreamAccounts.editDescription')}</CardDescription>
+                        </CardHeader>
+                        <CardContent className="grid gap-4 md:grid-cols-2">
+                          <label className="field md:col-span-2">
+                            <span className="field-label">{t('accountPool.upstreamAccounts.fields.displayName')}</span>
+                            <div className="relative">
+                              <Input
+                                name="detailDisplayName"
+                                value={draft.displayName}
+                                aria-invalid={detailDisplayNameConflict != null}
+                                onChange={(event) =>
+                                  setDraft((current) => ({
+                                    ...current,
+                                    displayName: event.target.value,
+                                  }))
+                                }
+                              />
+                              {detailDisplayNameConflict ? (
+                                <FloatingFieldError
+                                  message={t('accountPool.upstreamAccounts.validation.displayNameDuplicate')}
+                                />
+                              ) : null}
+                            </div>
+                          </label>
+                          <label className="field md:col-span-2">
+                            <span className="field-label">{t('accountPool.upstreamAccounts.fields.groupName')}</span>
+                            <div className="flex items-center gap-2">
+                              <UpstreamAccountGroupCombobox
+                                name="detailGroupName"
+                                value={draft.groupName}
+                                suggestions={availableGroups.names}
+                                placeholder={t('accountPool.upstreamAccounts.fields.groupNamePlaceholder')}
+                                searchPlaceholder={t('accountPool.upstreamAccounts.fields.groupNameSearchPlaceholder')}
+                                emptyLabel={t('accountPool.upstreamAccounts.fields.groupNameEmpty')}
+                                createLabel={(value) => t('accountPool.upstreamAccounts.fields.groupNameUseValue', { value })}
+                                onValueChange={(value) => setDraft((current) => ({ ...current, groupName: value }))}
+                                className="min-w-0 flex-1"
+                              />
+                              <Button
+                                type="button"
+                                size="icon"
+                                variant={hasGroupNote(draft.groupName) ? 'secondary' : 'outline'}
+                                className="shrink-0 rounded-full"
+                                aria-label={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
+                                title={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
+                                onClick={() => openGroupNoteEditor(draft.groupName)}
+                                disabled={!writesEnabled || !normalizeGroupName(draft.groupName)}
+                              >
+                                <AppIcon name="file-document-edit-outline" className="h-4 w-4" aria-hidden />
+                              </Button>
+                            </div>
+                          </label>
+                          <div className="md:col-span-2">
+                            <MotherAccountToggle
+                              checked={draft.isMother}
+                              disabled={!writesEnabled}
+                              label={t('accountPool.upstreamAccounts.mother.toggleLabel')}
+                              description={t('accountPool.upstreamAccounts.mother.toggleDescription')}
+                              onToggle={() => setDraft((current) => ({ ...current, isMother: !current.isMother }))}
+                            />
+                          </div>
+                          <label className="field md:col-span-2">
+                            <span className="field-label">{t('accountPool.upstreamAccounts.fields.note')}</span>
+                            <textarea
+                              className="min-h-24 rounded-xl border border-base-300 bg-base-100 px-3 py-2 text-sm text-base-content shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100"
+                              name="detailNote"
+                              value={draft.note}
+                              onChange={(event) => setDraft((current) => ({ ...current, note: event.target.value }))}
+                            />
+                          </label>
+                          <div className="md:col-span-2">
+                            <AccountTagField
+                              tags={tagItems}
+                              selectedTagIds={draft.tagIds}
+                              writesEnabled={writesEnabled}
+                              pageCreatedTagIds={pageCreatedTagIds}
+                              labels={tagFieldLabels}
+                              onChange={(tagIds) => setDraft((current) => ({ ...current, tagIds }))}
+                              onCreateTag={handleCreateTag}
+                              onUpdateTag={updateTag}
+                              onDeleteTag={handleDeleteTag}
+                            />
+                          </div>
+                          {selectedDetail.kind === 'api_key_codex' ? (
+                            <>
+                              <label className="field">
+                                <span className="field-label">{t('accountPool.upstreamAccounts.fields.primaryLimit')}</span>
+                                <Input
+                                  name="detailPrimaryLimit"
+                                  value={draft.localPrimaryLimit}
+                                  onChange={(event) => setDraft((current) => ({ ...current, localPrimaryLimit: event.target.value }))}
+                                />
+                              </label>
+                              <label className="field">
+                                <span className="field-label">{t('accountPool.upstreamAccounts.fields.secondaryLimit')}</span>
+                                <Input
+                                  name="detailSecondaryLimit"
+                                  value={draft.localSecondaryLimit}
+                                  onChange={(event) => setDraft((current) => ({ ...current, localSecondaryLimit: event.target.value }))}
+                                />
+                              </label>
+                              <label className="field">
+                                <span className="field-label">{t('accountPool.upstreamAccounts.fields.limitUnit')}</span>
+                                <Input
+                                  name="detailLimitUnit"
+                                  value={draft.localLimitUnit}
+                                  onChange={(event) => setDraft((current) => ({ ...current, localLimitUnit: event.target.value }))}
+                                />
+                              </label>
+                              <label className="field">
+                                <FormFieldFeedback
+                                  label={t('accountPool.upstreamAccounts.fields.upstreamBaseUrl')}
+                                  message={draftUpstreamBaseUrlError}
+                                  messageClassName="md:max-w-[min(20rem,calc(100%-8rem))]"
+                                />
+                                <div className="relative">
+                                  <Input
+                                    name="detailUpstreamBaseUrl"
+                                    value={draft.upstreamBaseUrl}
+                                    onChange={(event) => setDraft((current) => ({ ...current, upstreamBaseUrl: event.target.value }))}
+                                    placeholder={t('accountPool.upstreamAccounts.fields.upstreamBaseUrlPlaceholder')}
+                                    aria-invalid={draftUpstreamBaseUrlError ? 'true' : 'false'}
+                                    className={cn(draftUpstreamBaseUrlError ? 'border-error/70 focus-visible:ring-error' : '')}
+                                  />
+                                </div>
+                              </label>
+                              <label className="field">
+                                <span className="field-label">{t('accountPool.upstreamAccounts.fields.rotateApiKey')}</span>
+                                <Input
+                                  name="detailRotateApiKey"
+                                  value={draft.apiKey}
+                                  onChange={(event) => setDraft((current) => ({ ...current, apiKey: event.target.value }))}
+                                  placeholder={t('accountPool.upstreamAccounts.fields.rotateApiKeyPlaceholder')}
+                                />
+                              </label>
+                            </>
+                          ) : null}
+                          <div className="md:col-span-2 flex justify-end">
+                            <Button
+                              type="button"
+                              onClick={() => void handleSave(selectedDetail)}
+                              disabled={
+                                hasBusyAccountAction(busyAction, selectedDetail.id) ||
+                                !writesEnabled ||
+                                detailDisplayNameConflict != null ||
+                                (selectedDetail.kind === 'api_key_codex' && Boolean(draftUpstreamBaseUrlError))
+                              }
+                            >
+                              {isBusyAction(busyAction, 'save', selectedDetail.id) ? (
+                                <Spinner size="sm" className="mr-2" />
+                              ) : (
+                                <AppIcon name="content-save-outline" className="mr-2 h-4 w-4" aria-hidden />
+                              )}
+                              {t('accountPool.upstreamAccounts.actions.save')}
+                            </Button>
+                          </div>
+                        </CardContent>
+                      </Card>
+                    </div>
+                  ) : null}
+
+                  {detailTab === 'routing' ? (
+                    <div
+                      id={detailTabIds.routing.panel}
+                      role="tabpanel"
+                      aria-labelledby={detailTabIds.routing.tab}
+                      className="grid gap-5"
+                    >
+                      <EffectiveRoutingRuleCard
+                        rule={selectedDetail.effectiveRoutingRule}
+                        labels={{
+                          title: t('accountPool.upstreamAccounts.effectiveRule.title'),
+                          description: t('accountPool.upstreamAccounts.effectiveRule.description'),
+                          noTags: t('accountPool.upstreamAccounts.effectiveRule.noTags'),
+                          guardEnabled: t('accountPool.upstreamAccounts.effectiveRule.guardEnabled'),
+                          guardDisabled: t('accountPool.upstreamAccounts.effectiveRule.guardDisabled'),
+                          allowCutOut: t('accountPool.upstreamAccounts.effectiveRule.allowCutOut'),
+                          denyCutOut: t('accountPool.upstreamAccounts.effectiveRule.denyCutOut'),
+                          allowCutIn: t('accountPool.upstreamAccounts.effectiveRule.allowCutIn'),
+                          denyCutIn: t('accountPool.upstreamAccounts.effectiveRule.denyCutIn'),
+                          sourceTags: t('accountPool.upstreamAccounts.effectiveRule.sourceTags'),
+                          guardRule: (hours, count) => t('accountPool.upstreamAccounts.effectiveRule.guardRule', { hours, count }),
+                          allGuardsApply: t('accountPool.upstreamAccounts.effectiveRule.allGuardsApply'),
+                        }}
+                      />
+
+                      <Card className="border-base-300/80 bg-base-100/72">
+                        <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                          <div>
+                            <CardTitle>{t('accountPool.upstreamAccounts.stickyConversations.title')}</CardTitle>
+                            <CardDescription>{t('accountPool.upstreamAccounts.stickyConversations.description')}</CardDescription>
+                          </div>
+                          <SelectField
+                            label={t('accountPool.upstreamAccounts.stickyConversations.limitLabel')}
+                            className="w-36"
+                            name="stickyConversationLimit"
+                            size="sm"
+                            value={String(stickyConversationLimit)}
+                            options={STICKY_CONVERSATION_LIMIT_OPTIONS.map((value) => ({
+                              value: String(value),
+                              label: t('accountPool.upstreamAccounts.stickyConversations.limitOption', { count: value }),
+                            }))}
+                            onValueChange={(value) => setStickyConversationLimit(Number(value))}
+                          />
+                        </CardHeader>
+                        <CardContent>
+                          <StickyKeyConversationTable
+                            stats={stickyConversationStats}
+                            isLoading={stickyConversationLoading}
+                            error={stickyConversationError}
+                          />
+                        </CardContent>
+                      </Card>
+                    </div>
+                  ) : null}
+
+                  {detailTab === 'healthEvents' ? (
+                    <div
+                      id={detailTabIds.healthEvents.panel}
+                      role="tabpanel"
+                      aria-labelledby={detailTabIds.healthEvents.tab}
+                      className="grid gap-5"
+                    >
+                      <Card className="border-base-300/80 bg-base-100/72">
+                        <CardHeader>
+                          <CardTitle>{t('accountPool.upstreamAccounts.healthTitle')}</CardTitle>
+                          <CardDescription>{t('accountPool.upstreamAccounts.healthDescription')}</CardDescription>
+                        </CardHeader>
+                        <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                          <DetailField label={t('accountPool.upstreamAccounts.fields.lastSyncedAt')} value={formatDateTime(selectedDetail.lastSyncedAt)} />
+                          <DetailField label={t('accountPool.upstreamAccounts.fields.lastRefreshedAt')} value={formatDateTime(selectedDetail.lastRefreshedAt)} />
+                          <DetailField label={t('accountPool.upstreamAccounts.fields.tokenExpiresAt')} value={formatDateTime(selectedDetail.tokenExpiresAt)} />
+                          <DetailField
+                            label={t('accountPool.upstreamAccounts.fields.compactSupport')}
+                            value={
+                              selectedDetail.compactSupport?.status === 'supported'
+                                ? t('accountPool.upstreamAccounts.compactSupport.status.supported')
+                                : selectedDetail.compactSupport?.status === 'unsupported'
+                                  ? t('accountPool.upstreamAccounts.compactSupport.status.unsupported')
+                                  : t('accountPool.upstreamAccounts.compactSupport.status.unknown')
+                            }
+                          />
+                          <DetailField
+                            label={t('accountPool.upstreamAccounts.fields.credits')}
+                            value={selectedDetail.credits?.balance ? `${selectedDetail.credits.balance}` : selectedDetail.credits?.unlimited ? t('accountPool.upstreamAccounts.unlimited') : t('accountPool.upstreamAccounts.unavailable')}
+                          />
+                          <DetailField
+                            label={t('accountPool.upstreamAccounts.fields.compactObservedAt')}
+                            value={formatDateTime(selectedDetail.compactSupport?.observedAt)}
+                          />
+                          <DetailField
+                            label={t('accountPool.upstreamAccounts.fields.compactReason')}
+                            value={selectedDetail.compactSupport?.reason ?? t('accountPool.upstreamAccounts.unavailable')}
+                          />
+                          <div className="md:col-span-2 xl:col-span-4 rounded-[1.2rem] border border-base-300/80 bg-base-100/75 p-4">
+                            {selectedRecoveryHint ? (
+                              <Alert variant="warning" className="mb-4">
+                                <AppIcon name="alert-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                                <div>
+                                  <p className="font-semibold text-warning">
+                                    {t(selectedRecoveryHint.titleKey)}
+                                  </p>
+                                  <p className="mt-1 text-sm text-warning/90">
+                                    {t(selectedRecoveryHint.bodyKey)}
+                                  </p>
+                                </div>
+                              </Alert>
+                            ) : null}
+                            <p className="metric-label">{t('accountPool.upstreamAccounts.latestAction.title')}</p>
+                            {selectedDetail.lastAction ? (
+                              <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                                <DetailField
+                                  label={t('accountPool.upstreamAccounts.latestAction.fields.action')}
+                                  value={accountActionLabel(selectedDetail.lastAction) ?? t('accountPool.upstreamAccounts.latestAction.empty')}
+                                />
+                                <DetailField
+                                  label={t('accountPool.upstreamAccounts.latestAction.fields.source')}
+                                  value={
+                                    accountActionSourceLabel(selectedDetail.lastActionSource)
+                                    ?? t('accountPool.upstreamAccounts.latestAction.unknown')
+                                  }
+                                />
+                                <DetailField
+                                  label={t('accountPool.upstreamAccounts.latestAction.fields.reason')}
+                                  value={
+                                    accountActionReasonLabel(selectedDetail.lastActionReasonCode)
+                                    ?? t('accountPool.upstreamAccounts.latestAction.unknown')
+                                  }
+                                />
+                                <DetailField
+                                  label={t('accountPool.upstreamAccounts.latestAction.fields.httpStatus')}
+                                  value={
+                                    Number.isFinite(selectedDetail.lastActionHttpStatus ?? NaN)
+                                      ? `HTTP ${selectedDetail.lastActionHttpStatus}`
+                                      : t('accountPool.upstreamAccounts.unavailable')
+                                  }
+                                />
+                                <DetailField
+                                  label={t('accountPool.upstreamAccounts.latestAction.fields.occurredAt')}
+                                  value={formatDateTime(selectedDetail.lastActionAt)}
+                                />
+                                <DetailField
+                                  label={t('accountPool.upstreamAccounts.latestAction.fields.invokeId')}
+                                  value={selectedDetail.lastActionInvokeId ?? t('accountPool.upstreamAccounts.unavailable')}
+                                />
+                                <div className="metric-cell md:col-span-2 xl:col-span-3">
+                                  <p className="metric-label">{t('accountPool.upstreamAccounts.latestAction.fields.message')}</p>
+                                  <p className="mt-2 break-words text-sm leading-6 text-base-content/80">
+                                    {selectedDetail.lastActionReasonMessage ?? selectedDetail.lastError ?? t('accountPool.upstreamAccounts.noError')}
+                                  </p>
+                                </div>
+                              </div>
+                            ) : (
+                              <p className="mt-2 text-sm leading-6 text-base-content/75">
+                                {t('accountPool.upstreamAccounts.latestAction.empty')}
+                              </p>
+                            )}
+                          </div>
+                        </CardContent>
+                      </Card>
+
+                      <Card className="border-base-300/80 bg-base-100/72">
+                        <CardHeader>
+                          <CardTitle>{t('accountPool.upstreamAccounts.recentActions.title')}</CardTitle>
+                          <CardDescription>{t('accountPool.upstreamAccounts.recentActions.description')}</CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                          {selectedRecentActions.length === 0 ? (
+                            <p className="text-sm leading-6 text-base-content/68">
+                              {t('accountPool.upstreamAccounts.recentActions.empty')}
+                            </p>
+                          ) : (
+                            <div className="space-y-2">
+                              {selectedRecentActions.map((actionEvent) => (
+                                <div
+                                  key={actionEvent.id}
+                                  className="rounded-[1rem] border border-base-300/70 bg-base-100/70 p-3"
+                                >
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <Badge variant="secondary">
+                                      {accountActionLabel(actionEvent.action) ?? t('accountPool.upstreamAccounts.latestAction.unknown')}
+                                    </Badge>
+                                    <Badge variant="secondary">
+                                      {accountActionSourceLabel(actionEvent.source) ?? t('accountPool.upstreamAccounts.latestAction.unknown')}
+                                    </Badge>
+                                    {actionEvent.reasonCode ? (
+                                      <Badge variant="secondary">
+                                        {accountActionReasonLabel(actionEvent.reasonCode)}
+                                      </Badge>
+                                    ) : null}
+                                    {Number.isFinite(actionEvent.httpStatus ?? NaN) ? (
+                                      <Badge variant="secondary">{`HTTP ${actionEvent.httpStatus}`}</Badge>
+                                    ) : null}
+                                    <span className="text-xs text-base-content/55">
+                                      {formatDateTime(actionEvent.occurredAt)}
+                                    </span>
+                                  </div>
+                                  {actionEvent.reasonMessage ? (
+                                    <p className="mt-2 text-sm leading-6 text-base-content/75">
+                                      {actionEvent.reasonMessage}
+                                    </p>
+                                  ) : null}
+                                  {actionEvent.invokeId ? (
+                                    <p className="mt-2 text-xs text-base-content/55">
+                                      {t('accountPool.upstreamAccounts.latestAction.fields.invokeId')}: {actionEvent.invokeId}
+                                    </p>
+                                  ) : null}
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </CardContent>
+                      </Card>
+                    </div>
+                  ) : null}
                 </>
               ) : null}
             </div>
-          </>
-        )}
-      </AccountDetailDrawer>
+          )}
+        </AccountDetailDrawerShell>
+      ) : null}
 
       <UpstreamAccountGroupNoteDialog
         open={groupNoteEditor.open}

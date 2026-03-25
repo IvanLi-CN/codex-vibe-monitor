@@ -47,7 +47,18 @@ export const DetailDrawer: Story = {
   ),
   play: async ({ canvasElement }) => {
     const documentScope = within(canvasElement.ownerDocument.body)
-    await expect(documentScope.getByRole('dialog', { name: /Codex Pro - Tokyo/i })).toBeInTheDocument()
+    const dialog = await documentScope.findByRole('dialog', { name: /Codex Pro - Tokyo/i })
+    await expect(within(dialog).getByRole('tab', { name: /概览|overview/i })).toHaveAttribute('aria-selected', 'true')
+    await expect(within(dialog).getByText(/最近成功同步|last successful sync/i)).toBeInTheDocument()
+    await expect(within(dialog).getByText(/5 小时窗口|5h window/i)).toBeInTheDocument()
+    await userEvent.click(within(dialog).getByRole('tab', { name: /路由|routing/i }))
+    await expect(within(dialog).getByText(/最终生效规则|effective routing rule/i)).toBeInTheDocument()
+    await expect(within(dialog).getByText(/sticky-pool/i)).toBeInTheDocument()
+    await userEvent.click(within(dialog).getByRole('tab', { name: /健康与事件|health & events/i }))
+    await expect(within(dialog).getByText(/最近账号动作|latest account action/i)).toBeInTheDocument()
+    await expect(within(dialog).getByText(/Weekly cap exhausted; traffic was moved to a sibling Tokyo lane\./i)).toBeInTheDocument()
+    await userEvent.click(within(dialog).getByRole('tab', { name: /编辑|edit/i }))
+    await expect(within(dialog).getByLabelText(/显示名称|display name/i)).toBeInTheDocument()
   },
 }
 
@@ -352,6 +363,7 @@ export const CompactSupportDetailDrawer: Story = {
 
     await expect(await canvas.findByText(/Compact 不支持|Compact unsupported/i)).toBeInTheDocument()
     const dialog = await documentScope.findByRole('dialog', { name: /Codex Pro - Tokyo/i })
+    await userEvent.click(within(dialog).getByRole('tab', { name: /健康与事件|health & events/i }))
     await expect(within(dialog).getByText(/Compact 支持|Compact support/i)).toBeInTheDocument()
     await expect(within(dialog).getByText(/不支持|unsupported/i)).toBeInTheDocument()
     await expect(
@@ -373,8 +385,10 @@ export const DetailDrawerGroupNotes: Story = {
   ),
   play: async ({ canvasElement }) => {
     const documentScope = within(canvasElement.ownerDocument.body)
+    const dialog = await documentScope.findByRole('dialog', { name: /Codex Pro - Tokyo/i })
+    await userEvent.click(within(dialog).getByRole('tab', { name: /编辑|edit/i }))
     await userEvent.click(
-      await documentScope.findByRole('button', {
+      await within(dialog).findByRole('button', {
         name: /编辑分组备注|edit group note/i,
       }),
     )
@@ -400,6 +414,7 @@ export const DetailDrawerApiKeyInvalidUpstreamUrl: Story = {
   play: async ({ canvasElement }) => {
     const documentScope = within(canvasElement.ownerDocument.body)
     const dialog = documentScope.getByRole('dialog', { name: /Team key - staging/i })
+    await userEvent.click(within(dialog).getByRole('tab', { name: /编辑|edit/i }))
     const field = within(dialog).getByLabelText(/upstream base url/i)
     await userEvent.clear(field)
     await userEvent.type(field, 'https://proxy.example.com/gateway?team=staging')

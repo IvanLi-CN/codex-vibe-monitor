@@ -697,8 +697,8 @@ const accountDetails = new Map<number, UpstreamAccountDetail>([
       maskedApiKey: null,
       lastSyncedAt: '2026-03-16T09:10:00Z',
       lastSuccessfulSyncAt: '2026-03-16T09:08:00Z',
-      lastError: null,
-      lastErrorAt: null,
+      lastError: 'Two upstream 429 responses were observed during the latest compact capability probe.',
+      lastErrorAt: '2026-03-16T09:11:30Z',
       tokenExpiresAt: '2026-03-16T12:00:00Z',
       lastRefreshedAt: '2026-03-16T09:09:00Z',
       primaryWindow: {
@@ -715,7 +715,11 @@ const accountDetails = new Map<number, UpstreamAccountDetail>([
         resetsAt: '2026-03-17T00:00:00Z',
         windowDurationMins: 10080,
       },
-      credits: null,
+      credits: {
+        hasCredits: true,
+        unlimited: false,
+        balance: '42.7',
+      },
       localLimits: null,
       duplicateInfo: null,
       tags: [],
@@ -731,7 +735,44 @@ const accountDetails = new Map<number, UpstreamAccountDetail>([
       },
       note: null,
       upstreamBaseUrl: null,
-      history: [],
+      history: [
+        {
+          capturedAt: '2026-03-15T06:00:00Z',
+          primaryUsedPercent: 14,
+          secondaryUsedPercent: 22,
+          creditsBalance: '46.2',
+        },
+        {
+          capturedAt: '2026-03-15T12:00:00Z',
+          primaryUsedPercent: 18,
+          secondaryUsedPercent: 27,
+          creditsBalance: '45.8',
+        },
+        {
+          capturedAt: '2026-03-15T18:00:00Z',
+          primaryUsedPercent: 24,
+          secondaryUsedPercent: 31,
+          creditsBalance: '45.1',
+        },
+        {
+          capturedAt: '2026-03-16T00:00:00Z',
+          primaryUsedPercent: 30,
+          secondaryUsedPercent: 34,
+          creditsBalance: '44.6',
+        },
+        {
+          capturedAt: '2026-03-16T06:00:00Z',
+          primaryUsedPercent: 26,
+          secondaryUsedPercent: 35,
+          creditsBalance: '43.9',
+        },
+        {
+          capturedAt: '2026-03-16T09:00:00Z',
+          primaryUsedPercent: 22,
+          secondaryUsedPercent: 36,
+          creditsBalance: '42.7',
+        },
+      ],
     },
   ],
   [
@@ -1687,8 +1728,13 @@ export const AccountDrawer: Story = {
     const canvas = within(canvasElement)
     const documentScope = within(canvasElement.ownerDocument.body)
     await userEvent.click(await canvas.findByRole('button', { name: 'Codex Team Alpha' }))
-    await expect(documentScope.getByRole('dialog', { name: /Codex Team Alpha/i })).toBeInTheDocument()
-    await expect(documentScope.getByText(/去号池查看完整详情|Open in account pool/i)).toBeInTheDocument()
+    const dialog = await documentScope.findByRole('dialog', { name: /Codex Team Alpha/i })
+    await expect(within(dialog).getByRole('tab', { name: /概览|overview/i })).toHaveAttribute('aria-selected', 'true')
+    await expect(within(dialog).getByText(/最近成功同步|last successful sync/i)).toBeInTheDocument()
+    await expect(within(dialog).getByText(/22 \/ 100/i)).toBeInTheDocument()
+    await userEvent.click(within(dialog).getByRole('tab', { name: /健康|health/i }))
+    await expect(within(dialog).getByText(/Two upstream 429 responses were observed during the latest compact capability probe\./i)).toBeInTheDocument()
+    await expect(within(dialog).getByText(/去号池查看完整详情|Open in account pool/i)).toBeInTheDocument()
   },
 }
 

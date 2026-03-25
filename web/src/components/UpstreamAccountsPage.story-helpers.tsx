@@ -123,6 +123,70 @@ const defaultRoutingTimeouts: PoolRoutingTimeoutSettings = {
   compactStreamTimeoutSecs: 300,
 }
 
+const detailRichRoutingRule: EffectiveRoutingRule = {
+  guardEnabled: true,
+  lookbackHours: 24,
+  maxConversations: 8,
+  allowCutOut: false,
+  allowCutIn: true,
+  sourceTagIds: [1, 4, 20],
+  sourceTagNames: ['vip', 'sticky-pool', 'priority-route'],
+  guardRules: [
+    {
+      tagId: 1,
+      tagName: 'vip',
+      lookbackHours: 6,
+      maxConversations: 4,
+    },
+    {
+      tagId: 4,
+      tagName: 'sticky-pool',
+      lookbackHours: 24,
+      maxConversations: 8,
+    },
+  ],
+}
+
+const detailRichRecentActions = [
+  {
+    id: 7001,
+    occurredAt: '2026-03-17T12:22:00.000Z',
+    action: 'route_hard_unavailable',
+    source: 'call',
+    reasonCode: 'upstream_http_429_quota_exhausted',
+    reasonMessage: 'Weekly cap exhausted; traffic was moved to a sibling Tokyo lane.',
+    httpStatus: 429,
+    failureKind: 'upstream_http_429_quota_exhausted',
+    invokeId: 'inv_story_pool_failover_001',
+    stickyKey: '019ce3a1-6787-7910-b0fd-c246d6f6a901',
+    createdAt: '2026-03-17T12:22:00.000Z',
+  },
+  {
+    id: 7002,
+    occurredAt: '2026-03-17T12:06:00.000Z',
+    action: 'sync_recovery_blocked',
+    source: 'sync_maintenance',
+    reasonCode: 'quota_still_exhausted',
+    reasonMessage: 'Maintenance sync confirmed that the 7-day quota was still exhausted.',
+    httpStatus: 429,
+    failureKind: 'upstream_http_429_quota_exhausted',
+    invokeId: 'job_story_sync_maintenance_002',
+    createdAt: '2026-03-17T12:06:00.000Z',
+  },
+  {
+    id: 7003,
+    occurredAt: '2026-03-17T11:42:00.000Z',
+    action: 'sync_succeeded',
+    source: 'sync_manual',
+    reasonCode: 'sync_ok',
+    reasonMessage: 'Manual sync refreshed the access token and compact capability snapshot.',
+    httpStatus: null,
+    failureKind: null,
+    invokeId: 'job_story_sync_manual_003',
+    createdAt: '2026-03-17T11:42:00.000Z',
+  },
+]
+
 function atMinuteOffset(minutes: number) {
   return new Date(Date.parse(now) + minutes * 60_000).toISOString()
 }
@@ -788,34 +852,50 @@ function createStore(): StoryStore {
     storyId?.endsWith('--status-filters') === true ||
     storyId?.endsWith('--bulk-selection') === true
 
-  const oauth = createOauthAccount(101, duplicateStory
-    ? {
-        duplicateInfo: {
-          peerAccountIds: [103],
-          reasons: [...duplicateReasons],
-        },
-        note: 'Primary team account sharing the same upstream identity.',
-      }
-    : compactStory
+  const baseOauthStoryOverrides: Partial<UpstreamAccountDetail> = {
+    tags: pickStoryTags('vip', 'stickyPool', 'priority'),
+    effectiveRoutingRule: detailRichRoutingRule,
+    lastAction: 'route_hard_unavailable',
+    lastActionSource: 'call',
+    lastActionReasonCode: 'upstream_http_429_quota_exhausted',
+    lastActionReasonMessage: 'Weekly cap exhausted; traffic was moved to a sibling Tokyo lane.',
+    lastActionHttpStatus: 429,
+    lastActionInvokeId: 'inv_story_pool_failover_001',
+    lastActionAt: '2026-03-17T12:22:00.000Z',
+    recentActions: detailRichRecentActions,
+  }
+
+  const oauth = createOauthAccount(101, {
+    ...baseOauthStoryOverrides,
+    ...(duplicateStory
       ? {
-          displayName: 'Codex Pro - Tokyo enterprise rotation account with a deliberately long roster title',
-          groupName: 'production-apac-primary-operators',
-          tags: [
-            compactDefaultTags[0],
-            compactDefaultTags[1],
-            compactDefaultTags[2],
-            compactDefaultTags[3],
-          ],
+          duplicateInfo: {
+            peerAccountIds: [103],
+            reasons: [...duplicateReasons],
+          },
+          note: 'Primary team account sharing the same upstream identity.',
         }
-      : tagFilterStory
+      : compactStory
         ? {
+            displayName: 'Codex Pro - Tokyo enterprise rotation account with a deliberately long roster title',
+            groupName: 'production-apac-primary-operators',
             tags: [
               compactDefaultTags[0],
               compactDefaultTags[1],
               compactDefaultTags[2],
+              compactDefaultTags[3],
             ],
           }
-    : undefined)
+        : tagFilterStory
+          ? {
+              tags: [
+                compactDefaultTags[0],
+                compactDefaultTags[1],
+                compactDefaultTags[2],
+              ],
+            }
+          : undefined),
+  })
   const apiKey = createApiKeyAccount(102, compactStory
     ? {
         enabled: false,

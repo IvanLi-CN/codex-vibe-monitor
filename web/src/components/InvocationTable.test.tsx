@@ -1996,6 +1996,201 @@ describe('InvocationTable', () => {
     expect(document.body.textContent).toContain('上游账号')
     expect(document.body.textContent).toContain('Pool Alpha')
     expect(document.body.textContent).toContain('去号池查看完整详情')
+    expect(document.body.textContent).toContain('22 / 100')
+  })
+
+  it('closes the current-page upstream account drawer when clicking the backdrop or gutter', async () => {
+    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue({
+      id: 42,
+      kind: 'oauth_codex',
+      provider: 'openai',
+      displayName: 'Pool Alpha',
+      groupName: 'group-a',
+      isMother: false,
+      status: 'active',
+      enabled: true,
+      email: 'pool-alpha@example.com',
+      chatgptAccountId: 'org_pool_alpha',
+      chatgptUserId: 'user_pool_alpha',
+      planType: 'team',
+      maskedApiKey: null,
+      lastSyncedAt: '2026-03-16T09:10:00Z',
+      lastSuccessfulSyncAt: '2026-03-16T09:08:00Z',
+      lastError: null,
+      lastErrorAt: null,
+      tokenExpiresAt: '2026-03-16T12:00:00Z',
+      lastRefreshedAt: '2026-03-16T09:09:00Z',
+      primaryWindow: null,
+      secondaryWindow: null,
+      credits: null,
+      localLimits: null,
+      duplicateInfo: null,
+      tags: [],
+      effectiveRoutingRule: {
+        guardEnabled: false,
+        lookbackHours: null,
+        maxConversations: null,
+        allowCutOut: true,
+        allowCutIn: true,
+        sourceTagIds: [],
+        sourceTagNames: [],
+        guardRules: [],
+      },
+      note: null,
+      upstreamBaseUrl: null,
+      history: [],
+    })
+
+    await renderInteractiveTable([
+      {
+        id: 41,
+        invokeId: 'pool-drawer-close',
+        occurredAt: '2026-03-16T09:10:30Z',
+        createdAt: '2026-03-16T09:10:30Z',
+        source: 'proxy',
+        routeMode: 'pool',
+        upstreamAccountId: 42,
+        upstreamAccountName: 'Pool Alpha',
+        proxyDisplayName: 'relay-alpha',
+        responseContentEncoding: 'gzip',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'success',
+      },
+    ])
+
+    const trigger = Array.from(document.querySelectorAll('button')).find((button) => button.textContent?.includes('Pool Alpha'))
+    expect(trigger).toBeTruthy()
+
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    const backdrop = document.body.querySelector('.drawer-shell')?.parentElement?.previousElementSibling
+    expect(backdrop).toBeInstanceOf(HTMLElement)
+
+    await act(async () => {
+      backdrop?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull()
+
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    const gutter = document.body.querySelector('.drawer-shell')?.parentElement
+    expect(gutter).toBeInstanceOf(HTMLElement)
+
+    await act(async () => {
+      gutter?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull()
+  })
+
+  it('keeps tab interactions inside the current-page account drawer and resets to overview after reopen', async () => {
+    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue({
+      id: 42,
+      kind: 'oauth_codex',
+      provider: 'openai',
+      displayName: 'Pool Alpha',
+      groupName: 'group-a',
+      isMother: true,
+      status: 'active',
+      enabled: true,
+      email: 'pool-alpha@example.com',
+      chatgptAccountId: 'org_pool_alpha',
+      chatgptUserId: 'user_pool_alpha',
+      planType: 'team',
+      maskedApiKey: null,
+      lastSyncedAt: '2026-03-16T09:10:00Z',
+      lastSuccessfulSyncAt: '2026-03-16T09:08:00Z',
+      lastError: 'Needs reauth follow-up',
+      lastErrorAt: '2026-03-16T09:11:00Z',
+      tokenExpiresAt: '2026-03-16T12:00:00Z',
+      lastRefreshedAt: '2026-03-16T09:09:00Z',
+      primaryWindow: null,
+      secondaryWindow: null,
+      credits: null,
+      localLimits: null,
+      duplicateInfo: null,
+      tags: [],
+      effectiveRoutingRule: {
+        guardEnabled: false,
+        lookbackHours: null,
+        maxConversations: null,
+        allowCutOut: true,
+        allowCutIn: true,
+        sourceTagIds: [],
+        sourceTagNames: [],
+        guardRules: [],
+      },
+      note: null,
+      upstreamBaseUrl: null,
+      history: [],
+    })
+
+    await renderInteractiveTable([
+      {
+        id: 41,
+        invokeId: 'pool-drawer-tabs',
+        occurredAt: '2026-03-16T09:10:30Z',
+        createdAt: '2026-03-16T09:10:30Z',
+        source: 'proxy',
+        routeMode: 'pool',
+        upstreamAccountId: 42,
+        upstreamAccountName: 'Pool Alpha',
+        proxyDisplayName: 'relay-alpha',
+        responseContentEncoding: 'gzip',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'success',
+      },
+    ])
+
+    const trigger = Array.from(document.querySelectorAll('button')).find((button) => button.textContent?.includes('Pool Alpha'))
+    expect(trigger).toBeTruthy()
+
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    const healthTab = Array.from(document.querySelectorAll('[role="tab"]')).find((tab) =>
+      tab.textContent?.includes('健康'),
+    )
+    expect(healthTab).toBeInstanceOf(HTMLButtonElement)
+
+    await act(async () => {
+      healthTab?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull()
+    expect(document.body.textContent).toContain('Needs reauth follow-up')
+
+    const backdrop = document.body.querySelector('.drawer-shell')?.parentElement?.previousElementSibling
+    await act(async () => {
+      backdrop?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    const overviewTab = Array.from(document.querySelectorAll('[role="tab"]')).find((tab) =>
+      tab.textContent?.includes('概览'),
+    )
+    expect(overviewTab?.getAttribute('aria-selected')).toBe('true')
+    expect(document.body.textContent).toContain('最近成功同步')
+    expect(document.body.textContent).not.toContain('Needs reauth follow-up')
   })
 
   it('keeps structured-only metadata out of summary rows', () => {
