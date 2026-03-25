@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 进行中
+- Status: 已完成（PR #234）
 - Created: 2026-03-25
 - Last: 2026-03-25
 
@@ -68,7 +68,7 @@
   target_program: mock-only
   capture_scope: browser-viewport
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Account Pool/Pages/Upstream Account Create/OAuth — Manual Mailbox Auto Created
   state: manual mailbox auto-created
   evidence_note: 单账号 OAuth 手填 `finance.lab.d5r@mail-tw.707079.xyz` 后，页面显示生成邮箱标识并继续允许复制 OAuth 地址。
@@ -80,7 +80,7 @@
   target_program: mock-only
   capture_scope: browser-viewport
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Account Pool/Pages/Upstream Account Create/Batch OAuth — Mailbox Popover Auto Create
   state: batch mailbox popover auto-created
   evidence_note: Batch OAuth 邮箱气泡编辑把地址改成 `finance.lab.d5r@mail-tw.707079.xyz` 后，行内显示生成邮箱标识，并保持 OAuth 地址生成功能可用。
@@ -92,3 +92,4 @@
 
 - 2026-03-25: 新建 follow-up spec，冻结手动邮箱支持域名归一化、缺失即创建和 `generated` 生命周期清理语义。
 - 2026-03-25: 完成 MoeMail 手动邮箱域名归一化、缺失即创建和 `generated` 生命周期清理回归，并补充单账号 / Batch OAuth 的 Storybook mock 视觉证据。
+- 2026-03-25: PR #234 已建立，视觉证据提交授权已确认，review-loop clear 且远端 checks 全绿，快车道收口为 merge-ready。
