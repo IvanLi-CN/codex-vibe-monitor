@@ -2,9 +2,12 @@ import { getBrowserTimeZone } from "./timeZone";
 
 const rawBase = import.meta.env.VITE_API_BASE_URL ?? "";
 const API_BASE = rawBase.endsWith("/") ? rawBase.slice(0, -1) : rawBase;
+const OAUTH_LOGIN_SESSION_UPDATED_AT_HEADER =
+  "X-Codex-Login-Session-Updated-At";
 const FORWARD_PROXY_VALIDATION_TIMEOUT_MS = 5_000;
 const FORWARD_PROXY_SUBSCRIPTION_VALIDATION_TIMEOUT_MS = 60_000;
 const FORWARD_PROXY_HISTORY_DAY_MS = 86_400_000;
+const oauthLoginSessionOrderingTokens = new Map<string, string>();
 export const DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS = {
   primarySyncIntervalSecs: 300,
   secondarySyncIntervalSecs: 1_800,
@@ -1851,6 +1854,7 @@ export interface LoginSessionStatusResponse {
   authUrl?: string | null;
   redirectUri?: string | null;
   expiresAt: string;
+  updatedAt?: string | null;
   accountId?: number | null;
   error?: string | null;
 }
@@ -1917,6 +1921,33 @@ export interface UpdateOauthLoginSessionPayload {
   isMother?: boolean;
   mailboxSessionId?: string;
   mailboxAddress?: string;
+}
+
+export function setOauthLoginSessionOrderingToken(
+  loginId: string,
+  updatedAt: string,
+): void {
+  oauthLoginSessionOrderingTokens.set(loginId, updatedAt);
+}
+
+function withOauthLoginSessionOrderingHeader(
+  loginId: string,
+  init: RequestInit,
+): RequestInit {
+  const updatedAt = oauthLoginSessionOrderingTokens.get(loginId);
+  if (!updatedAt) {
+    return init;
+  }
+  oauthLoginSessionOrderingTokens.delete(loginId);
+  const headers = new Headers(init.headers);
+  if (!headers.has("Content-Type")) {
+    headers.set("Content-Type", "application/json");
+  }
+  headers.set(OAUTH_LOGIN_SESSION_UPDATED_AT_HEADER, updatedAt);
+  return {
+    ...init,
+    headers,
+  };
 }
 
 export interface CompleteOauthLoginSessionPayload {
@@ -2538,6 +2569,7 @@ function normalizeLoginSessionStatusResponse(
     redirectUri:
       typeof payload.redirectUri === "string" ? payload.redirectUri : null,
     expiresAt,
+    updatedAt: typeof payload.updatedAt === "string" ? payload.updatedAt : null,
     accountId: accountId == null ? null : accountId,
     error: typeof payload.error === "string" ? payload.error : null,
   };
@@ -3380,10 +3412,10 @@ export async function updateOauthLoginSession(
 ): Promise<LoginSessionStatusResponse> {
   const response = await fetchJson<unknown>(
     `/api/pool/upstream-accounts/oauth/login-sessions/${encodeURIComponent(loginId)}`,
-    {
+    withOauthLoginSessionOrderingHeader(loginId, {
       method: "PATCH",
       body: JSON.stringify(payload),
-    },
+    }),
   );
   return normalizeLoginSessionStatusResponse(response);
 }
@@ -3396,14 +3428,14 @@ export async function updateOauthLoginSessionKeepalive(
     withBase(
       `/api/pool/upstream-accounts/oauth/login-sessions/${encodeURIComponent(loginId)}`,
     ),
-    {
+    withOauthLoginSessionOrderingHeader(loginId, {
       method: "PATCH",
       headers: {
         "Content-Type": "application/json",
       },
       body: JSON.stringify(payload),
       keepalive: true,
-    },
+    }),
   );
   await ensureJsonRequestOk(response);
 }

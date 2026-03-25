@@ -75,6 +75,7 @@ import {
   normalizeImportedOauthValidationFailedEventPayload,
   normalizeImportedOauthValidationRowEventPayload,
   normalizeImportedOauthValidationSnapshotEventPayload,
+  setOauthLoginSessionOrderingToken,
   updateOauthLoginSessionKeepalive,
 } from "../../lib/api";
 import { copyText, selectAllReadonlyText } from "../../lib/clipboard";
@@ -119,6 +120,7 @@ type PendingOauthSessionSnapshot = {
   loginId: string;
   payload: UpdateOauthLoginSessionPayload;
   signature: string;
+  baseUpdatedAt: string | null;
 };
 
 type PendingOauthSessionSyncRecord = {
@@ -128,6 +130,7 @@ type PendingOauthSessionSyncRecord = {
   timerId: number | null;
   inFlight: Promise<void> | null;
   lastSnapshot: PendingOauthSessionSnapshot | null;
+  lastUpdatedAt: string | null;
 };
 
 type BatchOauthRow = {
@@ -616,12 +619,35 @@ function buildOauthLoginSessionUpdatePayload({
 function buildPendingOauthSessionSnapshot(
   loginId: string,
   payload: UpdateOauthLoginSessionPayload,
+  baseUpdatedAt?: string | null,
 ): PendingOauthSessionSnapshot {
   return {
     loginId,
     payload,
     signature: JSON.stringify(payload),
+    baseUpdatedAt: baseUpdatedAt?.trim() || null,
   };
+}
+
+function parsePendingOauthSessionUpdatedAt(
+  value: string | null | undefined,
+): number | null {
+  if (!value) return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function nextPendingOauthSessionUpdatedAt(
+  ...values: Array<string | null | undefined>
+): string {
+  let nextTimestamp = Date.now();
+  values.forEach((value) => {
+    const parsed = parsePendingOauthSessionUpdatedAt(value);
+    if (parsed != null) {
+      nextTimestamp = Math.max(nextTimestamp, parsed + 1);
+    }
+  });
+  return new Date(nextTimestamp).toISOString();
 }
 
 function areOauthSessionTagListsEqual(
@@ -1410,6 +1436,7 @@ export default function UpstreamAccountCreatePage() {
         isMother: oauthIsMother,
         mailboxSession: activeOauthMailboxSession,
       }),
+      session.updatedAt ?? null,
     );
   }, [
     activeOauthMailboxSession,
@@ -1438,6 +1465,7 @@ export default function UpstreamAccountCreatePage() {
           isMother: row.isMother,
           mailboxSession: row.mailboxSession,
         }),
+        row.session.updatedAt ?? null,
       );
     }
     return snapshots;
@@ -1542,12 +1570,20 @@ export default function UpstreamAccountCreatePage() {
         }
 
         const { payload, signature } = snapshot;
+        const orderingUpdatedAt = nextPendingOauthSessionUpdatedAt(
+          record.lastUpdatedAt,
+          snapshot.baseUpdatedAt,
+        );
+        record.lastUpdatedAt = orderingUpdatedAt;
+        setOauthLoginSessionOrderingToken(loginId, orderingUpdatedAt);
         const request = updateOauthLogin(loginId, payload)
           .then((nextSession) => {
             const currentRecord = pendingOauthSessionSyncRef.current[loginId];
             if (currentRecord) {
               currentRecord.syncedSignature = signature;
               currentRecord.failedSignature = null;
+              currentRecord.lastUpdatedAt =
+                nextSession.updatedAt ?? orderingUpdatedAt;
             }
             applyPendingOauthSessionStatus(loginId, nextSession);
             clearPendingOauthSessionSyncError(loginId);
@@ -1568,6 +1604,8 @@ export default function UpstreamAccountCreatePage() {
               if (latestRecord) {
                 latestRecord.failedSignature = null;
                 latestRecord.syncedSignature = signature;
+                latestRecord.lastUpdatedAt =
+                  latestSession.updatedAt ?? orderingUpdatedAt;
               }
               applyPendingOauthSessionStatus(loginId, latestSession);
               clearPendingOauthSessionSyncError(loginId);
@@ -1620,6 +1658,7 @@ export default function UpstreamAccountCreatePage() {
           timerId: null,
           inFlight: null,
           lastSnapshot: snapshot,
+          lastUpdatedAt: snapshot.baseUpdatedAt,
         };
       }
       record.pendingSignature = snapshot.signature;
@@ -1671,6 +1710,7 @@ export default function UpstreamAccountCreatePage() {
           timerId: null,
           inFlight: null,
           lastSnapshot: snapshot,
+          lastUpdatedAt: snapshot.baseUpdatedAt,
         };
       }
       record.pendingSignature = snapshot.signature;
@@ -1682,6 +1722,12 @@ export default function UpstreamAccountCreatePage() {
       if (record.syncedSignature === snapshot.signature) {
         return;
       }
+      const orderingUpdatedAt = nextPendingOauthSessionUpdatedAt(
+        record.lastUpdatedAt,
+        snapshot.baseUpdatedAt,
+      );
+      record.lastUpdatedAt = orderingUpdatedAt;
+      setOauthLoginSessionOrderingToken(loginId, orderingUpdatedAt);
       void updateOauthLoginSessionKeepalive(loginId, snapshot.payload).catch(() => undefined);
     },
     [
@@ -1741,6 +1787,7 @@ export default function UpstreamAccountCreatePage() {
           timerId: null,
           inFlight: null,
           lastSnapshot: snapshot,
+          lastUpdatedAt: snapshot.baseUpdatedAt,
         };
       }
       const shouldDebounce = shouldDebouncePendingOauthSessionSync(
@@ -3173,6 +3220,7 @@ export default function UpstreamAccountCreatePage() {
         buildPendingOauthSessionSnapshot(
           response.loginId,
           oauthLoginSessionPayload,
+          response.updatedAt ?? null,
         ).signature;
       setSession(response);
       setManualCopyOpen(false);
@@ -3192,6 +3240,14 @@ export default function UpstreamAccountCreatePage() {
   const handleCopyOauthUrl = async () => {
     if (!session?.authUrl) return;
     setActionError(null);
+    try {
+      await flushPendingOauthSessionSync(
+        session.loginId,
+        singleOauthSessionSnapshot,
+      );
+    } catch {
+      return;
+    }
     const result = await copyText(session.authUrl, {
       preferExecCommand: true,
     });
@@ -3530,11 +3586,12 @@ export default function UpstreamAccountCreatePage() {
         mailboxSessionId: row.mailboxSession?.sessionId,
         mailboxAddress: row.mailboxSession?.emailAddress,
       });
-      createdPendingOauthSessionSignaturesRef.current[response.loginId] =
-        buildPendingOauthSessionSnapshot(
-          response.loginId,
-          oauthLoginSessionPayload,
-        ).signature;
+        createdPendingOauthSessionSignaturesRef.current[response.loginId] =
+          buildPendingOauthSessionSnapshot(
+            response.loginId,
+            oauthLoginSessionPayload,
+            response.updatedAt ?? null,
+          ).signature;
       setBatchManualCopyRowId((current) =>
         current === rowId ? null : current,
       );
@@ -3566,6 +3623,15 @@ export default function UpstreamAccountCreatePage() {
       ...current,
       actionError: null,
     }));
+
+    try {
+      await flushPendingOauthSessionSync(
+        row.session.loginId,
+        batchOauthSessionSnapshots[row.session.loginId] ?? null,
+      );
+    } catch {
+      return;
+    }
 
     const result = await copyText(row.session.authUrl, {
       preferExecCommand: true,

@@ -114,6 +114,7 @@ const LOGIN_SESSION_STATUS_PENDING: &str = "pending";
 const LOGIN_SESSION_STATUS_COMPLETED: &str = "completed";
 const LOGIN_SESSION_STATUS_FAILED: &str = "failed";
 const LOGIN_SESSION_STATUS_EXPIRED: &str = "expired";
+const LOGIN_SESSION_UPDATED_AT_HEADER: &str = "x-codex-login-session-updated-at";
 const IMPORT_VALIDATION_STATUS_OK: &str = "ok";
 const IMPORT_VALIDATION_STATUS_OK_EXHAUSTED: &str = "ok_exhausted";
 const IMPORT_VALIDATION_STATUS_INVALID: &str = "invalid";
@@ -1129,6 +1130,7 @@ pub(crate) struct LoginSessionStatusResponse {
     auth_url: Option<String>,
     redirect_uri: Option<String>,
     expires_at: String,
+    updated_at: String,
     account_id: Option<i64>,
     error: Option<String>,
 }
@@ -4793,6 +4795,7 @@ pub(crate) async fn create_oauth_login_session(
         auth_url: Some(auth_url),
         redirect_uri: Some(redirect_uri),
         expires_at: expires_at_iso,
+        updated_at: now_iso,
         account_id: payload.account_id,
         error: None,
     }))
@@ -4854,6 +4857,18 @@ pub(crate) async fn update_oauth_login_session(
             StatusCode::BAD_REQUEST,
             "This login session belongs to an existing account and cannot be edited.".to_string(),
         ));
+    }
+    let requested_updated_at = headers
+        .get(LOGIN_SESSION_UPDATED_AT_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    if let Some(requested_updated_at) = requested_updated_at.as_deref() {
+        if !mailbox_updated_at_is_newer_or_equal(requested_updated_at, &session.updated_at) {
+            tx.commit().await.map_err(internal_error_tuple)?;
+            return Ok(Json(login_session_to_response(&session)));
+        }
     }
 
     let UpdateOauthLoginSessionRequest {
@@ -4940,7 +4955,7 @@ pub(crate) async fn update_oauth_login_session(
     } else {
         None
     };
-    let now_iso = format_utc_iso(Utc::now());
+    let now_iso = requested_updated_at.unwrap_or_else(|| format_utc_iso(Utc::now()));
     sqlx::query(
         r#"
         UPDATE pool_oauth_login_sessions
@@ -8788,6 +8803,7 @@ fn login_session_to_response(row: &OauthLoginSessionRow) -> LoginSessionStatusRe
             None
         },
         expires_at: row.expires_at.clone(),
+        updated_at: row.updated_at.clone(),
         account_id: row.account_id,
         error: row.error_message.clone(),
     }
@@ -18998,6 +19014,96 @@ mod tests {
             stored.mailbox_address.as_deref(),
             Some("pending-sync@mail-tw.707079.xyz")
         );
+    }
+
+    #[tokio::test]
+    async fn update_oauth_login_session_ignores_stale_ordering_updates() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let created = create_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(CreateOauthLoginSessionRequest {
+                display_name: Some("Ordered Pending".to_string()),
+                group_name: Some("alpha".to_string()),
+                note: Some("before".to_string()),
+                group_note: Some("alpha note".to_string()),
+                account_id: None,
+                tag_ids: vec![],
+                is_mother: Some(false),
+                mailbox_session_id: None,
+                mailbox_address: None,
+            }),
+        )
+        .await
+        .expect("create oauth login session")
+        .0;
+        let created_updated_at =
+            parse_rfc3339_utc(&created.updated_at).expect("created updated_at should parse");
+        let newer_updated_at = format_utc_iso(created_updated_at + ChronoDuration::seconds(2));
+        let stale_updated_at = format_utc_iso(created_updated_at + ChronoDuration::seconds(1));
+
+        let mut newer_headers = HeaderMap::new();
+        newer_headers.insert(
+            LOGIN_SESSION_UPDATED_AT_HEADER,
+            header::HeaderValue::from_str(&newer_updated_at).expect("valid updated_at header"),
+        );
+        let newer = update_oauth_login_session(
+            State(state.clone()),
+            newer_headers,
+            AxumPath(created.login_id.clone()),
+            Json(UpdateOauthLoginSessionRequest {
+                display_name: OptionalField::Value("Newest Pending".to_string()),
+                group_name: OptionalField::Value("beta".to_string()),
+                note: OptionalField::Value("newest note".to_string()),
+                group_note: OptionalField::Value("beta note".to_string()),
+                tag_ids: OptionalField::Value(vec![]),
+                is_mother: OptionalField::Value(true),
+                mailbox_session_id: OptionalField::Missing,
+                mailbox_address: OptionalField::Missing,
+            }),
+        )
+        .await
+        .expect("apply newer oauth login session update")
+        .0;
+        assert_eq!(newer.updated_at, newer_updated_at);
+
+        let mut stale_headers = HeaderMap::new();
+        stale_headers.insert(
+            LOGIN_SESSION_UPDATED_AT_HEADER,
+            header::HeaderValue::from_str(&stale_updated_at).expect("valid updated_at header"),
+        );
+        let stale = update_oauth_login_session(
+            State(state.clone()),
+            stale_headers,
+            AxumPath(created.login_id.clone()),
+            Json(UpdateOauthLoginSessionRequest {
+                display_name: OptionalField::Value("Stale Pending".to_string()),
+                group_name: OptionalField::Value("gamma".to_string()),
+                note: OptionalField::Value("stale note".to_string()),
+                group_note: OptionalField::Value("gamma note".to_string()),
+                tag_ids: OptionalField::Value(vec![]),
+                is_mother: OptionalField::Value(false),
+                mailbox_session_id: OptionalField::Missing,
+                mailbox_address: OptionalField::Missing,
+            }),
+        )
+        .await
+        .expect("stale oauth login session update should be ignored")
+        .0;
+
+        assert_eq!(stale.login_id, created.login_id);
+        assert_eq!(stale.updated_at, newer_updated_at);
+
+        let stored = load_login_session_by_login_id(&state.pool, &created.login_id)
+            .await
+            .expect("load stored login session")
+            .expect("stored login session should exist");
+        assert_eq!(stored.display_name.as_deref(), Some("Newest Pending"));
+        assert_eq!(stored.group_name.as_deref(), Some("beta"));
+        assert_eq!(stored.note.as_deref(), Some("newest note"));
+        assert_eq!(stored.group_note.as_deref(), Some("beta note"));
+        assert_eq!(stored.is_mother, 1);
+        assert_eq!(stored.updated_at, newer_updated_at);
     }
 
     #[tokio::test]

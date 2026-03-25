@@ -1591,6 +1591,44 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(updateOauthLogin.mock.lastCall?.[1]).not.toHaveProperty("groupNote");
   });
 
+  it("flushes pending single oauth metadata before copying the oauth url", async () => {
+    vi.useFakeTimers();
+    const updateOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    mockUpstreamAccounts({ updateOauthLogin });
+    render();
+
+    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth");
+    await flushAsync();
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+
+    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth Copied");
+    await flushAsync();
+    expect(updateOauthLogin).not.toHaveBeenCalled();
+
+    clickButton(/Copy OAuth URL/i);
+    await flushAsync();
+
+    expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
+      displayName: "Fresh OAuth Copied",
+      groupName: "",
+      note: "",
+      tagIds: [],
+      isMother: false,
+      mailboxSessionId: "",
+      mailboxAddress: "",
+    });
+    expect(updateOauthLogin.mock.lastCall?.[1]).not.toHaveProperty("groupNote");
+  });
+
   it("dispatches a keepalive sync for the latest oauth metadata on pagehide", async () => {
     vi.useFakeTimers();
     let resolveFirstSync:
