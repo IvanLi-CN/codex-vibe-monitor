@@ -110,7 +110,6 @@ type GroupNoteEditorState = {
 type MailboxCopyTone = "idle" | "copied" | "manual";
 const MAILBOX_REFRESH_INTERVAL_MS = 5_000;
 const MAILBOX_REFRESH_TICK_MS = 1_000;
-const OAUTH_SESSION_SYNC_DEBOUNCE_MS = 250;
 const IMPORTED_OAUTH_DUPLICATE_DETAIL =
   "duplicate credential in current import selection";
 
@@ -121,7 +120,7 @@ type PendingOauthSessionSnapshot = {
 };
 
 type PendingOauthSessionSyncRecord = {
-  syncedSignature: string;
+  syncedSignature: string | null;
   pendingSignature: string;
   timerId: number | null;
   inFlight: Promise<void> | null;
@@ -1469,10 +1468,6 @@ export default function UpstreamAccountCreatePage() {
       let record = pendingOauthSessionSyncRef.current[loginId];
       let snapshot = getPendingOauthSessionSnapshot(loginId);
       if (!record || !snapshot) return;
-      if (record.timerId != null) {
-        window.clearTimeout(record.timerId);
-        record.timerId = null;
-      }
       record.pendingSignature = snapshot.signature;
       if (record.inFlight) {
         await record.inFlight;
@@ -1531,13 +1526,12 @@ export default function UpstreamAccountCreatePage() {
       if (!snapshot) return;
       let record = pendingOauthSessionSyncRef.current[loginId];
       if (!record) {
-        pendingOauthSessionSyncRef.current[loginId] = {
-          syncedSignature: snapshot.signature,
+        record = pendingOauthSessionSyncRef.current[loginId] = {
+          syncedSignature: null,
           pendingSignature: snapshot.signature,
           timerId: null,
           inFlight: null,
         };
-        return;
       }
       record.pendingSignature = snapshot.signature;
       if (record.timerId != null) {
@@ -1574,15 +1568,14 @@ export default function UpstreamAccountCreatePage() {
     const activeLoginIds = new Set(activeSnapshots.map((snapshot) => snapshot.loginId));
 
     for (const snapshot of activeSnapshots) {
-      const existing = pendingOauthSessionSyncRef.current[snapshot.loginId];
+      let existing = pendingOauthSessionSyncRef.current[snapshot.loginId];
       if (!existing) {
-        pendingOauthSessionSyncRef.current[snapshot.loginId] = {
-          syncedSignature: snapshot.signature,
+        existing = pendingOauthSessionSyncRef.current[snapshot.loginId] = {
+          syncedSignature: null,
           pendingSignature: snapshot.signature,
           timerId: null,
           inFlight: null,
         };
-        continue;
       }
       existing.pendingSignature = snapshot.signature;
       if (existing.syncedSignature === snapshot.signature) {
@@ -1592,12 +1585,7 @@ export default function UpstreamAccountCreatePage() {
         }
         continue;
       }
-      if (existing.timerId != null) {
-        window.clearTimeout(existing.timerId);
-      }
-      existing.timerId = window.setTimeout(() => {
-        void runPendingOauthSessionSync(snapshot.loginId).catch(() => undefined);
-      }, OAUTH_SESSION_SYNC_DEBOUNCE_MS);
+      void runPendingOauthSessionSync(snapshot.loginId).catch(() => undefined);
     }
 
     for (const [loginId, record] of Object.entries(pendingOauthSessionSyncRef.current)) {
