@@ -584,6 +584,25 @@ function findDisplayNameConflict(
   );
 }
 
+function invalidatePendingSingleOauthSession(
+  currentSession: LoginSessionStatusResponse | null,
+  setSession: (value: LoginSessionStatusResponse | null) => void,
+  setSessionHint: (value: string | null) => void,
+  setOauthCallbackUrl: (value: string) => void,
+  setManualCopyOpen: (value: boolean) => void,
+  setActionError: (value: string | null) => void,
+  setOauthDuplicateWarning: (value: DuplicateWarningState | null) => void,
+  regenerateRequiredLabel: string,
+) {
+  if (!currentSession || currentSession.status !== "pending") return;
+  setSession(null);
+  setSessionHint(regenerateRequiredLabel);
+  setOauthCallbackUrl("");
+  setManualCopyOpen(false);
+  setActionError(null);
+  setOauthDuplicateWarning(null);
+}
+
 function buildOauthLoginSessionUpdatePayload({
   displayName,
   groupName,
@@ -1379,6 +1398,36 @@ export default function UpstreamAccountCreatePage() {
     }
     return null;
   };
+  const invalidateCurrentSingleOauthSession = useCallback(() => {
+    invalidatePendingSingleOauthSession(
+      session,
+      setSession,
+      setSessionHint,
+      setOauthCallbackUrl,
+      setManualCopyOpen,
+      setActionError,
+      setOauthDuplicateWarning,
+      t("accountPool.upstreamAccounts.oauth.regenerateRequired"),
+    );
+  }, [session, t]);
+  const invalidateRelinkPendingOauthSession = useCallback(() => {
+    if (!isRelinking) return;
+    invalidateCurrentSingleOauthSession();
+  }, [invalidateCurrentSingleOauthSession, isRelinking]);
+  const invalidateRelinkPendingOauthSessionForMailboxChange = useCallback(
+    (nextInput: string) => {
+      if (!isRelinking || !activeOauthMailboxSession) return;
+      if (mailboxInputMatchesSession(nextInput, activeOauthMailboxSession)) {
+        return;
+      }
+      invalidateCurrentSingleOauthSession();
+    },
+    [
+      activeOauthMailboxSession,
+      invalidateCurrentSingleOauthSession,
+      isRelinking,
+    ],
+  );
   const singleOauthSessionSnapshot = useMemo(() => {
     if (isRelinking || session?.status !== "pending") return null;
     return buildPendingOauthSessionSnapshot(
@@ -2224,6 +2273,10 @@ export default function UpstreamAccountCreatePage() {
     const normalizedGroupName = normalizeGroupName(groupNoteEditor.groupName);
     if (!normalizedGroupName) return;
     const normalizedNote = groupNoteEditor.note.trim();
+    const shouldInvalidateRelinkSessionForDraftGroup =
+      isRelinking &&
+      normalizeGroupName(oauthGroupName) === normalizedGroupName &&
+      resolvePendingGroupNoteForName(oauthGroupName).trim() !== normalizedNote;
     setGroupNoteError(null);
     if (!groupNoteEditor.existing) {
       setGroupDraftNotes((current) => {
@@ -2235,6 +2288,9 @@ export default function UpstreamAccountCreatePage() {
         }
         return next;
       });
+      if (shouldInvalidateRelinkSessionForDraftGroup) {
+        invalidateRelinkPendingOauthSession();
+      }
       setGroupNoteEditor((current) => ({ ...current, open: false }));
       return;
     }
@@ -3056,6 +3112,7 @@ export default function UpstreamAccountCreatePage() {
       setOauthMailboxError(null);
       setOauthMailboxTone("idle");
       setOauthMailboxCodeTone("idle");
+      invalidateRelinkPendingOauthSession();
       if (previousSessionId && previousSessionId !== response.sessionId) {
         void removeOauthMailboxSession(previousSessionId).catch(
           () => undefined,
@@ -3071,6 +3128,7 @@ export default function UpstreamAccountCreatePage() {
   const handleAttachOauthMailbox = async () => {
     const normalizedAddress = oauthMailboxInput.trim();
     if (!normalizedAddress) {
+      invalidateRelinkPendingOauthSessionForMailboxChange("");
       setOauthMailboxSession(null);
       setOauthMailboxStatus(null);
       setOauthMailboxError(null);
@@ -3091,9 +3149,14 @@ export default function UpstreamAccountCreatePage() {
       setOauthMailboxTone("idle");
       setOauthMailboxCodeTone("idle");
       if (isSupportedMailboxSession(response)) {
+        if (!previousSessionId || previousSessionId !== response.sessionId) {
+          invalidateRelinkPendingOauthSession();
+        }
         setOauthDisplayName((current) =>
           current.trim() ? current : response.emailAddress,
         );
+      } else if (previousSessionId) {
+        invalidateRelinkPendingOauthSession();
       }
       if (
         previousSessionId &&
@@ -4166,6 +4229,7 @@ export default function UpstreamAccountCreatePage() {
                         onChange={(event) => {
                           setOauthDisplayName(event.target.value);
                           setActionError(null);
+                          invalidateRelinkPendingOauthSession();
                         }}
                       />
                       {oauthDisplayNameConflict ? (
@@ -4193,6 +4257,9 @@ export default function UpstreamAccountCreatePage() {
                             const nextValue = event.target.value;
                             setOauthMailboxInput(nextValue);
                             setActionError(null);
+                            invalidateRelinkPendingOauthSessionForMailboxChange(
+                              nextValue,
+                            );
                             if (
                               oauthMailboxSession &&
                               (!isSupportedMailboxSession(
@@ -4381,6 +4448,7 @@ export default function UpstreamAccountCreatePage() {
                         onValueChange={(value) => {
                           setOauthGroupName(value);
                           setActionError(null);
+                          invalidateRelinkPendingOauthSession();
                         }}
                         className="min-w-0 flex-1"
                       />
@@ -4421,6 +4489,7 @@ export default function UpstreamAccountCreatePage() {
                     onToggle={() => {
                       setOauthIsMother((current) => !current);
                       setActionError(null);
+                      invalidateRelinkPendingOauthSession();
                     }}
                   />
                   <label className="field">
@@ -4434,6 +4503,7 @@ export default function UpstreamAccountCreatePage() {
                       onChange={(event) => {
                         setOauthNote(event.target.value);
                         setActionError(null);
+                        invalidateRelinkPendingOauthSession();
                       }}
                     />
                   </label>
@@ -4446,6 +4516,7 @@ export default function UpstreamAccountCreatePage() {
                     onChange={(nextTagIds) => {
                       setOauthTagIds(nextTagIds);
                       setActionError(null);
+                      invalidateRelinkPendingOauthSession();
                     }}
                     onCreateTag={handleCreateTag}
                     onUpdateTag={updateTag}

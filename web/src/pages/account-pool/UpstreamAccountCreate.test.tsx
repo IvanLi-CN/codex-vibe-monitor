@@ -2056,7 +2056,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     });
   });
 
-  it("skips pending oauth live sync for relink sessions", async () => {
+  it("invalidates pending relink sessions instead of live syncing metadata edits", async () => {
     vi.useFakeTimers();
     const updateOauthLogin = vi.fn();
     mockUpstreamAccounts({ updateOauthLogin });
@@ -2088,9 +2088,56 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     await flushAsync();
 
     expect(updateOauthLogin).not.toHaveBeenCalled();
-    expect(host?.textContent).not.toContain(
-      "This login session belongs to an existing account and cannot be edited.",
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(true);
+    expect(host?.textContent).toContain(
+      "Generate a fresh OAuth URL before completing login.",
     );
+  });
+
+  it("invalidates pending relink sessions when the mailbox binding changes", async () => {
+    vi.useFakeTimers();
+    const updateOauthLogin = vi.fn();
+    mockUpstreamAccounts({ updateOauthLogin });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?accountId=5",
+      state: {
+        draft: {
+          oauth: {
+            displayName: "Relink Draft",
+            mailboxSession: {
+              supported: true,
+              sessionId: "mailbox-relink-1",
+              emailAddress: "linked@example.com",
+              expiresAt: "2026-03-13T10:00:00.000Z",
+              source: "attached",
+            },
+            mailboxInput: "linked@example.com",
+            session: {
+              loginId: "login-relink-1",
+              status: "pending",
+              authUrl: "https://auth.openai.com/authorize?login=relink-1",
+              redirectUri: "http://localhost:1455/oauth/callback",
+              expiresAt: "2026-03-13T10:00:00.000Z",
+              accountId: 5,
+              error: null,
+            },
+            sessionHint: "OAuth URL ready",
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    setInputValue('input[name="oauthMailboxInput"]', "different@example.com");
+    await flushAsync();
+
+    expect(updateOauthLogin).not.toHaveBeenCalled();
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(true);
+    expect(host?.textContent).toContain(
+      "Generate a fresh OAuth URL before completing login.",
+    );
+    expect(host?.textContent).not.toContain("Attached mailbox");
   });
 
   it("retries an unchanged failed single oauth sync after a transient error", async () => {
