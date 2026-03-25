@@ -2567,6 +2567,8 @@ function normalizeLoginSessionStatusResponse(
     updatedAt: typeof payload.updatedAt === "string" ? payload.updatedAt : null,
     accountId: accountId == null ? null : accountId,
     error: typeof payload.error === "string" ? payload.error : null,
+    syncApplied:
+      typeof payload.syncApplied === "boolean" ? payload.syncApplied : null,
   };
 }
 

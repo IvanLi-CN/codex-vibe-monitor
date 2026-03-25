@@ -4851,11 +4851,14 @@ pub(crate) async fn update_oauth_login_session(
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string);
+    // Completed-session repairs are only valid for the last pending baseline that
+    // lost the race to callback completion. Once a repair lands, newer updates must
+    // advance the session baseline so older in-flight PATCHes cannot replay.
     let allows_completed_race_repair = session.status == LOGIN_SESSION_STATUS_COMPLETED
         && session.account_id.is_some()
         && requested_base_updated_at
             .as_deref()
-            .is_some_and(|value| value != session.updated_at);
+            .is_some_and(|value| value == session.updated_at);
     if session.status != LOGIN_SESSION_STATUS_PENDING && !allows_completed_race_repair {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -8872,8 +8875,7 @@ async fn complete_login_session_with_executor(
         UPDATE pool_oauth_login_sessions
         SET status = ?2,
             account_id = ?3,
-            consumed_at = ?4,
-            updated_at = ?4
+            consumed_at = ?4
         WHERE login_id = ?1
         "#,
     )
@@ -19683,6 +19685,147 @@ mod tests {
         .await
         .expect("load repaired group note");
         assert_eq!(group_note.as_deref(), Some("after group note"));
+
+        let completed_session = load_login_session_by_login_id(&state.pool, &created.login_id)
+            .await
+            .expect("reload completed session")
+            .expect("completed session should still exist");
+        assert_ne!(completed_session.updated_at, created.updated_at);
+        assert!(completed_session.consumed_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn update_oauth_login_session_rejects_stale_completed_race_repairs() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let created = create_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(CreateOauthLoginSessionRequest {
+                display_name: Some("Race Before".to_string()),
+                group_name: Some("race-group".to_string()),
+                note: Some("before note".to_string()),
+                group_note: Some("before group note".to_string()),
+                account_id: None,
+                tag_ids: vec![],
+                is_mother: Some(false),
+                mailbox_session_id: None,
+                mailbox_address: None,
+            }),
+        )
+        .await
+        .expect("create oauth login session")
+        .0;
+
+        let pending_session = load_login_session_by_login_id(&state.pool, &created.login_id)
+            .await
+            .expect("load pending session")
+            .expect("pending session should exist");
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let encrypted_credentials = encrypt_credentials(
+            crypto_key,
+            &StoredCredentials::Oauth(StoredOauthCredentials {
+                access_token: "race-access".to_string(),
+                refresh_token: "race-refresh".to_string(),
+                id_token: test_id_token(
+                    "race@example.com",
+                    Some("org_race"),
+                    Some("user_race"),
+                    Some("team"),
+                ),
+                token_type: Some("Bearer".to_string()),
+            }),
+        )
+        .expect("encrypt oauth credentials");
+        let account_id = persist_oauth_callback_inner(
+            state.as_ref(),
+            PersistOauthCallbackInput {
+                display_name: pending_session
+                    .display_name
+                    .clone()
+                    .expect("display name should be stored"),
+                session: pending_session,
+                claims: test_claims("race@example.com", Some("org_race"), Some("user_race")),
+                encrypted_credentials,
+                token_expires_at: "2026-04-01T00:00:00Z".to_string(),
+            },
+        )
+        .await
+        .expect("persist oauth callback");
+
+        let completed_session = load_login_session_by_login_id(&state.pool, &created.login_id)
+            .await
+            .expect("load completed session")
+            .expect("completed session should exist");
+        assert_eq!(completed_session.updated_at, created.updated_at);
+        assert!(completed_session.consumed_at.is_some());
+
+        let mut first_headers = HeaderMap::new();
+        first_headers.insert(
+            LOGIN_SESSION_BASE_UPDATED_AT_HEADER,
+            header::HeaderValue::from_str(&created.updated_at).expect("valid updated_at header"),
+        );
+        let first_repair = update_oauth_login_session(
+            State(state.clone()),
+            first_headers,
+            AxumPath(created.login_id.clone()),
+            Json(UpdateOauthLoginSessionRequest {
+                display_name: OptionalField::Value("Race Latest".to_string()),
+                group_name: OptionalField::Value("race-group".to_string()),
+                note: OptionalField::Value("latest note".to_string()),
+                group_note: OptionalField::Value("latest group note".to_string()),
+                tag_ids: OptionalField::Value(vec![]),
+                is_mother: OptionalField::Value(true),
+                mailbox_session_id: OptionalField::Missing,
+                mailbox_address: OptionalField::Missing,
+            }),
+        )
+        .await
+        .expect("apply latest repair")
+        .0;
+
+        assert_ne!(first_repair.updated_at, created.updated_at);
+        assert_eq!(first_repair.account_id, Some(account_id));
+
+        let mut stale_headers = HeaderMap::new();
+        stale_headers.insert(
+            LOGIN_SESSION_BASE_UPDATED_AT_HEADER,
+            header::HeaderValue::from_str(&created.updated_at).expect("valid updated_at header"),
+        );
+        let stale_err = update_oauth_login_session(
+            State(state.clone()),
+            stale_headers,
+            AxumPath(created.login_id.clone()),
+            Json(UpdateOauthLoginSessionRequest {
+                display_name: OptionalField::Value("Race Stale".to_string()),
+                group_name: OptionalField::Value("stale-group".to_string()),
+                note: OptionalField::Value("stale note".to_string()),
+                group_note: OptionalField::Value("stale group note".to_string()),
+                tag_ids: OptionalField::Value(vec![]),
+                is_mother: OptionalField::Value(false),
+                mailbox_session_id: OptionalField::Missing,
+                mailbox_address: OptionalField::Missing,
+            }),
+        )
+        .await
+        .expect_err("reject stale repair");
+        assert_eq!(stale_err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            stale_err.1,
+            "This login session can no longer be edited.".to_string()
+        );
+
+        let account = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load account after stale repair rejection")
+            .expect("oauth account should exist");
+        assert_eq!(account.display_name, "Race Latest");
+        assert_eq!(account.group_name.as_deref(), Some("race-group"));
+        assert_eq!(account.note.as_deref(), Some("latest note"));
+        assert_eq!(account.is_mother, 1);
     }
 
     #[tokio::test]
