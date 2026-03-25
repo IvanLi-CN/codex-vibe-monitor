@@ -7956,6 +7956,7 @@ fn build_summary_from_row(
     let status = effective_account_status(row);
     let enable_status = derive_upstream_account_enable_status(row.enabled != 0);
     let health_status = derive_upstream_account_health_status(
+        &row.kind,
         row.enabled != 0,
         &row.status,
         row.last_error.as_deref(),
@@ -7980,6 +7981,7 @@ fn build_summary_from_row(
         now,
     );
     let display_status = classify_upstream_account_display_status(
+        &row.kind,
         row.enabled != 0,
         &row.status,
         row.last_error.as_deref(),
@@ -9975,6 +9977,7 @@ fn derive_upstream_account_sync_state(enabled: bool, raw_status: &str) -> &'stat
 }
 
 fn derive_upstream_account_health_status(
+    account_kind: &str,
     enabled: bool,
     raw_status: &str,
     last_error: Option<&str>,
@@ -10008,6 +10011,11 @@ fn derive_upstream_account_health_status(
     }
     if status == UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH
         || last_action_reason_code == Some(UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED)
+        || (account_kind == UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX
+            && status == UPSTREAM_ACCOUNT_STATUS_ERROR
+            && is_explicit_reauth_error_message(error_message)
+            && !is_scope_permission_error_message(error_message)
+            && !is_bridge_error_message(error_message))
     {
         return UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH;
     }
@@ -10105,6 +10113,7 @@ fn derive_upstream_account_work_status(
 }
 
 fn classify_upstream_account_display_status(
+    account_kind: &str,
     enabled: bool,
     raw_status: &str,
     last_error: Option<&str>,
@@ -10122,6 +10131,7 @@ fn classify_upstream_account_display_status(
         return UPSTREAM_ACCOUNT_STATUS_SYNCING;
     }
     let health_status = derive_upstream_account_health_status(
+        account_kind,
         enabled,
         raw_status,
         last_error,
@@ -10792,6 +10802,10 @@ async fn record_account_sync_failure(
             last_synced_at = ?3,
             last_error = ?4,
             last_error_at = ?3,
+            last_route_failure_at = NULL,
+            last_route_failure_kind = NULL,
+            cooldown_until = NULL,
+            consecutive_route_failures = 0,
             updated_at = ?3
         WHERE id = ?1
         "#,
@@ -16364,10 +16378,8 @@ mod tests {
             summary.last_action_reason_code.as_deref(),
             Some(UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR)
         );
-        assert_eq!(
-            row.last_route_failure_kind.as_deref(),
-            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
-        );
+        assert!(row.last_route_failure_kind.is_none());
+        assert!(row.cooldown_until.is_none());
 
         let detail = load_upstream_account_detail(&pool, account_id)
             .await
@@ -16439,6 +16451,63 @@ mod tests {
 
         assert_ne!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH);
         assert_ne!(summary.health_status, UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH);
+        assert_eq!(summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
+    }
+
+    #[tokio::test]
+    async fn legacy_oauth_explicit_reauth_error_without_reason_code_still_exports_needs_reauth() {
+        let pool = test_pool().await;
+        let account_id = insert_oauth_account(&pool, "Legacy OAuth Reauth").await;
+        let now_iso = format_utc_iso(Utc::now());
+
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET status = ?2,
+                last_error = ?3,
+                last_error_at = ?4,
+                last_route_failure_at = ?4,
+                last_route_failure_kind = ?5,
+                last_action = ?6,
+                last_action_source = ?7,
+                last_action_reason_code = NULL,
+                last_action_reason_message = ?3,
+                last_action_http_status = ?8,
+                last_action_at = ?4,
+                updated_at = ?4
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .bind(UPSTREAM_ACCOUNT_STATUS_ERROR)
+        .bind(
+            "pool upstream responded with 403: Authentication token has been invalidated, please sign in again",
+        )
+        .bind(&now_iso)
+        .bind(PROXY_FAILURE_UPSTREAM_HTTP_AUTH)
+        .bind(UPSTREAM_ACCOUNT_ACTION_SYNC_FAILED)
+        .bind(UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE)
+        .bind(403)
+        .execute(&pool)
+        .await
+        .expect("seed legacy oauth reauth state");
+
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load updated row")
+            .expect("updated row exists");
+        let summary = build_summary_from_row(
+            &row,
+            None,
+            row.last_activity_at.clone(),
+            vec![],
+            None,
+            0,
+            Utc::now(),
+        );
+
+        assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH);
+        assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH);
         assert_eq!(summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
     }
 
@@ -17270,6 +17339,13 @@ mod tests {
             "user_retry_reauth",
         )
         .await;
+        seed_route_cooldown(
+            &state.pool,
+            account_id,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
+            300,
+        )
+        .await;
         let row = load_upstream_account_row(&state.pool, account_id)
             .await
             .expect("load oauth row")
@@ -17302,6 +17378,9 @@ mod tests {
             )
         );
         assert!(after.last_action_at.is_some());
+        assert!(after.last_route_failure_kind.is_none());
+        assert!(after.cooldown_until.is_none());
+        assert_eq!(after.consecutive_route_failures, 0);
 
         let decrypted = decrypt_credentials(
             crypto_key,
@@ -17412,6 +17491,13 @@ mod tests {
             "user_retry_gateway",
         )
         .await;
+        seed_route_cooldown(
+            &state.pool,
+            account_id,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
+            300,
+        )
+        .await;
         let row = load_upstream_account_row(&state.pool, account_id)
             .await
             .expect("load oauth row")
@@ -17442,6 +17528,9 @@ mod tests {
             Some("usage endpoint returned 502 Bad Gateway: gateway temporarily unavailable")
         );
         assert!(after.last_action_at.is_some());
+        assert!(after.last_route_failure_kind.is_none());
+        assert!(after.cooldown_until.is_none());
+        assert_eq!(after.consecutive_route_failures, 0);
 
         let summary = build_summary_from_row(
             &after,
