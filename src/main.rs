@@ -14077,6 +14077,10 @@ async fn proxy_openai_v1_capture_target(
         let mut response_raw_writer =
             StreamingRawPayloadWriter::new(&state_for_task.config, &invoke_id_for_task, "response");
         let mut stream_response_parser = StreamResponsePayloadChunkParser::default();
+        let mut nonstream_parse_buffer =
+            (!request_info_for_task.is_stream && !response_is_event_stream_for_task).then(|| {
+                BoundedResponseParseBuffer::new(BOUNDED_NON_STREAM_RESPONSE_PARSE_LIMIT_BYTES)
+            });
         let mut stream_error: Option<String> = None;
         let mut downstream_closed = false;
         let mut forwarded_chunks = 0usize;
@@ -14086,6 +14090,9 @@ async fn proxy_openai_v1_capture_target(
             response_preview.append(&chunk);
             response_raw_writer.append(&chunk).await;
             stream_response_parser.ingest_bytes(&chunk);
+            if let Some(buffer) = nonstream_parse_buffer.as_mut() {
+                buffer.append(&chunk);
+            }
             forwarded_chunks = forwarded_chunks.saturating_add(1);
             forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
             stream_started_at = Some(Instant::now());
@@ -14219,6 +14226,9 @@ async fn proxy_openai_v1_capture_target(
                     response_preview.append(&chunk);
                     response_raw_writer.append(&chunk).await;
                     stream_response_parser.ingest_bytes(&chunk);
+                    if let Some(buffer) = nonstream_parse_buffer.as_mut() {
+                        buffer.append(&chunk);
+                    }
                     forwarded_chunks = forwarded_chunks.saturating_add(1);
                     forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
                     if !downstream_closed && tx.send(Ok(chunk)).await.is_err() {
@@ -14277,6 +14287,23 @@ async fn proxy_openai_v1_capture_target(
         let resp_parse_started = Instant::now();
         let mut response_info = if response_is_stream_hint && streamed_response_saw_fields {
             streamed_response_info
+        } else if !response_is_stream_hint {
+            nonstream_parse_buffer
+                .take()
+                .map(|buffer| {
+                    buffer.into_response_info(
+                        capture_target,
+                        upstream_content_encoding_for_task.as_deref(),
+                    )
+                })
+                .unwrap_or_else(|| {
+                    parse_target_response_payload(
+                        capture_target,
+                        &preview_bytes,
+                        false,
+                        upstream_content_encoding_for_task.as_deref(),
+                    )
+                })
         } else {
             match tokio::task::spawn_blocking({
                 let preview_bytes_for_parse = preview_bytes.clone();
@@ -16903,6 +16930,49 @@ impl RawResponsePreviewBuffer {
 
     fn into_preview(self) -> String {
         build_raw_response_preview(&self.bytes)
+    }
+}
+
+struct BoundedResponseParseBuffer {
+    bytes: Vec<u8>,
+    limit: usize,
+    exceeded_limit: bool,
+}
+
+impl BoundedResponseParseBuffer {
+    fn new(limit: usize) -> Self {
+        Self {
+            bytes: Vec::new(),
+            limit,
+            exceeded_limit: false,
+        }
+    }
+
+    fn append(&mut self, chunk: &[u8]) {
+        if self.exceeded_limit || chunk.is_empty() {
+            return;
+        }
+
+        let remaining = self.limit.saturating_sub(self.bytes.len());
+        let take_len = remaining.min(chunk.len());
+        if take_len > 0 {
+            self.bytes.extend_from_slice(&chunk[..take_len]);
+        }
+        if take_len < chunk.len() {
+            self.exceeded_limit = true;
+        }
+    }
+
+    fn into_response_info(
+        self,
+        target: ProxyCaptureTarget,
+        content_encoding: Option<&str>,
+    ) -> ResponseCaptureInfo {
+        if self.exceeded_limit {
+            response_capture_info_with_reason(PROXY_USAGE_MISSING_NON_STREAM_PARSE_SKIPPED)
+        } else {
+            parse_target_response_payload(target, &self.bytes, false, content_encoding)
+        }
     }
 }
 

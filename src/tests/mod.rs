@@ -20734,6 +20734,113 @@ async fn proxy_capture_target_large_nonstream_json_skips_bounded_parse_and_keeps
 }
 
 #[tokio::test]
+async fn proxy_capture_target_nonstream_usage_survives_response_raw_truncation() {
+    #[derive(sqlx::FromRow)]
+    struct PersistedCompactRow {
+        status: Option<String>,
+        input_tokens: Option<i64>,
+        output_tokens: Option<i64>,
+        total_tokens: Option<i64>,
+        response_raw_path: Option<String>,
+        response_raw_size: Option<i64>,
+        response_raw_truncated: i64,
+        response_raw_truncated_reason: Option<String>,
+        payload: Option<String>,
+    }
+
+    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
+    let raw_dir = make_temp_test_dir("proxy-compact-truncated-raw");
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.proxy_raw_dir = raw_dir.clone();
+    config.proxy_raw_max_bytes = Some(96);
+    let state = test_state_from_config(config, true).await;
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.1-codex-max",
+        "previous_response_id": "resp_prev_truncated",
+        "input": [{ "role": "user", "content": "compact this thread" }]
+    }))
+    .expect("serialize compact request body");
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses/compact".parse().expect("valid compact uri")),
+        Method::POST,
+        HeaderMap::new(),
+        Body::from(request_body),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let _ = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read compact proxy response body");
+
+    let mut row: Option<PersistedCompactRow> = None;
+    for _ in 0..50 {
+        row = sqlx::query_as::<_, PersistedCompactRow>(
+            r#"
+            SELECT
+                status,
+                input_tokens,
+                output_tokens,
+                total_tokens,
+                response_raw_path,
+                response_raw_size,
+                response_raw_truncated,
+                response_raw_truncated_reason,
+                payload
+            FROM codex_invocations
+            ORDER BY id DESC
+            LIMIT 1
+            "#,
+        )
+        .fetch_optional(&state.pool)
+        .await
+        .expect("query truncated compact capture row");
+        if row.is_some() {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    let row = row.expect("truncated compact capture row should exist");
+
+    assert_eq!(row.status.as_deref(), Some("success"));
+    assert_eq!(row.input_tokens, Some(139));
+    assert_eq!(row.output_tokens, Some(438));
+    assert_eq!(row.total_tokens, Some(577));
+    assert_eq!(row.response_raw_truncated, 1);
+    assert_eq!(
+        row.response_raw_truncated_reason.as_deref(),
+        Some("max_bytes_exceeded")
+    );
+    assert!(
+        row.response_raw_size.is_some_and(|size| size > 96),
+        "stored raw size should still reflect the full response length"
+    );
+
+    let response_raw_path = row
+        .response_raw_path
+        .as_deref()
+        .expect("response raw path should be persisted");
+    let raw_bytes =
+        read_proxy_raw_bytes(response_raw_path, None).expect("read truncated compact raw response");
+    assert!(
+        raw_bytes.len() <= 96,
+        "persisted compact raw bytes should respect the configured cap"
+    );
+
+    let payload: Value = serde_json::from_str(row.payload.as_deref().unwrap_or("{}"))
+        .expect("decode payload summary");
+    assert!(payload["usageMissingReason"].is_null());
+
+    upstream_handle.abort();
+    cleanup_temp_test_dir(&raw_dir);
+}
+
+#[tokio::test]
 async fn resolve_default_source_scope_always_all() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await
