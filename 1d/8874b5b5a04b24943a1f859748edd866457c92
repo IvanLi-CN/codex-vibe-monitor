@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.25.5",
+  "base_stable_version": "1.25.4",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-25T15:52:31Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.25.5",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "cc5c1f1151b82b07e0c8a2e43a10a1a1eb908258",
+  "pr_number": 239,
+  "pr_title": "fix: avoid false pool 429 after timeout route failover",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.25.5",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.25.5,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "1d8874b5b5a04b24943a1f859748edd866457c92",
+  "type_label": "type:patch"
+}
