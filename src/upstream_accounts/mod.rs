@@ -6412,7 +6412,7 @@ async fn sync_oauth_account(
                         Err(retry_err) => {
                             record_classified_account_sync_failure(
                                 &state.pool,
-                                row,
+                                &latest_row,
                                 sync_source,
                                 &retry_err.to_string(),
                             )
@@ -6439,7 +6439,7 @@ async fn sync_oauth_account(
                 Err(refresh_err) => {
                     record_classified_account_sync_failure(
                         &state.pool,
-                        row,
+                        &latest_row,
                         sync_source,
                         &refresh_err.to_string(),
                     )
@@ -6449,8 +6449,13 @@ async fn sync_oauth_account(
             }
         }
         Err(err) => {
-            record_classified_account_sync_failure(&state.pool, row, sync_source, &err.to_string())
-                .await?;
+            record_classified_account_sync_failure(
+                &state.pool,
+                &latest_row,
+                sync_source,
+                &err.to_string(),
+            )
+            .await?;
             return Ok(());
         }
     };
@@ -18088,6 +18093,73 @@ mod tests {
         assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
         assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
         assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert_eq!(
+            summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+        );
+        assert_eq!(summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
+    }
+
+    #[tokio::test]
+    async fn classified_sync_failure_preserves_quota_marker_from_current_syncing_row() {
+        let pool = test_pool().await;
+        let account_id = insert_oauth_account(&pool, "Quota Syncing Preserve").await;
+
+        seed_hard_unavailable_route_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+        set_account_status(&pool, account_id, UPSTREAM_ACCOUNT_STATUS_SYNCING, None)
+            .await
+            .expect("mark row syncing");
+
+        let current_row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load current syncing row")
+            .expect("current syncing row exists");
+        assert_eq!(current_row.status, UPSTREAM_ACCOUNT_STATUS_SYNCING);
+
+        record_classified_account_sync_failure(
+            &pool,
+            &current_row,
+            UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
+            "usage endpoint returned 502 Bad Gateway: gateway temporarily unavailable",
+        )
+        .await
+        .expect("record retry failure against syncing row");
+
+        let after = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load syncing row after retry failure")
+            .expect("syncing row after retry failure exists");
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert_eq!(
+            after.last_action_reason_code.as_deref(),
+            Some("upstream_http_5xx")
+        );
+        assert_eq!(
+            after.last_route_failure_kind.as_deref(),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+        );
+        assert_eq!(after.last_route_failure_at, after.last_error_at);
+
+        let summary = build_summary_from_row(
+            &after,
+            None,
+            after.last_activity_at.clone(),
+            vec![],
+            None,
+            0,
+            Utc::now(),
+        );
+        assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
         assert_eq!(
             summary.work_status,
             UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
