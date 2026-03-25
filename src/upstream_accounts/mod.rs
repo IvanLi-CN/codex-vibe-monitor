@@ -12445,6 +12445,7 @@ pub(crate) async fn resolve_pool_account_for_request(
                     }
                     sticky_route_excluded_by_route_key = true;
                     sticky_route_was_excluded = true;
+                    saw_non_rate_limited_routing_candidate = true;
                 }
                 if !sticky_route_was_excluded {
                     saw_non_rate_limited_routing_candidate = true;
@@ -12503,6 +12504,7 @@ pub(crate) async fn resolve_pool_account_for_request(
         }
         if let Some(account) = prepare_pool_account(state, &row).await? {
             if excluded_upstream_route_keys.contains(&account.upstream_route_key()) {
+                saw_non_rate_limited_routing_candidate = true;
                 continue;
             }
             return Ok(PoolAccountResolution::Resolved(account));
