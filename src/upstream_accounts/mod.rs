@@ -10460,6 +10460,22 @@ fn status_preserves_current_route_failure(raw_status: &str) -> bool {
     )
 }
 
+fn account_reason_overrides_current_route_failure(
+    raw_status: &str,
+    reason_code: Option<&str>,
+) -> bool {
+    matches!(
+        reason_code,
+        Some(UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED)
+    ) || (matches!(
+        reason_code,
+        Some(
+            UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR
+                | UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE
+        )
+    ) && !status_preserves_current_route_failure(raw_status))
+}
+
 fn route_failure_kind_is_rate_limited(failure_kind: Option<&str>) -> bool {
     matches!(
         failure_kind
@@ -10518,7 +10534,7 @@ fn upstream_account_rate_limit_state_is_current(
     last_action_reason_code: Option<&str>,
 ) -> bool {
     account_reason_is_rate_limited(last_action_reason_code)
-        || (status_preserves_current_route_failure(raw_status)
+        || (!account_reason_overrides_current_route_failure(raw_status, last_action_reason_code)
             && current_route_failure_is_rate_limited(
                 last_error_at,
                 last_route_failure_at,
@@ -10534,7 +10550,7 @@ fn upstream_account_quota_exhausted_state_is_current(
     last_action_reason_code: Option<&str>,
 ) -> bool {
     account_reason_is_quota_exhausted(last_action_reason_code)
-        || (status_preserves_current_route_failure(raw_status)
+        || (!account_reason_overrides_current_route_failure(raw_status, last_action_reason_code)
             && current_route_failure_is_quota_exhausted(
                 last_error_at,
                 last_route_failure_at,
