@@ -15523,6 +15523,16 @@ async fn capture_target_pool_route_timeout_returns_no_alternate_when_only_same_r
         Some(shared_upstream_base.as_str()),
     )
     .await;
+    let exhausted_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Exhausted Other Route",
+        "route-exhausted",
+        None,
+        None,
+        Some("https://exhausted.example.com/backend-api/codex"),
+    )
+    .await;
+    insert_test_pool_limit_sample(&state, exhausted_id, Some(100.0), Some(0.0)).await;
 
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -15672,6 +15682,16 @@ async fn capture_target_pool_route_timeout_replay_failover_preserves_no_alternat
         Some(shared_upstream_base.as_str()),
     )
     .await;
+    let exhausted_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Exhausted Other Route",
+        "route-exhausted",
+        None,
+        None,
+        Some("https://exhausted.example.com/backend-api/codex"),
+    )
+    .await;
+    insert_test_pool_limit_sample(&state, exhausted_id, Some(100.0), Some(0.0)).await;
 
     let chunks = stream::iter(vec![Ok::<Bytes, io::Error>(Bytes::from_static(
         br#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-timeout-replay-no-alt-001"}"#,
