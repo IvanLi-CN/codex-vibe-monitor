@@ -3332,6 +3332,7 @@ export default function UpstreamAccountCreatePage() {
       }
       authUrlToCopy = latestSession.authUrl;
     } catch {
+      // Fall back to the last known pending auth URL on transient sync failures.
     }
     const result = await copyText(authUrlToCopy, {
       preferExecCommand: true,
@@ -3723,6 +3724,7 @@ export default function UpstreamAccountCreatePage() {
       }
       authUrlToCopy = latestSession.authUrl;
     } catch {
+      // Fall back to the last known pending auth URL on transient sync failures.
     }
 
     const result = await copyText(authUrlToCopy, {
