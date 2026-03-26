@@ -73,10 +73,11 @@
   target_program: mock-only
   capture_scope: browser-viewport
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Account Pool/Pages/Upstream Account Create/Batch OAuth/Action Tooltips
   state: generated row with bubble popover
   evidence_note: 批量 OAuth 表格首行在生成后切换成复制主按钮，并使用项目 bubble 组件展示剩余时间、绝对过期时间与重新生成入口。
+  PR: include
   image:
   ![Batch OAuth row bubble popover](./assets/batch-oauth-row-bubble.png)
 
@@ -84,10 +85,11 @@
   target_program: mock-only
   capture_scope: browser-viewport
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Account Pool/Pages/Upstream Account Create/Batch OAuth Action/Copy Popover
   state: copy bubble
   evidence_note: 行级主按钮在复制模式下打开紧凑 bubble，保留复制说明、剩余时间与重新生成动作。
+  PR: include
   image:
   ![Batch OAuth action copy bubble](./assets/batch-oauth-action-copy-popover.png)
 
@@ -95,10 +97,11 @@
   target_program: mock-only
   capture_scope: browser-viewport
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Account Pool/Pages/Upstream Account Create/Batch OAuth Action/Manual Fallback
   state: manual copy fallback
   evidence_note: 剪贴板失败时，手动复制文本和重新生成动作被收进同一个项目 bubble，而不再依赖独立复制按钮。
+  PR: include
   image:
   ![Batch OAuth action manual fallback bubble](./assets/batch-oauth-action-manual-fallback.png)
 
