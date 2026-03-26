@@ -86,6 +86,8 @@ function normalizePromptCacheInvocationPreview(
     invokeId: preview.invokeId,
     occurredAt: preview.occurredAt,
     status: preview.status?.trim() || "unknown",
+    failureClass: preview.failureClass ?? null,
+    routeMode: preview.routeMode?.trim() || null,
     model: preview.model?.trim() || null,
     totalTokens: preview.totalTokens ?? 0,
     cost: preview.cost ?? null,
@@ -100,21 +102,18 @@ function buildInvocationTableRecordFromPreview(
   preview: PromptCacheConversationInvocationPreview,
 ): ApiInvocation {
   const normalizedPreview = normalizePromptCacheInvocationPreview(preview);
-  const normalizedStatus = normalizedPreview.status.toLowerCase();
 
   return {
     id: normalizedPreview.id,
     invokeId: normalizedPreview.invokeId,
     occurredAt: normalizedPreview.occurredAt,
     status: normalizedPreview.status,
-    failureClass:
-      normalizedStatus === "success" || normalizedStatus === "completed"
-        ? "none"
-        : undefined,
+    failureClass: normalizedPreview.failureClass ?? undefined,
     model: normalizedPreview.model ?? undefined,
     totalTokens: normalizedPreview.totalTokens,
     cost: normalizedPreview.cost ?? undefined,
     endpoint: normalizedPreview.endpoint ?? undefined,
+    routeMode: normalizedPreview.routeMode ?? undefined,
     upstreamAccountId: normalizedPreview.upstreamAccountId,
     upstreamAccountName: normalizedPreview.upstreamAccountName ?? undefined,
     proxyDisplayName: normalizedPreview.proxyDisplayName ?? undefined,

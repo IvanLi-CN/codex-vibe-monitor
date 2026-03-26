@@ -102,6 +102,8 @@ function buildPreview(
     invokeId: overrides.invokeId,
     occurredAt: overrides.occurredAt,
     status: overrides.status ?? "completed",
+    failureClass: overrides.failureClass ?? null,
+    routeMode: overrides.routeMode ?? null,
     model: overrides.model ?? "gpt-5.4",
     totalTokens: overrides.totalTokens ?? 0,
     cost: overrides.cost ?? 0,
@@ -120,14 +122,12 @@ function buildHistoryRecord(
     invokeId: preview.invokeId,
     occurredAt: preview.occurredAt,
     status: preview.status,
-    failureClass:
-      preview.status === "completed" || preview.status === "success"
-        ? "none"
-        : "service_failure",
+    failureClass: preview.failureClass ?? undefined,
     totalTokens: preview.totalTokens,
     cost: preview.cost ?? undefined,
     endpoint: preview.endpoint ?? undefined,
     promptCacheKey: undefined,
+    routeMode: preview.routeMode ?? undefined,
     upstreamAccountId: preview.upstreamAccountId ?? undefined,
     upstreamAccountName: preview.upstreamAccountName ?? undefined,
     proxyDisplayName: preview.proxyDisplayName ?? undefined,

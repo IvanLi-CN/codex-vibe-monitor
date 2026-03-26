@@ -190,6 +190,8 @@ function buildRecentInvocations(
       invokeId: `live-section-${seed + 1}-${index + 1}`,
       occurredAt,
       status: index === 1 && seed % 4 === 2 ? "http_502" : "completed",
+      failureClass: index === 1 && seed % 4 === 2 ? "service_failure" : "none",
+      routeMode: "pool",
       model: index === 2 ? "gpt-5.4-mini" : "gpt-5.4",
       totalTokens: tokens,
       cost: Number((tokens / 42000).toFixed(4)),

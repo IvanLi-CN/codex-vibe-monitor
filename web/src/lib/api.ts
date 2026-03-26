@@ -902,6 +902,8 @@ export interface PromptCacheConversationInvocationPreview {
   invokeId: string;
   occurredAt: string;
   status: string;
+  failureClass: Exclude<ApiInvocation["failureClass"], undefined> | null;
+  routeMode: string | null;
   model: string | null;
   totalTokens: number;
   cost: number | null;
@@ -1334,6 +1336,10 @@ function normalizePromptCacheConversationInvocationPreview(
   const occurredAt =
     typeof payload.occurredAt === "string" ? payload.occurredAt : "";
   if (!invokeId || !occurredAt) return null;
+  const failureClass =
+    typeof payload.failureClass === "string"
+      ? payload.failureClass.trim().toLowerCase()
+      : "";
   return {
     id: normalizeFiniteNumber(payload.id) ?? 0,
     invokeId,
@@ -1342,6 +1348,17 @@ function normalizePromptCacheConversationInvocationPreview(
       typeof payload.status === "string" && payload.status.trim()
         ? payload.status.trim()
         : "unknown",
+    failureClass:
+      failureClass === "none" ||
+      failureClass === "service_failure" ||
+      failureClass === "client_failure" ||
+      failureClass === "client_abort"
+        ? failureClass
+        : null,
+    routeMode:
+      typeof payload.routeMode === "string" && payload.routeMode.trim()
+        ? payload.routeMode.trim()
+        : null,
     model:
       typeof payload.model === "string" && payload.model.trim()
         ? payload.model.trim()

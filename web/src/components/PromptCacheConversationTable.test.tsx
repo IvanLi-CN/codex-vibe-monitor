@@ -674,7 +674,9 @@ describe("PromptCacheConversationTable", () => {
               id: 11,
               invokeId: "preview-11",
               occurredAt: "2026-03-02T12:00:00Z",
-              status: "completed",
+              status: "success",
+              failureClass: "service_failure",
+              routeMode: "pool",
               model: "gpt-5.4",
               totalTokens: 3210,
               cost: 0.42,
@@ -724,7 +726,23 @@ describe("PromptCacheConversationTable", () => {
     expect(document.body.textContent).toContain("输入 / 缓存");
     expect(document.body.textContent).toContain("gpt-5.4");
     expect(document.body.textContent).toContain("Proxy West");
+    expect(document.body.textContent).toContain("失败");
     expect(document.body.textContent).toContain("3,210");
+
+    const detailToggle = document.querySelector(
+      'button[aria-controls^="records-list-details-"]',
+    ) as HTMLButtonElement | null;
+    expect(detailToggle).toBeTruthy();
+
+    await act(async () => {
+      detailToggle?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    const accountButtons = Array.from(document.querySelectorAll("button")).filter(
+      (button) => button.textContent?.includes("Pool Alpha"),
+    );
+    expect(accountButtons.length).toBeGreaterThan(0);
 
     const collapseButton = findButtonByAriaLabel("收起最近调用记录");
     expect(collapseButton).toBeTruthy();

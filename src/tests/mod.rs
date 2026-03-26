@@ -24514,6 +24514,7 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
             "proxyDisplayName": proxy_display_name,
             "endpoint": endpoint,
             "model": model,
+            "routeMode": "pool",
         });
         if let Some(account_id) = account_id {
             payload["upstreamAccountId"] = json!(account_id);
@@ -24702,6 +24703,8 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
     assert_eq!(latest.upstream_account_id, Some(404));
     assert_eq!(latest.upstream_account_name.as_deref(), Some("CRS Hidden"));
     assert_eq!(latest.endpoint.as_deref(), Some("/v1/responses"));
+    assert_eq!(latest.failure_class.as_deref(), Some("none"));
+    assert_eq!(latest.route_mode.as_deref(), Some("pool"));
 
     let id_only = conversation
         .recent_invocations
@@ -24717,6 +24720,11 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
         .find(|item| item.invoke_id == "preview-03")
         .expect("failed preview should be included");
     assert_eq!(failed_preview.status, "http_502");
+    assert_eq!(
+        failed_preview.failure_class.as_deref(),
+        Some("service_failure")
+    );
+    assert_eq!(failed_preview.route_mode.as_deref(), Some("pool"));
 
     let proxy_only_rows = query_prompt_cache_conversation_recent_invocations(
         &state.pool,

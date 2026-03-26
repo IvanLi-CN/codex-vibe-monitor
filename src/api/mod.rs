@@ -2194,6 +2194,8 @@ pub(crate) async fn build_prompt_cache_conversations_response(
                 invoke_id: row.invoke_id,
                 occurred_at: row.occurred_at,
                 status: row.status,
+                failure_class: normalize_trimmed_optional_string(row.failure_class),
+                route_mode: normalize_trimmed_optional_string(row.route_mode),
                 model: normalize_trimmed_optional_string(row.model),
                 total_tokens: row.total_tokens.max(0),
                 cost: row.cost,
@@ -2601,7 +2603,11 @@ pub(crate) async fn query_prompt_cache_conversation_recent_invocations(
         QueryBuilder::<Sqlite>::new("WITH ranked AS (SELECT id, invoke_id, occurred_at, ");
     query
         .push(invocation_raw_status_sql())
-        .push(" AS status, model, COALESCE(total_tokens, 0) AS total_tokens, cost, ")
+        .push(" AS status, ")
+        .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
+        .push(" AS failure_class, ")
+        .push(INVOCATION_ROUTE_MODE_SQL)
+        .push(" AS route_mode, model, COALESCE(total_tokens, 0) AS total_tokens, cost, ")
         .push(INVOCATION_PROXY_DISPLAY_SQL)
         .push(" AS proxy_display_name, ")
         .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
@@ -2630,7 +2636,7 @@ pub(crate) async fn query_prompt_cache_conversation_recent_invocations(
     }
 
     query
-        .push(") SELECT prompt_cache_key, id, invoke_id, occurred_at, status, model, total_tokens, cost, proxy_display_name, upstream_account_id, upstream_account_name, endpoint FROM ranked WHERE row_number <= ")
+        .push(") SELECT prompt_cache_key, id, invoke_id, occurred_at, status, failure_class, route_mode, model, total_tokens, cost, proxy_display_name, upstream_account_id, upstream_account_name, endpoint FROM ranked WHERE row_number <= ")
         .push_bind(limit_per_key)
         .push(" ORDER BY prompt_cache_key ASC, occurred_at DESC, id DESC");
 
@@ -4849,6 +4855,8 @@ pub(crate) struct PromptCacheConversationInvocationPreviewResponse {
     #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
     pub(crate) occurred_at: String,
     pub(crate) status: String,
+    pub(crate) failure_class: Option<String>,
+    pub(crate) route_mode: Option<String>,
     pub(crate) model: Option<String>,
     pub(crate) total_tokens: i64,
     pub(crate) cost: Option<f64>,
@@ -5237,6 +5245,8 @@ pub(crate) struct PromptCacheConversationInvocationPreviewRow {
     pub(crate) invoke_id: String,
     pub(crate) occurred_at: String,
     pub(crate) status: String,
+    pub(crate) failure_class: Option<String>,
+    pub(crate) route_mode: Option<String>,
     pub(crate) model: Option<String>,
     pub(crate) total_tokens: i64,
     pub(crate) cost: Option<f64>,

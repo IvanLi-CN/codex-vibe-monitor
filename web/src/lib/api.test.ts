@@ -1116,6 +1116,8 @@ describe("account pool frontend API helpers", () => {
                   invokeId: "invoke-17",
                   occurredAt: "2026-03-10T23:00:00Z",
                   status: "completed",
+                  failureClass: "none",
+                  routeMode: "pool",
                   model: "gpt-5.4",
                   totalTokens: 30,
                   cost: 0.12,
@@ -1149,6 +1151,12 @@ describe("account pool frontend API helpers", () => {
     );
     expect(response.conversations[0]?.recentInvocations[0]?.invokeId).toBe(
       "invoke-17",
+    );
+    expect(response.conversations[0]?.recentInvocations[0]?.failureClass).toBe(
+      "none",
+    );
+    expect(response.conversations[0]?.recentInvocations[0]?.routeMode).toBe(
+      "pool",
     );
     expect(response.conversations[0]?.recentInvocations[0]?.endpoint).toBe(
       "/v1/responses",
