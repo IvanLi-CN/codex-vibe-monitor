@@ -376,6 +376,10 @@ const baseTranslations = {
       "Copy OAuth URL",
     "accountPool.upstreamAccounts.batchOauth.tooltip.copyBody":
       "Copy the generated login URL, open it in the browser that will complete the login, and return here with the callback URL.",
+    "accountPool.upstreamAccounts.batchOauth.oauthAction.remaining":
+      "Current link expires in {{time}}.",
+    "accountPool.upstreamAccounts.batchOauth.oauthAction.expiresAt":
+      "Expires at {{timestamp}}.",
     "accountPool.upstreamAccounts.batchOauth.tooltip.copyCodeTitle":
       "Copy verification code",
     "accountPool.upstreamAccounts.batchOauth.tooltip.editMailboxTitle":
@@ -1844,6 +1848,10 @@ const baseTranslations = {
       "复制 OAuth 地址",
     "accountPool.upstreamAccounts.batchOauth.tooltip.copyBody":
       "把当前登录链接复制出去，在要完成登录的浏览器中打开；登录完成后，再把回调链接粘贴回这一行。",
+    "accountPool.upstreamAccounts.batchOauth.oauthAction.remaining":
+      "当前链接剩余有效时间：{{time}}。",
+    "accountPool.upstreamAccounts.batchOauth.oauthAction.expiresAt":
+      "过期时间：{{timestamp}}。",
     "accountPool.upstreamAccounts.batchOauth.tooltip.copyCodeTitle":
       "复制验证码",
     "accountPool.upstreamAccounts.batchOauth.tooltip.editMailboxTitle":

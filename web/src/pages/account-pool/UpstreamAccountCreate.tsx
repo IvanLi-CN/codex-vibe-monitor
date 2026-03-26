@@ -36,13 +36,13 @@ import {
 } from "../../components/ui/segmented-control";
 import {
   Popover,
-  PopoverAnchor,
   PopoverArrow,
   PopoverContent,
   PopoverTrigger,
 } from "../../components/ui/popover";
 import { Spinner } from "../../components/ui/spinner";
 import { Tooltip } from "../../components/ui/tooltip";
+import { BatchOauthActionButton } from "../../components/account-pool/BatchOauthActionButton";
 import { OauthMailboxChip } from "../../components/account-pool/OauthMailboxChip";
 import { AccountTagField } from "../../components/AccountTagField";
 import {
@@ -256,6 +256,56 @@ function formatRelativeRefreshCountdown(
     return t("accountPool.upstreamAccounts.oauth.refreshScheduledUnknown");
   const seconds = Math.max(0, Math.ceil((nextRefreshAt - now) / 1000));
   return t("accountPool.upstreamAccounts.oauth.refreshIn", { seconds });
+}
+
+function formatCountdownClock(targetTimestamp: number, now: number) {
+  const totalSeconds = Math.max(
+    0,
+    Math.ceil((targetTimestamp - now) / 1000),
+  );
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${String(hours).padStart(2, "0")}:${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+  }
+
+  return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
+}
+
+function isActivePendingOauthSession(
+  session: LoginSessionStatusResponse | null | undefined,
+) {
+  return Boolean(
+    session &&
+      session.status === "pending" &&
+      session.authUrl &&
+      !isExpiredIso(session.expiresAt),
+  );
+}
+
+function batchOauthSessionRemainingLabel(
+  session: LoginSessionStatusResponse | null | undefined,
+  now: number,
+  t: (key: string, values?: Record<string, string | number>) => string,
+) {
+  if (!session?.expiresAt) return null;
+  const expiresAt = Date.parse(session.expiresAt);
+  if (!Number.isFinite(expiresAt) || expiresAt <= now) return null;
+  return t("accountPool.upstreamAccounts.batchOauth.oauthAction.remaining", {
+    time: formatCountdownClock(expiresAt, now),
+  });
+}
+
+function batchOauthSessionExpiresAtLabel(
+  session: LoginSessionStatusResponse | null | undefined,
+  t: (key: string, values?: Record<string, string | number>) => string,
+) {
+  if (!session?.expiresAt) return null;
+  return t("accountPool.upstreamAccounts.batchOauth.oauthAction.expiresAt", {
+    timestamp: formatDateTime(session.expiresAt),
+  });
 }
 
 function parseAccountId(search: string): number | null {
@@ -1596,7 +1646,6 @@ export default function UpstreamAccountCreatePage() {
   }, []);
   const batchRowIdRef = useRef(getNextBatchRowIndex(initialBatchRows));
   const manualCopyFieldRef = useRef<HTMLTextAreaElement | null>(null);
-  const batchManualCopyFieldRef = useRef<HTMLTextAreaElement | null>(null);
 
   const groupSuggestions = useMemo(
     () =>
@@ -2293,14 +2342,6 @@ export default function UpstreamAccountCreatePage() {
     });
     return () => window.cancelAnimationFrame(frame);
   }, [manualCopyOpen]);
-
-  useEffect(() => {
-    if (!batchManualCopyRowId) return;
-    const frame = window.requestAnimationFrame(() => {
-      selectAllReadonlyText(batchManualCopyFieldRef.current);
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [batchManualCopyRowId]);
 
   useEffect(() => {
     if (oauthMailboxSession) return;
@@ -5693,7 +5734,11 @@ export default function UpstreamAccountCreatePage() {
                               row.metadataBusy ||
                               isCompleted ||
                               isRecoveredNeedsRefresh;
-                            const authUrl = row.session?.authUrl ?? "";
+                            const rowHasActiveOauthUrl =
+                              isActivePendingOauthSession(row.session);
+                            const authUrl = rowHasActiveOauthUrl
+                              ? (row.session?.authUrl ?? "")
+                              : "";
                             const rowMailboxAddress =
                               row.mailboxSession?.emailAddress ??
                               row.mailboxInput;
@@ -6065,158 +6110,102 @@ export default function UpstreamAccountCreatePage() {
                                     </label>
                                     <div className="flex items-center gap-3">
                                       <div className="flex flex-wrap items-center gap-2">
-                                        <div className="flex items-center gap-1 rounded-full bg-base-200/80 p-1">
-                                          <Tooltip
-                                            content={buildActionTooltip(
-                                              isPending
+                                        <BatchOauthActionButton
+                                          mode={
+                                            rowHasActiveOauthUrl
+                                              ? "copy"
+                                              : "generate"
+                                          }
+                                          primaryAriaLabel={
+                                            rowHasActiveOauthUrl
+                                              ? t(
+                                                  "accountPool.upstreamAccounts.actions.copyOauthUrl",
+                                                )
+                                              : t(
+                                                  "accountPool.upstreamAccounts.actions.generateOauthUrl",
+                                                )
+                                          }
+                                          regenerateAriaLabel={t(
+                                            "accountPool.upstreamAccounts.actions.regenerateOauthUrl",
+                                          )}
+                                          popoverTitle={
+                                            rowHasActiveOauthUrl
+                                              ? t(
+                                                  "accountPool.upstreamAccounts.batchOauth.tooltip.copyTitle",
+                                                )
+                                              : isPending
                                                 ? t(
                                                     "accountPool.upstreamAccounts.batchOauth.tooltip.regenerateTitle",
                                                   )
                                                 : t(
                                                     "accountPool.upstreamAccounts.batchOauth.tooltip.generateTitle",
-                                                  ),
-                                              isPending
+                                                  )
+                                          }
+                                          popoverDescription={
+                                            rowHasActiveOauthUrl
+                                              ? t(
+                                                  "accountPool.upstreamAccounts.batchOauth.tooltip.copyBody",
+                                                )
+                                              : isPending
                                                 ? t(
                                                     "accountPool.upstreamAccounts.batchOauth.tooltip.regenerateBody",
                                                   )
                                                 : t(
                                                     "accountPool.upstreamAccounts.batchOauth.tooltip.generateBody",
                                                   ),
-                                            )}
-                                          >
-                                            <Button
-                                              type="button"
-                                              size="icon"
-                                              variant={
-                                                isPending
-                                                  ? "destructive"
-                                                  : "default"
-                                              }
-                                              className="h-9 w-9 shrink-0 rounded-full"
-                                              aria-label={
-                                                isPending
-                                                  ? t(
-                                                      "accountPool.upstreamAccounts.actions.regenerateOauthUrl",
-                                                    )
-                                                  : t(
-                                                      "accountPool.upstreamAccounts.actions.generateOauthUrl",
-                                                    )
-                                              }
-                                              onClick={() =>
-                                                void handleBatchGenerateOauthUrl(
-                                                  row.id,
-                                                )
-                                              }
-                                              disabled={oauthLocked}
-                                            >
-                                              {row.busyAction === "generate" ? (
-                                                <Spinner size="sm" />
-                                              ) : (
-                                                <AppIcon
-                                                  name={
-                                                    isPending
-                                                      ? "refresh"
-                                                      : "link-variant-plus"
-                                                  }
-                                                  className="h-4 w-4"
-                                                  aria-hidden
-                                                />
-                                              )}
-                                            </Button>
-                                          </Tooltip>
-                                          <Tooltip
-                                            content={buildActionTooltip(
-                                              t(
-                                                "accountPool.upstreamAccounts.batchOauth.tooltip.copyTitle",
-                                              ),
-                                              t(
-                                                "accountPool.upstreamAccounts.batchOauth.tooltip.copyBody",
-                                              ),
-                                            )}
-                                          >
-                                            <Popover
-                                              open={
-                                                batchManualCopyRowId === row.id
-                                              }
-                                              onOpenChange={(
-                                                nextOpen: boolean,
-                                              ) => {
-                                                setBatchManualCopyRowId(
-                                                  nextOpen ? row.id : null,
-                                                );
-                                              }}
-                                            >
-                                              <PopoverAnchor asChild>
-                                                <Button
-                                                  type="button"
-                                                  size="icon"
-                                                  variant={
-                                                    authUrl
-                                                      ? "default"
-                                                      : "secondary"
-                                                  }
-                                                  className="h-9 w-9 shrink-0 rounded-full"
-                                                  aria-label={t(
-                                                    "accountPool.upstreamAccounts.actions.copyOauthUrl",
-                                                  )}
-                                                  onClick={() =>
-                                                    void handleBatchCopyOauthUrl(
-                                                      row.id,
-                                                    )
-                                                  }
-                                                  disabled={!authUrl || oauthLocked}
-                                                >
-                                                  <AppIcon
-                                                    name="content-copy"
-                                                    className="h-4 w-4"
-                                                    aria-hidden
-                                                  />
-                                                </Button>
-                                              </PopoverAnchor>
-                                              <PopoverContent
-                                                align="start"
-                                                sideOffset={10}
-                                                className="w-[min(32rem,calc(100vw-2rem))] rounded-2xl border-base-300 bg-base-100 p-4 shadow-xl"
-                                              >
-                                                <div className="space-y-3">
-                                                  <div className="space-y-1">
-                                                    <p className="text-sm font-semibold text-base-content">
-                                                      {t(
-                                                        "accountPool.upstreamAccounts.oauth.manualCopyTitle",
-                                                      )}
-                                                    </p>
-                                                    <p className="text-sm text-base-content/65">
-                                                      {t(
-                                                        "accountPool.upstreamAccounts.oauth.manualCopyDescription",
-                                                      )}
-                                                    </p>
-                                                  </div>
-                                                  <textarea
-                                                    ref={
-                                                      batchManualCopyRowId ===
-                                                      row.id
-                                                        ? batchManualCopyFieldRef
-                                                        : undefined
-                                                    }
-                                                    readOnly
-                                                    value={authUrl}
-                                                    className="min-h-28 w-full rounded-xl border border-base-300 bg-base-100 px-3 py-2 font-mono text-xs text-base-content shadow-sm focus-visible:outline-none"
-                                                    onClick={(event) =>
-                                                      selectAllReadonlyText(
-                                                        event.currentTarget,
-                                                      )
-                                                    }
-                                                    onFocus={(event) =>
-                                                      selectAllReadonlyText(
-                                                        event.currentTarget,
-                                                      )
-                                                    }
-                                                  />
-                                                </div>
-                                              </PopoverContent>
-                                            </Popover>
-                                          </Tooltip>
-                                        </div>
+                                                  )
+                                          }
+                                          remainingLabel={batchOauthSessionRemainingLabel(
+                                            row.session,
+                                            refreshClockMs,
+                                            t,
+                                          )}
+                                          expiresAtLabel={batchOauthSessionExpiresAtLabel(
+                                            row.session,
+                                            t,
+                                          )}
+                                          manualCopyTitle={t(
+                                            "accountPool.upstreamAccounts.oauth.manualCopyTitle",
+                                          )}
+                                          manualCopyDescription={t(
+                                            "accountPool.upstreamAccounts.oauth.manualCopyDescription",
+                                          )}
+                                          manualCopyValue={
+                                            batchManualCopyRowId === row.id
+                                              ? authUrl
+                                              : null
+                                          }
+                                          busy={row.busyAction === "generate"}
+                                          disabled={
+                                            rowHasActiveOauthUrl
+                                              ? !authUrl || oauthLocked
+                                              : oauthLocked
+                                          }
+                                          regenerateDisabled={oauthLocked}
+                                          onPrimaryAction={() => {
+                                            if (rowHasActiveOauthUrl) {
+                                              void handleBatchCopyOauthUrl(
+                                                row.id,
+                                              );
+                                              return;
+                                            }
+                                            void handleBatchGenerateOauthUrl(
+                                              row.id,
+                                            );
+                                          }}
+                                          onRegenerate={() =>
+                                            void handleBatchGenerateOauthUrl(
+                                              row.id,
+                                            )
+                                          }
+                                          onManualCopyOpenChange={(
+                                            nextOpen,
+                                          ) => {
+                                            setBatchManualCopyRowId(
+                                              nextOpen ? row.id : null,
+                                            );
+                                          }}
+                                        />
                                         {row.mailboxSession ? (
                                           <Tooltip
                                             content={buildActionTooltip(
