@@ -800,6 +800,7 @@ export interface ForwardProxyBindingNode {
   displayName: string;
   penalized: boolean;
   selectable: boolean;
+  last24h: ForwardProxyHourlyBucket[];
 }
 
 export interface ForwardProxySettings {
@@ -1083,6 +1084,7 @@ function normalizeForwardProxyBindingNode(
   const payload = (raw ?? {}) as Record<string, unknown>;
   const key = typeof payload.key === "string" ? payload.key.trim() : "";
   if (!key) return null;
+  const bucketsRaw = Array.isArray(payload.last24h) ? payload.last24h : [];
   return {
     key,
     source: typeof payload.source === "string" ? payload.source : "manual",
@@ -1092,6 +1094,9 @@ function normalizeForwardProxyBindingNode(
         : key,
     penalized: Boolean(payload.penalized),
     selectable: payload.selectable === true,
+    last24h: bucketsRaw
+      .map(normalizeForwardProxyHourlyBucket)
+      .filter((item): item is ForwardProxyHourlyBucket => item != null),
   };
 }
 

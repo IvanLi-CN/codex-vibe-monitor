@@ -609,9 +609,66 @@ pub(crate) async fn build_forward_proxy_settings_response(
 
 pub(crate) async fn build_forward_proxy_binding_nodes_response(
     state: &AppState,
-) -> Vec<ForwardProxyBindingNodeResponse> {
-    let manager = state.forward_proxy.lock().await;
-    manager.binding_nodes()
+) -> Result<Vec<ForwardProxyBindingNodeResponse>> {
+    const BUCKET_SECONDS: i64 = 3600;
+    const BUCKET_COUNT: i64 = 24;
+
+    let mut nodes = {
+        let manager = state.forward_proxy.lock().await;
+        manager.binding_nodes()
+    };
+    if nodes.is_empty() {
+        return Ok(nodes);
+    }
+
+    let now_epoch = Utc::now().timestamp();
+    let range_end_epoch = align_bucket_epoch(now_epoch, BUCKET_SECONDS, 0) + BUCKET_SECONDS;
+    let range_start_epoch = range_end_epoch - BUCKET_COUNT * BUCKET_SECONDS;
+    let hourly_map =
+        query_forward_proxy_hourly_stats(&state.pool, range_start_epoch, range_end_epoch).await?;
+
+    for node in &mut nodes {
+        node.last24h = build_forward_proxy_hourly_buckets(
+            hourly_map.get(&node.key),
+            range_start_epoch,
+            BUCKET_SECONDS,
+            BUCKET_COUNT,
+        )?;
+    }
+
+    Ok(nodes)
+}
+
+fn build_forward_proxy_hourly_buckets(
+    hourly: Option<&HashMap<i64, ForwardProxyHourlyStatsPoint>>,
+    range_start_epoch: i64,
+    bucket_seconds: i64,
+    bucket_count: i64,
+) -> Result<Vec<ForwardProxyHourlyBucketResponse>> {
+    (0..bucket_count)
+        .map(|index| {
+            let bucket_start_epoch = range_start_epoch + index * bucket_seconds;
+            let bucket_end_epoch = bucket_start_epoch + bucket_seconds;
+            let point = hourly
+                .and_then(|items| items.get(&bucket_start_epoch))
+                .cloned()
+                .unwrap_or_default();
+            let bucket_start = Utc
+                .timestamp_opt(bucket_start_epoch, 0)
+                .single()
+                .ok_or_else(|| anyhow!("invalid forward proxy bucket start epoch"))?;
+            let bucket_end = Utc
+                .timestamp_opt(bucket_end_epoch, 0)
+                .single()
+                .ok_or_else(|| anyhow!("invalid forward proxy bucket end epoch"))?;
+            Ok(ForwardProxyHourlyBucketResponse {
+                bucket_start: format_utc_iso(bucket_start),
+                bucket_end: format_utc_iso(bucket_end),
+                success_count: point.success_count,
+                failure_count: point.failure_count,
+            })
+        })
+        .collect::<Result<Vec<_>>>()
 }
 
 pub(crate) async fn build_forward_proxy_live_stats_response(
@@ -677,30 +734,12 @@ pub(crate) async fn build_forward_proxy_live_stats_response(
             let one_hour = stats_for(2, &proxy_key);
             let one_day = stats_for(3, &proxy_key);
             let seven_days = stats_for(4, &proxy_key);
-            let last24h = (0..BUCKET_COUNT)
-                .map(|index| {
-                    let bucket_start_epoch = range_start_epoch + index * BUCKET_SECONDS;
-                    let bucket_end_epoch = bucket_start_epoch + BUCKET_SECONDS;
-                    let point = hourly
-                        .and_then(|items| items.get(&bucket_start_epoch))
-                        .cloned()
-                        .unwrap_or_default();
-                    let bucket_start = Utc
-                        .timestamp_opt(bucket_start_epoch, 0)
-                        .single()
-                        .ok_or_else(|| anyhow!("invalid forward proxy bucket start epoch"))?;
-                    let bucket_end = Utc
-                        .timestamp_opt(bucket_end_epoch, 0)
-                        .single()
-                        .ok_or_else(|| anyhow!("invalid forward proxy bucket end epoch"))?;
-                    Ok(ForwardProxyHourlyBucketResponse {
-                        bucket_start: format_utc_iso(bucket_start),
-                        bucket_end: format_utc_iso(bucket_end),
-                        success_count: point.success_count,
-                        failure_count: point.failure_count,
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?;
+            let last24h = build_forward_proxy_hourly_buckets(
+                hourly,
+                range_start_epoch,
+                BUCKET_SECONDS,
+                BUCKET_COUNT,
+            )?;
             let weight24h = (0..BUCKET_COUNT)
                 .map(|index| {
                     let bucket_start_epoch = range_start_epoch + index * BUCKET_SECONDS;
@@ -2843,6 +2882,7 @@ impl ForwardProxyManager {
                     display_name: endpoint.display_name.clone(),
                     penalized,
                     selectable: endpoint.is_selectable(),
+                    last24h: Vec::new(),
                 }
             })
             .collect::<Vec<_>>();
@@ -3959,6 +3999,7 @@ pub(crate) struct ForwardProxyBindingNodeResponse {
     pub(crate) display_name: String,
     pub(crate) penalized: bool,
     pub(crate) selectable: bool,
+    pub(crate) last24h: Vec<ForwardProxyHourlyBucketResponse>,
 }
 
 #[derive(Debug, Clone, Serialize)]

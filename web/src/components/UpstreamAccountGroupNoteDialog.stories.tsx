@@ -13,6 +13,22 @@ type DialogHarnessProps = {
   availableProxyNodes?: ForwardProxyBindingNode[]
 }
 
+function buildRequestBuckets(seed: number, baseline: number, failuresEvery: number): ForwardProxyBindingNode['last24h'] {
+  const start = Date.parse('2026-03-01T00:00:00.000Z')
+  return Array.from({ length: 24 }, (_, index) => {
+    const bucketStart = new Date(start + index * 3600_000).toISOString()
+    const bucketEnd = new Date(start + (index + 1) * 3600_000).toISOString()
+    const successCount = Math.max(0, Math.round(baseline + Math.sin((index + seed) / 2.4) * (baseline * 0.35)))
+    const failureCount = index % failuresEvery === 0 ? Math.max(0, Math.round(1 + ((seed + index) % 3))) : 0
+    return {
+      bucketStart,
+      bucketEnd,
+      successCount,
+      failureCount,
+    }
+  })
+}
+
 const defaultForwardProxyNodes: ForwardProxyBindingNode[] = [
   {
     key: 'jp-edge-01',
@@ -20,6 +36,7 @@ const defaultForwardProxyNodes: ForwardProxyBindingNode[] = [
     displayName: 'JP Edge 01',
     penalized: false,
     selectable: true,
+    last24h: buildRequestBuckets(1, 18, 7),
   },
   {
     key: 'sg-edge-02',
@@ -27,6 +44,7 @@ const defaultForwardProxyNodes: ForwardProxyBindingNode[] = [
     displayName: 'SG Edge 02',
     penalized: false,
     selectable: true,
+    last24h: buildRequestBuckets(6, 12, 5),
   },
   {
     key: 'drain-node',
@@ -34,6 +52,7 @@ const defaultForwardProxyNodes: ForwardProxyBindingNode[] = [
     displayName: 'Drain Node',
     penalized: true,
     selectable: false,
+    last24h: buildRequestBuckets(11, 6, 3),
   },
 ]
 
@@ -84,6 +103,10 @@ function DialogHarness({
           proxyBindingsEmptyLabel="No proxy nodes available."
           proxyBindingsMissingLabel="Missing"
           proxyBindingsUnavailableLabel="Unavailable"
+          proxyBindingsChartLabel="24h request trend"
+          proxyBindingsChartSuccessLabel="ok"
+          proxyBindingsChartFailureLabel="fail"
+          proxyBindingsChartEmptyLabel="No 24h data"
         />
       </div>
     </div>

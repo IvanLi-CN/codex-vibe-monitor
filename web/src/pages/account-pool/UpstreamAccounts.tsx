@@ -3174,6 +3174,10 @@ export default function UpstreamAccountsPage() {
         proxyBindingsEmptyLabel={t('accountPool.upstreamAccounts.groupNotes.proxyBindings.empty')}
         proxyBindingsMissingLabel={t('accountPool.upstreamAccounts.groupNotes.proxyBindings.missing')}
         proxyBindingsUnavailableLabel={t('accountPool.upstreamAccounts.groupNotes.proxyBindings.unavailable')}
+        proxyBindingsChartLabel={t('accountPool.upstreamAccounts.groupNotes.proxyBindings.chartLabel')}
+        proxyBindingsChartSuccessLabel={t('accountPool.upstreamAccounts.groupNotes.proxyBindings.chartSuccess')}
+        proxyBindingsChartFailureLabel={t('accountPool.upstreamAccounts.groupNotes.proxyBindings.chartFailure')}
+        proxyBindingsChartEmptyLabel={t('accountPool.upstreamAccounts.groupNotes.proxyBindings.chartEmpty')}
       />
 
       {listError ? (

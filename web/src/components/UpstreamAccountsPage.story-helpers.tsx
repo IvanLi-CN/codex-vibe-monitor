@@ -87,6 +87,20 @@ const compactDefaultTags: AccountTagSummary[] = [
   },
 ]
 
+function buildRequestBuckets(seed: number, baseline: number, failuresEvery: number): ForwardProxyBindingNode['last24h'] {
+  const start = Date.parse('2026-03-01T00:00:00.000Z')
+  return Array.from({ length: 24 }, (_, index) => {
+    const bucketStart = new Date(start + index * 3600_000).toISOString()
+    const bucketEnd = new Date(start + (index + 1) * 3600_000).toISOString()
+    return {
+      bucketStart,
+      bucketEnd,
+      successCount: Math.max(0, Math.round(baseline + Math.sin((index + seed) / 2.3) * (baseline * 0.3))),
+      failureCount: index % failuresEvery === 0 ? Math.max(0, 1 + ((seed + index) % 2)) : 0,
+    }
+  })
+}
+
 const defaultForwardProxyNodes: ForwardProxyBindingNode[] = [
   {
     key: 'jp-edge-01',
@@ -94,6 +108,7 @@ const defaultForwardProxyNodes: ForwardProxyBindingNode[] = [
     displayName: 'JP Edge 01',
     penalized: false,
     selectable: true,
+    last24h: buildRequestBuckets(1, 18, 6),
   },
   {
     key: 'sg-edge-02',
@@ -101,6 +116,7 @@ const defaultForwardProxyNodes: ForwardProxyBindingNode[] = [
     displayName: 'SG Edge 02',
     penalized: false,
     selectable: true,
+    last24h: buildRequestBuckets(7, 13, 5),
   },
   {
     key: 'us-edge-03',
@@ -108,6 +124,7 @@ const defaultForwardProxyNodes: ForwardProxyBindingNode[] = [
     displayName: 'US Edge 03',
     penalized: true,
     selectable: true,
+    last24h: buildRequestBuckets(13, 10, 4),
   },
   {
     key: 'drain-node',
@@ -115,6 +132,7 @@ const defaultForwardProxyNodes: ForwardProxyBindingNode[] = [
     displayName: 'Drain Node',
     penalized: true,
     selectable: false,
+    last24h: buildRequestBuckets(17, 5, 3),
   },
 ]
 

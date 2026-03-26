@@ -581,6 +581,14 @@ describe("settings normalization", () => {
                 displayName: "JP Edge 01",
                 penalized: false,
                 selectable: true,
+                last24h: [
+                  {
+                    bucketStart: "2026-03-01T00:00:00Z",
+                    bucketEnd: "2026-03-01T01:00:00Z",
+                    successCount: 5,
+                    failureCount: 1,
+                  },
+                ],
               },
               {
                 key: "drain-node",
@@ -588,6 +596,7 @@ describe("settings normalization", () => {
                 displayName: "Drain Node",
                 penalized: true,
                 selectable: false,
+                last24h: [],
               },
             ],
             hasUngroupedAccounts: false,
@@ -608,6 +617,8 @@ describe("settings normalization", () => {
     ]);
     expect(response.forwardProxyNodes ?? []).toHaveLength(2);
     expect(response.forwardProxyNodes?.[1]?.selectable).toBe(false);
+    expect(response.forwardProxyNodes?.[0]?.last24h[0]?.successCount).toBe(5);
+    expect(response.forwardProxyNodes?.[1]?.last24h).toEqual([]);
   });
 });
 

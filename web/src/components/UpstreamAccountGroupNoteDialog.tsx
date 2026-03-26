@@ -1,3 +1,4 @@
+import { useMemo } from 'react'
 import { AppIcon } from './AppIcon'
 import type { ForwardProxyBindingNode } from '../lib/api'
 import { cn } from '../lib/utils'
@@ -46,6 +47,10 @@ interface UpstreamAccountGroupNoteDialogProps {
   proxyBindingsEmptyLabel?: string
   proxyBindingsMissingLabel?: string
   proxyBindingsUnavailableLabel?: string
+  proxyBindingsChartLabel?: string
+  proxyBindingsChartSuccessLabel?: string
+  proxyBindingsChartFailureLabel?: string
+  proxyBindingsChartEmptyLabel?: string
 }
 
 function normalizeBoundProxyKeys(values?: string[]): string[] {
@@ -58,6 +63,127 @@ function toggleBoundProxyKey(keys: string[], target: string): string[] {
     return keys.filter((key) => key !== target)
   }
   return [...keys, target]
+}
+
+function buildVisibleBarHeights(successCount: number, failureCount: number, scaleMax: number, totalHeightPx: number) {
+  if (scaleMax <= 0 || totalHeightPx <= 0) {
+    return { empty: totalHeightPx, failure: 0, success: 0 }
+  }
+
+  let success = successCount > 0 ? Math.max((successCount / scaleMax) * totalHeightPx, 1) : 0
+  let failure = failureCount > 0 ? Math.max((failureCount / scaleMax) * totalHeightPx, 1) : 0
+  const maxVisible = Math.max(totalHeightPx, 0)
+  let overflow = success + failure - maxVisible
+
+  const shrink = (value: number, minVisible: number, amount: number) => {
+    if (amount <= 0 || value <= minVisible) return { nextValue: value, remaining: amount }
+    const delta = Math.min(value - minVisible, amount)
+    return { nextValue: value - delta, remaining: amount - delta }
+  }
+
+  if (overflow > 0) {
+    const first = success >= failure ? 'success' : 'failure'
+    const second = first == 'success' ? 'failure' : 'success'
+    for (const key of [first, second] as const) {
+      const minVisible = key == 'success' ? (successCount > 0 ? 1 : 0) : failureCount > 0 ? 1 : 0
+      const current = key == 'success' ? success : failure
+      const result = shrink(current, minVisible, overflow)
+      if (key == 'success') {
+        success = result.nextValue
+      } else {
+        failure = result.nextValue
+      }
+      overflow = result.remaining
+    }
+  }
+
+  const used = Math.min(success + failure, maxVisible)
+  return {
+    empty: Math.max(maxVisible - used, 0),
+    failure,
+    success,
+  }
+}
+
+function sumProxyTraffic(node: ForwardProxyBindingNode) {
+  const buckets = Array.isArray(node.last24h) ? node.last24h : []
+  return buckets.reduce(
+    (acc, bucket) => {
+      acc.success += bucket.successCount
+      acc.failure += bucket.failureCount
+      return acc
+    },
+    { success: 0, failure: 0 },
+  )
+}
+
+function ProxyOptionTrafficChart({
+  node,
+  scaleMax,
+  label,
+  successLabel,
+  failureLabel,
+  emptyLabel,
+}: {
+  node: ForwardProxyBindingNode
+  scaleMax: number
+  label: string
+  successLabel: string
+  failureLabel: string
+  emptyLabel: string
+}) {
+  const buckets = useMemo(() => (Array.isArray(node.last24h) ? node.last24h : []), [node.last24h])
+  const totals = useMemo(() => sumProxyTraffic(node), [node])
+
+  return (
+    <div className="w-full md:w-[13.5rem] md:max-w-[13.5rem]">
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-base-content/55">
+          {label}
+        </span>
+        <div className="flex items-center gap-3 text-[11px] font-medium">
+          <span className="inline-flex items-center gap-1 text-success">
+            <span className="h-1.5 w-1.5 rounded-full bg-success" aria-hidden />
+            <span className="font-mono tabular-nums">{totals.success}</span>
+            <span className="text-base-content/55">{successLabel}</span>
+          </span>
+          <span className="inline-flex items-center gap-1 text-error">
+            <span className="h-1.5 w-1.5 rounded-full bg-error" aria-hidden />
+            <span className="font-mono tabular-nums">{totals.failure}</span>
+            <span className="text-base-content/55">{failureLabel}</span>
+          </span>
+        </div>
+      </div>
+
+      {buckets.length === 0 ? (
+        <div className="mt-2 flex h-12 items-center justify-center rounded-xl border border-dashed border-base-300/80 bg-base-100/70 px-3 text-[11px] text-base-content/50">
+          {emptyLabel}
+        </div>
+      ) : (
+        <div
+          role="img"
+          aria-label={`${node.displayName} ${label}: ${totals.success} ${successLabel}, ${totals.failure} ${failureLabel}`}
+          className="mt-2 flex h-12 items-end gap-px rounded-xl border border-base-300/70 bg-base-100/70 px-2 py-1.5"
+          data-chart-kind="proxy-binding-request-trend"
+        >
+          {buckets.map((bucket) => {
+            const total = bucket.successCount + bucket.failureCount
+            const heights = buildVisibleBarHeights(bucket.successCount, bucket.failureCount, scaleMax, 32)
+            return (
+              <div
+                key={`${node.key}-${bucket.bucketStart}`}
+                className="flex h-8 min-w-0 flex-1 flex-col overflow-hidden rounded-[3px] bg-base-300/35"
+              >
+                <div className="bg-transparent" style={{ height: `${heights.empty}px` }} />
+                <div className={cn(total > 0 ? 'bg-error/85' : 'bg-transparent')} style={{ height: `${heights.failure}px` }} />
+                <div className={cn(total > 0 ? 'bg-success/85' : 'bg-transparent')} style={{ height: `${heights.success}px` }} />
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
 }
 
 export function UpstreamAccountGroupNoteDialog({
@@ -90,10 +216,19 @@ export function UpstreamAccountGroupNoteDialog({
   proxyBindingsEmptyLabel,
   proxyBindingsMissingLabel,
   proxyBindingsUnavailableLabel,
+  proxyBindingsChartLabel,
+  proxyBindingsChartSuccessLabel,
+  proxyBindingsChartFailureLabel,
+  proxyBindingsChartEmptyLabel,
 }: UpstreamAccountGroupNoteDialogProps) {
   const normalizedBoundProxyKeys = normalizeBoundProxyKeys(boundProxyKeys)
   const proxyOptions = (() => {
-    const available = Array.isArray(availableProxyNodes) ? availableProxyNodes : []
+    const available = Array.isArray(availableProxyNodes)
+      ? availableProxyNodes.map((node) => ({
+          ...node,
+          last24h: Array.isArray(node.last24h) ? node.last24h : [],
+        }))
+      : []
     const availableByKey = new Map(available.map((node) => [node.key, node]))
     const options: GroupProxyOption[] = [...available]
     for (const key of normalizedBoundProxyKeys) {
@@ -104,12 +239,23 @@ export function UpstreamAccountGroupNoteDialog({
           displayName: key,
           penalized: false,
           selectable: false,
+          last24h: [],
           missing: true,
         })
       }
     }
     return options
   })()
+  const proxyChartScaleMax = useMemo(
+    () =>
+      Math.max(
+        ...proxyOptions.flatMap((node) =>
+          (Array.isArray(node.last24h) ? node.last24h : []).map((bucket) => bucket.successCount + bucket.failureCount),
+        ),
+        0,
+      ),
+    [proxyOptions],
+  )
   const showProxyBindings =
     Boolean(onBoundProxyKeysChange) ||
     proxyOptions.length > 0 ||
@@ -194,34 +340,44 @@ export function UpstreamAccountGroupNoteDialog({
                           onBoundProxyKeysChange(toggleBoundProxyKey(normalizedBoundProxyKeys, node.key))
                         }}
                         className={cn(
-                          'flex items-center gap-3 rounded-xl border px-3 py-3 text-left transition-colors',
+                          'flex flex-col gap-3 rounded-xl border px-3 py-3 text-left transition-colors md:flex-row md:items-center md:justify-between',
                           selected
                             ? 'border-primary/45 bg-primary/10'
                             : 'border-base-300/80 bg-base-100/75',
                           disabled ? 'cursor-not-allowed opacity-60' : 'hover:border-primary/40',
                         )}
                       >
-                        <div className="flex h-5 w-5 items-center justify-center rounded-full border border-base-300/80 bg-base-100">
-                          {selected ? <AppIcon name="check" className="h-3.5 w-3.5 text-primary" aria-hidden /> : null}
-                        </div>
-                        <div className="min-w-0 flex-1">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <span className="truncate text-sm font-medium text-base-content">{node.displayName}</span>
-                            {badgeLabel ? (
-                              <span className="rounded-full border border-base-300/80 bg-base-200/80 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/65">
-                                {badgeLabel}
-                              </span>
-                            ) : null}
-                            {node.penalized ? (
-                              <span className="rounded-full border border-warning/35 bg-warning/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-warning">
-                                Penalized
-                              </span>
-                            ) : null}
+                        <div className="flex min-w-0 flex-1 items-center gap-3">
+                          <div className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-base-300/80 bg-base-100">
+                            {selected ? <AppIcon name="check" className="h-3.5 w-3.5 text-primary" aria-hidden /> : null}
                           </div>
-                          <div className="mt-1 text-xs text-base-content/62">
-                            {node.key}
+                          <div className="min-w-0 flex-1">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="truncate text-sm font-medium text-base-content">{node.displayName}</span>
+                              {badgeLabel ? (
+                                <span className="rounded-full border border-base-300/80 bg-base-200/80 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/65">
+                                  {badgeLabel}
+                                </span>
+                              ) : null}
+                              {node.penalized ? (
+                                <span className="rounded-full border border-warning/35 bg-warning/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-warning">
+                                  Penalized
+                                </span>
+                              ) : null}
+                            </div>
+                            <div className="mt-1 text-xs text-base-content/62">
+                              {node.key}
+                            </div>
                           </div>
                         </div>
+                        <ProxyOptionTrafficChart
+                          node={node}
+                          scaleMax={proxyChartScaleMax}
+                          label={proxyBindingsChartLabel ?? '24h request trend'}
+                          successLabel={proxyBindingsChartSuccessLabel ?? 'ok'}
+                          failureLabel={proxyBindingsChartFailureLabel ?? 'fail'}
+                          emptyLabel={proxyBindingsChartEmptyLabel ?? 'No 24h data'}
+                        />
                       </button>
                     )
                   })}

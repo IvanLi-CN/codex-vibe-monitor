@@ -421,6 +421,14 @@ const baseTranslations = {
       "Missing",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.unavailable":
       "Unavailable",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartLabel":
+      "24h request trend",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartSuccess":
+      "ok",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartFailure":
+      "fail",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartEmpty":
+      "No 24h data",
     "accountPool.upstreamAccounts.batchOauth.tooltip.completeTitle":
       "Submit callback",
     "accountPool.upstreamAccounts.batchOauth.tooltip.completeBody":
@@ -1896,6 +1904,14 @@ const baseTranslations = {
       "已失效",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.unavailable":
       "不可选",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartLabel":
+      "24 小时请求图",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartSuccess":
+      "成功",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartFailure":
+      "失败",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartEmpty":
+      "暂无 24 小时数据",
     "accountPool.upstreamAccounts.batchOauth.tooltip.completeTitle": "提交回调",
     "accountPool.upstreamAccounts.batchOauth.tooltip.completeBody":
       "浏览器登录成功后，把上方回调链接粘贴完整，再点击这里完成这一行账号的入池。",

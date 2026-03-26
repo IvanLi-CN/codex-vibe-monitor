@@ -2935,7 +2935,9 @@ pub(crate) async fn list_upstream_accounts(
     let groups = load_upstream_account_groups(&state.pool)
         .await
         .map_err(internal_error_tuple)?;
-    let forward_proxy_nodes = build_forward_proxy_binding_nodes_response(state.as_ref()).await;
+    let forward_proxy_nodes = build_forward_proxy_binding_nodes_response(state.as_ref())
+        .await
+        .map_err(internal_error_tuple)?;
     let has_ungrouped_accounts = has_ungrouped_upstream_accounts(&state.pool)
         .await
         .map_err(internal_error_tuple)?;

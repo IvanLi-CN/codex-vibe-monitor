@@ -127,7 +127,7 @@
   submission_gate: pending-owner-approval
   story_id_or_title: Account Pool/Components/Upstream Account Group Settings Dialog/Automatic Routing
   state: existing-group-auto-routing
-  evidence_note: 验证已存在分组在未绑定代理节点时保持自动路由文案与共享备注编辑。
+  evidence_note: 验证已存在分组在未绑定代理节点时保持自动路由文案，并在每个候选节点右侧展示 24 小时成功/失败趋势供参考。
   image:
   ![Automatic routing group settings](./assets/group-settings-automatic-routing.png)
 
@@ -138,7 +138,7 @@
   submission_gate: pending-owner-approval
   story_id_or_title: Account Pool/Components/Upstream Account Group Settings Dialog/Hard Bound Multiple Nodes
   state: bound-multiple-nodes
-  evidence_note: 验证分组设置支持多选绑定代理节点，并清晰展示当前硬绑定集合。
+  evidence_note: 验证分组设置支持多选绑定代理节点，并清晰展示当前硬绑定集合与右侧 24 小时请求趋势对比。
   image:
   ![Bound multiple proxy nodes](./assets/group-settings-hard-bound-multiple-nodes.png)
 
@@ -149,7 +149,7 @@
   submission_gate: pending-owner-approval
   story_id_or_title: Account Pool/Components/Upstream Account Group Settings Dialog/Missing Or Unavailable Bindings
   state: missing-bound-nodes
-  evidence_note: 验证已保存但当前 inventory 缺失的绑定节点会被标记为失效，不会被误认为可路由节点。
+  evidence_note: 验证已保存但当前 inventory 缺失的绑定节点会被标记为失效，并在无历史桶数据时展示明确的空态图表提示。
   image:
   ![Missing bound proxy nodes](./assets/group-settings-missing-or-unavailable-bindings.png)
 
