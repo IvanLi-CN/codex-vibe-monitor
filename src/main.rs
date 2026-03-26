@@ -16934,7 +16934,6 @@ fn parse_target_response_payload(
         decode_failure_reason,
     )
 }
-
 fn parse_target_response_preview_payload(
     _target: ProxyCaptureTarget,
     bytes: &[u8],
@@ -18972,63 +18971,6 @@ fn merge_response_capture_reason(
         reason
     };
     response_info.usage_missing_reason = Some(combined_reason);
-}
-
-fn parsed_usage_has_values(usage: &ParsedUsage) -> bool {
-    usage.total_tokens.is_some()
-        || usage.input_tokens.is_some()
-        || usage.output_tokens.is_some()
-        || usage.cache_input_tokens.is_some()
-        || usage.reasoning_tokens.is_some()
-}
-
-fn fill_missing_parsed_usage(primary: &mut ParsedUsage, fallback: &ParsedUsage) {
-    if primary.input_tokens.is_none() {
-        primary.input_tokens = fallback.input_tokens;
-    }
-    if primary.output_tokens.is_none() {
-        primary.output_tokens = fallback.output_tokens;
-    }
-    if primary.cache_input_tokens.is_none() {
-        primary.cache_input_tokens = fallback.cache_input_tokens;
-    }
-    if primary.reasoning_tokens.is_none() {
-        primary.reasoning_tokens = fallback.reasoning_tokens;
-    }
-    if primary.total_tokens.is_none() {
-        primary.total_tokens = fallback.total_tokens;
-    }
-}
-
-#[allow(dead_code)]
-fn fill_missing_response_capture_info(
-    response_info: &mut ResponseCaptureInfo,
-    fallback: &ResponseCaptureInfo,
-) {
-    if response_info.model.is_none() {
-        response_info.model = fallback.model.clone();
-    }
-    fill_missing_parsed_usage(&mut response_info.usage, &fallback.usage);
-    if parsed_usage_has_values(&response_info.usage) {
-        response_info.usage_missing_reason = None;
-    } else if response_info.usage_missing_reason.is_none() {
-        response_info.usage_missing_reason = fallback.usage_missing_reason.clone();
-    }
-    if response_info.service_tier.is_none() {
-        response_info.service_tier = fallback.service_tier.clone();
-    }
-    if response_info.stream_terminal_event.is_none() {
-        response_info.stream_terminal_event = fallback.stream_terminal_event.clone();
-    }
-    if response_info.upstream_error_code.is_none() {
-        response_info.upstream_error_code = fallback.upstream_error_code.clone();
-    }
-    if response_info.upstream_error_message.is_none() {
-        response_info.upstream_error_message = fallback.upstream_error_message.clone();
-    }
-    if response_info.upstream_request_id.is_none() {
-        response_info.upstream_request_id = fallback.upstream_request_id.clone();
-    }
 }
 
 fn deflate_stream_uses_zlib_wrapper(header: &[u8]) -> bool {
