@@ -25,6 +25,7 @@ function buildCompletedBatchRow({
   accountId,
   displayName,
   groupName = 'production',
+  isMother = false,
   note = 'Completed batch row metadata stays editable.',
   needsRefresh = false,
   callbackUrl = 'http://localhost:43210/oauth/callback?code=completed&state=storybook',
@@ -36,6 +37,7 @@ function buildCompletedBatchRow({
   accountId: number
   displayName: string
   groupName?: string
+  isMother?: boolean
   note?: string
   needsRefresh?: boolean
   callbackUrl?: string
@@ -48,6 +50,7 @@ function buildCompletedBatchRow({
     id,
     displayName,
     groupName,
+    isMother,
     note,
     noteExpanded: true,
     callbackUrl,
@@ -60,7 +63,7 @@ function buildCompletedBatchRow({
       displayName,
       groupName,
       note,
-      isMother: false,
+      isMother,
       tagIds,
     },
   }
@@ -782,6 +785,7 @@ export const CompletedMetadataEditable: Story = {
                   id: 'completed-editable',
                   accountId: 101,
                   displayName: 'Codex Pro - Tokyo',
+                  isMother: true,
                   mailboxAddress: 'completed-editable@mail-tw.707079.xyz',
                   tagIds: [28],
                   mailboxMode: 'input-only',
@@ -795,10 +799,12 @@ export const CompletedMetadataEditable: Story = {
   ),
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
+    const doc = canvasElement.ownerDocument
     const displayName = canvas.getByDisplayValue('Codex Pro - Tokyo') as HTMLInputElement
     const callback = canvas.getByDisplayValue(
       'http://localhost:43210/oauth/callback?code=completed&state=storybook',
     ) as HTMLInputElement
+    const rowGroupTrigger = canvas.getAllByRole('combobox')[1] as HTMLInputElement
 
     await expect(displayName).toBeEnabled()
     await expect(callback).toBeDisabled()
@@ -810,6 +816,26 @@ export const CompletedMetadataEditable: Story = {
     await expect(
       within(document.body).getByRole('button', { name: /edit mailbox/i }),
     ).toBeDisabled()
+
+    await userEvent.click(rowGroupTrigger)
+
+    const searchInput = doc.body.querySelector('[cmdk-input]')
+    if (!(searchInput instanceof HTMLInputElement)) {
+      throw new Error('missing row group combobox search input')
+    }
+    await userEvent.clear(searchInput)
+    await userEvent.type(searchInput, 'analytics')
+
+    const analyticsOption = Array.from(doc.body.querySelectorAll('[cmdk-item]')).find((candidate) =>
+      (candidate.textContent || '').toLowerCase().includes('analytics'),
+    )
+    if (!(analyticsOption instanceof HTMLElement)) {
+      throw new Error('missing analytics group option')
+    }
+    await userEvent.click(analyticsOption)
+
+    await expect(rowGroupTrigger).toHaveValue('analytics')
+    await expect(doc.body.textContent || '').not.toContain('母号已更新')
   },
 }
 

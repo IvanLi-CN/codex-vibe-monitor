@@ -1094,6 +1094,74 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     );
   }, 10_000);
 
+  it("preserves the mother flag when a completed mother row changes groups", async () => {
+    const saveAccount = vi.fn().mockImplementation(
+      async (accountId: number, payload: Record<string, unknown>) => ({
+        id: accountId,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Row One",
+        groupName:
+          typeof payload.groupName === "string" ? payload.groupName : "prod",
+        isMother: payload.isMother === true,
+        status: "active",
+        enabled: true,
+        duplicateInfo: null,
+        history: [],
+        note: "Seed note",
+        tags: [],
+        effectiveRoutingRule: {
+          guardEnabled: false,
+          allowCutOut: true,
+          allowCutIn: true,
+          sourceTagIds: [],
+          sourceTagNames: [],
+          guardRules: [],
+        },
+      }),
+    );
+    mockUpstreamAccounts({ saveAccount });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            rows: [
+              buildCompletedBatchOauthRow({
+                isMother: true,
+                metadataPersisted: {
+                  displayName: "Row One",
+                  groupName: "prod",
+                  note: "Seed note",
+                  isMother: true,
+                  tagIds: [],
+                },
+              }),
+            ],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    expect(findButton(/Toggle mother account/i)?.getAttribute("aria-pressed")).toBe(
+      "true",
+    );
+
+    setComboboxValue('input[name="batchOauthGroupName-row-1"]', "analytics");
+    await flushAsync();
+
+    expect(saveAccount).toHaveBeenCalledWith(
+      41,
+      expect.objectContaining({
+        groupName: "analytics",
+        isMother: true,
+      }),
+    );
+    expect(pageTextContent()).not.toContain("Mother updated");
+  }, 10_000);
+
   it("uses the saved account tags as the completed-row baseline when metadata state is restored", async () => {
     const saveAccount = vi.fn().mockImplementation(
       async (accountId: number, payload: Record<string, unknown>) => ({
