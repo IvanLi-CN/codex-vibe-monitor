@@ -6,13 +6,13 @@ const labels = {
   failure: '失败',
   success: '成功',
   successRate: '成功率',
-  firstByteAvg: '首字耗时均值',
-  firstByteP95: '首字耗时 P95',
+  firstResponseByteTotalAvg: '首字总耗时均值',
+  firstResponseByteTotalP95: '首字总耗时 P95',
 }
 
 const numberFormatter = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 0 })
 const percentFormatter = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 1 })
-const latencyFormatter = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 1 })
+const latencyMsFormatter = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 1 })
 
 describe('SuccessFailureTooltipContent', () => {
   it('renders mapped success/failure and latency metrics for a populated bucket', () => {
@@ -24,15 +24,16 @@ describe('SuccessFailureTooltipContent', () => {
           success: 164,
           failure: 55,
           successRate: 164 / (164 + 55),
-          firstByteSampleCount: 164,
-          firstByteAvgMs: 320.4,
-          firstByteP95Ms: 690.8,
+          firstResponseByteTotalSampleCount: 164,
+          firstResponseByteTotalAvgMs: 320.4,
+          firstResponseByteTotalP95Ms: 690.8,
         }}
         labels={labels}
         noValueLabel="—"
         numberFormatter={numberFormatter}
         percentFormatter={percentFormatter}
-        latencyFormatter={latencyFormatter}
+        latencyMsFormatter={latencyMsFormatter}
+        localeTag="zh-CN"
         tooltipBg="#fff"
         tooltipBorder="#ddd"
         axisText="#333"
@@ -45,13 +46,42 @@ describe('SuccessFailureTooltipContent', () => {
     expect(html).toContain('164')
     expect(html).toContain('成功率')
     expect(html).toContain('74.9%')
-    expect(html).toContain('首字耗时均值')
+    expect(html).toContain('首字总耗时均值')
     expect(html).toContain('320.4 ms')
-    expect(html).toContain('首字耗时 P95')
+    expect(html).toContain('首字总耗时 P95')
     expect(html).toContain('690.8 ms')
   })
 
-  it('falls back to em dash when bucket has no valid first-byte samples', () => {
+  it('formats first-response-byte totals in seconds once they cross one second', () => {
+    const html = renderToStaticMarkup(
+      <SuccessFailureTooltipContent
+        label="2026-03-26 20:30"
+        datum={{
+          label: '2026-03-26 20:30',
+          success: 9,
+          failure: 1,
+          successRate: 0.9,
+          firstResponseByteTotalSampleCount: 10,
+          firstResponseByteTotalAvgMs: 43_890,
+          firstResponseByteTotalP95Ms: 52_340,
+        }}
+        labels={labels}
+        noValueLabel="—"
+        numberFormatter={numberFormatter}
+        percentFormatter={percentFormatter}
+        latencyMsFormatter={latencyMsFormatter}
+        localeTag="zh-CN"
+        tooltipBg="#fff"
+        tooltipBorder="#ddd"
+        axisText="#333"
+      />,
+    )
+
+    expect(html).toContain('43.89 s')
+    expect(html).toContain('52.34 s')
+  })
+
+  it('falls back to em dash when bucket has no valid first-response-byte-total samples', () => {
     const html = renderToStaticMarkup(
       <SuccessFailureTooltipContent
         label="2026-02-27 16:30"
@@ -60,15 +90,16 @@ describe('SuccessFailureTooltipContent', () => {
           success: 0,
           failure: 0,
           successRate: null,
-          firstByteSampleCount: 0,
-          firstByteAvgMs: null,
-          firstByteP95Ms: null,
+          firstResponseByteTotalSampleCount: 0,
+          firstResponseByteTotalAvgMs: null,
+          firstResponseByteTotalP95Ms: null,
         }}
         labels={labels}
         noValueLabel="—"
         numberFormatter={numberFormatter}
         percentFormatter={percentFormatter}
-        latencyFormatter={latencyFormatter}
+        latencyMsFormatter={latencyMsFormatter}
+        localeTag="zh-CN"
         tooltipBg="#fff"
         tooltipBorder="#ddd"
         axisText="#333"
@@ -77,7 +108,7 @@ describe('SuccessFailureTooltipContent', () => {
 
     expect(html).toContain('成功率')
     expect(html).toContain('—')
-    expect(html).toContain('首字耗时均值')
-    expect(html).toContain('首字耗时 P95')
+    expect(html).toContain('首字总耗时均值')
+    expect(html).toContain('首字总耗时 P95')
   })
 })

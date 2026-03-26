@@ -6,6 +6,7 @@ import {
   fetchForwardProxyLiveStats,
   fetchForwardProxyTimeseries,
   fetchPromptCacheConversations,
+  fetchTimeseries,
   fetchSettings,
   fetchSummary,
   fetchUpstreamAccountDetail,
@@ -224,6 +225,70 @@ describe("fetchForwardProxyLiveStats", () => {
     const response = await fetchForwardProxyLiveStats();
     expect(response.nodes).toHaveLength(1);
     expect(response.nodes[0].weight24h).toEqual([]);
+  });
+});
+
+describe("fetchTimeseries", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("normalizes first-response-byte-total fields from the timeseries payload", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(
+          JSON.stringify({
+            rangeStart: "2026-03-26T12:00:00Z",
+            rangeEnd: "2026-03-26T13:00:00Z",
+            bucketSeconds: 900,
+            effectiveBucket: "15m",
+            availableBuckets: ["15m", "1h"],
+            bucketLimitedToDaily: false,
+            points: [
+              {
+                bucketStart: "2026-03-26T12:00:00Z",
+                bucketEnd: "2026-03-26T12:15:00Z",
+                totalCount: 11,
+                successCount: 10,
+                failureCount: 1,
+                totalTokens: 193414,
+                totalCost: 0.0543,
+                firstByteSampleCount: 10,
+                firstByteAvgMs: 81.7,
+                firstByteP95Ms: 95.2,
+                firstResponseByteTotalSampleCount: 10,
+                firstResponseByteTotalAvgMs: 43890,
+                firstResponseByteTotalP95Ms: 52340,
+              },
+              {
+                bucketStart: "2026-03-26T12:15:00Z",
+                bucketEnd: "2026-03-26T12:30:00Z",
+                totalCount: 0,
+                successCount: 0,
+                failureCount: 0,
+                totalTokens: 0,
+                totalCost: 0,
+                firstResponseByteTotalSampleCount: Number.NaN,
+                firstResponseByteTotalAvgMs: "bad",
+                firstResponseByteTotalP95Ms: null,
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch,
+    );
+
+    const response = await fetchTimeseries("1h", { bucket: "15m" });
+    expect(response.bucketSeconds).toBe(900);
+    expect(response.points).toHaveLength(2);
+    expect(response.points[0].firstResponseByteTotalSampleCount).toBe(10);
+    expect(response.points[0].firstResponseByteTotalAvgMs).toBe(43890);
+    expect(response.points[0].firstResponseByteTotalP95Ms).toBe(52340);
+    expect(response.points[1].firstResponseByteTotalSampleCount).toBe(0);
+    expect(response.points[1].firstResponseByteTotalAvgMs).toBeNull();
+    expect(response.points[1].firstResponseByteTotalP95Ms).toBeNull();
   });
 });
 
