@@ -5,9 +5,11 @@ import { useTranslation, I18nProvider } from "../i18n";
 import {
   PromptCacheConversationTable,
 } from "./PromptCacheConversationTable";
+import { Button } from "./ui/button";
 import { SelectField } from "./ui/select-field";
 import type {
   PromptCacheConversation,
+  PromptCacheConversationInvocationPreview,
   PromptCacheConversationSelection,
   PromptCacheConversationsResponse,
 } from "../lib/api";
@@ -171,6 +173,34 @@ function buildUpstreamAccounts(seed: number, totalTokens: number, lastActivityAt
   ];
 }
 
+function buildRecentInvocations(
+  seed: number,
+  lastActivityAt: string,
+  totalTokens: number,
+): PromptCacheConversationInvocationPreview[] {
+  return Array.from({ length: 3 }, (_, index) => {
+    const offsetMinutes = index * 18;
+    const occurredAt = new Date(
+      Date.parse(lastActivityAt) - offsetMinutes * 60_000,
+    ).toISOString();
+    const tokens = Math.max(120, Math.round(totalTokens / (6 + index)));
+
+    return {
+      id: seed * 100 + index + 1,
+      invokeId: `live-section-${seed + 1}-${index + 1}`,
+      occurredAt,
+      status: index === 1 && seed % 4 === 2 ? "http_502" : "completed",
+      model: index === 2 ? "gpt-5.4-mini" : "gpt-5.4",
+      totalTokens: tokens,
+      cost: Number((tokens / 42000).toFixed(4)),
+      proxyDisplayName: `Proxy ${(seed % 3) + 1}`,
+      upstreamAccountId: 100 + seed,
+      upstreamAccountName: `Pool ${(seed % 4) + 1} Alpha`,
+      endpoint: index === 1 ? "/v1/chat/completions" : "/v1/responses",
+    };
+  });
+}
+
 function buildDenseConversation(seed: number, variant: "count" | "window") {
   const createdHoursAgo =
     variant === "count" ? 18 + seed * 1.35 : 5.2 - seed * 0.32;
@@ -204,6 +234,11 @@ function buildDenseConversation(seed: number, variant: "count" | "window") {
       seed,
       totalTokens,
       lastPoint?.occurredAt ?? isoAt(lastActivityHoursAgo, 0),
+    ),
+    recentInvocations: buildRecentInvocations(
+      seed,
+      lastPoint?.occurredAt ?? isoAt(lastActivityHoursAgo, 0),
+      totalTokens,
     ),
     last24hRequests: points,
   } satisfies PromptCacheConversation;
@@ -287,6 +322,11 @@ function buildActivityWindowStats(hours: number): PromptCacheConversationsRespon
           totalTokens,
           withinWindowPoints.at(-1)?.occurredAt ?? isoAt(0.2, 0),
         ),
+        recentInvocations: buildRecentInvocations(
+          index + 7,
+          withinWindowPoints.at(-1)?.occurredAt ?? isoAt(0.2, 0),
+          totalTokens,
+        ),
         last24hRequests: withinWindowPoints,
       };
     },
@@ -328,6 +368,9 @@ function StorySurface({ children }: { children: React.ReactNode }) {
 function LivePromptCacheSectionStory() {
   const { t } = useTranslation();
   const [selectionValue, setSelectionValue] = useState("activityWindow:24");
+  const [expandedPromptCacheKeys, setExpandedPromptCacheKeys] = useState<
+    string[]
+  >([]);
 
   const activeOption = useMemo(
     () =>
@@ -339,6 +382,31 @@ function LivePromptCacheSectionStory() {
     () => resolveStats(activeOption.selection),
     [activeOption.selection],
   );
+  const visiblePromptCacheKeys = useMemo(
+    () => stats.conversations.map((conversation) => conversation.promptCacheKey),
+    [stats],
+  );
+  const allExpanded =
+    visiblePromptCacheKeys.length > 0 &&
+    visiblePromptCacheKeys.every((promptCacheKey) =>
+      expandedPromptCacheKeys.includes(promptCacheKey),
+    );
+
+  const toggleAllVisible = () => {
+    setExpandedPromptCacheKeys((current) => {
+      if (
+        visiblePromptCacheKeys.length > 0 &&
+        visiblePromptCacheKeys.every((promptCacheKey) =>
+          current.includes(promptCacheKey),
+        )
+      ) {
+        return current.filter(
+          (promptCacheKey) => !visiblePromptCacheKeys.includes(promptCacheKey),
+        );
+      }
+      return visiblePromptCacheKeys;
+    });
+  };
 
   return (
     <section className="surface-panel">
@@ -350,31 +418,52 @@ function LivePromptCacheSectionStory() {
               {t("live.conversations.description")}
             </p>
           </div>
-          <SelectField
-            className="w-40"
-            label={t("live.conversations.selectionLabel")}
-            name="livePromptCacheSelection"
-            size="sm"
-            data-testid="live-prompt-cache-selection"
-            value={selectionValue}
-            onValueChange={setSelectionValue}
-            options={SELECTION_OPTIONS.map((option) => ({
-              value: option.value,
-              label:
-                option.kind === "count"
-                  ? t("live.conversations.option.count", {
-                      count: option.count,
-                    })
-                  : t("live.conversations.option.activityHours", {
-                      hours: option.hours,
-                    }),
-            }))}
-          />
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              data-testid="live-prompt-cache-expand-all"
+              onClick={toggleAllVisible}
+            >
+              {allExpanded
+                ? t("live.conversations.actions.collapseAllRecords")
+                : t("live.conversations.actions.expandAllRecords")}
+            </Button>
+            <SelectField
+              className="w-40"
+              label={t("live.conversations.selectionLabel")}
+              name="livePromptCacheSelection"
+              size="sm"
+              data-testid="live-prompt-cache-selection"
+              value={selectionValue}
+              onValueChange={setSelectionValue}
+              options={SELECTION_OPTIONS.map((option) => ({
+                value: option.value,
+                label:
+                  option.kind === "count"
+                    ? t("live.conversations.option.count", {
+                        count: option.count,
+                      })
+                    : t("live.conversations.option.activityHours", {
+                        hours: option.hours,
+                      }),
+              }))}
+            />
+          </div>
         </div>
         <PromptCacheConversationTable
           stats={stats}
           isLoading={false}
           error={null}
+          expandedPromptCacheKeys={expandedPromptCacheKeys}
+          onToggleExpandedPromptCacheKey={(promptCacheKey) => {
+            setExpandedPromptCacheKeys((current) =>
+              current.includes(promptCacheKey)
+                ? current.filter((value) => value !== promptCacheKey)
+                : [...current, promptCacheKey],
+            );
+          }}
         />
       </div>
     </section>
@@ -407,6 +496,7 @@ export const InteractiveFilters: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     const trigger = canvas.getByTestId("live-prompt-cache-selection");
+    const expandAllButton = canvas.getByTestId("live-prompt-cache-expand-all");
     const documentScope = within(canvasElement.ownerDocument.body);
 
     await userEvent.click(trigger);
@@ -425,6 +515,11 @@ export const InteractiveFilters: Story = {
     await expect(trigger.textContent ?? "").toContain("20 个对话");
     await expect(
       canvas.getByText(/有 25 个更新创建的对话因未在近 24 小时活动而未显示/i),
+    ).toBeInTheDocument();
+
+    await userEvent.click(expandAllButton);
+    await expect(
+      canvas.getByText(/最近 5 条调用记录/i),
     ).toBeInTheDocument();
   },
 };

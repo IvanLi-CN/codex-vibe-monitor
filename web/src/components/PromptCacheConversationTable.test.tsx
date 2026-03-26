@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { renderToStaticMarkup } from "react-dom/server";
-import { act } from "react";
+import { act, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -16,6 +16,7 @@ const apiMocks = vi.hoisted(() => ({
   fetchUpstreamAccountDetail: vi.fn<
     (accountId: number) => Promise<UpstreamAccountDetail>
   >(),
+  fetchInvocationRecords: vi.fn(),
 }));
 
 vi.mock("../lib/api", async () => {
@@ -23,6 +24,7 @@ vi.mock("../lib/api", async () => {
   return {
     ...actual,
     fetchUpstreamAccountDetail: apiMocks.fetchUpstreamAccountDetail,
+    fetchInvocationRecords: apiMocks.fetchInvocationRecords,
   };
 });
 
@@ -64,6 +66,7 @@ function createConversation(
     createdAt: overrides.createdAt,
     lastActivityAt: overrides.lastActivityAt,
     upstreamAccounts: overrides.upstreamAccounts ?? [],
+    recentInvocations: overrides.recentInvocations ?? [],
     last24hRequests: overrides.last24hRequests ?? [],
   };
 }
@@ -84,6 +87,7 @@ describe("PromptCacheConversationTable", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-03T00:00:00Z"));
     apiMocks.fetchUpstreamAccountDetail.mockReset();
+    apiMocks.fetchInvocationRecords.mockReset();
   });
 
   afterEach(() => {
@@ -96,7 +100,7 @@ describe("PromptCacheConversationTable", () => {
     vi.useRealTimers();
   });
 
-  function renderInteractive(stats: PromptCacheConversationsResponse | null) {
+  function renderInteractiveElement(element: React.ReactNode) {
     if (!host) {
       host = document.createElement("div");
       document.body.appendChild(host);
@@ -106,15 +110,29 @@ describe("PromptCacheConversationTable", () => {
       root?.render(
         <MemoryRouter>
           <I18nProvider>
-            <PromptCacheConversationTable
-              stats={stats}
-              isLoading={false}
-              error={null}
-            />
+            {element}
           </I18nProvider>
         </MemoryRouter>,
       );
     });
+  }
+
+  function renderInteractive(stats: PromptCacheConversationsResponse | null) {
+    renderInteractiveElement(
+      <PromptCacheConversationTable
+        stats={stats}
+        isLoading={false}
+        error={null}
+      />,
+    );
+  }
+
+  function findButtonByAriaLabel(label: string, index = 0) {
+    return Array.from(document.querySelectorAll("button")).filter(
+      (button): button is HTMLButtonElement =>
+        button.getAttribute("aria-label") === label ||
+        button.textContent?.includes(label) === true,
+    )[index] ?? null;
   }
 
   it("renders conversation metrics and unified 24h sparkline surfaces", () => {
@@ -633,5 +651,191 @@ describe("PromptCacheConversationTable", () => {
     });
 
     expect(document.body.textContent).not.toContain("去号池查看完整详情");
+  });
+
+  it("toggles recent invocation previews inline", async () => {
+    const stats: PromptCacheConversationsResponse = {
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-preview-toggle",
+          requestCount: 2,
+          totalTokens: 3210,
+          totalCost: 0.42,
+          createdAt: "2026-03-02T10:00:00Z",
+          lastActivityAt: "2026-03-02T12:00:00Z",
+          recentInvocations: [
+            {
+              id: 11,
+              invokeId: "preview-11",
+              occurredAt: "2026-03-02T12:00:00Z",
+              status: "completed",
+              model: "gpt-5.4",
+              totalTokens: 3210,
+              cost: 0.42,
+              proxyDisplayName: "Proxy West",
+              upstreamAccountId: 101,
+              upstreamAccountName: "Pool Alpha",
+              endpoint: "/v1/responses",
+            },
+          ],
+          last24hRequests: [],
+        }),
+      ],
+    };
+
+    function Harness() {
+      const [expandedPromptCacheKeys, setExpandedPromptCacheKeys] = useState<
+        string[]
+      >([]);
+
+      return (
+        <PromptCacheConversationTable
+          stats={stats}
+          isLoading={false}
+          error={null}
+          expandedPromptCacheKeys={expandedPromptCacheKeys}
+          onToggleExpandedPromptCacheKey={(promptCacheKey) => {
+            setExpandedPromptCacheKeys((current) =>
+              current.includes(promptCacheKey)
+                ? current.filter((value) => value !== promptCacheKey)
+                : [...current, promptCacheKey],
+            );
+          }}
+        />
+      );
+    }
+
+    renderInteractiveElement(<Harness />);
+
+    const expandButton = findButtonByAriaLabel("展开最近调用记录");
+    expect(expandButton).toBeTruthy();
+
+    await act(async () => {
+      expandButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(document.body.textContent).toContain("最近 5 条调用记录");
+    expect(document.body.textContent).toContain("gpt-5.4");
+    expect(document.body.textContent).toContain("/v1/responses");
+    expect(document.body.textContent).toContain("3,210");
+
+    const collapseButton = findButtonByAriaLabel("收起最近调用记录");
+    expect(collapseButton).toBeTruthy();
+
+    await act(async () => {
+      collapseButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(document.body.textContent).not.toContain("最近 5 条调用记录");
+  });
+
+  it("opens the history drawer and preserves loaded records when later pages fail", async () => {
+    apiMocks.fetchInvocationRecords
+      .mockResolvedValueOnce({
+        snapshotId: 901,
+        total: 3,
+        page: 1,
+        pageSize: 2,
+        records: [
+          {
+            id: 71,
+            invokeId: "history-71",
+            occurredAt: "2026-03-02T12:30:00Z",
+            status: "completed",
+            failureClass: "none",
+            totalTokens: 1500,
+            cost: 0.31,
+            endpoint: "/v1/responses",
+            promptCacheKey: "pck-history",
+            upstreamAccountId: 101,
+            upstreamAccountName: "Pool Alpha",
+            proxyDisplayName: "Proxy West",
+            createdAt: "2026-03-02T12:30:00Z",
+          },
+          {
+            id: 70,
+            invokeId: "history-70",
+            occurredAt: "2026-03-02T12:10:00Z",
+            status: "http_502",
+            failureClass: "service_failure",
+            totalTokens: 900,
+            cost: 0.2,
+            endpoint: "/v1/chat/completions",
+            promptCacheKey: "pck-history",
+            upstreamAccountId: null,
+            upstreamAccountName: null,
+            proxyDisplayName: "Proxy East",
+            createdAt: "2026-03-02T12:10:00Z",
+          },
+        ],
+      })
+      .mockRejectedValueOnce(new Error("page 2 failed"));
+
+    renderInteractive({
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-history",
+          requestCount: 3,
+          totalTokens: 2400,
+          totalCost: 0.51,
+          createdAt: "2026-03-02T10:00:00Z",
+          lastActivityAt: "2026-03-02T12:30:00Z",
+          last24hRequests: [],
+        }),
+      ],
+    });
+
+    const historyButton = findButtonByAriaLabel("打开全部调用记录");
+    expect(historyButton).toBeTruthy();
+
+    await act(async () => {
+      historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenNthCalledWith(1, {
+      promptCacheKey: "pck-history",
+      page: 1,
+      pageSize: 200,
+      sortBy: "occurredAt",
+      sortOrder: "desc",
+    });
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenNthCalledWith(2, {
+      promptCacheKey: "pck-history",
+      page: 2,
+      pageSize: 200,
+      sortBy: "occurredAt",
+      sortOrder: "desc",
+      snapshotId: 901,
+    });
+    expect(document.body.textContent).toContain("全部保留调用记录");
+    expect(document.body.textContent).toContain("Pool Alpha · Proxy West");
+    expect(document.body.textContent).toContain("page 2 failed");
+    expect(document.body.textContent).toContain("已加载 2 / 3 条保留调用记录");
+
+    const closeButton = findButtonByAriaLabel("关闭调用记录抽屉");
+    expect(closeButton).toBeTruthy();
+
+    await act(async () => {
+      closeButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(document.body.textContent).not.toContain("全部保留调用记录");
   });
 });

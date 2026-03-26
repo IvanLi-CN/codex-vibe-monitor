@@ -1147,6 +1147,11 @@ const baseTranslations = {
     "live.conversations.description":
       "Group requests by Prompt Cache Key. Filter by conversation count or recent activity window, while totals remain full-history metrics.",
     "live.conversations.selectionLabel": "Conversation filter",
+    "live.conversations.actions.expandAllRecords": "Expand all records",
+    "live.conversations.actions.collapseAllRecords": "Collapse all records",
+    "live.conversations.actions.expandPreview": "Expand recent calls",
+    "live.conversations.actions.collapsePreview": "Collapse recent calls",
+    "live.conversations.actions.openHistory": "Open full call history",
     "live.conversations.option.count": "{{count}} conversations",
     "live.conversations.option.activityHours":
       "Active in last {{hours}} hour(s)",
@@ -1171,6 +1176,24 @@ const baseTranslations = {
     "live.conversations.table.lastActivityAtShort": "Active",
     "live.conversations.table.chart24h": "24h Token Cumulative",
     "live.conversations.table.chartWindow": "{{hours}}h Token Cumulative",
+    "live.conversations.preview.title": "Recent 5 calls",
+    "live.conversations.preview.empty": "No retained call records.",
+    "live.conversations.invocations.model": "Model",
+    "live.conversations.invocations.totalTokens": "Total tokens",
+    "live.conversations.invocations.totalCost": "Cost",
+    "live.conversations.invocations.endpoint": "Endpoint",
+    "live.conversations.invocations.identityUnavailable": "Unknown identity",
+    "live.conversations.drawer.close": "Close history drawer",
+    "live.conversations.drawer.eyebrow": "All retained calls",
+    "live.conversations.drawer.description":
+      "Shows every retained raw invocation for this Prompt Cache Key, newest first.",
+    "live.conversations.drawer.progress":
+      "Loaded {{loaded}} / {{total}} retained record(s)",
+    "live.conversations.drawer.progressComplete":
+      "{{count}} retained record(s)",
+    "live.conversations.drawer.loadingMore": "Loading more records…",
+    "live.conversations.drawer.empty":
+      "No retained call records for this conversation.",
     "live.conversations.chartAria": "{{hours}}h token cumulative chart",
     "live.chart.tooltip.instructions":
       "Hover or tap for details. Focus the chart and use arrow keys to switch points.",
@@ -2539,6 +2562,11 @@ const baseTranslations = {
     "live.conversations.description":
       "按 Prompt Cache Key 聚合对话，可按数量或最近活动时间筛选，累计指标按全历史计算。",
     "live.conversations.selectionLabel": "对话筛选",
+    "live.conversations.actions.expandAllRecords": "展开所有记录",
+    "live.conversations.actions.collapseAllRecords": "收起所有记录",
+    "live.conversations.actions.expandPreview": "展开最近调用记录",
+    "live.conversations.actions.collapsePreview": "收起最近调用记录",
+    "live.conversations.actions.openHistory": "打开全部调用记录",
     "live.conversations.option.count": "{{count}} 个对话",
     "live.conversations.option.activityHours": "近 {{hours}} 小时活动",
     "live.conversations.empty": "暂无 Prompt Cache Key 对话数据。",
@@ -2562,6 +2590,24 @@ const baseTranslations = {
     "live.conversations.table.lastActivityAtShort": "活动",
     "live.conversations.table.chart24h": "24h Token 累计",
     "live.conversations.table.chartWindow": "{{hours}} 小时 Token 累计",
+    "live.conversations.preview.title": "最近 5 条调用记录",
+    "live.conversations.preview.empty": "暂无调用记录。",
+    "live.conversations.invocations.model": "模型",
+    "live.conversations.invocations.totalTokens": "总 Tokens",
+    "live.conversations.invocations.totalCost": "成本",
+    "live.conversations.invocations.endpoint": "接口",
+    "live.conversations.invocations.identityUnavailable": "未知来源",
+    "live.conversations.drawer.close": "关闭调用记录抽屉",
+    "live.conversations.drawer.eyebrow": "全部保留调用记录",
+    "live.conversations.drawer.description":
+      "按时间倒序展示当前仍可回放的原始调用记录。",
+    "live.conversations.drawer.progress":
+      "已加载 {{loaded}} / {{total}} 条保留调用记录",
+    "live.conversations.drawer.progressComplete":
+      "共 {{count}} 条保留调用记录",
+    "live.conversations.drawer.loadingMore": "继续加载调用记录中…",
+    "live.conversations.drawer.empty":
+      "当前对话暂无可回放的调用记录。",
     "live.conversations.chartAria": "{{hours}} 小时 Token 累计图",
     "live.chart.tooltip.instructions":
       "悬停或点按查看详情；聚焦图表后可用方向键切换数据点。",

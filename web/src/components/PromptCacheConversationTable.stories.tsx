@@ -1,8 +1,11 @@
 import { useEffect, useRef, type ReactNode } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { expect, userEvent, within } from "storybook/test";
 import { MemoryRouter } from "react-router-dom";
 import { I18nProvider } from "../i18n";
 import type {
+  ApiInvocation,
+  PromptCacheConversationInvocationPreview,
   PromptCacheConversationsResponse,
   UpstreamAccountDetail,
 } from "../lib/api";
@@ -87,6 +90,173 @@ const accountDetails = new Map<number, UpstreamAccountDetail>([
   [41, buildAccountDetail(41, "Pool High")],
 ]);
 
+function buildPreview(
+  overrides: Partial<PromptCacheConversationInvocationPreview> & {
+    id: number;
+    invokeId: string;
+    occurredAt: string;
+  },
+): PromptCacheConversationInvocationPreview {
+  return {
+    id: overrides.id,
+    invokeId: overrides.invokeId,
+    occurredAt: overrides.occurredAt,
+    status: overrides.status ?? "completed",
+    model: overrides.model ?? "gpt-5.4",
+    totalTokens: overrides.totalTokens ?? 0,
+    cost: overrides.cost ?? 0,
+    proxyDisplayName: overrides.proxyDisplayName ?? null,
+    upstreamAccountId: overrides.upstreamAccountId ?? null,
+    upstreamAccountName: overrides.upstreamAccountName ?? null,
+    endpoint: overrides.endpoint ?? null,
+  };
+}
+
+function buildHistoryRecord(
+  preview: PromptCacheConversationInvocationPreview,
+): ApiInvocation {
+  return {
+    id: preview.id,
+    invokeId: preview.invokeId,
+    occurredAt: preview.occurredAt,
+    status: preview.status,
+    failureClass:
+      preview.status === "completed" || preview.status === "success"
+        ? "none"
+        : "service_failure",
+    totalTokens: preview.totalTokens,
+    cost: preview.cost ?? undefined,
+    endpoint: preview.endpoint ?? undefined,
+    promptCacheKey: undefined,
+    upstreamAccountId: preview.upstreamAccountId ?? undefined,
+    upstreamAccountName: preview.upstreamAccountName ?? undefined,
+    proxyDisplayName: preview.proxyDisplayName ?? undefined,
+    createdAt: preview.occurredAt,
+  };
+}
+
+const conversationOnePreviews = [
+  buildPreview({
+    id: 501,
+    invokeId: "invoke-pck-01-05",
+    occurredAt: "2026-03-03T12:44:10.000Z",
+    totalTokens: 1184,
+    cost: 0.028,
+    proxyDisplayName: "Proxy Central",
+    upstreamAccountId: 11,
+    upstreamAccountName: "Pool Alpha",
+    endpoint: "/v1/responses",
+  }),
+  buildPreview({
+    id: 500,
+    invokeId: "invoke-pck-01-04",
+    occurredAt: "2026-03-03T11:58:00.000Z",
+    totalTokens: 940,
+    cost: 0.022,
+    proxyDisplayName: "Proxy Central",
+    upstreamAccountId: 12,
+    upstreamAccountName: "Pool Beta",
+    endpoint: "/v1/responses",
+  }),
+  buildPreview({
+    id: 499,
+    invokeId: "invoke-pck-01-03",
+    occurredAt: "2026-03-03T11:10:00.000Z",
+    status: "http_502",
+    totalTokens: 670,
+    cost: 0.016,
+    proxyDisplayName: "Proxy Relay",
+    upstreamAccountId: null,
+    upstreamAccountName: null,
+    endpoint: "/v1/chat/completions",
+  }),
+  buildPreview({
+    id: 498,
+    invokeId: "invoke-pck-01-02",
+    occurredAt: "2026-03-03T10:44:00.000Z",
+    totalTokens: 1460,
+    cost: 0.034,
+    proxyDisplayName: "Proxy Relay",
+    upstreamAccountId: 11,
+    upstreamAccountName: "Pool Alpha",
+    endpoint: "/v1/responses",
+  }),
+  buildPreview({
+    id: 497,
+    invokeId: "invoke-pck-01-01",
+    occurredAt: "2026-03-03T09:32:00.000Z",
+    totalTokens: 1024,
+    cost: 0.024,
+    proxyDisplayName: "Proxy North",
+    upstreamAccountId: 12,
+    upstreamAccountName: "Pool Beta",
+    endpoint: "/v1/responses",
+  }),
+];
+
+const conversationTwoPreviews = [
+  buildPreview({
+    id: 601,
+    invokeId: "invoke-pck-02-03",
+    occurredAt: "2026-03-03T11:40:28.000Z",
+    totalTokens: 804,
+    cost: 0.019,
+    proxyDisplayName: "Proxy South",
+    upstreamAccountId: 21,
+    upstreamAccountName: "Pool Delta",
+    endpoint: "/v1/responses",
+  }),
+  buildPreview({
+    id: 600,
+    invokeId: "invoke-pck-02-02",
+    occurredAt: "2026-03-03T10:15:00.000Z",
+    status: "invalid_api_key",
+    totalTokens: 56,
+    cost: 0.001,
+    proxyDisplayName: "Proxy South",
+    upstreamAccountId: 22,
+    upstreamAccountName: "Pool Epsilon",
+    endpoint: "/v1/chat/completions",
+  }),
+  buildPreview({
+    id: 599,
+    invokeId: "invoke-pck-02-01",
+    occurredAt: "2026-03-03T09:45:00.000Z",
+    totalTokens: 742,
+    cost: 0.017,
+    proxyDisplayName: "Proxy South",
+    upstreamAccountId: 21,
+    upstreamAccountName: "Pool Delta",
+    endpoint: "/v1/responses",
+  }),
+];
+
+const historyRecordsByKey = new Map<string, ApiInvocation[]>([
+  [
+    "pck-chat-20260303-01",
+    [
+      ...conversationOnePreviews.map(buildHistoryRecord),
+      buildHistoryRecord(
+        buildPreview({
+          id: 496,
+          invokeId: "invoke-pck-01-00",
+          occurredAt: "2026-03-03T08:10:00.000Z",
+          totalTokens: 880,
+          cost: 0.021,
+          proxyDisplayName: "Proxy North",
+          upstreamAccountId: 11,
+          upstreamAccountName: "Pool Alpha",
+          endpoint: "/v1/responses",
+        }),
+      ),
+    ],
+  ],
+  [
+    "pck-chat-20260303-02",
+    conversationTwoPreviews.map(buildHistoryRecord),
+  ],
+]);
+
 function StorybookPromptCacheAccountMock({
   children,
 }: {
@@ -119,6 +289,28 @@ function StorybookPromptCacheAccountMock({
           return jsonResponse({ message: "Not found" }, 404);
         }
         return jsonResponse(detail);
+      }
+
+      if (parsedUrl.pathname === "/api/invocations" && method === "GET") {
+        const promptCacheKey = parsedUrl.searchParams.get("promptCacheKey");
+        if (promptCacheKey) {
+          const page = Number(parsedUrl.searchParams.get("page") ?? "1");
+          const pageSize = Number(parsedUrl.searchParams.get("pageSize") ?? "20");
+          const snapshotId = Number(
+            parsedUrl.searchParams.get("snapshotId") ?? "8401",
+          );
+          const records = historyRecordsByKey.get(promptCacheKey) ?? [];
+          const start = Math.max(0, (page - 1) * pageSize);
+          const pagedRecords = records.slice(start, start + pageSize);
+
+          return jsonResponse({
+            snapshotId,
+            total: records.length,
+            page,
+            pageSize,
+            records: pagedRecords,
+          });
+        }
       }
 
       return (originalFetchRef.current as typeof window.fetch)(input, init);
@@ -185,6 +377,7 @@ const stats: PromptCacheConversationsResponse = {
           lastActivityAt: "2026-03-02T08:00:00.000Z",
         },
       ],
+      recentInvocations: conversationOnePreviews,
       last24hRequests: [
         {
           occurredAt: "2026-03-02T13:00:00.000Z",
@@ -248,6 +441,7 @@ const stats: PromptCacheConversationsResponse = {
           lastActivityAt: "2026-03-03T09:30:00.000Z",
         },
       ],
+      recentInvocations: conversationTwoPreviews,
       last24hRequests: [
         {
           occurredAt: "2026-03-02T14:16:00.000Z",
@@ -307,6 +501,19 @@ const sharedScaleStats: PromptCacheConversationsResponse = {
           lastActivityAt: "2026-03-02T05:00:00.000Z",
         },
       ],
+      recentInvocations: [
+        buildPreview({
+          id: 701,
+          invokeId: "invoke-low-01",
+          occurredAt: "2026-03-02T05:00:00.000Z",
+          totalTokens: 120,
+          cost: 0.003,
+          proxyDisplayName: "Proxy Low",
+          upstreamAccountId: 31,
+          upstreamAccountName: "Pool Low",
+          endpoint: "/v1/responses",
+        }),
+      ],
       last24hRequests: [
         {
           occurredAt: "2026-03-02T03:00:00.000Z",
@@ -340,6 +547,19 @@ const sharedScaleStats: PromptCacheConversationsResponse = {
           totalCost: 0.21,
           lastActivityAt: "2026-03-02T23:40:00.000Z",
         },
+      ],
+      recentInvocations: [
+        buildPreview({
+          id: 801,
+          invokeId: "invoke-high-01",
+          occurredAt: "2026-03-02T23:40:00.000Z",
+          totalTokens: 2200,
+          cost: 0.052,
+          proxyDisplayName: "Proxy High",
+          upstreamAccountId: 41,
+          upstreamAccountName: "Pool High",
+          endpoint: "/v1/responses",
+        }),
       ],
       last24hRequests: [
         {
@@ -378,6 +598,7 @@ const sharedScaleStats: PromptCacheConversationsResponse = {
 const meta = {
   title: "Monitoring/PromptCacheConversationTable",
   component: PromptCacheConversationTable,
+  tags: ["autodocs"],
   parameters: {
     layout: "fullscreen",
   },
@@ -410,6 +631,26 @@ export const Populated: Story = {
     stats,
     isLoading: false,
     error: null,
+  },
+};
+
+export const SingleExpanded: Story = {
+  args: {
+    stats,
+    isLoading: false,
+    error: null,
+    expandedPromptCacheKeys: [stats.conversations[0]?.promptCacheKey ?? ""],
+  },
+};
+
+export const ExpandAll: Story = {
+  args: {
+    stats,
+    isLoading: false,
+    error: null,
+    expandedPromptCacheKeys: stats.conversations.map(
+      (conversation) => conversation.promptCacheKey,
+    ),
   },
 };
 
@@ -466,5 +707,27 @@ export const TooltipEdgeDensity: Story = {
           "Hover or tap the final token segment to verify the shared tooltip flips inward near the right table edge without clipping.",
       },
     },
+  },
+};
+
+export const DrawerOpen: Story = {
+  args: {
+    stats,
+    isLoading: false,
+    error: null,
+  },
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body);
+    const historyButton = documentScope.getAllByRole("button", {
+      name: /open full call history/i,
+    })[0];
+
+    await userEvent.click(historyButton);
+    await expect(
+      await documentScope.findByText(/All retained calls/i),
+    ).toBeInTheDocument();
+    await expect(
+      documentScope.getByText(/Loaded 6 \/ 6 retained record\(s\)/i),
+    ).toBeInTheDocument();
   },
 };

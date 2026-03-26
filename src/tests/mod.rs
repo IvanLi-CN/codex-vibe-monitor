@@ -24486,6 +24486,268 @@ async fn prompt_cache_conversations_include_recent_upstream_account_summaries() 
 }
 
 #[tokio::test]
+async fn prompt_cache_conversations_include_recent_invocation_previews_with_limit_and_proxy_scope()
+{
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+
+    async fn insert_row(
+        pool: &Pool<Sqlite>,
+        invoke_id: &str,
+        occurred_at: DateTime<Utc>,
+        source: &str,
+        key: &str,
+        status: &str,
+        total_tokens: i64,
+        cost: f64,
+        proxy_display_name: &str,
+        account_id: Option<i64>,
+        account_name: Option<&str>,
+        endpoint: &str,
+        model: &str,
+    ) {
+        let mut payload = json!({
+            "promptCacheKey": key,
+            "proxyDisplayName": proxy_display_name,
+            "endpoint": endpoint,
+            "model": model,
+        });
+        if let Some(account_id) = account_id {
+            payload["upstreamAccountId"] = json!(account_id);
+        }
+        if let Some(account_name) = account_name {
+            payload["upstreamAccountName"] = json!(account_name);
+        }
+
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, model, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(format_naive(
+            occurred_at.with_timezone(&Shanghai).naive_local(),
+        ))
+        .bind(source)
+        .bind(status)
+        .bind(model)
+        .bind(total_tokens)
+        .bind(cost)
+        .bind(payload.to_string())
+        .bind("{}")
+        .execute(pool)
+        .await
+        .expect("insert invocation row");
+    }
+
+    insert_row(
+        &state.pool,
+        "preview-01",
+        now - ChronoDuration::hours(7),
+        SOURCE_PROXY,
+        "pck-preview",
+        "success",
+        100,
+        0.10,
+        "Proxy Alpha",
+        Some(101),
+        Some("Pool Alpha"),
+        "/v1/responses",
+        "gpt-5.4",
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "preview-02",
+        now - ChronoDuration::hours(6),
+        SOURCE_PROXY,
+        "pck-preview",
+        "success",
+        120,
+        0.12,
+        "Proxy Alpha",
+        Some(101),
+        Some("Pool Alpha"),
+        "/v1/responses",
+        "gpt-5.4",
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "preview-03",
+        now - ChronoDuration::hours(5),
+        SOURCE_PROXY,
+        "pck-preview",
+        "http_502",
+        140,
+        0.14,
+        "Proxy Beta",
+        None,
+        None,
+        "/v1/chat/completions",
+        "gpt-5.4-mini",
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "preview-04",
+        now - ChronoDuration::hours(4),
+        SOURCE_PROXY,
+        "pck-preview",
+        "success",
+        160,
+        0.16,
+        "Proxy Beta",
+        Some(202),
+        None,
+        "/v1/responses",
+        "gpt-5.4-mini",
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "preview-05",
+        now - ChronoDuration::hours(3),
+        SOURCE_PROXY,
+        "pck-preview",
+        "success",
+        180,
+        0.18,
+        "Proxy Gamma",
+        Some(303),
+        Some("Pool Gamma"),
+        "/v1/responses",
+        "gpt-5.4",
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "preview-06",
+        now - ChronoDuration::hours(2),
+        SOURCE_PROXY,
+        "pck-preview",
+        "success",
+        200,
+        0.20,
+        "Proxy Gamma",
+        Some(303),
+        Some("Pool Gamma"),
+        "/v1/responses",
+        "gpt-5.4",
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "preview-crs-hidden",
+        now - ChronoDuration::hours(1),
+        SOURCE_CRS,
+        "pck-preview",
+        "success",
+        999,
+        9.99,
+        "CRS Hidden",
+        Some(404),
+        Some("CRS Hidden"),
+        "/v1/responses",
+        "gpt-5.4",
+    )
+    .await;
+
+    let Json(response) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+        }),
+    )
+    .await
+    .expect("prompt cache conversations should succeed");
+
+    let conversation = response
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-preview")
+        .expect("pck-preview should be included");
+
+    assert_eq!(conversation.request_count, 7);
+    assert_eq!(conversation.total_tokens, 1899);
+    assert!((conversation.total_cost - 10.89).abs() < 1e-9);
+    assert_eq!(conversation.recent_invocations.len(), 5);
+    assert_eq!(
+        conversation
+            .recent_invocations
+            .iter()
+            .map(|item| item.invoke_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "preview-crs-hidden",
+            "preview-06",
+            "preview-05",
+            "preview-04",
+            "preview-03",
+        ]
+    );
+
+    let latest = &conversation.recent_invocations[0];
+    assert_eq!(latest.status, "success");
+    assert_eq!(latest.model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(latest.total_tokens, 999);
+    assert_eq!(latest.proxy_display_name.as_deref(), Some("CRS Hidden"));
+    assert_eq!(latest.upstream_account_id, Some(404));
+    assert_eq!(latest.upstream_account_name.as_deref(), Some("CRS Hidden"));
+    assert_eq!(latest.endpoint.as_deref(), Some("/v1/responses"));
+
+    let id_only = conversation
+        .recent_invocations
+        .iter()
+        .find(|item| item.invoke_id == "preview-04")
+        .expect("id-only preview should be included");
+    assert_eq!(id_only.upstream_account_id, Some(202));
+    assert_eq!(id_only.upstream_account_name, None);
+
+    let failed_preview = conversation
+        .recent_invocations
+        .iter()
+        .find(|item| item.invoke_id == "preview-03")
+        .expect("failed preview should be included");
+    assert_eq!(failed_preview.status, "http_502");
+
+    let proxy_only_rows = query_prompt_cache_conversation_recent_invocations(
+        &state.pool,
+        InvocationSourceScope::ProxyOnly,
+        &["pck-preview".to_string()],
+        5,
+    )
+    .await
+    .expect("proxy-only recent invocation previews should succeed");
+
+    assert_eq!(
+        proxy_only_rows
+            .iter()
+            .map(|item| item.invoke_id.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "preview-06",
+            "preview-05",
+            "preview-04",
+            "preview-03",
+            "preview-02",
+        ]
+    );
+    assert!(
+        proxy_only_rows
+            .iter()
+            .all(|item| item.invoke_id != "preview-crs-hidden")
+    );
+}
+
+#[tokio::test]
 async fn prompt_cache_conversations_preserve_upstream_account_history_after_raw_rows_are_removed() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -24591,6 +24853,76 @@ async fn prompt_cache_conversations_preserve_upstream_account_history_after_raw_
     assert_eq!(beta.request_count, 2);
     assert_eq!(beta.total_tokens, 55);
     assert!((beta.total_cost - 0.55).abs() < 1e-9);
+}
+
+#[tokio::test]
+async fn prompt_cache_conversations_keep_totals_when_recent_preview_is_empty() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+
+    for (invoke_id, minutes_ago, total_tokens, cost) in [
+        ("preview-empty-1", 130, 120, 0.12),
+        ("preview-empty-2", 70, 180, 0.18),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(format_naive(
+            (now - ChronoDuration::minutes(minutes_ago))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(total_tokens)
+        .bind(cost)
+        .bind(json!({ "promptCacheKey": "pck-preview-empty" }).to_string())
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert prompt cache invocation row");
+    }
+
+    ensure_hourly_rollups_caught_up(state.as_ref())
+        .await
+        .expect("hourly rollups should catch up before raw rows are removed");
+
+    sqlx::query("DELETE FROM codex_invocations WHERE invoke_id IN (?1, ?2)")
+        .bind("preview-empty-1")
+        .bind("preview-empty-2")
+        .execute(&state.pool)
+        .await
+        .expect("delete raw rows after hourly rollup catch-up");
+
+    let Json(response) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+        }),
+    )
+    .await
+    .expect("prompt cache conversations should succeed");
+
+    let conversation = response
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-preview-empty")
+        .expect("conversation should survive through hourly rollups");
+
+    assert_eq!(conversation.request_count, 2);
+    assert_eq!(conversation.total_tokens, 300);
+    assert!((conversation.total_cost - 0.30).abs() < 1e-9);
+    assert!(conversation.recent_invocations.is_empty());
 }
 
 #[tokio::test]

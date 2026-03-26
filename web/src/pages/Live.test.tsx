@@ -12,6 +12,9 @@ const hookMocks = vi.hoisted(() => ({
   usePromptCacheConversations: vi.fn(),
   useSummary: vi.fn(),
 }));
+const componentMocks = vi.hoisted(() => ({
+  promptCacheConversationTable: vi.fn(),
+}));
 const storage = new Map<string, string>();
 
 vi.mock("../hooks/useForwardProxyLiveStats", () => ({
@@ -39,9 +42,35 @@ vi.mock("../components/ForwardProxyLiveTable", () => ({
 }));
 
 vi.mock("../components/PromptCacheConversationTable", () => ({
-  PromptCacheConversationTable: () => (
-    <div data-testid="prompt-cache-conversation-table" />
-  ),
+  PromptCacheConversationTable: (props: {
+    stats: {
+      conversations?: Array<{ promptCacheKey: string }>;
+    } | null;
+    expandedPromptCacheKeys?: string[];
+    onToggleExpandedPromptCacheKey?: (promptCacheKey: string) => void;
+  }) => {
+    componentMocks.promptCacheConversationTable(props);
+    const firstPromptCacheKey = props.stats?.conversations?.[0]?.promptCacheKey;
+
+    return (
+      <div
+        data-testid="prompt-cache-conversation-table"
+        data-expanded={(props.expandedPromptCacheKeys ?? []).join(",")}
+      >
+        <button
+          type="button"
+          data-testid="prompt-cache-conversation-toggle-first"
+          onClick={() => {
+            if (firstPromptCacheKey) {
+              props.onToggleExpandedPromptCacheKey?.(firstPromptCacheKey);
+            }
+          }}
+        >
+          toggle first
+        </button>
+      </div>
+    );
+  },
 }));
 
 vi.mock("../components/InvocationChart", () => ({
@@ -77,6 +106,10 @@ vi.mock("../i18n", () => ({
           return "对话说明";
         case "live.conversations.selectionLabel":
           return "对话筛选";
+        case "live.conversations.actions.expandAllRecords":
+          return "展开所有记录";
+        case "live.conversations.actions.collapseAllRecords":
+          return "收起所有记录";
         case "live.conversations.option.count":
           return `${values?.count ?? 0} 个对话`;
         case "live.conversations.option.activityHours":
@@ -175,6 +208,12 @@ function render(ui: React.ReactNode) {
   });
 }
 
+function rerender(ui: React.ReactNode) {
+  act(() => {
+    root?.render(ui);
+  });
+}
+
 function pressElement(element: HTMLElement) {
   act(() => {
     if (typeof PointerEvent === "function") {
@@ -228,6 +267,46 @@ function remount(ui: React.ReactNode) {
   host = null;
   root = null;
   render(ui);
+}
+
+function buildConversationStats(promptCacheKeys: string[]) {
+  return {
+    rangeStart: "2026-03-02T00:00:00Z",
+    rangeEnd: "2026-03-03T00:00:00Z",
+    selectionMode: "count",
+    selectedLimit: 50,
+    selectedActivityHours: null,
+    implicitFilter: { kind: null, filteredCount: 0 },
+    conversations: promptCacheKeys.map((promptCacheKey, index) => ({
+      promptCacheKey,
+      requestCount: index + 1,
+      totalTokens: (index + 1) * 100,
+      totalCost: Number(((index + 1) * 0.01).toFixed(2)),
+      createdAt: "2026-03-02T00:00:00Z",
+      lastActivityAt: "2026-03-02T12:00:00Z",
+      upstreamAccounts: [],
+      recentInvocations: [],
+      last24hRequests: [],
+    })),
+  };
+}
+
+function getPromptCacheExpandAllButton() {
+  const button = host?.querySelector(
+    '[data-testid="live-prompt-cache-expand-all"]',
+  );
+  if (!(button instanceof HTMLButtonElement)) {
+    throw new Error("missing expand-all button");
+  }
+  return button;
+}
+
+function getPromptCacheConversationTable() {
+  const table = host?.querySelector('[data-testid="prompt-cache-conversation-table"]');
+  if (!(table instanceof HTMLDivElement)) {
+    throw new Error("missing prompt cache conversation table");
+  }
+  return table;
 }
 
 describe("LivePage", () => {
@@ -346,5 +425,62 @@ describe("LivePage", () => {
       PROMPT_CACHE_SELECTION_STORAGE_KEY,
       "activityWindow:6",
     );
+  });
+
+  it("toggles expand-all for the current visible prompt cache conversations", () => {
+    setupLivePageHooks();
+    hookMocks.usePromptCacheConversations.mockReturnValue({
+      stats: buildConversationStats(["pck-1", "pck-2"]),
+      isLoading: false,
+      error: null,
+    });
+
+    render(<LivePage />);
+
+    const expandAllButton = getPromptCacheExpandAllButton();
+    const table = getPromptCacheConversationTable();
+
+    expect(expandAllButton.textContent).toContain("展开所有记录");
+    expect(table.dataset.expanded).toBe("");
+
+    pressElement(expandAllButton);
+
+    expect(expandAllButton.textContent).toContain("收起所有记录");
+    expect(table.dataset.expanded).toBe("pck-1,pck-2");
+
+    pressElement(expandAllButton);
+
+    expect(expandAllButton.textContent).toContain("展开所有记录");
+    expect(table.dataset.expanded).toBe("");
+  });
+
+  it("keeps expanded rows that stay visible and prunes keys removed by refreshed results", () => {
+    setupLivePageHooks();
+    let currentConversationStats = buildConversationStats(["pck-1", "pck-2"]);
+    hookMocks.usePromptCacheConversations.mockImplementation(() => ({
+      stats: currentConversationStats,
+      isLoading: false,
+      error: null,
+    }));
+
+    render(<LivePage />);
+
+    const toggleFirstButton = host?.querySelector(
+      '[data-testid="prompt-cache-conversation-toggle-first"]',
+    );
+    if (!(toggleFirstButton instanceof HTMLButtonElement)) {
+      throw new Error("missing table toggle button");
+    }
+
+    pressElement(toggleFirstButton);
+    expect(getPromptCacheConversationTable().dataset.expanded).toBe("pck-1");
+
+    currentConversationStats = buildConversationStats(["pck-1", "pck-3"]);
+    rerender(<LivePage />);
+    expect(getPromptCacheConversationTable().dataset.expanded).toBe("pck-1");
+
+    currentConversationStats = buildConversationStats(["pck-3"]);
+    rerender(<LivePage />);
+    expect(getPromptCacheConversationTable().dataset.expanded).toBe("");
   });
 });
