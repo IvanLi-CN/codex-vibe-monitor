@@ -14807,6 +14807,10 @@ mod tests {
             retention_batch_rows: DEFAULT_RETENTION_BATCH_ROWS,
             retention_catchup_budget: Duration::from_secs(DEFAULT_RETENTION_CATCHUP_BUDGET_SECS),
             archive_dir: PathBuf::from("target/archive-tests"),
+            codex_invocation_archive_layout: DEFAULT_CODEX_INVOCATION_ARCHIVE_LAYOUT,
+            codex_invocation_archive_segment_granularity:
+                DEFAULT_CODEX_INVOCATION_ARCHIVE_SEGMENT_GRANULARITY,
+            invocation_archive_codec: DEFAULT_INVOCATION_ARCHIVE_CODEC,
             invocation_success_full_days: DEFAULT_INVOCATION_SUCCESS_FULL_DAYS,
             invocation_max_days: DEFAULT_INVOCATION_MAX_DAYS,
             invocation_archive_ttl_days: DEFAULT_INVOCATION_ARCHIVE_TTL_DAYS,

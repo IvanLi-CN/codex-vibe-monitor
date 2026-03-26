@@ -1671,6 +1671,12 @@ fn app_config_from_sources_reads_renamed_public_envs() {
         (ENV_ARCHIVE_DIR, Some("/tmp/archive")),
         (ENV_INVOCATION_SUCCESS_FULL_DAYS, Some("31")),
         (ENV_INVOCATION_MAX_DAYS, Some("91")),
+        (ENV_CODEX_INVOCATION_ARCHIVE_LAYOUT, Some("segment_v1")),
+        (
+            ENV_CODEX_INVOCATION_ARCHIVE_SEGMENT_GRANULARITY,
+            Some("day"),
+        ),
+        (ENV_INVOCATION_ARCHIVE_CODEC, Some("gzip")),
         (ENV_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS, Some("32")),
         (ENV_POOL_UPSTREAM_REQUEST_ATTEMPTS_RETENTION_DAYS, Some("7")),
         (
@@ -1716,6 +1722,15 @@ fn app_config_from_sources_reads_renamed_public_envs() {
     assert_eq!(config.archive_dir, PathBuf::from("/tmp/archive"));
     assert_eq!(config.invocation_success_full_days, 31);
     assert_eq!(config.invocation_max_days, 91);
+    assert_eq!(
+        config.codex_invocation_archive_layout,
+        ArchiveBatchLayout::SegmentV1
+    );
+    assert_eq!(
+        config.codex_invocation_archive_segment_granularity,
+        ArchiveSegmentGranularity::Day
+    );
+    assert_eq!(config.invocation_archive_codec, ArchiveFileCodec::Gzip);
     assert_eq!(config.forward_proxy_attempts_retention_days, 32);
     assert_eq!(config.pool_upstream_request_attempts_retention_days, 7);
     assert_eq!(config.pool_upstream_request_attempts_archive_ttl_days, 30);
@@ -1930,6 +1945,10 @@ fn test_config() -> AppConfig {
         retention_batch_rows: DEFAULT_RETENTION_BATCH_ROWS,
         retention_catchup_budget: Duration::from_secs(DEFAULT_RETENTION_CATCHUP_BUDGET_SECS),
         archive_dir: PathBuf::from("target/archive-tests"),
+        codex_invocation_archive_layout: DEFAULT_CODEX_INVOCATION_ARCHIVE_LAYOUT,
+        codex_invocation_archive_segment_granularity:
+            DEFAULT_CODEX_INVOCATION_ARCHIVE_SEGMENT_GRANULARITY,
+        invocation_archive_codec: DEFAULT_INVOCATION_ARCHIVE_CODEC,
         invocation_success_full_days: DEFAULT_INVOCATION_SUCCESS_FULL_DAYS,
         invocation_max_days: DEFAULT_INVOCATION_MAX_DAYS,
         invocation_archive_ttl_days: DEFAULT_INVOCATION_ARCHIVE_TTL_DAYS,
@@ -9664,6 +9683,7 @@ async fn proxy_openai_v1_models_passthrough_when_hijack_disabled() {
     let state =
         test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
             .await;
+    reset_proxy_capture_hot_path_raw_fallbacks();
 
     let response = proxy_openai_v1(
         State(state),
@@ -20723,18 +20743,39 @@ async fn proxy_capture_target_gzip_stream_without_event_stream_header_still_extr
     assert_eq!(row.input_tokens, Some(19));
     assert_eq!(row.output_tokens, Some(6));
     assert_eq!(row.total_tokens, Some(25));
+    assert_proxy_capture_hot_path_skips_raw_fallbacks();
 
     upstream_handle.abort();
 }
 
+fn reset_proxy_capture_hot_path_raw_fallbacks() {
+    reset_response_capture_raw_fallback_counters();
+}
+
+fn assert_proxy_capture_hot_path_skips_raw_fallbacks() {
+    let (sse_hint_fallbacks, parse_fallbacks) = response_capture_raw_fallback_counts();
+    assert_eq!(
+        sse_hint_fallbacks, 0,
+        "proxy capture hot path should not reread raw files for SSE hinting"
+    );
+    assert_eq!(
+        parse_fallbacks, 0,
+        "proxy capture hot path should not reread raw files for response parsing"
+    );
+}
+
 #[tokio::test]
-async fn proxy_capture_target_large_gzip_stream_without_event_stream_header_still_extracts_usage() {
+async fn proxy_capture_target_large_gzip_stream_without_event_stream_header_keeps_raw_capture_without_raw_reread()
+ {
     #[derive(sqlx::FromRow)]
     struct PersistedUsageRow {
         status: Option<String>,
         input_tokens: Option<i64>,
         output_tokens: Option<i64>,
         total_tokens: Option<i64>,
+        response_raw_path: Option<String>,
+        response_raw_size: Option<i64>,
+        payload: Option<String>,
     }
 
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
@@ -20743,6 +20784,7 @@ async fn proxy_capture_target_large_gzip_stream_without_event_stream_header_stil
     config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
     config.proxy_raw_dir = raw_dir.clone();
     let state = test_state_from_config(config, true).await;
+    reset_proxy_capture_hot_path_raw_fallbacks();
 
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -20770,7 +20812,10 @@ async fn proxy_capture_target_large_gzip_stream_without_event_stream_header_stil
                 status,
                 input_tokens,
                 output_tokens,
-                total_tokens
+                total_tokens,
+                response_raw_path,
+                response_raw_size,
+                payload
             FROM codex_invocations
             ORDER BY id DESC
             LIMIT 1
@@ -20781,7 +20826,7 @@ async fn proxy_capture_target_large_gzip_stream_without_event_stream_header_stil
         .expect("query large gzip stream usage row without event-stream header");
         if row
             .as_ref()
-            .is_some_and(|record| record.total_tokens.is_some())
+            .is_some_and(|record| record.response_raw_path.is_some() && record.payload.is_some())
         {
             break;
         }
@@ -20790,16 +20835,51 @@ async fn proxy_capture_target_large_gzip_stream_without_event_stream_header_stil
 
     let row = row.expect("large gzip stream usage row should exist");
     assert_eq!(row.status.as_deref(), Some("success"));
-    assert_eq!(row.input_tokens, Some(23));
-    assert_eq!(row.output_tokens, Some(7));
-    assert_eq!(row.total_tokens, Some(30));
+    assert!(
+        row.response_raw_size
+            .is_some_and(|size| size > RAW_RESPONSE_PREVIEW_LIMIT as i64)
+    );
+    let response_raw_path = row
+        .response_raw_path
+        .as_deref()
+        .expect("response raw path should be persisted");
+    let raw_bytes = read_proxy_raw_bytes(response_raw_path, None)
+        .expect("read persisted large gzip response raw");
+    let (decoded_raw_bytes, decode_failure_reason) =
+        decode_response_payload_for_usage(&raw_bytes, Some("gzip"));
+    assert!(
+        decode_failure_reason.is_none(),
+        "persisted raw gzip response should remain decodable"
+    );
+    let raw_text = String::from_utf8(decoded_raw_bytes.into_owned())
+        .expect("raw gzip response should decode to utf8");
+    assert!(raw_text.contains("response.completed"));
+    assert!(raw_text.contains("\"total_tokens\":30"));
+    let payload: Value = serde_json::from_str(row.payload.as_deref().unwrap_or("{}"))
+        .expect("decode large gzip payload summary");
+    match (row.input_tokens, row.output_tokens, row.total_tokens) {
+        (Some(input), Some(output), Some(total)) => {
+            assert_eq!(input, 23);
+            assert_eq!(output, 7);
+            assert_eq!(total, 30);
+            assert!(payload["usageMissingReason"].is_null());
+        }
+        (None, None, None) => {
+            assert!(
+                payload["usageMissingReason"].as_str().is_some(),
+                "bounded preview parsing may degrade metadata, but it should still record a reason"
+            );
+        }
+        other => panic!("unexpected partial usage extraction state: {other:?}"),
+    }
+    assert_proxy_capture_hot_path_skips_raw_fallbacks();
 
     upstream_handle.abort();
     cleanup_temp_test_dir(&raw_dir);
 }
 
 #[tokio::test]
-async fn proxy_capture_target_large_stream_keeps_preview_bounded_and_parses_from_raw_file() {
+async fn proxy_capture_target_large_stream_keeps_preview_bounded_without_raw_reread() {
     #[derive(sqlx::FromRow)]
     struct PersistedLargeRow {
         status: Option<String>,
@@ -20818,6 +20898,7 @@ async fn proxy_capture_target_large_stream_keeps_preview_bounded_and_parses_from
     config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
     config.proxy_raw_dir = raw_dir.clone();
     let state = test_state_from_config(config, true).await;
+    reset_proxy_capture_hot_path_raw_fallbacks();
 
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -20898,13 +20979,14 @@ async fn proxy_capture_target_large_stream_keeps_preview_bounded_and_parses_from
         .expect("decode persisted payload summary");
     assert!(payload["usageMissingReason"].is_null());
     assert_eq!(payload["serviceTier"].as_str(), Some("priority"));
+    assert_proxy_capture_hot_path_skips_raw_fallbacks();
 
     upstream_handle.abort();
     cleanup_temp_test_dir(&raw_dir);
 }
 
 #[tokio::test]
-async fn proxy_capture_target_large_stream_terminal_event_reparses_from_raw_file() {
+async fn proxy_capture_target_large_stream_terminal_event_keeps_live_metadata_without_raw_reread() {
     #[derive(sqlx::FromRow)]
     struct PersistedLargeTerminalRow {
         status: Option<String>,
@@ -20921,6 +21003,7 @@ async fn proxy_capture_target_large_stream_terminal_event_reparses_from_raw_file
     config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
     config.proxy_raw_dir = raw_dir.clone();
     let state = test_state_from_config(config, true).await;
+    reset_proxy_capture_hot_path_raw_fallbacks();
 
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -20972,18 +21055,40 @@ async fn proxy_capture_target_large_stream_terminal_event_reparses_from_raw_file
 
     let row = row.expect("large terminal stream capture row should exist");
     assert_eq!(row.status.as_deref(), Some("success"));
-    assert_eq!(row.input_tokens, Some(77));
-    assert_eq!(row.output_tokens, Some(19));
-    assert_eq!(row.total_tokens, Some(96));
     assert!(
         row.response_raw_path.is_some(),
         "full raw response should be stored"
     );
+    let response_raw_path = row
+        .response_raw_path
+        .as_deref()
+        .expect("response raw path should be persisted");
+    let raw_bytes =
+        read_proxy_raw_bytes(response_raw_path, None).expect("read persisted large terminal raw");
+    let raw_text =
+        String::from_utf8(raw_bytes).expect("large terminal raw response should be utf8");
+    assert!(raw_text.contains("response.completed"));
+    assert!(raw_text.contains("\"total_tokens\":96"));
 
     let payload: Value = serde_json::from_str(row.payload.as_deref().unwrap_or("{}"))
         .expect("decode large terminal payload summary");
-    assert_eq!(payload["serviceTier"], "priority");
-    assert!(payload["usageMissingReason"].is_null());
+    match (row.input_tokens, row.output_tokens, row.total_tokens) {
+        (Some(input), Some(output), Some(total)) => {
+            assert_eq!(input, 77);
+            assert_eq!(output, 19);
+            assert_eq!(total, 96);
+            assert_eq!(payload["serviceTier"], "priority");
+            assert!(payload["usageMissingReason"].is_null());
+        }
+        (None, None, None) => {
+            assert!(
+                payload["usageMissingReason"].as_str().is_some(),
+                "oversized terminal events may no longer backfill metadata from raw rereads"
+            );
+        }
+        other => panic!("unexpected partial usage extraction state: {other:?}"),
+    }
+    assert_proxy_capture_hot_path_skips_raw_fallbacks();
 
     upstream_handle.abort();
     cleanup_temp_test_dir(&raw_dir);
@@ -21009,6 +21114,7 @@ async fn proxy_capture_target_oversized_stream_keeps_live_metadata_when_raw_file
     config.proxy_raw_dir = raw_dir.clone();
     config.proxy_raw_max_bytes = Some(24 * 1024);
     let state = test_state_from_config(config, true).await;
+    reset_proxy_capture_hot_path_raw_fallbacks();
 
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -21074,6 +21180,7 @@ async fn proxy_capture_target_oversized_stream_keeps_live_metadata_when_raw_file
         .expect("decode oversized stream payload summary");
     assert_eq!(payload["serviceTier"], "priority");
     assert!(payload["usageMissingReason"].is_null());
+    assert_proxy_capture_hot_path_skips_raw_fallbacks();
 
     upstream_handle.abort();
     cleanup_temp_test_dir(&raw_dir);
@@ -21102,6 +21209,7 @@ async fn proxy_capture_target_large_stream_keeps_usage_when_response_raw_is_trun
     config.proxy_raw_dir = raw_dir.clone();
     config.proxy_raw_max_bytes = Some(8 * 1024);
     let state = test_state_from_config(config, true).await;
+    reset_proxy_capture_hot_path_raw_fallbacks();
 
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -21191,6 +21299,7 @@ async fn proxy_capture_target_large_stream_keeps_usage_when_response_raw_is_trun
         .expect("decode persisted payload summary");
     assert!(payload["usageMissingReason"].is_null());
     assert_eq!(payload["serviceTier"].as_str(), Some("priority"));
+    assert_proxy_capture_hot_path_skips_raw_fallbacks();
 
     upstream_handle.abort();
     cleanup_temp_test_dir(&raw_dir);
@@ -21213,6 +21322,7 @@ async fn proxy_capture_target_stream_request_json_error_uses_nonstream_parse_fal
     config.proxy_raw_dir = raw_dir.clone();
     config.proxy_raw_max_bytes = Some(128);
     let state = test_state_from_config(config, true).await;
+    reset_proxy_capture_hot_path_raw_fallbacks();
 
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -21277,6 +21387,7 @@ async fn proxy_capture_target_stream_request_json_error_uses_nonstream_parse_fal
             .is_some_and(|message| message.contains("tail-marker")),
         "payload should preserve the full upstream error message"
     );
+    assert_proxy_capture_hot_path_skips_raw_fallbacks();
 
     upstream_handle.abort();
     cleanup_temp_test_dir(&raw_dir);
@@ -21292,6 +21403,7 @@ async fn proxy_capture_target_large_stream_soak_keeps_rss_within_stable_window()
     config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
     config.proxy_raw_dir = raw_dir.clone();
     let state = test_state_from_config(config, true).await;
+    reset_proxy_capture_hot_path_raw_fallbacks();
 
     let mut rss_samples = Vec::new();
     for iteration in 0..8_i64 {
@@ -21337,6 +21449,7 @@ async fn proxy_capture_target_large_stream_soak_keeps_rss_within_stable_window()
         max_rss.saturating_sub(min_rss) < 128 * 1024,
         "steady-state RSS window too wide: min={min_rss}KiB max={max_rss}KiB"
     );
+    assert_proxy_capture_hot_path_skips_raw_fallbacks();
 
     upstream_handle.abort();
     cleanup_temp_test_dir(&raw_dir);
@@ -21362,6 +21475,7 @@ async fn proxy_capture_target_large_nonstream_json_skips_bounded_parse_and_keeps
     config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
     config.proxy_raw_dir = raw_dir.clone();
     let state = test_state_from_config(config, true).await;
+    reset_proxy_capture_hot_path_raw_fallbacks();
 
     let request_body = serde_json::to_vec(&json!({
         "model": "gpt-5.1-codex-max",
@@ -21442,6 +21556,7 @@ async fn proxy_capture_target_large_nonstream_json_skips_bounded_parse_and_keeps
         read_proxy_raw_bytes(response_raw_path, None).expect("read large compact raw response");
     let raw_text = String::from_utf8(raw_bytes).expect("raw compact response should be utf8");
     assert!(raw_text.contains("\"total_tokens\":300"));
+    assert_proxy_capture_hot_path_skips_raw_fallbacks();
 
     upstream_handle.abort();
     cleanup_temp_test_dir(&raw_dir);
@@ -21462,6 +21577,7 @@ async fn proxy_capture_target_large_nonstream_json_error_preserves_prefixed_meta
     config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
     config.proxy_raw_dir = raw_dir.clone();
     let state = test_state_from_config(config, true).await;
+    reset_proxy_capture_hot_path_raw_fallbacks();
 
     let response = proxy_openai_v1(
         State(state.clone()),
@@ -21523,6 +21639,7 @@ async fn proxy_capture_target_large_nonstream_json_error_preserves_prefixed_meta
             .as_str()
             .is_some_and(|reason| reason.contains(PROXY_USAGE_MISSING_NON_STREAM_PARSE_SKIPPED))
     );
+    assert_proxy_capture_hot_path_skips_raw_fallbacks();
 
     upstream_handle.abort();
     cleanup_temp_test_dir(&raw_dir);
@@ -29038,7 +29155,7 @@ async fn retention_archives_old_invocations_without_changing_summary_all() {
         .expect("query totals after retention");
 
     assert_eq!(summary.invocation_rows_archived, 2);
-    assert_eq!(summary.archive_batches_touched, 1);
+    assert_eq!(summary.archive_batches_touched, 2);
     assert_eq!(before.total_count, after.total_count);
     assert_eq!(before.success_count, after.success_count);
     assert_eq!(before.failure_count, after.failure_count);
@@ -29070,20 +29187,25 @@ async fn retention_archives_old_invocations_without_changing_summary_all() {
     assert_eq!(rollup.get::<i64, _>("total_tokens"), 100);
     assert_f64_close(rollup.get::<f64, _>("total_cost"), 0.5);
 
-    let batch = sqlx::query(
+    let batches = sqlx::query_as::<_, (String, i64, String, String)>(
         r#"
-        SELECT file_path, row_count, status
+        SELECT file_path, row_count, status, layout
         FROM archive_batches
         WHERE dataset = 'codex_invocations'
+        ORDER BY file_path ASC
         "#,
     )
-    .fetch_one(&pool)
+    .fetch_all(&pool)
     .await
-    .expect("load invocation archive batch");
-    let file_path = PathBuf::from(batch.get::<String, _>("file_path"));
-    assert!(file_path.exists());
-    assert!(batch.get::<i64, _>("row_count") >= 2);
-    assert_eq!(batch.get::<String, _>("status"), ARCHIVE_STATUS_COMPLETED);
+    .expect("load invocation archive batches");
+    assert_eq!(batches.len(), 2);
+    for (file_path, row_count, status, layout) in batches {
+        let file_path = PathBuf::from(file_path);
+        assert!(file_path.exists());
+        assert!(row_count >= 1);
+        assert_eq!(status, ARCHIVE_STATUS_COMPLETED);
+        assert_eq!(layout, ARCHIVE_LAYOUT_SEGMENT_V1);
+    }
 
     cleanup_temp_test_dir(&temp_dir);
 }
@@ -29889,6 +30011,8 @@ async fn upstream_last_activity_archive_backfill_refreshes_existing_activity_whe
         let batch = ArchiveBatchOutcome {
             dataset: "codex_invocations",
             month_key: month_key.to_string(),
+            day_key: None,
+            part_key: None,
             file_path: archive_path.to_string_lossy().to_string(),
             sha256: sha256_hex_file(&archive_path).expect("archive sha256"),
             row_count: 1,
@@ -29896,6 +30020,11 @@ async fn upstream_last_activity_archive_backfill_refreshes_existing_activity_whe
             coverage_start_at: None,
             coverage_end_at: None,
             archive_expires_at: None,
+            layout: ARCHIVE_LAYOUT_LEGACY_MONTH,
+            codec: ARCHIVE_FILE_CODEC_GZIP,
+            writer_version: ARCHIVE_WRITER_VERSION_LEGACY_MONTH_V1,
+            cleanup_state: ARCHIVE_CLEANUP_STATE_ACTIVE,
+            superseded_by: None,
         };
         let mut tx = pool.begin().await.expect("begin archive batch tx");
         upsert_archive_batch_manifest(tx.as_mut(), &batch)
@@ -29981,6 +30110,8 @@ async fn upstream_last_activity_archive_backfill_refreshes_existing_activity_whe
         let batch = ArchiveBatchOutcome {
             dataset: "codex_invocations",
             month_key: month_key.to_string(),
+            day_key: None,
+            part_key: None,
             file_path: archive_path.to_string_lossy().to_string(),
             sha256: sha256_hex_file(&archive_path).expect("archive sha256"),
             row_count: 1,
@@ -29988,6 +30119,11 @@ async fn upstream_last_activity_archive_backfill_refreshes_existing_activity_whe
             coverage_start_at: None,
             coverage_end_at: None,
             archive_expires_at: None,
+            layout: ARCHIVE_LAYOUT_LEGACY_MONTH,
+            codec: ARCHIVE_FILE_CODEC_GZIP,
+            writer_version: ARCHIVE_WRITER_VERSION_LEGACY_MONTH_V1,
+            cleanup_state: ARCHIVE_CLEANUP_STATE_ACTIVE,
+            superseded_by: None,
         };
         let mut tx = pool.begin().await.expect("begin archive batch tx");
         upsert_archive_batch_manifest(tx.as_mut(), &batch)
@@ -31578,21 +31714,21 @@ async fn prune_legacy_archive_batches_keeps_detail_prune_backups_within_live_win
         "detail backup archive should exist"
     );
 
-    let prune_dry_run = prune_legacy_archive_batches(&pool, &config, true)
+    let prune_dry_run = prune_archive_batches(&pool, &config, true)
         .await
         .expect("dry-run prune should retain detail backup archive");
-    assert_eq!(prune_dry_run.deleted_archive_batches, 0);
-    assert_eq!(prune_dry_run.skipped_retained_batches, 1);
+    assert_eq!(prune_dry_run.expired_archive_batches_deleted, 0);
+    assert_eq!(prune_dry_run.legacy_archive_batches_deleted, 0);
     assert!(
         Path::new(&archive_path).exists(),
         "dry-run should not remove archive"
     );
 
-    let prune_summary = prune_legacy_archive_batches(&pool, &config, false)
+    let prune_summary = prune_archive_batches(&pool, &config, false)
         .await
         .expect("prune should keep detail backup archive");
-    assert_eq!(prune_summary.deleted_archive_batches, 0);
-    assert_eq!(prune_summary.skipped_retained_batches, 1);
+    assert_eq!(prune_summary.expired_archive_batches_deleted, 0);
+    assert_eq!(prune_summary.legacy_archive_batches_deleted, 0);
     assert!(
         Path::new(&archive_path).exists(),
         "detail backup archive must remain"
@@ -31926,6 +32062,190 @@ async fn retention_archives_and_cleans_up_pool_upstream_request_attempts() {
     .await
     .expect("count remaining pool attempt archive batches");
     assert_eq!(remaining_archive_batches, 0);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[test]
+fn cleanup_stale_archive_temp_files_removes_only_old_archive_residue() {
+    let temp_dir = make_temp_test_dir("archive-temp-janitor");
+    let mut config = test_config();
+    config.archive_dir = temp_dir.join("archives");
+    let archive_root = resolved_archive_dir(&config);
+    let nested_dir = archive_root.join("codex_invocations/2026/03/25");
+    fs::create_dir_all(&nested_dir).expect("create nested archive dir");
+
+    let stale_temp = nested_dir.join("part-000001.sqlite.gz.1.partial.sqlite");
+    let fresh_temp = nested_dir.join("part-000002.sqlite.gz.1.partial.sqlite");
+    let official = nested_dir.join("part-000003.sqlite.gz");
+    fs::write(&stale_temp, b"stale temp").expect("write stale temp");
+    fs::write(&fresh_temp, b"fresh temp").expect("write fresh temp");
+    fs::write(&official, b"official archive").expect("write official archive");
+    set_file_mtime_seconds_ago(&stale_temp, DEFAULT_ARCHIVE_TEMP_MIN_AGE_SECS + 60);
+    set_file_mtime_seconds_ago(&fresh_temp, 60);
+
+    let summary = cleanup_stale_archive_temp_files(&config, false).expect("run archive janitor");
+    assert_eq!(summary.stale_temp_files_removed, 1);
+    assert!(summary.stale_temp_bytes_removed > 0);
+    assert!(!stale_temp.exists(), "stale temp should be deleted");
+    assert!(fresh_temp.exists(), "fresh temp should be kept");
+    assert!(official.exists(), "official archive should be kept");
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn verify_archive_storage_reports_missing_orphan_and_temp_files() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("verify-archive-storage").await;
+    config.archive_dir = temp_dir.join("archives");
+    let archive_root = resolved_archive_dir(&config);
+    fs::create_dir_all(&archive_root).expect("create archive root");
+
+    let day_key = "2025-01-01";
+    let missing_path = archive_segment_file_path(
+        &config,
+        "codex_invocations",
+        day_key,
+        "part-000001",
+        ArchiveFileCodec::Gzip,
+    )
+    .expect("resolve missing segment path");
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset, month_key, day_key, part_key, file_path, sha256, row_count, status, layout, codec, writer_version, cleanup_state, coverage_start_at, coverage_end_at, created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, datetime('now'))
+        "#,
+    )
+    .bind("codex_invocations")
+    .bind("2025-01")
+    .bind(day_key)
+    .bind("part-000001")
+    .bind(missing_path.to_string_lossy().to_string())
+    .bind("deadbeef")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(ARCHIVE_LAYOUT_SEGMENT_V1)
+    .bind(ARCHIVE_FILE_CODEC_GZIP)
+    .bind(ARCHIVE_WRITER_VERSION_SEGMENT_V1)
+    .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
+    .bind("2025-01-01 00:00:00")
+    .bind("2025-01-01 00:00:00")
+    .execute(&pool)
+    .await
+    .expect("insert missing segment manifest");
+
+    let orphan_path = archive_root.join("codex_invocations/2025/01/01/orphan.sqlite.gz");
+    fs::create_dir_all(orphan_path.parent().expect("orphan parent")).expect("create orphan parent");
+    fs::write(&orphan_path, b"orphan archive").expect("write orphan archive");
+    let stale_temp =
+        archive_root.join("codex_invocations/2025/01/01/part-000009.sqlite.gz.1.partial.sqlite");
+    fs::write(&stale_temp, b"stale temp").expect("write stale temp");
+    set_file_mtime_seconds_ago(&stale_temp, DEFAULT_ARCHIVE_TEMP_MIN_AGE_SECS + 60);
+
+    let summary = verify_archive_storage(&pool, &config)
+        .await
+        .expect("verify archive storage");
+    assert_eq!(summary.manifest_rows, 1);
+    assert_eq!(summary.missing_files, 1);
+    assert_eq!(summary.orphan_files, 1);
+    assert_eq!(summary.stale_temp_files, 1);
+    assert!(summary.stale_temp_bytes > 0);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn prune_archive_batches_removes_expired_segments_and_legacy_batches() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("prune-archive-batches").await;
+    config.archive_dir = temp_dir.join("archives");
+    let archive_root = resolved_archive_dir(&config);
+    fs::create_dir_all(&archive_root).expect("create archive root");
+
+    let segment_path = archive_segment_file_path(
+        &config,
+        "codex_invocations",
+        "2025-01-02",
+        "part-000001",
+        ArchiveFileCodec::Gzip,
+    )
+    .expect("resolve segment path");
+    fs::create_dir_all(segment_path.parent().expect("segment parent"))
+        .expect("create segment parent");
+    fs::write(&segment_path, b"expired segment").expect("write segment archive");
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset, month_key, day_key, part_key, file_path, sha256, row_count, status, layout, codec, writer_version, cleanup_state, coverage_start_at, coverage_end_at, archive_expires_at, historical_rollups_materialized_at, created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, datetime('now'), datetime('now'))
+        "#,
+    )
+    .bind("codex_invocations")
+    .bind("2025-01")
+    .bind("2025-01-02")
+    .bind("part-000001")
+    .bind(segment_path.to_string_lossy().to_string())
+    .bind("deadbeef")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(ARCHIVE_LAYOUT_SEGMENT_V1)
+    .bind(ARCHIVE_FILE_CODEC_GZIP)
+    .bind(ARCHIVE_WRITER_VERSION_SEGMENT_V1)
+    .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
+    .bind("2025-01-02 00:00:00")
+    .bind("2025-01-02 00:00:00")
+    .bind("2000-01-01 00:00:00")
+    .execute(&pool)
+    .await
+    .expect("insert expired segment manifest");
+
+    let legacy_path = archive_batch_file_path(&config, "codex_invocations", "2024-12")
+        .expect("resolve legacy batch path");
+    fs::create_dir_all(legacy_path.parent().expect("legacy parent")).expect("create legacy parent");
+    fs::write(&legacy_path, b"legacy archive").expect("write legacy archive");
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset, month_key, file_path, sha256, row_count, status, layout, codec, writer_version, cleanup_state, coverage_start_at, coverage_end_at, historical_rollups_materialized_at, created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, datetime('now'), datetime('now'))
+        "#,
+    )
+    .bind("codex_invocations")
+    .bind("2024-12")
+    .bind(legacy_path.to_string_lossy().to_string())
+    .bind("feedface")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(ARCHIVE_LAYOUT_LEGACY_MONTH)
+    .bind(ARCHIVE_FILE_CODEC_GZIP)
+    .bind(ARCHIVE_WRITER_VERSION_LEGACY_MONTH_V1)
+    .bind(ARCHIVE_CLEANUP_STATE_ACTIVE)
+    .bind("2024-12-01 00:00:00")
+    .bind("2024-12-01 00:00:00")
+    .execute(&pool)
+    .await
+    .expect("insert legacy archive manifest");
+
+    let summary = prune_archive_batches(&pool, &config, false)
+        .await
+        .expect("prune archive batches");
+    assert_eq!(
+        summary.expired_archive_batches_deleted + summary.legacy_archive_batches_deleted,
+        2
+    );
+    assert!(!segment_path.exists(), "expired segment should be removed");
+    assert!(!legacy_path.exists(), "legacy archive should be removed");
+
+    let remaining_batches: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM archive_batches")
+        .fetch_one(&pool)
+        .await
+        .expect("count remaining archive batches");
+    assert_eq!(remaining_batches, 0);
 
     cleanup_temp_test_dir(&temp_dir);
 }
