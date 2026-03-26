@@ -1,9 +1,10 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { ForwardProxyLiveTable } from "../components/ForwardProxyLiveTable";
 import { InvocationChart } from "../components/InvocationChart";
 import { InvocationTable } from "../components/InvocationTable";
 import { PromptCacheConversationTable } from "../components/PromptCacheConversationTable";
 import { StatsCards } from "../components/StatsCards";
+import { Button } from "../components/ui/button";
 import { useForwardProxyLiveStats } from "../hooks/useForwardProxyLiveStats";
 import { useInvocationStream } from "../hooks/useInvocations";
 import { usePromptCacheConversations } from "../hooks/usePromptCacheConversations";
@@ -128,6 +129,9 @@ export default function LivePage() {
   const [conversationSelectionValue, setConversationSelectionValue] = useState(
     () => readPromptCacheSelectionValue(),
   );
+  const [expandedPromptCacheKeys, setExpandedPromptCacheKeys] = useState<
+    string[]
+  >([]);
   const [summaryWindow, setSummaryWindow] = useState("current");
   const {
     stats: forwardProxyStats,
@@ -187,6 +191,63 @@ export default function LivePage() {
       })),
     [t],
   );
+  const visiblePromptCacheKeys = useMemo(
+    () =>
+      conversationStats?.conversations.map(
+        (conversation) => conversation.promptCacheKey,
+      ) ?? [],
+    [conversationStats],
+  );
+  const hasVisiblePromptCacheConversations = visiblePromptCacheKeys.length > 0;
+  const allVisiblePromptCacheKeysExpanded =
+    hasVisiblePromptCacheConversations &&
+    visiblePromptCacheKeys.every((promptCacheKey) =>
+      expandedPromptCacheKeys.includes(promptCacheKey),
+    );
+
+  useEffect(() => {
+    if (!conversationStats) return;
+
+    const visiblePromptCacheKeySet = new Set(
+      conversationStats.conversations.map(
+        (conversation) => conversation.promptCacheKey,
+      ),
+    );
+    setExpandedPromptCacheKeys((current) => {
+      const next = current.filter((promptCacheKey) =>
+        visiblePromptCacheKeySet.has(promptCacheKey),
+      );
+      return next.length === current.length ? current : next;
+    });
+  }, [conversationStats]);
+
+  const toggleExpandedPromptCacheKey = (promptCacheKey: string) => {
+    setExpandedPromptCacheKeys((current) =>
+      current.includes(promptCacheKey)
+        ? current.filter((value) => value !== promptCacheKey)
+        : [...current, promptCacheKey],
+    );
+  };
+
+  const toggleAllVisiblePromptCacheKeys = () => {
+    if (!hasVisiblePromptCacheConversations) return;
+
+    setExpandedPromptCacheKeys((current) => {
+      const allExpanded = visiblePromptCacheKeys.every((promptCacheKey) =>
+        current.includes(promptCacheKey),
+      );
+      if (allExpanded) {
+        return current.filter(
+          (promptCacheKey) => !visiblePromptCacheKeys.includes(promptCacheKey),
+        );
+      }
+
+      const preserved = current.filter(
+        (promptCacheKey) => !visiblePromptCacheKeys.includes(promptCacheKey),
+      );
+      return [...preserved, ...visiblePromptCacheKeys];
+    });
+  };
 
   return (
     <div className="mx-auto flex w-full max-w-full flex-col gap-6">
@@ -245,25 +306,43 @@ export default function LivePage() {
                 {t("live.conversations.description")}
               </p>
             </div>
-            <SelectField
-              label={t("live.conversations.selectionLabel")}
-              className="w-40"
-              name="livePromptCacheSelection"
-              data-testid="live-prompt-cache-selection"
-              size="sm"
-              value={conversationSelectionValue}
-              options={promptCacheSelectionOptions}
-              onValueChange={(value) => {
-                if (!PROMPT_CACHE_SELECTION_LOOKUP.has(value)) return;
-                setConversationSelectionValue(value);
-                persistPromptCacheSelectionValue(value);
-              }}
-            />
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                data-testid="live-prompt-cache-expand-all"
+                disabled={
+                  conversationsLoading || !hasVisiblePromptCacheConversations
+                }
+                onClick={toggleAllVisiblePromptCacheKeys}
+              >
+                {allVisiblePromptCacheKeysExpanded
+                  ? t("live.conversations.actions.collapseAllRecords")
+                  : t("live.conversations.actions.expandAllRecords")}
+              </Button>
+              <SelectField
+                label={t("live.conversations.selectionLabel")}
+                className="w-40"
+                name="livePromptCacheSelection"
+                data-testid="live-prompt-cache-selection"
+                size="sm"
+                value={conversationSelectionValue}
+                options={promptCacheSelectionOptions}
+                onValueChange={(value) => {
+                  if (!PROMPT_CACHE_SELECTION_LOOKUP.has(value)) return;
+                  setConversationSelectionValue(value);
+                  persistPromptCacheSelectionValue(value);
+                }}
+              />
+            </div>
           </div>
           <PromptCacheConversationTable
             stats={conversationStats}
             isLoading={conversationsLoading}
             error={conversationsError}
+            expandedPromptCacheKeys={expandedPromptCacheKeys}
+            onToggleExpandedPromptCacheKey={toggleExpandedPromptCacheKey}
           />
         </div>
       </section>

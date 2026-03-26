@@ -1110,6 +1110,23 @@ describe("account pool frontend API helpers", () => {
                   lastActivityAt: "2026-03-10T23:00:00Z",
                 },
               ],
+              recentInvocations: [
+                {
+                  id: 17,
+                  invokeId: "invoke-17",
+                  occurredAt: "2026-03-10T23:00:00Z",
+                  status: "completed",
+                  failureClass: "none",
+                  routeMode: "pool",
+                  model: "gpt-5.4",
+                  totalTokens: 30,
+                  cost: 0.12,
+                  proxyDisplayName: "Proxy Alpha",
+                  upstreamAccountId: 42,
+                  upstreamAccountName: "Pool Alpha",
+                  endpoint: "/v1/responses",
+                },
+              ],
               last24hRequests: [],
             },
           ],
@@ -1131,6 +1148,18 @@ describe("account pool frontend API helpers", () => {
     expect(response.conversations[0]?.promptCacheKey).toBe("pck-001");
     expect(response.conversations[0]?.upstreamAccounts[0]?.upstreamAccountName).toBe(
       "Pool Alpha",
+    );
+    expect(response.conversations[0]?.recentInvocations[0]?.invokeId).toBe(
+      "invoke-17",
+    );
+    expect(response.conversations[0]?.recentInvocations[0]?.failureClass).toBe(
+      "none",
+    );
+    expect(response.conversations[0]?.recentInvocations[0]?.routeMode).toBe(
+      "pool",
+    );
+    expect(response.conversations[0]?.recentInvocations[0]?.endpoint).toBe(
+      "/v1/responses",
     );
   });
 });

@@ -21,6 +21,7 @@ const INVOCATION_POOL_ATTEMPT_COUNT_SQL: &str = "CASE WHEN json_valid(payload) T
 const INVOCATION_POOL_DISTINCT_ACCOUNT_COUNT_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.poolDistinctAccountCount') AS INTEGER) END";
 const INVOCATION_POOL_ATTEMPT_TERMINAL_REASON_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.poolAttemptTerminalReason') AS TEXT) END";
 const PROMPT_CACHE_CONVERSATION_UPSTREAM_ACCOUNT_LIMIT: usize = 3;
+const PROMPT_CACHE_CONVERSATION_INVOCATION_PREVIEW_LIMIT: usize = 5;
 const INVOCATION_STATUS_NORMALIZED_SQL: &str = "LOWER(TRIM(COALESCE(status, '')))";
 
 // Legacy records can carry `failure_class=none` or NULL while still representing failures.
@@ -2132,6 +2133,13 @@ pub(crate) async fn build_prompt_cache_conversations_response(
         &selected_keys,
     )
     .await?;
+    let recent_invocation_rows = query_prompt_cache_conversation_recent_invocations(
+        &state.pool,
+        source_scope,
+        &selected_keys,
+        PROMPT_CACHE_CONVERSATION_INVOCATION_PREVIEW_LIMIT as i64,
+    )
+    .await?;
 
     let mut grouped_events: HashMap<String, Vec<PromptCacheConversationRequestPointResponse>> =
         HashMap::new();
@@ -2168,6 +2176,30 @@ pub(crate) async fn build_prompt_cache_conversations_response(
             .entry(row.prompt_cache_key.clone())
             .or_default()
             .push(row);
+    }
+    let mut grouped_recent_invocations: HashMap<
+        String,
+        Vec<PromptCacheConversationInvocationPreviewResponse>,
+    > = HashMap::new();
+    for row in recent_invocation_rows {
+        grouped_recent_invocations
+            .entry(row.prompt_cache_key.clone())
+            .or_default()
+            .push(PromptCacheConversationInvocationPreviewResponse {
+                id: row.id,
+                invoke_id: row.invoke_id,
+                occurred_at: row.occurred_at,
+                status: row.status,
+                failure_class: normalize_trimmed_optional_string(row.failure_class),
+                route_mode: normalize_trimmed_optional_string(row.route_mode),
+                model: normalize_trimmed_optional_string(row.model),
+                total_tokens: row.total_tokens.max(0),
+                cost: row.cost,
+                proxy_display_name: normalize_trimmed_optional_string(row.proxy_display_name),
+                upstream_account_id: row.upstream_account_id,
+                upstream_account_name: normalize_trimmed_optional_string(row.upstream_account_name),
+                endpoint: normalize_trimmed_optional_string(row.endpoint),
+            });
     }
 
     let mut grouped_upstream_accounts: HashMap<
@@ -2281,6 +2313,9 @@ pub(crate) async fn build_prompt_cache_conversations_response(
             created_at: row.created_at,
             last_activity_at: row.last_activity_at,
             upstream_accounts: grouped_upstream_accounts
+                .remove(&row.prompt_cache_key)
+                .unwrap_or_default(),
+            recent_invocations: grouped_recent_invocations
                 .remove(&row.prompt_cache_key)
                 .unwrap_or_default(),
             last24h_requests: grouped_events
@@ -2544,6 +2579,65 @@ pub(crate) async fn query_prompt_cache_conversation_events(
 
     query
         .build_query_as::<PromptCacheConversationEventRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}
+
+pub(crate) async fn query_prompt_cache_conversation_recent_invocations(
+    pool: &Pool<Sqlite>,
+    source_scope: InvocationSourceScope,
+    selected_keys: &[String],
+    limit_per_key: i64,
+) -> Result<Vec<PromptCacheConversationInvocationPreviewRow>> {
+    if selected_keys.is_empty() || limit_per_key <= 0 {
+        return Ok(Vec::new());
+    }
+
+    const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(CAST(json_extract(payload, '$.promptCacheKey') AS TEXT)) END";
+    let mut query =
+        QueryBuilder::<Sqlite>::new("WITH ranked AS (SELECT id, invoke_id, occurred_at, ");
+    query
+        .push(invocation_display_status_sql())
+        .push(" AS status, ")
+        .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
+        .push(" AS failure_class, ")
+        .push(INVOCATION_ROUTE_MODE_SQL)
+        .push(" AS route_mode, model, COALESCE(total_tokens, 0) AS total_tokens, cost, ")
+        .push(INVOCATION_PROXY_DISPLAY_SQL)
+        .push(" AS proxy_display_name, ")
+        .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+        .push(" AS upstream_account_id, ")
+        .push(INVOCATION_UPSTREAM_ACCOUNT_NAME_SQL)
+        .push(" AS upstream_account_name, ")
+        .push(INVOCATION_ENDPOINT_SQL)
+        .push(" AS endpoint, ")
+        .push(KEY_EXPR)
+        .push(" AS prompt_cache_key, ROW_NUMBER() OVER (PARTITION BY ")
+        .push(KEY_EXPR)
+        .push(" ORDER BY occurred_at DESC, id DESC) AS row_number FROM codex_invocations WHERE ")
+        .push(KEY_EXPR)
+        .push(" IN (");
+
+    {
+        let mut separated = query.separated(", ");
+        for key in selected_keys {
+            separated.push_bind(key);
+        }
+    }
+    query.push(")");
+
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+
+    query
+        .push(") SELECT prompt_cache_key, id, invoke_id, occurred_at, status, failure_class, route_mode, model, total_tokens, cost, proxy_display_name, upstream_account_id, upstream_account_name, endpoint FROM ranked WHERE row_number <= ")
+        .push_bind(limit_per_key)
+        .push(" ORDER BY prompt_cache_key ASC, occurred_at DESC, id DESC");
+
+    query
+        .build_query_as::<PromptCacheConversationInvocationPreviewRow>()
         .fetch_all(pool)
         .await
         .map_err(Into::into)
@@ -4745,7 +4839,27 @@ pub(crate) struct PromptCacheConversationResponse {
     #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
     pub(crate) last_activity_at: String,
     pub(crate) upstream_accounts: Vec<PromptCacheConversationUpstreamAccountResponse>,
+    pub(crate) recent_invocations: Vec<PromptCacheConversationInvocationPreviewResponse>,
     pub(crate) last24h_requests: Vec<PromptCacheConversationRequestPointResponse>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PromptCacheConversationInvocationPreviewResponse {
+    pub(crate) id: i64,
+    pub(crate) invoke_id: String,
+    #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
+    pub(crate) occurred_at: String,
+    pub(crate) status: String,
+    pub(crate) failure_class: Option<String>,
+    pub(crate) route_mode: Option<String>,
+    pub(crate) model: Option<String>,
+    pub(crate) total_tokens: i64,
+    pub(crate) cost: Option<f64>,
+    pub(crate) proxy_display_name: Option<String>,
+    pub(crate) upstream_account_id: Option<i64>,
+    pub(crate) upstream_account_name: Option<String>,
+    pub(crate) endpoint: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -5118,6 +5232,24 @@ pub(crate) struct PromptCacheConversationEventRow {
     pub(crate) status: String,
     pub(crate) request_tokens: i64,
     pub(crate) prompt_cache_key: String,
+}
+
+#[derive(Debug, FromRow)]
+pub(crate) struct PromptCacheConversationInvocationPreviewRow {
+    pub(crate) prompt_cache_key: String,
+    pub(crate) id: i64,
+    pub(crate) invoke_id: String,
+    pub(crate) occurred_at: String,
+    pub(crate) status: String,
+    pub(crate) failure_class: Option<String>,
+    pub(crate) route_mode: Option<String>,
+    pub(crate) model: Option<String>,
+    pub(crate) total_tokens: i64,
+    pub(crate) cost: Option<f64>,
+    pub(crate) proxy_display_name: Option<String>,
+    pub(crate) upstream_account_id: Option<i64>,
+    pub(crate) upstream_account_name: Option<String>,
+    pub(crate) endpoint: Option<String>,
 }
 
 #[derive(Debug, FromRow)]

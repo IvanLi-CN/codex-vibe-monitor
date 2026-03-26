@@ -897,6 +897,22 @@ export interface PromptCacheConversationUpstreamAccount {
   lastActivityAt: string;
 }
 
+export interface PromptCacheConversationInvocationPreview {
+  id: number;
+  invokeId: string;
+  occurredAt: string;
+  status: string;
+  failureClass: Exclude<ApiInvocation["failureClass"], undefined> | null;
+  routeMode: string | null;
+  model: string | null;
+  totalTokens: number;
+  cost: number | null;
+  proxyDisplayName: string | null;
+  upstreamAccountId: number | null;
+  upstreamAccountName: string | null;
+  endpoint: string | null;
+}
+
 export interface PromptCacheConversation {
   promptCacheKey: string;
   requestCount: number;
@@ -905,6 +921,7 @@ export interface PromptCacheConversation {
   createdAt: string;
   lastActivityAt: string;
   upstreamAccounts: PromptCacheConversationUpstreamAccount[];
+  recentInvocations: PromptCacheConversationInvocationPreview[];
   last24hRequests: PromptCacheConversationRequestPoint[];
 }
 
@@ -1310,6 +1327,62 @@ function normalizePromptCacheConversationUpstreamAccount(
   };
 }
 
+function normalizePromptCacheConversationInvocationPreview(
+  raw: unknown,
+): PromptCacheConversationInvocationPreview | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const invokeId =
+    typeof payload.invokeId === "string" ? payload.invokeId.trim() : "";
+  const occurredAt =
+    typeof payload.occurredAt === "string" ? payload.occurredAt : "";
+  if (!invokeId || !occurredAt) return null;
+  const failureClass =
+    typeof payload.failureClass === "string"
+      ? payload.failureClass.trim().toLowerCase()
+      : "";
+  return {
+    id: normalizeFiniteNumber(payload.id) ?? 0,
+    invokeId,
+    occurredAt,
+    status:
+      typeof payload.status === "string" && payload.status.trim()
+        ? payload.status.trim()
+        : "unknown",
+    failureClass:
+      failureClass === "none" ||
+      failureClass === "service_failure" ||
+      failureClass === "client_failure" ||
+      failureClass === "client_abort"
+        ? failureClass
+        : null,
+    routeMode:
+      typeof payload.routeMode === "string" && payload.routeMode.trim()
+        ? payload.routeMode.trim()
+        : null,
+    model:
+      typeof payload.model === "string" && payload.model.trim()
+        ? payload.model.trim()
+        : null,
+    totalTokens: normalizeFiniteNumber(payload.totalTokens) ?? 0,
+    cost: normalizeFiniteNumber(payload.cost) ?? null,
+    proxyDisplayName:
+      typeof payload.proxyDisplayName === "string" &&
+      payload.proxyDisplayName.trim()
+        ? payload.proxyDisplayName.trim()
+        : null,
+    upstreamAccountId: normalizeFiniteNumber(payload.upstreamAccountId) ?? null,
+    upstreamAccountName:
+      typeof payload.upstreamAccountName === "string" &&
+      payload.upstreamAccountName.trim()
+        ? payload.upstreamAccountName.trim()
+        : null,
+    endpoint:
+      typeof payload.endpoint === "string" && payload.endpoint.trim()
+        ? payload.endpoint.trim()
+        : null,
+  };
+}
+
 function normalizePromptCacheConversation(
   raw: unknown,
 ): PromptCacheConversation | null {
@@ -1321,6 +1394,9 @@ function normalizePromptCacheConversation(
   if (!promptCacheKey) return null;
   const requestsRaw = Array.isArray(payload.last24hRequests)
     ? payload.last24hRequests
+    : [];
+  const recentInvocationsRaw = Array.isArray(payload.recentInvocations)
+    ? payload.recentInvocations
     : [];
   const upstreamAccountsRaw = Array.isArray(payload.upstreamAccounts)
     ? payload.upstreamAccounts
@@ -1337,6 +1413,11 @@ function normalizePromptCacheConversation(
       .map(normalizePromptCacheConversationUpstreamAccount)
       .filter(
         (item): item is PromptCacheConversationUpstreamAccount => item != null,
+      ),
+    recentInvocations: recentInvocationsRaw
+      .map(normalizePromptCacheConversationInvocationPreview)
+      .filter(
+        (item): item is PromptCacheConversationInvocationPreview => item != null,
       ),
     last24hRequests: requestsRaw
       .map(normalizePromptCacheConversationRequestPoint)
