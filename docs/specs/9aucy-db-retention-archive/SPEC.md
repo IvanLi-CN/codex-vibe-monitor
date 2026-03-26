@@ -3,6 +3,7 @@
 ## 状态
 
 - Status: 已完成
+- Note: 本 spec 保留 retention/archive 基线；在线长期统计主来源与 archive 在线读取边界后续已由 `#h9r2m` 接管。
 
 ## 背景 / 问题陈述
 
@@ -16,7 +17,7 @@
 
 - 为 `codex_invocations`、`forward_proxy_attempts`、`stats_source_snapshots`、`codex_quota_snapshots` 建立按上海自然日 / 自然月切分的冷热分层策略。
 - 让 `/api/invocations` 与 `InvocationTable` 在展开详情中明确告知记录当前是 `Full` 还是 `Structured only`，避免误判细节完整性。
-- 通过 `invocation_rollup_daily` 承接被归档删除的调用总量，确保 `/api/stats` 与 `summary?window=all` 在清理前后 totals 一致。
+- 通过 `invocation_rollup_daily` 承接被归档删除的调用总量，确保初始 rollout 阶段 `/api/stats` 与 `summary?window=all` 在清理前后 totals 一致；后续在线长期统计主来源已升级为 `#h9r2m` 定义的 hourly rollups。
 - 固化离线归档格式、运维开关、执行顺序与 101 首次 rollout 验证口径，保证维护任务可重试、可核查、可回滚。
 
 ### Non-goals
@@ -34,7 +35,7 @@
 - retention/archive 运维配置与 CLI：`XY_RETENTION_*` / `XY_ARCHIVE_DIR` / `--retention-run-once` / `--retention-dry-run`。
 - 调用明细 30/90 天分层、月度 `sqlite.gz` 归档、manifest 校验、主库 purge、raw file 删除与 orphan sweep。
 - `forward_proxy_attempts`、`stats_source_snapshots`、`codex_quota_snapshots` 的在线保留、离线归档与压缩策略。
-- `summary?window=all` / 总量统计对 `invocation_rollup_daily` 的承接。
+- `summary?window=all` / 总量统计的初始 `invocation_rollup_daily` 承接方案，以及后续迁移到 hourly rollups 前的兼容边界。
 - `README.md`、`docs/deployment.md`、`docs/specs/README.md` 与前端 `InvocationTable` 的契约更新。
 
 ### Out of scope
@@ -86,7 +87,7 @@
 ### 查询边界
 
 - `/api/invocations`、`/api/stats/errors`、`/api/stats/failures/summary`、`/api/stats/prompt-cache-conversations`、`/api/stats/forward-proxy` 只查询在线 retention window，不接 archived 明细。
-- `/api/stats` 与 `/api/stats/summary?window=all` 读取“主库在线明细 + invocation_rollup_daily”，归档前后总请求数、成功/失败数、tokens、cost 必须一致。
+- 初始 rollout 中，`/api/stats` 与 `/api/stats/summary?window=all` 读取“主库在线明细 + invocation_rollup_daily”，归档前后总请求数、成功/失败数、tokens、cost 必须一致；当前实现已由 `#h9r2m` 升级为“hourly rollups + live tail”。
 - `build_raw_response_preview` 的 16KiB 上限保持不变；`raw_response` 明确只承载 preview，完整代理响应原文继续以 `response_raw_path` 为准。长期减压由分层保留与离线归档承担，而不是缩短 preview。
 
 ### 运维配置

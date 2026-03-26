@@ -444,6 +444,12 @@ describe("fetchSummary", () => {
                 zeroUpdateStreak: 1,
                 nextRunAfter: "2026-03-24T12:00:00Z",
               },
+              historicalRollupBackfill: {
+                pendingBuckets: 48,
+                legacyArchivePending: 2,
+                lastMaterializedHour: "2026-03-24T00:00:00Z",
+                alertLevel: "warn",
+              },
             },
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
@@ -464,6 +470,12 @@ describe("fetchSummary", () => {
         upstreamActivityArchivePendingAccounts: 2,
         zeroUpdateStreak: 1,
         nextRunAfter: "2026-03-24T12:00:00Z",
+      },
+      historicalRollupBackfill: {
+        pendingBuckets: 48,
+        legacyArchivePending: 2,
+        lastMaterializedHour: "2026-03-24T00:00:00Z",
+        alertLevel: "warn",
       },
     });
   });

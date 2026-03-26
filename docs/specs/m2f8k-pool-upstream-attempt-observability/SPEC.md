@@ -4,7 +4,8 @@
 
 - Status: 进行中
 - Created: 2026-03-22
-- Last: 2026-03-22
+- Last: 2026-03-25
+- Note: 在线历史读取语义已由 `#h9r2m` 接管；本 spec 中涉及 archive 回读的描述仅保留为原始设计背景，不再代表当前契约。
 
 ## 背景 / 问题陈述
 
@@ -34,7 +35,7 @@
 ### In scope
 
 - `src/main.rs`：pool attempt schema、每次上游尝试落库、3 账号预算、attempt summary payload、retention/archive/archive TTL 清理。
-- `src/api/mod.rs`：`GET /api/invocations/{invokeId}/pool-attempts`、主记录 summary 字段投影、archive 回读。
+- `src/api/mod.rs`：`GET /api/invocations/{invokeId}/pool-attempts`、主记录 summary 字段投影、live-only 在线读取。
 - `web/src/lib/api.ts`、`web/src/components/InvocationTable.tsx`、`web/src/i18n/translations.ts`：详情懒加载 pool attempts 与空态/错误态展示。
 - `src/tests/mod.rs`、`web/src/components/InvocationTable.test.tsx`：后端与前端回归覆盖。
 - `docs/specs/README.md` 与本 spec：索引与状态同步。
@@ -62,7 +63,7 @@
 
 ### SHOULD
 
-- attempt 查询优先读 live DB；live miss 时按 invocation 的 `occurred_at` 所属 archive 月份回读。
+- attempt 查询只读 live DB；超出在线保留窗时返回空数组，由主记录 summary 与统计层承担长期历史能力。
 - UI 详情应同时展示尝试序号、账号、账号内重试序号、终态、HTTP 状态、失败类型、各阶段耗时、上游请求 ID 与时间点。
 - UI 在首次拿到空 attempts 后，只要主记录仍在运行中或后续收到 `poolAttemptCount` / `pool_attempts` 增量，就必须能被动刷新，不得把空结果当成最终真相缓存住。
 - 历史 invocation 缺少 pool summary 字段时，前端详情仍应稳定渲染，不把它误判成错误态。
@@ -84,7 +85,7 @@
 
 ### Edge cases / errors
 
-- pool 调用在 live DB 中已被清理时，attempt API 需要能从 archive 中回读；若 archive 文件缺失且 manifest 仍存在，应返回明确错误，而不是静默吞掉。
+- pool 调用在 live DB 中已被清理时，attempt API 返回空数组，不再从 archive 中回读，也不因 archive 文件状态影响在线接口可用性。
 - 非 pool 调用或未知 `invokeId` 返回空数组，不把“没有 attempts”误报为服务异常。
 - 历史记录尚未带 `poolAttemptCount` / `poolDistinctAccountCount` / `poolAttemptTerminalReason` 时，列表详情按 `—` 降级显示。
 - `/v1/responses/compact` 与 `/v1/responses` 共用同一 attempt 记录与 3 账号预算模型，不分叉实现。

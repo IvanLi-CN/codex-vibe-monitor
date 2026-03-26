@@ -2866,6 +2866,16 @@ async fn fetch_stats_exposes_maintenance_observability_fields() {
     );
     assert_eq!(startup_backfill.zero_update_streak, 0);
     assert!(startup_backfill.next_run_after.is_none());
+    let historical_rollup_backfill = maintenance
+        .historical_rollup_backfill
+        .expect("historical rollup backfill maintenance payload");
+    assert_eq!(historical_rollup_backfill.pending_buckets, 0);
+    assert_eq!(historical_rollup_backfill.legacy_archive_pending, 0);
+    assert!(historical_rollup_backfill.last_materialized_hour.is_none());
+    assert_eq!(
+        historical_rollup_backfill.alert_level,
+        HistoricalRollupBackfillAlertLevel::None
+    );
 }
 
 #[tokio::test]
@@ -26532,9 +26542,51 @@ async fn seed_invocation_archive_batch(
     batch_name: &str,
     rows: &[(i64, &str, &str, &str, &str, i64, f64, Option<f64>)],
 ) -> PathBuf {
+    let rows = rows
+        .iter()
+        .map(
+            |(id, invoke_id, occurred_at, source, status, total_tokens, cost, ttfb_ms)| {
+                SeedInvocationArchiveBatchRow {
+                    id: *id,
+                    invoke_id,
+                    occurred_at,
+                    source,
+                    status,
+                    total_tokens: *total_tokens,
+                    cost: *cost,
+                    ttfb_ms: *ttfb_ms,
+                    payload: Some("{}"),
+                    detail_level: DETAIL_LEVEL_FULL,
+                }
+            },
+        )
+        .collect::<Vec<_>>();
+    seed_invocation_archive_batch_with_details(pool, config, batch_name, &rows).await
+}
+
+#[derive(Clone, Copy)]
+struct SeedInvocationArchiveBatchRow<'a> {
+    id: i64,
+    invoke_id: &'a str,
+    occurred_at: &'a str,
+    source: &'a str,
+    status: &'a str,
+    total_tokens: i64,
+    cost: f64,
+    ttfb_ms: Option<f64>,
+    payload: Option<&'a str>,
+    detail_level: &'a str,
+}
+
+async fn seed_invocation_archive_batch_with_details(
+    pool: &SqlitePool,
+    config: &AppConfig,
+    batch_name: &str,
+    rows: &[SeedInvocationArchiveBatchRow<'_>],
+) -> PathBuf {
     let month_key = rows
         .first()
-        .map(|row| row.2[..7].to_string())
+        .map(|row| row.occurred_at[..7].to_string())
         .expect("archive batch rows should not be empty");
     let archive_path = archive_batch_file_path(config, "codex_invocations", &month_key)
         .expect("resolve invocation archive batch path");
@@ -26556,25 +26608,27 @@ async fn seed_invocation_archive_batch(
         .execute(&archive_pool)
         .await
         .expect("create invocation archive schema");
-    for (id, invoke_id, occurred_at, source, status, total_tokens, cost, ttfb_ms) in rows {
+    for row in rows {
         sqlx::query(
             r#"
             INSERT INTO codex_invocations (
-                id, invoke_id, occurred_at, source, status, total_tokens, cost, t_upstream_ttfb_ms, raw_response, created_at
+                id, invoke_id, occurred_at, source, status, total_tokens, cost, t_upstream_ttfb_ms, payload, detail_level, raw_response, created_at
             )
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
             "#,
         )
-        .bind(*id)
-        .bind(*invoke_id)
-        .bind(*occurred_at)
-        .bind(*source)
-        .bind(*status)
-        .bind(*total_tokens)
-        .bind(*cost)
-        .bind(*ttfb_ms)
+        .bind(row.id)
+        .bind(row.invoke_id)
+        .bind(row.occurred_at)
+        .bind(row.source)
+        .bind(row.status)
+        .bind(row.total_tokens)
+        .bind(row.cost)
+        .bind(row.ttfb_ms)
+        .bind(row.payload)
+        .bind(row.detail_level)
         .bind("{}")
-        .bind(*occurred_at)
+        .bind(row.occurred_at)
         .execute(&archive_pool)
         .await
         .expect("insert invocation archive row");
@@ -27204,7 +27258,7 @@ async fn timeseries_hourly_backed_includes_crs_deltas() {
 }
 
 #[tokio::test]
-async fn timeseries_hourly_backed_fails_when_exact_archive_batch_is_missing() {
+async fn timeseries_hourly_backed_ignores_missing_exact_archive_batch() {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -27233,7 +27287,7 @@ async fn timeseries_hourly_backed_fails_when_exact_archive_batch_is_missing() {
     .await
     .expect("insert missing exact-range archive manifest");
 
-    let err = fetch_timeseries(
+    let Json(response) = fetch_timeseries(
         State(state),
         Query(TimeseriesQuery {
             range: "48h".to_string(),
@@ -27243,21 +27297,87 @@ async fn timeseries_hourly_backed_fails_when_exact_archive_batch_is_missing() {
         }),
     )
     .await
-    .expect_err("missing exact-range archive batch should fail timeseries");
-
-    match err {
-        ApiError::Internal(inner) => {
-            assert!(
-                inner
-                    .to_string()
-                    .contains("required codex_invocations archive batch is missing"),
-                "unexpected error message: {inner}"
-            );
-        }
-        other => panic!("unexpected error: {other:?}"),
-    }
+    .expect("missing exact-range archive batch should not fail timeseries");
+    assert!(response.points.iter().all(|point| point.total_count == 0));
 
     cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn timeseries_daily_backed_ignores_pruned_legacy_archive_batch_files() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 7;
+    let state = test_state_from_config(config, true).await;
+
+    let archived_day_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days(10))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived local day");
+    let archived_occurred_at = format_naive(
+        archived_day_local
+            .checked_add_signed(ChronoDuration::minutes(10))
+            .expect("valid archived occurred_at"),
+    );
+    let archive_path = seed_invocation_archive_batch(
+        &state.pool,
+        &state.config,
+        "timeseries-daily-pruned-legacy-archive",
+        &[(
+            1_i64,
+            "timeseries-daily-pruned-legacy-archive",
+            archived_occurred_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            12_i64,
+            0.12_f64,
+            Some(120.0),
+        )],
+    )
+    .await;
+
+    materialize_historical_rollups(&state.pool, &state.config, false)
+        .await
+        .expect("materialize legacy historical rollups");
+    prune_legacy_archive_batches(&state.pool, &state.config, false)
+        .await
+        .expect("prune legacy archive files after materialization");
+    assert!(
+        !archive_path.exists(),
+        "legacy archive file should be removed after prune"
+    );
+
+    let Json(response) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "30d".to_string(),
+            bucket: Some("1d".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("daily timeseries should read materialized hourly history");
+    assert_eq!(
+        response
+            .points
+            .iter()
+            .map(|point| point.total_count)
+            .sum::<i64>(),
+        1
+    );
+    let expected_date = archived_day_local.date();
+    let point = response
+        .points
+        .iter()
+        .find(|point| shanghai_bucket_date(&point.bucket_start) == expected_date)
+        .expect("archived day should remain queryable after prune");
+    assert_eq!(point.total_count, 1);
+    assert_eq!(point.success_count, 1);
+    assert_eq!(point.failure_count, 0);
+    assert_eq!(point.total_tokens, 12);
+    assert_f64_close(point.total_cost, 0.12);
 }
 
 #[tokio::test]
@@ -27379,7 +27499,7 @@ async fn timeseries_hourly_backed_bucket_stays_available_across_archive_boundary
 }
 
 #[tokio::test]
-async fn summary_hourly_backed_since_preserves_exact_archived_start_hour() {
+async fn summary_hourly_backed_since_omits_pre_cutoff_partial_archived_hours() {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -27452,11 +27572,11 @@ async fn summary_hourly_backed_since_preserves_exact_archived_start_hour() {
             .await
             .expect("load exact archived summary totals");
 
-    assert_eq!(totals.total_count, 1);
-    assert_eq!(totals.success_count, 1);
+    assert_eq!(totals.total_count, 0);
+    assert_eq!(totals.success_count, 0);
     assert_eq!(totals.failure_count, 0);
-    assert_eq!(totals.total_tokens, 10);
-    assert_f64_close(totals.total_cost, 0.1);
+    assert_eq!(totals.total_tokens, 0);
+    assert_f64_close(totals.total_cost, 0.0);
 }
 
 #[tokio::test]
@@ -27531,7 +27651,7 @@ async fn collect_summary_snapshots_uses_hourly_backed_duration_windows() {
 }
 
 #[tokio::test]
-async fn timeseries_hourly_backed_uses_exact_archived_partial_hour_records() {
+async fn timeseries_hourly_backed_omits_pre_cutoff_partial_archived_hours() {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -27631,29 +27751,20 @@ async fn timeseries_hourly_backed_uses_exact_archived_partial_hour_records() {
     .await
     .expect("fetch exact archived timeseries");
 
-    let bucket = response
+    let point = response
         .points
         .iter()
-        .find(|point| point.total_count > 0)
-        .expect("should include exact archived bucket");
-    assert_eq!(bucket.total_count, 1);
-    assert_eq!(bucket.success_count, 1);
-    assert_eq!(bucket.failure_count, 0);
-    assert_eq!(bucket.total_tokens, 10);
-    assert_f64_close(bucket.total_cost, 0.1);
-    assert_eq!(bucket.first_byte_sample_count, 1);
-    assert_f64_close(
-        bucket.first_byte_avg_ms.expect("avg should be present"),
-        200.0,
-    );
-    assert_f64_close(
-        bucket.first_byte_p95_ms.expect("p95 should be present"),
-        200.0,
-    );
+        .find(|point| point.bucket_start == format_utc_iso(bucket_start))
+        .expect("archived hour bucket should remain visible");
+    assert_eq!(point.total_count, 0);
+    assert_eq!(point.success_count, 0);
+    assert_eq!(point.failure_count, 0);
+    assert_eq!(point.total_tokens, 0);
+    assert_f64_close(point.total_cost, 0.0);
 }
 
 #[tokio::test]
-async fn hourly_backed_summary_reads_pre_cutoff_exact_rows_from_live_table() {
+async fn hourly_backed_summary_omits_pre_cutoff_partial_hour_rollups() {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -27692,17 +27803,247 @@ async fn hourly_backed_summary_reads_pre_cutoff_exact_rows_from_live_table() {
     .await
     .expect("insert pre-cutoff live exact row");
 
+    let bucket_start_epoch =
+        invocation_bucket_start_epoch(&occurred_at).expect("derive pre-cutoff bucket epoch");
+    let bucket_start = Utc
+        .timestamp_opt(bucket_start_epoch, 0)
+        .single()
+        .expect("valid pre-cutoff bucket start");
+    insert_invocation_hourly_rollup_bucket(
+        &state.pool,
+        bucket_start,
+        SOURCE_PROXY,
+        1,
+        1,
+        0,
+        12,
+        0.12,
+    )
+    .await;
+
     let start = local_naive_to_utc(pre_cutoff_local - ChronoDuration::minutes(15), Shanghai);
     let totals =
         query_hourly_backed_summary_since(state.as_ref(), start, InvocationSourceScope::ProxyOnly)
             .await
             .expect("load summary totals across retention cutoff");
 
-    assert_eq!(totals.total_count, 1);
-    assert_eq!(totals.success_count, 1);
+    assert_eq!(totals.total_count, 0);
+    assert_eq!(totals.success_count, 0);
     assert_eq!(totals.failure_count, 0);
-    assert_eq!(totals.total_tokens, 12);
-    assert_f64_close(totals.total_cost, 0.12);
+    assert_eq!(totals.total_tokens, 0);
+    assert_f64_close(totals.total_cost, 0.0);
+}
+
+#[tokio::test]
+async fn hourly_backed_summary_trims_crs_totals_to_effective_proxy_range() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 0;
+    config.crs_stats = Some(CrsStatsConfig {
+        base_url: Url::parse("https://crs.example.com/").expect("valid crs base url"),
+        api_id: "test-api".to_string(),
+        period: "daily".to_string(),
+        poll_interval: Duration::from_secs(3600),
+    });
+    let state = test_state_from_config(config, true).await;
+
+    let pre_cutoff_local = start_of_local_day(Utc::now(), Shanghai)
+        .with_timezone(&Shanghai)
+        .naive_local()
+        - ChronoDuration::minutes(15);
+    let captured_at = local_naive_to_utc(pre_cutoff_local, Shanghai);
+    let stats_date = captured_at
+        .with_timezone(&Shanghai)
+        .date_naive()
+        .to_string();
+    sqlx::query(
+        r#"
+        INSERT INTO stats_source_deltas (
+            source,
+            period,
+            stats_date,
+            captured_at,
+            captured_at_epoch,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        "#,
+    )
+    .bind(SOURCE_CRS)
+    .bind("daily")
+    .bind(&stats_date)
+    .bind(format_utc_iso(captured_at))
+    .bind(captured_at.timestamp())
+    .bind(3_i64)
+    .bind(2_i64)
+    .bind(1_i64)
+    .bind(300_i64)
+    .bind(0.9_f64)
+    .execute(&state.pool)
+    .await
+    .expect("insert pre-cutoff crs delta");
+
+    let start = local_naive_to_utc(pre_cutoff_local - ChronoDuration::minutes(15), Shanghai);
+    let totals =
+        query_hourly_backed_summary_since(state.as_ref(), start, InvocationSourceScope::All)
+            .await
+            .expect("load summary totals across retention cutoff with crs");
+
+    assert_eq!(totals.total_count, 0);
+    assert_eq!(totals.success_count, 0);
+    assert_eq!(totals.failure_count, 0);
+    assert_eq!(totals.total_tokens, 0);
+    assert_f64_close(totals.total_cost, 0.0);
+}
+
+#[tokio::test]
+async fn hourly_timeseries_trims_crs_deltas_to_effective_proxy_range() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.invocation_max_days = 0;
+    config.crs_stats = Some(CrsStatsConfig {
+        base_url: Url::parse("https://crs.example.com/").expect("valid crs base url"),
+        api_id: "test-api".to_string(),
+        period: "daily".to_string(),
+        poll_interval: Duration::from_secs(3600),
+    });
+    let state = test_state_from_config(config, true).await;
+
+    let cutoff_local = start_of_local_day(Utc::now(), Shanghai)
+        .with_timezone(&Shanghai)
+        .naive_local();
+    let pre_cutoff_captured_at =
+        local_naive_to_utc(cutoff_local - ChronoDuration::minutes(15), Shanghai);
+    let post_cutoff_captured_at =
+        local_naive_to_utc(cutoff_local + ChronoDuration::minutes(5), Shanghai);
+    for (captured_at, total_count, success_count, failure_count, total_tokens, total_cost) in [
+        (
+            pre_cutoff_captured_at,
+            3_i64,
+            2_i64,
+            1_i64,
+            300_i64,
+            0.9_f64,
+        ),
+        (
+            post_cutoff_captured_at,
+            2_i64,
+            2_i64,
+            0_i64,
+            200_i64,
+            0.4_f64,
+        ),
+    ] {
+        let stats_date = captured_at
+            .with_timezone(&Shanghai)
+            .date_naive()
+            .to_string();
+        sqlx::query(
+            r#"
+            INSERT INTO stats_source_deltas (
+                source,
+                period,
+                stats_date,
+                captured_at,
+                captured_at_epoch,
+                total_count,
+                success_count,
+                failure_count,
+                total_tokens,
+                total_cost
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+            "#,
+        )
+        .bind(SOURCE_CRS)
+        .bind("daily")
+        .bind(&stats_date)
+        .bind(format_utc_iso(captured_at))
+        .bind(captured_at.timestamp())
+        .bind(total_count)
+        .bind(success_count)
+        .bind(failure_count)
+        .bind(total_tokens)
+        .bind(total_cost)
+        .execute(&state.pool)
+        .await
+        .expect("insert crs delta around retention cutoff");
+    }
+
+    let start = local_naive_to_utc(cutoff_local - ChronoDuration::minutes(30), Shanghai);
+    let end = local_naive_to_utc(cutoff_local + ChronoDuration::minutes(10), Shanghai);
+    let Json(response) = fetch_timeseries_from_hourly_rollups(
+        state.clone(),
+        TimeseriesQuery {
+            range: "ignored".to_string(),
+            bucket: Some("1h".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        },
+        Shanghai,
+        InvocationSourceScope::All,
+        RangeWindow {
+            start,
+            end,
+            display_end: end,
+            duration: end - start,
+        },
+        TimeseriesBucketSelection {
+            bucket_seconds: 3_600,
+            effective_bucket: "1h".to_string(),
+            available_buckets: vec!["1h".to_string()],
+            bucket_limited_to_daily: false,
+        },
+    )
+    .await
+    .expect("fetch hourly-backed timeseries with crs trim across retention cutoff");
+
+    assert_eq!(
+        response
+            .points
+            .iter()
+            .map(|point| point.total_count)
+            .sum::<i64>(),
+        2
+    );
+    assert_eq!(
+        response
+            .points
+            .iter()
+            .map(|point| point.success_count)
+            .sum::<i64>(),
+        2
+    );
+    assert_eq!(
+        response
+            .points
+            .iter()
+            .map(|point| point.failure_count)
+            .sum::<i64>(),
+        0
+    );
+    assert_eq!(
+        response
+            .points
+            .iter()
+            .map(|point| point.total_tokens)
+            .sum::<i64>(),
+        200
+    );
+    assert_f64_close(
+        response
+            .points
+            .iter()
+            .map(|point| point.total_cost)
+            .sum::<f64>(),
+        0.4,
+    );
 }
 
 #[tokio::test]
@@ -27723,6 +28064,7 @@ async fn invocation_hourly_rollup_ignores_null_status_for_success_failure_counts
             occurred_at,
             source: SOURCE_PROXY.to_string(),
             status: None,
+            detail_level: DETAIL_LEVEL_FULL.to_string(),
             total_tokens: Some(7),
             cost: Some(0.07),
             error_message: None,
@@ -27762,7 +28104,7 @@ async fn invocation_hourly_rollup_ignores_null_status_for_success_failure_counts
 }
 
 #[tokio::test]
-async fn hourly_timeseries_exact_rows_ignore_null_status_for_failure_counts() {
+async fn hourly_timeseries_omits_pre_cutoff_partial_hour_rollups() {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -27801,6 +28143,24 @@ async fn hourly_timeseries_exact_rows_ignore_null_status_for_failure_counts() {
     .await
     .expect("insert null-status exact row");
 
+    let bucket_start_epoch =
+        invocation_bucket_start_epoch(&occurred_at).expect("derive pre-cutoff bucket epoch");
+    let bucket_start = Utc
+        .timestamp_opt(bucket_start_epoch, 0)
+        .single()
+        .expect("valid pre-cutoff bucket start");
+    insert_invocation_hourly_rollup_bucket(
+        &state.pool,
+        bucket_start,
+        SOURCE_PROXY,
+        1,
+        0,
+        0,
+        5,
+        0.05,
+    )
+    .await;
+
     let start = local_naive_to_utc(pre_cutoff_local - ChronoDuration::minutes(15), Shanghai);
     let end = local_naive_to_utc(pre_cutoff_local + ChronoDuration::minutes(15), Shanghai);
     let Json(response) = fetch_timeseries_from_hourly_rollups(
@@ -27829,16 +28189,16 @@ async fn hourly_timeseries_exact_rows_ignore_null_status_for_failure_counts() {
     .await
     .expect("fetch exact hourly timeseries");
 
-    let bucket = response
+    let point = response
         .points
         .iter()
-        .find(|point| point.total_count > 0)
-        .expect("should include exact bucket");
-    assert_eq!(bucket.total_count, 1);
-    assert_eq!(bucket.success_count, 0);
-    assert_eq!(bucket.failure_count, 0);
-    assert_eq!(bucket.total_tokens, 5);
-    assert_f64_close(bucket.total_cost, 0.05);
+        .find(|point| point.bucket_start == format_utc_iso(bucket_start))
+        .expect("pre-cutoff bucket should remain visible");
+    assert_eq!(point.total_count, 0);
+    assert_eq!(point.success_count, 0);
+    assert_eq!(point.failure_count, 0);
+    assert_eq!(point.total_tokens, 0);
+    assert_f64_close(point.total_cost, 0.0);
 }
 
 #[tokio::test]
@@ -28939,7 +29299,7 @@ async fn retention_archives_into_legacy_pool_attempt_archive_batch_without_route
 }
 
 #[tokio::test]
-async fn fetch_invocation_pool_attempts_reads_archived_upstream_route_keys() {
+async fn fetch_invocation_pool_attempts_does_not_read_archived_records() {
     let temp_dir = make_temp_test_dir("api-pool-attempts-archive-route-key");
     let mut config = test_config();
     config.archive_dir = temp_dir.join("archives");
@@ -29073,12 +29433,7 @@ async fn fetch_invocation_pool_attempts_reads_archived_upstream_route_keys() {
     )
     .await
     .expect("fetch archived pool attempt records");
-    assert_eq!(records.len(), 1);
-    assert_eq!(records[0].upstream_route_key.as_deref(), Some(route_key));
-    assert_eq!(
-        records[0].upstream_account_name.as_deref(),
-        Some("Archive account")
-    );
+    assert!(records.is_empty());
 
     cleanup_temp_test_dir(&temp_dir);
 }
@@ -30244,9 +30599,10 @@ async fn cleanup_expired_invocation_archive_batches_removes_manifest_rows() {
             status,
             coverage_start_at,
             coverage_end_at,
+            historical_rollups_materialized_at,
             created_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'), ?10)
         "#,
     )
     .bind(1_i64)
@@ -30314,9 +30670,10 @@ async fn backfill_invocation_archive_expiries_uses_coverage_end_at() {
             status,
             coverage_start_at,
             coverage_end_at,
+            historical_rollups_materialized_at,
             created_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'), ?10)
         "#,
     )
     .bind(1_i64)
@@ -30354,6 +30711,222 @@ async fn backfill_invocation_archive_expiries_uses_coverage_end_at() {
             .await
             .expect("load archive expiry");
     assert_eq!(actual.as_deref(), Some(expected.as_str()));
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn pending_legacy_invocation_archives_do_not_expire_before_materialization() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("archive-expiry-pending-legacy").await;
+    config.invocation_archive_ttl_days = 0;
+    let coverage_end_at = shanghai_local_days_ago(120, 8, 0, 0);
+    let archive_path = temp_dir.join("pending-legacy.sqlite.gz");
+    write_gzip_test_file(&archive_path, b"pending-legacy");
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            id,
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'))
+        "#,
+    )
+    .bind(1_i64)
+    .bind("codex_invocations")
+    .bind(&coverage_end_at[..7])
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind("deadbeef")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&coverage_end_at)
+    .bind(&coverage_end_at)
+    .execute(&pool)
+    .await
+    .expect("insert pending legacy archive batch");
+
+    let updated = backfill_invocation_archive_expiries(&pool, &config)
+        .await
+        .expect("backfill should skip pending legacy archive");
+    assert_eq!(updated, 0);
+
+    let dry_run_deleted = cleanup_expired_archive_batches(&pool, &config, true)
+        .await
+        .expect("dry-run should also skip pending legacy archive");
+    assert_eq!(dry_run_deleted, 0);
+
+    let deleted = cleanup_expired_archive_batches(&pool, &config, false)
+        .await
+        .expect("cleanup should keep pending legacy archive");
+    assert_eq!(deleted, 0);
+    assert!(archive_path.exists());
+
+    let remaining_batches: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM archive_batches")
+        .fetch_one(&pool)
+        .await
+        .expect("count remaining pending legacy batches");
+    assert_eq!(remaining_batches, 1);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn pending_legacy_forward_proxy_archives_do_not_expire_before_materialization() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("archive-expiry-pending-forward-proxy").await;
+    let coverage_end_at = format_utc_iso(Utc::now() - ChronoDuration::days(120));
+    let archive_path = temp_dir.join("pending-forward-proxy.sqlite.gz");
+    write_gzip_test_file(&archive_path, b"pending-forward-proxy");
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            id,
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            archive_expires_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, datetime('now'))
+        "#,
+    )
+    .bind(1_i64)
+    .bind("forward_proxy_attempts")
+    .bind(&coverage_end_at[..7])
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind("deadbeef")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&coverage_end_at)
+    .bind(&coverage_end_at)
+    .bind("2025-01-01 00:00:00")
+    .execute(&pool)
+    .await
+    .expect("insert pending forward-proxy archive batch");
+
+    let dry_run_deleted = cleanup_expired_archive_batches(&pool, &config, true)
+        .await
+        .expect("dry-run should skip pending forward-proxy archive");
+    assert_eq!(dry_run_deleted, 0);
+
+    let deleted = cleanup_expired_archive_batches(&pool, &config, false)
+        .await
+        .expect("cleanup should keep pending forward-proxy archive");
+    assert_eq!(deleted, 0);
+    assert!(archive_path.exists());
+
+    let remaining_batches: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM archive_batches")
+        .fetch_one(&pool)
+        .await
+        .expect("count remaining pending forward-proxy batches");
+    assert_eq!(remaining_batches, 1);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn prune_legacy_archive_batches_keeps_missing_invocation_manifest_while_backfill_pending() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("prune-missing-invocation-manifest-pending").await;
+    let missing_archive_path = temp_dir.join("missing-manifest.sqlite.gz");
+    let coverage_end_at =
+        shanghai_local_days_ago((config.invocation_max_days + 30) as i64, 9, 0, 0);
+    let created_at = format_utc_iso(Utc::now());
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind(771_i64)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Pending manifest account")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&pool)
+    .await
+    .expect("insert pending manifest account");
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            id,
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'))
+        "#,
+    )
+    .bind(1_i64)
+    .bind("codex_invocations")
+    .bind(&coverage_end_at[..7])
+    .bind(missing_archive_path.to_string_lossy().to_string())
+    .bind("deadbeef")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&coverage_end_at)
+    .bind(&coverage_end_at)
+    .execute(&pool)
+    .await
+    .expect("insert missing invocation archive metadata");
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batch_upstream_activity (archive_batch_id, account_id, last_activity_at)
+        VALUES (?1, ?2, ?3)
+        "#,
+    )
+    .bind(1_i64)
+    .bind(771_i64)
+    .bind(&coverage_end_at)
+    .execute(&pool)
+    .await
+    .expect("insert pending manifest row");
+
+    let prune_summary = prune_legacy_archive_batches(&pool, &config, false)
+        .await
+        .expect("prune should keep missing invocation manifest metadata while pending");
+    assert_eq!(prune_summary.deleted_archive_batches, 0);
+    assert_eq!(prune_summary.skipped_unmaterialized_batches, 1);
+
+    let remaining_batches: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM archive_batches")
+        .fetch_one(&pool)
+        .await
+        .expect("count remaining archive batches");
+    assert_eq!(remaining_batches, 1);
+    let remaining_manifest_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM archive_batch_upstream_activity")
+            .fetch_one(&pool)
+            .await
+            .expect("count remaining manifest rows");
+    assert_eq!(remaining_manifest_rows, 1);
 
     cleanup_temp_test_dir(&temp_dir);
 }
@@ -30486,6 +31059,764 @@ async fn retention_archives_forward_proxy_attempts_and_stats_snapshots() {
 }
 
 #[tokio::test]
+async fn materialize_historical_rollups_marks_batches_and_prune_removes_files() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("historical-rollup-materialize-prune").await;
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days((config.invocation_max_days + 2) as i64))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived local hour");
+    let archived_occurred_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(10))
+            .expect("valid archived occurred_at"),
+    );
+    let archive_path = seed_invocation_archive_batch(
+        &pool,
+        &config,
+        "historical-rollup-materialize-prune",
+        &[(
+            1_i64,
+            "historical-rollup-materialize-prune",
+            archived_occurred_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            12_i64,
+            0.12_f64,
+            Some(120.0),
+        )],
+    )
+    .await;
+
+    let snapshot_before = load_historical_rollup_backfill_snapshot(&pool, &config)
+        .await
+        .expect("load historical rollup backlog before materialization");
+    assert_eq!(snapshot_before.legacy_archive_pending, 1);
+    assert!(snapshot_before.pending_buckets >= 1);
+
+    let dry_run_summary = materialize_historical_rollups(&pool, &config, true)
+        .await
+        .expect("dry-run materialize historical rollups");
+    assert_eq!(dry_run_summary.scanned_archive_batches, 1);
+    assert_eq!(dry_run_summary.materialized_archive_batches, 1);
+
+    let summary = materialize_historical_rollups(&pool, &config, false)
+        .await
+        .expect("materialize historical rollups");
+    assert_eq!(summary.materialized_invocation_batches, 1);
+    assert_eq!(summary.materialized_forward_proxy_batches, 0);
+
+    let total_count: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly WHERE source = ?1",
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load materialized invocation hourly total count");
+    assert_eq!(total_count, 1);
+
+    let materialized_at: Option<String> = sqlx::query_scalar(
+        "SELECT historical_rollups_materialized_at FROM archive_batches WHERE dataset = 'codex_invocations' LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load archive batch materialized timestamp");
+    assert!(materialized_at.is_some());
+
+    let snapshot_after = load_historical_rollup_backfill_snapshot(&pool, &config)
+        .await
+        .expect("load historical rollup backlog after materialization");
+    assert_eq!(snapshot_after.legacy_archive_pending, 0);
+
+    let prune_dry_run = prune_legacy_archive_batches(&pool, &config, true)
+        .await
+        .expect("dry-run prune legacy archive batches");
+    assert_eq!(prune_dry_run.deleted_archive_batches, 1);
+    assert!(archive_path.exists(), "dry-run should keep archive file");
+
+    let prune_summary = prune_legacy_archive_batches(&pool, &config, false)
+        .await
+        .expect("prune legacy archive batches");
+    assert_eq!(prune_summary.deleted_archive_batches, 1);
+    assert!(
+        !archive_path.exists(),
+        "pruned legacy archive file should be removed"
+    );
+
+    let remaining_batches: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM archive_batches")
+        .fetch_one(&pool)
+        .await
+        .expect("count remaining archive batches after prune");
+    assert_eq!(remaining_batches, 0);
+
+    let rerun_summary = materialize_historical_rollups(&pool, &config, false)
+        .await
+        .expect("rerun materialize historical rollups after prune");
+    assert_eq!(rerun_summary.materialized_invocation_batches, 0);
+    let rerun_total_count: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly WHERE source = ?1",
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load hourly totals after rerun");
+    assert_eq!(rerun_total_count, 1);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn materialize_historical_rollups_skips_already_materialized_batches() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("historical-rollup-skip-materialized").await;
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days((config.invocation_max_days + 2) as i64))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived local hour");
+    let archived_occurred_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(10))
+            .expect("valid archived occurred_at"),
+    );
+    let bucket_start_epoch =
+        invocation_bucket_start_epoch(&archived_occurred_at).expect("invocation bucket epoch");
+
+    seed_invocation_archive_batch(
+        &pool,
+        &config,
+        "historical-rollup-skip-materialized",
+        &[(
+            1_i64,
+            "historical-rollup-skip-materialized",
+            archived_occurred_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            12_i64,
+            0.12_f64,
+            Some(120.0),
+        )],
+    )
+    .await;
+
+    sqlx::query(
+        r#"
+        UPDATE archive_batches
+        SET historical_rollups_materialized_at = datetime('now')
+        WHERE dataset = 'codex_invocations'
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("mark archive batch already materialized");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0, 0, ?8)
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind(1_i64)
+    .bind(1_i64)
+    .bind(0_i64)
+    .bind(12_i64)
+    .bind(0.12_f64)
+    .bind("[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]")
+    .execute(&pool)
+    .await
+    .expect("seed already materialized invocation rollup");
+
+    let snapshot = load_historical_rollup_backfill_snapshot(&pool, &config)
+        .await
+        .expect("load snapshot for already materialized batch");
+    assert_eq!(snapshot.legacy_archive_pending, 0);
+
+    let summary = materialize_historical_rollups(&pool, &config, false)
+        .await
+        .expect("materialize should skip already materialized archive batch");
+    assert_eq!(summary.materialized_invocation_batches, 0);
+
+    let total_count: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly WHERE source = ?1",
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load invocation rollup total count after skipped replay");
+    assert_eq!(total_count, 1);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn materialize_historical_rollups_keeps_pruned_detail_archives_pending() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("historical-rollup-pruned-detail-pending").await;
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days((config.invocation_max_days + 2) as i64))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived local hour");
+    let archived_occurred_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(10))
+            .expect("valid archived occurred_at"),
+    );
+    let archive_path = seed_invocation_archive_batch_with_details(
+        &pool,
+        &config,
+        "historical-rollup-pruned-detail-pending",
+        &[SeedInvocationArchiveBatchRow {
+            id: 1,
+            invoke_id: "historical-rollup-pruned-detail-pending",
+            occurred_at: archived_occurred_at.as_str(),
+            source: SOURCE_PROXY,
+            status: "success",
+            total_tokens: 12,
+            cost: 0.12,
+            ttfb_ms: Some(120.0),
+            payload: Some(r#"{"upstreamAccountId":17}"#),
+            detail_level: DETAIL_LEVEL_STRUCTURED_ONLY,
+        }],
+    )
+    .await;
+
+    let summary = materialize_historical_rollups(&pool, &config, false)
+        .await
+        .expect("materialize historical rollups with pruned detail archive");
+    assert_eq!(summary.materialized_invocation_batches, 0);
+
+    let total_count: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly WHERE source = ?1",
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load invocation hourly total count after partial materialization");
+    assert_eq!(total_count, 1);
+
+    let keyed_replay_markers: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM hourly_rollup_archive_replay
+        WHERE dataset = 'codex_invocations'
+          AND file_path = ?1
+          AND target IN (?2, ?3, ?4)
+        "#,
+    )
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind(HOURLY_ROLLUP_TARGET_PROMPT_CACHE)
+    .bind(HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS)
+    .bind(HOURLY_ROLLUP_TARGET_STICKY_KEYS)
+    .fetch_one(&pool)
+    .await
+    .expect("load keyed replay markers");
+    assert_eq!(keyed_replay_markers, 0);
+
+    let materialized_at: Option<String> = sqlx::query_scalar(
+        "SELECT historical_rollups_materialized_at FROM archive_batches WHERE dataset = 'codex_invocations' LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load archive batch materialized timestamp for pruned detail archive");
+    assert!(materialized_at.is_none());
+
+    let snapshot = load_historical_rollup_backfill_snapshot(&pool, &config)
+        .await
+        .expect("load historical rollup snapshot after pruned detail materialization");
+    assert_eq!(snapshot.legacy_archive_pending, 1);
+    assert_eq!(
+        snapshot.alert_level,
+        HistoricalRollupBackfillAlertLevel::Critical
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn materialize_historical_rollups_marks_replayed_batches_as_materialized() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("historical-rollup-mark-replayed").await;
+    let old_invocation = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 9, 0, 0);
+    let old_attempt = parse_to_utc_datetime(&utc_naive_from_shanghai_local_days_ago(
+        (config.forward_proxy_attempts_retention_days + 2) as i64,
+        7,
+        0,
+        0,
+    ))
+    .expect("parse old forward proxy attempt timestamp");
+
+    insert_retention_invocation(
+        &pool,
+        "historical-rollup-mark-replayed",
+        &old_invocation,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"promptCacheKey\":\"replayed\",\"upstreamAccountId\":17,\"upstreamAccountName\":\"Replay\",\"stickyKey\":\"sticky-replayed\"}"),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(42),
+        Some(0.42),
+    )
+    .await;
+    seed_forward_proxy_attempt_at(&pool, "proxy-replayed", old_attempt, true).await;
+
+    sync_hourly_rollups_from_live_tables(&pool)
+        .await
+        .expect("seed live hourly rollups before retention");
+    let retention = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("archive old rows before materialize");
+    assert_eq!(retention.invocation_rows_archived, 1);
+    assert_eq!(retention.forward_proxy_attempt_rows_archived, 1);
+
+    sqlx::query("UPDATE archive_batches SET historical_rollups_materialized_at = NULL")
+        .execute(&pool)
+        .await
+        .expect("clear materialized markers to mimic pre-upgrade replay state");
+
+    let invocation_archive_path: String = sqlx::query_scalar(
+        "SELECT file_path FROM archive_batches WHERE dataset = 'codex_invocations' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load invocation archive path");
+    for target in [
+        HOURLY_ROLLUP_TARGET_INVOCATIONS,
+        HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES,
+        HOURLY_ROLLUP_TARGET_PROXY_PERF,
+        HOURLY_ROLLUP_TARGET_PROMPT_CACHE,
+        HOURLY_ROLLUP_TARGET_PROMPT_CACHE_UPSTREAM_ACCOUNTS,
+        HOURLY_ROLLUP_TARGET_STICKY_KEYS,
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, replayed_at)
+            VALUES (?1, ?2, ?3, datetime('now'))
+            "#,
+        )
+        .bind(target)
+        .bind(HOURLY_ROLLUP_DATASET_INVOCATIONS)
+        .bind(&invocation_archive_path)
+        .execute(&pool)
+        .await
+        .expect("insert invocation replay marker");
+    }
+
+    let forward_proxy_archive_path: String = sqlx::query_scalar(
+        "SELECT file_path FROM archive_batches WHERE dataset = 'forward_proxy_attempts' ORDER BY id DESC LIMIT 1",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("load forward-proxy archive path");
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_archive_replay (target, dataset, file_path, replayed_at)
+        VALUES (?1, ?2, ?3, datetime('now'))
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_TARGET_FORWARD_PROXY_ATTEMPTS)
+    .bind(HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS)
+    .bind(&forward_proxy_archive_path)
+    .execute(&pool)
+    .await
+    .expect("insert forward-proxy replay marker");
+
+    let snapshot_before = load_historical_rollup_backfill_snapshot(&pool, &config)
+        .await
+        .expect("load snapshot before marking replayed batches");
+    assert_eq!(snapshot_before.legacy_archive_pending, 2);
+
+    let materialize = materialize_historical_rollups(&pool, &config, false)
+        .await
+        .expect("materialize should only mark replayed batches");
+    assert_eq!(materialize.materialized_invocation_batches, 0);
+    assert_eq!(materialize.materialized_forward_proxy_batches, 0);
+
+    let materialized_batches: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM archive_batches WHERE historical_rollups_materialized_at IS NOT NULL",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count replayed batches marked materialized");
+    assert_eq!(materialized_batches, 2);
+
+    let snapshot_after = load_historical_rollup_backfill_snapshot(&pool, &config)
+        .await
+        .expect("load snapshot after marking replayed batches");
+    assert_eq!(snapshot_after.legacy_archive_pending, 0);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn historical_rollup_backfill_stays_critical_until_legacy_invocations_materialized() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("historical-rollup-backfill-critical").await;
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days((config.invocation_max_days + 2) as i64))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived local hour");
+    let archived_occurred_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(10))
+            .expect("valid archived occurred_at"),
+    );
+    seed_invocation_archive_batch(
+        &pool,
+        &config,
+        "historical-rollup-backfill-critical",
+        &[(
+            1_i64,
+            "historical-rollup-backfill-critical",
+            archived_occurred_at.as_str(),
+            SOURCE_PROXY,
+            "success",
+            12_i64,
+            0.12_f64,
+            Some(120.0),
+        )],
+    )
+    .await;
+    sqlx::query(
+        r#"
+        INSERT INTO hourly_rollup_materialized_buckets (
+            target,
+            bucket_start_epoch,
+            source,
+            materialized_at
+        )
+        VALUES (?1, ?2, ?3, datetime('now'))
+        "#,
+    )
+    .bind(HOURLY_ROLLUP_TARGET_INVOCATIONS)
+    .bind(align_bucket_epoch(Utc::now().timestamp(), 3_600, 0))
+    .bind(SOURCE_PROXY)
+    .execute(&pool)
+    .await
+    .expect("seed unrelated materialized bucket marker");
+
+    let snapshot = load_historical_rollup_backfill_snapshot(&pool, &config)
+        .await
+        .expect("load historical rollup backlog snapshot");
+    assert_eq!(snapshot.legacy_archive_pending, 1);
+    assert!(snapshot.last_materialized_hour.is_none());
+    assert_eq!(
+        snapshot.alert_level,
+        HistoricalRollupBackfillAlertLevel::Critical
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn prune_legacy_archive_batches_keeps_detail_prune_backups_within_live_window() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("historical-rollup-prune-detail-backup").await;
+    let pruned_occurred_at = shanghai_local_days_ago(
+        (config.invocation_success_full_days + 5)
+            .try_into()
+            .expect("detail prune age should fit in i64"),
+        14,
+        0,
+        0,
+    );
+    insert_retention_invocation(
+        &pool,
+        "historical-rollup-prune-detail-backup",
+        &pruned_occurred_at,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"promptCacheKey\":\"detail-backup\"}"),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(11),
+        Some(0.11),
+    )
+    .await;
+
+    run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run retention detail prune");
+
+    let (archive_path, materialized_at, detail_level): (String, Option<String>, String) =
+        sqlx::query_as(
+            r#"
+            SELECT b.file_path, b.historical_rollups_materialized_at, i.detail_level
+            FROM archive_batches AS b
+            JOIN codex_invocations AS i
+              ON i.invoke_id = ?1
+            WHERE b.dataset = 'codex_invocations'
+            ORDER BY b.id DESC
+            LIMIT 1
+            "#,
+        )
+        .bind("historical-rollup-prune-detail-backup")
+        .fetch_one(&pool)
+        .await
+        .expect("load detail prune archive metadata");
+    assert_eq!(detail_level, DETAIL_LEVEL_STRUCTURED_ONLY);
+    assert!(
+        materialized_at.is_some(),
+        "detail-prune archive still participates in rollup materialization"
+    );
+    assert!(
+        Path::new(&archive_path).exists(),
+        "detail backup archive should exist"
+    );
+
+    let prune_dry_run = prune_legacy_archive_batches(&pool, &config, true)
+        .await
+        .expect("dry-run prune should retain detail backup archive");
+    assert_eq!(prune_dry_run.deleted_archive_batches, 0);
+    assert_eq!(prune_dry_run.skipped_retained_batches, 1);
+    assert!(
+        Path::new(&archive_path).exists(),
+        "dry-run should not remove archive"
+    );
+
+    let prune_summary = prune_legacy_archive_batches(&pool, &config, false)
+        .await
+        .expect("prune should keep detail backup archive");
+    assert_eq!(prune_summary.deleted_archive_batches, 0);
+    assert_eq!(prune_summary.skipped_retained_batches, 1);
+    assert!(
+        Path::new(&archive_path).exists(),
+        "detail backup archive must remain"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn materialize_historical_rollups_skips_missing_archives_and_preserves_existing_rollups() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("historical-rollup-materialize-atomic").await;
+    let archived_hour_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days((config.invocation_max_days + 2) as i64))
+    .and_hms_opt(8, 0, 0)
+    .expect("valid archived local hour");
+    let archived_occurred_at = format_naive(
+        archived_hour_local
+            .checked_add_signed(ChronoDuration::minutes(10))
+            .expect("valid archived occurred_at"),
+    );
+    let bucket_start_epoch =
+        invocation_bucket_start_epoch(&archived_occurred_at).expect("invocation bucket epoch");
+    let missing_archive_path =
+        archive_batch_file_path(&config, "codex_invocations", &archived_occurred_at[..7])
+            .expect("resolve missing archive path");
+
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0, 0, ?8)
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .bind(7_i64)
+    .bind(6_i64)
+    .bind(1_i64)
+    .bind(77_i64)
+    .bind(7.7_f64)
+    .bind("[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]")
+    .execute(&pool)
+    .await
+    .expect("seed existing invocation rollup");
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))
+        "#,
+    )
+    .bind("codex_invocations")
+    .bind(&archived_occurred_at[..7])
+    .bind(missing_archive_path.to_string_lossy().to_string())
+    .bind("deadbeef")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&archived_occurred_at)
+    .bind(&archived_occurred_at)
+    .execute(&pool)
+    .await
+    .expect("insert missing archive manifest");
+
+    let snapshot_before = load_historical_rollup_backfill_snapshot(&pool, &config)
+        .await
+        .expect("load snapshot before skipping missing archive");
+    assert_eq!(snapshot_before.legacy_archive_pending, 0);
+
+    let summary = materialize_historical_rollups(&pool, &config, false)
+        .await
+        .expect("materialization should skip missing archive file");
+    assert_eq!(summary.materialized_invocation_batches, 0);
+
+    let total_count: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(total_count), 0) FROM invocation_rollup_hourly WHERE source = ?1",
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load retained invocation rollup total");
+    assert_eq!(
+        total_count, 7,
+        "skipped materialization must keep prior rollups"
+    );
+
+    let prune_summary = prune_legacy_archive_batches(&pool, &config, false)
+        .await
+        .expect("prune should remove stale missing archive metadata");
+    assert_eq!(prune_summary.deleted_archive_batches, 1);
+
+    let remaining_batches: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM archive_batches")
+        .fetch_one(&pool)
+        .await
+        .expect("count remaining archive batches after pruning missing metadata");
+    assert_eq!(remaining_batches, 0);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn recompute_invocation_hourly_rollups_ignores_archive_manifests_for_live_buckets() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("historical-rollup-recompute-live-only").await;
+    let live_local = (Utc::now().with_timezone(&Shanghai).date_naive()
+        - ChronoDuration::days((config.invocation_success_full_days + 5) as i64))
+    .and_hms_opt(9, 20, 0)
+    .expect("valid live historical local hour");
+    let live_occurred_at = format_naive(live_local);
+    insert_retention_invocation(
+        &pool,
+        "historical-rollup-recompute-live-only",
+        &live_occurred_at,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"promptCacheKey\":\"live-key\"}"),
+        "{}",
+        None,
+        None,
+        Some(5),
+        Some(0.5),
+    )
+    .await;
+
+    let live_id: i64 =
+        sqlx::query_scalar("SELECT id FROM codex_invocations WHERE invoke_id = ?1 LIMIT 1")
+            .bind("historical-rollup-recompute-live-only")
+            .fetch_one(&pool)
+            .await
+            .expect("load live invocation id");
+    let bucket_start_epoch =
+        invocation_bucket_start_epoch(&live_occurred_at).expect("invocation bucket epoch");
+    let missing_archive_path =
+        archive_batch_file_path(&config, "codex_invocations", &live_occurred_at[..7])
+            .expect("resolve missing archive path");
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            historical_rollups_materialized_at,
+            coverage_start_at,
+            coverage_end_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, datetime('now'), ?7, ?8, datetime('now'))
+        "#,
+    )
+    .bind("codex_invocations")
+    .bind(&live_occurred_at[..7])
+    .bind(missing_archive_path.to_string_lossy().to_string())
+    .bind("deadbeef")
+    .bind(1_i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(&live_occurred_at)
+    .bind(&live_occurred_at)
+    .execute(&pool)
+    .await
+    .expect("insert missing archive manifest for same live month");
+
+    let mut tx = pool.begin().await.expect("begin recompute tx");
+    sqlx::query("UPDATE codex_invocations SET total_tokens = ?1, cost = ?2 WHERE id = ?3")
+        .bind(15_i64)
+        .bind(1.5_f64)
+        .bind(live_id)
+        .execute(tx.as_mut())
+        .await
+        .expect("update live invocation before recompute");
+    recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &[live_id])
+        .await
+        .expect("recompute invocation hourly rollups without archive dependency");
+    tx.commit().await.expect("commit recompute tx");
+
+    let after = sqlx::query_as::<_, StatsRow>(
+        r#"
+        SELECT
+            COALESCE(SUM(total_count), 0) AS total_count,
+            COALESCE(SUM(success_count), 0) AS success_count,
+            COALESCE(SUM(failure_count), 0) AS failure_count,
+            COALESCE(SUM(total_cost), 0.0) AS total_cost,
+            COALESCE(SUM(total_tokens), 0) AS total_tokens
+        FROM invocation_rollup_hourly
+        WHERE bucket_start_epoch = ?1 AND source = ?2
+        "#,
+    )
+    .bind(bucket_start_epoch)
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load post-recompute bucket totals");
+    assert_eq!(after.total_count, 1);
+    assert_eq!(after.success_count, Some(1));
+    assert_eq!(after.failure_count, Some(0));
+    assert_eq!(after.total_tokens, 15);
+    assert_f64_close(after.total_cost, 1.5);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn retention_archives_and_cleans_up_pool_upstream_request_attempts() {
     let (pool, mut config, temp_dir) =
         retention_test_pool_and_config("retention-pool-attempts").await;
@@ -30600,7 +31931,7 @@ async fn retention_archives_and_cleans_up_pool_upstream_request_attempts() {
 }
 
 #[tokio::test]
-async fn bootstrap_hourly_rollups_skips_batches_already_accounted_during_retention() {
+async fn bootstrap_hourly_rollups_keeps_retention_materialized_totals_unchanged() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("hourly-rollup-retention-accounted").await;
     let old_invocation = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 9, 0, 0);
@@ -30669,34 +32000,34 @@ async fn bootstrap_hourly_rollups_skips_batches_already_accounted_during_retenti
     assert_eq!(forward_proxy_total_before, 1);
     assert_eq!(forward_proxy_total_after, forward_proxy_total_before);
 
-    let invocation_marked_targets: HashSet<String> = sqlx::query_scalar(
-        "SELECT target FROM hourly_rollup_archive_replay WHERE dataset = 'codex_invocations'",
+    let invocation_materialized_batches: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM archive_batches WHERE dataset = 'codex_invocations' AND historical_rollups_materialized_at IS NOT NULL",
     )
-    .fetch_all(&pool)
-    .await
-    .expect("load invocation replay markers")
-    .into_iter()
-    .collect();
-    assert!(invocation_marked_targets.contains(HOURLY_ROLLUP_TARGET_INVOCATIONS));
-    assert!(invocation_marked_targets.contains(HOURLY_ROLLUP_TARGET_INVOCATION_FAILURES));
-    assert!(invocation_marked_targets.contains(HOURLY_ROLLUP_TARGET_PROXY_PERF));
-    assert!(invocation_marked_targets.contains(HOURLY_ROLLUP_TARGET_PROMPT_CACHE));
-    assert!(invocation_marked_targets.contains(HOURLY_ROLLUP_TARGET_STICKY_KEYS));
-
-    let forward_proxy_marked: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM hourly_rollup_archive_replay WHERE dataset = 'forward_proxy_attempts' AND target = ?1",
-    )
-    .bind(HOURLY_ROLLUP_TARGET_FORWARD_PROXY_ATTEMPTS)
     .fetch_one(&pool)
     .await
-    .expect("load forward proxy replay marker count");
-    assert_eq!(forward_proxy_marked, 1);
+    .expect("count materialized invocation archive batches");
+    assert_eq!(invocation_materialized_batches, 1);
+
+    let forward_proxy_materialized_batches: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM archive_batches WHERE dataset = 'forward_proxy_attempts' AND historical_rollups_materialized_at IS NOT NULL",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("count materialized forward proxy archive batches");
+    assert_eq!(forward_proxy_materialized_batches, 1);
+
+    let replay_marker_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM hourly_rollup_archive_replay")
+            .fetch_one(&pool)
+            .await
+            .expect("count hourly rollup archive replay markers");
+    assert_eq!(replay_marker_count, 0);
 
     cleanup_temp_test_dir(&temp_dir);
 }
 
 #[tokio::test]
-async fn bootstrap_hourly_rollups_replays_only_missing_invocation_targets() {
+async fn bootstrap_hourly_rollups_ignores_missing_replay_markers() {
     let (pool, config, temp_dir) =
         retention_test_pool_and_config("hourly-rollup-missing-invocation-target").await;
     let old_invocation = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 9, 0, 0);
@@ -30773,13 +32104,13 @@ async fn bootstrap_hourly_rollups_replays_only_missing_invocation_targets() {
 
     assert_eq!(invocation_total_before, 1);
     assert_eq!(invocation_total_after, invocation_total_before);
-    assert_eq!(repaired_marker_count, 1);
+    assert_eq!(repaired_marker_count, 0);
 
     cleanup_temp_test_dir(&temp_dir);
 }
 
 #[tokio::test]
-async fn bootstrap_hourly_rollups_fails_when_invocation_archive_batch_is_missing() {
+async fn bootstrap_hourly_rollups_ignores_missing_invocation_archive_batch() {
     let (pool, _config, temp_dir) =
         retention_test_pool_and_config("hourly-rollup-missing-invocation-archive").await;
     let missing_archive = temp_dir.join("missing-codex-invocations.sqlite.gz");
@@ -30801,24 +32132,15 @@ async fn bootstrap_hourly_rollups_fails_when_invocation_archive_batch_is_missing
     .await
     .expect("insert missing codex_invocations archive manifest");
 
-    let err = bootstrap_hourly_rollups(&pool)
+    bootstrap_hourly_rollups(&pool)
         .await
-        .expect_err("missing codex_invocations archive batch should fail bootstrap");
-    assert!(
-        err.to_string()
-            .contains("required codex_invocations archive batch is missing"),
-        "unexpected error: {err:#}"
-    );
-    assert!(
-        err.to_string().contains(&missing_archive_path),
-        "unexpected error: {err:#}"
-    );
+        .expect("missing codex_invocations archive batch should not affect bootstrap");
 
     cleanup_temp_test_dir(&temp_dir);
 }
 
 #[tokio::test]
-async fn bootstrap_hourly_rollups_fails_when_forward_proxy_archive_batch_is_missing() {
+async fn bootstrap_hourly_rollups_ignores_missing_forward_proxy_archive_batch() {
     let (pool, _config, temp_dir) =
         retention_test_pool_and_config("hourly-rollup-missing-forward-proxy-archive").await;
     let missing_archive = temp_dir.join("missing-forward-proxy-attempts.sqlite.gz");
@@ -30840,18 +32162,9 @@ async fn bootstrap_hourly_rollups_fails_when_forward_proxy_archive_batch_is_miss
     .await
     .expect("insert missing forward_proxy_attempts archive manifest");
 
-    let err = bootstrap_hourly_rollups(&pool)
+    bootstrap_hourly_rollups(&pool)
         .await
-        .expect_err("missing forward_proxy_attempts archive batch should fail bootstrap");
-    assert!(
-        err.to_string()
-            .contains("required forward_proxy_attempts archive batch is missing"),
-        "unexpected error: {err:#}"
-    );
-    assert!(
-        err.to_string().contains(&missing_archive_path),
-        "unexpected error: {err:#}"
-    );
+        .expect("missing forward_proxy_attempts archive batch should not affect bootstrap");
 
     cleanup_temp_test_dir(&temp_dir);
 }

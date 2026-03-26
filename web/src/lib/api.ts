@@ -515,6 +515,7 @@ export interface StatsResponse {
 export interface StatsMaintenanceResponse {
   rawCompressionBacklog?: RawCompressionBacklogResponse;
   startupBackfill?: StartupBackfillResponse;
+  historicalRollupBackfill?: HistoricalRollupBackfillResponse;
 }
 
 export interface RawCompressionBacklogResponse {
@@ -528,6 +529,13 @@ export interface StartupBackfillResponse {
   upstreamActivityArchivePendingAccounts: number;
   zeroUpdateStreak: number;
   nextRunAfter?: string | null;
+}
+
+export interface HistoricalRollupBackfillResponse {
+  pendingBuckets: number;
+  legacyArchivePending: number;
+  lastMaterializedHour?: string | null;
+  alertLevel: "none" | "warn" | "critical";
 }
 
 export interface TimeseriesPoint {
