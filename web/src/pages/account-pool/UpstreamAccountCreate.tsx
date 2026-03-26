@@ -354,17 +354,54 @@ function buildBatchOauthPersistedMetadata(
   };
 }
 
+function resolveCompletedBatchOauthCommittedFieldBaseline(
+  row: Pick<BatchOauthRow, "session" | "metadataPersisted">,
+  field: keyof BatchOauthPersistedMetadata,
+  items: UpstreamAccountSummary[],
+) {
+  if (field === "tagIds") {
+    return resolveCompletedBatchOauthRowPersistedTagIds(row, items);
+  }
+  if (row.metadataPersisted) {
+    return row.metadataPersisted[field];
+  }
+  const account = findCompletedBatchOauthAccount(row, items);
+  if (!account) return undefined;
+  if (field === "displayName") {
+    return account.displayName.trim();
+  }
+  if (field === "groupName") {
+    return (account.groupName ?? "").trim();
+  }
+  if (field === "isMother") {
+    return account.isMother === true;
+  }
+  return undefined;
+}
+
 function didCompletedBatchOauthCommittedFieldsChange(
-  persisted: BatchOauthPersistedMetadata | null,
+  row: Pick<BatchOauthRow, "session" | "metadataPersisted">,
   next: BatchOauthPersistedMetadata,
   committedFields: Array<keyof BatchOauthPersistedMetadata>,
+  items: UpstreamAccountSummary[],
 ) {
-  if (!persisted) return true;
   return committedFields.some((field) => {
     if (field === "tagIds") {
-      return !batchTagIdsEqual(persisted.tagIds, next.tagIds);
+      const baselineTagIds = resolveCompletedBatchOauthRowPersistedTagIds(
+        row,
+        items,
+      );
+      return baselineTagIds == null
+        ? true
+        : !batchTagIdsEqual(baselineTagIds, next.tagIds);
     }
-    return persisted[field] !== next[field];
+    const baseline = resolveCompletedBatchOauthCommittedFieldBaseline(
+      row,
+      field,
+      items,
+    );
+    if (baseline == null) return true;
+    return baseline !== next[field];
   });
 }
 
@@ -1557,33 +1594,6 @@ export default function UpstreamAccountCreatePage() {
     }, MAILBOX_REFRESH_TICK_MS);
     return () => window.clearInterval(timer);
   }, []);
-  useEffect(() => {
-    setBatchRows((current) => {
-      let changed = false;
-      const nextRows = current.map((row) => {
-        const persistedTagIds = resolveCompletedBatchOauthRowPersistedTagIds(
-          row,
-          items,
-        );
-        if (
-          !canEditCompletedBatchOauthRowMetadata(row) ||
-          row.metadataPersisted != null ||
-          persistedTagIds == null
-        ) {
-          return row;
-        }
-        changed = true;
-        return {
-          ...row,
-          metadataPersisted: buildBatchOauthPersistedMetadata(
-            row,
-            persistedTagIds,
-          ),
-        };
-      });
-      return changed ? nextRows : current;
-    });
-  }, [batchRows, items]);
   const batchRowIdRef = useRef(getNextBatchRowIndex(initialBatchRows));
   const manualCopyFieldRef = useRef<HTMLTextAreaElement | null>(null);
   const batchManualCopyFieldRef = useRef<HTMLTextAreaElement | null>(null);
@@ -2753,9 +2763,10 @@ export default function UpstreamAccountCreatePage() {
 
     if (
       !didCompletedBatchOauthCommittedFieldsChange(
-        sourceRow.metadataPersisted,
+        sourceRow,
         nextMetadata,
         committedFields,
+        items,
       )
     ) {
       updateBatchRow(rowId, (current) =>
@@ -2773,7 +2784,8 @@ export default function UpstreamAccountCreatePage() {
       ...current,
       metadataBusy: true,
       metadataError: null,
-      sharedTagSyncAttempts: isPendingSharedTagSyncAttempt
+      sharedTagSyncAttempts:
+        committedFields.includes("tagIds") && isPendingSharedTagSyncAttempt
         ? current.sharedTagSyncAttempts + 1
         : current.sharedTagSyncAttempts,
     }));
