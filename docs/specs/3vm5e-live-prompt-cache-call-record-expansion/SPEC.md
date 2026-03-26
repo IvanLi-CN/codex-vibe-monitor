@@ -92,7 +92,7 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Monitoring/PromptCacheConversationTable / Populated
   state: collapsed table
   evidence_note: 验证默认折叠态下的 Prompt Cache 对话表仍保持现有双列摘要、时间列与 24 小时累计趋势不变。
@@ -103,10 +103,11 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Monitoring/PromptCacheConversationTable / SingleExpanded
   state: single row expanded
   evidence_note: 验证单行展开时只显示该对话最近 5 条调用记录，并直接复用 `Records` 页同款调用记录表格。
+  PR: include
   image:
   ![Prompt Cache 对话单行展开态](./assets/prompt-cache-records-single-expanded.png)
 
@@ -114,7 +115,7 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Monitoring/PromptCacheConversationTable / ExpandAll
   state: all rows expanded
   evidence_note: 验证所有对话同时展开时，每个对话都追加同款调用记录表格，而不是退化成多套卡片区块。
@@ -125,10 +126,11 @@
   target_program: mock-only
   capture_scope: browser-viewport
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Monitoring/PromptCacheConversationTable / DrawerOpen
   state: retained history drawer open
   evidence_note: 验证“全部调用记录”抽屉按时间倒序展示保留 raw records，并复用同款调用记录表格与数量统计。
+  PR: include
   image:
   ![Prompt Cache 对话历史抽屉](./assets/prompt-cache-records-drawer-open.png)
 
@@ -136,9 +138,10 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Monitoring/Live Prompt Cache Section / InteractiveFilters
   state: live section bulk expand control
   evidence_note: 验证 Live 页对话筛选左侧新增“一键展开所有记录”按钮，并且点击后当前可见结果集统一展开。
+  PR: include
   image:
   ![Live Prompt Cache 一键展开](./assets/prompt-cache-live-bulk-expand.png)
