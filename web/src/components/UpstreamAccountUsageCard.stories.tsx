@@ -73,11 +73,31 @@ export const PlaceholderApiKeyWindow: Story = {
 
 export const EmptyHistory: Story = {
   args: {
-    title: '5h window',
-    description: 'New account without historical samples yet.',
-    window: null,
+    title: '7d window',
+    description: 'Known weekly snapshot without historical samples yet.',
+    window: {
+      usedPercent: 18,
+      usedText: '18 requests',
+      limitText: '500 requests',
+      resetsAt: '2026-03-18T00:00:00.000Z',
+      windowDurationMins: 10080,
+    },
     history: [],
-    historyKey: 'primaryUsedPercent',
+    historyKey: 'secondaryUsedPercent',
     emptyLabel: 'No usage samples yet',
+    accentClassName: 'text-info',
+  },
+}
+
+export const MissingWindowPlaceholder: Story = {
+  args: {
+    title: '7d window',
+    description: 'Account without a configured secondary quota window.',
+    window: null,
+    history,
+    historyKey: 'secondaryUsedPercent',
+    emptyLabel: 'No usage samples yet',
+    noteLabel: 'Window missing',
+    accentClassName: 'text-info',
   },
 }
