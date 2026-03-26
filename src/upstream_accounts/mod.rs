@@ -10631,6 +10631,15 @@ fn derive_upstream_account_health_status(
     if is_upstream_unavailable_error_message(error_message) {
         return UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE;
     }
+    if upstream_account_upstream_rejected_state_is_current(
+        status.as_str(),
+        last_error_at,
+        last_route_failure_at,
+        last_route_failure_kind,
+        last_action_reason_code,
+    ) {
+        return UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED;
+    }
     if is_upstream_rejected_error_message(error_message) {
         return UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED;
     }
@@ -11049,6 +11058,13 @@ fn account_reason_is_rate_limited(reason_code: Option<&str>) -> bool {
         )
 }
 
+fn account_reason_is_upstream_rejected(reason_code: Option<&str>) -> bool {
+    matches!(
+        reason_code,
+        Some("upstream_http_401" | "upstream_http_402" | "upstream_http_403")
+    )
+}
+
 fn account_reason_is_quota_exhausted(reason_code: Option<&str>) -> bool {
     matches!(
         reason_code,
@@ -11111,6 +11127,15 @@ fn route_failure_kind_is_quota_exhausted(failure_kind: Option<&str>) -> bool {
     )
 }
 
+fn route_failure_kind_is_upstream_rejected(failure_kind: Option<&str>) -> bool {
+    matches!(
+        failure_kind
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+        Some(PROXY_FAILURE_UPSTREAM_HTTP_AUTH | PROXY_FAILURE_UPSTREAM_HTTP_402)
+    )
+}
+
 fn route_failure_is_current(
     last_error_at: Option<&str>,
     last_route_failure_at: Option<&str>,
@@ -11134,6 +11159,15 @@ fn current_route_failure_is_quota_exhausted(
 ) -> bool {
     route_failure_is_current(last_error_at, last_route_failure_at)
         && route_failure_kind_is_quota_exhausted(last_route_failure_kind)
+}
+
+fn current_route_failure_is_upstream_rejected(
+    last_error_at: Option<&str>,
+    last_route_failure_at: Option<&str>,
+    last_route_failure_kind: Option<&str>,
+) -> bool {
+    route_failure_is_current(last_error_at, last_route_failure_at)
+        && route_failure_kind_is_upstream_rejected(last_route_failure_kind)
 }
 
 fn upstream_account_rate_limit_state_is_current(
@@ -11162,6 +11196,22 @@ fn upstream_account_quota_exhausted_state_is_current(
     account_reason_is_quota_exhausted(last_action_reason_code)
         || (!account_reason_overrides_current_route_failure(raw_status, last_action_reason_code)
             && current_route_failure_is_quota_exhausted(
+                last_error_at,
+                last_route_failure_at,
+                last_route_failure_kind,
+            ))
+}
+
+fn upstream_account_upstream_rejected_state_is_current(
+    raw_status: &str,
+    last_error_at: Option<&str>,
+    last_route_failure_at: Option<&str>,
+    last_route_failure_kind: Option<&str>,
+    last_action_reason_code: Option<&str>,
+) -> bool {
+    account_reason_is_upstream_rejected(last_action_reason_code)
+        || (!account_reason_overrides_current_route_failure(raw_status, last_action_reason_code)
+            && current_route_failure_is_upstream_rejected(
                 last_error_at,
                 last_route_failure_at,
                 last_route_failure_kind,
@@ -17002,6 +17052,89 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn route_triggered_402_summary_and_detail_export_as_upstream_rejected() {
+        let pool = test_pool().await;
+        let account_id = insert_oauth_account(&pool, "Workspace Blocked OAuth").await;
+
+        record_pool_route_http_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            Some("sticky-402-workspace"),
+            StatusCode::PAYMENT_REQUIRED,
+            "initial usage snapshot attempt with configured user agent failed: usage endpoint returned 402 Payment Required: {\"detail\":{\"code\":\"deactivated_workspace\"}}",
+            Some("invk_workspace_402"),
+        )
+        .await
+        .expect("record route-triggered 402 failure");
+
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load route-triggered 402 row")
+            .expect("route-triggered 402 row exists");
+        let summary = build_summary_from_row(
+            &row,
+            None,
+            row.last_activity_at.clone(),
+            vec![],
+            None,
+            0,
+            Utc::now(),
+        );
+
+        assert_eq!(
+            summary.display_status,
+            UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
+        );
+        assert_eq!(
+            summary.health_status,
+            UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
+        );
+        assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_IDLE);
+        assert_eq!(
+            summary.last_action_reason_code.as_deref(),
+            Some("upstream_http_402")
+        );
+        assert_eq!(
+            summary.last_error.as_deref(),
+            Some(
+                "initial usage snapshot attempt with configured user agent failed: usage endpoint returned 402 Payment Required: {\"detail\":{\"code\":\"deactivated_workspace\"}}"
+            )
+        );
+
+        let detail = load_upstream_account_detail(&pool, account_id)
+            .await
+            .expect("load route-triggered 402 detail")
+            .expect("route-triggered 402 detail exists");
+        assert_eq!(
+            detail.summary.display_status,
+            UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
+        );
+        assert_eq!(
+            detail.summary.health_status,
+            UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
+        );
+        assert_eq!(
+            detail.summary.last_action_reason_code.as_deref(),
+            Some("upstream_http_402")
+        );
+        assert_eq!(
+            detail
+                .recent_actions
+                .first()
+                .and_then(|event| event.reason_code.as_deref()),
+            Some("upstream_http_402")
+        );
+        assert_eq!(
+            detail
+                .recent_actions
+                .first()
+                .and_then(|event| event.failure_kind.as_deref()),
+            Some(PROXY_FAILURE_UPSTREAM_HTTP_402)
+        );
+    }
+
+    #[tokio::test]
     async fn record_pool_route_http_failure_marks_quota_429_as_hard_error_and_records_reason() {
         let pool = test_pool().await;
         let account_id = insert_api_key_account(&pool, "Quota Exhausted Key").await;
@@ -17203,6 +17336,99 @@ mod tests {
                 .first()
                 .and_then(|event| event.failure_kind.as_deref()),
             Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+        );
+    }
+
+    #[tokio::test]
+    async fn sync_triggered_402_summary_and_detail_export_as_upstream_rejected() {
+        let pool = test_pool().await;
+        let account_id = insert_oauth_account(&pool, "Workspace Sync Blocked OAuth").await;
+
+        record_account_sync_hard_unavailable(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
+            "upstream_http_402",
+            "initial usage snapshot attempt with configured user agent failed: usage endpoint returned 402 Payment Required: {\"detail\":{\"code\":\"deactivated_workspace\"}}",
+            PROXY_FAILURE_UPSTREAM_HTTP_402,
+        )
+        .await
+        .expect("record sync-triggered 402 hard unavailable");
+
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load sync-triggered 402 row")
+            .expect("sync-triggered 402 row exists");
+        let summary = build_summary_from_row(
+            &row,
+            None,
+            row.last_activity_at.clone(),
+            vec![],
+            None,
+            0,
+            Utc::now(),
+        );
+
+        assert_eq!(
+            summary.display_status,
+            UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
+        );
+        assert_eq!(
+            summary.health_status,
+            UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
+        );
+        assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_IDLE);
+        assert_eq!(
+            summary.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_SYNC_HARD_UNAVAILABLE)
+        );
+        assert_eq!(
+            summary.last_action_reason_code.as_deref(),
+            Some("upstream_http_402")
+        );
+        assert_eq!(
+            summary.last_error.as_deref(),
+            Some(
+                "initial usage snapshot attempt with configured user agent failed: usage endpoint returned 402 Payment Required: {\"detail\":{\"code\":\"deactivated_workspace\"}}"
+            )
+        );
+
+        let detail = load_upstream_account_detail(&pool, account_id)
+            .await
+            .expect("load sync-triggered 402 detail")
+            .expect("sync-triggered 402 detail exists");
+        assert_eq!(
+            detail.summary.display_status,
+            UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
+        );
+        assert_eq!(
+            detail.summary.health_status,
+            UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
+        );
+        assert_eq!(
+            detail.summary.last_action_reason_code.as_deref(),
+            Some("upstream_http_402")
+        );
+        assert_eq!(
+            detail
+                .recent_actions
+                .first()
+                .map(|event| event.action.as_str()),
+            Some(UPSTREAM_ACCOUNT_ACTION_SYNC_HARD_UNAVAILABLE)
+        );
+        assert_eq!(
+            detail
+                .recent_actions
+                .first()
+                .and_then(|event| event.reason_code.as_deref()),
+            Some("upstream_http_402")
+        );
+        assert_eq!(
+            detail
+                .recent_actions
+                .first()
+                .and_then(|event| event.failure_kind.as_deref()),
+            Some(PROXY_FAILURE_UPSTREAM_HTTP_402)
         );
     }
 

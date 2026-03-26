@@ -103,6 +103,7 @@ const labels = {
     null,
   actionReason: (reason?: string | null) =>
     ({
+      upstream_http_402: 'Plan or billing rejected',
       upstream_http_429_quota_exhausted: 'Weekly cap exhausted',
       quota_still_exhausted: 'Still exhausted',
       reauth_required: 'Needs reauth',
@@ -532,6 +533,62 @@ describe('UpstreamAccountsTable', () => {
     expect(html).toContain(
       'latest usage snapshot still shows an exhausted upstream usage limit window',
     )
+  })
+
+  it('shows upstream 402 hard-unavailable rows as upstream rejected while preserving the raw context', () => {
+    const html = renderTable([
+      {
+        id: 19,
+        kind: 'oauth_codex',
+        provider: 'codex',
+        displayName: 'Workspace deactivated 402 routing state',
+        groupName: 'production',
+        isMother: false,
+        status: 'error',
+        displayStatus: 'upstream_rejected',
+        enabled: true,
+        enableStatus: 'enabled',
+        workStatus: 'idle',
+        healthStatus: 'upstream_rejected',
+        syncState: 'idle',
+        planType: 'team',
+        lastError:
+          'initial usage snapshot attempt with configured user agent failed: usage endpoint returned 402 Payment Required: {"detail":{"code":"deactivated_workspace"}}',
+        lastErrorAt: '2026-03-26T08:11:47.000Z',
+        lastAction: 'sync_hard_unavailable',
+        lastActionSource: 'sync_maintenance',
+        lastActionReasonCode: 'upstream_http_402',
+        lastActionReasonMessage:
+          'initial usage snapshot attempt with configured user agent failed: usage endpoint returned 402 Payment Required: {"detail":{"code":"deactivated_workspace"}}',
+        lastActionHttpStatus: 402,
+        lastActionAt: '2026-03-26T08:11:47.000Z',
+        primaryWindow: {
+          usedPercent: 38,
+          usedText: '38% used',
+          limitText: '5h rolling window',
+          resetsAt: '2026-03-26T11:59:42.000Z',
+          windowDurationMins: 300,
+        },
+        secondaryWindow: {
+          usedPercent: 19,
+          usedText: '19% used',
+          limitText: '7d rolling window',
+          resetsAt: '2026-04-02T00:00:00.000Z',
+          windowDurationMins: 10080,
+        },
+        credits: null,
+        localLimits: null,
+        duplicateInfo: null,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
+    ])
+
+    expect(html).toContain('Upstream rejected')
+    expect(html).not.toContain('>Other error<')
+    expect(html).toContain('Plan or billing rejected')
+    expect(html).toContain('HTTP 402')
+    expect(html).toContain('deactivated_workspace')
   })
 
   it('falls back to the plain working label when the active conversation count is missing', () => {

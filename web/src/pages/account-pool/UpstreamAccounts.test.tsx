@@ -2722,6 +2722,72 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
       "This OAuth account needs a fresh sign-in",
     );
   });
+
+  it("shows upstream rejected details for structured 402 workspace deactivation failures", async () => {
+    mockAccountsPage({
+      selectedSummary: {
+        status: "error",
+        displayStatus: "upstream_rejected",
+        healthStatus: "upstream_rejected",
+        workStatus: "idle",
+        lastAction: "sync_hard_unavailable",
+        lastActionSource: "sync_maintenance",
+        lastActionReasonCode: "upstream_http_402",
+        lastActionReasonMessage:
+          'initial usage snapshot attempt with configured user agent failed: usage endpoint returned 402 Payment Required: {"detail":{"code":"deactivated_workspace"}}',
+        lastActionHttpStatus: 402,
+        lastActionInvokeId: "invk_workspace_402",
+        lastError:
+          'initial usage snapshot attempt with configured user agent failed: usage endpoint returned 402 Payment Required: {"detail":{"code":"deactivated_workspace"}}',
+      },
+      detail: {
+        status: "error",
+        displayStatus: "upstream_rejected",
+        healthStatus: "upstream_rejected",
+        workStatus: "idle",
+        lastAction: "sync_hard_unavailable",
+        lastActionSource: "sync_maintenance",
+        lastActionReasonCode: "upstream_http_402",
+        lastActionReasonMessage:
+          'initial usage snapshot attempt with configured user agent failed: usage endpoint returned 402 Payment Required: {"detail":{"code":"deactivated_workspace"}}',
+        lastActionHttpStatus: 402,
+        lastActionInvokeId: "invk_workspace_402",
+        lastError:
+          'initial usage snapshot attempt with configured user agent failed: usage endpoint returned 402 Payment Required: {"detail":{"code":"deactivated_workspace"}}',
+        recentActions: [
+          {
+            id: 73,
+            occurredAt: "2026-03-26T08:11:47.000Z",
+            action: "sync_hard_unavailable",
+            source: "sync_maintenance",
+            reasonCode: "upstream_http_402",
+            reasonMessage:
+              'initial usage snapshot attempt with configured user agent failed: usage endpoint returned 402 Payment Required: {"detail":{"code":"deactivated_workspace"}}',
+            httpStatus: 402,
+            failureKind: "upstream_http_402",
+            invokeId: "invk_workspace_402",
+            stickyKey: null,
+            createdAt: "2026-03-26T08:11:47.000Z",
+          },
+        ],
+      },
+    });
+
+    render("/account-pool/upstream-accounts");
+
+    clickFirstRosterRow();
+    await flushAsync();
+    clickTab(/Health & events/i);
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Upstream rejected");
+    expect(document.body.textContent).toContain(
+      "Plan or billing rejected upstream access (402)",
+    );
+    expect(document.body.textContent).toContain("HTTP 402");
+    expect(document.body.textContent).toContain("deactivated_workspace");
+    expect(document.body.textContent).not.toContain("Other error");
+  });
 });
 
 describe("UpstreamAccountsPage api key details", () => {
