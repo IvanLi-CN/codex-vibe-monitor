@@ -1927,14 +1927,14 @@ export default function UpstreamAccountsPage() {
         const payload = normalizeBulkUpstreamAccountSyncSnapshotEventPayload(
           JSON.parse((event as MessageEvent<string>).data),
         )
-        handleTerminalEvent(payload.snapshot, payload.counts, null, 'completed')
+        handleTerminalEvent(payload.snapshot, payload.counts, undefined, 'completed')
       })
 
       eventSource.addEventListener('cancelled', (event) => {
         const payload = normalizeBulkUpstreamAccountSyncSnapshotEventPayload(
           JSON.parse((event as MessageEvent<string>).data),
         )
-        handleTerminalEvent(payload.snapshot, payload.counts, null, 'cancelled')
+        handleTerminalEvent(payload.snapshot, payload.counts, undefined, 'cancelled')
       })
 
       eventSource.addEventListener('failed', (event) => {

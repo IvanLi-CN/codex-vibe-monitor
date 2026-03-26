@@ -2271,13 +2271,12 @@ function parseBody<T>(raw: BodyInit | null | undefined, fallback: T): T {
 class MockStoryBulkSyncEventSource implements EventTarget {
   private listeners = new Map<string, Set<EventListener>>()
   private timers: number[] = []
+  private readonly storeRef: { current: StoryStore }
   readyState = 1
   onerror: ((this: EventSource, ev: Event) => unknown) | null = null
 
-  constructor(
-    private readonly storeRef: { current: StoryStore },
-    url: string | URL,
-  ) {
+  constructor(storeRef: { current: StoryStore }, url: string | URL) {
+    this.storeRef = storeRef
     this.bootstrap(url.toString())
   }
 
