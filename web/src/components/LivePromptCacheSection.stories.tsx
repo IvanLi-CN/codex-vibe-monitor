@@ -519,7 +519,7 @@ export const InteractiveFilters: Story = {
 
     await userEvent.click(expandAllButton);
     await expect(
-      canvas.getByText(/最近 5 条调用记录/i),
+      canvas.getByText(/输入 \/ 缓存/i),
     ).toBeInTheDocument();
   },
 };

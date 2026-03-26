@@ -544,7 +544,6 @@ export function PromptCacheConversationTable({
   );
   const previewLabels = useMemo(
     () => ({
-      title: t("live.conversations.preview.title"),
       empty: t("live.conversations.preview.empty"),
       expandAction: t("live.conversations.actions.expandPreview"),
       collapseAction: t("live.conversations.actions.collapsePreview"),
@@ -680,14 +679,6 @@ export function PromptCacheConversationTable({
                   </div>
                   {isExpanded ? (
                     <div className="rounded-lg border border-base-300/70 bg-base-200/30 p-3">
-                      <div className="mb-3 flex items-center gap-2 text-xs font-medium uppercase tracking-[0.08em] text-base-content/60">
-                        <AppIcon
-                          name="chevron-down"
-                          className="h-3.5 w-3.5"
-                          aria-hidden
-                        />
-                        <span>{previewLabels.title}</span>
-                      </div>
                       <PromptCacheConversationInvocationRecordsTable
                         records={conversation.recentInvocations.map(
                           buildInvocationTableRecordFromPreview,
@@ -898,14 +889,6 @@ export function PromptCacheConversationTable({
                     <tr className="bg-base-200/20">
                       <td colSpan={5} className="px-3 pb-4 pt-0">
                         <div className="border-t border-base-300/60 pt-3">
-                          <div className="mb-3 flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.08em] text-base-content/60">
-                            <AppIcon
-                              name="chevron-down"
-                              className="h-3.5 w-3.5"
-                              aria-hidden
-                            />
-                            <span>{previewLabels.title}</span>
-                          </div>
                           <PromptCacheConversationInvocationRecordsTable
                             records={conversation.recentInvocations.map(
                               buildInvocationTableRecordFromPreview,

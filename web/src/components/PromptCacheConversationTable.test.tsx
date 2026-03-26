@@ -721,7 +721,7 @@ describe("PromptCacheConversationTable", () => {
       await Promise.resolve();
     });
 
-    expect(document.body.textContent).toContain("最近 5 条调用记录");
+    expect(document.body.textContent).toContain("输入 / 缓存");
     expect(document.body.textContent).toContain("gpt-5.4");
     expect(document.body.textContent).toContain("Proxy West");
     expect(document.body.textContent).toContain("3,210");
@@ -734,7 +734,7 @@ describe("PromptCacheConversationTable", () => {
       await Promise.resolve();
     });
 
-    expect(document.body.textContent).not.toContain("最近 5 条调用记录");
+    expect(document.body.textContent).not.toContain("输入 / 缓存");
   });
 
   it("opens the history drawer and preserves loaded records when later pages fail", async () => {
