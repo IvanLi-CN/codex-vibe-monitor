@@ -145,6 +145,7 @@ type BatchOauthRow = {
   id: string;
   displayName: string;
   groupName: string;
+  inheritsDefaultGroup: boolean;
   isMother: boolean;
   note: string;
   noteExpanded: boolean;
@@ -276,6 +277,7 @@ function createBatchOauthRow(id: string, groupName = ""): BatchOauthRow {
     id,
     displayName: "",
     groupName,
+    inheritsDefaultGroup: true,
     isMother: false,
     note: "",
     noteExpanded: false,
@@ -416,14 +418,19 @@ function hydrateBatchOauthRow(
   fallbackId: string,
   fallbackGroupName = "",
 ): BatchOauthRow {
+  const hydratedGroupName = seed.groupName ?? fallbackGroupName;
   return {
     ...createBatchOauthRow(
       seed.id ?? fallbackId,
-      seed.groupName ?? fallbackGroupName,
+      hydratedGroupName,
     ),
     ...seed,
     id: seed.id ?? fallbackId,
-    groupName: seed.groupName ?? fallbackGroupName,
+    groupName: hydratedGroupName,
+    inheritsDefaultGroup:
+      typeof seed.inheritsDefaultGroup === "boolean"
+        ? seed.inheritsDefaultGroup
+        : !hydratedGroupName.trim() || hydratedGroupName === fallbackGroupName,
     isMother: seed.isMother === true,
     duplicateWarning: seed.duplicateWarning ?? null,
     needsRefresh: seed.needsRefresh === true,
@@ -1399,6 +1406,9 @@ export default function UpstreamAccountCreatePage() {
   );
   const [batchTagIds, setBatchTagIds] = useState<number[]>(
     () => draft?.batchOauth?.tagIds ?? [],
+  );
+  const batchSharedTagSyncEnabledRef = useRef(
+    Object.prototype.hasOwnProperty.call(draft?.batchOauth ?? {}, "tagIds"),
   );
   const [importGroupName, setImportGroupName] = useState(
     () => draft?.import?.defaultGroupName ?? "",
@@ -2911,7 +2921,20 @@ export default function UpstreamAccountCreatePage() {
   const handleBatchGroupValueChange = (rowId: string, value: string) => {
     const row = batchRowsRef.current.find((item) => item.id === rowId);
     if (!row) return;
-    handleBatchMetadataChange(rowId, "groupName", value);
+    updateBatchRow(rowId, (current) => {
+      if (current.busyAction || current.mailboxBusyAction || current.metadataBusy) {
+        return current;
+      }
+      return {
+        ...current,
+        groupName: value,
+        inheritsDefaultGroup: value.trim() === "",
+        metadataError: canEditCompletedBatchOauthRowMetadata(current)
+          ? null
+          : current.metadataError,
+        actionError: null,
+      };
+    });
     if (!canEditCompletedBatchOauthRowMetadata(row)) return;
     void persistCompletedBatchRowMetadata(
       rowId,
@@ -2941,7 +2964,6 @@ export default function UpstreamAccountCreatePage() {
   };
 
   const handleBatchDefaultGroupChange = (value: string) => {
-    const previousTrimmed = batchDefaultGroupName.trim();
     const nextTrimmed = value.trim();
     const completedRowIdsToPersist: string[] = [];
 
@@ -2956,20 +2978,20 @@ export default function UpstreamAccountCreatePage() {
         ) {
           return row;
         }
-        const inheritsDefault =
-          !row.groupName.trim() || row.groupName === previousTrimmed;
-        if (!inheritsDefault) return row;
+        if (!row.inheritsDefaultGroup) return row;
         if (canEditCompletedBatchOauthRowMetadata(row)) {
           completedRowIdsToPersist.push(row.id);
           return {
             ...row,
             groupName: nextTrimmed,
+            inheritsDefaultGroup: true,
             metadataError: null,
           };
         }
         return {
           ...row,
           groupName: nextTrimmed,
+          inheritsDefaultGroup: true,
           actionError: null,
         };
       }),
@@ -2993,6 +3015,11 @@ export default function UpstreamAccountCreatePage() {
       batchRows,
       items,
     );
+    if (!batchSharedTagSyncEnabledRef.current) {
+      previousBatchTagIdsRef.current = normalizedBatchTagIds;
+      previousCompletedSharedTagBaselineRef.current = baselineSignature;
+      return;
+    }
     if (
       previousBatchTagIds != null &&
       batchTagIdsEqual(normalizedBatchTagIds, previousBatchTagIds) &&
@@ -4819,6 +4846,7 @@ export default function UpstreamAccountCreatePage() {
                         pageCreatedTagIds={pageCreatedTagIds}
                         labels={tagFieldLabels}
                         onChange={(nextTagIds) => {
+                          batchSharedTagSyncEnabledRef.current = true;
                           setBatchTagIds(nextTagIds);
                           setBatchRows((current) =>
                             current.map((row) => ({

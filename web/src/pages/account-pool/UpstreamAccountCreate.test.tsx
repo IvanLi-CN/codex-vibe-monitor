@@ -1094,6 +1094,81 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     );
   }, 10_000);
 
+  it("does not reapply the header default group after a completed row opts out manually", async () => {
+    const saveAccount = vi.fn().mockImplementation(
+      async (accountId: number, payload: Record<string, unknown>) => ({
+        id: accountId,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Inherited Row",
+        groupName:
+          typeof payload.groupName === "string" ? payload.groupName : "alpha",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        duplicateInfo: null,
+        history: [],
+        note: "Seed note",
+        tags: [],
+        effectiveRoutingRule: {
+          guardEnabled: false,
+          allowCutOut: true,
+          allowCutIn: true,
+          sourceTagIds: [],
+          sourceTagNames: [],
+          guardRules: [],
+        },
+      }),
+    );
+    mockUpstreamAccounts({ saveAccount });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            defaultGroupName: "alpha",
+            rows: [
+              buildCompletedBatchOauthRow({
+                id: "row-1",
+                displayName: "Inherited Row",
+                groupName: "alpha",
+                metadataPersisted: {
+                  displayName: "Inherited Row",
+                  groupName: "alpha",
+                  note: "Seed note",
+                  isMother: false,
+                  tagIds: [],
+                },
+              }),
+            ],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    setComboboxValue('input[name="batchOauthGroupName-row-1"]', "custom");
+    await flushAsync();
+
+    setComboboxValue('input[name="batchOauthGroupName-row-1"]', "alpha");
+    await flushAsync();
+
+    setComboboxValue('input[name="batchOauthDefaultGroupName"]', "beta");
+    await flushAsync();
+
+    const groupInput = host?.querySelector(
+      'input[name="batchOauthGroupName-row-1"]',
+    );
+    expect(groupInput).toHaveProperty("value", "alpha");
+    expect(saveAccount).toHaveBeenCalledTimes(2);
+    expect(saveAccount).toHaveBeenNthCalledWith(
+      2,
+      41,
+      expect.objectContaining({ groupName: "alpha" }),
+    );
+  }, 10_000);
+
   it("preserves the mother flag when a completed mother row changes groups", async () => {
     const saveAccount = vi.fn().mockImplementation(
       async (accountId: number, payload: Record<string, unknown>) => ({
@@ -1429,6 +1504,96 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
       41,
       expect.objectContaining({ tagIds: [1] }),
     );
+  }, 10_000);
+
+  it("does not clear completed-row tags when restored drafts never saved shared tags", async () => {
+    const saveAccount = vi.fn().mockImplementation(
+      async (accountId: number, payload: Record<string, unknown>) => ({
+        id: accountId,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Tagged Row",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        duplicateInfo: null,
+        history: [],
+        note: "Seed note",
+        tags: Array.isArray(payload.tagIds)
+          ? payload.tagIds.map((tagId) => ({
+              id: Number(tagId),
+              name: tagId === 1 ? "vip" : `tag-${tagId}`,
+              routingRule: {
+                guardEnabled: false,
+                allowCutOut: true,
+                allowCutIn: true,
+              },
+            }))
+          : [],
+        effectiveRoutingRule: {
+          guardEnabled: false,
+          allowCutOut: true,
+          allowCutIn: true,
+          sourceTagIds: [],
+          sourceTagNames: [],
+          guardRules: [],
+        },
+      }),
+    );
+    mockUpstreamAccounts({
+      saveAccount,
+      items: [
+        {
+          id: 41,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Tagged Row",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          tags: [
+            {
+              id: 2,
+              name: "burst-safe",
+              routingRule: {
+                guardEnabled: false,
+                allowCutOut: true,
+                allowCutIn: true,
+              },
+            },
+          ],
+          effectiveRoutingRule: {
+            guardEnabled: false,
+            allowCutOut: true,
+            allowCutIn: true,
+            sourceTagIds: [],
+            sourceTagNames: [],
+            guardRules: [],
+          },
+        },
+      ],
+    });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            rows: [
+              buildCompletedBatchOauthRow({
+                displayName: "Tagged Row",
+                metadataPersisted: null,
+              }),
+            ],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    expect(saveAccount).not.toHaveBeenCalled();
   }, 10_000);
 
   it("syncs shared batch tags onto completed rows", async () => {
