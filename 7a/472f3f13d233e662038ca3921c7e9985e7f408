@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.26.1",
+  "base_stable_version": "1.26.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-26T08:18:44Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.26.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "6b95cb98537c6946ce3edb7247bcf8d07848aede",
+  "pr_number": 242,
+  "pr_title": "fix: remove proxy capture raw rereads from hot path",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.26.1",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.26.1,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "7a472f3f13d233e662038ca3921c7e9985e7f408",
+  "type_label": "type:patch"
+}
