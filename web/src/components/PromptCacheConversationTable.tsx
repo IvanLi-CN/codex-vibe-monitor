@@ -634,7 +634,7 @@ export function PromptCacheConversationTable({
                 className="space-y-3 rounded-lg border border-base-300/70 bg-base-100/70 p-3"
               >
                 <div className="space-y-2">
-                  <div className="flex items-start justify-between gap-3">
+                  <div className="space-y-2">
                     <div className="min-w-0 space-y-1">
                       <div className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">
                         {t("live.conversations.table.promptCacheKey")}
@@ -643,7 +643,7 @@ export function PromptCacheConversationTable({
                         {conversation.promptCacheKey}
                       </div>
                     </div>
-                    <div className="flex shrink-0 items-center gap-1">
+                    <div className="flex items-center gap-1">
                       <button
                         type="button"
                         className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-base-300/70 bg-base-100/80 text-base-content/72 transition hover:border-primary/40 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
@@ -787,16 +787,14 @@ export function PromptCacheConversationTable({
                 <Fragment key={conversation.promptCacheKey}>
                   <tr className="transition-colors hover:bg-primary/6">
                     <td className="max-w-0 px-2 py-2 align-top sm:px-3 sm:py-3">
-                      <div className="flex items-start gap-2">
-                        <div className="min-w-0 flex-1">
-                          <div
-                            className="truncate font-mono text-xs"
-                            title={conversation.promptCacheKey}
-                          >
-                            {conversation.promptCacheKey}
-                          </div>
+                      <div className="space-y-2">
+                        <div
+                          className="truncate font-mono text-xs"
+                          title={conversation.promptCacheKey}
+                        >
+                          {conversation.promptCacheKey}
                         </div>
-                        <div className="flex shrink-0 items-center gap-1">
+                        <div className="flex items-center gap-1">
                           <button
                             type="button"
                             className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-base-300/70 bg-base-100/80 text-base-content/72 transition hover:border-primary/40 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
