@@ -1,3 +1,5 @@
+#[cfg(test)]
+use std::sync::atomic::AtomicUsize;
 use std::{
     borrow::Cow,
     collections::hash_map::DefaultHasher,
@@ -129,6 +131,7 @@ const DEFAULT_PROXY_RAW_HOT_SECS: u64 = 24 * 60 * 60;
 const RAW_RESPONSE_PREVIEW_LIMIT: usize = 16 * 1024;
 const BOUNDED_NON_STREAM_RESPONSE_PARSE_LIMIT_BYTES: usize = 256 * 1024;
 const STREAM_RESPONSE_LINE_BUFFER_LIMIT: usize = 256 * 1024;
+#[allow(dead_code)]
 const RAW_FILE_STREAM_RESPONSE_LINE_BUFFER_LIMIT: usize = 8 * 1024 * 1024;
 const PROXY_USAGE_MISSING_NON_STREAM_PARSE_SKIPPED: &str =
     "non_stream_response_parse_skipped_body_too_large";
@@ -177,6 +180,10 @@ const LEGACY_ENV_INVOCATION_SUCCESS_FULL_DAYS: &str = "XY_INVOCATION_SUCCESS_FUL
 const ENV_INVOCATION_MAX_DAYS: &str = "INVOCATION_MAX_DAYS";
 const LEGACY_ENV_INVOCATION_MAX_DAYS: &str = "XY_INVOCATION_MAX_DAYS";
 const ENV_INVOCATION_ARCHIVE_TTL_DAYS: &str = "INVOCATION_ARCHIVE_TTL_DAYS";
+const ENV_CODEX_INVOCATION_ARCHIVE_LAYOUT: &str = "CODEX_INVOCATION_ARCHIVE_LAYOUT";
+const ENV_CODEX_INVOCATION_ARCHIVE_SEGMENT_GRANULARITY: &str =
+    "CODEX_INVOCATION_ARCHIVE_SEGMENT_GRANULARITY";
+const ENV_INVOCATION_ARCHIVE_CODEC: &str = "INVOCATION_ARCHIVE_CODEC";
 const ENV_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS: &str = "FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS";
 const LEGACY_ENV_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS: &str =
     "XY_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS";
@@ -213,6 +220,10 @@ const DEFAULT_ORPHAN_SWEEP_MIN_AGE_SECS: u64 = 24 * 60 * 60;
 const DEFAULT_INVOCATION_SUCCESS_FULL_DAYS: u64 = 30;
 const DEFAULT_INVOCATION_MAX_DAYS: u64 = 90;
 const DEFAULT_INVOCATION_ARCHIVE_TTL_DAYS: u64 = 30;
+const DEFAULT_CODEX_INVOCATION_ARCHIVE_LAYOUT: ArchiveBatchLayout = ArchiveBatchLayout::SegmentV1;
+const DEFAULT_CODEX_INVOCATION_ARCHIVE_SEGMENT_GRANULARITY: ArchiveSegmentGranularity =
+    ArchiveSegmentGranularity::Day;
+const DEFAULT_INVOCATION_ARCHIVE_CODEC: ArchiveFileCodec = ArchiveFileCodec::Gzip;
 const DEFAULT_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS: u64 = 30;
 const DEFAULT_POOL_UPSTREAM_REQUEST_ATTEMPTS_RETENTION_DAYS: u64 = 7;
 const DEFAULT_POOL_UPSTREAM_REQUEST_ATTEMPTS_ARCHIVE_TTL_DAYS: u64 = 30;
@@ -221,6 +232,14 @@ const DEFAULT_POOL_UPSTREAM_RESPONSES_TOTAL_TIMEOUT_SECS: u64 = 300;
 const DEFAULT_STATS_SOURCE_SNAPSHOTS_RETENTION_DAYS: u64 = 30;
 const DEFAULT_QUOTA_SNAPSHOT_FULL_DAYS: u64 = 30;
 const ARCHIVE_STATUS_COMPLETED: &str = "completed";
+const ARCHIVE_LAYOUT_LEGACY_MONTH: &str = "legacy_month";
+const ARCHIVE_LAYOUT_SEGMENT_V1: &str = "segment_v1";
+const ARCHIVE_SEGMENT_GRANULARITY_DAY: &str = "day";
+const ARCHIVE_FILE_CODEC_GZIP: &str = "gzip";
+const ARCHIVE_WRITER_VERSION_LEGACY_MONTH_V1: &str = "legacy_month_v1";
+const ARCHIVE_WRITER_VERSION_SEGMENT_V1: &str = "segment_v1";
+const ARCHIVE_CLEANUP_STATE_ACTIVE: &str = "active";
+const DEFAULT_ARCHIVE_TEMP_MIN_AGE_SECS: u64 = 6 * 60 * 60;
 const PROXY_DOT_SEGMENT_PATH_NOT_ALLOWED: &str = "proxy path contains forbidden dot segments";
 const PROXY_INVALID_REQUEST_TARGET: &str = "proxy request target is malformed";
 const PROXY_UPSTREAM_HANDSHAKE_TIMEOUT: &str = "upstream handshake timed out";
@@ -476,6 +495,100 @@ fn resolve_raw_compression_codec_config(raw: Option<&str>) -> Result<RawCompress
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ArchiveBatchLayout {
+    LegacyMonth,
+    SegmentV1,
+}
+
+impl ArchiveBatchLayout {}
+
+impl FromStr for ArchiveBatchLayout {
+    type Err = anyhow::Error;
+
+    fn from_str(raw: &str) -> Result<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            ARCHIVE_LAYOUT_LEGACY_MONTH => Ok(Self::LegacyMonth),
+            ARCHIVE_LAYOUT_SEGMENT_V1 => Ok(Self::SegmentV1),
+            _ => bail!("invalid {ENV_CODEX_INVOCATION_ARCHIVE_LAYOUT} value: {raw}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ArchiveSegmentGranularity {
+    Day,
+}
+
+impl ArchiveSegmentGranularity {}
+
+impl FromStr for ArchiveSegmentGranularity {
+    type Err = anyhow::Error;
+
+    fn from_str(raw: &str) -> Result<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            ARCHIVE_SEGMENT_GRANULARITY_DAY => Ok(Self::Day),
+            _ => bail!("invalid {ENV_CODEX_INVOCATION_ARCHIVE_SEGMENT_GRANULARITY} value: {raw}"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ArchiveFileCodec {
+    Gzip,
+}
+
+impl ArchiveFileCodec {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Gzip => ARCHIVE_FILE_CODEC_GZIP,
+        }
+    }
+
+    fn file_extension(self) -> &'static str {
+        match self {
+            Self::Gzip => "gz",
+        }
+    }
+}
+
+impl FromStr for ArchiveFileCodec {
+    type Err = anyhow::Error;
+
+    fn from_str(raw: &str) -> Result<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            ARCHIVE_FILE_CODEC_GZIP => Ok(Self::Gzip),
+            _ => bail!("invalid {ENV_INVOCATION_ARCHIVE_CODEC} value: {raw}"),
+        }
+    }
+}
+
+fn resolve_archive_batch_layout_config(raw: Option<&str>) -> Result<ArchiveBatchLayout> {
+    match raw {
+        Some(value) => ArchiveBatchLayout::from_str(value),
+        None => Ok(DEFAULT_CODEX_INVOCATION_ARCHIVE_LAYOUT),
+    }
+}
+
+fn resolve_archive_segment_granularity_config(
+    raw: Option<&str>,
+) -> Result<ArchiveSegmentGranularity> {
+    match raw {
+        Some(value) => ArchiveSegmentGranularity::from_str(value),
+        None => Ok(DEFAULT_CODEX_INVOCATION_ARCHIVE_SEGMENT_GRANULARITY),
+    }
+}
+
+fn resolve_archive_file_codec_config(raw: Option<&str>) -> Result<ArchiveFileCodec> {
+    match raw {
+        Some(value) => ArchiveFileCodec::from_str(value),
+        None => Ok(DEFAULT_INVOCATION_ARCHIVE_CODEC),
+    }
+}
+
 fn reject_legacy_env_var(legacy_name: &str, canonical_name: &str) -> Result<()> {
     if env::var_os(legacy_name).is_some() {
         bail!("{legacy_name} is not supported; rename it to {canonical_name}");
@@ -557,6 +670,10 @@ enum MaintenanceCommand {
     ArchiveUpstreamActivityManifest(MaintenanceDryRunArgs),
     /// Materialize legacy archive-backed history into hourly rollup tables.
     MaterializeHistoricalRollups(MaintenanceDryRunArgs),
+    /// Verify archive manifest/file consistency and stale temporary residues.
+    VerifyArchiveStorage(MaintenanceDryRunArgs),
+    /// Prune archive batches that are safe to delete under current retention guarantees.
+    PruneArchiveBatches(MaintenanceDryRunArgs),
     /// Prune legacy archive batches that are no longer needed for online history.
     PruneLegacyArchiveBatches(MaintenanceDryRunArgs),
 }
@@ -569,6 +686,7 @@ struct MaintenanceDryRunArgs {
 
 #[derive(Debug, Default)]
 struct StartupPersistentPrepSummary {
+    stale_archive_temp_files_removed: usize,
     refreshed_manifest_batches: usize,
     refreshed_manifest_account_rows: usize,
     missing_manifest_files: usize,
@@ -626,6 +744,7 @@ async fn run_startup_persistent_prep_inner(
         return Ok(StartupPersistentPrepSummary::default());
     }
 
+    let janitor_summary = cleanup_stale_archive_temp_files(config, false)?;
     let manifest_refresh = refresh_archive_upstream_activity_manifest(pool, false).await?;
     let archive_expiry_backfill_count = backfill_invocation_archive_expiries(pool, config).await?;
     if include_hourly_rollup_bootstrap {
@@ -634,6 +753,7 @@ async fn run_startup_persistent_prep_inner(
     let historical_rollup_snapshot = load_historical_rollup_backfill_snapshot(pool, config).await?;
 
     Ok(StartupPersistentPrepSummary {
+        stale_archive_temp_files_removed: janitor_summary.stale_temp_files_removed,
         refreshed_manifest_batches: manifest_refresh.refreshed_batches,
         refreshed_manifest_account_rows: manifest_refresh.account_rows_written,
         missing_manifest_files: manifest_refresh.missing_files,
@@ -699,6 +819,7 @@ async fn main() -> Result<()> {
     if should_run_blocking_startup_persistent_prep(&cli) {
         let prep_summary = run_startup_persistent_prep(&pool, &config, &cli).await?;
         info!(
+            stale_archive_temp_files_removed = prep_summary.stale_archive_temp_files_removed,
             refreshed_manifest_batches = prep_summary.refreshed_manifest_batches,
             refreshed_manifest_account_rows = prep_summary.refreshed_manifest_account_rows,
             missing_manifest_files = prep_summary.missing_manifest_files,
@@ -836,6 +957,29 @@ async fn run_cli_command(
                     ?summary,
                     ?snapshot,
                     "maintenance historical rollup materialization finished"
+                );
+            }
+            MaintenanceCommand::VerifyArchiveStorage(opts) => {
+                let summary = verify_archive_storage(pool, config).await?;
+                info!(
+                    dry_run = opts.dry_run,
+                    manifest_rows = summary.manifest_rows,
+                    missing_files = summary.missing_files,
+                    orphan_files = summary.orphan_files,
+                    stale_temp_files = summary.stale_temp_files,
+                    stale_temp_bytes = summary.stale_temp_bytes,
+                    "maintenance archive storage verification finished"
+                );
+            }
+            MaintenanceCommand::PruneArchiveBatches(opts) => {
+                let summary = prune_archive_batches(pool, config, opts.dry_run).await?;
+                let snapshot = load_historical_rollup_backfill_snapshot(pool, config).await?;
+                info!(
+                    dry_run = opts.dry_run,
+                    expired_archive_batches_deleted = summary.expired_archive_batches_deleted,
+                    legacy_archive_batches_deleted = summary.legacy_archive_batches_deleted,
+                    ?snapshot,
+                    "maintenance archive prune finished"
                 );
             }
             MaintenanceCommand::PruneLegacyArchiveBatches(opts) => {
@@ -2336,6 +2480,8 @@ struct ArchiveTableSpec {
 struct ArchiveBatchOutcome {
     dataset: &'static str,
     month_key: String,
+    day_key: Option<String>,
+    part_key: Option<String>,
     file_path: String,
     sha256: String,
     row_count: i64,
@@ -2343,6 +2489,11 @@ struct ArchiveBatchOutcome {
     coverage_start_at: Option<String>,
     coverage_end_at: Option<String>,
     archive_expires_at: Option<String>,
+    layout: &'static str,
+    codec: &'static str,
+    writer_version: &'static str,
+    cleanup_state: &'static str,
+    superseded_by: Option<i64>,
 }
 
 #[derive(Debug, Default)]
@@ -2383,8 +2534,7 @@ struct InvocationRawCompressionFieldCandidate {
 
 #[derive(Debug, FromRow)]
 struct ArchiveBatchFileRow {
-    _id: i64,
-    month_key: String,
+    id: i64,
     file_path: String,
     coverage_start_at: Option<String>,
     coverage_end_at: Option<String>,
@@ -2400,6 +2550,35 @@ struct InvocationBucketPresenceRow {
 struct ArchiveManifestBatchRow {
     id: i64,
     file_path: String,
+}
+
+#[derive(Debug, FromRow)]
+struct ArchiveStorageManifestRow {
+    id: i64,
+    dataset: String,
+    layout: String,
+    file_path: String,
+}
+
+#[derive(Debug, Default)]
+struct ArchiveTempCleanupSummary {
+    stale_temp_files_removed: usize,
+    stale_temp_bytes_removed: u64,
+}
+
+#[derive(Debug, Default)]
+struct ArchiveStorageVerificationSummary {
+    manifest_rows: usize,
+    missing_files: usize,
+    orphan_files: usize,
+    stale_temp_files: usize,
+    stale_temp_bytes: u64,
+}
+
+#[derive(Debug, Default)]
+struct ArchiveBatchPruneSummary {
+    expired_archive_batches_deleted: usize,
+    legacy_archive_batches_deleted: usize,
 }
 
 #[derive(Debug, FromRow)]
@@ -2899,6 +3078,13 @@ async fn run_data_retention_maintenance(
 
     if !dry_run {
         sync_hourly_rollups_from_live_tables(pool).await?;
+        let janitor = cleanup_stale_archive_temp_files(config, false)?;
+        if janitor.stale_temp_files_removed > 0 {
+            info!(
+                ?janitor,
+                "archive temp janitor removed stale files before retention"
+            );
+        }
     }
 
     if should_stop_data_retention_maintenance(shutdown) {
@@ -3527,15 +3713,15 @@ async fn prune_old_invocation_details(
         .bind(&archive_cutoff)
         .fetch_all(pool)
         .await?;
-        let mut by_month: BTreeMap<String, usize> = BTreeMap::new();
+        let mut by_group: BTreeMap<String, usize> = BTreeMap::new();
         for candidate in &candidates {
-            let month_key = shanghai_month_key_from_local_naive(&candidate.occurred_at)?;
-            *by_month.entry(month_key).or_default() += 1;
+            let group_key = invocation_archive_group_key(config, &candidate.occurred_at)?;
+            *by_group.entry(group_key).or_default() += 1;
         }
-        for (month_key, rows) in &by_month {
+        for (group_key, rows) in &by_group {
             info!(
                 dataset = spec.dataset,
-                month_key,
+                archive_group = group_key,
                 rows = *rows,
                 reason = DETAIL_PRUNE_REASON_SUCCESS_OVER_30D,
                 "retention dry-run planned invocation detail prune archive batch"
@@ -3552,7 +3738,7 @@ async fn prune_old_invocation_details(
             .collect::<Vec<_>>();
         return Ok((
             candidates.len(),
-            by_month.len(),
+            by_group.len(),
             count_existing_proxy_raw_paths(&raw_paths, raw_path_fallback_root),
         ));
     }
@@ -3585,13 +3771,13 @@ async fn prune_old_invocation_details(
             break;
         }
 
-        let mut by_month: BTreeMap<String, Vec<InvocationDetailPruneCandidate>> = BTreeMap::new();
+        let mut by_group: BTreeMap<String, Vec<InvocationDetailPruneCandidate>> = BTreeMap::new();
         for candidate in candidates {
-            let month_key = shanghai_month_key_from_local_naive(&candidate.occurred_at)?;
-            by_month.entry(month_key).or_default().push(candidate);
+            let group_key = invocation_archive_group_key(config, &candidate.occurred_at)?;
+            by_group.entry(group_key).or_default().push(candidate);
         }
 
-        for (month_key, group) in by_month {
+        for (group_key, group) in by_group {
             rows_pruned += group.len();
             archive_batches += 1;
             let raw_paths = group
@@ -3608,8 +3794,14 @@ async fn prune_old_invocation_details(
                 .iter()
                 .map(|candidate| candidate.id)
                 .collect::<Vec<_>>();
-            let mut archive_outcome =
-                archive_rows_into_month_batch(pool, config, spec, &month_key, &ids).await?;
+            let mut archive_outcome = match archive_layout_for_dataset(config, spec.dataset) {
+                ArchiveBatchLayout::LegacyMonth => {
+                    archive_rows_into_month_batch(pool, config, spec, &group_key, &ids).await?
+                }
+                ArchiveBatchLayout::SegmentV1 => {
+                    archive_rows_into_segment_batch(pool, config, spec, &group_key, &ids).await?
+                }
+            };
             set_archive_batch_coverage_from_local_rows(
                 &mut archive_outcome,
                 group.iter().map(|candidate| candidate.occurred_at.as_str()),
@@ -3621,7 +3813,6 @@ async fn prune_old_invocation_details(
             mark_archive_batch_historical_rollups_materialized_tx(
                 tx.as_mut(),
                 spec.dataset,
-                &archive_outcome.month_key,
                 &archive_outcome.file_path,
             )
             .await?;
@@ -3682,15 +3873,15 @@ async fn archive_old_invocations(
         .fetch_all(pool)
         .await?;
 
-        let mut by_month: BTreeMap<String, usize> = BTreeMap::new();
+        let mut by_group: BTreeMap<String, usize> = BTreeMap::new();
         for candidate in &candidates {
-            let month_key = shanghai_month_key_from_local_naive(&candidate.occurred_at)?;
-            *by_month.entry(month_key).or_default() += 1;
+            let group_key = invocation_archive_group_key(config, &candidate.occurred_at)?;
+            *by_group.entry(group_key).or_default() += 1;
         }
-        for (month_key, rows) in &by_month {
+        for (group_key, rows) in &by_group {
             info!(
                 dataset = spec.dataset,
-                month_key,
+                archive_group = group_key,
                 rows = *rows,
                 reason = DETAIL_PRUNE_REASON_MAX_AGE_ARCHIVED,
                 "retention dry-run planned invocation archive batch"
@@ -3707,7 +3898,7 @@ async fn archive_old_invocations(
             .collect::<Vec<_>>();
         return Ok((
             candidates.len(),
-            by_month.len(),
+            by_group.len(),
             count_existing_proxy_raw_paths(&raw_paths, raw_path_fallback_root),
         ));
     }
@@ -3743,13 +3934,13 @@ async fn archive_old_invocations(
             break;
         }
 
-        let mut by_month: BTreeMap<String, Vec<InvocationArchiveCandidate>> = BTreeMap::new();
+        let mut by_group: BTreeMap<String, Vec<InvocationArchiveCandidate>> = BTreeMap::new();
         for candidate in candidates {
-            let month_key = shanghai_month_key_from_local_naive(&candidate.occurred_at)?;
-            by_month.entry(month_key).or_default().push(candidate);
+            let group_key = invocation_archive_group_key(config, &candidate.occurred_at)?;
+            by_group.entry(group_key).or_default().push(candidate);
         }
 
-        for (month_key, group) in by_month {
+        for (group_key, group) in by_group {
             rows_archived += group.len();
             archive_batches += 1;
             let raw_paths = group
@@ -3791,8 +3982,14 @@ async fn archive_old_invocations(
                     t_persist_ms: None,
                 })
                 .collect::<Vec<_>>();
-            let mut archive_outcome =
-                archive_rows_into_month_batch(pool, config, spec, &month_key, &ids).await?;
+            let mut archive_outcome = match archive_layout_for_dataset(config, spec.dataset) {
+                ArchiveBatchLayout::LegacyMonth => {
+                    archive_rows_into_month_batch(pool, config, spec, &group_key, &ids).await?
+                }
+                ArchiveBatchLayout::SegmentV1 => {
+                    archive_rows_into_segment_batch(pool, config, spec, &group_key, &ids).await?
+                }
+            };
             set_archive_batch_coverage_from_local_rows(
                 &mut archive_outcome,
                 group.iter().map(|candidate| candidate.occurred_at.as_str()),
@@ -3809,7 +4006,6 @@ async fn archive_old_invocations(
             mark_archive_batch_historical_rollups_materialized_tx(
                 tx.as_mut(),
                 spec.dataset,
-                &archive_outcome.month_key,
                 &archive_outcome.file_path,
             )
             .await?;
@@ -3957,7 +4153,6 @@ async fn archive_timestamped_dataset(
             mark_archive_batch_historical_rollups_materialized_tx(
                 tx.as_mut(),
                 spec.dataset,
-                &archive_outcome.month_key,
                 &archive_outcome.file_path,
             )
             .await?;
@@ -4202,6 +4397,116 @@ async fn log_raw_compression_backlog_if_needed(
         }
     }
     Ok(())
+}
+
+fn archive_file_is_stale_temp(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .map(is_archive_temp_file_name)
+        .unwrap_or(false)
+}
+
+fn archive_temp_file_is_old_enough(path: &Path) -> bool {
+    fs::metadata(path)
+        .ok()
+        .and_then(|metadata| metadata.modified().ok())
+        .and_then(|modified| modified.elapsed().ok())
+        .map(|age| age.as_secs() >= DEFAULT_ARCHIVE_TEMP_MIN_AGE_SECS)
+        .unwrap_or(false)
+}
+
+fn archive_file_size(path: &Path) -> u64 {
+    fs::metadata(path)
+        .map(|metadata| metadata.len())
+        .unwrap_or_default()
+}
+
+fn cleanup_stale_archive_temp_files(
+    config: &AppConfig,
+    dry_run: bool,
+) -> Result<ArchiveTempCleanupSummary> {
+    let archive_root = resolved_archive_dir(config);
+    let mut files = Vec::new();
+    collect_archive_file_paths(&archive_root, &mut files)?;
+    let mut summary = ArchiveTempCleanupSummary::default();
+    for file_path in files {
+        if !archive_file_is_stale_temp(&file_path) || !archive_temp_file_is_old_enough(&file_path) {
+            continue;
+        }
+        let file_size = archive_file_size(&file_path);
+        if dry_run {
+            summary.stale_temp_files_removed += 1;
+            summary.stale_temp_bytes_removed += file_size;
+            continue;
+        }
+        match fs::remove_file(&file_path) {
+            Ok(_) => {
+                summary.stale_temp_files_removed += 1;
+                summary.stale_temp_bytes_removed += file_size;
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => {
+                warn!(
+                    file_path = %file_path.display(),
+                    error = %err,
+                    "failed to remove stale archive temp file"
+                );
+            }
+        }
+    }
+    Ok(summary)
+}
+
+async fn verify_archive_storage(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+) -> Result<ArchiveStorageVerificationSummary> {
+    let manifest_rows = sqlx::query_as::<_, ArchiveStorageManifestRow>(
+        r#"
+        SELECT id, dataset, layout, file_path
+        FROM archive_batches
+        WHERE status = ?1
+        "#,
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .fetch_all(pool)
+    .await?;
+    let mut summary = ArchiveStorageVerificationSummary {
+        manifest_rows: manifest_rows.len(),
+        ..ArchiveStorageVerificationSummary::default()
+    };
+    let referenced_paths = manifest_rows
+        .iter()
+        .map(|row| normalize_path_for_compare(Path::new(&row.file_path)))
+        .collect::<HashSet<_>>();
+    for row in &manifest_rows {
+        if !Path::new(&row.file_path).exists() {
+            summary.missing_files += 1;
+            warn!(
+                archive_batch_id = row.id,
+                dataset = row.dataset,
+                layout = row.layout,
+                file_path = row.file_path,
+                "archive manifest points to a missing file"
+            );
+        }
+    }
+
+    let archive_root = resolved_archive_dir(config);
+    let mut files = Vec::new();
+    collect_archive_file_paths(&archive_root, &mut files)?;
+    for file_path in files {
+        let normalized = normalize_path_for_compare(&file_path);
+        if archive_file_is_stale_temp(&file_path) {
+            summary.stale_temp_files += 1;
+            summary.stale_temp_bytes += archive_file_size(&file_path);
+            continue;
+        }
+        if !referenced_paths.contains(&normalized) {
+            summary.orphan_files += 1;
+        }
+    }
+    Ok(summary)
 }
 
 #[derive(Debug, FromRow)]
@@ -4568,7 +4873,11 @@ async fn prune_legacy_archive_batches(
             separated.push_bind(dataset);
         }
     }
-    query.push(") ORDER BY month_key ASC, id ASC");
+    query.push(") AND COALESCE(layout, ");
+    query.push_bind(ARCHIVE_LAYOUT_LEGACY_MONTH);
+    query.push(") = ");
+    query.push_bind(ARCHIVE_LAYOUT_LEGACY_MONTH);
+    query.push(" ORDER BY month_key ASC, id ASC");
     let candidates = query
         .build_query_as::<LegacyArchivePruneCandidateRow>()
         .fetch_all(pool)
@@ -4651,6 +4960,20 @@ async fn prune_legacy_archive_batches(
     }
 
     Ok(summary)
+}
+
+async fn prune_archive_batches(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    dry_run: bool,
+) -> Result<ArchiveBatchPruneSummary> {
+    let expired_archive_batches_deleted =
+        cleanup_expired_archive_batches(pool, config, dry_run).await?;
+    let legacy_summary = prune_legacy_archive_batches(pool, config, dry_run).await?;
+    Ok(ArchiveBatchPruneSummary {
+        expired_archive_batches_deleted,
+        legacy_archive_batches_deleted: legacy_summary.deleted_archive_batches,
+    })
 }
 
 async fn compact_old_quota_snapshots(
@@ -4777,7 +5100,7 @@ async fn refresh_archive_upstream_activity_manifest(
         WHERE dataset = 'codex_invocations'
           AND status = ?1
           AND upstream_activity_manifest_refreshed_at IS NULL
-        ORDER BY month_key DESC, created_at DESC, id DESC
+        ORDER BY month_key DESC, day_key DESC, part_key DESC, created_at DESC, id DESC
         "#,
     )
     .bind(ARCHIVE_STATUS_COMPLETED)
@@ -5285,20 +5608,30 @@ async fn archive_rows_into_month_batch(
         }
     };
 
-    deflate_sqlite_file_to_gzip(&work_path, &temp_gzip_path)?;
-    fs::rename(&temp_gzip_path, &final_path).with_context(|| {
+    if let Err(err) = deflate_sqlite_file_to_gzip(&work_path, &temp_gzip_path) {
+        let _ = fs::remove_file(&work_path);
+        let _ = fs::remove_file(&temp_gzip_path);
+        return Err(err);
+    }
+    if let Err(err) = fs::rename(&temp_gzip_path, &final_path).with_context(|| {
         format!(
             "failed to move archive batch into place: {} -> {}",
             temp_gzip_path.display(),
             final_path.display()
         )
-    })?;
+    }) {
+        let _ = fs::remove_file(&work_path);
+        let _ = fs::remove_file(&temp_gzip_path);
+        return Err(err);
+    }
     let _ = fs::remove_file(&work_path);
 
     let sha256 = sha256_hex_file(&final_path)?;
     Ok(ArchiveBatchOutcome {
         dataset: spec.dataset,
         month_key: month_key.to_string(),
+        day_key: None,
+        part_key: None,
         file_path: final_path.to_string_lossy().to_string(),
         sha256,
         row_count: result,
@@ -5306,6 +5639,149 @@ async fn archive_rows_into_month_batch(
         coverage_start_at: None,
         coverage_end_at: None,
         archive_expires_at: None,
+        layout: ARCHIVE_LAYOUT_LEGACY_MONTH,
+        codec: ARCHIVE_FILE_CODEC_GZIP,
+        writer_version: ARCHIVE_WRITER_VERSION_LEGACY_MONTH_V1,
+        cleanup_state: ARCHIVE_CLEANUP_STATE_ACTIVE,
+        superseded_by: None,
+    })
+}
+
+async fn archive_rows_into_segment_batch(
+    pool: &Pool<Sqlite>,
+    config: &AppConfig,
+    spec: ArchiveTableSpec,
+    day_key: &str,
+    ids: &[i64],
+) -> Result<ArchiveBatchOutcome> {
+    if ids.is_empty() {
+        bail!("archive segment requires at least one row id");
+    }
+    if spec.dataset != "codex_invocations" {
+        bail!("archive segment writer only supports codex_invocations");
+    }
+    let month_key = archive_month_key_from_day_key(day_key)?;
+    let part_key = next_archive_segment_part_key(pool, spec.dataset, day_key).await?;
+    let final_path = archive_segment_file_path(
+        config,
+        spec.dataset,
+        day_key,
+        &part_key,
+        config.invocation_archive_codec,
+    )?;
+    if let Some(parent) = final_path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create archive directory: {}", parent.display()))?;
+    }
+
+    let suffix = retention_temp_suffix();
+    let work_path = PathBuf::from(format!(
+        "{}.{}.partial.sqlite",
+        final_path.display(),
+        suffix
+    ));
+    let temp_gzip_path = PathBuf::from(format!("{}.{}.tmp", final_path.display(), suffix));
+    let _temp_cleanup = TempSqliteCleanup(work_path.clone());
+    let _gzip_cleanup = TempSqliteCleanup(temp_gzip_path.clone());
+    ensure_sqlite_file_initialized(&work_path).await?;
+
+    let row_count = async {
+        let mut conn = pool.acquire().await?;
+        sqlx::query("ATTACH DATABASE ?1 AS archive_db")
+            .bind(work_path.to_string_lossy().to_string())
+            .execute(&mut *conn)
+            .await
+            .with_context(|| {
+                format!("failed to attach archive database {}", work_path.display())
+            })?;
+        sqlx::query(spec.create_sql)
+            .execute(&mut *conn)
+            .await
+            .with_context(|| format!("failed to ensure archive schema for {}", spec.dataset))?;
+        ensure_codex_invocations_archive_schema(&mut conn).await?;
+
+        let mut upstream_last_activity = Vec::new();
+        for chunk in ids.chunks(BACKFILL_ACCOUNT_BIND_BATCH_SIZE) {
+            let mut query = QueryBuilder::<Sqlite>::new(
+                "SELECT account_id, MAX(occurred_at) AS last_activity_at FROM (SELECT CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END AS account_id, occurred_at FROM main.codex_invocations WHERE id IN (",
+            );
+            {
+                let mut separated = query.separated(", ");
+                for id in chunk {
+                    separated.push_bind(id);
+                }
+            }
+            query.push(")) WHERE account_id IS NOT NULL GROUP BY account_id");
+            upstream_last_activity.extend(
+                query
+                    .build_query_as::<ArchivedAccountLastActivityRow>()
+                    .fetch_all(&mut *conn)
+                    .await?,
+            );
+        }
+        let upstream_last_activity = upstream_last_activity
+            .into_iter()
+            .map(|row| (row.account_id, row.last_activity_at))
+            .collect::<Vec<_>>();
+
+        let mut insert = QueryBuilder::<Sqlite>::new(format!(
+            "INSERT OR IGNORE INTO archive_db.{} ({}) SELECT {} FROM main.{} WHERE id IN (",
+            spec.dataset, spec.columns, spec.columns, spec.dataset
+        ));
+        {
+            let mut separated = insert.separated(", ");
+            for id in ids {
+                separated.push_bind(id);
+            }
+        }
+        insert.push(")");
+        insert.build().execute(&mut *conn).await.with_context(|| {
+            format!(
+                "failed to copy rows into archive segment for {}",
+                spec.dataset
+            )
+        })?;
+
+        let count_query = format!("SELECT COUNT(*) FROM archive_db.{}", spec.dataset);
+        let row_count = sqlx::query_scalar::<_, i64>(&count_query)
+            .fetch_one(&mut *conn)
+            .await
+            .with_context(|| format!("failed to count archive rows for {}", spec.dataset))?;
+        sqlx::query("DETACH DATABASE archive_db")
+            .execute(&mut *conn)
+            .await
+            .context("failed to detach archive database")?;
+        Ok::<(i64, Vec<(i64, String)>), anyhow::Error>((row_count, upstream_last_activity))
+    }
+    .await?;
+
+    deflate_sqlite_file_to_gzip(&work_path, &temp_gzip_path)?;
+    fs::rename(&temp_gzip_path, &final_path).with_context(|| {
+        format!(
+            "failed to move archive segment into place: {} -> {}",
+            temp_gzip_path.display(),
+            final_path.display()
+        )
+    })?;
+
+    let sha256 = sha256_hex_file(&final_path)?;
+    Ok(ArchiveBatchOutcome {
+        dataset: spec.dataset,
+        month_key,
+        day_key: Some(day_key.to_string()),
+        part_key: Some(part_key),
+        file_path: final_path.to_string_lossy().to_string(),
+        sha256,
+        row_count: row_count.0,
+        upstream_last_activity: row_count.1,
+        coverage_start_at: None,
+        coverage_end_at: None,
+        archive_expires_at: None,
+        layout: ARCHIVE_LAYOUT_SEGMENT_V1,
+        codec: config.invocation_archive_codec.as_str(),
+        writer_version: ARCHIVE_WRITER_VERSION_SEGMENT_V1,
+        cleanup_state: ARCHIVE_CLEANUP_STATE_ACTIVE,
+        superseded_by: None,
     })
 }
 
@@ -5341,20 +5817,34 @@ async fn upsert_archive_batch_manifest(
         INSERT INTO archive_batches (
             dataset,
             month_key,
+            day_key,
+            part_key,
             file_path,
             sha256,
             row_count,
             status,
+            layout,
+            codec,
+            writer_version,
+            cleanup_state,
+            superseded_by,
             coverage_start_at,
             coverage_end_at,
             archive_expires_at,
             created_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, datetime('now'))
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, datetime('now'))
         ON CONFLICT(dataset, month_key, file_path) DO UPDATE SET
+            day_key = excluded.day_key,
+            part_key = excluded.part_key,
             sha256 = excluded.sha256,
             row_count = excluded.row_count,
             status = excluded.status,
+            layout = excluded.layout,
+            codec = excluded.codec,
+            writer_version = excluded.writer_version,
+            cleanup_state = excluded.cleanup_state,
+            superseded_by = excluded.superseded_by,
             coverage_start_at = excluded.coverage_start_at,
             coverage_end_at = excluded.coverage_end_at,
             archive_expires_at = excluded.archive_expires_at,
@@ -5363,10 +5853,17 @@ async fn upsert_archive_batch_manifest(
     )
     .bind(batch.dataset)
     .bind(&batch.month_key)
+    .bind(batch.day_key.as_deref())
+    .bind(batch.part_key.as_deref())
     .bind(&batch.file_path)
     .bind(&batch.sha256)
     .bind(batch.row_count)
     .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(batch.layout)
+    .bind(batch.codec)
+    .bind(batch.writer_version)
+    .bind(batch.cleanup_state)
+    .bind(batch.superseded_by)
     .bind(batch.coverage_start_at.as_deref())
     .bind(batch.coverage_end_at.as_deref())
     .bind(batch.archive_expires_at.as_deref())
@@ -5448,7 +5945,6 @@ async fn mark_retention_archived_hourly_rollup_targets_tx(
 async fn mark_archive_batch_historical_rollups_materialized_tx(
     tx: &mut SqliteConnection,
     dataset: &str,
-    month_key: &str,
     file_path: &str,
 ) -> Result<()> {
     sqlx::query(
@@ -5456,12 +5952,10 @@ async fn mark_archive_batch_historical_rollups_materialized_tx(
         UPDATE archive_batches
         SET historical_rollups_materialized_at = datetime('now')
         WHERE dataset = ?1
-          AND month_key = ?2
-          AND file_path = ?3
+          AND file_path = ?2
         "#,
     )
     .bind(dataset)
-    .bind(month_key)
     .bind(file_path)
     .execute(&mut *tx)
     .await?;
@@ -6746,7 +7240,7 @@ async fn replay_invocation_archives_into_hourly_rollups_tx(
 ) -> Result<u64> {
     let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
         r#"
-        SELECT id AS _id, month_key, file_path, coverage_start_at, coverage_end_at
+        SELECT id, file_path, coverage_start_at, coverage_end_at
         FROM archive_batches
         WHERE dataset = 'codex_invocations'
           AND status = ?1
@@ -6855,7 +7349,6 @@ async fn replay_invocation_archives_into_hourly_rollups_tx(
             mark_archive_batch_historical_rollups_materialized_tx(
                 tx,
                 HOURLY_ROLLUP_DATASET_INVOCATIONS,
-                &archive_file.month_key,
                 &archive_file.file_path,
             )
             .await?;
@@ -6867,7 +7360,7 @@ async fn replay_invocation_archives_into_hourly_rollups_tx(
             let coverage_end_at = rows.iter().map(|row| row.occurred_at.as_str()).max();
             update_archive_batch_coverage_bounds_tx(
                 tx,
-                archive_file._id,
+                archive_file.id,
                 coverage_start_at,
                 coverage_end_at,
             )
@@ -6889,7 +7382,6 @@ async fn replay_invocation_archives_into_hourly_rollups_tx(
             mark_archive_batch_historical_rollups_materialized_tx(
                 tx,
                 HOURLY_ROLLUP_DATASET_INVOCATIONS,
-                &archive_file.month_key,
                 &archive_file.file_path,
             )
             .await?;
@@ -6912,7 +7404,7 @@ async fn replay_forward_proxy_archives_into_hourly_rollups_tx(
 ) -> Result<u64> {
     let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
         r#"
-        SELECT id AS _id, month_key, file_path, coverage_start_at, coverage_end_at
+        SELECT id, file_path, coverage_start_at, coverage_end_at
         FROM archive_batches
         WHERE dataset = 'forward_proxy_attempts'
           AND status = ?1
@@ -6937,7 +7429,6 @@ async fn replay_forward_proxy_archives_into_hourly_rollups_tx(
             mark_archive_batch_historical_rollups_materialized_tx(
                 tx,
                 HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS,
-                &archive_file.month_key,
                 &archive_file.file_path,
             )
             .await?;
@@ -6990,7 +7481,7 @@ async fn replay_forward_proxy_archives_into_hourly_rollups_tx(
             let coverage_end_at = rows.iter().map(|row| row.occurred_at.as_str()).max();
             update_archive_batch_coverage_bounds_tx(
                 tx,
-                archive_file._id,
+                archive_file.id,
                 coverage_start_at,
                 coverage_end_at,
             )
@@ -7002,7 +7493,6 @@ async fn replay_forward_proxy_archives_into_hourly_rollups_tx(
         mark_archive_batch_historical_rollups_materialized_tx(
             tx,
             HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS,
-            &archive_file.month_key,
             &archive_file.file_path,
         )
         .await?;
@@ -7290,12 +7780,126 @@ fn archive_batch_file_path(config: &AppConfig, dataset: &str, month_key: &str) -
         .join(format!("{dataset}-{month_key}.sqlite.gz")))
 }
 
+fn archive_segment_file_path(
+    config: &AppConfig,
+    dataset: &str,
+    day_key: &str,
+    part_key: &str,
+    codec: ArchiveFileCodec,
+) -> Result<PathBuf> {
+    let mut segments = day_key.split('-');
+    let year = segments
+        .next()
+        .filter(|segment| segment.len() == 4)
+        .ok_or_else(|| anyhow!("invalid day key: {day_key}"))?;
+    let month = segments
+        .next()
+        .filter(|segment| segment.len() == 2)
+        .ok_or_else(|| anyhow!("invalid day key: {day_key}"))?;
+    let day = segments
+        .next()
+        .filter(|segment| segment.len() == 2)
+        .ok_or_else(|| anyhow!("invalid day key: {day_key}"))?;
+    Ok(resolved_archive_dir(config)
+        .join(dataset)
+        .join(year)
+        .join(month)
+        .join(day)
+        .join(format!("{part_key}.sqlite.{}", codec.file_extension())))
+}
+
+fn archive_month_key_from_day_key(day_key: &str) -> Result<String> {
+    Ok(day_key
+        .get(..7)
+        .ok_or_else(|| anyhow!("invalid day key: {day_key}"))?
+        .to_string())
+}
+
 fn retention_temp_suffix() -> String {
     format!(
         "{}-{}",
         std::process::id(),
         Utc::now().timestamp_nanos_opt().unwrap_or_default()
     )
+}
+
+fn archive_layout_for_dataset(config: &AppConfig, dataset: &str) -> ArchiveBatchLayout {
+    if dataset == "codex_invocations" {
+        config.codex_invocation_archive_layout
+    } else {
+        ArchiveBatchLayout::LegacyMonth
+    }
+}
+
+fn invocation_archive_group_key(config: &AppConfig, occurred_at: &str) -> Result<String> {
+    match config.codex_invocation_archive_layout {
+        ArchiveBatchLayout::LegacyMonth => shanghai_month_key_from_local_naive(occurred_at),
+        ArchiveBatchLayout::SegmentV1 => {
+            match config.codex_invocation_archive_segment_granularity {
+                ArchiveSegmentGranularity::Day => shanghai_day_key_from_local_naive(occurred_at),
+            }
+        }
+    }
+}
+
+async fn next_archive_segment_part_key(
+    pool: &Pool<Sqlite>,
+    dataset: &str,
+    day_key: &str,
+) -> Result<String> {
+    let latest_part_key = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT part_key
+        FROM archive_batches
+        WHERE dataset = ?1
+          AND layout = ?2
+          AND day_key = ?3
+          AND part_key IS NOT NULL
+        ORDER BY part_key DESC, id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(dataset)
+    .bind(ARCHIVE_LAYOUT_SEGMENT_V1)
+    .bind(day_key)
+    .fetch_optional(pool)
+    .await?;
+    let next_seq = latest_part_key
+        .as_deref()
+        .and_then(|value| value.strip_prefix("part-"))
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or_default()
+        + 1;
+    Ok(format!("part-{next_seq:06}"))
+}
+
+fn is_archive_temp_file_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    (lower.contains(".sqlite.gz.") || lower.contains(".sqlite.zst."))
+        && (lower.ends_with(".sqlite")
+            || lower.ends_with(".tmp")
+            || lower.ends_with(".partial")
+            || lower.ends_with(".sqlite-wal")
+            || lower.ends_with(".sqlite-shm"))
+}
+
+fn collect_archive_file_paths(root: &Path, files: &mut Vec<PathBuf>) -> Result<()> {
+    if !root.exists() {
+        return Ok(());
+    }
+    for entry in fs::read_dir(root)
+        .with_context(|| format!("failed to read archive directory {}", root.display()))?
+    {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            collect_archive_file_paths(&path, files)?;
+        } else if file_type.is_file() {
+            files.push(path);
+        }
+    }
+    Ok(())
 }
 
 fn inflate_gzip_sqlite_file(source: &Path, destination: &Path) -> Result<()> {
@@ -8809,10 +9413,17 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             dataset TEXT NOT NULL,
             month_key TEXT NOT NULL,
+            day_key TEXT,
+            part_key TEXT,
             file_path TEXT NOT NULL,
             sha256 TEXT NOT NULL,
             row_count INTEGER NOT NULL,
             status TEXT NOT NULL,
+            layout TEXT NOT NULL DEFAULT 'legacy_month',
+            codec TEXT NOT NULL DEFAULT 'gzip',
+            writer_version TEXT NOT NULL DEFAULT 'legacy_month_v1',
+            cleanup_state TEXT NOT NULL DEFAULT 'active',
+            superseded_by INTEGER,
             coverage_start_at TEXT,
             coverage_end_at TEXT,
             archive_expires_at TEXT,
@@ -8827,6 +9438,13 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     let archive_batch_columns = load_sqlite_table_columns(pool, "archive_batches").await?;
     for (column, ty) in [
+        ("day_key", "TEXT"),
+        ("part_key", "TEXT"),
+        ("layout", "TEXT NOT NULL DEFAULT 'legacy_month'"),
+        ("codec", "TEXT NOT NULL DEFAULT 'gzip'"),
+        ("writer_version", "TEXT NOT NULL DEFAULT 'legacy_month_v1'"),
+        ("cleanup_state", "TEXT NOT NULL DEFAULT 'active'"),
+        ("superseded_by", "INTEGER"),
         ("coverage_start_at", "TEXT"),
         ("coverage_end_at", "TEXT"),
         ("archive_expires_at", "TEXT"),
@@ -8851,6 +9469,16 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_archive_batches_dataset_month")?;
+
+    sqlx::query(
+        r#"
+        CREATE INDEX IF NOT EXISTS idx_archive_batches_dataset_layout_day_part
+        ON archive_batches (dataset, layout, day_key, part_key, id)
+        "#,
+    )
+    .execute(pool)
+    .await
+    .context("failed to ensure index idx_archive_batches_dataset_layout_day_part")?;
 
     sqlx::query(
         r#"
@@ -15298,44 +15926,26 @@ async fn proxy_openai_v1_capture_target(
         let preview_bytes = response_preview.as_slice().to_vec();
         let raw_response_preview = response_preview.into_preview();
         let streamed_response_outcome = stream_response_parser.finish();
-        let streamed_response_info = streamed_response_outcome.response_info.clone();
         let preview_looks_like_sse = response_payload_looks_like_sse_after_decode(
             &preview_bytes,
             upstream_content_encoding_for_task.as_deref(),
         );
-        let response_is_stream_hint = if response_is_event_stream_for_task
+        let response_is_stream_hint = response_is_event_stream_for_task
             || streamed_response_outcome.saw_stream_fields
-            || preview_looks_like_sse
-        {
-            true
-        } else if resp_raw.path.is_some()
-            && (upstream_content_encoding_for_task.is_some()
-                || preview_bytes.len() == RAW_RESPONSE_PREVIEW_LIMIT)
-        {
-            tokio::task::spawn_blocking({
-                let resp_raw_for_hint = resp_raw.clone();
-                let preview_bytes_for_hint = preview_bytes.clone();
-                let upstream_content_encoding_for_hint = upstream_content_encoding_for_task.clone();
-                move || {
-                    response_payload_looks_like_sse_from_capture(
-                        &resp_raw_for_hint,
-                        &preview_bytes_for_hint,
-                        upstream_content_encoding_for_hint.as_deref(),
-                    )
-                }
-            })
-            .await
-            .unwrap_or(false)
-        } else {
-            false
-        };
+            || preview_looks_like_sse;
         let resp_parse_started = Instant::now();
-        let mut response_info = if response_is_stream_hint
-            && streamed_response_outcome.saw_stream_fields
-            && !streamed_response_outcome.discarded_oversized_line
-        {
-            streamed_response_outcome.response_info
-        } else if !response_is_stream_hint {
+        let mut response_info = if response_is_stream_hint {
+            if streamed_response_outcome.saw_stream_fields {
+                streamed_response_outcome.response_info
+            } else {
+                parse_target_response_preview_payload(
+                    capture_target,
+                    &preview_bytes,
+                    true,
+                    upstream_content_encoding_for_task.as_deref(),
+                )
+            }
+        } else {
             nonstream_parse_buffer
                 .take()
                 .map(|buffer| {
@@ -15352,43 +15962,7 @@ async fn proxy_openai_v1_capture_target(
                         upstream_content_encoding_for_task.as_deref(),
                     )
                 })
-        } else {
-            match tokio::task::spawn_blocking({
-                let preview_bytes_for_parse = preview_bytes.clone();
-                let resp_raw_for_parse = resp_raw.clone();
-                let upstream_content_encoding_for_parse =
-                    upstream_content_encoding_for_task.clone();
-                move || {
-                    parse_target_response_payload_from_capture(
-                        capture_target,
-                        &resp_raw_for_parse,
-                        &preview_bytes_for_parse,
-                        response_is_stream_hint,
-                        upstream_content_encoding_for_parse.as_deref(),
-                    )
-                }
-            })
-            .await
-            {
-                Ok(response_info) => response_info,
-                Err(err) => {
-                    let mut response_info = parse_target_response_payload(
-                        capture_target,
-                        &preview_bytes,
-                        response_is_stream_hint,
-                        upstream_content_encoding_for_task.as_deref(),
-                    );
-                    merge_response_capture_reason(
-                        &mut response_info,
-                        format!("response_parse_join_error:{err}"),
-                    );
-                    response_info
-                }
-            }
         };
-        if response_is_stream_hint && streamed_response_outcome.discarded_oversized_line {
-            fill_missing_response_capture_info(&mut response_info, &streamed_response_info);
-        }
         let t_resp_parse_ms = elapsed_ms(resp_parse_started);
 
         if response_info.model.is_none() {
@@ -16261,11 +16835,10 @@ fn extract_reasoning_effort_from_request_body(
     }
 }
 
-fn parse_target_response_payload(
-    _target: ProxyCaptureTarget,
+fn build_response_capture_info_from_bytes(
     bytes: &[u8],
     request_is_stream: bool,
-    content_encoding: Option<&str>,
+    decode_failure_reason: Option<String>,
 ) -> ResponseCaptureInfo {
     if bytes.is_empty() {
         return ResponseCaptureInfo {
@@ -16280,14 +16853,11 @@ fn parse_target_response_payload(
         };
     }
 
-    let (decoded_bytes, decode_failure_reason) =
-        decode_response_payload_for_parse(bytes, content_encoding);
-    let parse_bytes = decoded_bytes.as_ref();
-    let looks_like_stream = request_is_stream || response_payload_looks_like_sse(parse_bytes);
+    let looks_like_stream = request_is_stream || response_payload_looks_like_sse(bytes);
     let mut response_info = if looks_like_stream {
-        parse_stream_response_payload(parse_bytes)
+        parse_stream_response_payload(bytes)
     } else {
-        match serde_json::from_slice::<Value>(parse_bytes) {
+        match serde_json::from_slice::<Value>(bytes) {
             Ok(value) => {
                 let model = extract_model_from_payload(&value);
                 let usage = extract_usage_from_payload(&value).unwrap_or_default();
@@ -16312,18 +16882,18 @@ fn parse_target_response_payload(
                 }
             }
             Err(_) => {
-                let model = extract_partial_json_model(parse_bytes);
-                let service_tier = extract_partial_json_service_tier(parse_bytes);
-                let upstream_error_code = extract_partial_json_string_field(parse_bytes, &["code"]);
-                let upstream_error_message =
-                    extract_partial_json_string_field(parse_bytes, &["message"]);
+                let model = extract_partial_json_model(bytes);
+                let service_tier = extract_partial_json_service_tier(bytes);
+                let upstream_error_code = extract_partial_json_string_field(bytes, &["code"]);
+                let upstream_error_message = extract_partial_json_string_field(bytes, &["message"]);
                 let upstream_request_id =
-                    extract_partial_json_string_field(parse_bytes, &["request_id", "requestId"])
-                        .or_else(|| {
+                    extract_partial_json_string_field(bytes, &["request_id", "requestId"]).or_else(
+                        || {
                             upstream_error_message
                                 .as_deref()
                                 .and_then(extract_request_id_from_message)
-                        });
+                        },
+                    );
                 ResponseCaptureInfo {
                     model,
                     usage: ParsedUsage::default(),
@@ -16350,6 +16920,36 @@ fn parse_target_response_payload(
     response_info
 }
 
+fn parse_target_response_payload(
+    _target: ProxyCaptureTarget,
+    bytes: &[u8],
+    request_is_stream: bool,
+    content_encoding: Option<&str>,
+) -> ResponseCaptureInfo {
+    let (decoded_bytes, decode_failure_reason) =
+        decode_response_payload_for_parse(bytes, content_encoding);
+    build_response_capture_info_from_bytes(
+        decoded_bytes.as_ref(),
+        request_is_stream,
+        decode_failure_reason,
+    )
+}
+
+fn parse_target_response_preview_payload(
+    _target: ProxyCaptureTarget,
+    bytes: &[u8],
+    request_is_stream: bool,
+    content_encoding: Option<&str>,
+) -> ResponseCaptureInfo {
+    let (decoded_bytes, decode_failure_reason) =
+        decode_response_payload_for_preview_parse(bytes, content_encoding);
+    build_response_capture_info_from_bytes(
+        decoded_bytes.as_ref(),
+        request_is_stream,
+        decode_failure_reason,
+    )
+}
+
 fn response_payload_looks_like_sse(bytes: &[u8]) -> bool {
     String::from_utf8_lossy(bytes)
         .lines()
@@ -16373,10 +16973,30 @@ fn response_payload_looks_like_sse_after_decode(
     bytes: &[u8],
     content_encoding: Option<&str>,
 ) -> bool {
-    let (decoded, _) = decode_response_payload_for_parse(bytes, content_encoding);
+    let (decoded, _) = decode_response_payload_for_preview_parse(bytes, content_encoding);
     response_payload_looks_like_sse(decoded.as_ref())
 }
 
+#[cfg(test)]
+static RESPONSE_CAPTURE_RAW_SSE_HINT_FALLBACK_CALLS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static RESPONSE_CAPTURE_RAW_PARSE_FALLBACK_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+#[cfg(test)]
+fn reset_response_capture_raw_fallback_counters() {
+    RESPONSE_CAPTURE_RAW_SSE_HINT_FALLBACK_CALLS.store(0, Ordering::Relaxed);
+    RESPONSE_CAPTURE_RAW_PARSE_FALLBACK_CALLS.store(0, Ordering::Relaxed);
+}
+
+#[cfg(test)]
+fn response_capture_raw_fallback_counts() -> (usize, usize) {
+    (
+        RESPONSE_CAPTURE_RAW_SSE_HINT_FALLBACK_CALLS.load(Ordering::Relaxed),
+        RESPONSE_CAPTURE_RAW_PARSE_FALLBACK_CALLS.load(Ordering::Relaxed),
+    )
+}
+
+#[allow(dead_code)]
 fn response_payload_looks_like_sse_from_raw_file(
     path: &Path,
     content_encoding: Option<&str>,
@@ -16391,11 +17011,15 @@ fn response_payload_looks_like_sse_from_raw_file(
     Ok(response_payload_looks_like_sse(&decoded_prefix))
 }
 
+#[allow(dead_code)]
 fn response_payload_looks_like_sse_from_capture(
     resp_raw: &RawPayloadMeta,
     preview_bytes: &[u8],
     content_encoding: Option<&str>,
 ) -> bool {
+    #[cfg(test)]
+    RESPONSE_CAPTURE_RAW_SSE_HINT_FALLBACK_CALLS.fetch_add(1, Ordering::Relaxed);
+
     if response_payload_looks_like_sse_after_decode(preview_bytes, content_encoding) {
         return true;
     }
@@ -16417,6 +17041,69 @@ fn decode_response_payload_for_parse<'a>(
     content_encoding: Option<&str>,
 ) -> (Cow<'a, [u8]>, Option<String>) {
     decode_response_payload(bytes, content_encoding, false)
+}
+
+fn decode_response_payload_for_preview_parse<'a>(
+    bytes: &'a [u8],
+    content_encoding: Option<&str>,
+) -> (Cow<'a, [u8]>, Option<String>) {
+    let encodings = parse_content_encodings(content_encoding);
+    if encodings.is_empty() {
+        return (Cow::Borrowed(bytes), None);
+    }
+
+    let mut decoded = bytes.to_vec();
+    for encoding in encodings.iter().rev() {
+        match decode_single_content_encoding_lossy(decoded.as_slice(), encoding) {
+            Ok((next, None)) => decoded = next,
+            Ok((next, Some(err))) => return (Cow::Owned(next), Some(format!("{encoding}:{err}"))),
+            Err(err) => return (Cow::Borrowed(bytes), Some(format!("{encoding}:{err}"))),
+        }
+    }
+
+    (Cow::Owned(decoded), None)
+}
+
+fn read_decoder_lossy(
+    mut reader: impl Read,
+) -> std::result::Result<(Vec<u8>, Option<String>), String> {
+    let mut decoded = Vec::new();
+    match reader.read_to_end(&mut decoded) {
+        Ok(_) => Ok((decoded, None)),
+        Err(err) if !decoded.is_empty() => Ok((decoded, Some(err.to_string()))),
+        Err(err) => Err(err.to_string()),
+    }
+}
+
+fn decode_single_content_encoding_lossy(
+    bytes: &[u8],
+    encoding: &str,
+) -> std::result::Result<(Vec<u8>, Option<String>), String> {
+    match encoding {
+        "identity" => Ok((bytes.to_vec(), None)),
+        "gzip" | "x-gzip" => read_decoder_lossy(GzDecoder::new(bytes)),
+        "br" => read_decoder_lossy(BrotliDecompressor::new(bytes, 4096)),
+        "deflate" => {
+            let mut zlib_decoder = ZlibDecoder::new(bytes);
+            let mut decoded = Vec::new();
+            match zlib_decoder.read_to_end(&mut decoded) {
+                Ok(_) => Ok((decoded, None)),
+                Err(zlib_err) if !decoded.is_empty() => Ok((decoded, Some(zlib_err.to_string()))),
+                Err(zlib_err) => {
+                    let mut raw_decoder = DeflateDecoder::new(bytes);
+                    let mut raw_decoded = Vec::new();
+                    match raw_decoder.read_to_end(&mut raw_decoded) {
+                        Ok(_) => Ok((raw_decoded, None)),
+                        Err(raw_err) if !raw_decoded.is_empty() => {
+                            Ok((raw_decoded, Some(raw_err.to_string())))
+                        }
+                        Err(raw_err) => Err(format!("zlib={zlib_err}; raw={raw_err}")),
+                    }
+                }
+            }
+        }
+        other => Err(format!("unsupported_content_encoding:{other}")),
+    }
 }
 
 #[derive(Default)]
@@ -16517,7 +17204,6 @@ impl StreamResponsePayloadParser {
 struct StreamResponsePayloadParseOutcome {
     response_info: ResponseCaptureInfo,
     saw_stream_fields: bool,
-    discarded_oversized_line: bool,
 }
 
 struct StreamResponsePayloadChunkParser {
@@ -16620,7 +17306,6 @@ impl StreamResponsePayloadChunkParser {
         }
         StreamResponsePayloadParseOutcome {
             saw_stream_fields: self.parser.saw_stream_fields,
-            discarded_oversized_line: self.discarded_oversized_line,
             response_info: self.parser.finish(),
         }
     }
@@ -16632,6 +17317,7 @@ fn parse_stream_response_payload(bytes: &[u8]) -> ResponseCaptureInfo {
     parser.finish().response_info
 }
 
+#[allow(dead_code)]
 fn parse_stream_response_payload_from_reader<R: Read>(
     reader: R,
 ) -> io::Result<ResponseCaptureInfo> {
@@ -18314,6 +19000,7 @@ fn fill_missing_parsed_usage(primary: &mut ParsedUsage, fallback: &ParsedUsage) 
     }
 }
 
+#[allow(dead_code)]
 fn fill_missing_response_capture_info(
     response_info: &mut ResponseCaptureInfo,
     fallback: &ResponseCaptureInfo,
@@ -18357,6 +19044,7 @@ fn deflate_stream_uses_zlib_wrapper(header: &[u8]) -> bool {
     method == 8 && window_bits <= 7 && header_word % 31 == 0
 }
 
+#[allow(dead_code)]
 fn wrap_decoded_response_reader(
     mut reader: Box<dyn Read + Send>,
     content_encoding: Option<&str>,
@@ -18382,6 +19070,7 @@ fn wrap_decoded_response_reader(
     Ok(reader)
 }
 
+#[allow(dead_code)]
 fn open_decoded_response_reader(
     path: &Path,
     content_encoding: Option<&str>,
@@ -18390,6 +19079,7 @@ fn open_decoded_response_reader(
     wrap_decoded_response_reader(Box::new(file), content_encoding)
 }
 
+#[allow(dead_code)]
 fn parse_nonstream_response_payload_from_raw_file(
     target: ProxyCaptureTarget,
     path: &Path,
@@ -18414,6 +19104,7 @@ fn parse_nonstream_response_payload_from_raw_file(
     Ok(parse_target_response_payload(target, &decoded, false, None))
 }
 
+#[allow(dead_code)]
 fn parse_target_response_payload_from_raw_file(
     target: ProxyCaptureTarget,
     path: &Path,
@@ -18428,6 +19119,7 @@ fn parse_target_response_payload_from_raw_file(
     }
 }
 
+#[allow(dead_code)]
 fn parse_target_response_payload_from_capture(
     target: ProxyCaptureTarget,
     resp_raw: &RawPayloadMeta,
@@ -18435,6 +19127,9 @@ fn parse_target_response_payload_from_capture(
     is_stream_hint: bool,
     content_encoding: Option<&str>,
 ) -> ResponseCaptureInfo {
+    #[cfg(test)]
+    RESPONSE_CAPTURE_RAW_PARSE_FALLBACK_CALLS.fetch_add(1, Ordering::Relaxed);
+
     if let Some(path) = resp_raw.path.as_deref() {
         let path = PathBuf::from(path);
         match parse_target_response_payload_from_raw_file(
@@ -22664,6 +23359,9 @@ struct AppConfig {
     retention_batch_rows: usize,
     retention_catchup_budget: Duration,
     archive_dir: PathBuf,
+    codex_invocation_archive_layout: ArchiveBatchLayout,
+    codex_invocation_archive_segment_granularity: ArchiveSegmentGranularity,
+    invocation_archive_codec: ArchiveFileCodec,
     invocation_success_full_days: u64,
     invocation_max_days: u64,
     invocation_archive_ttl_days: u64,
@@ -22888,6 +23586,20 @@ impl AppConfig {
             ENV_INVOCATION_ARCHIVE_TTL_DAYS,
             DEFAULT_INVOCATION_ARCHIVE_TTL_DAYS,
         )?;
+        let codex_invocation_archive_layout = resolve_archive_batch_layout_config(
+            env::var(ENV_CODEX_INVOCATION_ARCHIVE_LAYOUT)
+                .ok()
+                .as_deref(),
+        )?;
+        let codex_invocation_archive_segment_granularity =
+            resolve_archive_segment_granularity_config(
+                env::var(ENV_CODEX_INVOCATION_ARCHIVE_SEGMENT_GRANULARITY)
+                    .ok()
+                    .as_deref(),
+            )?;
+        let invocation_archive_codec = resolve_archive_file_codec_config(
+            env::var(ENV_INVOCATION_ARCHIVE_CODEC).ok().as_deref(),
+        )?;
         let forward_proxy_attempts_retention_days = parse_u64_env_var(
             ENV_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS,
             DEFAULT_FORWARD_PROXY_ATTEMPTS_RETENTION_DAYS,
@@ -23042,6 +23754,9 @@ impl AppConfig {
             retention_batch_rows,
             retention_catchup_budget,
             archive_dir,
+            codex_invocation_archive_layout,
+            codex_invocation_archive_segment_granularity,
+            invocation_archive_codec,
             invocation_success_full_days,
             invocation_max_days,
             invocation_archive_ttl_days,
