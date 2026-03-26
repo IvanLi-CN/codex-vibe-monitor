@@ -1938,6 +1938,8 @@ struct AccountRoutingCandidateRow {
     primary_used_percent: Option<f64>,
     primary_window_minutes: Option<i64>,
     primary_resets_at: Option<String>,
+    local_primary_limit: Option<f64>,
+    local_secondary_limit: Option<f64>,
     credits_has_credits: Option<i64>,
     credits_unlimited: Option<i64>,
     credits_balance: Option<String>,
@@ -1954,13 +1956,13 @@ impl AccountRoutingCandidateRow {
     }
 
     fn capacity_profile(&self) -> RoutingCapacityProfile {
-        let pressure = self.normalized_window_pressure(Utc::now());
-        if pressure.short_pressure.is_some() {
+        let signals = self.window_signals();
+        if signals.short_signal {
             RoutingCapacityProfile {
                 soft_limit: 2,
                 hard_cap: 3,
             }
-        } else if pressure.long_pressure.is_some() {
+        } else if signals.long_signal {
             RoutingCapacityProfile {
                 soft_limit: 1,
                 hard_cap: 2,
@@ -1982,12 +1984,14 @@ impl AccountRoutingCandidateRow {
                 self.primary_window_minutes,
                 self.primary_resets_at.as_deref(),
                 now,
+                RoutingWindowBucket::Short,
             ),
             routing_window_state(
                 self.secondary_used_percent,
                 self.secondary_window_minutes,
                 self.secondary_resets_at.as_deref(),
                 now,
+                RoutingWindowBucket::Long,
             ),
         ]
         .into_iter()
@@ -2005,6 +2009,35 @@ impl AccountRoutingCandidateRow {
         NormalizedRoutingPressure {
             short_pressure,
             long_pressure,
+        }
+    }
+
+    fn window_signals(&self) -> RoutingWindowSignals {
+        let mut short_signal = false;
+        let mut long_signal = false;
+        for window_minutes in [self.primary_window_minutes, self.secondary_window_minutes]
+            .into_iter()
+            .flatten()
+        {
+            if window_minutes <= 360 {
+                short_signal = true;
+            } else {
+                long_signal = true;
+            }
+        }
+        if self.primary_window_minutes.is_none()
+            && (self.primary_used_percent.is_some() || self.local_primary_limit.is_some())
+        {
+            short_signal = true;
+        }
+        if self.secondary_window_minutes.is_none()
+            && (self.secondary_used_percent.is_some() || self.local_secondary_limit.is_some())
+        {
+            long_signal = true;
+        }
+        RoutingWindowSignals {
+            short_signal,
+            long_signal,
         }
     }
 
@@ -2032,6 +2065,12 @@ struct NormalizedRoutingPressure {
 }
 
 #[derive(Debug, Clone, Copy)]
+struct RoutingWindowSignals {
+    short_signal: bool,
+    long_signal: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
 struct RoutingWindowState {
     bucket: RoutingWindowBucket,
     pressure: f64,
@@ -2048,23 +2087,29 @@ fn routing_window_state(
     window_minutes: Option<i64>,
     resets_at: Option<&str>,
     now: DateTime<Utc>,
+    default_bucket: RoutingWindowBucket,
 ) -> Option<RoutingWindowState> {
     let used_ratio = normalize_unit_ratio(used_percent? / 100.0);
-    let window_minutes = window_minutes?.max(1);
-    let bucket = if window_minutes <= 360 {
-        RoutingWindowBucket::Short
+    let (bucket, remaining_ratio) = if let Some(window_minutes) = window_minutes {
+        let window_minutes = window_minutes.max(1);
+        let bucket = if window_minutes <= 360 {
+            RoutingWindowBucket::Short
+        } else {
+            RoutingWindowBucket::Long
+        };
+        let window_duration_secs = (window_minutes as f64) * 60.0;
+        let remaining_ratio = resets_at
+            .and_then(parse_rfc3339_utc)
+            .map(|reset_at| {
+                normalize_unit_ratio(
+                    (reset_at - now).num_seconds().max(0) as f64 / window_duration_secs,
+                )
+            })
+            .unwrap_or(1.0);
+        (bucket, remaining_ratio)
     } else {
-        RoutingWindowBucket::Long
+        (default_bucket, 1.0)
     };
-    let window_duration_secs = (window_minutes as f64) * 60.0;
-    let remaining_ratio = resets_at
-        .and_then(parse_rfc3339_utc)
-        .map(|reset_at| {
-            normalize_unit_ratio(
-                (reset_at - now).num_seconds().max(0) as f64 / window_duration_secs,
-            )
-        })
-        .unwrap_or(1.0);
     Some(RoutingWindowState {
         bucket,
         pressure: used_ratio * remaining_ratio,
@@ -14018,6 +14063,8 @@ async fn load_account_routing_candidates(
                 ORDER BY sample.captured_at DESC
                 LIMIT 1
             ) AS primary_resets_at,
+            account.local_primary_limit,
+            account.local_secondary_limit,
             (
                 SELECT sample.credits_has_credits
                 FROM pool_upstream_account_limit_samples sample
@@ -14133,6 +14180,8 @@ async fn load_account_routing_candidate(
                 ORDER BY sample.captured_at DESC
                 LIMIT 1
             ) AS primary_resets_at,
+            account.local_primary_limit,
+            account.local_secondary_limit,
             (
                 SELECT sample.credits_has_credits
                 FROM pool_upstream_account_limit_samples sample
@@ -16857,6 +16906,8 @@ mod tests {
             primary_used_percent: None,
             primary_window_minutes: None,
             primary_resets_at: None,
+            local_primary_limit: None,
+            local_secondary_limit: None,
             credits_has_credits: None,
             credits_unlimited: None,
             credits_balance: None,
@@ -16954,6 +17005,23 @@ mod tests {
         assert_eq!(long_only_capacity.hard_cap, 2);
         assert_eq!(short_window_capacity.soft_limit, 2);
         assert_eq!(short_window_capacity.hard_cap, 3);
+    }
+
+    #[test]
+    fn candidate_capacity_profile_preserves_legacy_limit_signals_without_window_metadata() {
+        let mut legacy_long_only = test_routing_candidate(1);
+        legacy_long_only.secondary_used_percent = Some(10.0);
+
+        let mut locally_limited = test_routing_candidate(2);
+        locally_limited.local_secondary_limit = Some(100.0);
+
+        let legacy_capacity = legacy_long_only.capacity_profile();
+        let local_capacity = locally_limited.capacity_profile();
+
+        assert_eq!(legacy_capacity.soft_limit, 1);
+        assert_eq!(legacy_capacity.hard_cap, 2);
+        assert_eq!(local_capacity.soft_limit, 1);
+        assert_eq!(local_capacity.hard_cap, 2);
     }
 
     #[tokio::test]
