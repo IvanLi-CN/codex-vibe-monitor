@@ -311,21 +311,6 @@ function clickCommandItem(matcher: RegExp) {
   return item
 }
 
-function clickSelectOption(matcher: RegExp) {
-  const option = Array.from(document.body.querySelectorAll('[role="option"]')).find(
-    (candidate) =>
-      candidate instanceof HTMLElement &&
-      matcher.test(candidate.textContent || ''),
-  )
-  if (!(option instanceof HTMLElement)) {
-    throw new Error(`missing select option: ${matcher}`)
-  }
-  act(() => {
-    option.dispatchEvent(new MouseEvent("click", { bubbles: true }))
-  })
-  return option
-}
-
 function pressButton(button: HTMLButtonElement) {
   act(() => {
     if (typeof PointerEvent === "function") {
@@ -1056,18 +1041,20 @@ describe("UpstreamAccountsPage duplicates", () => {
     render("/account-pool/upstream-accounts");
 
     clickCombobox(/work status/i);
-    clickSelectOption(/^rate limited$/i);
+    clickCommandItem(/^rate limited$/i);
+    clickCommandItem(/^working$/i);
     clickCombobox(/enable status/i);
-    clickSelectOption(/^enabled$/i);
+    clickCommandItem(/^enabled$/i);
     clickCombobox(/account health/i);
-    clickSelectOption(/^needs re-auth$/i);
+    clickCommandItem(/^needs re-auth$/i);
+    clickCommandItem(/^normal$/i);
 
     expect(hookMocks.useUpstreamAccounts).toHaveBeenLastCalledWith({
       groupSearch: undefined,
       groupUngrouped: undefined,
-      workStatus: "rate_limited",
-      enableStatus: "enabled",
-      healthStatus: "needs_reauth",
+      workStatus: ["rate_limited", "working"],
+      enableStatus: ["enabled"],
+      healthStatus: ["needs_reauth", "normal"],
       page: 1,
       pageSize: 20,
       tagIds: undefined,

@@ -8383,7 +8383,7 @@ async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHand
         )
         .route(
             "/api/pool/upstream-accounts",
-            get(list_upstream_accounts).post(bulk_update_upstream_accounts),
+            get(list_upstream_accounts_from_uri).post(bulk_update_upstream_accounts),
         )
         .route(
             "/api/pool/upstream-accounts/bulk-sync-jobs",

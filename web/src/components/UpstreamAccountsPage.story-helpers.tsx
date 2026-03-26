@@ -918,9 +918,18 @@ function filterAccountsForQuery(store: StoryStore, url: URL) {
     .getAll('tagIds')
     .map((value) => Number(value))
     .filter(Number.isFinite)
-  const workStatus = (url.searchParams.get('workStatus') || '').trim()
-  const enableStatus = (url.searchParams.get('enableStatus') || '').trim()
-  const healthStatus = (url.searchParams.get('healthStatus') || '').trim()
+  const workStatuses = url.searchParams
+    .getAll('workStatus')
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0)
+  const enableStatuses = url.searchParams
+    .getAll('enableStatus')
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0)
+  const healthStatuses = url.searchParams
+    .getAll('healthStatus')
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0)
 
   return store.accounts.filter((account) => {
     const normalizedGroup =
@@ -938,10 +947,10 @@ function filterAccountsForQuery(store: StoryStore, url: URL) {
         ? normalizedGroup.includes(groupSearch)
         : true
     if (!matchesGroup) return false
-    if (workStatus && derivedWorkStatus !== workStatus) return false
-    if (enableStatus && storyEnableStatus(account) !== enableStatus)
+    if (workStatuses.length > 0 && !workStatuses.includes(derivedWorkStatus)) return false
+    if (enableStatuses.length > 0 && !enableStatuses.includes(storyEnableStatus(account)))
       return false
-    if (healthStatus && derivedHealthStatus !== healthStatus) return false
+    if (healthStatuses.length > 0 && !healthStatuses.includes(derivedHealthStatus)) return false
     if (tagIds.length === 0) return true
     const accountTagIds = new Set(account.tags.map((tag) => tag.id))
     return tagIds.every((tagId) => accountTagIds.has(tagId))

@@ -28,6 +28,7 @@ import { Switch } from '../../components/ui/switch'
 import { AccountTagField } from '../../components/AccountTagField'
 import { AccountTagFilterCombobox } from '../../components/AccountTagFilterCombobox'
 import { EffectiveRoutingRuleCard } from '../../components/EffectiveRoutingRuleCard'
+import { MultiSelectFilterCombobox } from '../../components/MultiSelectFilterCombobox'
 import { UpstreamAccountGroupCombobox } from '../../components/UpstreamAccountGroupCombobox'
 import { UpstreamAccountGroupNoteDialog } from '../../components/UpstreamAccountGroupNoteDialog'
 import { UpstreamAccountUsageCard } from '../../components/UpstreamAccountUsageCard'
@@ -702,9 +703,9 @@ export default function UpstreamAccountsPage() {
   const navigate = useNavigate()
   const [groupFilterQuery, setGroupFilterQuery] = useState('')
   const [selectedTagIds, setSelectedTagIds] = useState<number[]>([])
-  const [workStatusFilter, setWorkStatusFilter] = useState('all')
-  const [enableStatusFilter, setEnableStatusFilter] = useState('all')
-  const [healthStatusFilter, setHealthStatusFilter] = useState('all')
+  const [workStatusFilter, setWorkStatusFilter] = useState<string[]>([])
+  const [enableStatusFilter, setEnableStatusFilter] = useState<string[]>([])
+  const [healthStatusFilter, setHealthStatusFilter] = useState<string[]>([])
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [selectedAccountIds, setSelectedAccountIds] = useState<number[]>([])
@@ -721,9 +722,9 @@ export default function UpstreamAccountsPage() {
           ? undefined
           : normalizedQuery,
       groupUngrouped: normalizedQuery ? normalizedLowerQuery === ungroupedLabel : undefined,
-      workStatus: workStatusFilter === 'all' ? undefined : workStatusFilter,
-      enableStatus: enableStatusFilter === 'all' ? undefined : enableStatusFilter,
-      healthStatus: healthStatusFilter === 'all' ? undefined : healthStatusFilter,
+      workStatus: workStatusFilter.length > 0 ? workStatusFilter : undefined,
+      enableStatus: enableStatusFilter.length > 0 ? enableStatusFilter : undefined,
+      healthStatus: healthStatusFilter.length > 0 ? healthStatusFilter : undefined,
       page,
       pageSize,
       tagIds: selectedTagIds.length > 0 ? selectedTagIds : undefined,
@@ -731,7 +732,6 @@ export default function UpstreamAccountsPage() {
   }, [enableStatusFilter, groupFilterQuery, healthStatusFilter, page, pageSize, selectedTagIds, t, workStatusFilter])
   const workStatusFilterOptions = useMemo(
     () => [
-      { value: 'all', label: t('accountPool.upstreamAccounts.workStatusFilter.all') },
       { value: 'working', label: t('accountPool.upstreamAccounts.workStatus.working') },
       { value: 'idle', label: t('accountPool.upstreamAccounts.workStatus.idle') },
       { value: 'rate_limited', label: t('accountPool.upstreamAccounts.workStatus.rate_limited') },
@@ -740,7 +740,6 @@ export default function UpstreamAccountsPage() {
   )
   const enableStatusFilterOptions = useMemo(
     () => [
-      { value: 'all', label: t('accountPool.upstreamAccounts.enableStatusFilter.all') },
       { value: 'enabled', label: t('accountPool.upstreamAccounts.enableStatus.enabled') },
       { value: 'disabled', label: t('accountPool.upstreamAccounts.enableStatus.disabled') },
     ],
@@ -748,7 +747,6 @@ export default function UpstreamAccountsPage() {
   )
   const healthStatusFilterOptions = useMemo(
     () => [
-      { value: 'all', label: t('accountPool.upstreamAccounts.healthStatusFilter.all') },
       { value: 'normal', label: t('accountPool.upstreamAccounts.healthStatus.normal') },
       { value: 'needs_reauth', label: t('accountPool.upstreamAccounts.healthStatus.needs_reauth') },
       {
@@ -884,19 +882,19 @@ export default function UpstreamAccountsPage() {
     clearBulkSelection()
   }, [clearBulkSelection])
 
-  const handleWorkStatusFilterChange = useCallback((value: string) => {
+  const handleWorkStatusFilterChange = useCallback((value: string[]) => {
     setWorkStatusFilter(value)
     setPage(1)
     clearBulkSelection()
   }, [clearBulkSelection])
 
-  const handleEnableStatusFilterChange = useCallback((value: string) => {
+  const handleEnableStatusFilterChange = useCallback((value: string[]) => {
     setEnableStatusFilter(value)
     setPage(1)
     clearBulkSelection()
   }, [clearBulkSelection])
 
-  const handleHealthStatusFilterChange = useCallback((value: string) => {
+  const handleHealthStatusFilterChange = useCallback((value: string[]) => {
     setHealthStatusFilter(value)
     setPage(1)
     clearBulkSelection()
@@ -1948,36 +1946,51 @@ export default function UpstreamAccountsPage() {
               </div>
 
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-12">
-                <SelectField
-                  label={t('accountPool.upstreamAccounts.workStatusFilterLabel')}
-                  className={cn('min-w-0', formFieldSpanVariants({ size: 'compact' }))}
-                  value={workStatusFilter}
-                  options={workStatusFilterOptions}
-                  size="filter"
-                  triggerClassName="border-base-300/90 bg-base-100"
-                  aria-label={t('accountPool.upstreamAccounts.workStatusFilterLabel')}
-                  onValueChange={handleWorkStatusFilterChange}
-                />
-                <SelectField
-                  label={t('accountPool.upstreamAccounts.enableStatusFilterLabel')}
-                  className={cn('min-w-0', formFieldSpanVariants({ size: 'compact' }))}
-                  value={enableStatusFilter}
-                  options={enableStatusFilterOptions}
-                  size="filter"
-                  triggerClassName="border-base-300/90 bg-base-100"
-                  aria-label={t('accountPool.upstreamAccounts.enableStatusFilterLabel')}
-                  onValueChange={handleEnableStatusFilterChange}
-                />
-                <SelectField
-                  label={t('accountPool.upstreamAccounts.healthStatusFilterLabel')}
-                  className={cn('min-w-0', formFieldSpanVariants({ size: 'compact' }))}
-                  value={healthStatusFilter}
-                  options={healthStatusFilterOptions}
-                  size="filter"
-                  triggerClassName="border-base-300/90 bg-base-100"
-                  aria-label={t('accountPool.upstreamAccounts.healthStatusFilterLabel')}
-                  onValueChange={handleHealthStatusFilterChange}
-                />
+                <label className={cn('field min-w-0', formFieldSpanVariants({ size: 'compact' }))}>
+                  <span className="field-label">{t('accountPool.upstreamAccounts.workStatusFilterLabel')}</span>
+                  <MultiSelectFilterCombobox
+                    size="filter"
+                    options={workStatusFilterOptions}
+                    value={workStatusFilter}
+                    placeholder={t('accountPool.upstreamAccounts.workStatusFilter.all')}
+                    searchPlaceholder={t('accountPool.upstreamAccounts.workStatusFilter.searchPlaceholder')}
+                    emptyLabel={t('accountPool.upstreamAccounts.workStatusFilter.empty')}
+                    clearLabel={t('accountPool.upstreamAccounts.workStatusFilter.clear')}
+                    ariaLabel={t('accountPool.upstreamAccounts.workStatusFilterLabel')}
+                    triggerClassName="border-base-300/90 bg-base-100"
+                    onValueChange={handleWorkStatusFilterChange}
+                  />
+                </label>
+                <label className={cn('field min-w-0', formFieldSpanVariants({ size: 'compact' }))}>
+                  <span className="field-label">{t('accountPool.upstreamAccounts.enableStatusFilterLabel')}</span>
+                  <MultiSelectFilterCombobox
+                    size="filter"
+                    options={enableStatusFilterOptions}
+                    value={enableStatusFilter}
+                    placeholder={t('accountPool.upstreamAccounts.enableStatusFilter.all')}
+                    searchPlaceholder={t('accountPool.upstreamAccounts.enableStatusFilter.searchPlaceholder')}
+                    emptyLabel={t('accountPool.upstreamAccounts.enableStatusFilter.empty')}
+                    clearLabel={t('accountPool.upstreamAccounts.enableStatusFilter.clear')}
+                    ariaLabel={t('accountPool.upstreamAccounts.enableStatusFilterLabel')}
+                    triggerClassName="border-base-300/90 bg-base-100"
+                    onValueChange={handleEnableStatusFilterChange}
+                  />
+                </label>
+                <label className={cn('field min-w-0', formFieldSpanVariants({ size: 'compact' }))}>
+                  <span className="field-label">{t('accountPool.upstreamAccounts.healthStatusFilterLabel')}</span>
+                  <MultiSelectFilterCombobox
+                    size="filter"
+                    options={healthStatusFilterOptions}
+                    value={healthStatusFilter}
+                    placeholder={t('accountPool.upstreamAccounts.healthStatusFilter.all')}
+                    searchPlaceholder={t('accountPool.upstreamAccounts.healthStatusFilter.searchPlaceholder')}
+                    emptyLabel={t('accountPool.upstreamAccounts.healthStatusFilter.empty')}
+                    clearLabel={t('accountPool.upstreamAccounts.healthStatusFilter.clear')}
+                    ariaLabel={t('accountPool.upstreamAccounts.healthStatusFilterLabel')}
+                    triggerClassName="border-base-300/90 bg-base-100"
+                    onValueChange={handleHealthStatusFilterChange}
+                  />
+                </label>
                 <label className={cn('field min-w-0', formFieldSpanVariants({ size: 'wide' }))}>
                   <span className="field-label">{t('accountPool.upstreamAccounts.groupFilterLabel')}</span>
                   <UpstreamAccountGroupCombobox

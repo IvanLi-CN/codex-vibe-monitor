@@ -5,8 +5,8 @@ use aes_gcm::{
     aead::{Aead, KeyInit},
 };
 use axum::{
-    extract::{Path as AxumPath, Query},
-    http::header,
+    extract::{OriginalUri, Path as AxumPath, Query},
+    http::{Uri, header},
     response::Html,
 };
 use base64::engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD};
@@ -803,13 +803,28 @@ pub(crate) struct ListUpstreamAccountsQuery {
     pub(crate) group_search: Option<String>,
     pub(crate) group_ungrouped: Option<bool>,
     pub(crate) status: Option<String>,
-    pub(crate) work_status: Option<String>,
-    pub(crate) enable_status: Option<String>,
-    pub(crate) health_status: Option<String>,
+    #[serde(default)]
+    pub(crate) work_status: Vec<String>,
+    #[serde(default)]
+    pub(crate) enable_status: Vec<String>,
+    #[serde(default)]
+    pub(crate) health_status: Vec<String>,
     pub(crate) page: Option<usize>,
     pub(crate) page_size: Option<usize>,
     #[serde(default)]
     pub(crate) tag_ids: Vec<i64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListUpstreamAccountsBaseQuery {
+    group_search: Option<String>,
+    group_ungrouped: Option<bool>,
+    status: Option<String>,
+    page: Option<usize>,
+    page_size: Option<usize>,
+    #[serde(default)]
+    tag_ids: Vec<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -2884,9 +2899,26 @@ async fn sqlite_table_exists(pool: &Pool<Sqlite>, table_name: &str) -> Result<bo
         > 0)
 }
 
+#[cfg(test)]
 pub(crate) async fn list_upstream_accounts(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ListUpstreamAccountsQuery>,
+) -> Result<Json<UpstreamAccountListResponse>, (StatusCode, String)> {
+    list_upstream_accounts_from_params(state, params).await
+}
+
+pub(crate) async fn list_upstream_accounts_from_uri(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(original_uri): OriginalUri,
+) -> Result<Json<UpstreamAccountListResponse>, (StatusCode, String)> {
+    let params = parse_list_upstream_accounts_query(&original_uri)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    list_upstream_accounts_from_params(state, params).await
+}
+
+async fn list_upstream_accounts_from_params(
+    state: Arc<AppState>,
+    params: ListUpstreamAccountsQuery,
 ) -> Result<Json<UpstreamAccountListResponse>, (StatusCode, String)> {
     expire_pending_login_sessions(&state.pool)
         .await
@@ -2928,6 +2960,32 @@ pub(crate) async fn list_upstream_accounts(
         has_ungrouped_accounts,
         routing: build_pool_routing_settings_response(state.as_ref(), &routing),
     }))
+}
+
+fn parse_list_upstream_accounts_query(uri: &Uri) -> Result<ListUpstreamAccountsQuery, String> {
+    let base = Query::<ListUpstreamAccountsBaseQuery>::try_from_uri(uri)
+        .map_err(|err| err.body_text())?
+        .0;
+    let mut params = ListUpstreamAccountsQuery {
+        group_search: base.group_search,
+        group_ungrouped: base.group_ungrouped,
+        status: base.status,
+        page: base.page,
+        page_size: base.page_size,
+        tag_ids: base.tag_ids,
+        ..ListUpstreamAccountsQuery::default()
+    };
+
+    for (key, value) in url::form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes()) {
+        match key.as_ref() {
+            "workStatus" => params.work_status.push(value.into_owned()),
+            "enableStatus" => params.enable_status.push(value.into_owned()),
+            "healthStatus" => params.health_status.push(value.into_owned()),
+            _ => {}
+        }
+    }
+
+    Ok(params)
 }
 
 pub(crate) async fn list_tags(
@@ -8116,15 +8174,21 @@ async fn load_upstream_account_summaries_filtered(
 ) -> Result<Vec<UpstreamAccountSummary>> {
     let legacy_status_filter =
         normalize_legacy_upstream_account_status_filter(params.status.as_deref());
-    let work_status_filter =
-        normalize_upstream_account_work_status_filter(params.work_status.as_deref())
-            .or(legacy_status_filter.work_status);
-    let enable_status_filter =
-        normalize_upstream_account_enable_status_filter(params.enable_status.as_deref())
-            .or(legacy_status_filter.enable_status);
-    let health_status_filter =
-        normalize_upstream_account_health_status_filter(params.health_status.as_deref())
-            .or(legacy_status_filter.health_status);
+    let work_status_filters = collect_normalized_upstream_account_filters(
+        &params.work_status,
+        legacy_status_filter.work_status,
+        normalize_upstream_account_work_status_filter,
+    );
+    let enable_status_filters = collect_normalized_upstream_account_filters(
+        &params.enable_status,
+        legacy_status_filter.enable_status,
+        normalize_upstream_account_enable_status_filter,
+    );
+    let health_status_filters = collect_normalized_upstream_account_filters(
+        &params.health_status,
+        legacy_status_filter.health_status,
+        normalize_upstream_account_health_status_filter,
+    );
     let sync_state_filter = legacy_status_filter.sync_state;
     let duplicate_info_map = load_duplicate_info_map(pool).await?;
     let mut normalized_tag_ids = params
@@ -8213,9 +8277,9 @@ async fn load_upstream_account_summaries_filtered(
         .filter(|item| {
             matches_upstream_account_filters(
                 item,
-                work_status_filter,
-                enable_status_filter,
-                health_status_filter,
+                &work_status_filters,
+                &enable_status_filters,
+                &health_status_filters,
                 sync_state_filter,
             )
         })
@@ -10530,6 +10594,31 @@ fn normalize_upstream_account_health_status_filter(value: Option<&str>) -> Optio
     }
 }
 
+fn collect_normalized_upstream_account_filters(
+    values: &[String],
+    legacy_value: Option<&'static str>,
+    normalize: fn(Option<&str>) -> Option<&'static str>,
+) -> Vec<&'static str> {
+    let mut normalized = Vec::new();
+
+    for value in values {
+        let Some(next_value) = normalize(Some(value.as_str())) else {
+            continue;
+        };
+        if !normalized.contains(&next_value) {
+            normalized.push(next_value);
+        }
+    }
+
+    if let Some(legacy_value) = legacy_value {
+        if !normalized.contains(&legacy_value) {
+            normalized.push(legacy_value);
+        }
+    }
+
+    normalized
+}
+
 fn normalize_legacy_upstream_account_status_filter(
     value: Option<&str>,
 ) -> LegacyUpstreamAccountStatusFilter {
@@ -10942,14 +11031,16 @@ fn classify_upstream_account_display_status(
 
 fn matches_upstream_account_filters(
     item: &UpstreamAccountSummary,
-    work_status_filter: Option<&str>,
-    enable_status_filter: Option<&str>,
-    health_status_filter: Option<&str>,
+    work_status_filters: &[&str],
+    enable_status_filters: &[&str],
+    health_status_filters: &[&str],
     sync_state_filter: Option<&str>,
 ) -> bool {
-    work_status_filter.is_none_or(|value| item.work_status == value)
-        && enable_status_filter.is_none_or(|value| item.enable_status == value)
-        && health_status_filter.is_none_or(|value| item.health_status == value)
+    (work_status_filters.is_empty() || work_status_filters.contains(&item.work_status.as_str()))
+        && (enable_status_filters.is_empty()
+            || enable_status_filters.contains(&item.enable_status.as_str()))
+        && (health_status_filters.is_empty()
+            || health_status_filters.contains(&item.health_status.as_str()))
         && sync_state_filter.is_none_or(|value| item.sync_state == value)
 }
 
@@ -14528,6 +14619,68 @@ mod tests {
         time::timeout,
     };
 
+    fn test_summary_with_statuses(
+        work_status: &str,
+        enable_status: &str,
+        health_status: &str,
+        sync_state: &str,
+    ) -> UpstreamAccountSummary {
+        UpstreamAccountSummary {
+            id: 1,
+            kind: UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX.to_string(),
+            provider: UPSTREAM_ACCOUNT_PROVIDER_CODEX.to_string(),
+            display_name: "Test account".to_string(),
+            group_name: Some("alpha".to_string()),
+            is_mother: false,
+            status: UPSTREAM_ACCOUNT_STATUS_ACTIVE.to_string(),
+            display_status: UPSTREAM_ACCOUNT_STATUS_ACTIVE.to_string(),
+            enabled: enable_status == UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED,
+            work_status: work_status.to_string(),
+            enable_status: enable_status.to_string(),
+            health_status: health_status.to_string(),
+            sync_state: sync_state.to_string(),
+            email: Some("tester@example.com".to_string()),
+            chatgpt_account_id: Some("acct_test".to_string()),
+            plan_type: Some("pro".to_string()),
+            masked_api_key: None,
+            last_synced_at: None,
+            last_successful_sync_at: None,
+            last_activity_at: None,
+            active_conversation_count: 0,
+            last_error: None,
+            last_error_at: None,
+            last_action: None,
+            last_action_source: None,
+            last_action_reason_code: None,
+            last_action_reason_message: None,
+            last_action_http_status: None,
+            last_action_invoke_id: None,
+            last_action_at: None,
+            token_expires_at: None,
+            primary_window: None,
+            secondary_window: None,
+            credits: None,
+            local_limits: None,
+            compact_support: CompactSupportState {
+                status: "unknown".to_string(),
+                observed_at: None,
+                reason: None,
+            },
+            duplicate_info: None,
+            tags: vec![],
+            effective_routing_rule: EffectiveRoutingRule {
+                guard_enabled: false,
+                lookback_hours: None,
+                max_conversations: None,
+                allow_cut_out: true,
+                allow_cut_in: true,
+                source_tag_ids: vec![],
+                source_tag_names: vec![],
+                guard_rules: vec![],
+            },
+        }
+    }
+
     #[test]
     fn derive_secret_key_is_stable() {
         let lhs = derive_secret_key("alpha");
@@ -14576,6 +14729,90 @@ mod tests {
             string_value.upstream_base_url,
             OptionalField::Value("https://proxy.example.com/gateway".to_string())
         );
+    }
+
+    #[test]
+    fn list_query_deserializes_repeated_status_filters() {
+        let query = parse_list_upstream_accounts_query(
+            &"/api/pool/upstream-accounts?workStatus=working&workStatus=rate_limited&enableStatus=enabled&healthStatus=normal&healthStatus=needs_reauth"
+                .parse()
+                .expect("parse uri"),
+        )
+        .expect("deserialize repeated filters");
+
+        assert_eq!(
+            query.work_status,
+            vec![
+                UPSTREAM_ACCOUNT_WORK_STATUS_WORKING.to_string(),
+                UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED.to_string(),
+            ]
+        );
+        assert_eq!(
+            query.enable_status,
+            vec![UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED.to_string()]
+        );
+        assert_eq!(
+            query.health_status,
+            vec![
+                UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL.to_string(),
+                UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH.to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn list_query_keeps_single_status_filter_compatible() {
+        let query = parse_list_upstream_accounts_query(
+            &"/api/pool/upstream-accounts?workStatus=idle&enableStatus=disabled&healthStatus=normal"
+                .parse()
+                .expect("parse uri"),
+        )
+        .expect("deserialize single filters");
+
+        assert_eq!(
+            query.work_status,
+            vec![UPSTREAM_ACCOUNT_WORK_STATUS_IDLE.to_string()]
+        );
+        assert_eq!(
+            query.enable_status,
+            vec![UPSTREAM_ACCOUNT_ENABLE_STATUS_DISABLED.to_string()]
+        );
+        assert_eq!(
+            query.health_status,
+            vec![UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL.to_string()]
+        );
+    }
+
+    #[test]
+    fn matches_upstream_account_filters_uses_or_within_each_dimension() {
+        let item = test_summary_with_statuses(
+            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED,
+            UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED,
+            UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL,
+            UPSTREAM_ACCOUNT_SYNC_STATE_IDLE,
+        );
+
+        assert!(matches_upstream_account_filters(
+            &item,
+            &[
+                UPSTREAM_ACCOUNT_WORK_STATUS_WORKING,
+                UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED,
+            ],
+            &[UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED],
+            &[
+                UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL,
+                UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH,
+            ],
+            Some(UPSTREAM_ACCOUNT_SYNC_STATE_IDLE),
+        ));
+
+        assert!(!matches_upstream_account_filters(
+            &item,
+            &[UPSTREAM_ACCOUNT_WORK_STATUS_WORKING],
+            &[UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED],
+            &[UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL],
+            Some(UPSTREAM_ACCOUNT_SYNC_STATE_IDLE),
+        ));
     }
 
     #[test]

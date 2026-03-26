@@ -213,10 +213,28 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.statusFilter.all": "All statuses",
     "accountPool.upstreamAccounts.workStatusFilterLabel": "Work status",
     "accountPool.upstreamAccounts.workStatusFilter.all": "All work statuses",
+    "accountPool.upstreamAccounts.workStatusFilter.searchPlaceholder":
+      "Search work statuses...",
+    "accountPool.upstreamAccounts.workStatusFilter.empty":
+      "No matching work statuses.",
+    "accountPool.upstreamAccounts.workStatusFilter.clear":
+      "Clear work status filters",
     "accountPool.upstreamAccounts.enableStatusFilterLabel": "Enable status",
     "accountPool.upstreamAccounts.enableStatusFilter.all": "All enable statuses",
+    "accountPool.upstreamAccounts.enableStatusFilter.searchPlaceholder":
+      "Search enable statuses...",
+    "accountPool.upstreamAccounts.enableStatusFilter.empty":
+      "No matching enable statuses.",
+    "accountPool.upstreamAccounts.enableStatusFilter.clear":
+      "Clear enable status filters",
     "accountPool.upstreamAccounts.healthStatusFilterLabel": "Account health",
     "accountPool.upstreamAccounts.healthStatusFilter.all": "All account health statuses",
+    "accountPool.upstreamAccounts.healthStatusFilter.searchPlaceholder":
+      "Search account health statuses...",
+    "accountPool.upstreamAccounts.healthStatusFilter.empty":
+      "No matching account health statuses.",
+    "accountPool.upstreamAccounts.healthStatusFilter.clear":
+      "Clear account health filters",
     "accountPool.upstreamAccounts.tagFilterLabel": "Account tags",
     "accountPool.upstreamAccounts.tagFilterPlaceholder": "All tags",
     "accountPool.upstreamAccounts.tagFilterSearchPlaceholder": "Search tags...",
@@ -1703,10 +1721,19 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.statusFilter.all": "全部状态",
     "accountPool.upstreamAccounts.workStatusFilterLabel": "工作状态",
     "accountPool.upstreamAccounts.workStatusFilter.all": "全部工作状态",
+    "accountPool.upstreamAccounts.workStatusFilter.searchPlaceholder": "搜索工作状态...",
+    "accountPool.upstreamAccounts.workStatusFilter.empty": "没有匹配的工作状态。",
+    "accountPool.upstreamAccounts.workStatusFilter.clear": "清空工作状态筛选",
     "accountPool.upstreamAccounts.enableStatusFilterLabel": "启用状态",
     "accountPool.upstreamAccounts.enableStatusFilter.all": "全部启用状态",
+    "accountPool.upstreamAccounts.enableStatusFilter.searchPlaceholder": "搜索启用状态...",
+    "accountPool.upstreamAccounts.enableStatusFilter.empty": "没有匹配的启用状态。",
+    "accountPool.upstreamAccounts.enableStatusFilter.clear": "清空启用状态筛选",
     "accountPool.upstreamAccounts.healthStatusFilterLabel": "账号状态",
     "accountPool.upstreamAccounts.healthStatusFilter.all": "全部账号状态",
+    "accountPool.upstreamAccounts.healthStatusFilter.searchPlaceholder": "搜索账号状态...",
+    "accountPool.upstreamAccounts.healthStatusFilter.empty": "没有匹配的账号状态。",
+    "accountPool.upstreamAccounts.healthStatusFilter.clear": "清空账号状态筛选",
     "accountPool.upstreamAccounts.tagFilterLabel": "账号标签",
     "accountPool.upstreamAccounts.tagFilterPlaceholder": "全部标签",
     "accountPool.upstreamAccounts.tagFilterSearchPlaceholder": "搜索标签...",
