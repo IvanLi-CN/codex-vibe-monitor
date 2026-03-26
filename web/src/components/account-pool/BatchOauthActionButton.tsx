@@ -2,6 +2,7 @@ import {
   useEffect,
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { AppIcon } from "../AppIcon";
@@ -65,12 +66,17 @@ export function BatchOauthActionButton({
   className,
 }: BatchOauthActionButtonProps) {
   const longPressTimerRef = useRef<number | null>(null);
+  const longPressResetTimerRef = useRef<number | null>(null);
+  const focusPopoverTimerRef = useRef<number | null>(null);
   const hoverCloseTimerRef = useRef<number | null>(null);
   const manualCopyValueRef = useRef<HTMLDivElement | null>(null);
+  const popoverContentRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const focusPopoverRequestedRef = useRef(false);
   const longPressTriggeredRef = useRef(false);
   const [hoverOpen, setHoverOpen] = useState(false);
   const [pinnedOpen, setPinnedOpen] = useState(false);
+  const resolvedOpen = hoverOpen || pinnedOpen || Boolean(manualCopyValue);
 
   useEffect(() => {
     return () => {
@@ -79,6 +85,12 @@ export function BatchOauthActionButton({
       }
       if (hoverCloseTimerRef.current != null) {
         window.clearTimeout(hoverCloseTimerRef.current);
+      }
+      if (longPressResetTimerRef.current != null) {
+        window.clearTimeout(longPressResetTimerRef.current);
+      }
+      if (focusPopoverTimerRef.current != null) {
+        window.clearTimeout(focusPopoverTimerRef.current);
       }
     };
   }, []);
@@ -101,11 +113,45 @@ export function BatchOauthActionButton({
     }
   };
 
+  const clearLongPressResetTimer = () => {
+    if (longPressResetTimerRef.current != null) {
+      window.clearTimeout(longPressResetTimerRef.current);
+      longPressResetTimerRef.current = null;
+    }
+  };
+
   const clearHoverCloseTimer = () => {
     if (hoverCloseTimerRef.current != null) {
       window.clearTimeout(hoverCloseTimerRef.current);
       hoverCloseTimerRef.current = null;
     }
+  };
+
+  const focusFirstPopoverControl = () => {
+    const focusNow = () => {
+      const container = popoverContentRef.current;
+      if (!container) return false;
+      const firstFocusable = container.querySelector<HTMLElement>(
+        [
+          'button:not([disabled])',
+          'a[href]',
+          'input:not([disabled])',
+          'textarea:not([disabled])',
+          '[role="textbox"][tabindex]',
+          '[tabindex]:not([tabindex="-1"])',
+        ].join(", "),
+      );
+      firstFocusable?.focus();
+      return document.activeElement === firstFocusable;
+    };
+    if (focusNow()) return;
+    if (focusPopoverTimerRef.current != null) {
+      window.clearTimeout(focusPopoverTimerRef.current);
+    }
+    focusPopoverTimerRef.current = window.setTimeout(() => {
+      focusNow();
+      focusPopoverTimerRef.current = null;
+    }, 0);
   };
 
   const closePopover = () => {
@@ -134,6 +180,8 @@ export function BatchOauthActionButton({
     if (disabled || busy) return;
     if (event.button !== 0) return;
     if (event.pointerType !== "touch" && event.pointerType !== "pen") return;
+    clearLongPressResetTimer();
+    longPressTriggeredRef.current = false;
     clearLongPressTimer();
     longPressTimerRef.current = window.setTimeout(() => {
       longPressTriggeredRef.current = true;
@@ -144,11 +192,18 @@ export function BatchOauthActionButton({
 
   const handlePointerRelease = () => {
     clearLongPressTimer();
+    if (!longPressTriggeredRef.current) return;
+    clearLongPressResetTimer();
+    longPressResetTimerRef.current = window.setTimeout(() => {
+      longPressTriggeredRef.current = false;
+      longPressResetTimerRef.current = null;
+    }, 0);
   };
 
   const handlePrimaryClick = () => {
     if (disabled) return;
     if (longPressTriggeredRef.current) {
+      clearLongPressResetTimer();
       longPressTriggeredRef.current = false;
       return;
     }
@@ -166,7 +221,40 @@ export function BatchOauthActionButton({
     onRegenerate();
   };
 
-  const resolvedOpen = hoverOpen || pinnedOpen || Boolean(manualCopyValue);
+  const handleTriggerKeyDown = (
+    event: ReactKeyboardEvent<HTMLButtonElement>,
+  ) => {
+    if (disabled) return;
+    if (
+      event.key === "Tab" &&
+      !event.shiftKey &&
+      (resolvedOpen || mode === "copy")
+    ) {
+      event.preventDefault();
+      clearHoverCloseTimer();
+      setPinnedOpen(true);
+      if (resolvedOpen) {
+        focusFirstPopoverControl();
+      } else {
+        focusPopoverRequestedRef.current = true;
+      }
+      return;
+    }
+    if (
+      event.key === "ArrowDown" ||
+      event.key === "ContextMenu" ||
+      (event.shiftKey && event.key === "F10")
+    ) {
+      event.preventDefault();
+      clearHoverCloseTimer();
+      setPinnedOpen(true);
+      if (resolvedOpen) {
+        focusFirstPopoverControl();
+      } else {
+        focusPopoverRequestedRef.current = true;
+      }
+    }
+  };
 
   return (
     <Popover
@@ -194,11 +282,19 @@ export function BatchOauthActionButton({
             }
           }}
           onFocus={openHoverPopover}
-          onBlur={() => {
+          onBlur={(event) => {
+            if (
+              popoverContentRef.current?.contains(
+                event.relatedTarget as Node | null,
+              )
+            ) {
+              return;
+            }
             if (!pinnedOpen && !manualCopyValue) {
               scheduleHoverPopoverClose();
             }
           }}
+          onKeyDown={handleTriggerKeyDown}
           onPointerDown={handlePointerDown}
           onPointerUp={handlePointerRelease}
           onPointerCancel={handlePointerRelease}
@@ -222,6 +318,7 @@ export function BatchOauthActionButton({
         </Button>
       </PopoverAnchor>
       <BubblePopoverContent
+        ref={popoverContentRef}
         anchorElement={triggerRef.current}
         align="start"
         side="top"
@@ -229,7 +326,12 @@ export function BatchOauthActionButton({
         collisionPadding={12}
         sticky="partial"
         className="w-[min(28rem,calc(100vw-1rem))] rounded-2xl px-4 py-4 shadow-xl"
-        onOpenAutoFocus={(event) => event.preventDefault()}
+        onOpenAutoFocus={(event) => {
+          event.preventDefault();
+          if (!focusPopoverRequestedRef.current) return;
+          focusPopoverRequestedRef.current = false;
+          focusFirstPopoverControl();
+        }}
         onCloseAutoFocus={(event) => event.preventDefault()}
         onMouseEnter={openHoverPopover}
         onMouseLeave={() => {

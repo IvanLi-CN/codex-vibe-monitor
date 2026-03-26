@@ -147,6 +147,13 @@ describe("BatchOauthActionButton", () => {
     });
 
     expect(onPrimaryAction).not.toHaveBeenCalled();
+
+    act(() => {
+      vi.runAllTimers();
+      button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    expect(onPrimaryAction).toHaveBeenCalledTimes(1);
   });
 
   it("shows the manual copy fallback and allows dismissing it", () => {
@@ -170,5 +177,27 @@ describe("BatchOauthActionButton", () => {
     });
 
     expect(onManualCopyOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it("lets keyboard users tab into the pinned popover action", () => {
+    render(<BatchOauthActionButton mode="copy" {...baseProps} />);
+
+    const button = getButton(/copy oauth url/i);
+    act(() => {
+      button.focus();
+    });
+
+    act(() => {
+      button.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          bubbles: true,
+          key: "Tab",
+        }),
+      );
+      vi.runAllTimers();
+    });
+
+    const regenerateButton = getButton(/regenerate oauth url/i);
+    expect(document.activeElement).toBe(regenerateButton);
   });
 });
