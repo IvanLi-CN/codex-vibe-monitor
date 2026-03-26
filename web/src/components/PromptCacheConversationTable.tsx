@@ -646,7 +646,7 @@ export function PromptCacheConversationTable({
                     <div className="flex items-center gap-1">
                       <button
                         type="button"
-                        className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-base-300/70 bg-base-100/80 text-base-content/72 transition hover:border-primary/40 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-base-300/70 bg-base-100/80 text-base-content/72 transition hover:border-primary/40 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                         aria-label={
                           isExpanded
                             ? previewLabels.collapseAction
@@ -665,7 +665,7 @@ export function PromptCacheConversationTable({
                       </button>
                       <button
                         type="button"
-                        className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-base-300/70 bg-base-100/80 text-base-content/72 transition hover:border-primary/40 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                        className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-base-300/70 bg-base-100/80 text-base-content/72 transition hover:border-primary/40 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                         aria-label={previewLabels.historyAction}
                         onClick={() => openHistoryDrawer(conversation.promptCacheKey)}
                       >
@@ -797,7 +797,7 @@ export function PromptCacheConversationTable({
                         <div className="flex items-center gap-1">
                           <button
                             type="button"
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-base-300/70 bg-base-100/80 text-base-content/72 transition hover:border-primary/40 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-base-300/70 bg-base-100/80 text-base-content/72 transition hover:border-primary/40 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                             aria-label={
                               isExpanded
                                 ? previewLabels.collapseAction
@@ -816,7 +816,7 @@ export function PromptCacheConversationTable({
                           </button>
                           <button
                             type="button"
-                            className="inline-flex h-8 w-8 items-center justify-center rounded-md border border-base-300/70 bg-base-100/80 text-base-content/72 transition hover:border-primary/40 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                            className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-base-300/70 bg-base-100/80 text-base-content/72 transition hover:border-primary/40 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                             aria-label={previewLabels.historyAction}
                             onClick={() =>
                               openHistoryDrawer(conversation.promptCacheKey)
