@@ -103,7 +103,7 @@ function buildPreview(
     occurredAt: overrides.occurredAt,
     status: overrides.status ?? "completed",
     failureClass: overrides.failureClass ?? null,
-    routeMode: overrides.routeMode ?? null,
+    routeMode: overrides.routeMode ?? "pool",
     model: overrides.model ?? "gpt-5.4",
     totalTokens: overrides.totalTokens ?? 0,
     cost: overrides.cost ?? 0,
@@ -123,6 +123,7 @@ function buildHistoryRecord(
     occurredAt: preview.occurredAt,
     status: preview.status,
     failureClass: preview.failureClass ?? undefined,
+    model: preview.model ?? undefined,
     totalTokens: preview.totalTokens,
     cost: preview.cost ?? undefined,
     endpoint: preview.endpoint ?? undefined,
@@ -610,7 +611,7 @@ const meta = {
             <div className="min-h-screen bg-base-200 px-4 py-6 text-base-content sm:px-6">
               <main className="mx-auto w-full max-w-[1200px] space-y-4">
                 <h2 className="text-xl font-semibold">
-                  Prompt Cache 对话统计（Storybook Mock）
+                  对话（Storybook Mock）
                 </h2>
                 <Story />
               </main>
@@ -729,5 +730,8 @@ export const DrawerOpen: Story = {
     await expect(
       documentScope.getByText(/Loaded 6 \/ 6 retained record\(s\)/i),
     ).toBeInTheDocument();
+    await expect(
+      documentScope.getAllByTestId("invocation-table-scroll").length,
+    ).toBeGreaterThan(0);
   },
 };

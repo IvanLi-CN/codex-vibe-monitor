@@ -11,7 +11,7 @@ import { fetchInvocationRecords } from "../lib/api";
 import { InvocationAccountDetailDrawer } from "./InvocationAccountDetailDrawer";
 import { AccountDetailDrawerShell } from "./AccountDetailDrawerShell";
 import { AppIcon } from "./AppIcon";
-import { InvocationRecordsTable } from "./InvocationRecordsTable";
+import { InvocationTable } from "./InvocationTable";
 import { ConversationSparkline } from "./KeyedConversationTable";
 import {
   FALLBACK_CELL,
@@ -232,7 +232,7 @@ function UpstreamAccountsBlock({
   );
 }
 
-function PromptCacheConversationInvocationRecordsTable({
+function PromptCacheConversationInvocationTable({
   records,
   isLoading,
   error,
@@ -243,20 +243,32 @@ function PromptCacheConversationInvocationRecordsTable({
   error?: string | null;
   emptyLabel: string;
 }) {
-  if (!isLoading && !error && records.length === 0) {
+  const hasLoadedRecords = records.length > 0;
+
+  if (hasLoadedRecords) {
     return (
-      <div className="rounded-lg border border-dashed border-base-300/75 bg-base-100/35 px-3 py-4 text-[11px] text-base-content/60">
-        {emptyLabel}
+      <div className="space-y-3">
+        {error ? (
+          <Alert variant="error">
+            <span>{error}</span>
+          </Alert>
+        ) : null}
+        <InvocationTable
+          records={records}
+          isLoading={false}
+          error={null}
+          emptyLabel={emptyLabel}
+        />
       </div>
     );
   }
 
   return (
-    <InvocationRecordsTable
-      focus="token"
+    <InvocationTable
       records={records}
       isLoading={isLoading}
       error={error}
+      emptyLabel={emptyLabel}
     />
   );
 }
@@ -371,7 +383,7 @@ function PromptCacheConversationHistoryDrawer({
       }
     >
       <div className="space-y-3">
-        <PromptCacheConversationInvocationRecordsTable
+        <PromptCacheConversationInvocationTable
           records={records}
           isLoading={isLoading}
           error={error}
@@ -703,7 +715,7 @@ export function PromptCacheConversationTable({
                   </div>
                   {isExpanded ? (
                     <div className="rounded-lg border border-base-300/70 bg-base-200/30 p-3">
-                      <PromptCacheConversationInvocationRecordsTable
+                      <PromptCacheConversationInvocationTable
                         records={conversation.recentInvocations.map(
                           buildInvocationTableRecordFromPreview,
                         )}
@@ -911,7 +923,7 @@ export function PromptCacheConversationTable({
                     <tr className="bg-base-200/20">
                       <td colSpan={5} className="px-3 pb-4 pt-0">
                         <div className="border-t border-base-300/60 pt-3">
-                          <PromptCacheConversationInvocationRecordsTable
+                          <PromptCacheConversationInvocationTable
                             records={conversation.recentInvocations.map(
                               buildInvocationTableRecordFromPreview,
                             )}

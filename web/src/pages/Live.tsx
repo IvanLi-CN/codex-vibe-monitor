@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { ForwardProxyLiveTable } from "../components/ForwardProxyLiveTable";
+import { AppIcon } from "../components/AppIcon";
 import { InvocationChart } from "../components/InvocationChart";
 import { InvocationTable } from "../components/InvocationTable";
 import { PromptCacheConversationTable } from "../components/PromptCacheConversationTable";
@@ -311,12 +312,28 @@ export default function LivePage() {
                 type="button"
                 variant="ghost"
                 size="sm"
+                className="gap-2"
                 data-testid="live-prompt-cache-expand-all"
                 disabled={
                   conversationsLoading || !hasVisiblePromptCacheConversations
                 }
                 onClick={toggleAllVisiblePromptCacheKeys}
               >
+                <AppIcon
+                  name={
+                    allVisiblePromptCacheKeysExpanded
+                      ? "chevron-up"
+                      : "chevron-down"
+                  }
+                  className="h-4 w-4"
+                  data-testid="live-prompt-cache-expand-all-icon"
+                  data-icon-name={
+                    allVisiblePromptCacheKeysExpanded
+                      ? "chevron-up"
+                      : "chevron-down"
+                  }
+                  aria-hidden
+                />
                 {allVisiblePromptCacheKeysExpanded
                   ? t("live.conversations.actions.collapseAllRecords")
                   : t("live.conversations.actions.expandAllRecords")}

@@ -29,6 +29,7 @@ interface InvocationTableProps {
   records: ApiInvocation[]
   isLoading: boolean
   error?: string | null
+  emptyLabel?: string
 }
 
 const STATUS_META: Record<
@@ -36,12 +37,27 @@ const STATUS_META: Record<
   { variant: 'default' | 'secondary' | 'success' | 'warning' | 'error'; key: TranslationKey }
 > = {
   success: { variant: 'success', key: 'table.status.success' },
+  completed: { variant: 'success', key: 'table.status.success' },
   failed: { variant: 'error', key: 'table.status.failed' },
   running: { variant: 'default', key: 'table.status.running' },
   pending: { variant: 'warning', key: 'table.status.pending' },
 }
 
-const FALLBACK_STATUS_META = { variant: 'secondary', key: 'table.status.unknown' as TranslationKey }
+const FALLBACK_STATUS_META: {
+  variant: 'default' | 'secondary' | 'success' | 'warning' | 'error'
+  key: TranslationKey
+} = { variant: 'secondary', key: 'table.status.unknown' }
+
+function resolveStatusMeta(
+  status: string,
+): { variant: 'default' | 'secondary' | 'success' | 'warning' | 'error'; key: TranslationKey } {
+  const normalized = status.trim().toLowerCase()
+  if (!normalized || normalized === 'unknown') {
+    return FALLBACK_STATUS_META
+  }
+
+  return STATUS_META[normalized] ?? STATUS_META.failed
+}
 
 interface InvocationRowViewModel {
   record: ApiInvocation
@@ -78,7 +94,7 @@ interface InvocationRowViewModel {
   timingPairs: Array<{ label: string; value: string }>
 }
 
-export function InvocationTable({ records, isLoading, error }: InvocationTableProps) {
+export function InvocationTable({ records, isLoading, error, emptyLabel }: InvocationTableProps) {
   const { t, locale } = useTranslation()
   const localeTag = locale === 'zh' ? 'zh-CN' : 'en-US'
   const [expandedId, setExpandedId] = useState<string | null>(null)
@@ -86,7 +102,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
   const [drawerAccountLabel, setDrawerAccountLabel] = useState<string | null>(null)
   const [nowMs, setNowMs] = useState(() => Date.now())
   const [isXlUp, setIsXlUp] = useState(() => {
-    if (typeof window === 'undefined') return false
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
     return window.matchMedia('(min-width: 1280px)').matches
   })
 
@@ -222,7 +238,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
         const rowKey = invocationStableKey(record)
         const occurred = new Date(record.occurredAt)
         const normalizedStatus = (resolveInvocationDisplayStatus(record) || 'unknown').toLowerCase()
-        const meta = STATUS_META[normalizedStatus] ?? FALLBACK_STATUS_META
+        const meta = resolveStatusMeta(normalizedStatus)
         const recordId = record.id
         const isInFlight = normalizedStatus === 'running' || normalizedStatus === 'pending'
         const occurredValid = !Number.isNaN(occurred.getTime())
@@ -287,7 +303,7 @@ export function InvocationTable({ records, isLoading, error }: InvocationTablePr
   }
 
   if (records.length === 0) {
-    return <Alert>{t('table.noRecords')}</Alert>
+    return <Alert>{emptyLabel ?? t('table.noRecords')}</Alert>
   }
 
   return (

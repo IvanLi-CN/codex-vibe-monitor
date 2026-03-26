@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { expect, userEvent, within } from "storybook/test";
 import { useTranslation, I18nProvider } from "../i18n";
+import { AppIcon } from "./AppIcon";
 import {
   PromptCacheConversationTable,
 } from "./PromptCacheConversationTable";
@@ -425,9 +426,17 @@ function LivePromptCacheSectionStory() {
               type="button"
               variant="ghost"
               size="sm"
+              className="gap-2"
               data-testid="live-prompt-cache-expand-all"
               onClick={toggleAllVisible}
             >
+              <AppIcon
+                name={allExpanded ? "chevron-up" : "chevron-down"}
+                className="h-4 w-4"
+                data-testid="live-prompt-cache-expand-all-icon"
+                data-icon-name={allExpanded ? "chevron-up" : "chevron-down"}
+                aria-hidden
+              />
               {allExpanded
                 ? t("live.conversations.actions.collapseAllRecords")
                 : t("live.conversations.actions.expandAllRecords")}
@@ -499,7 +508,11 @@ export const InteractiveFilters: Story = {
     const canvas = within(canvasElement);
     const trigger = canvas.getByTestId("live-prompt-cache-selection");
     const expandAllButton = canvas.getByTestId("live-prompt-cache-expand-all");
+    const expandAllIcon = canvas.getByTestId("live-prompt-cache-expand-all-icon");
     const documentScope = within(canvasElement.ownerDocument.body);
+
+    await expect(canvas.getByRole("heading", { name: "对话" })).toBeInTheDocument();
+    await expect(expandAllIcon).toHaveAttribute("data-icon-name", "chevron-down");
 
     await userEvent.click(trigger);
     await userEvent.click(
@@ -520,8 +533,9 @@ export const InteractiveFilters: Story = {
     ).toBeInTheDocument();
 
     await userEvent.click(expandAllButton);
-    await expect(
-      canvas.getByText(/输入 \/ 缓存/i),
-    ).toBeInTheDocument();
+    await expect(expandAllIcon).toHaveAttribute("data-icon-name", "chevron-up");
+    await expect(canvas.getAllByTestId("invocation-table-scroll").length).toBeGreaterThan(0);
+    await expect(canvas.queryByText(/输入 \/ 缓存/i)).not.toBeInTheDocument();
+    await expect(canvas.getAllByText(/总时延/i).length).toBeGreaterThan(0);
   },
 };

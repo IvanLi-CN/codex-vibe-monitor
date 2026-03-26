@@ -1165,7 +1165,7 @@ const baseTranslations = {
     "live.window.label": "Window size",
     "live.option.records": "{{count}} records",
     "live.latest.title": "Latest records",
-    "live.conversations.title": "Prompt Cache Key conversations",
+    "live.conversations.title": "Conversations",
     "live.conversations.description":
       "Group requests by Prompt Cache Key. Filter by conversation count or recent activity window, while totals remain full-history metrics.",
     "live.conversations.selectionLabel": "Conversation filter",
@@ -1177,7 +1177,7 @@ const baseTranslations = {
     "live.conversations.option.count": "{{count}} conversations",
     "live.conversations.option.activityHours":
       "Active in last {{hours}} hour(s)",
-    "live.conversations.empty": "No prompt cache key conversations yet.",
+    "live.conversations.empty": "No conversations available.",
     "live.conversations.implicitFilter.inactiveOutside24h":
       "{{count}} newer conversation(s) were hidden because count mode only includes conversations active in the last 24 hours.",
     "live.conversations.implicitFilter.cappedTo50":
@@ -2593,7 +2593,7 @@ const baseTranslations = {
     "live.window.label": "窗口大小",
     "live.option.records": "{{count}} 条记录",
     "live.latest.title": "最新记录",
-    "live.conversations.title": "Prompt Cache Key 对话",
+    "live.conversations.title": "对话",
     "live.conversations.description":
       "按 Prompt Cache Key 聚合对话，可按数量或最近活动时间筛选，累计指标按全历史计算。",
     "live.conversations.selectionLabel": "对话筛选",
@@ -2604,7 +2604,7 @@ const baseTranslations = {
     "live.conversations.actions.openHistory": "打开全部调用记录",
     "live.conversations.option.count": "{{count}} 个对话",
     "live.conversations.option.activityHours": "近 {{hours}} 小时活动",
-    "live.conversations.empty": "暂无 Prompt Cache Key 对话数据。",
+    "live.conversations.empty": "暂无对话数据。",
     "live.conversations.implicitFilter.inactiveOutside24h":
       "有 {{count}} 个更新创建的对话因未在近 24 小时活动而未显示；数量模式只统计近 24 小时活跃对话。",
     "live.conversations.implicitFilter.cappedTo50":

@@ -327,7 +327,7 @@ describe("PromptCacheConversationTable", () => {
 
     const html = renderTable(stats);
 
-    expect(html).toContain("暂无 Prompt Cache Key 对话数据。");
+    expect(html).toContain("暂无对话数据。");
     expect(html).toContain("有 2 个更新创建的对话因未在近 24 小时活动而未显示");
   });
 
@@ -723,14 +723,17 @@ describe("PromptCacheConversationTable", () => {
       await Promise.resolve();
     });
 
-    expect(document.body.textContent).toContain("输入 / 缓存");
+    expect(
+      document.querySelector('[data-testid="invocation-table-scroll"]'),
+    ).toBeTruthy();
+    expect(document.body.textContent).toContain("首字总耗时 / HTTP 压缩");
+    expect(document.body.textContent).not.toContain("输入 / 缓存");
     expect(document.body.textContent).toContain("gpt-5.4");
     expect(document.body.textContent).toContain("Proxy West");
-    expect(document.body.textContent).toContain("失败");
     expect(document.body.textContent).toContain("3,210");
 
     const detailToggle = document.querySelector(
-      'button[aria-controls^="records-list-details-"]',
+      'button[aria-controls^="invocation-table-details-"]',
     ) as HTMLButtonElement | null;
     expect(detailToggle).toBeTruthy();
 
@@ -752,7 +755,7 @@ describe("PromptCacheConversationTable", () => {
       await Promise.resolve();
     });
 
-    expect(document.body.textContent).not.toContain("输入 / 缓存");
+    expect(document.body.textContent).not.toContain("总时延");
   });
 
   it("toggles recent invocation previews inline without external expansion state", async () => {
@@ -803,7 +806,10 @@ describe("PromptCacheConversationTable", () => {
       await Promise.resolve();
     });
 
-    expect(document.body.textContent).toContain("输入 / 缓存");
+    expect(
+      document.querySelector('[data-testid="invocation-table-scroll"]'),
+    ).toBeTruthy();
+    expect(document.body.textContent).toContain("首字总耗时 / HTTP 压缩");
     expect(document.body.textContent).toContain("Proxy Central");
 
     const collapseButton = findButtonByAriaLabel("收起最近调用记录");
@@ -814,7 +820,7 @@ describe("PromptCacheConversationTable", () => {
       await Promise.resolve();
     });
 
-    expect(document.body.textContent).not.toContain("输入 / 缓存");
+    expect(document.body.textContent).not.toContain("总时延");
   });
 
   it("opens the history drawer and preserves loaded records when later pages fail", async () => {
@@ -904,8 +910,13 @@ describe("PromptCacheConversationTable", () => {
       snapshotId: 901,
     });
     expect(document.body.textContent).toContain("全部保留调用记录");
+    expect(
+      document.querySelector('[data-testid="invocation-table-scroll"]'),
+    ).toBeTruthy();
+    expect(document.body.textContent).toContain("首字总耗时 / HTTP 压缩");
+    expect(document.body.textContent).not.toContain("输入 / 缓存");
     expect(document.body.textContent).toContain("Proxy West");
-    expect(document.body.textContent).toContain("HTTP 502");
+    expect(document.body.textContent).toContain("失败");
     expect(document.body.textContent).toContain("page 2 failed");
     expect(document.body.textContent).toContain("已加载 2 / 3 条保留调用记录");
 
