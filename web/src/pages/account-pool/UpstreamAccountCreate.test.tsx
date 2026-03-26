@@ -181,6 +181,8 @@ type RenderEntry =
 
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
+let dateNowSpy: ReturnType<typeof vi.spyOn> | null = null;
+const FIXED_NOW_MS = Date.parse("2026-03-12T00:00:00.000Z");
 
 beforeAll(() => {
   class ResizeObserverMock {
@@ -221,6 +223,7 @@ beforeAll(() => {
 });
 
 beforeEach(() => {
+  dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(FIXED_NOW_MS);
   vi.mocked(window.localStorage.getItem).mockImplementation((key: string) =>
     key === "codex-vibe-monitor.locale" ? "en" : null,
   );
@@ -241,6 +244,8 @@ afterEach(() => {
   apiMocks.fetchUpstreamAccountDetail.mockReset();
   apiMocks.createImportedOauthValidationJobEventSource.mockReset();
   apiMocks.updateOauthLoginSessionKeepalive.mockReset();
+  dateNowSpy?.mockRestore();
+  dateNowSpy = null;
   vi.useRealTimers();
   vi.clearAllMocks();
 });
@@ -2214,9 +2219,10 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     });
     await flushAsync();
 
-    let generateButtons = Array.from(
-      host?.querySelectorAll("button") ?? [],
-    ).filter((button) =>
+    const firstRowButtons = Array.from(
+      getBatchRows()[0]?.querySelectorAll("button") ?? [],
+    );
+    const firstGenerateButton = firstRowButtons.find((button) =>
       /Generate OAuth URL/.test(
         button.textContent ||
           button.getAttribute("aria-label") ||
@@ -2225,22 +2231,23 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
       ),
     );
     act(() => {
-      generateButtons[0]?.dispatchEvent(
+      firstGenerateButton?.dispatchEvent(
         new MouseEvent("click", { bubbles: true }),
       );
     });
     await flushAsync();
-    generateButtons = Array.from(host?.querySelectorAll("button") ?? []).filter(
-      (button) =>
-        /Generate OAuth URL|Regenerate OAuth URL/.test(
-          button.textContent ||
-            button.getAttribute("aria-label") ||
-            button.getAttribute("title") ||
-            "",
-        ),
+    const secondGenerateButton = Array.from(
+      getBatchRows()[1]?.querySelectorAll("button") ?? [],
+    ).find((button) =>
+      /Generate OAuth URL/.test(
+        button.textContent ||
+          button.getAttribute("aria-label") ||
+          button.getAttribute("title") ||
+          "",
+      ),
     );
     act(() => {
-      generateButtons[1]?.dispatchEvent(
+      secondGenerateButton?.dispatchEvent(
         new MouseEvent("click", { bubbles: true }),
       );
     });
@@ -4411,7 +4418,8 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     });
     expect(getLoginSession).toHaveBeenCalledWith("login-1");
     expect(writeText).not.toHaveBeenCalled();
-    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(true);
+    expect(findButton(/Copy OAuth URL/i)).toBeUndefined();
+    expect(findButton(/Generate OAuth URL/i)?.disabled).toBe(true);
 
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
