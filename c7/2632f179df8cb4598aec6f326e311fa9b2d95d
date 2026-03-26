@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.25.9",
+  "base_stable_version": "1.25.8",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-26T03:02:56Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.25.9",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "1e37b8481f37aa4299e1b022cbd120b030867725",
+  "pr_number": 236,
+  "pr_title": "feat(stats): keep historical queries in main rollups",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.25.9",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.25.9,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "c72632f179df8cb4598aec6f326e311fa9b2d95d",
+  "type_label": "type:patch"
+}
