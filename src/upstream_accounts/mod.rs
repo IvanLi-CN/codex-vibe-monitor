@@ -10610,8 +10610,8 @@ fn collect_normalized_upstream_account_filters(
         }
     }
 
-    if let Some(legacy_value) = legacy_value {
-        if !normalized.contains(&legacy_value) {
+    if normalized.is_empty() {
+        if let Some(legacy_value) = legacy_value {
             normalized.push(legacy_value);
         }
     }
@@ -14781,6 +14781,23 @@ mod tests {
             query.health_status,
             vec![UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL.to_string()]
         );
+    }
+
+    #[test]
+    fn explicit_split_filters_override_legacy_status_mapping() {
+        let enable_filters = collect_normalized_upstream_account_filters(
+            &[UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED.to_string()],
+            Some(UPSTREAM_ACCOUNT_ENABLE_STATUS_DISABLED),
+            normalize_upstream_account_enable_status_filter,
+        );
+        assert_eq!(enable_filters, vec![UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED]);
+
+        let health_filters = collect_normalized_upstream_account_filters(
+            &[UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL.to_string()],
+            Some(UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH),
+            normalize_upstream_account_health_status_filter,
+        );
+        assert_eq!(health_filters, vec![UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL]);
     }
 
     #[test]
