@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.28.0",
+  "base_stable_version": "1.27.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-26T14:53:40Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.28.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "1ae2d653c63d35b238d4d802ee368972efa960e8",
+  "pr_number": 248,
+  "pr_title": "feat(web): unify batch oauth action bubble",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.28.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.28.0,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "f225a7c20c7398d1d611f54a03bff7bdf8cbff12",
+  "type_label": "type:minor"
+}
