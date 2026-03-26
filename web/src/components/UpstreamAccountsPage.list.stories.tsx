@@ -48,6 +48,22 @@ async function chooseSelectOption(
   await userEvent.click(option)
 }
 
+async function chooseCommandOptions(
+  canvasElement: HTMLElement,
+  triggerMatcher: RegExp,
+  optionMatchers: RegExp[],
+) {
+  const documentScope = within(canvasElement.ownerDocument.body)
+  const trigger = await documentScope.findByRole('combobox', {
+    name: triggerMatcher,
+  })
+  await userEvent.click(trigger)
+  for (const optionMatcher of optionMatchers) {
+    const option = await documentScope.findByText(optionMatcher)
+    await userEvent.click(option)
+  }
+}
+
 async function clickCheckboxByLabel(
   canvasElement: HTMLElement,
   matcher: RegExp,
@@ -190,27 +206,27 @@ export const StatusFilters: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await choosePageSize(canvasElement, 50)
-    await chooseSelectOption(
+    await chooseCommandOptions(
       canvasElement,
       /工作状态|work status/i,
-      /限流|rate limited/i,
+      [/限流|rate limited/i, /工作|working/i],
     )
-    await chooseSelectOption(
+    await chooseCommandOptions(
       canvasElement,
       /启用状态|enable status/i,
-      /启用|enabled/i,
+      [/启用|enabled/i],
     )
-    await chooseSelectOption(
+    await chooseCommandOptions(
       canvasElement,
       /账号状态|account health/i,
-      /正常|normal/i,
+      [/正常|normal/i],
     )
     await expect(
       await canvas.findByText(/Team key - staging/i),
     ).toBeInTheDocument()
     await expect(
-      canvas.queryByText(/Codex Pro - Tokyo/i),
-    ).not.toBeInTheDocument()
+      await canvas.findByText(/Codex Pro - Tokyo/i),
+    ).toBeInTheDocument()
   },
 }
 

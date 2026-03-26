@@ -1895,9 +1895,9 @@ export interface FetchUpstreamAccountsQuery {
   groupSearch?: string;
   groupUngrouped?: boolean;
   status?: string;
-  workStatus?: string;
-  enableStatus?: string;
-  healthStatus?: string;
+  workStatus?: string[];
+  enableStatus?: string[];
+  healthStatus?: string[];
   page?: number;
   pageSize?: number;
   tagIds?: number[];
@@ -3373,9 +3373,15 @@ export async function fetchUpstreamAccounts(
   if (query?.groupUngrouped != null)
     search.set("groupUngrouped", String(query.groupUngrouped));
   if (query?.status) search.set("status", query.status);
-  if (query?.workStatus) search.set("workStatus", query.workStatus);
-  if (query?.enableStatus) search.set("enableStatus", query.enableStatus);
-  if (query?.healthStatus) search.set("healthStatus", query.healthStatus);
+  for (const workStatus of query?.workStatus ?? []) {
+    if (workStatus) search.append("workStatus", workStatus);
+  }
+  for (const enableStatus of query?.enableStatus ?? []) {
+    if (enableStatus) search.append("enableStatus", enableStatus);
+  }
+  for (const healthStatus of query?.healthStatus ?? []) {
+    if (healthStatus) search.append("healthStatus", healthStatus);
+  }
   if (query?.page != null) search.set("page", String(query.page));
   if (query?.pageSize != null) search.set("pageSize", String(query.pageSize));
   for (const tagId of query?.tagIds ?? []) {

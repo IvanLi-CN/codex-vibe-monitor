@@ -202,11 +202,22 @@ function Probe({ query }: { query?: FetchUpstreamAccountsQuery }) {
 
 describe("useUpstreamAccounts", () => {
   it("passes server-side roster filters through to the list endpoint", async () => {
-    render(<Probe query={{ groupSearch: "prod", tagIds: [1, 2] }} />);
+    render(
+      <Probe
+        query={{
+          groupSearch: "prod",
+          workStatus: ["working", "rate_limited"],
+          healthStatus: ["normal"],
+          tagIds: [1, 2],
+        }}
+      />,
+    );
     await flushAsync();
 
     expect(apiMocks.fetchUpstreamAccounts).toHaveBeenCalledWith({
       groupSearch: "prod",
+      workStatus: ["working", "rate_limited"],
+      healthStatus: ["normal"],
       tagIds: [1, 2],
     });
   });
