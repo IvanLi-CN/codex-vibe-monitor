@@ -59,6 +59,7 @@
 ## 验收标准（Acceptance Criteria）
 
 - Given 任一 Prompt Cache 对话行可见，When 点击 preview icon，Then 仅该行在表内展开最近 5 条调用记录，再次点击可收起。
+- Given 最近 5 条调用记录或历史抽屉可见，When 调用记录渲染完成，Then 必须复用 `Records` 页同款调用记录表格，而不是独立卡片样式。
 - Given 当前筛选结果中存在多个对话，When 点击头部“展开所有记录 / 收起所有记录”，Then 仅当前可见结果集一起展开或收起，不写入本地持久化。
 - Given 点击历史抽屉 icon，When 抽屉打开，Then 以时间倒序展示该 Prompt Cache Key 的全部保留调用记录，并自动续拉后续页直到拉满。
 - Given 某对话 totals 仍存在但 raw rows 已被清理，When 表内 preview 与抽屉渲染，Then 显示“暂无调用记录”，同时 totals / 图表 / 上游账号摘要保持正常。
@@ -105,7 +106,7 @@
   submission_gate: pending-owner-approval
   story_id_or_title: Monitoring/PromptCacheConversationTable / SingleExpanded
   state: single row expanded
-  evidence_note: 验证单行展开时只显示该对话最近 5 条调用记录，并保留原有行内 totals 与趋势图布局。
+  evidence_note: 验证单行展开时只显示该对话最近 5 条调用记录，并直接复用 `Records` 页同款调用记录表格。
   image:
   ![Prompt Cache 对话单行展开态](./assets/prompt-cache-records-single-expanded.png)
 
@@ -116,7 +117,7 @@
   submission_gate: pending-owner-approval
   story_id_or_title: Monitoring/PromptCacheConversationTable / ExpandAll
   state: all rows expanded
-  evidence_note: 验证所有对话同时展开时，表格会为每个对话追加最近调用记录区块，且状态/账号/接口信息可同时对照查看。
+  evidence_note: 验证所有对话同时展开时，每个对话都追加同款调用记录表格，而不是退化成多套卡片区块。
   image:
   ![Prompt Cache 对话全部展开态](./assets/prompt-cache-records-expand-all.png)
 
@@ -127,7 +128,7 @@
   submission_gate: pending-owner-approval
   story_id_or_title: Monitoring/PromptCacheConversationTable / DrawerOpen
   state: retained history drawer open
-  evidence_note: 验证“全部调用记录”抽屉按时间倒序展示保留 raw records，并显示完整数量统计与关闭入口。
+  evidence_note: 验证“全部调用记录”抽屉按时间倒序展示保留 raw records，并复用同款调用记录表格与数量统计。
   image:
   ![Prompt Cache 对话历史抽屉](./assets/prompt-cache-records-drawer-open.png)
 

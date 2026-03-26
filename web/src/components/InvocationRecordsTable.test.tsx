@@ -128,6 +128,24 @@ async function waitFor(check: () => boolean, timeoutMs = 500) {
 }
 
 describe('InvocationRecordsTable', () => {
+  it('treats completed rows as success in the shared records table', () => {
+    render(
+      <InvocationRecordsTable
+        focus="token"
+        isLoading={false}
+        records={[
+          createRecord({
+            status: 'completed',
+          }),
+        ]}
+      />,
+    )
+
+    const text = host?.textContent ?? ''
+    expect(text).toContain('table.status.success')
+    expect(text).not.toContain('completed')
+  })
+
   it('renders a richer expanded panel with summary strip and structured-only notice', () => {
     render(
       <InvocationRecordsTable

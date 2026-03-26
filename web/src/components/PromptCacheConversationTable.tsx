@@ -8,17 +8,16 @@ import type {
   PromptCacheConversationsResponse,
 } from "../lib/api";
 import { fetchInvocationRecords } from "../lib/api";
-import { resolveInvocationDisplayStatus } from "../lib/invocationStatus";
 import { InvocationAccountDetailDrawer } from "./InvocationAccountDetailDrawer";
 import { AccountDetailDrawerShell } from "./AccountDetailDrawerShell";
 import { AppIcon } from "./AppIcon";
+import { InvocationRecordsTable } from "./InvocationRecordsTable";
 import { ConversationSparkline } from "./KeyedConversationTable";
 import {
   FALLBACK_CELL,
   findVisibleConversationChartMax,
 } from "./keyedConversationChart";
 import { Alert } from "./ui/alert";
-import { Badge } from "./ui/badge";
 import { Spinner } from "./ui/spinner";
 
 interface PromptCacheConversationTableProps {
@@ -79,58 +78,47 @@ function canOpenPromptCacheUpstreamAccount(
   );
 }
 
-function resolveInvocationPreviewAccountLabel(
-  preview: Pick<
-    PromptCacheConversationInvocationPreview,
-    "upstreamAccountId" | "upstreamAccountName"
-  >,
-  fallbackAccountLabel: (id: number) => string,
-) {
-  const trimmedName = preview.upstreamAccountName?.trim();
-  if (trimmedName) return trimmedName;
-  if (
-    typeof preview.upstreamAccountId === "number" &&
-    Number.isFinite(preview.upstreamAccountId)
-  ) {
-    return fallbackAccountLabel(Math.trunc(preview.upstreamAccountId));
-  }
-  return null;
-}
-
-function resolveInvocationPreviewIdentity(
-  preview: Pick<
-    PromptCacheConversationInvocationPreview,
-    "proxyDisplayName" | "upstreamAccountId" | "upstreamAccountName"
-  >,
-  fallbackAccountLabel: (id: number) => string,
-  fallbackLabel: string,
-) {
-  const accountLabel = resolveInvocationPreviewAccountLabel(
-    preview,
-    fallbackAccountLabel,
-  );
-  const proxyLabel = preview.proxyDisplayName?.trim() || null;
-  if (accountLabel && proxyLabel) return `${accountLabel} · ${proxyLabel}`;
-  if (accountLabel) return accountLabel;
-  if (proxyLabel) return proxyLabel;
-  return fallbackLabel;
-}
-
-function buildInvocationPreviewFromRecord(
-  record: ApiInvocation,
+function normalizePromptCacheInvocationPreview(
+  preview: PromptCacheConversationInvocationPreview,
 ): PromptCacheConversationInvocationPreview {
   return {
-    id: record.id,
-    invokeId: record.invokeId,
-    occurredAt: record.occurredAt,
-    status: resolveInvocationDisplayStatus(record) || record.status || "unknown",
-    model: record.model?.trim() || null,
-    totalTokens: record.totalTokens ?? 0,
-    cost: record.cost ?? null,
-    proxyDisplayName: record.proxyDisplayName?.trim() || null,
-    upstreamAccountId: record.upstreamAccountId ?? null,
-    upstreamAccountName: record.upstreamAccountName?.trim() || null,
-    endpoint: record.endpoint?.trim() || null,
+    id: preview.id,
+    invokeId: preview.invokeId,
+    occurredAt: preview.occurredAt,
+    status: preview.status?.trim() || "unknown",
+    model: preview.model?.trim() || null,
+    totalTokens: preview.totalTokens ?? 0,
+    cost: preview.cost ?? null,
+    proxyDisplayName: preview.proxyDisplayName?.trim() || null,
+    upstreamAccountId: preview.upstreamAccountId ?? null,
+    upstreamAccountName: preview.upstreamAccountName?.trim() || null,
+    endpoint: preview.endpoint?.trim() || null,
+  };
+}
+
+function buildInvocationTableRecordFromPreview(
+  preview: PromptCacheConversationInvocationPreview,
+): ApiInvocation {
+  const normalizedPreview = normalizePromptCacheInvocationPreview(preview);
+  const normalizedStatus = normalizedPreview.status.toLowerCase();
+
+  return {
+    id: normalizedPreview.id,
+    invokeId: normalizedPreview.invokeId,
+    occurredAt: normalizedPreview.occurredAt,
+    status: normalizedPreview.status,
+    failureClass:
+      normalizedStatus === "success" || normalizedStatus === "completed"
+        ? "none"
+        : undefined,
+    model: normalizedPreview.model ?? undefined,
+    totalTokens: normalizedPreview.totalTokens,
+    cost: normalizedPreview.cost ?? undefined,
+    endpoint: normalizedPreview.endpoint ?? undefined,
+    upstreamAccountId: normalizedPreview.upstreamAccountId,
+    upstreamAccountName: normalizedPreview.upstreamAccountName ?? undefined,
+    proxyDisplayName: normalizedPreview.proxyDisplayName ?? undefined,
+    createdAt: normalizedPreview.occurredAt,
   };
 }
 
@@ -245,185 +233,32 @@ function UpstreamAccountsBlock({
   );
 }
 
-function resolvePreviewStatusMeta(
-  status: string,
-  t: (key: string) => string,
-): {
-  label: string;
-  variant: "default" | "secondary" | "success" | "warning" | "error";
-} {
-  const raw = status.trim();
-  const lower = raw.toLowerCase();
-
-  switch (lower) {
-    case "success":
-    case "completed":
-      return { label: t("table.status.success"), variant: "success" };
-    case "running":
-      return { label: t("table.status.running"), variant: "default" };
-    case "pending":
-      return { label: t("table.status.pending"), variant: "warning" };
-    case "failed":
-      return { label: t("table.status.failed"), variant: "error" };
-    default:
-      if (!raw) {
-        return { label: t("table.status.unknown"), variant: "secondary" };
-      }
-      if (lower.startsWith("http_4")) {
-        return { label: raw, variant: "warning" };
-      }
-      if (lower.startsWith("http_5")) {
-        return { label: raw, variant: "error" };
-      }
-      return { label: raw, variant: "secondary" };
-  }
-}
-
-function ConversationInvocationPreviewItem({
-  preview,
-  t,
-  dateFormatter,
-  numberFormatter,
-  currencyFormatter,
-  fallbackAccountLabel,
-  identityFallbackLabel,
-  labels,
-}: {
-  preview: PromptCacheConversationInvocationPreview;
-  t: (key: string) => string;
-  dateFormatter: Intl.DateTimeFormat;
-  numberFormatter: Intl.NumberFormat;
-  currencyFormatter: Intl.NumberFormat;
-  fallbackAccountLabel: (id: number) => string;
-  identityFallbackLabel: string;
-  labels: {
-    model: string;
-    totalTokens: string;
-    totalCost: string;
-    endpoint: string;
-  };
-}) {
-  const statusMeta = resolvePreviewStatusMeta(preview.status, t);
-  const identityLabel = resolveInvocationPreviewIdentity(
-    preview,
-    fallbackAccountLabel,
-    identityFallbackLabel,
-  );
-
-  return (
-    <article className="rounded-lg border border-base-300/70 bg-base-100/65 p-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0 space-y-1">
-          <div className="font-medium tabular-nums">
-            {formatDateLabel(preview.occurredAt, dateFormatter)}
-          </div>
-          <div
-            className="truncate text-[11px] text-base-content/60"
-            title={identityLabel}
-          >
-            {identityLabel}
-          </div>
-        </div>
-        <Badge variant={statusMeta.variant}>{statusMeta.label}</Badge>
-      </div>
-      <dl className="mt-3 grid gap-2 text-[11px] sm:grid-cols-3">
-        <div className="space-y-1">
-          <dt className="text-base-content/55">{labels.model}</dt>
-          <dd className="truncate font-medium" title={preview.model ?? FALLBACK_CELL}>
-            {preview.model || FALLBACK_CELL}
-          </dd>
-        </div>
-        <div className="space-y-1">
-          <dt className="text-base-content/55">{labels.totalTokens}</dt>
-          <dd className="font-medium">
-            {formatNumber(preview.totalTokens, numberFormatter)}
-          </dd>
-        </div>
-        <div className="space-y-1">
-          <dt className="text-base-content/55">{labels.totalCost}</dt>
-          <dd className="font-medium">
-            {formatCurrency(preview.cost, currencyFormatter)}
-          </dd>
-        </div>
-      </dl>
-      {preview.endpoint ? (
-        <div className="mt-2 truncate text-[11px] text-base-content/60">
-          <span>{labels.endpoint}</span>
-          {" · "}
-          <span className="font-medium text-base-content/80" title={preview.endpoint}>
-            {preview.endpoint}
-          </span>
-        </div>
-      ) : null}
-    </article>
-  );
-}
-
-function ConversationInvocationPreviewList({
-  previews,
+function PromptCacheConversationInvocationRecordsTable({
+  records,
   isLoading,
   error,
   emptyLabel,
-  t,
-  dateFormatter,
-  numberFormatter,
-  currencyFormatter,
-  fallbackAccountLabel,
-  identityFallbackLabel,
-  labels,
 }: {
-  previews: PromptCacheConversationInvocationPreview[];
+  records: ApiInvocation[];
   isLoading: boolean;
   error?: string | null;
   emptyLabel: string;
-  t: (key: string) => string;
-  dateFormatter: Intl.DateTimeFormat;
-  numberFormatter: Intl.NumberFormat;
-  currencyFormatter: Intl.NumberFormat;
-  fallbackAccountLabel: (id: number) => string;
-  identityFallbackLabel: string;
-  labels: {
-    model: string;
-    totalTokens: string;
-    totalCost: string;
-    endpoint: string;
-  };
 }) {
-  if (isLoading && previews.length === 0) {
+  if (!isLoading && !error && records.length === 0) {
     return (
-      <div className="flex justify-center py-4">
-        <Spinner size="md" aria-label={t("chart.loadingDetailed")} />
+      <div className="rounded-lg border border-dashed border-base-300/75 bg-base-100/35 px-3 py-4 text-[11px] text-base-content/60">
+        {emptyLabel}
       </div>
     );
   }
 
   return (
-    <div className="space-y-3">
-      {error ? (
-        <Alert variant="error">
-          <span>{error}</span>
-        </Alert>
-      ) : null}
-      {previews.length === 0 ? (
-        <div className="rounded-lg border border-dashed border-base-300/75 bg-base-100/35 px-3 py-4 text-[11px] text-base-content/60">
-          {emptyLabel}
-        </div>
-      ) : (
-        previews.map((preview) => (
-          <ConversationInvocationPreviewItem
-            key={`${preview.id}-${preview.invokeId}`}
-            preview={preview}
-            t={t}
-            dateFormatter={dateFormatter}
-            numberFormatter={numberFormatter}
-            currencyFormatter={currencyFormatter}
-            fallbackAccountLabel={fallbackAccountLabel}
-            identityFallbackLabel={identityFallbackLabel}
-            labels={labels}
-          />
-        ))
-      )}
-    </div>
+    <InvocationRecordsTable
+      focus="token"
+      records={records}
+      isLoading={isLoading}
+      error={error}
+    />
   );
 }
 
@@ -432,19 +267,11 @@ function PromptCacheConversationHistoryDrawer({
   promptCacheKey,
   onClose,
   t,
-  dateFormatter,
-  numberFormatter,
-  currencyFormatter,
-  fallbackAccountLabel,
 }: {
   open: boolean;
   promptCacheKey: string | null;
   onClose: () => void;
   t: (key: string, values?: Record<string, string | number>) => string;
-  dateFormatter: Intl.DateTimeFormat;
-  numberFormatter: Intl.NumberFormat;
-  currencyFormatter: Intl.NumberFormat;
-  fallbackAccountLabel: (id: number) => string;
 }) {
   const titleId = useId();
   const requestSeqRef = useRef(0);
@@ -509,23 +336,7 @@ function PromptCacheConversationHistoryDrawer({
     });
   }, [open, promptCacheKey]);
 
-  const previewRecords = useMemo(
-    () => records.map(buildInvocationPreviewFromRecord),
-    [records],
-  );
-  const loadedCount = previewRecords.length;
-  const identityFallbackLabel = t(
-    "live.conversations.invocations.identityUnavailable",
-  );
-  const previewLabels = useMemo(
-    () => ({
-      model: t("live.conversations.invocations.model"),
-      totalTokens: t("live.conversations.invocations.totalTokens"),
-      totalCost: t("live.conversations.invocations.totalCost"),
-      endpoint: t("live.conversations.invocations.endpoint"),
-    }),
-    [t],
-  );
+  const loadedCount = records.length;
 
   return (
     <AccountDetailDrawerShell
@@ -533,7 +344,7 @@ function PromptCacheConversationHistoryDrawer({
       labelledBy={titleId}
       closeLabel={t("live.conversations.drawer.close")}
       onClose={onClose}
-      shellClassName="max-w-[42rem]"
+      shellClassName="max-w-[78rem]"
       header={
         <div className="space-y-3">
           <div className="section-heading">
@@ -561,20 +372,13 @@ function PromptCacheConversationHistoryDrawer({
       }
     >
       <div className="space-y-3">
-        <ConversationInvocationPreviewList
-          previews={previewRecords}
+        <PromptCacheConversationInvocationRecordsTable
+          records={records}
           isLoading={isLoading}
           error={error}
           emptyLabel={t("live.conversations.drawer.empty")}
-          t={t}
-          dateFormatter={dateFormatter}
-          numberFormatter={numberFormatter}
-          currencyFormatter={currencyFormatter}
-          fallbackAccountLabel={fallbackAccountLabel}
-          identityFallbackLabel={identityFallbackLabel}
-          labels={previewLabels}
         />
-        {isLoading && previewRecords.length > 0 ? (
+        {isLoading && records.length > 0 ? (
           <div className="flex items-center justify-center gap-2 py-2 text-sm text-base-content/60">
             <Spinner size="sm" aria-label={t("chart.loadingDetailed")} />
             <span>{t("live.conversations.drawer.loadingMore")}</span>
@@ -742,10 +546,6 @@ export function PromptCacheConversationTable({
     () => ({
       title: t("live.conversations.preview.title"),
       empty: t("live.conversations.preview.empty"),
-      model: t("live.conversations.invocations.model"),
-      totalTokens: t("live.conversations.invocations.totalTokens"),
-      totalCost: t("live.conversations.invocations.totalCost"),
-      endpoint: t("live.conversations.invocations.endpoint"),
       expandAction: t("live.conversations.actions.expandPreview"),
       collapseAction: t("live.conversations.actions.collapsePreview"),
       historyAction: t("live.conversations.actions.openHistory"),
@@ -758,9 +558,6 @@ export function PromptCacheConversationTable({
         id: String(Math.trunc(id)),
       }),
     [t],
-  );
-  const identityFallbackLabel = t(
-    "live.conversations.invocations.identityUnavailable",
   );
   const expandedPromptCacheKeySet = useMemo(
     () => new Set(expandedPromptCacheKeys),
@@ -891,17 +688,12 @@ export function PromptCacheConversationTable({
                         />
                         <span>{previewLabels.title}</span>
                       </div>
-                      <ConversationInvocationPreviewList
-                        previews={conversation.recentInvocations}
+                      <PromptCacheConversationInvocationRecordsTable
+                        records={conversation.recentInvocations.map(
+                          buildInvocationTableRecordFromPreview,
+                        )}
                         isLoading={false}
                         emptyLabel={previewLabels.empty}
-                        t={t}
-                        dateFormatter={dateFormatter}
-                        numberFormatter={numberFormatter}
-                        currencyFormatter={currencyFormatter}
-                        fallbackAccountLabel={fallbackAccountLabel}
-                        identityFallbackLabel={identityFallbackLabel}
-                        labels={previewLabels}
                       />
                     </div>
                   ) : null}
@@ -1114,17 +906,12 @@ export function PromptCacheConversationTable({
                             />
                             <span>{previewLabels.title}</span>
                           </div>
-                          <ConversationInvocationPreviewList
-                            previews={conversation.recentInvocations}
+                          <PromptCacheConversationInvocationRecordsTable
+                            records={conversation.recentInvocations.map(
+                              buildInvocationTableRecordFromPreview,
+                            )}
                             isLoading={false}
                             emptyLabel={previewLabels.empty}
-                            t={t}
-                            dateFormatter={dateFormatter}
-                            numberFormatter={numberFormatter}
-                            currencyFormatter={currencyFormatter}
-                            fallbackAccountLabel={fallbackAccountLabel}
-                            identityFallbackLabel={identityFallbackLabel}
-                            labels={previewLabels}
                           />
                         </div>
                       </td>
@@ -1150,10 +937,6 @@ export function PromptCacheConversationTable({
         promptCacheKey={historyDrawerPromptCacheKey}
         onClose={closeHistoryDrawer}
         t={t}
-        dateFormatter={dateFormatter}
-        numberFormatter={numberFormatter}
-        currencyFormatter={currencyFormatter}
-        fallbackAccountLabel={fallbackAccountLabel}
       />
     </div>
   );

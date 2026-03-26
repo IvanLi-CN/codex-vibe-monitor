@@ -68,6 +68,7 @@ interface InvocationRecordsRowViewModel {
 
 const STATUS_META: Record<string, { variant: StatusMeta['variant']; labelKey: string }> = {
   success: { variant: 'success', labelKey: 'table.status.success' },
+  completed: { variant: 'success', labelKey: 'table.status.success' },
   failed: { variant: 'error', labelKey: 'table.status.failed' },
   running: { variant: 'default', labelKey: 'table.status.running' },
   pending: { variant: 'warning', labelKey: 'table.status.pending' },

@@ -723,7 +723,7 @@ describe("PromptCacheConversationTable", () => {
 
     expect(document.body.textContent).toContain("最近 5 条调用记录");
     expect(document.body.textContent).toContain("gpt-5.4");
-    expect(document.body.textContent).toContain("/v1/responses");
+    expect(document.body.textContent).toContain("Proxy West");
     expect(document.body.textContent).toContain("3,210");
 
     const collapseButton = findButtonByAriaLabel("收起最近调用记录");
@@ -824,7 +824,8 @@ describe("PromptCacheConversationTable", () => {
       snapshotId: 901,
     });
     expect(document.body.textContent).toContain("全部保留调用记录");
-    expect(document.body.textContent).toContain("Pool Alpha · Proxy West");
+    expect(document.body.textContent).toContain("Proxy West");
+    expect(document.body.textContent).toContain("HTTP 502");
     expect(document.body.textContent).toContain("page 2 failed");
     expect(document.body.textContent).toContain("已加载 2 / 3 条保留调用记录");
 
