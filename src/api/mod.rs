@@ -2729,7 +2729,7 @@ pub(crate) async fn fetch_timeseries(
     let start_str_iso = format_utc_iso(start_dt);
 
     let mut records_query = QueryBuilder::new(
-        "SELECT occurred_at, status, total_tokens, cost, t_upstream_ttfb_ms FROM codex_invocations WHERE occurred_at >= ",
+        "SELECT occurred_at, status, total_tokens, cost, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms FROM codex_invocations WHERE occurred_at >= ",
     );
     records_query.push_bind(db_occurred_at_lower_bound(start_dt));
     if source_scope == InvocationSourceScope::ProxyOnly {
@@ -2763,6 +2763,12 @@ pub(crate) async fn fetch_timeseries(
             None => {}
         }
         entry.record_ttfb_sample(record.status.as_deref(), record.t_upstream_ttfb_ms);
+        entry.record_first_response_byte_total_sample(
+            record.t_req_read_ms,
+            record.t_req_parse_ms,
+            record.t_upstream_connect_ms,
+            record.t_upstream_ttfb_ms,
+        );
         entry.total_tokens += record.total_tokens.unwrap_or(0);
         entry.total_cost += record.cost.unwrap_or(0.0);
     }
@@ -2820,6 +2826,8 @@ pub(crate) async fn fetch_timeseries(
             .ok_or_else(|| anyhow!("invalid bucket epoch"))?;
         let first_byte_avg_ms = agg.first_byte_avg_ms();
         let first_byte_p95_ms = agg.first_byte_p95_ms();
+        let first_response_byte_total_avg_ms = agg.first_response_byte_total_avg_ms();
+        let first_response_byte_total_p95_ms = agg.first_response_byte_total_p95_ms();
         points.push(TimeseriesPoint {
             bucket_start: format_utc_iso(start),
             bucket_end: format_utc_iso(end),
@@ -2831,6 +2839,9 @@ pub(crate) async fn fetch_timeseries(
             first_byte_sample_count: agg.first_byte_sample_count,
             first_byte_avg_ms,
             first_byte_p95_ms,
+            first_response_byte_total_sample_count: agg.first_response_byte_total_sample_count,
+            first_response_byte_total_avg_ms,
+            first_response_byte_total_p95_ms,
         });
     }
 
@@ -2912,6 +2923,20 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
                 )?;
                 merged
             };
+            entry.first_response_byte_total_sample_count +=
+                row.first_response_byte_total_sample_count;
+            entry.first_response_byte_total_sum_ms += row.first_response_byte_total_sum_ms;
+            entry.first_response_byte_total_histogram =
+                if entry.first_response_byte_total_histogram.is_empty() {
+                    decode_approx_histogram(&row.first_response_byte_total_histogram)
+                } else {
+                    let mut merged = entry.first_response_byte_total_histogram.clone();
+                    merge_approx_histogram_into(
+                        &mut merged,
+                        &decode_approx_histogram(&row.first_response_byte_total_histogram),
+                    )?;
+                    merged
+                };
         }
     }
 
@@ -2931,6 +2956,12 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
                 None => {}
             }
             entry.record_exact_ttfb_sample(record.status.as_deref(), record.t_upstream_ttfb_ms);
+            entry.record_exact_first_response_byte_total_sample(
+                record.t_req_read_ms,
+                record.t_req_parse_ms,
+                record.t_upstream_connect_ms,
+                record.t_upstream_ttfb_ms,
+            );
             entry.total_tokens += record.total_tokens.unwrap_or_default();
             entry.total_cost += record.cost.unwrap_or_default();
         }
@@ -2988,6 +3019,9 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
             first_byte_sample_count: agg.first_byte_sample_count,
             first_byte_avg_ms: agg.first_byte_avg_ms(),
             first_byte_p95_ms: agg.first_byte_p95_ms(),
+            first_response_byte_total_sample_count: agg.first_response_byte_total_sample_count,
+            first_response_byte_total_avg_ms: agg.first_response_byte_total_avg_ms(),
+            first_response_byte_total_p95_ms: agg.first_response_byte_total_p95_ms(),
         });
     }
 
@@ -4608,6 +4642,9 @@ pub(crate) struct TimeseriesPoint {
     pub(crate) first_byte_sample_count: i64,
     pub(crate) first_byte_avg_ms: Option<f64>,
     pub(crate) first_byte_p95_ms: Option<f64>,
+    pub(crate) first_response_byte_total_sample_count: i64,
+    pub(crate) first_response_byte_total_avg_ms: Option<f64>,
+    pub(crate) first_response_byte_total_p95_ms: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
