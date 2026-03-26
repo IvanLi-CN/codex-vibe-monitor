@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.28.2",
+  "base_stable_version": "1.28.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-26T19:28:19Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.28.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "f7972fb11c547917e9414e3e6541a7638bca05da",
+  "pr_number": 250,
+  "pr_title": "fix: unify missing quota window placeholders",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.28.2",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.28.2,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "74bdb32672a62015a4967f84224e232a38b27b6d",
+  "type_label": "type:patch"
+}
