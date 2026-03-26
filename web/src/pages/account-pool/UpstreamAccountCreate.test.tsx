@@ -1162,6 +1162,109 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     expect(pageTextContent()).not.toContain("Mother updated");
   }, 10_000);
 
+  it("demotes sibling completed rows after a mother reassignment save", async () => {
+    const saveAccount = vi.fn().mockImplementation(
+      async (accountId: number, payload: Record<string, unknown>) => ({
+        id: accountId,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: accountId === 41 ? "Row One" : "Row Two",
+        groupName:
+          typeof payload.groupName === "string" ? payload.groupName : "prod",
+        isMother: payload.isMother === true,
+        status: "active",
+        enabled: true,
+        duplicateInfo: null,
+        history: [],
+        note: typeof payload.note === "string" ? payload.note : "Seed note",
+        tags: [],
+        effectiveRoutingRule: {
+          guardEnabled: false,
+          allowCutOut: true,
+          allowCutIn: true,
+          sourceTagIds: [],
+          sourceTagNames: [],
+          guardRules: [],
+        },
+      }),
+    );
+    mockUpstreamAccounts({ saveAccount });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            rows: [
+              buildCompletedBatchOauthRow({
+                id: "row-1",
+                displayName: "Row One",
+                isMother: false,
+                metadataPersisted: {
+                  displayName: "Row One",
+                  groupName: "prod",
+                  note: "Seed note",
+                  isMother: false,
+                  tagIds: [],
+                },
+              }),
+              buildCompletedBatchOauthRow({
+                id: "row-2",
+                displayName: "Row Two",
+                isMother: true,
+                session: {
+                  loginId: "login-2",
+                  status: "completed",
+                  authUrl: null,
+                  redirectUri: null,
+                  expiresAt: "2026-03-13T10:00:00.000Z",
+                  accountId: 42,
+                  error: null,
+                },
+                metadataPersisted: {
+                  displayName: "Row Two",
+                  groupName: "prod",
+                  note: "Seed note",
+                  isMother: true,
+                  tagIds: [],
+                },
+              }),
+            ],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    const motherButtons = Array.from(host?.querySelectorAll("button") ?? []).filter(
+      (candidate): candidate is HTMLButtonElement =>
+        candidate instanceof HTMLButtonElement &&
+        candidate.getAttribute("aria-label") === "Toggle mother account",
+    );
+    expect(motherButtons).toHaveLength(2);
+
+    act(() => {
+      motherButtons[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+
+    expect(motherButtons[0]?.getAttribute("aria-pressed")).toBe("true");
+    expect(motherButtons[1]?.getAttribute("aria-pressed")).toBe("false");
+
+    setInputValue('input[name="batchOauthNote-row-2"]', "Row Two updated");
+    blurField('input[name="batchOauthNote-row-2"]');
+    await flushAsync();
+
+    expect(saveAccount).toHaveBeenNthCalledWith(
+      2,
+      42,
+      expect.objectContaining({
+        note: "Row Two updated",
+        isMother: false,
+      }),
+    );
+  }, 10_000);
+
   it("uses the saved account tags as the completed-row baseline when metadata state is restored", async () => {
     const saveAccount = vi.fn().mockImplementation(
       async (accountId: number, payload: Record<string, unknown>) => ({
@@ -1240,7 +1343,7 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
       state: {
         draft: {
           batchOauth: {
-            tagIds: [1],
+            tagIds: [2],
             rows: [
               buildCompletedBatchOauthRow({
                 metadataPersisted: null,
@@ -1263,6 +1366,68 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
         displayName: "Row One Restored",
         tagIds: [2],
       }),
+    );
+  }, 10_000);
+
+  it("syncs restored completed rows to the initial shared tag set", async () => {
+    const saveAccount = vi.fn().mockImplementation(
+      async (accountId: number, payload: Record<string, unknown>) => ({
+        id: accountId,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Tagged Row",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        duplicateInfo: null,
+        history: [],
+        note: "Seed note",
+        tags: Array.isArray(payload.tagIds)
+          ? payload.tagIds.map((tagId) => ({
+              id: Number(tagId),
+              name: tagId === 1 ? "vip" : `tag-${tagId}`,
+              routingRule: {
+                guardEnabled: false,
+                allowCutOut: true,
+                allowCutIn: true,
+              },
+            }))
+          : [],
+        effectiveRoutingRule: {
+          guardEnabled: false,
+          allowCutOut: true,
+          allowCutIn: true,
+          sourceTagIds: [],
+          sourceTagNames: [],
+          guardRules: [],
+        },
+      }),
+    );
+    mockUpstreamAccounts({ saveAccount });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            tagIds: [1],
+            rows: [
+              buildCompletedBatchOauthRow({
+                displayName: "Tagged Row",
+                metadataPersisted: null,
+              }),
+            ],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    expect(saveAccount).toHaveBeenCalledTimes(1);
+    expect(saveAccount).toHaveBeenCalledWith(
+      41,
+      expect.objectContaining({ tagIds: [1] }),
     );
   }, 10_000);
 
