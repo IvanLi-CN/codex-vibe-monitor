@@ -66,6 +66,7 @@ import type {
   OauthMailboxSessionSupported,
   OauthMailboxStatus,
   UpdateOauthLoginSessionPayload,
+  UpdateUpstreamAccountPayload,
   UpstreamAccountDetail,
   UpstreamAccountDuplicateInfo,
   UpstreamAccountSummary,
@@ -353,17 +354,18 @@ function buildBatchOauthPersistedMetadata(
   };
 }
 
-function batchOauthPersistedMetadataEquals(
-  left: BatchOauthPersistedMetadata | null,
-  right: BatchOauthPersistedMetadata,
+function didCompletedBatchOauthCommittedFieldsChange(
+  persisted: BatchOauthPersistedMetadata | null,
+  next: BatchOauthPersistedMetadata,
+  committedFields: Array<keyof BatchOauthPersistedMetadata>,
 ) {
-  if (!left) return false;
-  if (left.displayName !== right.displayName) return false;
-  if (left.groupName !== right.groupName) return false;
-  if (left.note !== right.note) return false;
-  if (left.isMother !== right.isMother) return false;
-  if (left.tagIds.length !== right.tagIds.length) return false;
-  return left.tagIds.every((value, index) => value === right.tagIds[index]);
+  if (!persisted) return true;
+  return committedFields.some((field) => {
+    if (field === "tagIds") {
+      return !batchTagIdsEqual(persisted.tagIds, next.tagIds);
+    }
+    return persisted[field] !== next[field];
+  });
 }
 
 function findCompletedBatchOauthAccount(
@@ -2749,7 +2751,13 @@ export default function UpstreamAccountCreatePage() {
       return;
     }
 
-    if (batchOauthPersistedMetadataEquals(sourceRow.metadataPersisted, nextMetadata)) {
+    if (
+      !didCompletedBatchOauthCommittedFieldsChange(
+        sourceRow.metadataPersisted,
+        nextMetadata,
+        committedFields,
+      )
+    ) {
       updateBatchRow(rowId, (current) =>
         current.metadataError
           ? {
@@ -2771,15 +2779,25 @@ export default function UpstreamAccountCreatePage() {
     }));
 
     try {
-      const detail = await saveAccount(accountId, {
-        displayName: nextMetadata.displayName || undefined,
-        groupName: nextMetadata.groupName,
-        note: nextMetadata.note,
-        isMother: nextMetadata.isMother,
-        tagIds: nextMetadata.tagIds,
-        groupNote:
-          resolvePendingGroupNoteForName(nextMetadata.groupName) || undefined,
-      });
+      const payload: UpdateUpstreamAccountPayload = {};
+      if (committedFields.includes("displayName")) {
+        payload.displayName = nextMetadata.displayName || undefined;
+      }
+      if (committedFields.includes("groupName")) {
+        payload.groupName = nextMetadata.groupName;
+        payload.groupNote =
+          resolvePendingGroupNoteForName(nextMetadata.groupName) || undefined;
+      }
+      if (committedFields.includes("note")) {
+        payload.note = nextMetadata.note;
+      }
+      if (committedFields.includes("isMother")) {
+        payload.isMother = nextMetadata.isMother;
+      }
+      if (committedFields.includes("tagIds")) {
+        payload.tagIds = nextMetadata.tagIds;
+      }
+      const detail = await saveAccount(accountId, payload);
       notifyMotherChange(detail);
       setBatchRows((currentRows) => {
         const nextRows = currentRows.map((current) => {
@@ -2915,14 +2933,16 @@ export default function UpstreamAccountCreatePage() {
   const handleBatchGroupValueChange = (rowId: string, value: string) => {
     const row = batchRowsRef.current.find((item) => item.id === rowId);
     if (!row) return;
+    const normalizedValue = value.trim();
+    const nextGroupName = normalizedValue || batchDefaultGroupName.trim();
     updateBatchRow(rowId, (current) => {
       if (current.busyAction || current.mailboxBusyAction || current.metadataBusy) {
         return current;
       }
       return {
         ...current,
-        groupName: value,
-        inheritsDefaultGroup: value.trim() === "",
+        groupName: nextGroupName,
+        inheritsDefaultGroup: normalizedValue === "",
         metadataError: canEditCompletedBatchOauthRowMetadata(current)
           ? null
           : current.metadataError,
@@ -2932,7 +2952,7 @@ export default function UpstreamAccountCreatePage() {
     if (!canEditCompletedBatchOauthRowMetadata(row)) return;
     void persistCompletedBatchRowMetadata(
       rowId,
-      { groupName: value.trim() },
+      { groupName: nextGroupName },
       ["groupName"],
     );
   };

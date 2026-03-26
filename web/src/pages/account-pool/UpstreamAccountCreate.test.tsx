@@ -1669,7 +1669,7 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     );
   }, 10_000);
 
-  it("keeps failed local metadata edits in later completed-row auto-saves", async () => {
+  it("does not resend failed local metadata edits during later completed-row auto-saves", async () => {
     let displayNameFailed = false;
     const saveAccount = vi.fn().mockImplementation(
       async (accountId: number, payload: Record<string, unknown>) => {
@@ -1767,10 +1767,11 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
       2,
       41,
       expect.objectContaining({
-        displayName: "Row One Draft",
         tagIds: [1],
       }),
     );
+    const secondPayload = saveAccount.mock.calls[1]?.[1] as Record<string, unknown>;
+    expect("displayName" in secondPayload).toBe(false);
   }, 10_000);
 
   it("retries completed-row shared tag sync after a transient save failure", async () => {
