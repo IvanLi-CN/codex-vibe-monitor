@@ -226,21 +226,6 @@ export function BatchOauthActionButton({
   ) => {
     if (disabled) return;
     if (
-      event.key === "Tab" &&
-      !event.shiftKey &&
-      (resolvedOpen || mode === "copy")
-    ) {
-      event.preventDefault();
-      clearHoverCloseTimer();
-      setPinnedOpen(true);
-      if (resolvedOpen) {
-        focusFirstPopoverControl();
-      } else {
-        focusPopoverRequestedRef.current = true;
-      }
-      return;
-    }
-    if (
       event.key === "ArrowDown" ||
       event.key === "ContextMenu" ||
       (event.shiftKey && event.key === "F10")

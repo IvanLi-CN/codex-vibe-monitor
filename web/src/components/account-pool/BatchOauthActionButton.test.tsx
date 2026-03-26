@@ -179,7 +179,7 @@ describe("BatchOauthActionButton", () => {
     expect(onManualCopyOpenChange).toHaveBeenCalledWith(false);
   });
 
-  it("lets keyboard users tab into the pinned popover action", () => {
+  it("lets keyboard users open the pinned popover action with ArrowDown", () => {
     render(<BatchOauthActionButton mode="copy" {...baseProps} />);
 
     const button = getButton(/copy oauth url/i);
@@ -191,7 +191,7 @@ describe("BatchOauthActionButton", () => {
       button.dispatchEvent(
         new KeyboardEvent("keydown", {
           bubbles: true,
-          key: "Tab",
+          key: "ArrowDown",
         }),
       );
       vi.runAllTimers();
@@ -199,5 +199,30 @@ describe("BatchOauthActionButton", () => {
 
     const regenerateButton = getButton(/regenerate oauth url/i);
     expect(document.activeElement).toBe(regenerateButton);
+  });
+
+  it("does not hijack forward tab navigation from the trigger", () => {
+    render(<BatchOauthActionButton mode="copy" {...baseProps} />);
+
+    const button = getButton(/copy oauth url/i);
+    act(() => {
+      button.focus();
+    });
+
+    const event = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Tab",
+    });
+
+    let dispatchResult = true;
+    act(() => {
+      dispatchResult = button.dispatchEvent(event);
+      vi.runAllTimers();
+    });
+
+    expect(dispatchResult).toBe(true);
+    expect(event.defaultPrevented).toBe(false);
+    expect(document.activeElement).toBe(button);
   });
 });
