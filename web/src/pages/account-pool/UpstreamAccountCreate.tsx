@@ -2716,25 +2716,19 @@ export default function UpstreamAccountCreatePage() {
     const accountId = sourceRow.session?.accountId;
     if (accountId == null) return;
 
-    const baseline =
-      sourceRow.metadataPersisted ??
-      buildBatchOauthPersistedMetadata(
-        sourceRow,
-        resolveCompletedBatchOauthRowBaselineTagIds(
-          sourceRow,
-          items,
-          batchTagIds,
-        ),
-      );
     const nextMetadata: BatchOauthPersistedMetadata = {
-      displayName: overrides.displayName ?? baseline.displayName,
-      groupName: overrides.groupName ?? baseline.groupName,
-      note: overrides.note ?? baseline.note,
-      isMother: overrides.isMother ?? baseline.isMother,
+      displayName: overrides.displayName ?? sourceRow.displayName.trim(),
+      groupName: overrides.groupName ?? sourceRow.groupName.trim(),
+      note: overrides.note ?? sourceRow.note.trim(),
+      isMother: overrides.isMother ?? sourceRow.isMother,
       tagIds: normalizeBatchTagIds(
         overrides.tagIds ??
           sourceRow.pendingSharedTagIds ??
-          baseline.tagIds,
+          resolveCompletedBatchOauthRowBaselineTagIds(
+            sourceRow,
+            items,
+            batchTagIds,
+          ),
       ),
     };
     const isPendingSharedTagSyncAttempt =

@@ -1669,6 +1669,110 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     );
   }, 10_000);
 
+  it("keeps failed local metadata edits in later completed-row auto-saves", async () => {
+    let displayNameFailed = false;
+    const saveAccount = vi.fn().mockImplementation(
+      async (accountId: number, payload: Record<string, unknown>) => {
+        if (
+          !displayNameFailed &&
+          typeof payload.displayName === "string" &&
+          payload.displayName === "Row One Draft"
+        ) {
+          displayNameFailed = true;
+          throw new Error("Display save failed");
+        }
+        return {
+          id: accountId,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName:
+            typeof payload.displayName === "string"
+              ? payload.displayName
+              : "Row One",
+          groupName: "prod",
+          isMother: payload.isMother === true,
+          status: "active",
+          enabled: true,
+          duplicateInfo: null,
+          history: [],
+          note: "Seed note",
+          tags: Array.isArray(payload.tagIds)
+            ? payload.tagIds.map((tagId) => ({
+                id: Number(tagId),
+                name: tagId === 1 ? "vip" : `tag-${tagId}`,
+                routingRule: {
+                  guardEnabled: false,
+                  allowCutOut: true,
+                  allowCutIn: true,
+                },
+              }))
+            : [],
+          effectiveRoutingRule: {
+            guardEnabled: false,
+            allowCutOut: true,
+            allowCutIn: true,
+            sourceTagIds: [],
+            sourceTagNames: [],
+            guardRules: [],
+          },
+        };
+      },
+    );
+    mockUpstreamAccounts({ saveAccount });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            rows: [
+              buildCompletedBatchOauthRow({
+                displayName: "Row One",
+                metadataPersisted: {
+                  displayName: "Row One",
+                  groupName: "prod",
+                  note: "Seed note",
+                  isMother: false,
+                  tagIds: [],
+                },
+              }),
+            ],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    setInputValue(
+      'input[name="batchOauthDisplayName-row-1"]',
+      "Row One Draft",
+    );
+    blurField('input[name="batchOauthDisplayName-row-1"]');
+    await flushAsync();
+
+    clickButton(/Add tag/i);
+    await flushAsync();
+    const vipOption = Array.from(document.body.querySelectorAll("[cmdk-item]")).find(
+      (candidate) => (candidate.textContent || "").includes("vip"),
+    );
+    if (!(vipOption instanceof HTMLElement)) {
+      throw new Error("missing vip tag option");
+    }
+    act(() => {
+      vipOption.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+
+    expect(saveAccount).toHaveBeenNthCalledWith(
+      2,
+      41,
+      expect.objectContaining({
+        displayName: "Row One Draft",
+        tagIds: [1],
+      }),
+    );
+  }, 10_000);
+
   it("retries completed-row shared tag sync after a transient save failure", async () => {
     let firstRowFailures = 0;
     const saveAccount = vi.fn().mockImplementation(
