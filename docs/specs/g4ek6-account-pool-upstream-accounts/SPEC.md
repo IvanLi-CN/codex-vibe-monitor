@@ -229,53 +229,7 @@
 
 ## Visual Evidence
 
-- source_type: storybook_canvas
-  target_program: mock-only
-  capture_scope: browser-viewport
-  sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
-  story_id_or_title: Account Pool / Pages / Upstream Account Create / Batch OAuth / Completed Metadata Editable
-  state: completed-row-metadata-open
-  evidence_note: 验证批量 OAuth 已完成行仍可在原表格中编辑显示名、分组、备注与整批标签，且 OAuth 主动作保持锁定。
-  image:
-  ![Batch OAuth completed row metadata editable](./assets/batch-oauth-completed-metadata-editable.png)
-
-- source_type: storybook_canvas
-  target_program: mock-only
-  capture_scope: browser-viewport
-  sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
-  story_id_or_title: Account Pool / Pages / Upstream Account Create / Batch OAuth / Completed Needs Refresh Editable
-  state: completed-needs-refresh-recovered
-  evidence_note: 验证 `completedNeedsRefresh` 行仍可直接编辑元数据，并在一次保存成功后收敛回正常完成态。
-  image:
-  ![Batch OAuth completed needs refresh editable](./assets/batch-oauth-completed-needs-refresh-editable.png)
-
-- source_type: storybook_canvas
-  target_program: mock-only
-  capture_scope: browser-viewport
-  sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
-  story_id_or_title: Account Pool / Pages / Upstream Account Create / Batch OAuth / Completed Save Failure Feedback
-  state: inline-save-error
-  evidence_note: 验证完成态行的即时保存失败只显示在当前行，不会把页面切离批量表格，也不会吞掉其它可继续编辑的入口。
-  image:
-  ![Batch OAuth completed save failure feedback](./assets/batch-oauth-completed-save-failure-feedback.png)
-
-- source_type: storybook_canvas
-  target_program: mock-only
-  capture_scope: browser-viewport
-  sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
-  story_id_or_title: Account Pool / Pages / Upstream Account Create / Batch OAuth / Completed Email Readonly
-  state: identity-controls-locked
-  evidence_note: 验证完成态行的邮箱 chip 仍保留只读展示，而 callback、OAuth 生成/完成与删除等身份类控件继续禁用。
-  image:
-  ![Batch OAuth completed email readonly](./assets/batch-oauth-completed-email-readonly.png)
-
-## Visual Evidence (PR)
-
-- 已迁移到上方 `## Visual Evidence`。当前未选择自动复用任何历史 PR 截图，避免旧证据继续绑定到新的完成态行为变更。
+- 本次任务按主人要求不保留截图交付；对应完成态场景已通过稳定 Storybook stories 与前端测试覆盖验证。
 
 ## 风险 / 假设
 
