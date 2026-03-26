@@ -4,7 +4,7 @@
 
 - Status: 已实现
 - Created: 2026-03-11
-- Last: 2026-03-25
+- Last: 2026-03-26
 
 ## 背景 / 问题陈述
 
@@ -62,6 +62,8 @@
 - 号池路由密钥弹窗必须提供“生成密钥”次级动作：前端本地生成 `cvm-` 前缀的高熵 key 并填入输入框，只有用户点击保存后才真正替换当前生效 key。
 - 批量 OAuth 模式必须以表格呈现，允许“一个逻辑账号占两行视觉布局”，但每个字段控件都必须保持单行输入，不得在单元格内自动换行；每行 OAuth 生成/完成状态独立，失败不得阻塞其他行。
 - 批量 OAuth 行操作区必须在“完成 OAuth 登录”与状态 badge 之间提供母号皇冠按钮，使用 Iconify `mdi:crown` / `mdi:crown-outline`。
+- 批量 OAuth 行一旦完成并拿到 `accountId`，该行必须继续允许编辑 `displayName`、`groupName`、`note`、`isMother` 与分组备注入口，并直接复用 `PATCH /api/pool/upstream-accounts/:id` 落库；`email/mailboxAddress/callbackUrl` 与 OAuth 生成/完成动作必须继续只读或禁用。
+- 批量 OAuth 顶部的默认分组与共享标签必须继续联动已完成行：默认分组只覆盖仍在继承旧默认分组的已完成行，共享标签则按整批单一标签集合持续同步到所有已落库账号。
 - 账号状态至少支持 `active`、`syncing`、`needs_reauth`、`error` 与 `disabled`；授权失效只能转 `needs_reauth`，不得静默删除账号或清空最后一次成功快照。
 - 对外列表 / 详情读模型必须把混合状态拆成 `workStatus`、`enableStatus`、`healthStatus`、`syncState` 四个维度；`限流` 只能出现在 `workStatus`，`同步中` 只能出现在 `syncState`，`enabled=false` 只能出现在 `enableStatus`，旧 `status` 查询参数只保留一轮兼容映射。
 - 状态拆分不得新增持久化状态列或新表；`workStatus`、`enableStatus`、`healthStatus`、`syncState` 必须统一由 `enabled`、`status`、`last_error`、`cooldown_until`、`last_selected_at` 的读模型派生得出，避免状态回写漂移。
@@ -86,6 +88,7 @@
 
 - 用户点击 `新增 OAuth 账号` 后，前端创建登录会话、打开授权页并轮询登录状态；callback 成功后列表自动刷新并选中新账号。
 - 用户点击 `Batch OAuth` 后，前端在同页表格中维护多行 OAuth 草稿；每行独立生成登录会话、复制授权链接并回填 callback，已完成行必须留在当前页，方便继续处理剩余账号。
+- 用户在批量 OAuth 中完成某一行后，仍可在原表格内继续修改该行的名称、分组、备注、母号与共享标签；这些修改必须即时保存到已创建账号，且不得重新打开 OAuth 流程。
 - 用户把账号设为母号后，服务端以该分组为边界自动撤销旧母号；前端收到成功响应后立即弹出系统级通知，并允许撤销到操作前的母号归属。
 - 服务端在 callback 成功后立即保存账号，并尝试执行一次 usage 同步；同步失败不回滚账号创建，而是把账号标为 `error` 并保留最后错误。
 - 新建 OAuth 账号时不得再按 `chatgpt_account_id` 覆盖旧账号；只有显式 `accountId` 的 re-login 才允许覆盖现有 OAuth 账号的凭据与身份字段。
@@ -140,6 +143,11 @@
 - Given 用户位于 `dashboard / live / settings` 任意页面，When 点击导航中的 `号池`，Then 页面进入 `号池 -> 上游账号` 且不影响现有四个模块。
 - Given 前端创建 OAuth 登录会话，When 打开 `authUrl` 并完成授权，Then callback 会把账号落库，轮询接口变为 `completed`，列表中出现该账号。
 - Given 用户进入 `Batch OAuth` 模式，When 在多行里分别生成授权链接、粘贴 callback 并完成其中一行，Then 该行显示 `completed` 且页面保持在批量表格，其他行仍可继续生成或完成。
+- Given 某批量 OAuth 行已完成且持有 `accountId`，When 用户修改 `displayName/groupName/note/isMother`，Then 改动直接保存到对应账号且页面不离开批量表格。
+- Given 某批量 OAuth 行已完成，When 用户尝试修改邮箱、邮箱来源、callback 或再次触发 OAuth 生成/完成，Then 这些身份与 OAuth 控件必须保持只读或禁用。
+- Given 批量 OAuth 顶部默认分组发生变化，When 某已完成行仍在继承旧默认分组，Then 该行分组随之更新并立即落库；已手动改过分组的完成态行不得被覆盖。
+- Given 批量 OAuth 顶部共享标签发生变化，When 页面中已存在完成态账号，Then 所有已完成账号的标签集合最终与当前共享标签一致，未完成行后续创建也复用同一集合。
+- Given 某完成态批量 OAuth 行保存失败，When 用户继续编辑其它已完成行，Then 错误只留在失败行，其他行仍可继续保存。
 - Given 账号启用、`healthStatus=normal`、`syncState=idle` 且 `cooldown_until > now`，When 列表返回该账号，Then `workStatus=rate_limited`。
 - Given 账号启用且 `last_selected_at` 在最近 30 分钟内、且不在 cooldown，When 列表返回该账号，Then `workStatus=working`。
 - Given 账号禁用，When 列表与筛选渲染，Then `enableStatus=disabled`，且不会再通过旧混合状态把主状态显示成“已停用”。
@@ -219,172 +227,9 @@
 - 2026-03-20：补充账号级 actor 串行与后台维护去重约束，明确维护只允许阻塞同一账号、无关账号启停在维护竞争下需以 `1 秒内完成服务端提交` 为目标，并新增对应的 Rust 并发回归测试要求。
 - 2026-03-23：把上游账号列表的混合 `displayStatus` 读模型拆成 `workStatus` / `enableStatus` / `healthStatus` / `syncState` 四个维度，列表筛选同步拆成 `工作状态`、`启用状态`、`账号状态` 三组服务端交集筛选，并锁定“不新增持久化状态列”的实现边界。
 
-## Visual Evidence (PR)
+## Visual Evidence
 
-- source_type: storybook_canvas
-  target_program: mock-only
-  capture_scope: browser-viewport
-  sensitive_exclusion: N/A
-  submission_gate: approved
-  story_id_or_title: Account Pool / Pages / Upstream Accounts / List / Status Filters
-  state: split-status-filters
-  evidence_note: 验证账号列表已拆分为工作状态、启用状态、账号状态三组独立筛选，并且服务端筛选后的列表结果只保留符合条件的账号。
-  image:
-  ![Upstream accounts split status filters](./assets/upstream-accounts-status-filters.png)
-
-- source_type: storybook_canvas
-  target_program: mock-only
-  capture_scope: browser-viewport
-  sensitive_exclusion: N/A
-  submission_gate: approved
-  story_id_or_title: Account Pool / Pages / Upstream Accounts / List / Bulk Selection
-  state: cross-page-bulk-selection
-  evidence_note: 验证列表在高密度账号样本下可展示跨页选择提示条，以及与批量启用、停用、分组和标签操作并排的主操作布局。
-  image:
-  ![Upstream accounts bulk selection bar](./assets/upstream-accounts-bulk-selection.png)
-
-- source_type: storybook_canvas
-  target_program: mock-only
-  capture_scope: element
-  sensitive_exclusion: N/A
-  submission_gate: approved
-  story_id_or_title: Account Pool / Pages / Upstream Accounts / Overlays / Detail Drawer
-  state: detail-drawer-status-breakdown
-  evidence_note: 验证账号详情抽屉顶部展示了解耦后的启用状态、工作状态、同步状态和账号固有状态，并保留母号标记与核心操作入口。
-  image:
-  ![Upstream account detail drawer status breakdown](./assets/upstream-accounts-detail-drawer-statuses.png)
-
-- source_type: storybook_canvas
-  target_program: mock-only
-  capture_scope: element
-  sensitive_exclusion: N/A
-  submission_gate: approved
-  story_id_or_title: Account Pool / Components / Mother Account Toggle / Overview
-  state: light-dark-gallery
-  evidence_note: 验证母号 badge 与“设为母号”切换卡在 light/dark 两套主题下都保持 amber 语义，但文本、皇冠图标和 icon-only 状态具备足够对比度。
-  image:
-  ![Mother account toggle overview](./assets/mother-account-toggle-overview.png)
-
-- source_type: storybook_canvas
-  target_program: mock-only
-  capture_scope: element
-  sensitive_exclusion: N/A
-  submission_gate: approved
-  story_id_or_title: Account Pool / Pages / Upstream Accounts / Tag Filter All Match
-  state: group-and-tag-combined-filter
-  evidence_note: 验证账号列表的分组筛选与标签筛选可同时生效；当分组为 `production` 且标签为 `vip + burst-safe` 时，列表只保留满足两类条件的账号。
-  image:
-  ![Upstream accounts group and tag combined filter](./assets/upstream-accounts-group-tag-filter-combined-storybook.png)
-
-- source_type: storybook_canvas
-  target_program: mock-only
-  capture_scope: element
-  sensitive_exclusion: N/A
-  submission_gate: approved
-  story_id_or_title: Account Pool / Pages / Upstream Accounts / Detail Drawer
-  state: idle-sync-button
-  evidence_note: 验证账号详情抽屉里的 `立即同步` 按钮空闲态为 outline 风格同步图标，而不是 spinner 或实心刷新图标。
-  image:
-  ![Upstream account sync button outline](./assets/upstream-account-sync-button-outline.png)
-
-- source_type: storybook_canvas
-  target_program: mock-only
-  capture_scope: browser-viewport
-  sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
-  story_id_or_title: Account Pool / Pages / Upstream Accounts / Operational
-  state: default
-  evidence_note: 验证号池首页的账号统计、路由设置卡片、分组筛选与 5 小时 / 7 天窗口列表展示。
-  image:
-  ![Account pool operational page](./assets/account-pool-operational.png)
-
-- source_type: storybook_canvas
-  target_program: mock-only
-  capture_scope: browser-viewport
-  sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
-  story_id_or_title: Account Pool / Pages / Upstream Accounts / Detail Drawer
-  state: drawer-open
-  evidence_note: 验证账号详情抽屉中的身份信息、配额卡片，以及新增的 Sticky Key 对话表格。
-  image:
-  ![Account pool detail drawer with sticky conversations](./assets/account-pool-detail-drawer.png)
-
-- source_type: storybook_canvas
-  target_program: mock-only
-  capture_scope: browser-viewport
-  sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
-  story_id_or_title: Account Pool / Pages / Upstream Accounts / Routing Dialog
-  state: dialog-open
-  evidence_note: 验证号池入口 key 的编辑弹窗，包括标题层级、生成密钥按钮、输入字段、关闭回滚与主次按钮关系。
-  image:
-  ![Account pool routing dialog](./assets/account-pool-routing-dialog.png)
-
-- source_type: storybook_canvas
-  target_program: mock-only
-  capture_scope: browser-viewport
-  sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
-  story_id_or_title: Records / RecordsPage / Default
-  state: filtered-list-default
-  evidence_note: 验证记录页新增的上游筛选位于筛选区，并与统计卡片和记录表同页联动展示。
-  image:
-  ![Records page upstream filter](./assets/records-upstream-filter.png)
-
-- source_type: local_browser
-  target_program: codex-vibe-monitor local web app
-  capture_scope: browser-viewport
-  sensitive_exclusion: browser page only
-  submission_gate: approved
-  story_id_or_title: 上游账号列表页（真实运行界面）
-  state: current-local
-  evidence_note: 展示当前上游账号列表页的顶部操作区、统计卡片与列表容器布局，确认新增入口已收敛为单个按钮。
-  image:
-  ![Upstream accounts list page](./assets/upstream-accounts-list.png)
-
-- source_type: local_browser
-  target_program: codex-vibe-monitor local web app
-  capture_scope: browser-viewport
-  sensitive_exclusion: browser page only
-  submission_gate: approved
-  story_id_or_title: 批量 OAuth 创建页（真实运行界面）
-  state: current-local
-  evidence_note: 展示批量 OAuth 创建页的真实交互态：顶部默认分组控件、表格化批量录入、已生成 OAuth 链接以及回填 callback 的示例行。
-  image:
-  ![Batch OAuth create page](./assets/upstream-accounts-batch-oauth.png)
-
-- source_type: storybook_canvas
-  target_program: mock-only
-  capture_scope: element
-  sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
-  story_id_or_title: Account Pool / Pages / Upstream Account Create / Batch OAuth Mixed States
-  state: duplicate-warning-bubble
-  evidence_note: 验证批量 OAuth 行内的重复身份告警已改成贴锚点的小气泡，并使用三角警告图标作为触发器，不再占用公共区域。
-  image:
-  ![Batch OAuth duplicate warning bubble](./assets/batch-oauth-duplicate-bubble.png)
-
-- source_type: storybook_canvas
-  target_program: mock-only
-  capture_scope: element
-  sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
-  story_id_or_title: Account Pool / Components / Upstream Accounts Table / Duplicate Identity
-  state: duplicate-badge-nowrap
-  evidence_note: 验证账号列表中的“重复账号”标签保持单行展示，不再在窄列宽下自动换行。
-  image:
-  ![Upstream accounts duplicate badge](./assets/upstream-accounts-duplicate-badge.png)
-
-- source_type: storybook_canvas
-  target_program: mock-only
-  capture_scope: element
-  sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
-  story_id_or_title: Account Pool / Pages / Upstream Accounts / Duplicate OAuth Detail
-  state: detail-drawer-open
-  evidence_note: 验证账号列表页的重复账号详情抽屉持续展示重复标记与原因，作为创建页“打开详情”后的承接界面参考。
-  image:
-  ![Upstream accounts duplicate detail drawer](./assets/upstream-accounts-duplicate-detail-drawer.png)
+- 本次任务按主人要求不保留截图交付；对应完成态场景已通过稳定 Storybook stories 与前端测试覆盖验证。
 
 ## 风险 / 假设
 
@@ -401,3 +246,4 @@
 - 2026-03-14: 调整 OAuth 新建语义为“重复身份仅告警不合并”，并补充 `displayName` 全局唯一约束与 UI warning/inline error 验收口径。
 - 2026-03-18: 账号列表头部改为 `分组 + 多 Tag` 双筛选，Tag 必须全匹配；移除头部 `打开详情` 冗余按钮并保持列表行点击/路由态打开详情抽屉的承接语义。
 - 2026-03-25: 收敛母号 badge 与“设为母号”切换卡的 amber 对比度，补充独立 Storybook 画廊与 dark 详情抽屉证据，避免母号标记继续混入低可读 warning 文本配色。
+- 2026-03-26: 批量 OAuth 完成态继续开放元数据编辑，默认分组与共享标签会继续联动已落库账号，同时锁定邮箱与 OAuth 身份控件只读。

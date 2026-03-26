@@ -3330,6 +3330,7 @@ async fn test_state_from_config(config: AppConfig, startup_ready: bool) -> Arc<A
         )),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
+        pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     })
 }
@@ -3363,6 +3364,7 @@ fn clone_state_with_upstream_accounts(
         pricing_catalog: state.pricing_catalog.clone(),
         prompt_cache_conversation_cache: state.prompt_cache_conversation_cache.clone(),
         maintenance_stats_cache: state.maintenance_stats_cache.clone(),
+        pool_routing_reservations: state.pool_routing_reservations.clone(),
         upstream_accounts,
     })
 }
@@ -3414,6 +3416,7 @@ async fn test_state_from_existing_pool(
         )),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
+        pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     })
 }
@@ -3493,6 +3496,32 @@ async fn insert_test_pool_limit_sample(
     primary_used_percent: Option<f64>,
     secondary_used_percent: Option<f64>,
 ) {
+    insert_test_pool_limit_sample_with_windows(
+        state,
+        account_id,
+        None,
+        primary_used_percent,
+        Some(300),
+        None,
+        secondary_used_percent,
+        Some(300),
+        None,
+    )
+    .await;
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn insert_test_pool_limit_sample_with_windows(
+    state: &Arc<AppState>,
+    account_id: i64,
+    plan_type: Option<&str>,
+    primary_used_percent: Option<f64>,
+    primary_window_minutes: Option<i64>,
+    primary_resets_at: Option<&str>,
+    secondary_used_percent: Option<f64>,
+    secondary_window_minutes: Option<i64>,
+    secondary_resets_at: Option<&str>,
+) {
     ensure_upstream_accounts_schema(&state.pool)
         .await
         .expect("ensure upstream account schema");
@@ -3505,20 +3534,43 @@ async fn insert_test_pool_limit_sample(
             secondary_used_percent, secondary_window_minutes, secondary_resets_at,
             credits_has_credits, credits_unlimited, credits_balance
         ) VALUES (
-            ?1, ?2, NULL, NULL, NULL,
-            ?3, 300, NULL,
-            ?4, 300, NULL,
+            ?1, ?2, NULL, NULL, ?3,
+            ?4, ?5, ?6,
+            ?7, ?8, ?9,
             NULL, NULL, NULL
         )
         "#,
     )
     .bind(account_id)
     .bind(&captured_at)
+    .bind(plan_type)
     .bind(primary_used_percent)
+    .bind(primary_window_minutes)
+    .bind(primary_resets_at)
     .bind(secondary_used_percent)
+    .bind(secondary_window_minutes)
+    .bind(secondary_resets_at)
     .execute(&state.pool)
     .await
     .expect("insert test pool limit sample");
+}
+
+async fn reserve_test_pool_routing_account(
+    state: &Arc<AppState>,
+    reservation_key: &str,
+    account_id: i64,
+) {
+    let account = PoolResolvedAccount {
+        account_id,
+        display_name: format!("reserved-{account_id}"),
+        kind: "api_key_codex".to_string(),
+        auth: PoolResolvedAuth::ApiKey {
+            authorization: format!("Bearer reserved-{account_id}"),
+        },
+        upstream_base_url: Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        routing_source: PoolRoutingSelectionSource::FreshAssignment,
+    };
+    reserve_pool_routing_account(state.as_ref(), reservation_key, &account);
 }
 
 async fn set_test_account_local_limits(
@@ -10138,6 +10190,7 @@ async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
             PromptCacheConversationsCacheState::default(),
         )),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
+        pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
@@ -11991,6 +12044,7 @@ async fn proxy_openai_v1_allows_slow_upload_with_short_timeout() {
             PromptCacheConversationsCacheState::default(),
         )),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
+        pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
@@ -13446,42 +13500,319 @@ async fn resolve_pool_account_for_request_soft_deprioritizes_accounts_with_only_
 }
 
 #[tokio::test]
-async fn resolve_pool_account_for_request_keeps_existing_sort_order_when_truly_unlimited_accounts_mix_with_limited_candidates()
- {
+async fn resolve_pool_account_for_request_prefers_reset_aware_pressure_over_raw_percent() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
     )
     .await;
-    let exempt_id = insert_test_pool_api_key_account(&state, "Exempt", "upstream-exempt").await;
-    let limited_id = insert_test_pool_api_key_account(&state, "Limited", "upstream-limited").await;
-    let recent_seen_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(5));
+    let team_id = insert_test_pool_api_key_account(&state, "Team", "upstream-team").await;
+    let free_id = insert_test_pool_api_key_account(&state, "Free", "upstream-free").await;
+    let now = Utc::now();
 
-    set_test_account_local_limits(&state.pool, limited_id, Some(100.0), Some(100.0)).await;
-    insert_test_pool_limit_sample(&state, limited_id, Some(15.0), Some(15.0)).await;
-    for sticky_key in [
-        "sticky-mixed-order-001",
-        "sticky-mixed-order-002",
-        "sticky-mixed-order-003",
-    ] {
-        upsert_test_sticky_route_at(&state.pool, sticky_key, exempt_id, &recent_seen_at).await;
-    }
-
-    let account = match resolve_pool_account_for_request(
-        state.as_ref(),
-        Some("sticky-mixed-order-target"),
-        &[],
-        &HashSet::new(),
+    insert_test_pool_limit_sample_with_windows(
+        &state,
+        team_id,
+        Some("team"),
+        Some(70.0),
+        Some(300),
+        Some(&format_utc_iso(now + ChronoDuration::minutes(5))),
+        Some(40.0),
+        Some(7 * 24 * 60),
+        Some(&format_utc_iso(now + ChronoDuration::days(1))),
     )
-    .await
-    .expect("resolve pool account")
+    .await;
+    insert_test_pool_limit_sample_with_windows(
+        &state,
+        free_id,
+        Some("free"),
+        None,
+        None,
+        None,
+        Some(30.0),
+        Some(7 * 24 * 60),
+        Some(&format_utc_iso(now + ChronoDuration::days(6))),
+    )
+    .await;
+
+    let account = match resolve_pool_account_for_request(state.as_ref(), None, &[], &HashSet::new())
+        .await
+        .expect("resolve pool account")
     {
         PoolAccountResolution::Resolved(account) => account,
         other => panic!("pool account should resolve, got {other:?}"),
     };
 
-    assert!(exempt_id < limited_id);
-    assert_eq!(account.account_id, exempt_id);
-    assert_ne!(account.account_id, limited_id);
+    assert_eq!(account.account_id, team_id);
+    assert_ne!(account.account_id, free_id);
+}
+
+#[tokio::test]
+async fn resolve_pool_account_for_request_applies_tighter_long_only_hard_cap() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let free_id = insert_test_pool_api_key_account(&state, "Free", "upstream-free").await;
+    let team_id = insert_test_pool_api_key_account(&state, "Team", "upstream-team").await;
+    let recent_seen_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(5));
+    let now = Utc::now();
+
+    insert_test_pool_limit_sample_with_windows(
+        &state,
+        free_id,
+        Some("free"),
+        None,
+        None,
+        None,
+        Some(5.0),
+        Some(7 * 24 * 60),
+        Some(&format_utc_iso(now + ChronoDuration::days(6))),
+    )
+    .await;
+    insert_test_pool_limit_sample_with_windows(
+        &state,
+        team_id,
+        Some("team"),
+        Some(65.0),
+        Some(300),
+        Some(&format_utc_iso(now + ChronoDuration::minutes(45))),
+        Some(55.0),
+        Some(7 * 24 * 60),
+        Some(&format_utc_iso(now + ChronoDuration::days(4))),
+    )
+    .await;
+    for sticky_key in ["sticky-free-001", "sticky-free-002"] {
+        upsert_test_sticky_route_at(&state.pool, sticky_key, free_id, &recent_seen_at).await;
+    }
+
+    let account = match resolve_pool_account_for_request(state.as_ref(), None, &[], &HashSet::new())
+        .await
+        .expect("resolve pool account")
+    {
+        PoolAccountResolution::Resolved(account) => account,
+        other => panic!("pool account should resolve, got {other:?}"),
+    };
+
+    assert_eq!(account.account_id, team_id);
+    assert_ne!(account.account_id, free_id);
+}
+
+#[tokio::test]
+async fn resolve_pool_account_for_request_counts_in_flight_reservations_toward_effective_load() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let preferred_id =
+        insert_test_pool_api_key_account(&state, "Preferred", "upstream-preferred").await;
+    let fallback_id =
+        insert_test_pool_api_key_account(&state, "Fallback", "upstream-fallback").await;
+    let recent_seen_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(5));
+    let now = Utc::now();
+
+    insert_test_pool_limit_sample_with_windows(
+        &state,
+        preferred_id,
+        Some("team"),
+        Some(5.0),
+        Some(300),
+        Some(&format_utc_iso(now + ChronoDuration::minutes(30))),
+        Some(5.0),
+        Some(7 * 24 * 60),
+        Some(&format_utc_iso(now + ChronoDuration::days(3))),
+    )
+    .await;
+    insert_test_pool_limit_sample_with_windows(
+        &state,
+        fallback_id,
+        Some("team"),
+        Some(25.0),
+        Some(300),
+        Some(&format_utc_iso(now + ChronoDuration::minutes(30))),
+        Some(25.0),
+        Some(7 * 24 * 60),
+        Some(&format_utc_iso(now + ChronoDuration::days(3))),
+    )
+    .await;
+    for sticky_key in ["sticky-pref-001", "sticky-pref-002"] {
+        upsert_test_sticky_route_at(&state.pool, sticky_key, preferred_id, &recent_seen_at).await;
+    }
+    reserve_test_pool_routing_account(&state, "reservation-001", preferred_id).await;
+
+    let account = match resolve_pool_account_for_request(state.as_ref(), None, &[], &HashSet::new())
+        .await
+        .expect("resolve pool account")
+    {
+        PoolAccountResolution::Resolved(account) => account,
+        other => panic!("pool account should resolve, got {other:?}"),
+    };
+
+    assert_eq!(account.account_id, fallback_id);
+    assert_ne!(account.account_id, preferred_id);
+}
+
+#[tokio::test]
+async fn resolve_pool_account_for_request_keeps_old_in_flight_reservations_counted() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let preferred_id =
+        insert_test_pool_api_key_account(&state, "Preferred", "upstream-preferred").await;
+    let fallback_id =
+        insert_test_pool_api_key_account(&state, "Fallback", "upstream-fallback").await;
+    let recent_seen_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(5));
+    let now = Utc::now();
+
+    insert_test_pool_limit_sample_with_windows(
+        &state,
+        preferred_id,
+        Some("team"),
+        Some(5.0),
+        Some(300),
+        Some(&format_utc_iso(now + ChronoDuration::minutes(30))),
+        Some(5.0),
+        Some(7 * 24 * 60),
+        Some(&format_utc_iso(now + ChronoDuration::days(3))),
+    )
+    .await;
+    insert_test_pool_limit_sample_with_windows(
+        &state,
+        fallback_id,
+        Some("team"),
+        Some(25.0),
+        Some(300),
+        Some(&format_utc_iso(now + ChronoDuration::minutes(30))),
+        Some(25.0),
+        Some(7 * 24 * 60),
+        Some(&format_utc_iso(now + ChronoDuration::days(3))),
+    )
+    .await;
+    for sticky_key in ["sticky-pref-001", "sticky-pref-002"] {
+        upsert_test_sticky_route_at(&state.pool, sticky_key, preferred_id, &recent_seen_at).await;
+    }
+    state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned")
+        .insert(
+            "reservation-old".to_string(),
+            PoolRoutingReservation {
+                account_id: preferred_id,
+                created_at: std::time::Instant::now() - Duration::from_secs(5 * 60),
+            },
+        );
+
+    let account = match resolve_pool_account_for_request(state.as_ref(), None, &[], &HashSet::new())
+        .await
+        .expect("resolve pool account")
+    {
+        PoolAccountResolution::Resolved(account) => account,
+        other => panic!("pool account should resolve, got {other:?}"),
+    };
+
+    assert_eq!(account.account_id, fallback_id);
+    assert_ne!(account.account_id, preferred_id);
+}
+
+#[tokio::test]
+async fn resolve_pool_account_for_request_preserves_long_only_cap_without_window_metadata() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let legacy_long_only_id =
+        insert_test_pool_api_key_account(&state, "Legacy Long Only", "upstream-legacy").await;
+    let team_id = insert_test_pool_api_key_account(&state, "Team", "upstream-team").await;
+    let recent_seen_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(5));
+    let now = Utc::now();
+
+    insert_test_pool_limit_sample_with_windows(
+        &state,
+        legacy_long_only_id,
+        Some("free"),
+        None,
+        None,
+        None,
+        Some(5.0),
+        None,
+        None,
+    )
+    .await;
+    insert_test_pool_limit_sample_with_windows(
+        &state,
+        team_id,
+        Some("team"),
+        Some(25.0),
+        Some(300),
+        Some(&format_utc_iso(now + ChronoDuration::minutes(30))),
+        Some(25.0),
+        Some(7 * 24 * 60),
+        Some(&format_utc_iso(now + ChronoDuration::days(3))),
+    )
+    .await;
+    for sticky_key in ["sticky-legacy-001", "sticky-legacy-002"] {
+        upsert_test_sticky_route_at(
+            &state.pool,
+            sticky_key,
+            legacy_long_only_id,
+            &recent_seen_at,
+        )
+        .await;
+    }
+
+    let account = match resolve_pool_account_for_request(state.as_ref(), None, &[], &HashSet::new())
+        .await
+        .expect("resolve pool account")
+    {
+        PoolAccountResolution::Resolved(account) => account,
+        other => panic!("pool account should resolve, got {other:?}"),
+    };
+
+    assert_eq!(account.account_id, team_id);
+    assert_ne!(account.account_id, legacy_long_only_id);
+}
+
+#[tokio::test]
+async fn resolve_pool_account_for_request_preserves_local_long_limit_without_samples() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let locally_limited_id =
+        insert_test_pool_api_key_account(&state, "Locally Limited", "upstream-local").await;
+    let team_id = insert_test_pool_api_key_account(&state, "Team", "upstream-team").await;
+    let recent_seen_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(5));
+    let now = Utc::now();
+
+    set_test_account_local_limits(&state.pool, locally_limited_id, None, Some(100.0)).await;
+    insert_test_pool_limit_sample_with_windows(
+        &state,
+        team_id,
+        Some("team"),
+        Some(25.0),
+        Some(300),
+        Some(&format_utc_iso(now + ChronoDuration::minutes(30))),
+        Some(25.0),
+        Some(7 * 24 * 60),
+        Some(&format_utc_iso(now + ChronoDuration::days(3))),
+    )
+    .await;
+    for sticky_key in ["sticky-local-001", "sticky-local-002"] {
+        upsert_test_sticky_route_at(&state.pool, sticky_key, locally_limited_id, &recent_seen_at)
+            .await;
+    }
+
+    let account = match resolve_pool_account_for_request(state.as_ref(), None, &[], &HashSet::new())
+        .await
+        .expect("resolve pool account")
+    {
+        PoolAccountResolution::Resolved(account) => account,
+        other => panic!("pool account should resolve, got {other:?}"),
+    };
+
+    assert_eq!(account.account_id, team_id);
+    assert_ne!(account.account_id, locally_limited_id);
 }
 
 #[tokio::test]
@@ -17052,10 +17383,12 @@ async fn pool_route_oauth_passthrough_replays_large_file_backed_body() {
         },
         upstream_base_url: oauth_bridge::oauth_codex_upstream_base_url()
             .expect("oauth upstream base url"),
+        routing_source: PoolRoutingSelectionSource::FreshAssignment,
     };
 
     let upstream = send_pool_request_with_failover(
         state,
+        424242,
         Method::POST,
         &"/v1/chat/completions".parse().expect("valid uri"),
         &HeaderMap::from_iter([(
@@ -18148,6 +18481,7 @@ async fn pool_route_large_oauth_responses_falls_back_to_api_key_account() {
 
     let upstream = send_pool_request_with_failover(
         state.clone(),
+        626262,
         Method::POST,
         &"/v1/responses?mode=delay".parse().expect("valid uri"),
         &HeaderMap::from_iter([(
@@ -18304,10 +18638,12 @@ async fn pool_route_oauth_responses_rejects_large_file_backed_rewrite_body() {
         },
         upstream_base_url: oauth_bridge::oauth_codex_upstream_base_url()
             .expect("oauth upstream base url"),
+        routing_source: PoolRoutingSelectionSource::FreshAssignment,
     };
 
     let err = send_pool_request_with_failover(
         state,
+        515151,
         Method::POST,
         &"/v1/responses".parse().expect("valid uri"),
         &HeaderMap::from_iter([(
@@ -18567,6 +18903,7 @@ fn capture_target_pool_route_prefers_account_upstream_base_for_redirect_rewrite(
         },
         upstream_base_url: Url::parse("https://proxy.example.com/gateway")
             .expect("account upstream base url"),
+        routing_source: PoolRoutingSelectionSource::FreshAssignment,
     };
 
     assert_eq!(
@@ -18709,6 +19046,7 @@ async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
             PromptCacheConversationsCacheState::default(),
         )),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
+        pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
@@ -19515,6 +19853,7 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout() {
             PromptCacheConversationsCacheState::default(),
         )),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
+        pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
@@ -19589,6 +19928,7 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout_with_
             PromptCacheConversationsCacheState::default(),
         )),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
+        pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
@@ -26456,6 +26796,7 @@ async fn quota_latest_returns_degraded_when_empty() {
             PromptCacheConversationsCacheState::default(),
         )),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
+        pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });

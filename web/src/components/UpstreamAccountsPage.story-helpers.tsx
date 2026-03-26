@@ -2509,6 +2509,14 @@ export function StorybookUpstreamAccountsMock({
       }
 
       if (detailMatch && method === 'PATCH') {
+        if (storyId?.endsWith('--completed-save-failure-feedback')) {
+          return Promise.resolve(
+            new Response('Storybook forced save failure.', {
+              status: 500,
+              headers: { 'Content-Type': 'text/plain' },
+            }),
+          )
+        }
         const accountId = Number(detailMatch[1])
         const detail = store.details[accountId]
         if (!detail)
