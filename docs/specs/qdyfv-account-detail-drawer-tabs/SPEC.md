@@ -4,7 +4,7 @@
 
 - Status: 已完成（4/4）
 - Created: 2026-03-25
-- Last: 2026-03-25
+- Last: 2026-03-27
 
 ## 背景 / 问题陈述
 
@@ -51,6 +51,7 @@
 - 两套抽屉都必须使用现有 `SegmentedControl` family 渲染 tabs，并补齐 `role="tablist" / "tab" / "tabpanel"` 与 `aria-selected` / `aria-controls` / `aria-labelledby`。
 - 号池抽屉默认打开 `概览`，切换账号或关闭后重新打开时都必须复位到 `概览`。
 - Invocation 抽屉默认打开 `概览`，切换账号或关闭后重新打开时都必须复位到 `概览`。
+- 号池与 Invocation 的概览额度卡都必须区分两类空态：`window == null` 时把 ring 中心、使用值、限制文案与重置文案统一显示为 ASCII `-`；只有 `window != null && history 为空` 时，图表区域才继续显示既有 empty state 文案。
 - 号池抽屉内容分组必须满足：
   - `概览`：duplicate warning + metric grid + 5h/7d usage
   - `编辑`：editable profile card
@@ -84,6 +85,7 @@
 - 号池页删除确认打开时，点击确认气泡内部、tag picker、group-note dialog 或其它 drawer-subtree overlay 不得触发外层关闭。
 - Invocation 抽屉详情加载失败时，tabs 仍保留只读分组结构；错误内容继续只显示在抽屉内部，不污染页面公共错误区。
 - 没有 history 或 recent actions 时，对应 tab panel 继续显示既有 empty state，不新增新的降级分支。
+- 缺失窗口不等于“还没有额度历史”：当 `window == null` 时，概览额度卡必须显示 `-` 占位态，而不是复用 history empty 文案。
 
 ## 接口契约（Interfaces & Contracts）
 
@@ -107,6 +109,7 @@
 - Given 号池详情抽屉打开后切到 `健康与事件`，When 用户切换到另一个账号或关闭后重新打开，Then 激活 tab 复位到 `概览`。
 - Given Invocation 只读抽屉打开后切到 `健康`，When 用户切换到另一条记录的账号或关闭后重新打开，Then 激活 tab 复位到 `概览`。
 - Given Invocation 只读抽屉已打开，When 用户点击“去号池查看完整详情”，Then 仍能进入号池页并打开对应账号详情。
+- Given 号池详情或 Invocation 只读抽屉里的某个 usage card `window == null`，When 渲染概览额度卡，Then ring 中心、使用值、限制文案与重置文案统一显示 ASCII `-`，且不再出现“还没有额度历史 / No quota history yet”来描述窗口本身。
 - Given Storybook `Account Pool / Pages / Upstream Accounts / Overlays / Detail Drawer` 与 `Monitoring / InvocationTable / AccountDrawer`，When 查看 docs/canvas，Then 能明确看到 tabs 分组后的稳定状态并可作为视觉证据。
 
 ## 实现前置条件（Definition of Ready / Preconditions）
@@ -133,9 +136,11 @@
 
 ### Quality checks
 
+- `cd web && bun run test -- src/components/UpstreamAccountUsageCard.test.tsx`
 - `cd web && bun run test -- src/pages/account-pool/UpstreamAccounts.test.tsx`
 - `cd web && bun run test -- src/components/InvocationTable.test.tsx`
 - `cd web && bun run build`
+- `cd web && bun run build-storybook`
 
 ## 文档更新（Docs to Update）
 
@@ -146,75 +151,45 @@
 
 - Directory: `docs/specs/qdyfv-account-detail-drawer-tabs/assets/`
 - In-plan references: `![...](./assets/<file>.png)`
-- PR visual evidence source: maintain `## Visual Evidence (PR)` in this spec when PR screenshots are needed.
+
+## Visual Evidence
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Account Pool/Components/Upstream Account Usage Card — Missing Window Placeholder
+  state: dark-theme / missing window placeholder
+  evidence_note: 验证共享 usage card 在 `window == null` 时把环形中心、使用值、限制文案和重置文案统一切到 ASCII `-`，同时不再复用 history empty 文案。
+  image:
+  ![账号详情 usage card 缺失窗口占位](./assets/upstream-account-usage-card-missing-window-dark.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Account Pool/Pages/Upstream Accounts/Overlays — Missing Window Placeholders
+  state: dark-theme / account-pool drawer overview
+  evidence_note: 验证号池详情抽屉概览页签在缺失次级窗口时，5 小时卡保持真实快照，7 天卡切换为弱一级 `-` 占位态。
+  image:
+  ![号池详情抽屉缺失窗口占位](./assets/account-pool-detail-missing-window-placeholders-dark.png)
+
+ - source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Monitoring/InvocationTable — Missing Window Placeholders
+  state: dark-theme / invocation drawer overview
+  evidence_note: 验证 Invocation 只读账号抽屉在缺失次级窗口时沿用相同占位契约，显示 ASCII `-` 而非 `No quota history yet`。
+  image:
+  ![Invocation 只读抽屉缺失窗口占位](./assets/invocation-account-drawer-missing-window-placeholders-dark.png)
 
 ## Visual Evidence (PR)
 
-- source_type: `storybook_canvas`
-- target_program: `mock-only`
-- capture_scope: `browser-viewport`
-- sensitive_exclusion: `N/A`
-- submission_gate: `pending-owner-approval`
-- story_id_or_title: `Account Pool/Pages/Upstream Accounts/Overlays/Detail Drawer`
-- state: `overview tab / shared shell + fixed summary header`
-- evidence_note: `验证号池账号详情抽屉在共享 shell 下保留固定摘要头，并把身份摘要与 5 小时 / 7 天额度卡一起收敛到“概览” tab。`
-
-![Account pool drawer overview tab](./assets/account-pool-detail-overview.png)
-
-- source_type: `storybook_canvas`
-- target_program: `mock-only`
-- capture_scope: `browser-viewport`
-- sensitive_exclusion: `N/A`
-- submission_gate: `pending-owner-approval`
-- story_id_or_title: `Account Pool/Pages/Upstream Accounts/Overlays/Detail Drawer`
-- state: `edit tab / editable profile + tags`
-- evidence_note: `验证号池账号详情抽屉把可编辑资料、备注与 tags 集中放入“编辑” tab，固定头部与操作区不会随着正文切换而丢失。`
-
-![Account pool drawer edit tab](./assets/account-pool-detail-edit.png)
-
-- source_type: `storybook_canvas`
-- target_program: `mock-only`
-- capture_scope: `browser-viewport`
-- sensitive_exclusion: `N/A`
-- submission_gate: `pending-owner-approval`
-- story_id_or_title: `Account Pool/Pages/Upstream Accounts/Overlays/Detail Drawer`
-- state: `routing tab / effective rule + sticky conversations`
-- evidence_note: `验证号池账号详情抽屉把最终生效规则与 sticky conversation 路由结果迁入“路由” tab，并使用充足 mock 数据展示非空状态。`
-
-![Account pool drawer routing tab](./assets/account-pool-detail-routing.png)
-
-- source_type: `storybook_canvas`
-- target_program: `mock-only`
-- capture_scope: `browser-viewport`
-- sensitive_exclusion: `N/A`
-- submission_gate: `pending-owner-approval`
-- story_id_or_title: `Account Pool/Pages/Upstream Accounts/Overlays/Detail Drawer`
-- state: `health & events tab / grouped long-form maintenance content`
-- evidence_note: `验证号池账号详情抽屉把登录健康度、最近动作与最近账号事件迁入“健康与事件” tab，避免单页超长滚动。`
-
-![Account pool drawer health and events tab](./assets/account-pool-detail-health-events.png)
-
-- source_type: `storybook_canvas`
-- target_program: `mock-only`
-- capture_scope: `browser-viewport`
-- sensitive_exclusion: `N/A`
-- submission_gate: `pending-owner-approval`
-- story_id_or_title: `Monitoring/InvocationTable/AccountDrawer`
-- state: `overview tab / read-only drawer grouped with account-pool deep-link CTA`
-- evidence_note: `验证 Invocation 只读账号抽屉复用同一关闭语义与 tabs 框架，同时把 5 小时 / 7 天窗口并入“概览” tab。`
-
-![Invocation account drawer overview tab](./assets/invocation-account-drawer-overview.png)
-
-- source_type: `storybook_canvas`
-- target_program: `mock-only`
-- capture_scope: `browser-viewport`
-- sensitive_exclusion: `N/A`
-- submission_gate: `pending-owner-approval`
-- story_id_or_title: `Monitoring/InvocationTable/AccountDrawer`
-- state: `health tab / read-only health + last error`
-- evidence_note: `验证 Invocation 只读账号抽屉把健康度、最近错误与额度摘要集中到“健康” tab，并使用非空 mock 数据呈现稳定状态。`
-
-![Invocation account drawer health tab](./assets/invocation-account-drawer-health.png)
+None. Pending explicit owner approval for PR-bound screenshots.
 
 ## 资产晋升（Asset promotion）
 
@@ -246,6 +221,7 @@ None
 - 2026-03-25: 完成共享 drawer shell、号池详情 tabs、Invocation 只读详情 tabs、i18n、Vitest 与 Storybook 覆盖；本地定向 `vitest` 与 `web build` 已通过，并根据最新反馈把配额卡并回概览页签，等待重新抓取 mock-only 视觉证据。
 - 2026-03-25: 已按最新反馈重拍 mock-only 视觉证据，截图提交授权已获确认，进入 PR / CI 收敛阶段。
 - 2026-03-25: PR #230 已完成 labels、远端 checks 与 `codex review --base origin/main` 收敛，快车道终态更新为 merge-ready。
+- 2026-03-27: 统一账号详情抽屉的缺失窗口占位契约；共享 usage card 在 `window == null` 时统一显示 ASCII `-`，仅在 `window != null && history 为空` 时保留既有图表 empty state，并补充号池详情 / Invocation 只读抽屉的 Storybook 与集成测试覆盖。
 
 ## 参考（References）
 

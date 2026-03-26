@@ -179,6 +179,15 @@ function createDeferredPromise<T>() {
   return { promise, resolve, reject }
 }
 
+function findExactTextElements(text: string, root: ParentNode = document.body) {
+  return Array.from(root.querySelectorAll('*')).filter(
+    (candidate) =>
+      candidate instanceof HTMLElement &&
+      candidate.children.length === 0 &&
+      candidate.textContent?.trim() === text,
+  ) as HTMLElement[]
+}
+
 describe('formatProxyWeightDelta', () => {
   it('formats positive deltas as up direction with absolute value', () => {
     expect(formatProxyWeightDelta(0.55)).toEqual({ direction: 'up', value: '0.55' })
@@ -1997,6 +2006,93 @@ describe('InvocationTable', () => {
     expect(document.body.textContent).toContain('Pool Alpha')
     expect(document.body.textContent).toContain('去号池查看完整详情')
     expect(document.body.textContent).toContain('22 / 100')
+  })
+
+  it('renders missing secondary windows as dash placeholders inside the current-page account drawer', async () => {
+    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue({
+      id: 42,
+      kind: 'oauth_codex',
+      provider: 'openai',
+      displayName: 'Pool Alpha',
+      groupName: 'group-a',
+      isMother: true,
+      status: 'active',
+      enabled: true,
+      email: 'pool-alpha@example.com',
+      chatgptAccountId: 'org_pool_alpha',
+      chatgptUserId: 'user_pool_alpha',
+      planType: 'team',
+      maskedApiKey: null,
+      lastSyncedAt: '2026-03-16T09:10:00Z',
+      lastSuccessfulSyncAt: '2026-03-16T09:08:00Z',
+      lastError: null,
+      lastErrorAt: null,
+      tokenExpiresAt: '2026-03-16T12:00:00Z',
+      lastRefreshedAt: '2026-03-16T09:09:00Z',
+      primaryWindow: {
+        usedPercent: 22,
+        usedText: '22 / 100',
+        limitText: '100 requests',
+        resetsAt: '2026-03-16T10:00:00Z',
+        windowDurationMins: 300,
+      },
+      secondaryWindow: null,
+      credits: null,
+      localLimits: null,
+      duplicateInfo: null,
+      tags: [],
+      effectiveRoutingRule: {
+        guardEnabled: false,
+        lookbackHours: null,
+        maxConversations: null,
+        allowCutOut: true,
+        allowCutIn: true,
+        sourceTagIds: [],
+        sourceTagNames: [],
+        guardRules: [],
+      },
+      note: null,
+      upstreamBaseUrl: null,
+      history: [
+        {
+          capturedAt: '2026-03-16T08:00:00Z',
+          primaryUsedPercent: 22,
+          secondaryUsedPercent: null,
+          creditsBalance: null,
+        },
+      ],
+    })
+
+    await renderInteractiveTable([
+      {
+        id: 41,
+        invokeId: 'pool-drawer-missing-window',
+        occurredAt: '2026-03-16T09:10:30Z',
+        createdAt: '2026-03-16T09:10:30Z',
+        source: 'proxy',
+        routeMode: 'pool',
+        upstreamAccountId: 42,
+        upstreamAccountName: 'Pool Alpha',
+        proxyDisplayName: 'relay-alpha',
+        responseContentEncoding: 'gzip',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'success',
+        totalTokens: 256,
+      },
+    ])
+
+    const trigger = Array.from(document.querySelectorAll('button')).find((button) => button.textContent?.includes('Pool Alpha'))
+    expect(trigger).toBeTruthy()
+
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      await Promise.resolve()
+    })
+
+    expect(document.body.textContent).toContain('22 / 100')
+    expect(document.body.textContent).not.toContain('还没有额度历史')
+    expect(findExactTextElements('-', document.body).length).toBeGreaterThanOrEqual(4)
   })
 
   it('closes the current-page upstream account drawer when clicking the backdrop or gutter', async () => {
