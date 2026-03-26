@@ -3350,6 +3350,14 @@ fn compute_bulk_upstream_account_sync_counts(
     counts
 }
 
+fn with_bulk_upstream_account_sync_snapshot_status(
+    mut snapshot: BulkUpstreamAccountSyncSnapshot,
+    status: &str,
+) -> BulkUpstreamAccountSyncSnapshot {
+    snapshot.status = status.to_string();
+    snapshot
+}
+
 fn build_bulk_upstream_account_sync_snapshot_event(
     snapshot: BulkUpstreamAccountSyncSnapshot,
 ) -> BulkUpstreamAccountSyncSnapshotEvent {
@@ -3661,7 +3669,10 @@ async fn set_bulk_upstream_account_sync_job_terminal(
 }
 
 async fn finish_bulk_upstream_account_sync_job_completed(job: &Arc<BulkUpstreamAccountSyncJob>) {
-    let snapshot = { job.snapshot.lock().await.clone() };
+    let snapshot = with_bulk_upstream_account_sync_snapshot_status(
+        job.snapshot.lock().await.clone(),
+        BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_COMPLETED,
+    );
     set_bulk_upstream_account_sync_job_terminal(
         job,
         BulkUpstreamAccountSyncTerminalEvent::Completed(
@@ -3675,7 +3686,10 @@ async fn finish_bulk_upstream_account_sync_job_failed(
     job: &Arc<BulkUpstreamAccountSyncJob>,
     error: String,
 ) {
-    let snapshot = { job.snapshot.lock().await.clone() };
+    let snapshot = with_bulk_upstream_account_sync_snapshot_status(
+        job.snapshot.lock().await.clone(),
+        BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_FAILED,
+    );
     set_bulk_upstream_account_sync_job_terminal(
         job,
         BulkUpstreamAccountSyncTerminalEvent::Failed(BulkUpstreamAccountSyncFailedEvent {
@@ -3688,7 +3702,10 @@ async fn finish_bulk_upstream_account_sync_job_failed(
 }
 
 async fn finish_bulk_upstream_account_sync_job_cancelled(job: &Arc<BulkUpstreamAccountSyncJob>) {
-    let snapshot = { job.snapshot.lock().await.clone() };
+    let snapshot = with_bulk_upstream_account_sync_snapshot_status(
+        job.snapshot.lock().await.clone(),
+        BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_CANCELLED,
+    );
     set_bulk_upstream_account_sync_job_terminal(
         job,
         BulkUpstreamAccountSyncTerminalEvent::Cancelled(
@@ -15493,6 +15510,121 @@ mod tests {
         assert_eq!(response.counts.total, counts.total);
         assert_eq!(response.counts.completed, counts.completed);
         assert_eq!(state.upstream_accounts.bulk_sync_jobs.lock().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn finish_bulk_sync_job_completed_exposes_completed_status_in_events_and_response() {
+        let job = Arc::new(BulkUpstreamAccountSyncJob::new(
+            BulkUpstreamAccountSyncSnapshot {
+                job_id: "job-completed".to_string(),
+                status: BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_RUNNING.to_string(),
+                rows: vec![BulkUpstreamAccountSyncRow {
+                    account_id: 5,
+                    display_name: "Existing OAuth".to_string(),
+                    status: BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_SUCCEEDED.to_string(),
+                    detail: None,
+                }],
+            },
+        ));
+        let mut receiver = job.broadcaster.subscribe();
+
+        finish_bulk_upstream_account_sync_job_completed(&job).await;
+
+        match receiver.recv().await.expect("completed event") {
+            BulkUpstreamAccountSyncJobEvent::Completed(payload) => {
+                assert_eq!(
+                    payload.snapshot.status,
+                    BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_COMPLETED
+                );
+                assert_eq!(payload.counts.completed, 1);
+                assert_eq!(payload.counts.failed, 0);
+                assert_eq!(payload.counts.skipped, 0);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        let response =
+            build_bulk_upstream_account_sync_job_response("job-completed".to_string(), &job).await;
+        assert_eq!(
+            response.snapshot.status,
+            BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_COMPLETED
+        );
+    }
+
+    #[tokio::test]
+    async fn finish_bulk_sync_job_failed_exposes_failed_status_in_events_and_response() {
+        let job = Arc::new(BulkUpstreamAccountSyncJob::new(
+            BulkUpstreamAccountSyncSnapshot {
+                job_id: "job-failed".to_string(),
+                status: BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_RUNNING.to_string(),
+                rows: vec![BulkUpstreamAccountSyncRow {
+                    account_id: 5,
+                    display_name: "Existing OAuth".to_string(),
+                    status: BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_FAILED.to_string(),
+                    detail: Some("upstream rejected".to_string()),
+                }],
+            },
+        ));
+        let mut receiver = job.broadcaster.subscribe();
+
+        finish_bulk_upstream_account_sync_job_failed(&job, "job failed".to_string()).await;
+
+        match receiver.recv().await.expect("failed event") {
+            BulkUpstreamAccountSyncJobEvent::Failed(payload) => {
+                assert_eq!(
+                    payload.snapshot.status,
+                    BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_FAILED
+                );
+                assert_eq!(payload.counts.failed, 1);
+                assert_eq!(payload.error, "job failed");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        let response =
+            build_bulk_upstream_account_sync_job_response("job-failed".to_string(), &job).await;
+        assert_eq!(
+            response.snapshot.status,
+            BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_FAILED
+        );
+    }
+
+    #[tokio::test]
+    async fn finish_bulk_sync_job_cancelled_exposes_cancelled_status_in_events_and_response() {
+        let job = Arc::new(BulkUpstreamAccountSyncJob::new(
+            BulkUpstreamAccountSyncSnapshot {
+                job_id: "job-cancelled".to_string(),
+                status: BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_RUNNING.to_string(),
+                rows: vec![BulkUpstreamAccountSyncRow {
+                    account_id: 5,
+                    display_name: "Existing OAuth".to_string(),
+                    status: BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_SKIPPED.to_string(),
+                    detail: Some("disabled accounts cannot be synced".to_string()),
+                }],
+            },
+        ));
+        let mut receiver = job.broadcaster.subscribe();
+
+        finish_bulk_upstream_account_sync_job_cancelled(&job).await;
+
+        match receiver.recv().await.expect("cancelled event") {
+            BulkUpstreamAccountSyncJobEvent::Cancelled(payload) => {
+                assert_eq!(
+                    payload.snapshot.status,
+                    BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_CANCELLED
+                );
+                assert_eq!(payload.counts.skipped, 1);
+                assert_eq!(payload.counts.completed, 1);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        let response =
+            build_bulk_upstream_account_sync_job_response("job-cancelled".to_string(), &job).await;
+        assert_eq!(
+            response.snapshot.status,
+            BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_CANCELLED
+        );
     }
 
     #[test]

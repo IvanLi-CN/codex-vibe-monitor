@@ -3,6 +3,9 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { useTheme } from '../theme/context'
 import type {
   AccountTagSummary,
+  BulkUpstreamAccountSyncCounts,
+  BulkUpstreamAccountSyncSnapshot,
+  BulkUpstreamAccountSyncRow,
   CreateApiKeyAccountPayload,
   CompleteOauthLoginSessionPayload,
   EffectiveRoutingRule,
@@ -51,6 +54,8 @@ type StoryStore = {
   >
   mailboxStatuses: Record<string, OauthMailboxStatus>
   nextMailboxId: number
+  bulkSyncScenario: StoryBulkSyncScenario
+  bulkSyncJobs: Record<string, StoryBulkSyncJob>
 }
 
 const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
@@ -186,6 +191,15 @@ export type StoryInitialEntry =
       search?: string
       state?: unknown
     }
+
+type StoryBulkSyncScenario = 'success-auto-hide' | 'partial-failure' | null
+
+type StoryBulkSyncJob = {
+  jobId: string
+  snapshot: BulkUpstreamAccountSyncSnapshot
+  counts: BulkUpstreamAccountSyncCounts
+  error: string | null
+}
 
 const now = '2026-03-17T12:30:00.000Z'
 const storyFutureExpiresAt = '2027-03-20T12:50:00.000Z'
@@ -805,6 +819,81 @@ function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
 }
 
+function buildBulkSyncCounts(rows: BulkUpstreamAccountSyncRow[]): BulkUpstreamAccountSyncCounts {
+  return rows.reduce<BulkUpstreamAccountSyncCounts>((counts, row) => {
+    counts.total += 1
+    if (row.status === 'succeeded') {
+      counts.completed += 1
+      counts.succeeded += 1
+    } else if (row.status === 'failed') {
+      counts.completed += 1
+      counts.failed += 1
+    } else if (row.status === 'skipped') {
+      counts.completed += 1
+      counts.skipped += 1
+    }
+    return counts
+  }, {
+    total: 0,
+    completed: 0,
+    succeeded: 0,
+    failed: 0,
+    skipped: 0,
+  })
+}
+
+function createBulkSyncRows(store: StoryStore, accountIds: number[]): BulkUpstreamAccountSyncRow[] {
+  return accountIds.map((accountId) => {
+    const account = store.details[accountId] ?? store.accounts.find((item) => item.id === accountId)
+    return {
+      accountId,
+      displayName: account?.displayName ?? `Account ${accountId}`,
+      status: 'pending',
+      detail: null,
+    }
+  })
+}
+
+function buildBulkSyncSnapshot(
+  jobId: string,
+  rows: BulkUpstreamAccountSyncRow[],
+  status: BulkUpstreamAccountSyncSnapshot['status'] = 'running',
+): BulkUpstreamAccountSyncSnapshot {
+  return {
+    jobId,
+    status,
+    rows: clone(rows),
+  }
+}
+
+function buildBulkSyncSnapshotEvent(job: StoryBulkSyncJob) {
+  return {
+    snapshot: clone(job.snapshot),
+    counts: clone(job.counts),
+  }
+}
+
+function buildBulkSyncRowEvent(
+  row: BulkUpstreamAccountSyncRow,
+  counts: BulkUpstreamAccountSyncCounts,
+) {
+  return {
+    row: clone(row),
+    counts: clone(counts),
+  }
+}
+
+function updateStoryBulkSyncJob(
+  job: StoryBulkSyncJob,
+  rows: BulkUpstreamAccountSyncRow[],
+  status: BulkUpstreamAccountSyncSnapshot['status'] = 'running',
+  error: string | null = null,
+) {
+  job.snapshot = buildBulkSyncSnapshot(job.jobId, rows, status)
+  job.counts = buildBulkSyncCounts(job.snapshot.rows)
+  job.error = error
+}
+
 function normalizeGroupName(value?: string | null) {
   const trimmed = value?.trim() ?? ''
   return trimmed || null
@@ -1245,6 +1334,10 @@ function createStore(): StoryStore {
     storyId?.endsWith('--unavailable-work-status-filter') === true
   const missingWindowPlaceholdersStory =
     storyId?.endsWith('--missing-window-placeholders') === true
+  const bulkSyncSuccessStory =
+    storyId?.endsWith('--bulk-sync-success-auto-hide') === true
+  const bulkSyncFailureStory =
+    storyId?.endsWith('--bulk-sync-failure-dismiss') === true
   const denseRosterStory =
     storyId?.endsWith('--dense-roster') === true ||
     storyId?.endsWith('--operational') === true ||
@@ -1898,6 +1991,12 @@ function createStore(): StoryStore {
     sessions: {},
     mailboxStatuses: {},
     nextMailboxId: 1,
+    bulkSyncScenario: bulkSyncSuccessStory
+      ? 'success-auto-hide'
+      : bulkSyncFailureStory
+        ? 'partial-failure'
+        : null,
+    bulkSyncJobs: {},
   }
 }
 
@@ -2169,6 +2268,141 @@ function parseBody<T>(raw: BodyInit | null | undefined, fallback: T): T {
   }
 }
 
+class MockStoryBulkSyncEventSource implements EventTarget {
+  private listeners = new Map<string, Set<EventListener>>()
+  private timers: number[] = []
+  readyState = 1
+  onerror: ((this: EventSource, ev: Event) => unknown) | null = null
+
+  constructor(
+    private readonly storeRef: { current: StoryStore },
+    url: string | URL,
+  ) {
+    this.bootstrap(url.toString())
+  }
+
+  addEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+  ) {
+    if (!listener) return
+    const handler =
+      typeof listener === 'function'
+        ? listener
+        : ((event: Event) => listener.handleEvent(event)) as EventListener
+    const current = this.listeners.get(type) ?? new Set<EventListener>()
+    current.add(handler)
+    this.listeners.set(type, current)
+  }
+
+  removeEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+  ) {
+    if (!listener) return
+    const current = this.listeners.get(type)
+    if (!current) return
+    const handler =
+      typeof listener === 'function'
+        ? listener
+        : ((event: Event) => listener.handleEvent(event)) as EventListener
+    current.delete(handler)
+    if (current.size === 0) {
+      this.listeners.delete(type)
+    }
+  }
+
+  dispatchEvent(event: Event): boolean {
+    const current = Array.from(this.listeners.get(event.type) ?? [])
+    current.forEach((listener) => listener(event))
+    return true
+  }
+
+  close() {
+    this.readyState = 2
+    this.timers.forEach((timer) => window.clearTimeout(timer))
+    this.timers = []
+    this.listeners.clear()
+  }
+
+  private emit(type: string, payload: unknown) {
+    if (this.readyState === 2) return
+    this.dispatchEvent(
+      new MessageEvent(type, {
+        data: JSON.stringify(payload),
+      }),
+    )
+  }
+
+  private schedule(delayMs: number, callback: () => void) {
+    const timer = window.setTimeout(() => {
+      if (this.readyState === 2) return
+      callback()
+    }, delayMs)
+    this.timers.push(timer)
+  }
+
+  private bootstrap(rawUrl: string) {
+    const parsed = new URL(rawUrl, window.location.origin)
+    const match = parsed.pathname.match(
+      /^\/api\/pool\/upstream-accounts\/bulk-sync-jobs\/([^/]+)\/events$/,
+    )
+    if (!match) return
+
+    const jobId = decodeURIComponent(match[1])
+    const store = this.storeRef.current
+    const job = store.bulkSyncJobs[jobId]
+    if (!job) return
+
+    this.schedule(0, () => {
+      this.emit('snapshot', buildBulkSyncSnapshotEvent(job))
+    })
+
+    if (store.bulkSyncScenario === 'success-auto-hide') {
+      this.schedule(80, () => {
+        const nextRows = job.snapshot.rows.map((row) => ({
+          ...row,
+          status: 'succeeded',
+          detail: null,
+        }))
+        const lastRow = clone(nextRows[nextRows.length - 1])
+        updateStoryBulkSyncJob(job, nextRows, 'running')
+        this.emit('row', buildBulkSyncRowEvent(lastRow, job.counts))
+      })
+      this.schedule(160, () => {
+        updateStoryBulkSyncJob(job, job.snapshot.rows, 'completed')
+        this.emit('completed', buildBulkSyncSnapshotEvent(job))
+      })
+      return
+    }
+
+    if (store.bulkSyncScenario === 'partial-failure') {
+      this.schedule(80, () => {
+        const nextRows = job.snapshot.rows.map((row, index) =>
+          index === 0
+            ? {
+                ...row,
+                status: 'failed',
+                detail: 'refresh token already rotated',
+              }
+            : {
+                ...row,
+                status: 'succeeded',
+                detail: null,
+              },
+        )
+        const firstRow = clone(nextRows[0])
+        updateStoryBulkSyncJob(job, nextRows, 'running')
+        this.emit('row', buildBulkSyncRowEvent(firstRow, job.counts))
+      })
+      this.schedule(160, () => {
+        updateStoryBulkSyncJob(job, job.snapshot.rows, 'completed')
+        this.emit('completed', buildBulkSyncSnapshotEvent(job))
+      })
+    }
+  }
+}
+
 function syncLocalWindows(detail: UpstreamAccountDetail) {
   if (detail.kind !== 'api_key_codex') return withDerivedStatusFields(detail)
   const primaryLimit = detail.localLimits?.primaryLimit ?? 120
@@ -2200,11 +2434,13 @@ export function StorybookUpstreamAccountsMock({
 }) {
   const storeRef = useRef<StoryStore>(createStore())
   const originalFetchRef = useRef<typeof window.fetch | null>(null)
+  const originalEventSourceRef = useRef<typeof window.EventSource | null>(null)
   const installedRef = useRef(false)
 
   if (typeof window !== 'undefined' && !installedRef.current) {
     installedRef.current = true
     originalFetchRef.current = window.fetch.bind(window)
+    originalEventSourceRef.current = window.EventSource
 
     const mockedFetch: typeof window.fetch = async (input, init) => {
       const method = (
@@ -2274,6 +2510,62 @@ export function StorybookUpstreamAccountsMock({
           writesEnabled: store.writesEnabled,
           items: listTagSummaries(store),
         })
+      }
+
+      if (path === '/api/pool/upstream-accounts/bulk-sync-jobs' && method === 'POST') {
+        const body = parseBody<{ accountIds?: number[] }>(init?.body, {})
+        const accountIds = Array.isArray(body.accountIds) ? body.accountIds : []
+        const rows = createBulkSyncRows(store, accountIds)
+        const jobId = `story-bulk-sync-${Date.now()}`
+        const job: StoryBulkSyncJob = {
+          jobId,
+          snapshot: buildBulkSyncSnapshot(jobId, rows),
+          counts: buildBulkSyncCounts(rows),
+          error: null,
+        }
+        store.bulkSyncJobs[jobId] = job
+        return jsonResponse({
+          jobId,
+          ...buildBulkSyncSnapshotEvent(job),
+        }, 201)
+      }
+
+      if (
+        path.startsWith('/api/pool/upstream-accounts/bulk-sync-jobs/') &&
+        method === 'GET'
+      ) {
+        const match = path.match(
+          /^\/api\/pool\/upstream-accounts\/bulk-sync-jobs\/([^/]+)$/,
+        )
+        if (!match) {
+          return jsonResponse({ message: 'not found' }, 404)
+        }
+        const jobId = decodeURIComponent(match[1])
+        const job = store.bulkSyncJobs[jobId]
+        if (!job) {
+          return jsonResponse({ message: 'not found' }, 404)
+        }
+        return jsonResponse({
+          jobId,
+          ...buildBulkSyncSnapshotEvent(job),
+        })
+      }
+
+      if (
+        path.startsWith('/api/pool/upstream-accounts/bulk-sync-jobs/') &&
+        method === 'DELETE'
+      ) {
+        const match = path.match(
+          /^\/api\/pool\/upstream-accounts\/bulk-sync-jobs\/([^/]+)$/,
+        )
+        if (match) {
+          const jobId = decodeURIComponent(match[1])
+          const job = store.bulkSyncJobs[jobId]
+          if (job) {
+            updateStoryBulkSyncJob(job, job.snapshot.rows, 'cancelled')
+          }
+        }
+        return noContent()
       }
 
       if (path === '/api/pool/routing-settings' && method === 'PUT') {
@@ -2788,6 +3080,11 @@ export function StorybookUpstreamAccountsMock({
     }
 
     window.fetch = mockedFetch
+    window.EventSource = class extends MockStoryBulkSyncEventSource {
+      constructor(url: string | URL) {
+        super(storeRef, url)
+      }
+    } as unknown as typeof window.EventSource
   }
 
   useEffect(() => {
@@ -2795,6 +3092,10 @@ export function StorybookUpstreamAccountsMock({
       if (typeof window !== 'undefined' && originalFetchRef.current) {
         window.fetch = originalFetchRef.current
         originalFetchRef.current = null
+      }
+      if (typeof window !== 'undefined' && originalEventSourceRef.current) {
+        window.EventSource = originalEventSourceRef.current
+        originalEventSourceRef.current = null
       }
     }
   }, [])

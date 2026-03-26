@@ -41,6 +41,7 @@ import { useUpstreamStickyConversations } from '../../hooks/useUpstreamStickyCon
 import type {
   BulkUpstreamAccountActionPayload,
   BulkUpstreamAccountSyncCounts,
+  BulkUpstreamAccountSyncRow,
   BulkUpstreamAccountSyncSnapshot,
   PoolRoutingMaintenanceSettings,
   CompactSupportState,
@@ -348,6 +349,54 @@ function bulkSyncRowStatusVariant(status: string): 'success' | 'warning' | 'erro
   if (status === 'pending') return 'warning'
   if (status === 'failed') return 'error'
   return 'secondary'
+}
+
+function computeBulkSyncCounts(rows: BulkUpstreamAccountSyncRow[]): BulkUpstreamAccountSyncCounts {
+  return rows.reduce<BulkUpstreamAccountSyncCounts>((counts, row) => {
+    counts.total += 1
+    if (row.status === 'succeeded') {
+      counts.succeeded += 1
+      counts.completed += 1
+    } else if (row.status === 'failed') {
+      counts.failed += 1
+      counts.completed += 1
+    } else if (row.status === 'skipped') {
+      counts.skipped += 1
+      counts.completed += 1
+    }
+    return counts
+  }, {
+    total: 0,
+    completed: 0,
+    succeeded: 0,
+    failed: 0,
+    skipped: 0,
+  })
+}
+
+function resolveBulkSyncCounts(
+  snapshot: BulkUpstreamAccountSyncSnapshot,
+  counts?: BulkUpstreamAccountSyncCounts | null,
+) {
+  return counts ?? computeBulkSyncCounts(snapshot.rows)
+}
+
+function withBulkSyncSnapshotStatus(
+  snapshot: BulkUpstreamAccountSyncSnapshot,
+  status: BulkUpstreamAccountSyncSnapshot['status'],
+) {
+  if (snapshot.status === status) return snapshot
+  return {
+    ...snapshot,
+    status,
+  }
+}
+
+function shouldAutoHideBulkSyncProgress(
+  snapshot: BulkUpstreamAccountSyncSnapshot,
+  counts: BulkUpstreamAccountSyncCounts,
+) {
+  return snapshot.status === 'completed' && counts.failed === 0 && counts.skipped === 0
 }
 
 function kindVariant(kind: string): 'secondary' | 'success' {
@@ -923,6 +972,12 @@ export default function UpstreamAccountsPage() {
   const closeBulkSyncEventSource = useCallback(() => {
     bulkSyncEventSourceRef.current?.close()
     bulkSyncEventSourceRef.current = null
+  }, [])
+
+  const clearBulkSyncProgress = useCallback(() => {
+    setBulkSyncSnapshot(null)
+    setBulkSyncCounts(null)
+    setBulkSyncError(null)
   }, [])
 
   const draftUpstreamBaseUrlError = useMemo(() => {
@@ -1796,6 +1851,31 @@ export default function UpstreamAccountsPage() {
     setBulkActionError(null)
   }, [])
 
+  const applyBulkSyncTerminalState = useCallback((
+    nextSnapshot: BulkUpstreamAccountSyncSnapshot,
+    nextCounts: BulkUpstreamAccountSyncCounts | null,
+    options?: {
+      error?: string | null
+      status?: BulkUpstreamAccountSyncSnapshot['status']
+    },
+  ) => {
+    const resolvedSnapshot = options?.status
+      ? withBulkSyncSnapshotStatus(nextSnapshot, options.status)
+      : nextSnapshot
+    const resolvedCounts = resolveBulkSyncCounts(resolvedSnapshot, nextCounts)
+    const shouldHide = shouldAutoHideBulkSyncProgress(resolvedSnapshot, resolvedCounts)
+
+    closeBulkSyncEventSource()
+    if (shouldHide) {
+      clearBulkSyncProgress()
+    } else {
+      setBulkSyncSnapshot(resolvedSnapshot)
+      setBulkSyncCounts(resolvedCounts)
+      setBulkSyncError(options?.error ?? null)
+    }
+    void refresh()
+  }, [clearBulkSyncProgress, closeBulkSyncEventSource, refresh])
+
   const handleStartBulkSync = useCallback(async () => {
     if (selectedAccountIds.length === 0 || isBulkSyncBusy) return
     setIsBulkSyncStarting(true)
@@ -1838,44 +1918,41 @@ export default function UpstreamAccountsPage() {
         nextSnapshot: BulkUpstreamAccountSyncSnapshot,
         nextCounts: BulkUpstreamAccountSyncCounts,
         error?: string,
+        status?: BulkUpstreamAccountSyncSnapshot['status'],
       ) => {
-        setBulkSyncSnapshot(nextSnapshot)
-        setBulkSyncCounts(nextCounts)
-        setBulkSyncError(error ?? null)
-        closeBulkSyncEventSource()
-        void refresh()
+        applyBulkSyncTerminalState(nextSnapshot, nextCounts, { error, status })
       }
 
       eventSource.addEventListener('completed', (event) => {
         const payload = normalizeBulkUpstreamAccountSyncSnapshotEventPayload(
           JSON.parse((event as MessageEvent<string>).data),
         )
-        handleTerminalEvent(payload.snapshot, payload.counts)
+        handleTerminalEvent(payload.snapshot, payload.counts, null, 'completed')
       })
 
       eventSource.addEventListener('cancelled', (event) => {
         const payload = normalizeBulkUpstreamAccountSyncSnapshotEventPayload(
           JSON.parse((event as MessageEvent<string>).data),
         )
-        handleTerminalEvent(payload.snapshot, payload.counts)
+        handleTerminalEvent(payload.snapshot, payload.counts, null, 'cancelled')
       })
 
       eventSource.addEventListener('failed', (event) => {
         const payload = normalizeBulkUpstreamAccountSyncFailedEventPayload(
           JSON.parse((event as MessageEvent<string>).data),
         )
-        handleTerminalEvent(payload.snapshot, payload.counts, payload.error)
+        handleTerminalEvent(payload.snapshot, payload.counts, payload.error, 'failed')
       })
 
       eventSource.onerror = () => {
         void getBulkSyncJob(created.jobId)
           .then((latest) => {
+            if (latest.snapshot.status !== 'running') {
+              applyBulkSyncTerminalState(latest.snapshot, latest.counts)
+              return
+            }
             setBulkSyncSnapshot(latest.snapshot)
             setBulkSyncCounts(latest.counts)
-            if (latest.snapshot.status !== 'running') {
-              closeBulkSyncEventSource()
-              void refresh()
-            }
           })
           .catch((err) => {
             setBulkSyncError(err instanceof Error ? err.message : String(err))
@@ -1888,6 +1965,7 @@ export default function UpstreamAccountsPage() {
       setIsBulkSyncStarting(false)
     }
   }, [
+    applyBulkSyncTerminalState,
     closeBulkSyncEventSource,
     getBulkSyncJob,
     isBulkSyncBusy,
@@ -1904,6 +1982,79 @@ export default function UpstreamAccountsPage() {
       setBulkSyncError(err instanceof Error ? err.message : String(err))
     }
   }, [bulkSyncSnapshot?.jobId, bulkSyncSnapshot?.status, stopBulkSyncJob])
+
+  const bulkSyncProgressBubble = bulkSyncSnapshot ? (
+    <div className="pointer-events-none fixed inset-x-3 bottom-3 z-[65] sm:inset-x-auto sm:right-4 sm:w-[min(30rem,calc(100vw-2rem))]">
+      <Card
+        className={cn(
+          'pointer-events-auto overflow-hidden rounded-[1.75rem] border border-base-300/85 bg-base-100/92 shadow-[0_24px_64px_rgba(15,23,42,0.28)] backdrop-blur-xl',
+          bulkSyncSnapshot.status === 'running'
+            ? 'ring-1 ring-primary/20'
+            : 'ring-1 ring-base-300/60',
+        )}
+      >
+        <CardHeader className="flex flex-col gap-3 border-b border-base-300/70 bg-base-100/78 pb-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="space-y-1">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-primary/12 text-primary">
+                {bulkSyncSnapshot.status === 'running' ? (
+                  <Spinner size="sm" />
+                ) : (
+                  <AppIcon name="refresh" className="h-4 w-4" aria-hidden />
+                )}
+              </span>
+              {t('accountPool.upstreamAccounts.bulk.syncProgressTitle')}
+            </CardTitle>
+            <CardDescription className="text-xs leading-5 text-base-content/72">
+              {t('accountPool.upstreamAccounts.bulk.syncProgressSummary', {
+                completed: bulkSyncCounts?.completed ?? 0,
+                total: bulkSyncCounts?.total ?? bulkSyncSnapshot.rows.length,
+                succeeded: bulkSyncCounts?.succeeded ?? 0,
+                failed: bulkSyncCounts?.failed ?? 0,
+                skipped: bulkSyncCounts?.skipped ?? 0,
+              })}
+            </CardDescription>
+          </div>
+          {bulkSyncSnapshot.status === 'running' ? (
+            <Button type="button" variant="outline" size="sm" onClick={() => void handleCancelBulkSync()}>
+              {t('accountPool.upstreamAccounts.bulk.cancelSync')}
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 rounded-full text-base-content/62 hover:text-base-content"
+              aria-label={t('accountPool.upstreamAccounts.bulk.dismissSync')}
+              title={t('accountPool.upstreamAccounts.bulk.dismissSync')}
+              onClick={clearBulkSyncProgress}
+            >
+              <AppIcon name="close" className="h-4 w-4" aria-hidden />
+            </Button>
+          )}
+        </CardHeader>
+        <CardContent className="space-y-3 p-4 pt-3">
+          {bulkSyncError ? (
+            <Alert variant="error">
+              <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+              <div>{bulkSyncError}</div>
+            </Alert>
+          ) : null}
+          <div className="max-h-[min(52vh,20rem)] space-y-2 overflow-y-auto rounded-2xl border border-base-300/80 bg-base-100/72 p-3">
+            {bulkSyncSnapshot.rows.map((row) => (
+              <div key={row.accountId} className="flex flex-col gap-1 rounded-xl border border-base-300/60 px-3 py-2 text-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-medium text-base-content">{row.displayName}</span>
+                  <Badge variant={bulkSyncRowStatusVariant(row.status)}>{t(`accountPool.upstreamAccounts.bulk.rowStatus.${row.status}`)}</Badge>
+                </div>
+                {row.detail ? <p className="text-xs text-base-content/68">{row.detail}</p> : null}
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  ) : null
 
   return (
     <div className="grid gap-6">
@@ -2251,57 +2402,6 @@ export default function UpstreamAccountsPage() {
                 <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
                 <div>{bulkActionError}</div>
               </Alert>
-            ) : null}
-
-            {bulkSyncSnapshot ? (
-              <Card className="border-base-300/80 bg-base-100/72">
-                <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <CardTitle>{t('accountPool.upstreamAccounts.bulk.syncProgressTitle')}</CardTitle>
-                    <CardDescription>
-                      {t('accountPool.upstreamAccounts.bulk.syncProgressSummary', {
-                        completed: bulkSyncCounts?.completed ?? 0,
-                        total: bulkSyncCounts?.total ?? bulkSyncSnapshot.rows.length,
-                        succeeded: bulkSyncCounts?.succeeded ?? 0,
-                        failed: bulkSyncCounts?.failed ?? 0,
-                        skipped: bulkSyncCounts?.skipped ?? 0,
-                      })}
-                    </CardDescription>
-                  </div>
-                  {bulkSyncSnapshot.status === 'running' ? (
-                    <Button type="button" variant="outline" size="sm" onClick={() => void handleCancelBulkSync()}>
-                      {t('accountPool.upstreamAccounts.bulk.cancelSync')}
-                    </Button>
-                  ) : (
-                    <Button type="button" variant="ghost" size="sm" onClick={() => {
-                      setBulkSyncSnapshot(null)
-                      setBulkSyncCounts(null)
-                      setBulkSyncError(null)
-                    }}>
-                      {t('accountPool.upstreamAccounts.bulk.dismissSync')}
-                    </Button>
-                  )}
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  {bulkSyncError ? (
-                    <Alert variant="error">
-                      <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-                      <div>{bulkSyncError}</div>
-                    </Alert>
-                  ) : null}
-                  <div className="max-h-60 space-y-2 overflow-y-auto rounded-2xl border border-base-300/80 bg-base-100/70 p-3">
-                    {bulkSyncSnapshot.rows.map((row) => (
-                      <div key={row.accountId} className="flex flex-col gap-1 rounded-xl border border-base-300/60 px-3 py-2 text-sm">
-                        <div className="flex items-center justify-between gap-3">
-                          <span className="font-medium text-base-content">{row.displayName}</span>
-                          <Badge variant={bulkSyncRowStatusVariant(row.status)}>{t(`accountPool.upstreamAccounts.bulk.rowStatus.${row.status}`)}</Badge>
-                        </div>
-                        {row.detail ? <p className="text-xs text-base-content/68">{row.detail}</p> : null}
-                      </div>
-                    ))}
-                  </div>
-                </CardContent>
-              </Card>
             ) : null}
 
             <UpstreamAccountsTable
@@ -3357,6 +3457,8 @@ export default function UpstreamAccountsPage() {
           <div>{detailError}</div>
         </Alert>
       ) : null}
+
+      {bulkSyncProgressBubble}
     </div>
   )
 }

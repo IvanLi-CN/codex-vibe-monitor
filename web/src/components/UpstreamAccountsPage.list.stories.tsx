@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { expect, userEvent, within } from 'storybook/test'
+import { expect, userEvent, waitFor, within } from 'storybook/test'
 import { I18nProvider } from '../i18n'
 import UpstreamAccountsPage from '../pages/account-pool/UpstreamAccounts'
 import {
@@ -270,6 +270,90 @@ export const BulkSelection: Story = {
     await expect(
       await canvas.findByText(
         /已跨页选中 \d+ 个账号|\d+ accounts selected across pages/i,
+      ),
+    ).toBeInTheDocument()
+  },
+}
+
+export const BulkSyncSuccessAutoHide: Story = {
+  render: () => (
+    <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const documentScope = within(canvasElement.ownerDocument.body)
+
+    await userEvent.click(
+      await documentScope.findByRole('checkbox', { name: /select existing oauth/i }),
+    )
+    await userEvent.click(
+      await documentScope.findByRole('checkbox', { name: /select team key - staging/i }),
+    )
+    const syncButton = await canvas.findByRole('button', {
+      name: /sync selected|批量同步/i,
+    })
+
+    await userEvent.click(syncButton)
+    const progressTitle = await canvas.findByText(/bulk sync progress|批量同步进度/i)
+    await expect(progressTitle).toBeInTheDocument()
+    await expect(progressTitle.closest('.fixed')).not.toBeNull()
+
+    await waitFor(() => {
+      expect(
+        canvas.queryByText(/bulk sync progress|批量同步进度/i),
+      ).not.toBeInTheDocument()
+    })
+
+    await expect(syncButton).toBeEnabled()
+    await expect(
+      await canvas.findByText(
+        /2 accounts selected across pages|已跨页选中 2 个账号/i,
+      ),
+    ).toBeInTheDocument()
+  },
+}
+
+export const BulkSyncFailureDismiss: Story = {
+  render: () => (
+    <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const documentScope = within(canvasElement.ownerDocument.body)
+
+    await userEvent.click(
+      await documentScope.findByRole('checkbox', { name: /select existing oauth/i }),
+    )
+    await userEvent.click(
+      await documentScope.findByRole('checkbox', { name: /select team key - staging/i }),
+    )
+    const syncButton = await canvas.findByRole('button', {
+      name: /sync selected|批量同步/i,
+    })
+
+    await userEvent.click(syncButton)
+    const progressTitle = await canvas.findByText(/bulk sync progress|批量同步进度/i)
+    await expect(progressTitle).toBeInTheDocument()
+    await expect(progressTitle.closest('.fixed')).not.toBeNull()
+    await expect(
+      await canvas.findByText(/refresh token already rotated/i),
+    ).toBeInTheDocument()
+
+    const dismissButton = await canvas.findByRole('button', {
+      name: /dismiss|收起/i,
+    })
+    await expect(syncButton).toBeEnabled()
+    await userEvent.click(dismissButton)
+
+    await waitFor(() => {
+      expect(
+        canvas.queryByText(/bulk sync progress|批量同步进度/i),
+      ).not.toBeInTheDocument()
+    })
+
+    await expect(
+      await canvas.findByText(
+        /2 accounts selected across pages|已跨页选中 2 个账号/i,
       ),
     ).toBeInTheDocument()
   },
