@@ -6152,7 +6152,6 @@ export default function UpstreamAccountCreatePage() {
                                                   )
                                                 : t(
                                                     "accountPool.upstreamAccounts.batchOauth.tooltip.generateBody",
-                                                  ),
                                                   )
                                           }
                                           remainingLabel={batchOauthSessionRemainingLabel(
