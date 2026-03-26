@@ -13652,6 +13652,170 @@ async fn resolve_pool_account_for_request_counts_in_flight_reservations_toward_e
 }
 
 #[tokio::test]
+async fn resolve_pool_account_for_request_keeps_old_in_flight_reservations_counted() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let preferred_id =
+        insert_test_pool_api_key_account(&state, "Preferred", "upstream-preferred").await;
+    let fallback_id =
+        insert_test_pool_api_key_account(&state, "Fallback", "upstream-fallback").await;
+    let recent_seen_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(5));
+    let now = Utc::now();
+
+    insert_test_pool_limit_sample_with_windows(
+        &state,
+        preferred_id,
+        Some("team"),
+        Some(5.0),
+        Some(300),
+        Some(&format_utc_iso(now + ChronoDuration::minutes(30))),
+        Some(5.0),
+        Some(7 * 24 * 60),
+        Some(&format_utc_iso(now + ChronoDuration::days(3))),
+    )
+    .await;
+    insert_test_pool_limit_sample_with_windows(
+        &state,
+        fallback_id,
+        Some("team"),
+        Some(25.0),
+        Some(300),
+        Some(&format_utc_iso(now + ChronoDuration::minutes(30))),
+        Some(25.0),
+        Some(7 * 24 * 60),
+        Some(&format_utc_iso(now + ChronoDuration::days(3))),
+    )
+    .await;
+    for sticky_key in ["sticky-pref-001", "sticky-pref-002"] {
+        upsert_test_sticky_route_at(&state.pool, sticky_key, preferred_id, &recent_seen_at).await;
+    }
+    state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned")
+        .insert(
+            "reservation-old".to_string(),
+            PoolRoutingReservation {
+                account_id: preferred_id,
+                created_at: std::time::Instant::now() - Duration::from_secs(5 * 60),
+            },
+        );
+
+    let account = match resolve_pool_account_for_request(state.as_ref(), None, &[], &HashSet::new())
+        .await
+        .expect("resolve pool account")
+    {
+        PoolAccountResolution::Resolved(account) => account,
+        other => panic!("pool account should resolve, got {other:?}"),
+    };
+
+    assert_eq!(account.account_id, fallback_id);
+    assert_ne!(account.account_id, preferred_id);
+}
+
+#[tokio::test]
+async fn resolve_pool_account_for_request_preserves_long_only_cap_without_window_metadata() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let legacy_long_only_id =
+        insert_test_pool_api_key_account(&state, "Legacy Long Only", "upstream-legacy").await;
+    let team_id = insert_test_pool_api_key_account(&state, "Team", "upstream-team").await;
+    let recent_seen_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(5));
+    let now = Utc::now();
+
+    insert_test_pool_limit_sample_with_windows(
+        &state,
+        legacy_long_only_id,
+        Some("free"),
+        None,
+        None,
+        None,
+        Some(5.0),
+        None,
+        None,
+    )
+    .await;
+    insert_test_pool_limit_sample_with_windows(
+        &state,
+        team_id,
+        Some("team"),
+        Some(25.0),
+        Some(300),
+        Some(&format_utc_iso(now + ChronoDuration::minutes(30))),
+        Some(25.0),
+        Some(7 * 24 * 60),
+        Some(&format_utc_iso(now + ChronoDuration::days(3))),
+    )
+    .await;
+    for sticky_key in ["sticky-legacy-001", "sticky-legacy-002"] {
+        upsert_test_sticky_route_at(
+            &state.pool,
+            sticky_key,
+            legacy_long_only_id,
+            &recent_seen_at,
+        )
+        .await;
+    }
+
+    let account = match resolve_pool_account_for_request(state.as_ref(), None, &[], &HashSet::new())
+        .await
+        .expect("resolve pool account")
+    {
+        PoolAccountResolution::Resolved(account) => account,
+        other => panic!("pool account should resolve, got {other:?}"),
+    };
+
+    assert_eq!(account.account_id, team_id);
+    assert_ne!(account.account_id, legacy_long_only_id);
+}
+
+#[tokio::test]
+async fn resolve_pool_account_for_request_preserves_local_long_limit_without_samples() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let locally_limited_id =
+        insert_test_pool_api_key_account(&state, "Locally Limited", "upstream-local").await;
+    let team_id = insert_test_pool_api_key_account(&state, "Team", "upstream-team").await;
+    let recent_seen_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(5));
+    let now = Utc::now();
+
+    set_test_account_local_limits(&state.pool, locally_limited_id, None, Some(100.0)).await;
+    insert_test_pool_limit_sample_with_windows(
+        &state,
+        team_id,
+        Some("team"),
+        Some(25.0),
+        Some(300),
+        Some(&format_utc_iso(now + ChronoDuration::minutes(30))),
+        Some(25.0),
+        Some(7 * 24 * 60),
+        Some(&format_utc_iso(now + ChronoDuration::days(3))),
+    )
+    .await;
+    for sticky_key in ["sticky-local-001", "sticky-local-002"] {
+        upsert_test_sticky_route_at(&state.pool, sticky_key, locally_limited_id, &recent_seen_at)
+            .await;
+    }
+
+    let account = match resolve_pool_account_for_request(state.as_ref(), None, &[], &HashSet::new())
+        .await
+        .expect("resolve pool account")
+    {
+        PoolAccountResolution::Resolved(account) => account,
+        other => panic!("pool account should resolve, got {other:?}"),
+    };
+
+    assert_eq!(account.account_id, team_id);
+    assert_ne!(account.account_id, locally_limited_id);
+}
+
+#[tokio::test]
 async fn resolve_pool_account_for_request_defers_sticky_binding_until_success() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

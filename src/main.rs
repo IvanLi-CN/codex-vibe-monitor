@@ -21631,11 +21631,10 @@ fn next_proxy_request_id() -> u64 {
     NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
 }
 
-const POOL_ROUTING_RESERVATION_TTL: Duration = Duration::from_secs(90);
-
 #[derive(Debug, Clone, Copy)]
 struct PoolRoutingReservation {
     account_id: i64,
+    #[allow(dead_code)]
     created_at: Instant,
 }
 
@@ -21672,21 +21671,11 @@ fn build_pool_routing_reservation_key(proxy_request_id: u64) -> String {
     format!("pool-route-{proxy_request_id}")
 }
 
-fn prune_pool_routing_reservations(
-    reservations: &mut HashMap<String, PoolRoutingReservation>,
-    now: Instant,
-) {
-    reservations.retain(|_, reservation| {
-        now.duration_since(reservation.created_at) < POOL_ROUTING_RESERVATION_TTL
-    });
-}
-
 fn pool_routing_reservation_count(state: &AppState, account_id: i64) -> i64 {
-    let mut reservations = state
+    let reservations = state
         .pool_routing_reservations
         .lock()
         .expect("pool routing reservations mutex poisoned");
-    prune_pool_routing_reservations(&mut reservations, Instant::now());
     reservations
         .values()
         .filter(|reservation| reservation.account_id == account_id)
@@ -21705,7 +21694,6 @@ fn reserve_pool_routing_account(
         .pool_routing_reservations
         .lock()
         .expect("pool routing reservations mutex poisoned");
-    prune_pool_routing_reservations(&mut reservations, Instant::now());
     reservations.insert(
         reservation_key.to_string(),
         PoolRoutingReservation {
@@ -21720,7 +21708,6 @@ fn release_pool_routing_reservation(state: &AppState, reservation_key: &str) {
         .pool_routing_reservations
         .lock()
         .expect("pool routing reservations mutex poisoned");
-    prune_pool_routing_reservations(&mut reservations, Instant::now());
     reservations.remove(reservation_key);
 }
 
