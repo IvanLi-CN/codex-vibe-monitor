@@ -392,7 +392,7 @@ export function PromptCacheConversationTable({
   stats,
   isLoading,
   error,
-  expandedPromptCacheKeys = [],
+  expandedPromptCacheKeys,
   onToggleExpandedPromptCacheKey,
 }: PromptCacheConversationTableProps) {
   const { t, locale } = useTranslation();
@@ -400,7 +400,10 @@ export function PromptCacheConversationTable({
   const [drawerAccountId, setDrawerAccountId] = useState<number | null>(null);
   const [drawerAccountLabel, setDrawerAccountLabel] = useState<string | null>(null);
   const [historyDrawerPromptCacheKey, setHistoryDrawerPromptCacheKey] = useState<string | null>(null);
+  const [internalExpandedPromptCacheKeys, setInternalExpandedPromptCacheKeys] =
+    useState<string[]>([]);
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
+  const isExpansionControlled = expandedPromptCacheKeys != null;
 
   useEffect(() => {
     const timer = setInterval(() => {
@@ -557,10 +560,25 @@ export function PromptCacheConversationTable({
       }),
     [t],
   );
+  const effectiveExpandedPromptCacheKeys = isExpansionControlled
+    ? expandedPromptCacheKeys
+    : internalExpandedPromptCacheKeys;
   const expandedPromptCacheKeySet = useMemo(
-    () => new Set(expandedPromptCacheKeys),
-    [expandedPromptCacheKeys],
+    () => new Set(effectiveExpandedPromptCacheKeys),
+    [effectiveExpandedPromptCacheKeys],
   );
+
+  useEffect(() => {
+    if (isExpansionControlled || !stats) return;
+    const visiblePromptCacheKeys = new Set(
+      stats.conversations.map((conversation) => conversation.promptCacheKey),
+    );
+    setInternalExpandedPromptCacheKeys((current) =>
+      current.filter((promptCacheKey) =>
+        visiblePromptCacheKeys.has(promptCacheKey),
+      ),
+    );
+  }, [isExpansionControlled, stats]);
 
   const openAccountDrawer = (account: PromptCacheConversationUpstreamAccount) => {
     if (!canOpenPromptCacheUpstreamAccount(account)) return;
@@ -580,6 +598,13 @@ export function PromptCacheConversationTable({
     setHistoryDrawerPromptCacheKey(null);
   };
   const togglePromptCachePreview = (promptCacheKey: string) => {
+    if (!isExpansionControlled) {
+      setInternalExpandedPromptCacheKeys((current) =>
+        current.includes(promptCacheKey)
+          ? current.filter((value) => value !== promptCacheKey)
+          : [...current, promptCacheKey],
+      );
+    }
     onToggleExpandedPromptCacheKey?.(promptCacheKey);
   };
 

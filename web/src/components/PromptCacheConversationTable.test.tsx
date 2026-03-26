@@ -755,6 +755,68 @@ describe("PromptCacheConversationTable", () => {
     expect(document.body.textContent).not.toContain("输入 / 缓存");
   });
 
+  it("toggles recent invocation previews inline without external expansion state", async () => {
+    const stats: PromptCacheConversationsResponse = {
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-preview-uncontrolled",
+          requestCount: 1,
+          totalTokens: 1184,
+          totalCost: 0.028,
+          createdAt: "2026-03-02T10:00:00Z",
+          lastActivityAt: "2026-03-02T12:00:00Z",
+          recentInvocations: [
+            {
+              id: 21,
+              invokeId: "preview-21",
+              occurredAt: "2026-03-02T12:00:00Z",
+              status: "success",
+              failureClass: "none",
+              routeMode: "pool",
+              model: "gpt-5.4",
+              totalTokens: 1184,
+              cost: 0.028,
+              proxyDisplayName: "Proxy Central",
+              upstreamAccountId: 101,
+              upstreamAccountName: "Pool Alpha",
+              endpoint: "/v1/responses",
+            },
+          ],
+          last24hRequests: [],
+        }),
+      ],
+    };
+
+    renderInteractive(stats);
+
+    const expandButton = findButtonByAriaLabel("展开最近调用记录");
+    expect(expandButton).toBeTruthy();
+
+    await act(async () => {
+      expandButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(document.body.textContent).toContain("输入 / 缓存");
+    expect(document.body.textContent).toContain("Proxy Central");
+
+    const collapseButton = findButtonByAriaLabel("收起最近调用记录");
+    expect(collapseButton).toBeTruthy();
+
+    await act(async () => {
+      collapseButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(document.body.textContent).not.toContain("输入 / 缓存");
+  });
+
   it("opens the history drawer and preserves loaded records when later pages fail", async () => {
     apiMocks.fetchInvocationRecords
       .mockResolvedValueOnce({
