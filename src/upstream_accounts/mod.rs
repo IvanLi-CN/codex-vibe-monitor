@@ -134,7 +134,6 @@ const DEFAULT_STICKY_KEY_LIMIT: i64 = 50;
 const DEFAULT_UPSTREAM_ACCOUNT_LIST_PAGE_SIZE: usize = 20;
 const UPSTREAM_ACCOUNT_LIST_PAGE_SIZE_OPTIONS: [usize; 3] = [20, 50, 100];
 const POOL_ROUTE_ACTIVE_STICKY_WINDOW_MINUTES: i64 = 30;
-const POOL_ROUTE_ACTIVE_STICKY_SOFT_LIMIT: i64 = 2;
 pub(crate) const COMPACT_SUPPORT_STATUS_UNKNOWN: &str = "unknown";
 pub(crate) const COMPACT_SUPPORT_STATUS_SUPPORTED: &str = "supported";
 pub(crate) const COMPACT_SUPPORT_STATUS_UNSUPPORTED: &str = "unsupported";
@@ -1932,22 +1931,151 @@ struct PoolStickyRouteRow {
 #[derive(Debug, Clone, FromRow)]
 struct AccountRoutingCandidateRow {
     id: i64,
+    plan_type: Option<String>,
     secondary_used_percent: Option<f64>,
+    secondary_window_minutes: Option<i64>,
+    secondary_resets_at: Option<String>,
     primary_used_percent: Option<f64>,
+    primary_window_minutes: Option<i64>,
+    primary_resets_at: Option<String>,
     credits_has_credits: Option<i64>,
     credits_unlimited: Option<i64>,
     credits_balance: Option<String>,
     last_selected_at: Option<String>,
-    has_local_limits: bool,
     active_sticky_conversations: i64,
+    #[sqlx(default)]
+    in_flight_reservations: i64,
 }
 
 impl AccountRoutingCandidateRow {
-    fn has_any_limits(&self) -> bool {
-        self.has_local_limits
-            || self.primary_used_percent.is_some()
-            || self.secondary_used_percent.is_some()
+    fn effective_load(&self) -> i64 {
+        self.active_sticky_conversations
+            .saturating_add(self.in_flight_reservations.max(0))
     }
+
+    fn capacity_profile(&self) -> RoutingCapacityProfile {
+        let pressure = self.normalized_window_pressure(Utc::now());
+        if pressure.short_pressure.is_some() {
+            RoutingCapacityProfile {
+                soft_limit: 2,
+                hard_cap: 3,
+            }
+        } else if pressure.long_pressure.is_some() {
+            RoutingCapacityProfile {
+                soft_limit: 1,
+                hard_cap: 2,
+            }
+        } else {
+            RoutingCapacityProfile {
+                soft_limit: 2,
+                hard_cap: 3,
+            }
+        }
+    }
+
+    fn normalized_window_pressure(&self, now: DateTime<Utc>) -> NormalizedRoutingPressure {
+        let mut short_pressure = None;
+        let mut long_pressure = None;
+        for window in [
+            routing_window_state(
+                self.primary_used_percent,
+                self.primary_window_minutes,
+                self.primary_resets_at.as_deref(),
+                now,
+            ),
+            routing_window_state(
+                self.secondary_used_percent,
+                self.secondary_window_minutes,
+                self.secondary_resets_at.as_deref(),
+                now,
+            ),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            match window.bucket {
+                RoutingWindowBucket::Short => {
+                    short_pressure = Some(short_pressure.unwrap_or(0.0_f64).max(window.pressure));
+                }
+                RoutingWindowBucket::Long => {
+                    long_pressure = Some(long_pressure.unwrap_or(0.0_f64).max(window.pressure));
+                }
+            }
+        }
+        NormalizedRoutingPressure {
+            short_pressure,
+            long_pressure,
+        }
+    }
+
+    fn scarcity_score(&self, now: DateTime<Utc>) -> f64 {
+        let pressure = self.normalized_window_pressure(now);
+        match (pressure.short_pressure, pressure.long_pressure) {
+            (Some(short), Some(long)) => (0.65 * short) + (0.35 * long),
+            (Some(short), None) => short,
+            (None, Some(long)) => long,
+            (None, None) => 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RoutingCapacityProfile {
+    soft_limit: i64,
+    hard_cap: i64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct NormalizedRoutingPressure {
+    short_pressure: Option<f64>,
+    long_pressure: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RoutingWindowState {
+    bucket: RoutingWindowBucket,
+    pressure: f64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RoutingWindowBucket {
+    Short,
+    Long,
+}
+
+fn routing_window_state(
+    used_percent: Option<f64>,
+    window_minutes: Option<i64>,
+    resets_at: Option<&str>,
+    now: DateTime<Utc>,
+) -> Option<RoutingWindowState> {
+    let used_ratio = normalize_unit_ratio(used_percent? / 100.0);
+    let window_minutes = window_minutes?.max(1);
+    let bucket = if window_minutes <= 360 {
+        RoutingWindowBucket::Short
+    } else {
+        RoutingWindowBucket::Long
+    };
+    let window_duration_secs = (window_minutes as f64) * 60.0;
+    let remaining_ratio = resets_at
+        .and_then(parse_rfc3339_utc)
+        .map(|reset_at| {
+            normalize_unit_ratio(
+                (reset_at - now).num_seconds().max(0) as f64 / window_duration_secs,
+            )
+        })
+        .unwrap_or(1.0);
+    Some(RoutingWindowState {
+        bucket,
+        pressure: used_ratio * remaining_ratio,
+    })
+}
+
+fn normalize_unit_ratio(value: f64) -> f64 {
+    if !value.is_finite() {
+        return 0.0;
+    }
+    value.clamp(0.0, 1.0)
 }
 
 #[derive(Debug, FromRow)]
@@ -13029,12 +13157,19 @@ pub(crate) struct PoolResolvedAccount {
     pub(crate) kind: String,
     pub(crate) auth: PoolResolvedAuth,
     pub(crate) upstream_base_url: Url,
+    pub(crate) routing_source: PoolRoutingSelectionSource,
 }
 
 impl PoolResolvedAccount {
     pub(crate) fn upstream_route_key(&self) -> String {
         canonical_pool_upstream_route_key(&self.upstream_base_url)
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PoolRoutingSelectionSource {
+    StickyReuse,
+    FreshAssignment,
 }
 
 #[derive(Debug, Clone)]
@@ -13122,6 +13257,8 @@ pub(crate) async fn resolve_pool_account_for_request(
             if is_account_selectable_for_routing(&row, sticky_snapshot_exhausted) {
                 let mut sticky_route_was_excluded = false;
                 if let Some(account) = prepare_pool_account(state, &row).await? {
+                    let mut account = account;
+                    account.routing_source = PoolRoutingSelectionSource::StickyReuse;
                     if !excluded_upstream_route_keys.contains(&account.upstream_route_key()) {
                         return Ok(PoolAccountResolution::Resolved(account));
                     }
@@ -13155,43 +13292,65 @@ pub(crate) async fn resolve_pool_account_for_request(
     }
 
     let mut candidates = load_account_routing_candidates(&state.pool, &tried).await?;
+    for candidate in &mut candidates {
+        candidate.in_flight_reservations = pool_routing_reservation_count(state, candidate.id);
+    }
     candidates.sort_by(compare_routing_candidates);
+    let mut primary_candidates = Vec::new();
+    let mut overflow_candidates = Vec::new();
     for candidate in candidates {
-        let Some(row) = load_upstream_account_row(&state.pool, candidate.id).await? else {
-            continue;
-        };
-        let snapshot_exhausted = routing_candidate_snapshot_is_exhausted(&candidate);
-        if !is_account_selectable_for_routing(&row, snapshot_exhausted) {
-            if is_account_rate_limited_for_routing(&row, snapshot_exhausted) {
-                saw_rate_limited_candidate = true;
-            } else if is_routing_eligible_account(&row) {
-                saw_non_rate_limited_routing_candidate = true;
-            } else {
-                saw_non_routing_candidate = true;
+        if candidate.effective_load() < candidate.capacity_profile().hard_cap {
+            primary_candidates.push(candidate);
+        } else {
+            overflow_candidates.push(candidate);
+        }
+    }
+    let candidate_passes = if primary_candidates.is_empty() {
+        vec![overflow_candidates]
+    } else if overflow_candidates.is_empty() {
+        vec![primary_candidates]
+    } else {
+        vec![primary_candidates, overflow_candidates]
+    };
+    for pass_candidates in candidate_passes {
+        for candidate in pass_candidates {
+            let Some(row) = load_upstream_account_row(&state.pool, candidate.id).await? else {
+                continue;
+            };
+            let snapshot_exhausted = routing_candidate_snapshot_is_exhausted(&candidate);
+            if !is_account_selectable_for_routing(&row, snapshot_exhausted) {
+                if is_account_rate_limited_for_routing(&row, snapshot_exhausted) {
+                    saw_rate_limited_candidate = true;
+                } else if is_routing_eligible_account(&row) {
+                    saw_non_rate_limited_routing_candidate = true;
+                } else {
+                    saw_non_routing_candidate = true;
+                }
+                continue;
             }
-            continue;
-        }
-        let effective_rule = load_effective_routing_rule_for_account(&state.pool, row.id).await?;
-        if !account_accepts_sticky_assignment(
-            &state.pool,
-            row.id,
-            sticky_key,
-            sticky_source_id,
-            &effective_rule,
-        )
-        .await?
-        {
-            saw_non_rate_limited_routing_candidate = true;
-            continue;
-        }
-        if let Some(account) = prepare_pool_account(state, &row).await? {
-            if excluded_upstream_route_keys.contains(&account.upstream_route_key()) {
+            let effective_rule =
+                load_effective_routing_rule_for_account(&state.pool, row.id).await?;
+            if !account_accepts_sticky_assignment(
+                &state.pool,
+                row.id,
+                sticky_key,
+                sticky_source_id,
+                &effective_rule,
+            )
+            .await?
+            {
                 saw_non_rate_limited_routing_candidate = true;
                 continue;
             }
-            return Ok(PoolAccountResolution::Resolved(account));
+            if let Some(account) = prepare_pool_account(state, &row).await? {
+                if excluded_upstream_route_keys.contains(&account.upstream_route_key()) {
+                    saw_non_rate_limited_routing_candidate = true;
+                    continue;
+                }
+                return Ok(PoolAccountResolution::Resolved(account));
+            }
+            saw_non_rate_limited_routing_candidate = true;
         }
-        saw_non_rate_limited_routing_candidate = true;
     }
 
     if saw_rate_limited_candidate && !saw_non_rate_limited_routing_candidate {
@@ -13584,6 +13743,7 @@ async fn prepare_pool_account(
                 authorization: format!("Bearer {}", value.api_key),
             },
             upstream_base_url,
+            routing_source: PoolRoutingSelectionSource::FreshAssignment,
         })),
         StoredCredentials::Oauth(mut value) => {
             let expires_at = row.token_expires_at.as_deref().and_then(parse_rfc3339_utc);
@@ -13742,6 +13902,7 @@ async fn prepare_pool_account(
                     chatgpt_account_id: row.chatgpt_account_id.clone(),
                 },
                 upstream_base_url,
+                routing_source: PoolRoutingSelectionSource::FreshAssignment,
             }))
         }
     }
@@ -13809,6 +13970,13 @@ async fn load_account_routing_candidates(
         SELECT
             account.id,
             (
+                SELECT sample.plan_type
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS plan_type,
+            (
                 SELECT sample.secondary_used_percent
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
@@ -13816,12 +13984,40 @@ async fn load_account_routing_candidates(
                 LIMIT 1
             ) AS secondary_used_percent,
             (
+                SELECT sample.secondary_window_minutes
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS secondary_window_minutes,
+            (
+                SELECT sample.secondary_resets_at
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS secondary_resets_at,
+            (
                 SELECT sample.primary_used_percent
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
                 ORDER BY sample.captured_at DESC
                 LIMIT 1
             ) AS primary_used_percent,
+            (
+                SELECT sample.primary_window_minutes
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS primary_window_minutes,
+            (
+                SELECT sample.primary_resets_at
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS primary_resets_at,
             (
                 SELECT sample.credits_has_credits
                 FROM pool_upstream_account_limit_samples sample
@@ -13844,12 +14040,6 @@ async fn load_account_routing_candidates(
                 LIMIT 1
             ) AS credits_balance,
             account.last_selected_at,
-            CASE
-                WHEN account.local_primary_limit IS NOT NULL
-                  OR account.local_secondary_limit IS NOT NULL
-                THEN 1
-                ELSE 0
-            END AS has_local_limits,
             (
                 SELECT COUNT(*)
                 FROM pool_sticky_routes route
@@ -13895,6 +14085,13 @@ async fn load_account_routing_candidate(
         SELECT
             account.id,
             (
+                SELECT sample.plan_type
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS plan_type,
+            (
                 SELECT sample.secondary_used_percent
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
@@ -13902,12 +14099,40 @@ async fn load_account_routing_candidate(
                 LIMIT 1
             ) AS secondary_used_percent,
             (
+                SELECT sample.secondary_window_minutes
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS secondary_window_minutes,
+            (
+                SELECT sample.secondary_resets_at
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS secondary_resets_at,
+            (
                 SELECT sample.primary_used_percent
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
                 ORDER BY sample.captured_at DESC
                 LIMIT 1
             ) AS primary_used_percent,
+            (
+                SELECT sample.primary_window_minutes
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS primary_window_minutes,
+            (
+                SELECT sample.primary_resets_at
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS primary_resets_at,
             (
                 SELECT sample.credits_has_credits
                 FROM pool_upstream_account_limit_samples sample
@@ -13930,12 +14155,6 @@ async fn load_account_routing_candidate(
                 LIMIT 1
             ) AS credits_balance,
             account.last_selected_at,
-            CASE
-                WHEN account.local_primary_limit IS NOT NULL
-                  OR account.local_secondary_limit IS NOT NULL
-                THEN 1
-                ELSE 0
-            END AS has_local_limits,
             (
                 SELECT COUNT(*)
                 FROM pool_sticky_routes route
@@ -13959,25 +14178,28 @@ fn compare_routing_candidates(
     lhs: &AccountRoutingCandidateRow,
     rhs: &AccountRoutingCandidateRow,
 ) -> std::cmp::Ordering {
-    let lhs_over_soft_limit = lhs.has_any_limits()
-        && lhs.active_sticky_conversations > POOL_ROUTE_ACTIVE_STICKY_SOFT_LIMIT;
-    let rhs_over_soft_limit = rhs.has_any_limits()
-        && rhs.active_sticky_conversations > POOL_ROUTE_ACTIVE_STICKY_SOFT_LIMIT;
-    let lhs_secondary = lhs.secondary_used_percent.unwrap_or(0.0);
-    let rhs_secondary = rhs.secondary_used_percent.unwrap_or(0.0);
+    compare_routing_candidates_at(lhs, rhs, Utc::now())
+}
+
+fn compare_routing_candidates_at(
+    lhs: &AccountRoutingCandidateRow,
+    rhs: &AccountRoutingCandidateRow,
+    now: DateTime<Utc>,
+) -> std::cmp::Ordering {
+    let lhs_capacity = lhs.capacity_profile();
+    let rhs_capacity = rhs.capacity_profile();
+    let lhs_over_soft_limit = lhs.effective_load() > lhs_capacity.soft_limit;
+    let rhs_over_soft_limit = rhs.effective_load() > rhs_capacity.soft_limit;
+    let lhs_score = lhs.scarcity_score(now);
+    let rhs_score = rhs.scarcity_score(now);
     lhs_over_soft_limit
         .cmp(&rhs_over_soft_limit)
         .then_with(|| {
-            lhs_secondary
-                .partial_cmp(&rhs_secondary)
+            lhs_score
+                .partial_cmp(&rhs_score)
                 .unwrap_or(std::cmp::Ordering::Equal)
         })
-        .then_with(|| {
-            lhs.primary_used_percent
-                .unwrap_or(0.0)
-                .partial_cmp(&rhs.primary_used_percent.unwrap_or(0.0))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
+        .then_with(|| lhs.effective_load().cmp(&rhs.effective_load()))
         .then_with(|| lhs.last_selected_at.cmp(&rhs.last_selected_at))
         .then_with(|| lhs.id.cmp(&rhs.id))
 }
@@ -15077,6 +15299,7 @@ mod tests {
                 },
             )),
             maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
+            pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
             hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
             upstream_accounts: Arc::new(
                 UpstreamAccountsRuntime::test_instance_with_maintenance_parallelism(
@@ -15255,6 +15478,7 @@ mod tests {
                 },
             )),
             maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
+            pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
             hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
             upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
         });
@@ -16623,100 +16847,113 @@ mod tests {
         );
     }
 
-    #[test]
-    fn compare_routing_candidates_soft_deprioritizes_remote_window_accounts_over_limit() {
-        let limited_remote = AccountRoutingCandidateRow {
-            id: 1,
-            secondary_used_percent: Some(8.0),
-            primary_used_percent: Some(8.0),
+    fn test_routing_candidate(id: i64) -> AccountRoutingCandidateRow {
+        AccountRoutingCandidateRow {
+            id,
+            plan_type: None,
+            secondary_used_percent: None,
+            secondary_window_minutes: None,
+            secondary_resets_at: None,
+            primary_used_percent: None,
+            primary_window_minutes: None,
+            primary_resets_at: None,
             credits_has_credits: None,
             credits_unlimited: None,
             credits_balance: None,
             last_selected_at: Some("2026-03-23T11:00:00Z".to_string()),
-            has_local_limits: false,
-            active_sticky_conversations: POOL_ROUTE_ACTIVE_STICKY_SOFT_LIMIT + 1,
-        };
-        let unlimited = AccountRoutingCandidateRow {
-            id: 2,
-            secondary_used_percent: Some(18.0),
-            primary_used_percent: Some(18.0),
-            credits_has_credits: None,
-            credits_unlimited: None,
-            credits_balance: None,
-            last_selected_at: Some("2026-03-23T11:05:00Z".to_string()),
-            has_local_limits: false,
             active_sticky_conversations: 0,
-        };
-
-        assert_eq!(
-            compare_routing_candidates(&limited_remote, &unlimited),
-            std::cmp::Ordering::Greater,
-            "accounts with only remote window limits should still be soft-deprioritized once they exceed the active sticky threshold"
-        );
+            in_flight_reservations: 0,
+        }
     }
 
     #[test]
-    fn compare_routing_candidates_treats_single_remote_window_as_limited() {
-        let single_remote_window = AccountRoutingCandidateRow {
-            id: 1,
-            secondary_used_percent: None,
-            primary_used_percent: Some(0.0),
-            credits_has_credits: None,
-            credits_unlimited: None,
-            credits_balance: None,
-            last_selected_at: Some("2026-03-23T11:00:00Z".to_string()),
-            has_local_limits: false,
-            active_sticky_conversations: POOL_ROUTE_ACTIVE_STICKY_SOFT_LIMIT + 1,
-        };
-        let unlimited = AccountRoutingCandidateRow {
-            id: 2,
-            secondary_used_percent: None,
-            primary_used_percent: None,
-            credits_has_credits: None,
-            credits_unlimited: None,
-            credits_balance: None,
-            last_selected_at: Some("2026-03-23T11:05:00Z".to_string()),
-            has_local_limits: false,
-            active_sticky_conversations: 0,
-        };
+    fn compare_routing_candidates_prefers_short_window_that_is_about_to_reset() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 3, 26, 7, 0, 0)
+            .single()
+            .expect("valid now");
+        let mut short_reset_soon = test_routing_candidate(1);
+        short_reset_soon.plan_type = Some("team".to_string());
+        short_reset_soon.primary_used_percent = Some(70.0);
+        short_reset_soon.primary_window_minutes = Some(300);
+        short_reset_soon.primary_resets_at = Some(format_utc_iso(now + ChronoDuration::minutes(5)));
+        short_reset_soon.secondary_used_percent = Some(40.0);
+        short_reset_soon.secondary_window_minutes = Some(7 * 24 * 60);
+        short_reset_soon.secondary_resets_at = Some(format_utc_iso(now + ChronoDuration::days(1)));
+
+        let mut long_only = test_routing_candidate(2);
+        long_only.plan_type = Some("free".to_string());
+        long_only.secondary_used_percent = Some(30.0);
+        long_only.secondary_window_minutes = Some(7 * 24 * 60);
+        long_only.secondary_resets_at = Some(format_utc_iso(now + ChronoDuration::days(6)));
 
         assert_eq!(
-            compare_routing_candidates(&single_remote_window, &unlimited),
-            std::cmp::Ordering::Greater,
-            "a single remote window sample, even at 0%, should mark the account as limited for soft deprioritization"
-        );
-    }
-
-    #[test]
-    fn compare_routing_candidates_keeps_unlimited_accounts_on_existing_ordering() {
-        let busier_unlimited = AccountRoutingCandidateRow {
-            id: 1,
-            secondary_used_percent: None,
-            primary_used_percent: None,
-            credits_has_credits: None,
-            credits_unlimited: None,
-            credits_balance: None,
-            last_selected_at: Some("2026-03-23T11:00:00Z".to_string()),
-            has_local_limits: false,
-            active_sticky_conversations: POOL_ROUTE_ACTIVE_STICKY_SOFT_LIMIT + 3,
-        };
-        let quieter_unlimited = AccountRoutingCandidateRow {
-            id: 2,
-            secondary_used_percent: Some(10.0),
-            primary_used_percent: Some(10.0),
-            credits_has_credits: None,
-            credits_unlimited: None,
-            credits_balance: None,
-            last_selected_at: Some("2026-03-23T11:05:00Z".to_string()),
-            has_local_limits: false,
-            active_sticky_conversations: 0,
-        };
-
-        assert_eq!(
-            compare_routing_candidates(&busier_unlimited, &quieter_unlimited),
+            compare_routing_candidates_at(&short_reset_soon, &long_only, now),
             std::cmp::Ordering::Less,
-            "accounts without any local or remote limit signal should not be soft-deprioritized by active sticky count alone"
+            "a short-window account that is about to reset should beat a lower-used long-only account whose reset is still far away",
         );
+    }
+
+    #[test]
+    fn compare_routing_candidates_penalizes_far_from_reset_pressure() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 3, 26, 7, 0, 0)
+            .single()
+            .expect("valid now");
+        let mut stretched_team = test_routing_candidate(1);
+        stretched_team.plan_type = Some("team".to_string());
+        stretched_team.primary_used_percent = Some(95.0);
+        stretched_team.primary_window_minutes = Some(300);
+        stretched_team.primary_resets_at = Some(format_utc_iso(now + ChronoDuration::minutes(250)));
+        stretched_team.secondary_used_percent = Some(80.0);
+        stretched_team.secondary_window_minutes = Some(7 * 24 * 60);
+        stretched_team.secondary_resets_at = Some(format_utc_iso(now + ChronoDuration::days(6)));
+
+        let mut healthier_long = test_routing_candidate(2);
+        healthier_long.plan_type = Some("free".to_string());
+        healthier_long.secondary_used_percent = Some(20.0);
+        healthier_long.secondary_window_minutes = Some(7 * 24 * 60);
+        healthier_long.secondary_resets_at = Some(format_utc_iso(now + ChronoDuration::days(3)));
+
+        assert_eq!(
+            compare_routing_candidates_at(&stretched_team, &healthier_long, now),
+            std::cmp::Ordering::Greater,
+            "near-exhausted windows with lots of time left should sort behind healthier long-window accounts",
+        );
+    }
+
+    #[test]
+    fn compare_routing_candidates_treats_zero_percent_single_window_as_limited() {
+        let mut single_window = test_routing_candidate(1);
+        single_window.primary_used_percent = Some(0.0);
+        single_window.primary_window_minutes = Some(7 * 24 * 60);
+        single_window.active_sticky_conversations = 2;
+
+        let unlimited = test_routing_candidate(2);
+
+        assert_eq!(
+            compare_routing_candidates(&single_window, &unlimited),
+            std::cmp::Ordering::Greater,
+            "a single remote window sample, even at 0%, should still participate in the tighter long-window load caps",
+        );
+    }
+
+    #[test]
+    fn candidate_capacity_profile_tightens_for_long_only_accounts() {
+        let mut long_only = test_routing_candidate(1);
+        long_only.secondary_used_percent = Some(10.0);
+        long_only.secondary_window_minutes = Some(7 * 24 * 60);
+        let mut short_window = test_routing_candidate(2);
+        short_window.primary_used_percent = Some(10.0);
+        short_window.primary_window_minutes = Some(300);
+
+        let long_only_capacity = long_only.capacity_profile();
+        let short_window_capacity = short_window.capacity_profile();
+
+        assert_eq!(long_only_capacity.soft_limit, 1);
+        assert_eq!(long_only_capacity.hard_cap, 2);
+        assert_eq!(short_window_capacity.soft_limit, 2);
+        assert_eq!(short_window_capacity.hard_cap, 3);
     }
 
     #[tokio::test]

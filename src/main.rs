@@ -904,6 +904,7 @@ async fn main() -> Result<()> {
             PromptCacheConversationsCacheState::default(),
         )),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
+        pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         upstream_accounts,
     });
 
@@ -11957,6 +11958,7 @@ fn parse_retry_after_delay(value: &HeaderValue) -> Option<Duration> {
 
 async fn send_pool_request_with_failover(
     state: Arc<AppState>,
+    proxy_request_id: u64,
     method: Method,
     original_uri: &Uri,
     headers: &HeaderMap,
@@ -11970,6 +11972,9 @@ async fn send_pool_request_with_failover(
     same_account_attempts: u8,
 ) -> Result<PoolUpstreamResponse, PoolUpstreamError> {
     let request_connection_scoped = connection_scoped_header_names(headers);
+    let reservation_key = build_pool_routing_reservation_key(proxy_request_id);
+    let mut reservation_guard =
+        PoolRoutingReservationDropGuard::new(state.clone(), reservation_key.clone());
     let runtime_timeouts = resolve_pool_routing_timeouts(&state.pool, &state.config)
         .await
         .map_err(|err| PoolUpstreamError {
@@ -12367,6 +12372,7 @@ async fn send_pool_request_with_failover(
                 }
             }
         };
+        reserve_pool_routing_account(state.as_ref(), &reservation_key, &account);
         timeout_route_failover_pending = false;
 
         excluded_ids.push(account.account_id);
@@ -13248,6 +13254,7 @@ async fn send_pool_request_with_failover(
                 );
             }
 
+            reservation_guard.disarm();
             return Ok(PoolUpstreamResponse {
                 account: account.clone(),
                 response,
@@ -13312,6 +13319,7 @@ async fn extract_sticky_key_from_replay_snapshot(
 
 async fn continue_or_retry_pool_live_request(
     state: Arc<AppState>,
+    proxy_request_id: u64,
     method: Method,
     original_uri: &Uri,
     headers: &HeaderMap,
@@ -13323,6 +13331,7 @@ async fn continue_or_retry_pool_live_request(
     replay_cancel: &CancellationToken,
     first_error: PoolUpstreamError,
 ) -> Result<PoolUpstreamResponse, PoolUpstreamError> {
+    let reservation_key = build_pool_routing_reservation_key(proxy_request_id);
     let replay_status = { replay_status_rx.borrow().clone() };
     match replay_status {
         PoolReplayBodyStatus::Complete(snapshot) => {
@@ -13374,6 +13383,7 @@ async fn continue_or_retry_pool_live_request(
                 };
             send_pool_request_with_failover(
                 state,
+                proxy_request_id,
                 method,
                 original_uri,
                 headers,
@@ -13388,32 +13398,39 @@ async fn continue_or_retry_pool_live_request(
             )
             .await
         }
-        PoolReplayBodyStatus::ReadError(err) => Err(PoolUpstreamError {
-            account: Some(initial_account),
-            status: err.status,
-            message: err.message,
-            failure_kind: err.failure_kind,
-            connect_latency_ms: first_error.connect_latency_ms,
-            upstream_error_code: None,
-            upstream_error_message: None,
-            upstream_request_id: None,
-            oauth_responses_debug: None,
-            attempt_summary: first_error.attempt_summary.clone(),
-        }),
-        PoolReplayBodyStatus::InternalError(message) => Err(PoolUpstreamError {
-            account: Some(initial_account),
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            message,
-            failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
-            connect_latency_ms: first_error.connect_latency_ms,
-            upstream_error_code: None,
-            upstream_error_message: None,
-            upstream_request_id: None,
-            oauth_responses_debug: None,
-            attempt_summary: first_error.attempt_summary.clone(),
-        }),
+        PoolReplayBodyStatus::ReadError(err) => {
+            release_pool_routing_reservation(state.as_ref(), &reservation_key);
+            Err(PoolUpstreamError {
+                account: Some(initial_account),
+                status: err.status,
+                message: err.message,
+                failure_kind: err.failure_kind,
+                connect_latency_ms: first_error.connect_latency_ms,
+                upstream_error_code: None,
+                upstream_error_message: None,
+                upstream_request_id: None,
+                oauth_responses_debug: None,
+                attempt_summary: first_error.attempt_summary.clone(),
+            })
+        }
+        PoolReplayBodyStatus::InternalError(message) => {
+            release_pool_routing_reservation(state.as_ref(), &reservation_key);
+            Err(PoolUpstreamError {
+                account: Some(initial_account),
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message,
+                failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                connect_latency_ms: first_error.connect_latency_ms,
+                upstream_error_code: None,
+                upstream_error_message: None,
+                upstream_request_id: None,
+                oauth_responses_debug: None,
+                attempt_summary: first_error.attempt_summary.clone(),
+            })
+        }
         PoolReplayBodyStatus::Reading | PoolReplayBodyStatus::Incomplete => {
             replay_cancel.cancel();
+            release_pool_routing_reservation(state.as_ref(), &reservation_key);
             Err(first_error)
         }
     }
@@ -13460,6 +13477,7 @@ async fn proxy_openai_v1_via_pool(
     runtime_timeouts: PoolRoutingTimeoutSettingsResolved,
 ) -> Result<Response, (StatusCode, String)> {
     let body_limit = state.config.openai_proxy_max_request_body_bytes;
+    let pool_routing_reservation_key = build_pool_routing_reservation_key(proxy_request_id);
     let capture_target = capture_target_for_request(original_uri.path(), &method);
     let handshake_timeout =
         proxy_upstream_send_timeout_for_capture_target(&runtime_timeouts, capture_target);
@@ -13502,6 +13520,7 @@ async fn proxy_openai_v1_via_pool(
             (
                 send_pool_request_with_failover(
                     state.clone(),
+                    proxy_request_id,
                     method,
                     original_uri,
                     &headers,
@@ -13587,6 +13606,7 @@ async fn proxy_openai_v1_via_pool(
                     (
                         send_pool_request_with_failover(
                             state.clone(),
+                            proxy_request_id,
                             method,
                             original_uri,
                             &headers,
@@ -13619,6 +13639,11 @@ async fn proxy_openai_v1_via_pool(
                         body_limit,
                         runtime_timeouts.request_read_timeout,
                         proxy_request_id,
+                    );
+                    reserve_pool_routing_account(
+                        state.as_ref(),
+                        &pool_routing_reservation_key,
+                        &initial_account,
                     );
                     if let Err(route_err) =
                         record_account_selected(&state.pool, initial_account.account_id).await
@@ -13752,6 +13777,7 @@ async fn proxy_openai_v1_via_pool(
                         };
                         continue_or_retry_pool_live_request(
                             state.clone(),
+                            proxy_request_id,
                             method,
                             original_uri,
                             &headers,
@@ -13818,6 +13844,7 @@ async fn proxy_openai_v1_via_pool(
                                 };
                                 continue_or_retry_pool_live_request(
                                     state.clone(),
+                                    proxy_request_id,
                                     method,
                                     original_uri,
                                     &headers,
@@ -13852,6 +13879,11 @@ async fn proxy_openai_v1_via_pool(
                     body_limit,
                     runtime_timeouts.request_read_timeout,
                     proxy_request_id,
+                );
+                reserve_pool_routing_account(
+                    state.as_ref(),
+                    &pool_routing_reservation_key,
+                    &initial_account,
                 );
                 if let Err(route_err) =
                     record_account_selected(&state.pool, initial_account.account_id).await
@@ -13978,6 +14010,7 @@ async fn proxy_openai_v1_via_pool(
                             };
                             continue_or_retry_pool_live_request(
                                 state.clone(),
+                                proxy_request_id,
                                 method,
                                 original_uri,
                                 &headers,
@@ -14028,6 +14061,7 @@ async fn proxy_openai_v1_via_pool(
                                     };
                                     continue_or_retry_pool_live_request(
                                         state.clone(),
+                                        proxy_request_id,
                                         method,
                                         original_uri,
                                         &headers,
@@ -14060,6 +14094,7 @@ async fn proxy_openai_v1_via_pool(
                         };
                         continue_or_retry_pool_live_request(
                             state.clone(),
+                            proxy_request_id,
                             method,
                             original_uri,
                             &headers,
@@ -14092,6 +14127,7 @@ async fn proxy_openai_v1_via_pool(
                         };
                         continue_or_retry_pool_live_request(
                             state.clone(),
+                            proxy_request_id,
                             method,
                             original_uri,
                             &headers,
@@ -14114,6 +14150,7 @@ async fn proxy_openai_v1_via_pool(
         (
             send_pool_request_with_failover(
                 state.clone(),
+                proxy_request_id,
                 method,
                 original_uri,
                 &headers,
@@ -14182,6 +14219,7 @@ async fn proxy_openai_v1_via_pool(
             "pool upstream response first chunk ready"
         );
     } else {
+        consume_pool_routing_reservation(state.as_ref(), &pool_routing_reservation_key);
         if let Err(route_err) = record_pool_route_success(
             &state.pool,
             account.account_id,
@@ -14203,6 +14241,7 @@ async fn proxy_openai_v1_via_pool(
 
     let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(16);
     let state_for_record = state.clone();
+    let reservation_key_for_record = pool_routing_reservation_key.clone();
     let sticky_key_for_record = sticky_key.clone();
     let invoke_id_for_record = upstream_invoke_id.clone();
     let upstream_attempt_started_at_utc_for_record = upstream_attempt_started_at_utc;
@@ -14246,6 +14285,10 @@ async fn proxy_openai_v1_via_pool(
         }
 
         if let Some(message) = stream_error_message.as_deref() {
+            release_pool_routing_reservation(
+                state_for_record.as_ref(),
+                &reservation_key_for_record,
+            );
             if let Err(route_err) = record_pool_route_transport_failure(
                 &state_for_record.pool,
                 account.account_id,
@@ -14257,16 +14300,22 @@ async fn proxy_openai_v1_via_pool(
             {
                 warn!(account_id = account.account_id, error = %route_err, "failed to record pool stream error");
             }
-        } else if let Err(route_err) = record_pool_route_success(
-            &state_for_record.pool,
-            account.account_id,
-            upstream_attempt_started_at_utc_for_record,
-            sticky_key_for_record.as_deref(),
-            invoke_id_for_record.as_deref(),
-        )
-        .await
-        {
-            warn!(account_id = account.account_id, error = %route_err, "failed to record pool route success");
+        } else {
+            consume_pool_routing_reservation(
+                state_for_record.as_ref(),
+                &reservation_key_for_record,
+            );
+            if let Err(route_err) = record_pool_route_success(
+                &state_for_record.pool,
+                account.account_id,
+                upstream_attempt_started_at_utc_for_record,
+                sticky_key_for_record.as_deref(),
+                invoke_id_for_record.as_deref(),
+            )
+            .await
+            {
+                warn!(account_id = account.account_id, error = %route_err, "failed to record pool route success");
+            }
         }
 
         info!(
@@ -14990,6 +15039,7 @@ async fn proxy_openai_v1_capture_target(
     runtime_timeouts: PoolRoutingTimeoutSettingsResolved,
 ) -> Result<Response, (StatusCode, String)> {
     let capture_started = Instant::now();
+    let pool_routing_reservation_key = build_pool_routing_reservation_key(proxy_request_id);
     let occurred_at_utc = Utc::now();
     let occurred_at = format_naive(occurred_at_utc.with_timezone(&Shanghai).naive_local());
     let body_limit = state.config.openai_proxy_max_request_body_bytes;
@@ -15209,6 +15259,7 @@ async fn proxy_openai_v1_capture_target(
     ) = if pool_route_active {
         match send_pool_request_with_failover(
             state.clone(),
+            proxy_request_id,
             Method::POST,
             &original_uri,
             &upstream_headers,
@@ -15696,6 +15747,7 @@ async fn proxy_openai_v1_capture_target(
     let upstream_content_encoding_for_task = upstream_content_encoding.clone();
     let requester_ip_for_task = requester_ip.clone();
     let sticky_key_for_task = sticky_key.clone();
+    let reservation_key_for_task = pool_routing_reservation_key.clone();
     let prompt_cache_key_for_task = prompt_cache_key.clone();
     let selected_proxy_for_task = selected_proxy.clone();
     let selected_proxy_display_name_for_task = selected_proxy_display_name.clone();
@@ -16063,6 +16115,10 @@ async fn proxy_openai_v1_capture_target(
                     had_logical_stream_failure,
                 );
                 let route_result = if pool_route_success {
+                    consume_pool_routing_reservation(
+                        state_for_task.as_ref(),
+                        &reservation_key_for_task,
+                    );
                     record_pool_route_success(
                         &state_for_task.pool,
                         account.account_id,
@@ -16076,6 +16132,10 @@ async fn proxy_openai_v1_capture_target(
                         .as_deref()
                         .unwrap_or("upstream stream error")
                         .to_string();
+                    release_pool_routing_reservation(
+                        state_for_task.as_ref(),
+                        &reservation_key_for_task,
+                    );
                     record_pool_route_transport_failure(
                         &state_for_task.pool,
                         account.account_id,
@@ -16089,6 +16149,10 @@ async fn proxy_openai_v1_capture_target(
                         .as_deref()
                         .unwrap_or("upstream request failed")
                         .to_string();
+                    release_pool_routing_reservation(
+                        state_for_task.as_ref(),
+                        &reservation_key_for_task,
+                    );
                     record_pool_route_http_failure(
                         &state_for_task.pool,
                         account.account_id,
@@ -21567,6 +21631,103 @@ fn next_proxy_request_id() -> u64 {
     NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
 }
 
+const POOL_ROUTING_RESERVATION_TTL: Duration = Duration::from_secs(90);
+
+#[derive(Debug, Clone, Copy)]
+struct PoolRoutingReservation {
+    account_id: i64,
+    created_at: Instant,
+}
+
+#[derive(Debug)]
+struct PoolRoutingReservationDropGuard {
+    state: Arc<AppState>,
+    reservation_key: String,
+    active: bool,
+}
+
+impl PoolRoutingReservationDropGuard {
+    fn new(state: Arc<AppState>, reservation_key: String) -> Self {
+        Self {
+            state,
+            reservation_key,
+            active: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.active = false;
+    }
+}
+
+impl Drop for PoolRoutingReservationDropGuard {
+    fn drop(&mut self) {
+        if self.active {
+            release_pool_routing_reservation(self.state.as_ref(), &self.reservation_key);
+        }
+    }
+}
+
+fn build_pool_routing_reservation_key(proxy_request_id: u64) -> String {
+    format!("pool-route-{proxy_request_id}")
+}
+
+fn prune_pool_routing_reservations(
+    reservations: &mut HashMap<String, PoolRoutingReservation>,
+    now: Instant,
+) {
+    reservations.retain(|_, reservation| {
+        now.duration_since(reservation.created_at) < POOL_ROUTING_RESERVATION_TTL
+    });
+}
+
+fn pool_routing_reservation_count(state: &AppState, account_id: i64) -> i64 {
+    let mut reservations = state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned");
+    prune_pool_routing_reservations(&mut reservations, Instant::now());
+    reservations
+        .values()
+        .filter(|reservation| reservation.account_id == account_id)
+        .count() as i64
+}
+
+fn reserve_pool_routing_account(
+    state: &AppState,
+    reservation_key: &str,
+    account: &PoolResolvedAccount,
+) {
+    if account.routing_source == PoolRoutingSelectionSource::StickyReuse {
+        return;
+    }
+    let mut reservations = state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned");
+    prune_pool_routing_reservations(&mut reservations, Instant::now());
+    reservations.insert(
+        reservation_key.to_string(),
+        PoolRoutingReservation {
+            account_id: account.account_id,
+            created_at: Instant::now(),
+        },
+    );
+}
+
+fn release_pool_routing_reservation(state: &AppState, reservation_key: &str) {
+    let mut reservations = state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned");
+    prune_pool_routing_reservations(&mut reservations, Instant::now());
+    reservations.remove(reservation_key);
+}
+
+fn consume_pool_routing_reservation(state: &AppState, reservation_key: &str) {
+    release_pool_routing_reservation(state, reservation_key);
+}
+
 fn is_body_too_large_error(err: &reqwest::Error) -> bool {
     error_chain_contains(err, "length limit exceeded")
         || error_chain_contains(err, PROXY_REQUEST_BODY_LIMIT_EXCEEDED)
@@ -22311,6 +22472,7 @@ struct AppState {
     pricing_catalog: Arc<RwLock<PricingCatalog>>,
     prompt_cache_conversation_cache: Arc<Mutex<PromptCacheConversationsCacheState>>,
     maintenance_stats_cache: Arc<Mutex<StatsMaintenanceCacheState>>,
+    pool_routing_reservations: Arc<std::sync::Mutex<HashMap<String, PoolRoutingReservation>>>,
     upstream_accounts: Arc<UpstreamAccountsRuntime>,
 }
 
