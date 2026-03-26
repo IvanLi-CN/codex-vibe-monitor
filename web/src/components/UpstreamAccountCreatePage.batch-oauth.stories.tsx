@@ -73,9 +73,22 @@ export const Ready: Story = {
   render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new?mode=batchOauth" />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
+    const documentScope = within(canvasElement.ownerDocument.body)
     await userEvent.click(canvas.getByRole('button', { name: /generate oauth url/i }))
     await expect(canvas.getByDisplayValue(/https:\/\/auth\.openai\.com\/authorize/i)).toBeInTheDocument()
     await expect(canvas.getByRole('button', { name: /complete oauth login/i })).toBeInTheDocument()
+    await userEvent.click(
+      await documentScope.findByRole('button', {
+        name: /编辑分组设置|edit group settings|编辑分组备注|edit group note/i,
+      }),
+    )
+    await expect(
+      documentScope.getByRole('dialog', { name: /分组设置|group settings|分组备注|group note/i }),
+    ).toBeInTheDocument()
+    await expect(
+      documentScope.getByText(/绑定代理节点|bound proxy nodes/i),
+    ).toBeInTheDocument()
+    await expect(documentScope.getByText(/JP Edge 01/i)).toBeInTheDocument()
   },
 }
 
@@ -386,6 +399,9 @@ export const GroupNoteDraft: Story = {
       documentScope.getByRole('dialog', { name: /分组设置|group settings|分组备注|group note/i }),
     ).toBeInTheDocument()
     await expect(documentScope.getByText(/new-team/i)).toBeInTheDocument()
+    await expect(
+      documentScope.getByText(/绑定代理节点|bound proxy nodes/i),
+    ).toBeInTheDocument()
   },
 }
 

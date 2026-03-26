@@ -153,6 +153,17 @@
   image:
   ![Missing bound proxy nodes](./assets/group-settings-missing-or-unavailable-bindings.png)
 
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: viewport
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Account Pool/Pages/Upstream Account Create/Batch OAuth/Ready
+  state: existing-group-settings-from-create-page
+  evidence_note: 验证创建页里的真实分组设置入口已经和列表页使用同一套组件与数据契约，选中现有分组后会展示绑定代理节点与 24 小时趋势。
+  image:
+  ![Batch OAuth ready group settings with bindings](./assets/batch-oauth-ready-group-settings-with-bindings.png)
+
 ## 变更记录
 
 - 2026-03-26: 创建 spec，冻结 `/v1/*` 新语义、分组绑定 forward proxy 的运行时规则、接口契约与视觉证据目标。
