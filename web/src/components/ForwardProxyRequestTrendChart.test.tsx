@@ -107,9 +107,11 @@ describe('ForwardProxyRequestTrendChart', () => {
       '[aria-label="JP Edge 01 Last 24h request volume chart"]',
     ) as HTMLElement | null
     const firstBar = container?.querySelector('[data-inline-chart-index="0"]') as HTMLElement | null
+    const chartRoot = document.querySelector('[data-chart-kind="proxy-binding-request-trend"]') as HTMLElement | null
 
     expect(container).not.toBeNull()
     expect(firstBar).not.toBeNull()
+    expect(chartRoot?.className).toContain('w-full')
 
     mockRect(container!, { left: 0, top: 0, width: 280, height: 96 })
     mockRect(firstBar!, { left: 24, top: 28, width: 10, height: 32 })

@@ -141,13 +141,13 @@ export function ForwardProxyRequestTrendChart({
       linkedActiveIndex={linkedActiveIndex}
       onActiveIndexChange={onActiveIndexChange}
       className={cn('py-0.5', className)}
-      chartClassName={isDialog ? 'flex h-12 items-end' : 'flex h-11 items-end'}
+      chartClassName={isDialog ? 'flex h-12 min-w-0 w-full items-end' : 'flex h-11 items-end'}
     >
       {({ highlightedIndex, getItemProps }) => (
         <div
           className={cn(
             isDialog
-              ? 'flex h-12 items-end gap-px rounded-xl border border-base-300/70 bg-base-100/70 px-2 py-1.5'
+              ? 'flex h-12 min-w-0 w-full items-end gap-px rounded-xl border border-base-300/70 bg-base-100/70 px-2 py-1.5'
               : 'flex h-11 items-end gap-px sm:gap-[1.5px] md:gap-[2px]',
           )}
           data-chart-kind={dataChartKind}
