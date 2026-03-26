@@ -20,6 +20,55 @@ export default meta
 
 type Story = StoryObj<typeof meta>
 
+function buildCompletedBatchRow({
+  id,
+  accountId,
+  displayName,
+  groupName = 'production',
+  isMother = false,
+  note = 'Completed batch row metadata stays editable.',
+  needsRefresh = false,
+  callbackUrl = 'http://localhost:43210/oauth/callback?code=completed&state=storybook',
+  mailboxAddress = 'completed-row@mail-tw.707079.xyz',
+  tagIds = [],
+  mailboxMode = 'session',
+}: {
+  id: string
+  accountId: number
+  displayName: string
+  groupName?: string
+  isMother?: boolean
+  note?: string
+  needsRefresh?: boolean
+  callbackUrl?: string
+  mailboxAddress?: string
+  tagIds?: number[]
+  mailboxMode?: 'session' | 'input-only'
+}) {
+  const mailboxSession = createMailboxSession(`story-${id}-mailbox`, mailboxAddress)
+  return {
+    id,
+    displayName,
+    groupName,
+    isMother,
+    note,
+    noteExpanded: true,
+    callbackUrl,
+    mailboxSession: mailboxMode === 'session' ? mailboxSession : null,
+    mailboxInput: mailboxAddress,
+    session: createCompletedSession(`story-${id}-login`, accountId),
+    sessionHint: `${displayName} is ready. Continue with the remaining rows when you are done here.`,
+    needsRefresh,
+    metadataPersisted: {
+      displayName,
+      groupName,
+      note,
+      isMother,
+      tagIds,
+    },
+  }
+}
+
 export const Ready: Story = {
   render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new?mode=batchOauth" />,
   play: async ({ canvasElement }) => {
@@ -718,4 +767,188 @@ export const MixedStates: Story = {
       }}
     />
   ),
+}
+
+export const CompletedMetadataEditable: Story = {
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts/new',
+        search: '?mode=batchOauth',
+        state: {
+          draft: {
+            batchOauth: {
+              defaultGroupName: 'production',
+              tagIds: [28],
+              rows: [
+                buildCompletedBatchRow({
+                  id: 'completed-editable',
+                  accountId: 101,
+                  displayName: 'Codex Pro - Tokyo',
+                  isMother: true,
+                  mailboxAddress: 'completed-editable@mail-tw.707079.xyz',
+                  tagIds: [28],
+                  mailboxMode: 'input-only',
+                }),
+              ],
+            },
+          },
+        },
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const doc = canvasElement.ownerDocument
+    const displayName = canvas.getByDisplayValue('Codex Pro - Tokyo') as HTMLInputElement
+    const callback = canvas.getByDisplayValue(
+      'http://localhost:43210/oauth/callback?code=completed&state=storybook',
+    ) as HTMLInputElement
+    const rowGroupTrigger = canvas.getAllByRole('combobox')[1] as HTMLInputElement
+
+    await expect(displayName).toBeEnabled()
+    await expect(callback).toBeDisabled()
+    await expect(canvas.getByRole('button', { name: /generate oauth url/i })).toBeDisabled()
+    await expect(canvas.getByRole('button', { name: /complete oauth login/i })).toBeDisabled()
+    await expect(canvas.getByRole('button', { name: /remove row/i })).toBeDisabled()
+
+    await userEvent.hover(canvas.getByRole('button', { name: /copy mailbox/i }))
+    await expect(
+      within(document.body).getByRole('button', { name: /edit mailbox/i }),
+    ).toBeDisabled()
+
+    await userEvent.click(rowGroupTrigger)
+
+    const searchInput = doc.body.querySelector('[cmdk-input]')
+    if (!(searchInput instanceof HTMLInputElement)) {
+      throw new Error('missing row group combobox search input')
+    }
+    await userEvent.clear(searchInput)
+    await userEvent.type(searchInput, 'analytics')
+
+    const analyticsOption = Array.from(doc.body.querySelectorAll('[cmdk-item]')).find((candidate) =>
+      (candidate.textContent || '').toLowerCase().includes('analytics'),
+    )
+    if (!(analyticsOption instanceof HTMLElement)) {
+      throw new Error('missing analytics group option')
+    }
+    await userEvent.click(analyticsOption)
+
+    await expect(rowGroupTrigger).toHaveValue('analytics')
+    await expect(doc.body.textContent || '').not.toContain('母号已更新')
+  },
+}
+
+export const CompletedNeedsRefreshEditable: Story = {
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts/new',
+        search: '?mode=batchOauth',
+        state: {
+          draft: {
+            batchOauth: {
+              defaultGroupName: 'production',
+              rows: [
+                buildCompletedBatchRow({
+                  id: 'completed-needs-refresh',
+                  accountId: 104,
+                  displayName: 'Codex Pro - Nagoya',
+                  needsRefresh: true,
+                  mailboxAddress: 'completed-refresh@mail-tw.707079.xyz',
+                  mailboxMode: 'input-only',
+                }),
+              ],
+            },
+          },
+        },
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const displayName = canvas.getByDisplayValue('Codex Pro - Nagoya')
+
+    await expect(canvas.getByText(/needs refresh/i)).toBeInTheDocument()
+    await userEvent.clear(displayName)
+    await userEvent.type(displayName, 'Codex Pro - Nagoya Recovered')
+    await userEvent.tab()
+
+    await expect(canvas.getByDisplayValue('Codex Pro - Nagoya Recovered')).toBeInTheDocument()
+    await expect(canvas.queryByText(/needs refresh/i)).not.toBeInTheDocument()
+  },
+}
+
+export const CompletedSaveFailureFeedback: Story = {
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts/new',
+        search: '?mode=batchOauth',
+        state: {
+          draft: {
+            batchOauth: {
+              defaultGroupName: 'production',
+              rows: [
+                buildCompletedBatchRow({
+                  id: 'completed-save-failure',
+                  accountId: 101,
+                  displayName: 'Codex Pro - Tokyo',
+                  mailboxAddress: 'completed-save-failure@mail-tw.707079.xyz',
+                  mailboxMode: 'input-only',
+                }),
+              ],
+            },
+          },
+        },
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const displayName = canvas.getByDisplayValue('Codex Pro - Tokyo')
+
+    await userEvent.clear(displayName)
+    await userEvent.type(displayName, 'Codex Pro - Tokyo Failed Save')
+    await userEvent.tab()
+
+    await expect(canvas.getByText(/storybook forced save failure/i)).toBeInTheDocument()
+  },
+}
+
+export const CompletedEmailReadonly: Story = {
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts/new',
+        search: '?mode=batchOauth',
+        state: {
+          draft: {
+            batchOauth: {
+              defaultGroupName: 'production',
+              rows: [
+                buildCompletedBatchRow({
+                  id: 'completed-email-readonly',
+                  accountId: 101,
+                  displayName: 'Codex Pro - Tokyo',
+                  mailboxAddress: 'completed-email-readonly@mail-tw.707079.xyz',
+                  mailboxMode: 'input-only',
+                }),
+              ],
+            },
+          },
+        },
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await userEvent.hover(canvas.getByRole('button', { name: /copy mailbox/i }))
+    const editMailbox = within(document.body).getByRole('button', {
+      name: /edit mailbox/i,
+    })
+
+    await expect(editMailbox).toBeDisabled()
+    await expect(canvas.getByRole('button', { name: /generate$/i })).toBeDisabled()
+  },
 }

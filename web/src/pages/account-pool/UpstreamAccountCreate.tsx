@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type KeyboardEvent,
 } from "react";
 import { AppIcon } from "../../components/AppIcon";
 import { Link, useLocation, useNavigate } from "react-router-dom";
@@ -65,6 +66,7 @@ import type {
   OauthMailboxSessionSupported,
   OauthMailboxStatus,
   UpdateOauthLoginSessionPayload,
+  UpdateUpstreamAccountPayload,
   UpstreamAccountDetail,
   UpstreamAccountDuplicateInfo,
   UpstreamAccountSummary,
@@ -96,6 +98,13 @@ import { useTranslation } from "../../i18n";
 type CreateTab = "oauth" | "batchOauth" | "apiKey" | "import";
 type BatchOauthBusyAction = "generate" | "complete" | null;
 type MailboxBusyAction = "attach" | "generate" | null;
+type BatchOauthPersistedMetadata = {
+  displayName: string;
+  groupName: string;
+  note: string;
+  isMother: boolean;
+  tagIds: number[];
+};
 type DuplicateWarningState = {
   accountId: number;
   displayName: string;
@@ -113,6 +122,7 @@ const MAILBOX_REFRESH_INTERVAL_MS = 5_000;
 const MAILBOX_REFRESH_TICK_MS = 1_000;
 const OAUTH_SESSION_SYNC_DEBOUNCE_MS = 300;
 const OAUTH_SESSION_SYNC_RETRY_MS = 1_000;
+const MAX_SHARED_TAG_SYNC_ATTEMPTS = 2;
 const IMPORTED_OAUTH_DUPLICATE_DETAIL =
   "duplicate credential in current import selection";
 
@@ -136,6 +146,7 @@ type BatchOauthRow = {
   id: string;
   displayName: string;
   groupName: string;
+  inheritsDefaultGroup: boolean;
   isMother: boolean;
   note: string;
   noteExpanded: boolean;
@@ -158,6 +169,11 @@ type BatchOauthRow = {
   mailboxEditorError: string | null;
   mailboxRefreshBusy: boolean;
   mailboxNextRefreshAt: number | null;
+  metadataBusy: boolean;
+  metadataError: string | null;
+  metadataPersisted: BatchOauthPersistedMetadata | null;
+  pendingSharedTagIds: number[] | null;
+  sharedTagSyncAttempts: number;
 };
 
 type CreatePageDraft = {
@@ -262,6 +278,7 @@ function createBatchOauthRow(id: string, groupName = ""): BatchOauthRow {
     id,
     displayName: "",
     groupName,
+    inheritsDefaultGroup: true,
     isMother: false,
     note: "",
     noteExpanded: false,
@@ -284,7 +301,155 @@ function createBatchOauthRow(id: string, groupName = ""): BatchOauthRow {
     mailboxEditorError: null,
     mailboxRefreshBusy: false,
     mailboxNextRefreshAt: null,
+    metadataBusy: false,
+    metadataError: null,
+    metadataPersisted: null,
+    pendingSharedTagIds: null,
+    sharedTagSyncAttempts: 0,
   };
+}
+
+function normalizeBatchTagIds(tagIds: number[]) {
+  return Array.from(new Set(tagIds))
+    .filter((value) => Number.isInteger(value) && value > 0)
+    .sort((left, right) => left - right);
+}
+
+function batchTagIdsEqual(
+  left: number[] | null | undefined,
+  right: number[] | null | undefined,
+) {
+  const normalizedLeft = normalizeBatchTagIds(Array.isArray(left) ? left : []);
+  const normalizedRight = normalizeBatchTagIds(
+    Array.isArray(right) ? right : [],
+  );
+  if (normalizedLeft.length !== normalizedRight.length) return false;
+  return normalizedLeft.every((value, index) => value === normalizedRight[index]);
+}
+
+function normalizeBatchOauthPersistedMetadata(
+  value: Partial<BatchOauthPersistedMetadata> | null | undefined,
+): BatchOauthPersistedMetadata | null {
+  if (!value) return null;
+  return {
+    displayName:
+      typeof value.displayName === "string" ? value.displayName.trim() : "",
+    groupName: typeof value.groupName === "string" ? value.groupName.trim() : "",
+    note: typeof value.note === "string" ? value.note.trim() : "",
+    isMother: value.isMother === true,
+    tagIds: normalizeBatchTagIds(Array.isArray(value.tagIds) ? value.tagIds : []),
+  };
+}
+
+function buildBatchOauthPersistedMetadata(
+  row: Pick<BatchOauthRow, "displayName" | "groupName" | "note" | "isMother">,
+  tagIds: number[],
+): BatchOauthPersistedMetadata {
+  return {
+    displayName: row.displayName.trim(),
+    groupName: row.groupName.trim(),
+    note: row.note.trim(),
+    isMother: row.isMother,
+    tagIds: normalizeBatchTagIds(tagIds),
+  };
+}
+
+function resolveCompletedBatchOauthCommittedFieldBaseline(
+  row: Pick<BatchOauthRow, "session" | "metadataPersisted">,
+  field: keyof BatchOauthPersistedMetadata,
+  items: UpstreamAccountSummary[],
+) {
+  if (field === "tagIds") {
+    return resolveCompletedBatchOauthRowPersistedTagIds(row, items);
+  }
+  if (row.metadataPersisted) {
+    return row.metadataPersisted[field];
+  }
+  const account = findCompletedBatchOauthAccount(row, items);
+  if (!account) return undefined;
+  if (field === "displayName") {
+    return account.displayName.trim();
+  }
+  if (field === "groupName") {
+    return (account.groupName ?? "").trim();
+  }
+  if (field === "isMother") {
+    return account.isMother === true;
+  }
+  return undefined;
+}
+
+function didCompletedBatchOauthCommittedFieldsChange(
+  row: Pick<BatchOauthRow, "session" | "metadataPersisted">,
+  next: BatchOauthPersistedMetadata,
+  committedFields: Array<keyof BatchOauthPersistedMetadata>,
+  items: UpstreamAccountSummary[],
+) {
+  return committedFields.some((field) => {
+    if (field === "tagIds") {
+      const baselineTagIds = resolveCompletedBatchOauthRowPersistedTagIds(
+        row,
+        items,
+      );
+      return baselineTagIds == null
+        ? true
+        : !batchTagIdsEqual(baselineTagIds, next.tagIds);
+    }
+    const baseline = resolveCompletedBatchOauthCommittedFieldBaseline(
+      row,
+      field,
+      items,
+    );
+    if (baseline == null) return true;
+    return baseline !== next[field];
+  });
+}
+
+function findCompletedBatchOauthAccount(
+  row: Pick<BatchOauthRow, "session">,
+  items: UpstreamAccountSummary[],
+) {
+  const accountId = row.session?.accountId;
+  return accountId == null
+    ? null
+    : (items.find((item) => item.id === accountId) ?? null);
+}
+
+function resolveCompletedBatchOauthRowPersistedTagIds(
+  row: Pick<BatchOauthRow, "session" | "metadataPersisted">,
+  items: UpstreamAccountSummary[],
+) {
+  const account = findCompletedBatchOauthAccount(row, items);
+  if (account) {
+    return normalizeBatchTagIds(account.tags.map((tag) => tag.id));
+  }
+  return row.metadataPersisted
+    ? normalizeBatchTagIds(row.metadataPersisted.tagIds)
+    : null;
+}
+
+function resolveCompletedBatchOauthRowBaselineTagIds(
+  row: Pick<BatchOauthRow, "session" | "metadataPersisted">,
+  items: UpstreamAccountSummary[],
+  fallbackTagIds: number[],
+) {
+  return (
+    resolveCompletedBatchOauthRowPersistedTagIds(row, items) ??
+    normalizeBatchTagIds(fallbackTagIds)
+  );
+}
+
+function buildCompletedBatchOauthSharedTagBaselineSignature(
+  rows: BatchOauthRow[],
+  items: UpstreamAccountSummary[],
+) {
+  return rows
+    .filter((row) => canEditCompletedBatchOauthRowMetadata(row))
+    .map((row) => {
+      const tagIds = resolveCompletedBatchOauthRowPersistedTagIds(row, items);
+      return `${row.id}:${row.session?.accountId ?? "draft"}:${tagIds == null ? "unknown" : tagIds.join(",")}`;
+    })
+    .join("|");
 }
 
 function hydrateBatchOauthRow(
@@ -292,14 +457,19 @@ function hydrateBatchOauthRow(
   fallbackId: string,
   fallbackGroupName = "",
 ): BatchOauthRow {
+  const hydratedGroupName = seed.groupName ?? fallbackGroupName;
   return {
     ...createBatchOauthRow(
       seed.id ?? fallbackId,
-      seed.groupName ?? fallbackGroupName,
+      hydratedGroupName,
     ),
     ...seed,
     id: seed.id ?? fallbackId,
-    groupName: seed.groupName ?? fallbackGroupName,
+    groupName: hydratedGroupName,
+    inheritsDefaultGroup:
+      typeof seed.inheritsDefaultGroup === "boolean"
+        ? seed.inheritsDefaultGroup
+        : !hydratedGroupName.trim() || hydratedGroupName === fallbackGroupName,
     isMother: seed.isMother === true,
     duplicateWarning: seed.duplicateWarning ?? null,
     needsRefresh: seed.needsRefresh === true,
@@ -337,6 +507,21 @@ function hydrateBatchOauthRow(
       typeof seed.mailboxNextRefreshAt === "number"
         ? seed.mailboxNextRefreshAt
         : null,
+    metadataBusy: seed.metadataBusy === true,
+    metadataError:
+      typeof seed.metadataError === "string" ? seed.metadataError : null,
+    metadataPersisted: normalizeBatchOauthPersistedMetadata(
+      seed.metadataPersisted,
+    ),
+    pendingSharedTagIds: Array.isArray(seed.pendingSharedTagIds)
+      ? normalizeBatchTagIds(seed.pendingSharedTagIds)
+      : null,
+    sharedTagSyncAttempts:
+      typeof seed.sharedTagSyncAttempts === "number" &&
+      Number.isFinite(seed.sharedTagSyncAttempts) &&
+      seed.sharedTagSyncAttempts > 0
+        ? Math.trunc(seed.sharedTagSyncAttempts)
+        : 0,
   };
 }
 
@@ -695,6 +880,34 @@ function enforceBatchMotherDraftUniqueness(rows: BatchOauthRow[]) {
   );
 }
 
+function reconcileBatchOauthMotherRowsAfterSave(
+  rows: BatchOauthRow[],
+  savedRowId: string,
+  updated: Pick<UpstreamAccountSummary, "groupName" | "isMother">,
+) {
+  if (updated.isMother !== true) return rows;
+  const groupKey = normalizeMotherGroupKey(updated.groupName);
+  return rows.map((row) => {
+    if (
+      row.id === savedRowId ||
+      !row.isMother ||
+      normalizeMotherGroupKey(row.groupName) !== groupKey
+    ) {
+      return row;
+    }
+    return {
+      ...row,
+      isMother: false,
+      metadataPersisted: row.metadataPersisted
+        ? {
+            ...row.metadataPersisted,
+            isMother: false,
+          }
+        : row.metadataPersisted,
+    };
+  });
+}
+
 function batchStatusVariant(
   status: string,
 ): "success" | "warning" | "error" | "secondary" {
@@ -710,7 +923,16 @@ function batchRowStatus(row: BatchOauthRow) {
   return row.session?.status ?? "draft";
 }
 
+function canEditCompletedBatchOauthRowMetadata(row: BatchOauthRow) {
+  const status = batchRowStatus(row);
+  return Boolean(
+    row.session?.accountId != null &&
+      (status === "completed" || status === "completedNeedsRefresh"),
+  );
+}
+
 function batchRowStatusDetail(row: BatchOauthRow) {
+  if (row.metadataError) return row.metadataError;
   if (row.actionError) return row.actionError;
   if (row.mailboxError) return row.mailboxError;
   if (row.sessionHint) return row.sessionHint;
@@ -1084,6 +1306,7 @@ export default function UpstreamAccountCreatePage() {
     startImportedOauthValidationJob,
     stopImportedOauthValidationJob,
     importOauthAccounts,
+    saveAccount,
     saveGroupNote,
   } = useUpstreamAccounts();
   const { items: tagItems, createTag, updateTag, deleteTag } = usePoolTags();
@@ -1223,6 +1446,9 @@ export default function UpstreamAccountCreatePage() {
   const [batchTagIds, setBatchTagIds] = useState<number[]>(
     () => draft?.batchOauth?.tagIds ?? [],
   );
+  const batchSharedTagSyncEnabledRef = useRef(
+    Object.prototype.hasOwnProperty.call(draft?.batchOauth ?? {}, "tagIds"),
+  );
   const [importGroupName, setImportGroupName] = useState(
     () => draft?.import?.defaultGroupName ?? "",
   );
@@ -1244,8 +1470,14 @@ export default function UpstreamAccountCreatePage() {
   const importValidationEventCleanupRef = useRef<(() => void) | null>(null);
   const importValidationJobIdRef = useRef<string | null>(null);
   const [pageCreatedTagIds, setPageCreatedTagIds] = useState<number[]>([]);
+  const previousBatchTagIdsRef = useRef<number[] | null>(null);
+  const previousCompletedSharedTagBaselineRef = useRef<string | null>(null);
   const [batchRows, setBatchRows] = useState<BatchOauthRow[]>(
     () => initialBatchRows,
+  );
+  const hasBatchMetadataBusy = useMemo(
+    () => batchRows.some((row) => row.metadataBusy),
+    [batchRows],
   );
   const [groupDraftNotes, setGroupDraftNotes] = useState<
     Record<string, string>
@@ -2480,22 +2712,199 @@ export default function UpstreamAccountCreatePage() {
     }));
   };
 
+  async function persistCompletedBatchRowMetadata(
+    rowId: string,
+    overrides: Partial<BatchOauthPersistedMetadata>,
+    committedFields: Array<keyof BatchOauthPersistedMetadata>,
+  ) {
+    const sourceRow = batchRowsRef.current.find((item) => item.id === rowId);
+    if (
+      !sourceRow ||
+      !canEditCompletedBatchOauthRowMetadata(sourceRow) ||
+      sourceRow.metadataBusy
+    ) {
+      return;
+    }
+    const accountId = sourceRow.session?.accountId;
+    if (accountId == null) return;
+
+    const nextMetadata: BatchOauthPersistedMetadata = {
+      displayName: overrides.displayName ?? sourceRow.displayName.trim(),
+      groupName: overrides.groupName ?? sourceRow.groupName.trim(),
+      note: overrides.note ?? sourceRow.note.trim(),
+      isMother: overrides.isMother ?? sourceRow.isMother,
+      tagIds: normalizeBatchTagIds(
+        overrides.tagIds ??
+          sourceRow.pendingSharedTagIds ??
+          resolveCompletedBatchOauthRowBaselineTagIds(
+            sourceRow,
+            items,
+            batchTagIds,
+          ),
+      ),
+    };
+    const isPendingSharedTagSyncAttempt =
+      sourceRow.pendingSharedTagIds != null &&
+      batchTagIdsEqual(sourceRow.pendingSharedTagIds, nextMetadata.tagIds);
+
+    if (
+      committedFields.includes("displayName") &&
+      nextMetadata.displayName &&
+      findDisplayNameConflict(items, nextMetadata.displayName, accountId)
+    ) {
+      updateBatchRow(rowId, (current) => ({
+        ...current,
+        metadataError: t(
+          "accountPool.upstreamAccounts.validation.displayNameDuplicate",
+        ),
+      }));
+      return;
+    }
+
+    if (
+      !didCompletedBatchOauthCommittedFieldsChange(
+        sourceRow,
+        nextMetadata,
+        committedFields,
+        items,
+      )
+    ) {
+      updateBatchRow(rowId, (current) =>
+        current.metadataError
+          ? {
+              ...current,
+              metadataError: null,
+            }
+          : current,
+      );
+      return;
+    }
+
+    updateBatchRow(rowId, (current) => ({
+      ...current,
+      metadataBusy: true,
+      metadataError: null,
+      sharedTagSyncAttempts:
+        committedFields.includes("tagIds") && isPendingSharedTagSyncAttempt
+        ? current.sharedTagSyncAttempts + 1
+        : current.sharedTagSyncAttempts,
+    }));
+
+    try {
+      const payload: UpdateUpstreamAccountPayload = {};
+      if (committedFields.includes("displayName")) {
+        payload.displayName = nextMetadata.displayName || undefined;
+      }
+      if (committedFields.includes("groupName")) {
+        payload.groupName = nextMetadata.groupName;
+        payload.groupNote =
+          resolvePendingGroupNoteForName(nextMetadata.groupName) || undefined;
+      }
+      if (committedFields.includes("note")) {
+        payload.note = nextMetadata.note;
+      }
+      if (committedFields.includes("isMother")) {
+        payload.isMother = nextMetadata.isMother;
+      }
+      if (committedFields.includes("tagIds")) {
+        payload.tagIds = nextMetadata.tagIds;
+      }
+      const detail = await saveAccount(accountId, payload);
+      notifyMotherChange(detail);
+      setBatchRows((currentRows) => {
+        const nextRows = currentRows.map((current) => {
+          if (current.id !== rowId) return current;
+          const nextPersisted = buildBatchOauthPersistedMetadata(
+            {
+              displayName: detail.displayName,
+              groupName: detail.groupName ?? "",
+              note: detail.note ?? "",
+              isMother: detail.isMother === true,
+            },
+            (detail.tags ?? []).map((tag) => tag.id),
+          );
+          const pendingSharedTagIds =
+            current.pendingSharedTagIds &&
+            batchTagIdsEqual(current.pendingSharedTagIds, nextPersisted.tagIds)
+              ? null
+              : current.pendingSharedTagIds;
+          return {
+            ...current,
+            displayName: committedFields.includes("displayName")
+              ? detail.displayName
+              : current.displayName,
+            groupName: committedFields.includes("groupName")
+              ? (detail.groupName ?? "")
+              : current.groupName,
+            note: committedFields.includes("note")
+              ? (detail.note ?? "")
+              : current.note,
+            isMother: detail.isMother === true,
+            metadataBusy: false,
+            metadataError: null,
+            metadataPersisted: nextPersisted,
+            pendingSharedTagIds,
+            sharedTagSyncAttempts: pendingSharedTagIds
+              ? current.sharedTagSyncAttempts
+              : 0,
+            needsRefresh: false,
+            actionError: null,
+            session: current.session
+              ? {
+                  ...current.session,
+                  status: "completed",
+                  authUrl: null,
+                  redirectUri: null,
+                  accountId: detail.id,
+                  error: null,
+                }
+              : current.session,
+            sessionHint:
+              current.needsRefresh || committedFields.includes("displayName")
+                ? t("accountPool.upstreamAccounts.batchOauth.completed", {
+                    name:
+                      detail.displayName ||
+                      current.displayName ||
+                      `#${detail.id}`,
+                  })
+                : current.sessionHint,
+            duplicateWarning: detail.duplicateInfo
+              ? {
+                  accountId: detail.id,
+                  displayName: detail.displayName,
+                  peerAccountIds: detail.duplicateInfo.peerAccountIds,
+                  reasons: detail.duplicateInfo.reasons,
+                }
+              : null,
+          };
+        });
+        return reconcileBatchOauthMotherRowsAfterSave(nextRows, rowId, detail);
+      });
+    } catch (err) {
+      updateBatchRow(rowId, (current) => ({
+        ...current,
+        metadataBusy: false,
+        metadataError: err instanceof Error ? err.message : String(err),
+      }));
+    }
+  }
+
   const handleBatchMetadataChange = (
     rowId: string,
     field: "displayName" | "groupName" | "note" | "callbackUrl",
     value: string,
   ) => {
     updateBatchRow(rowId, (row) => {
-      if (
-        row.busyAction ||
-        row.mailboxBusyAction ||
-        row.session?.status === "completed"
-      ) {
+      if (row.busyAction || row.mailboxBusyAction || row.metadataBusy) {
         return row;
       }
       const nextRow = {
         ...row,
         [field]: value,
+        metadataError:
+          canEditCompletedBatchOauthRowMetadata(row) && field !== "callbackUrl"
+            ? null
+            : row.metadataError,
       };
       return {
         ...nextRow,
@@ -2504,33 +2913,199 @@ export default function UpstreamAccountCreatePage() {
     });
   };
 
-  const handleBatchDefaultGroupChange = (value: string) => {
-    setBatchDefaultGroupName((previousDefault) => {
-      const previousTrimmed = previousDefault.trim();
-      const nextTrimmed = value.trim();
-      setBatchRows((current) =>
-        enforceBatchMotherDraftUniqueness(
-          current.map((row) => {
-            if (
-              row.busyAction ||
-              row.mailboxBusyAction ||
-              row.session?.status === "completed"
-            )
-              return row;
-            const inheritsDefault =
-              !row.groupName.trim() || row.groupName === previousTrimmed;
-            if (!inheritsDefault) return row;
-            return {
-              ...row,
-              groupName: nextTrimmed,
-              actionError: null,
-            };
-          }),
-        ),
+  const handleBatchCompletedTextFieldBlur = (
+    rowId: string,
+    field: "displayName" | "note",
+  ) => {
+    const row = batchRowsRef.current.find((item) => item.id === rowId);
+    if (!row || !canEditCompletedBatchOauthRowMetadata(row)) return;
+    if (field === "displayName") {
+      void persistCompletedBatchRowMetadata(
+        rowId,
+        { displayName: row.displayName.trim() },
+        ["displayName"],
       );
-      return value;
+      return;
+    }
+    void persistCompletedBatchRowMetadata(
+      rowId,
+      { note: row.note.trim() },
+      ["note"],
+    );
+  };
+
+  const handleBatchCompletedTextFieldKeyDown = (
+    event: KeyboardEvent<HTMLInputElement>,
+  ) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    event.currentTarget.blur();
+  };
+
+  const handleBatchGroupValueChange = (rowId: string, value: string) => {
+    const row = batchRowsRef.current.find((item) => item.id === rowId);
+    if (!row) return;
+    const normalizedValue = value.trim();
+    const nextGroupName = normalizedValue || batchDefaultGroupName.trim();
+    updateBatchRow(rowId, (current) => {
+      if (current.busyAction || current.mailboxBusyAction || current.metadataBusy) {
+        return current;
+      }
+      return {
+        ...current,
+        groupName: nextGroupName,
+        inheritsDefaultGroup: normalizedValue === "",
+        metadataError: canEditCompletedBatchOauthRowMetadata(current)
+          ? null
+          : current.metadataError,
+        actionError: null,
+      };
+    });
+    if (!canEditCompletedBatchOauthRowMetadata(row)) return;
+    void persistCompletedBatchRowMetadata(
+      rowId,
+      { groupName: nextGroupName },
+      ["groupName"],
+    );
+  };
+
+  const handleBatchMotherToggle = (rowId: string) => {
+    const row = batchRowsRef.current.find((item) => item.id === rowId);
+    if (!row || row.busyAction || row.mailboxBusyAction || row.metadataBusy) {
+      return;
+    }
+    const nextIsMother = !row.isMother;
+    if (!canEditCompletedBatchOauthRowMetadata(row)) {
+      updateBatchRow(rowId, (current) => ({
+        ...current,
+        isMother: nextIsMother,
+      }));
+      return;
+    }
+    void persistCompletedBatchRowMetadata(
+      rowId,
+      { isMother: nextIsMother },
+      ["isMother"],
+    );
+  };
+
+  const handleBatchDefaultGroupChange = (value: string) => {
+    const nextTrimmed = value.trim();
+    const completedRowIdsToPersist: string[] = [];
+
+    const nextRows = enforceBatchMotherDraftUniqueness(
+      batchRows.map((row) => {
+        if (row.busyAction || row.mailboxBusyAction || row.metadataBusy) {
+          return row;
+        }
+        if (
+          row.session?.status === "completed" &&
+          !canEditCompletedBatchOauthRowMetadata(row)
+        ) {
+          return row;
+        }
+        if (!row.inheritsDefaultGroup) return row;
+        if (canEditCompletedBatchOauthRowMetadata(row)) {
+          completedRowIdsToPersist.push(row.id);
+          return {
+            ...row,
+            groupName: nextTrimmed,
+            inheritsDefaultGroup: true,
+            metadataError: null,
+          };
+        }
+        return {
+          ...row,
+          groupName: nextTrimmed,
+          inheritsDefaultGroup: true,
+          actionError: null,
+        };
+      }),
+    );
+
+    setBatchDefaultGroupName(value);
+    setBatchRows(nextRows);
+    completedRowIdsToPersist.forEach((rowId) => {
+      void persistCompletedBatchRowMetadata(
+        rowId,
+        { groupName: nextTrimmed },
+        ["groupName"],
+      );
     });
   };
+
+  useEffect(() => {
+    const normalizedBatchTagIds = normalizeBatchTagIds(batchTagIds);
+    const previousBatchTagIds = previousBatchTagIdsRef.current;
+    const baselineSignature = buildCompletedBatchOauthSharedTagBaselineSignature(
+      batchRows,
+      items,
+    );
+    if (!batchSharedTagSyncEnabledRef.current) {
+      previousBatchTagIdsRef.current = normalizedBatchTagIds;
+      previousCompletedSharedTagBaselineRef.current = baselineSignature;
+      return;
+    }
+    if (
+      previousBatchTagIds != null &&
+      batchTagIdsEqual(normalizedBatchTagIds, previousBatchTagIds) &&
+      baselineSignature === previousCompletedSharedTagBaselineRef.current
+    ) {
+      return;
+    }
+    previousBatchTagIdsRef.current = normalizedBatchTagIds;
+    previousCompletedSharedTagBaselineRef.current = baselineSignature;
+    setBatchRows((current) => {
+      let changed = false;
+      const nextRows = current.map((row) => {
+        if (!canEditCompletedBatchOauthRowMetadata(row)) return row;
+        const persistedTagIds = resolveCompletedBatchOauthRowPersistedTagIds(
+          row,
+          items,
+        );
+        const nextPendingSharedTagIds = batchTagIdsEqual(
+          normalizedBatchTagIds,
+          persistedTagIds,
+        )
+          ? null
+          : normalizedBatchTagIds;
+        if (
+          batchTagIdsEqual(row.pendingSharedTagIds, nextPendingSharedTagIds) &&
+          row.sharedTagSyncAttempts === 0 &&
+          (nextPendingSharedTagIds == null || row.metadataError == null)
+        ) {
+          return row;
+        }
+        changed = true;
+        return {
+          ...row,
+          pendingSharedTagIds: nextPendingSharedTagIds,
+          sharedTagSyncAttempts: 0,
+          metadataError: nextPendingSharedTagIds ? null : row.metadataError,
+        };
+      });
+      return changed ? nextRows : current;
+    });
+  }, [batchRows, batchTagIds, items]);
+
+  useEffect(() => {
+    batchRows.forEach((row) => {
+      if (
+        !canEditCompletedBatchOauthRowMetadata(row) ||
+        row.metadataBusy ||
+        row.pendingSharedTagIds == null ||
+        row.sharedTagSyncAttempts >= MAX_SHARED_TAG_SYNC_ATTEMPTS ||
+        batchTagIdsEqual(row.pendingSharedTagIds, row.metadataPersisted?.tagIds)
+      ) {
+        return;
+      }
+      void persistCompletedBatchRowMetadata(
+        row.id,
+        { tagIds: row.pendingSharedTagIds },
+        ["tagIds"],
+      );
+    });
+  }, [batchRows]);
 
   const handleTabChange = (tab: CreateTab) => {
     if (tab !== "import" && importValidationState?.checking) {
@@ -3835,7 +4410,19 @@ export default function UpstreamAccountCreatePage() {
             : null,
           needsRefresh: false,
           actionError: null,
-          isMother: detail.isMother,
+          metadataError: null,
+          metadataPersisted: buildBatchOauthPersistedMetadata(
+            {
+              displayName: detail.displayName,
+              groupName: detail.groupName ?? "",
+              note: detail.note ?? "",
+              isMother: detail.isMother === true,
+            },
+            (detail.tags ?? []).map((tag) => tag.id),
+          ),
+          pendingSharedTagIds: null,
+          sharedTagSyncAttempts: 0,
+          isMother: detail.isMother === true,
         };
       });
     } catch (err) {
@@ -3888,7 +4475,19 @@ export default function UpstreamAccountCreatePage() {
                 : null,
               needsRefresh: false,
               actionError: null,
-              isMother: detail.isMother,
+              metadataError: null,
+              metadataPersisted: buildBatchOauthPersistedMetadata(
+                {
+                  displayName: detail.displayName,
+                  groupName: detail.groupName ?? "",
+                  note: detail.note ?? "",
+                  isMother: detail.isMother === true,
+                },
+                (detail.tags ?? []).map((tag) => tag.id),
+              ),
+              pendingSharedTagIds: null,
+              sharedTagSyncAttempts: 0,
+              isMother: detail.isMother === true,
             };
           });
         } catch {
@@ -4228,6 +4827,7 @@ export default function UpstreamAccountCreatePage() {
                         ariaLabel={t(
                           "accountPool.upstreamAccounts.batchOauth.defaultGroupLabel",
                         )}
+                        disabled={!writesEnabled || hasBatchMetadataBusy}
                         className="min-w-0 flex-1"
                         triggerClassName="h-10 min-w-0 whitespace-nowrap rounded-lg"
                       />
@@ -4251,6 +4851,7 @@ export default function UpstreamAccountCreatePage() {
                         }
                         disabled={
                           !writesEnabled ||
+                          hasBatchMetadataBusy ||
                           !normalizeGroupName(batchDefaultGroupName)
                         }
                       >
@@ -4265,10 +4866,13 @@ export default function UpstreamAccountCreatePage() {
                       <AccountTagField
                         tags={tagItems}
                         selectedTagIds={batchTagIds}
-                        writesEnabled={writesEnabled}
+                        writesEnabled={
+                          writesEnabled && !hasBatchMetadataBusy
+                        }
                         pageCreatedTagIds={pageCreatedTagIds}
                         labels={tagFieldLabels}
                         onChange={(nextTagIds) => {
+                          batchSharedTagSyncEnabledRef.current = true;
                           setBatchTagIds(nextTagIds);
                           setBatchRows((current) =>
                             current.map((row) => ({
@@ -4286,7 +4890,7 @@ export default function UpstreamAccountCreatePage() {
                       type="button"
                       variant="secondary"
                       onClick={appendBatchRow}
-                      disabled={!writesEnabled}
+                      disabled={!writesEnabled || hasBatchMetadataBusy}
                       className="h-10 shrink-0 rounded-lg"
                     >
                       <AppIcon
@@ -5077,9 +5681,18 @@ export default function UpstreamAccountCreatePage() {
                             const isPending = status === "pending";
                             const isBusy = row.busyAction != null;
                             const isMailboxBusy = row.mailboxBusyAction != null;
-                            const rowLocked =
-                              isBusy || isCompleted || isRecoveredNeedsRefresh;
-                            const actionLocked = rowLocked || isMailboxBusy;
+                            const metadataLocked =
+                              !writesEnabled ||
+                              isBusy ||
+                              isMailboxBusy ||
+                              row.metadataBusy;
+                            const oauthLocked =
+                              !writesEnabled ||
+                              isBusy ||
+                              isMailboxBusy ||
+                              row.metadataBusy ||
+                              isCompleted ||
+                              isRecoveredNeedsRefresh;
                             const authUrl = row.session?.authUrl ?? "";
                             const rowMailboxAddress =
                               row.mailboxSession?.emailAddress ??
@@ -5219,7 +5832,7 @@ export default function UpstreamAccountCreatePage() {
                                               inputError:
                                                 row.mailboxEditorError,
                                               disabled:
-                                                actionLocked || !writesEnabled,
+                                                oauthLocked,
                                               submitDisabled:
                                                 !row.mailboxEditorValue.trim() ||
                                                 row.mailboxEditorError != null,
@@ -5270,9 +5883,7 @@ export default function UpstreamAccountCreatePage() {
                                                   row.id,
                                                 )
                                               }
-                                              disabled={
-                                                !writesEnabled || actionLocked
-                                              }
+                                              disabled={oauthLocked}
                                             >
                                               {row.mailboxBusyAction ===
                                               "generate" ? (
@@ -5297,7 +5908,7 @@ export default function UpstreamAccountCreatePage() {
                                           id={`batch-oauth-display-name-${row.id}`}
                                           name={`batchOauthDisplayName-${row.id}`}
                                           value={row.displayName}
-                                          disabled={actionLocked}
+                                          disabled={metadataLocked}
                                           aria-invalid={
                                             duplicateNameError != null
                                           }
@@ -5308,6 +5919,15 @@ export default function UpstreamAccountCreatePage() {
                                               "displayName",
                                               event.target.value,
                                             )
+                                          }
+                                          onBlur={() =>
+                                            handleBatchCompletedTextFieldBlur(
+                                              row.id,
+                                              "displayName",
+                                            )
+                                          }
+                                          onKeyDown={
+                                            handleBatchCompletedTextFieldKeyDown
                                           }
                                         />
                                         {duplicateNameError ? (
@@ -5344,13 +5964,12 @@ export default function UpstreamAccountCreatePage() {
                                             )
                                           }
                                           onValueChange={(value) =>
-                                            handleBatchMetadataChange(
+                                            handleBatchGroupValueChange(
                                               row.id,
-                                              "groupName",
                                               value,
                                             )
                                           }
-                                          disabled={actionLocked}
+                                          disabled={metadataLocked}
                                           className="min-w-0 flex-1"
                                           triggerClassName="min-w-0 whitespace-nowrap"
                                         />
@@ -5374,7 +5993,7 @@ export default function UpstreamAccountCreatePage() {
                                           }
                                           disabled={
                                             !writesEnabled ||
-                                            actionLocked ||
+                                            metadataLocked ||
                                             !normalizeGroupName(row.groupName)
                                           }
                                         >
@@ -5396,7 +6015,7 @@ export default function UpstreamAccountCreatePage() {
                                         <Input
                                           name={`batchOauthNote-${row.id}`}
                                           value={row.note}
-                                          disabled={actionLocked}
+                                          disabled={metadataLocked}
                                           className="min-w-0"
                                           onChange={(event) =>
                                             handleBatchMetadataChange(
@@ -5404,6 +6023,15 @@ export default function UpstreamAccountCreatePage() {
                                               "note",
                                               event.target.value,
                                             )
+                                          }
+                                          onBlur={() =>
+                                            handleBatchCompletedTextFieldBlur(
+                                              row.id,
+                                              "note",
+                                            )
+                                          }
+                                          onKeyDown={
+                                            handleBatchCompletedTextFieldKeyDown
                                           }
                                         />
                                       </label>
@@ -5421,7 +6049,7 @@ export default function UpstreamAccountCreatePage() {
                                       <Input
                                         name={`batchOauthCallbackUrl-${row.id}`}
                                         value={row.callbackUrl}
-                                        disabled={actionLocked}
+                                        disabled={oauthLocked}
                                         placeholder={t(
                                           "accountPool.upstreamAccounts.oauth.callbackUrlPlaceholder",
                                         )}
@@ -5479,9 +6107,7 @@ export default function UpstreamAccountCreatePage() {
                                                   row.id,
                                                 )
                                               }
-                                              disabled={
-                                                actionLocked || !writesEnabled
-                                              }
+                                              disabled={oauthLocked}
                                             >
                                               {row.busyAction === "generate" ? (
                                                 <Spinner size="sm" />
@@ -5538,9 +6164,7 @@ export default function UpstreamAccountCreatePage() {
                                                       row.id,
                                                     )
                                                   }
-                                                  disabled={
-                                                    !authUrl || actionLocked
-                                                  }
+                                                  disabled={!authUrl || oauthLocked}
                                                 >
                                                   <AppIcon
                                                     name="content-copy"
@@ -5757,7 +6381,7 @@ export default function UpstreamAccountCreatePage() {
                                             }
                                             disabled={
                                               !writesEnabled ||
-                                              actionLocked ||
+                                              oauthLocked ||
                                               isCompleted ||
                                               !isPending ||
                                               !row.callbackUrl.trim() ||
@@ -5787,9 +6411,7 @@ export default function UpstreamAccountCreatePage() {
                                         >
                                           <MotherAccountToggle
                                             checked={row.isMother}
-                                            disabled={
-                                              actionLocked || !writesEnabled
-                                            }
+                                            disabled={metadataLocked}
                                             iconOnly
                                             label={t(
                                               "accountPool.upstreamAccounts.mother.badge",
@@ -5798,14 +6420,7 @@ export default function UpstreamAccountCreatePage() {
                                               "accountPool.upstreamAccounts.batchOauth.actions.toggleMother",
                                             )}
                                             onToggle={() =>
-                                              updateBatchRow(
-                                                row.id,
-                                                (current) => ({
-                                                  ...current,
-                                                  isMother: !current.isMother,
-                                                  actionError: null,
-                                                }),
-                                              )
+                                              handleBatchMotherToggle(row.id)
                                             }
                                           />
                                         </Tooltip>
@@ -5868,7 +6483,7 @@ export default function UpstreamAccountCreatePage() {
                                               removeBatchRow(row.id)
                                             }
                                             disabled={
-                                              actionLocked || isCompleted
+                                              oauthLocked || isCompleted
                                             }
                                           >
                                             <AppIcon

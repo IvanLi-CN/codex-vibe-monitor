@@ -3,7 +3,35 @@ import { useSystemNotifications } from '../components/ui/system-notifications'
 import type { UpstreamAccountSummary } from '../lib/api'
 import { updateUpstreamAccount } from '../lib/api'
 import { emitUpstreamAccountsChanged } from '../lib/upstreamAccountsEvents'
-import { detectMotherSwitches, normalizeMotherGroupKey } from '../lib/upstreamMother'
+import {
+  detectMotherSwitches,
+  normalizeMotherGroupKey,
+  type MotherSwitchSnapshot,
+} from '../lib/upstreamMother'
+
+function isPureMotherGroupMove(
+  accountId: number,
+  previous: UpstreamAccountSummary,
+  next: UpstreamAccountSummary,
+  relatedChanges: MotherSwitchSnapshot[],
+): boolean {
+  if (!previous.isMother || !next.isMother) {
+    return false
+  }
+
+  const previousGroup = normalizeMotherGroupKey(previous.groupName)
+  const nextGroup = normalizeMotherGroupKey(next.groupName)
+  if (previousGroup === nextGroup || relatedChanges.length === 0) {
+    return false
+  }
+
+  return relatedChanges.every((change) => {
+    const touchedAccountIds = [change.previousMotherAccountId, change.newMotherAccountId].filter(
+      (value): value is number => value != null,
+    )
+    return touchedAccountIds.length > 0 && touchedAccountIds.every((value) => value === accountId)
+  })
+}
 
 export function useMotherSwitchNotifications() {
   const { showMotherSwitchUndo } = useSystemNotifications()
@@ -29,6 +57,10 @@ export function useMotherSwitchNotifications() {
             change.previousMotherAccountId === accountId || change.newMotherAccountId === accountId,
         )
         if (relatedChanges.length === 0) continue
+        if (isPureMotherGroupMove(accountId, previous, next, relatedChanges)) {
+          relatedChanges.forEach((change) => consumedGroupKeys.add(change.groupKey))
+          continue
+        }
 
         const primaryChange =
           (next.isMother

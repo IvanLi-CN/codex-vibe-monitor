@@ -23,6 +23,7 @@ import UpstreamAccountCreatePage from "./UpstreamAccountCreate";
 const navigateMock = vi.hoisted(() => vi.fn());
 const hookMocks = vi.hoisted(() => ({
   useUpstreamAccounts: vi.fn(),
+  usePoolTags: vi.fn(),
 }));
 const upstreamAccountsEventMocks = vi.hoisted(() => ({
   emitUpstreamAccountsChanged: vi.fn(),
@@ -46,6 +47,10 @@ vi.mock("react-router-dom", async () => {
 
 vi.mock("../../hooks/useUpstreamAccounts", () => ({
   useUpstreamAccounts: hookMocks.useUpstreamAccounts,
+}));
+
+vi.mock("../../hooks/usePoolTags", () => ({
+  usePoolTags: hookMocks.usePoolTags,
 }));
 
 vi.mock("../../lib/upstreamAccountsEvents", () => ({
@@ -489,6 +494,65 @@ function setComboboxValue(nameSelector: string, value: string) {
 function mockUpstreamAccounts(
   overrides: Partial<ReturnType<typeof hookMocks.useUpstreamAccounts>> = {},
 ) {
+  const buildTagSummary = (tagId: number, name = `tag-${tagId}`) => ({
+    id: tagId,
+    name,
+    routingRule: {
+      guardEnabled: false,
+      allowCutOut: true,
+      allowCutIn: true,
+    },
+  });
+  const buildSavedAccountDetail = (
+    overrides: Record<string, unknown> = {},
+  ) => ({
+    id: 41,
+    kind: "oauth_codex",
+    provider: "codex",
+    displayName: "Row One",
+    groupName: "prod",
+    isMother: false,
+    status: "active",
+    enabled: true,
+    duplicateInfo: null,
+    history: [],
+    note: null,
+    tags: [],
+    effectiveRoutingRule: {
+      guardEnabled: false,
+      allowCutOut: true,
+      allowCutIn: true,
+      sourceTagIds: [],
+      sourceTagNames: [],
+      guardRules: [],
+    },
+    ...overrides,
+  });
+  hookMocks.usePoolTags.mockReturnValue({
+    items: [
+      {
+        ...buildTagSummary(1, "vip"),
+        accountCount: 1,
+        groupCount: 1,
+        updatedAt: "2026-03-13T10:00:00.000Z",
+      },
+      {
+        ...buildTagSummary(2, "burst-safe"),
+        accountCount: 0,
+        groupCount: 0,
+        updatedAt: "2026-03-13T10:00:00.000Z",
+      },
+    ],
+    writesEnabled: true,
+    isLoading: false,
+    error: null,
+    query: {},
+    refresh: vi.fn(),
+    updateQuery: vi.fn(),
+    createTag: vi.fn(),
+    updateTag: vi.fn(),
+    deleteTag: vi.fn(),
+  });
   apiMocks.fetchUpstreamAccountDetail.mockResolvedValue({
     id: 41,
     kind: "oauth_codex",
@@ -594,8 +658,78 @@ function mockUpstreamAccounts(
     saveGroupNote: vi
       .fn()
       .mockResolvedValue({ groupName: "prod", note: "Saved note" }),
+    saveAccount: vi.fn().mockImplementation(
+      async (accountId: number, payload: Record<string, unknown>) =>
+        buildSavedAccountDetail({
+          id: accountId,
+          displayName:
+            typeof payload.displayName === "string"
+              ? payload.displayName
+              : "Row One",
+          groupName:
+            typeof payload.groupName === "string" ? payload.groupName : "prod",
+          note: typeof payload.note === "string" ? payload.note : null,
+          isMother: payload.isMother === true,
+          tags: Array.isArray(payload.tagIds)
+            ? payload.tagIds.map((tagId) => buildTagSummary(Number(tagId)))
+            : [],
+        }),
+    ),
     ...overrides,
   });
+}
+
+function blurField(selector: string) {
+  const input = host?.querySelector(selector);
+  if (
+    !(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)
+  ) {
+    throw new Error(`missing input for blur: ${selector}`);
+  }
+  act(() => {
+    input.dispatchEvent(new FocusEvent("blur", { bubbles: true }));
+    input.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+  });
+  return input;
+}
+
+function buildCompletedBatchOauthRow(
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> {
+  return {
+    id: "row-1",
+    displayName: "Row One",
+    groupName: "prod",
+    isMother: false,
+    note: "Seed note",
+    noteExpanded: true,
+    callbackUrl: "http://localhost:1455/oauth/callback?code=row-one",
+    mailboxSession: {
+      supported: true,
+      sessionId: "mailbox-row-1",
+      emailAddress: "row-one@mail-tw.707079.xyz",
+      expiresAt: "2026-04-13T10:00:00.000Z",
+      source: "generated",
+    },
+    mailboxInput: "row-one@mail-tw.707079.xyz",
+    session: {
+      loginId: "login-1",
+      status: "completed",
+      authUrl: null,
+      redirectUri: null,
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: 41,
+      error: null,
+    },
+    metadataPersisted: {
+      displayName: "Row One",
+      groupName: "prod",
+      note: "Seed note",
+      isMother: false,
+      tagIds: [],
+    },
+    ...overrides,
+  };
 }
 
 describe("UpstreamAccountCreatePage batch oauth", () => {
@@ -727,6 +861,1310 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
       mailboxAddress: "",
     });
     expect(updateOauthLogin.mock.lastCall?.[1]).not.toHaveProperty("groupNote");
+  }, 10_000);
+
+  it("keeps completed oauth controls locked while saving completed-row metadata", async () => {
+    const savedState = {
+      displayName: "Row One",
+      groupName: "prod",
+      note: "Seed note",
+      isMother: false,
+      tagIds: [1],
+    };
+    const saveAccount = vi.fn().mockImplementation(
+      async (accountId: number, payload: Record<string, unknown>) => {
+        if (typeof payload.displayName === "string") {
+          savedState.displayName = payload.displayName;
+        }
+        if (typeof payload.groupName === "string") {
+          savedState.groupName = payload.groupName;
+        }
+        if (typeof payload.note === "string") {
+          savedState.note = payload.note;
+        }
+        if (typeof payload.isMother === "boolean") {
+          savedState.isMother = payload.isMother;
+        }
+        if (Array.isArray(payload.tagIds)) {
+          savedState.tagIds = payload.tagIds.map((tagId) => Number(tagId));
+        }
+        return {
+          id: accountId,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: savedState.displayName,
+          groupName: savedState.groupName,
+          isMother: savedState.isMother,
+          status: "active",
+          enabled: true,
+          duplicateInfo: null,
+          history: [],
+          note: savedState.note,
+          tags: savedState.tagIds.map((tagId) => ({
+            id: Number(tagId),
+            name: `tag-${tagId}`,
+            routingRule: {
+              guardEnabled: false,
+              allowCutOut: true,
+              allowCutIn: true,
+            },
+          })),
+          effectiveRoutingRule: {
+            guardEnabled: false,
+            allowCutOut: true,
+            allowCutIn: true,
+            sourceTagIds: [],
+            sourceTagNames: [],
+            guardRules: [],
+          },
+        };
+      },
+    );
+    mockUpstreamAccounts({ saveAccount });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            defaultGroupName: "prod",
+            tagIds: [1],
+            rows: [
+              buildCompletedBatchOauthRow({
+                needsRefresh: true,
+                metadataPersisted: {
+                  displayName: "Row One",
+                  groupName: "prod",
+                  note: "Seed note",
+                  isMother: false,
+                  tagIds: [1],
+                },
+              }),
+            ],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    const displayNameInput = host?.querySelector(
+      'input[name="batchOauthDisplayName-row-1"]',
+    );
+    const noteInput = host?.querySelector('input[name="batchOauthNote-row-1"]');
+    const callbackInput = host?.querySelector(
+      'input[name="batchOauthCallbackUrl-row-1"]',
+    );
+    expect(displayNameInput).toBeInstanceOf(HTMLInputElement);
+    expect(noteInput).toBeInstanceOf(HTMLInputElement);
+    expect(callbackInput).toBeInstanceOf(HTMLInputElement);
+    expect((displayNameInput as HTMLInputElement).disabled).toBe(false);
+    expect((noteInput as HTMLInputElement).disabled).toBe(false);
+    expect((callbackInput as HTMLInputElement).disabled).toBe(true);
+    expect(findButton(/Generate OAuth URL/i)?.disabled).toBe(true);
+    expect(findButton(/Complete OAuth login/i)?.disabled).toBe(true);
+    expect(findButton(/Remove row/i)?.disabled).toBe(true);
+    expect(pageTextContent()).toContain("Needs refresh");
+
+    setInputValue('input[name="batchOauthDisplayName-row-1"]', "Row One Renamed");
+    blurField('input[name="batchOauthDisplayName-row-1"]');
+    await flushAsync();
+
+    setComboboxValue('input[name="batchOauthGroupName-row-1"]', "ops");
+    await flushAsync();
+
+    setInputValue('input[name="batchOauthNote-row-1"]', "Updated note");
+    blurField('input[name="batchOauthNote-row-1"]');
+    await flushAsync();
+
+    clickButton(/Toggle mother account/i);
+    await flushAsync();
+
+    expect(saveAccount).toHaveBeenCalledTimes(4);
+    const displayNamePayload = saveAccount.mock.calls[0]?.[1] as Record<
+      string,
+      unknown
+    >;
+    expect(displayNamePayload.displayName).toBe("Row One Renamed");
+    expect("groupName" in displayNamePayload).toBe(false);
+    expect("note" in displayNamePayload).toBe(false);
+    expect("isMother" in displayNamePayload).toBe(false);
+    expect("tagIds" in displayNamePayload).toBe(false);
+    expect("email" in displayNamePayload).toBe(false);
+    expect("mailboxAddress" in displayNamePayload).toBe(false);
+    expect("callbackUrl" in displayNamePayload).toBe(false);
+
+    const groupPayload = saveAccount.mock.calls[1]?.[1] as Record<
+      string,
+      unknown
+    >;
+    expect(groupPayload.groupName).toBe("ops");
+
+    const notePayload = saveAccount.mock.calls[2]?.[1] as Record<
+      string,
+      unknown
+    >;
+    expect(notePayload.note).toBe("Updated note");
+
+    const motherPayload = saveAccount.mock.calls[3]?.[1] as Record<
+      string,
+      unknown
+    >;
+    expect(motherPayload.isMother).toBe(true);
+    expect(pageTextContent()).not.toContain("Needs refresh");
+  }, 10_000);
+
+  it("propagates the header default group to completed rows that still inherit it", async () => {
+    const saveAccount = vi.fn().mockImplementation(
+      async (accountId: number, payload: Record<string, unknown>) => ({
+        id: accountId,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: accountId === 41 ? "Inherited Row" : "Custom Row",
+        groupName:
+          typeof payload.groupName === "string" ? payload.groupName : "alpha",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        duplicateInfo: null,
+        history: [],
+        note: null,
+        tags: [],
+        effectiveRoutingRule: {
+          guardEnabled: false,
+          allowCutOut: true,
+          allowCutIn: true,
+          sourceTagIds: [],
+          sourceTagNames: [],
+          guardRules: [],
+        },
+      }),
+    );
+    mockUpstreamAccounts({ saveAccount });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            defaultGroupName: "alpha",
+            rows: [
+              buildCompletedBatchOauthRow({
+                id: "row-1",
+                displayName: "Inherited Row",
+                groupName: "alpha",
+                session: {
+                  loginId: "login-1",
+                  status: "completed",
+                  authUrl: null,
+                  redirectUri: null,
+                  expiresAt: "2026-03-13T10:00:00.000Z",
+                  accountId: 41,
+                  error: null,
+                },
+                metadataPersisted: {
+                  displayName: "Inherited Row",
+                  groupName: "alpha",
+                  note: "Seed note",
+                  isMother: false,
+                  tagIds: [],
+                },
+              }),
+              buildCompletedBatchOauthRow({
+                id: "row-2",
+                displayName: "Custom Row",
+                groupName: "custom",
+                session: {
+                  loginId: "login-2",
+                  status: "completed",
+                  authUrl: null,
+                  redirectUri: null,
+                  expiresAt: "2026-03-13T10:00:00.000Z",
+                  accountId: 42,
+                  error: null,
+                },
+                metadataPersisted: {
+                  displayName: "Custom Row",
+                  groupName: "custom",
+                  note: "Seed note",
+                  isMother: false,
+                  tagIds: [],
+                },
+              }),
+            ],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    setComboboxValue('input[name="batchOauthDefaultGroupName"]', "beta");
+    await flushAsync();
+
+    const groupInputs = Array.from(
+      host?.querySelectorAll('input[name^="batchOauthGroupName-"]') ?? [],
+    ) as HTMLInputElement[];
+    expect(groupInputs[0]?.value).toBe("beta");
+    expect(groupInputs[1]?.value).toBe("custom");
+    expect(saveAccount).toHaveBeenCalledTimes(1);
+    expect(saveAccount).toHaveBeenCalledWith(
+      41,
+      expect.objectContaining({ groupName: "beta" }),
+    );
+  }, 10_000);
+
+  it("does not reapply the header default group after a completed row opts out manually", async () => {
+    const saveAccount = vi.fn().mockImplementation(
+      async (accountId: number, payload: Record<string, unknown>) => ({
+        id: accountId,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Inherited Row",
+        groupName:
+          typeof payload.groupName === "string" ? payload.groupName : "alpha",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        duplicateInfo: null,
+        history: [],
+        note: "Seed note",
+        tags: [],
+        effectiveRoutingRule: {
+          guardEnabled: false,
+          allowCutOut: true,
+          allowCutIn: true,
+          sourceTagIds: [],
+          sourceTagNames: [],
+          guardRules: [],
+        },
+      }),
+    );
+    mockUpstreamAccounts({ saveAccount });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            defaultGroupName: "alpha",
+            rows: [
+              buildCompletedBatchOauthRow({
+                id: "row-1",
+                displayName: "Inherited Row",
+                groupName: "alpha",
+                metadataPersisted: {
+                  displayName: "Inherited Row",
+                  groupName: "alpha",
+                  note: "Seed note",
+                  isMother: false,
+                  tagIds: [],
+                },
+              }),
+            ],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    setComboboxValue('input[name="batchOauthGroupName-row-1"]', "custom");
+    await flushAsync();
+
+    setComboboxValue('input[name="batchOauthGroupName-row-1"]', "alpha");
+    await flushAsync();
+
+    setComboboxValue('input[name="batchOauthDefaultGroupName"]', "beta");
+    await flushAsync();
+
+    const groupInput = host?.querySelector(
+      'input[name="batchOauthGroupName-row-1"]',
+    );
+    expect(groupInput).toHaveProperty("value", "alpha");
+    expect(saveAccount).toHaveBeenCalledTimes(2);
+    expect(saveAccount).toHaveBeenNthCalledWith(
+      2,
+      41,
+      expect.objectContaining({ groupName: "alpha" }),
+    );
+  }, 10_000);
+
+  it("preserves the mother flag when a completed mother row changes groups", async () => {
+    let savedIsMother = true;
+    const saveAccount = vi.fn().mockImplementation(
+      async (accountId: number, payload: Record<string, unknown>) => {
+        if (typeof payload.isMother === "boolean") {
+          savedIsMother = payload.isMother;
+        }
+        return {
+          id: accountId,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Row One",
+          groupName:
+            typeof payload.groupName === "string" ? payload.groupName : "prod",
+          isMother: savedIsMother,
+          status: "active",
+          enabled: true,
+          duplicateInfo: null,
+          history: [],
+          note: "Seed note",
+          tags: [],
+          effectiveRoutingRule: {
+            guardEnabled: false,
+            allowCutOut: true,
+            allowCutIn: true,
+            sourceTagIds: [],
+            sourceTagNames: [],
+            guardRules: [],
+          },
+        };
+      },
+    );
+    mockUpstreamAccounts({ saveAccount });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            rows: [
+              buildCompletedBatchOauthRow({
+                isMother: true,
+                metadataPersisted: {
+                  displayName: "Row One",
+                  groupName: "prod",
+                  note: "Seed note",
+                  isMother: true,
+                  tagIds: [],
+                },
+              }),
+            ],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    expect(findButton(/Toggle mother account/i)?.getAttribute("aria-pressed")).toBe(
+      "true",
+    );
+
+    setComboboxValue('input[name="batchOauthGroupName-row-1"]', "analytics");
+    await flushAsync();
+
+    expect(saveAccount).toHaveBeenCalledWith(
+      41,
+      expect.objectContaining({
+        groupName: "analytics",
+      }),
+    );
+    const groupPayload = saveAccount.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect("isMother" in groupPayload).toBe(false);
+    expect(findButton(/Toggle mother account/i)?.getAttribute("aria-pressed")).toBe(
+      "true",
+    );
+    expect(pageTextContent()).not.toContain("Mother updated");
+  }, 10_000);
+
+  it("demotes sibling completed rows after a mother reassignment save", async () => {
+    const savedAccounts = new Map<number, { isMother: boolean; note: string }>([
+      [41, { isMother: false, note: "Seed note" }],
+      [42, { isMother: true, note: "Seed note" }],
+    ]);
+    const saveAccount = vi.fn().mockImplementation(
+      async (accountId: number, payload: Record<string, unknown>) => {
+        const current =
+          savedAccounts.get(accountId) ?? { isMother: false, note: "Seed note" };
+        if (typeof payload.isMother === "boolean") {
+          current.isMother = payload.isMother;
+          if (payload.isMother) {
+            for (const [peerAccountId, peer] of savedAccounts.entries()) {
+              if (peerAccountId !== accountId) {
+                peer.isMother = false;
+              }
+            }
+          }
+        }
+        if (typeof payload.note === "string") {
+          current.note = payload.note;
+        }
+        savedAccounts.set(accountId, current);
+        return {
+          id: accountId,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: accountId === 41 ? "Row One" : "Row Two",
+          groupName:
+            typeof payload.groupName === "string" ? payload.groupName : "prod",
+          isMother: current.isMother,
+          status: "active",
+          enabled: true,
+          duplicateInfo: null,
+          history: [],
+          note: current.note,
+          tags: [],
+          effectiveRoutingRule: {
+            guardEnabled: false,
+            allowCutOut: true,
+            allowCutIn: true,
+            sourceTagIds: [],
+            sourceTagNames: [],
+            guardRules: [],
+          },
+        };
+      },
+    );
+    mockUpstreamAccounts({ saveAccount });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            rows: [
+              buildCompletedBatchOauthRow({
+                id: "row-1",
+                displayName: "Row One",
+                isMother: false,
+                metadataPersisted: {
+                  displayName: "Row One",
+                  groupName: "prod",
+                  note: "Seed note",
+                  isMother: false,
+                  tagIds: [],
+                },
+              }),
+              buildCompletedBatchOauthRow({
+                id: "row-2",
+                displayName: "Row Two",
+                isMother: true,
+                session: {
+                  loginId: "login-2",
+                  status: "completed",
+                  authUrl: null,
+                  redirectUri: null,
+                  expiresAt: "2026-03-13T10:00:00.000Z",
+                  accountId: 42,
+                  error: null,
+                },
+                metadataPersisted: {
+                  displayName: "Row Two",
+                  groupName: "prod",
+                  note: "Seed note",
+                  isMother: true,
+                  tagIds: [],
+                },
+              }),
+            ],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    const motherButtons = Array.from(host?.querySelectorAll("button") ?? []).filter(
+      (candidate): candidate is HTMLButtonElement =>
+        candidate instanceof HTMLButtonElement &&
+        candidate.getAttribute("aria-label") === "Toggle mother account",
+    );
+    expect(motherButtons).toHaveLength(2);
+
+    act(() => {
+      motherButtons[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+
+    expect(motherButtons[0]?.getAttribute("aria-pressed")).toBe("true");
+    expect(motherButtons[1]?.getAttribute("aria-pressed")).toBe("false");
+
+    setInputValue('input[name="batchOauthNote-row-2"]', "Row Two updated");
+    blurField('input[name="batchOauthNote-row-2"]');
+    await flushAsync();
+
+    expect(saveAccount).toHaveBeenNthCalledWith(
+      2,
+      42,
+      expect.objectContaining({
+        note: "Row Two updated",
+      }),
+    );
+    const secondPayload = saveAccount.mock.calls[1]?.[1] as Record<string, unknown>;
+    expect("isMother" in secondPayload).toBe(false);
+    expect(motherButtons[1]?.getAttribute("aria-pressed")).toBe("false");
+  }, 10_000);
+
+  it("uses the saved account tags as the completed-row baseline when metadata state is restored", async () => {
+    let savedTagIds = [2];
+    const saveAccount = vi.fn().mockImplementation(
+      async (accountId: number, payload: Record<string, unknown>) => {
+        if (Array.isArray(payload.tagIds)) {
+          savedTagIds = payload.tagIds.map((tagId) => Number(tagId));
+        }
+        return {
+          id: accountId,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName:
+            typeof payload.displayName === "string"
+              ? payload.displayName
+              : "Row One",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          duplicateInfo: null,
+          history: [],
+          note: "Seed note",
+          tags: savedTagIds.map((tagId) => ({
+            id: Number(tagId),
+            name: tagId === 2 ? "burst-safe" : `tag-${tagId}`,
+            routingRule: {
+              guardEnabled: false,
+              allowCutOut: true,
+              allowCutIn: true,
+            },
+          })),
+          effectiveRoutingRule: {
+            guardEnabled: false,
+            allowCutOut: true,
+            allowCutIn: true,
+            sourceTagIds: [],
+            sourceTagNames: [],
+            guardRules: [],
+          },
+        };
+      },
+    );
+    mockUpstreamAccounts({
+      saveAccount,
+      items: [
+        {
+          id: 41,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Row One",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          tags: [
+            {
+              id: 2,
+              name: "burst-safe",
+              routingRule: {
+                guardEnabled: false,
+                allowCutOut: true,
+                allowCutIn: true,
+              },
+            },
+          ],
+          effectiveRoutingRule: {
+            guardEnabled: false,
+            allowCutOut: true,
+            allowCutIn: true,
+            sourceTagIds: [],
+            sourceTagNames: [],
+            guardRules: [],
+          },
+        },
+      ],
+    });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            tagIds: [2],
+            rows: [
+              buildCompletedBatchOauthRow({
+                metadataPersisted: null,
+              }),
+            ],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    setInputValue('input[name="batchOauthDisplayName-row-1"]', "Row One Restored");
+    blurField('input[name="batchOauthDisplayName-row-1"]');
+    await flushAsync();
+
+    expect(saveAccount).toHaveBeenCalledTimes(1);
+    expect(saveAccount).toHaveBeenCalledWith(
+      41,
+      expect.objectContaining({
+        displayName: "Row One Restored",
+      }),
+    );
+    const displayNamePayload = saveAccount.mock.calls[0]?.[1] as Record<
+      string,
+      unknown
+    >;
+    expect("tagIds" in displayNamePayload).toBe(false);
+  }, 10_000);
+
+  it("persists restored completed-row draft edits when the metadata baseline is missing", async () => {
+    const saveAccount = vi.fn().mockImplementation(
+      async (accountId: number, payload: Record<string, unknown>) => ({
+        id: accountId,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName:
+          typeof payload.displayName === "string"
+            ? payload.displayName
+            : "Row One",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        duplicateInfo: null,
+        history: [],
+        note: "Seed note",
+        tags: [],
+        effectiveRoutingRule: {
+          guardEnabled: false,
+          allowCutOut: true,
+          allowCutIn: true,
+          sourceTagIds: [],
+          sourceTagNames: [],
+          guardRules: [],
+        },
+      }),
+    );
+    mockUpstreamAccounts({
+      saveAccount,
+      items: [
+        {
+          id: 41,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Row One",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          tags: [],
+          effectiveRoutingRule: {
+            guardEnabled: false,
+            allowCutOut: true,
+            allowCutIn: true,
+            sourceTagIds: [],
+            sourceTagNames: [],
+            guardRules: [],
+          },
+        },
+      ],
+    });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            rows: [
+              buildCompletedBatchOauthRow({
+                displayName: "Row One Draft",
+                metadataPersisted: null,
+              }),
+            ],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    blurField('input[name="batchOauthDisplayName-row-1"]');
+    await flushAsync();
+
+    expect(saveAccount).toHaveBeenCalledTimes(1);
+    expect(saveAccount).toHaveBeenCalledWith(
+      41,
+      expect.objectContaining({
+        displayName: "Row One Draft",
+      }),
+    );
+  }, 10_000);
+
+  it("syncs restored completed rows to the initial shared tag set", async () => {
+    const saveAccount = vi.fn().mockImplementation(
+      async (accountId: number, payload: Record<string, unknown>) => ({
+        id: accountId,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Tagged Row",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        duplicateInfo: null,
+        history: [],
+        note: "Seed note",
+        tags: Array.isArray(payload.tagIds)
+          ? payload.tagIds.map((tagId) => ({
+              id: Number(tagId),
+              name: tagId === 1 ? "vip" : `tag-${tagId}`,
+              routingRule: {
+                guardEnabled: false,
+                allowCutOut: true,
+                allowCutIn: true,
+              },
+            }))
+          : [],
+        effectiveRoutingRule: {
+          guardEnabled: false,
+          allowCutOut: true,
+          allowCutIn: true,
+          sourceTagIds: [],
+          sourceTagNames: [],
+          guardRules: [],
+        },
+      }),
+    );
+    mockUpstreamAccounts({ saveAccount });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            tagIds: [1],
+            rows: [
+              buildCompletedBatchOauthRow({
+                displayName: "Tagged Row",
+                metadataPersisted: null,
+              }),
+            ],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    expect(saveAccount).toHaveBeenCalledTimes(1);
+    expect(saveAccount).toHaveBeenCalledWith(
+      41,
+      expect.objectContaining({ tagIds: [1] }),
+    );
+  }, 10_000);
+
+  it("does not clear completed-row tags when restored drafts never saved shared tags", async () => {
+    const saveAccount = vi.fn().mockImplementation(
+      async (accountId: number, payload: Record<string, unknown>) => ({
+        id: accountId,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Tagged Row",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        duplicateInfo: null,
+        history: [],
+        note: "Seed note",
+        tags: Array.isArray(payload.tagIds)
+          ? payload.tagIds.map((tagId) => ({
+              id: Number(tagId),
+              name: tagId === 1 ? "vip" : `tag-${tagId}`,
+              routingRule: {
+                guardEnabled: false,
+                allowCutOut: true,
+                allowCutIn: true,
+              },
+            }))
+          : [],
+        effectiveRoutingRule: {
+          guardEnabled: false,
+          allowCutOut: true,
+          allowCutIn: true,
+          sourceTagIds: [],
+          sourceTagNames: [],
+          guardRules: [],
+        },
+      }),
+    );
+    mockUpstreamAccounts({
+      saveAccount,
+      items: [
+        {
+          id: 41,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Tagged Row",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          tags: [
+            {
+              id: 2,
+              name: "burst-safe",
+              routingRule: {
+                guardEnabled: false,
+                allowCutOut: true,
+                allowCutIn: true,
+              },
+            },
+          ],
+          effectiveRoutingRule: {
+            guardEnabled: false,
+            allowCutOut: true,
+            allowCutIn: true,
+            sourceTagIds: [],
+            sourceTagNames: [],
+            guardRules: [],
+          },
+        },
+      ],
+    });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            rows: [
+              buildCompletedBatchOauthRow({
+                displayName: "Tagged Row",
+                metadataPersisted: null,
+              }),
+            ],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    expect(saveAccount).not.toHaveBeenCalled();
+  }, 10_000);
+
+  it("syncs shared batch tags onto completed rows", async () => {
+    const saveAccount = vi.fn().mockImplementation(
+      async (accountId: number, payload: Record<string, unknown>) => ({
+        id: accountId,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Tagged Row",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        duplicateInfo: null,
+        history: [],
+        note: null,
+        tags: Array.isArray(payload.tagIds)
+          ? payload.tagIds.map((tagId) => ({
+              id: Number(tagId),
+              name: tagId === 1 ? "vip" : `tag-${tagId}`,
+              routingRule: {
+                guardEnabled: false,
+                allowCutOut: true,
+                allowCutIn: true,
+              },
+            }))
+          : [],
+        effectiveRoutingRule: {
+          guardEnabled: false,
+          allowCutOut: true,
+          allowCutIn: true,
+          sourceTagIds: [],
+          sourceTagNames: [],
+          guardRules: [],
+        },
+      }),
+    );
+    mockUpstreamAccounts({ saveAccount });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            rows: [
+              buildCompletedBatchOauthRow({
+                displayName: "Tagged Row",
+              }),
+            ],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    clickButton(/Add tag/i);
+    await flushAsync();
+    const vipOption = Array.from(document.body.querySelectorAll("[cmdk-item]")).find(
+      (candidate) => (candidate.textContent || "").includes("vip"),
+    );
+    if (!(vipOption instanceof HTMLElement)) {
+      throw new Error("missing vip tag option");
+    }
+    act(() => {
+      vipOption.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+
+    expect(saveAccount).toHaveBeenCalledTimes(1);
+    expect(saveAccount).toHaveBeenCalledWith(
+      41,
+      expect.objectContaining({ tagIds: [1] }),
+    );
+  }, 10_000);
+
+  it("does not resend failed local metadata edits during later completed-row auto-saves", async () => {
+    let displayNameFailed = false;
+    const saveAccount = vi.fn().mockImplementation(
+      async (accountId: number, payload: Record<string, unknown>) => {
+        if (
+          !displayNameFailed &&
+          typeof payload.displayName === "string" &&
+          payload.displayName === "Row One Draft"
+        ) {
+          displayNameFailed = true;
+          throw new Error("Display save failed");
+        }
+        return {
+          id: accountId,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName:
+            typeof payload.displayName === "string"
+              ? payload.displayName
+              : "Row One",
+          groupName: "prod",
+          isMother: payload.isMother === true,
+          status: "active",
+          enabled: true,
+          duplicateInfo: null,
+          history: [],
+          note: "Seed note",
+          tags: Array.isArray(payload.tagIds)
+            ? payload.tagIds.map((tagId) => ({
+                id: Number(tagId),
+                name: tagId === 1 ? "vip" : `tag-${tagId}`,
+                routingRule: {
+                  guardEnabled: false,
+                  allowCutOut: true,
+                  allowCutIn: true,
+                },
+              }))
+            : [],
+          effectiveRoutingRule: {
+            guardEnabled: false,
+            allowCutOut: true,
+            allowCutIn: true,
+            sourceTagIds: [],
+            sourceTagNames: [],
+            guardRules: [],
+          },
+        };
+      },
+    );
+    mockUpstreamAccounts({ saveAccount });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            rows: [
+              buildCompletedBatchOauthRow({
+                displayName: "Row One",
+                metadataPersisted: {
+                  displayName: "Row One",
+                  groupName: "prod",
+                  note: "Seed note",
+                  isMother: false,
+                  tagIds: [],
+                },
+              }),
+            ],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    setInputValue(
+      'input[name="batchOauthDisplayName-row-1"]',
+      "Row One Draft",
+    );
+    blurField('input[name="batchOauthDisplayName-row-1"]');
+    await flushAsync();
+
+    clickButton(/Add tag/i);
+    await flushAsync();
+    const vipOption = Array.from(document.body.querySelectorAll("[cmdk-item]")).find(
+      (candidate) => (candidate.textContent || "").includes("vip"),
+    );
+    if (!(vipOption instanceof HTMLElement)) {
+      throw new Error("missing vip tag option");
+    }
+    act(() => {
+      vipOption.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+
+    expect(saveAccount).toHaveBeenNthCalledWith(
+      2,
+      41,
+      expect.objectContaining({
+        tagIds: [1],
+      }),
+    );
+    const secondPayload = saveAccount.mock.calls[1]?.[1] as Record<string, unknown>;
+    expect("displayName" in secondPayload).toBe(false);
+  }, 10_000);
+
+  it("retries completed-row shared tag sync after a transient save failure", async () => {
+    let firstRowFailures = 0;
+    const saveAccount = vi.fn().mockImplementation(
+      async (accountId: number, payload: Record<string, unknown>) => {
+        if (
+          accountId === 41 &&
+          Array.isArray(payload.tagIds) &&
+          payload.tagIds.length === 1 &&
+          payload.tagIds[0] === 1 &&
+          firstRowFailures === 0
+        ) {
+          firstRowFailures += 1;
+          throw new Error("Transient tag sync failure");
+        }
+        return {
+          id: accountId,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: accountId === 41 ? "Row One" : "Row Two",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          duplicateInfo: null,
+          history: [],
+          note: null,
+          tags: Array.isArray(payload.tagIds)
+            ? payload.tagIds.map((tagId) => ({
+                id: Number(tagId),
+                name: tagId === 1 ? "vip" : `tag-${tagId}`,
+                routingRule: {
+                  guardEnabled: false,
+                  allowCutOut: true,
+                  allowCutIn: true,
+                },
+              }))
+            : [],
+          effectiveRoutingRule: {
+            guardEnabled: false,
+            allowCutOut: true,
+            allowCutIn: true,
+            sourceTagIds: [],
+            sourceTagNames: [],
+            guardRules: [],
+          },
+        };
+      },
+    );
+    mockUpstreamAccounts({ saveAccount });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            rows: [
+              buildCompletedBatchOauthRow({
+                displayName: "Row One",
+                metadataPersisted: {
+                  displayName: "Row One",
+                  groupName: "prod",
+                  note: "Seed note",
+                  isMother: false,
+                  tagIds: [],
+                },
+              }),
+              buildCompletedBatchOauthRow({
+                id: "row-2",
+                displayName: "Row Two",
+                session: {
+                  loginId: "login-2",
+                  status: "completed",
+                  authUrl: null,
+                  redirectUri: null,
+                  expiresAt: "2026-03-13T10:00:00.000Z",
+                  accountId: 42,
+                  error: null,
+                },
+                metadataPersisted: {
+                  displayName: "Row Two",
+                  groupName: "prod",
+                  note: "Seed note",
+                  isMother: false,
+                  tagIds: [],
+                },
+              }),
+            ],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    clickButton(/Add tag/i);
+    await flushAsync();
+    const vipOption = Array.from(document.body.querySelectorAll("[cmdk-item]")).find(
+      (candidate) => (candidate.textContent || "").includes("vip"),
+    );
+    if (!(vipOption instanceof HTMLElement)) {
+      throw new Error("missing vip tag option");
+    }
+    act(() => {
+      vipOption.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+    await flushAsync();
+
+    expect(
+      saveAccount.mock.calls.filter(([accountId]) => accountId === 41),
+    ).toHaveLength(2);
+    expect(
+      saveAccount.mock.calls.filter(([accountId]) => accountId === 42),
+    ).toHaveLength(1);
+    expect(pageTextContent()).not.toContain("Transient tag sync failure");
+  }, 10_000);
+
+  it("keeps the mother toggle reverted when completed-row persistence fails", async () => {
+    const saveAccount = vi.fn().mockRejectedValue(
+      new Error("Mother save failed"),
+    );
+    mockUpstreamAccounts({ saveAccount });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            rows: [buildCompletedBatchOauthRow()],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    const motherToggleBefore = findButton(/Toggle mother account/i);
+    expect(motherToggleBefore?.getAttribute("aria-pressed")).toBe("false");
+
+    clickButton(/Toggle mother account/i);
+    await flushAsync();
+
+    expect(saveAccount).toHaveBeenCalledWith(
+      41,
+      expect.objectContaining({ isMother: true }),
+    );
+    expect(findButton(/Toggle mother account/i)?.getAttribute("aria-pressed")).toBe(
+      "false",
+    );
+    expect(pageTextContent()).toContain("Mother save failed");
+  }, 10_000);
+
+  it("keeps completed-row save failures isolated to the failing row", async () => {
+    const saveAccount = vi.fn().mockImplementation(
+      async (accountId: number, payload: Record<string, unknown>) => {
+        if (accountId === 41) {
+          throw new Error("Save failed for row one");
+        }
+        return {
+          id: accountId,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName:
+            typeof payload.displayName === "string"
+              ? payload.displayName
+              : "Row Two",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          duplicateInfo: null,
+          history: [],
+          note: null,
+          tags: [],
+          effectiveRoutingRule: {
+            guardEnabled: false,
+            allowCutOut: true,
+            allowCutIn: true,
+            sourceTagIds: [],
+            sourceTagNames: [],
+            guardRules: [],
+          },
+        };
+      },
+    );
+    mockUpstreamAccounts({ saveAccount });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            rows: [
+              buildCompletedBatchOauthRow({
+                id: "row-1",
+                session: {
+                  loginId: "login-1",
+                  status: "completed",
+                  authUrl: null,
+                  redirectUri: null,
+                  expiresAt: "2026-03-13T10:00:00.000Z",
+                  accountId: 41,
+                  error: null,
+                },
+              }),
+              buildCompletedBatchOauthRow({
+                id: "row-2",
+                displayName: "Row Two",
+                session: {
+                  loginId: "login-2",
+                  status: "completed",
+                  authUrl: null,
+                  redirectUri: null,
+                  expiresAt: "2026-03-13T10:00:00.000Z",
+                  accountId: 42,
+                  error: null,
+                },
+                metadataPersisted: {
+                  displayName: "Row Two",
+                  groupName: "prod",
+                  note: "Seed note",
+                  isMother: false,
+                  tagIds: [],
+                },
+              }),
+            ],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    setInputValue('input[name="batchOauthDisplayName-row-1"]', "Row One Broken");
+    blurField('input[name="batchOauthDisplayName-row-1"]');
+    await flushAsync();
+
+    expect(pageTextContent()).toContain("Save failed for row one");
+
+    setInputValue('input[name="batchOauthDisplayName-row-2"]', "Row Two Saved");
+    blurField('input[name="batchOauthDisplayName-row-2"]');
+    await flushAsync();
+
+    expect(saveAccount).toHaveBeenCalledTimes(2);
+    expect(saveAccount).toHaveBeenNthCalledWith(
+      2,
+      42,
+      expect.objectContaining({ displayName: "Row Two Saved" }),
+    );
+    expect(
+      host?.querySelector('input[name="batchOauthDisplayName-row-2"]'),
+    ).toHaveProperty("value", "Row Two Saved");
   }, 10_000);
 
   it("completes one row without leaving the batch page", async () => {
