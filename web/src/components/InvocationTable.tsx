@@ -32,38 +32,50 @@ interface InvocationTableProps {
   emptyLabel?: string
 }
 
-const STATUS_META: Record<
-  string,
-  { variant: 'default' | 'secondary' | 'success' | 'warning' | 'error'; key: TranslationKey }
-> = {
-  success: { variant: 'success', key: 'table.status.success' },
-  completed: { variant: 'success', key: 'table.status.success' },
-  failed: { variant: 'error', key: 'table.status.failed' },
-  running: { variant: 'default', key: 'table.status.running' },
-  pending: { variant: 'warning', key: 'table.status.pending' },
+type StatusMeta = {
+  variant: 'default' | 'secondary' | 'success' | 'warning' | 'error'
+  labelKey?: TranslationKey
+  label?: string
 }
 
-const FALLBACK_STATUS_META: {
-  variant: 'default' | 'secondary' | 'success' | 'warning' | 'error'
-  key: TranslationKey
-} = { variant: 'secondary', key: 'table.status.unknown' }
+const STATUS_META: Record<string, { variant: StatusMeta['variant']; labelKey: TranslationKey }> = {
+  success: { variant: 'success', labelKey: 'table.status.success' },
+  completed: { variant: 'success', labelKey: 'table.status.success' },
+  failed: { variant: 'error', labelKey: 'table.status.failed' },
+  running: { variant: 'default', labelKey: 'table.status.running' },
+  pending: { variant: 'warning', labelKey: 'table.status.pending' },
+}
 
-function resolveStatusMeta(
-  status: string,
-): { variant: 'default' | 'secondary' | 'success' | 'warning' | 'error'; key: TranslationKey } {
-  const normalized = status.trim().toLowerCase()
-  if (!normalized || normalized === 'unknown') {
-    return FALLBACK_STATUS_META
+function formatStatusLabel(status: string) {
+  const normalized = status.trim()
+  if (!normalized) return null
+  const lower = normalized.toLowerCase()
+  if (lower.startsWith('http_')) {
+    const code = lower.slice('http_'.length)
+    if (/^\d{3}$/.test(code)) return `HTTP ${code}`
+    return normalized.toUpperCase().replace('_', ' ')
   }
+  return normalized
+}
 
-  return STATUS_META[normalized] ?? STATUS_META.failed
+function resolveStatusMeta(status?: string | null): StatusMeta {
+  const raw = (status ?? '').trim()
+  const lower = raw.toLowerCase()
+  const known = STATUS_META[lower]
+  if (known) return known
+  if (!raw) return { variant: 'secondary', labelKey: 'table.status.unknown' }
+  if (lower.startsWith('http_4')) return { variant: 'warning', label: formatStatusLabel(raw) ?? raw }
+  if (lower.startsWith('http_5')) return { variant: 'error', label: formatStatusLabel(raw) ?? raw }
+  if (lower.startsWith('http_')) return { variant: 'secondary', label: formatStatusLabel(raw) ?? raw }
+  return { variant: 'secondary', label: raw }
 }
 
 interface InvocationRowViewModel {
   record: ApiInvocation
   rowKey: string
   recordId: number
-  meta: { variant: 'default' | 'secondary' | 'success' | 'warning' | 'error'; key: TranslationKey }
+  meta: StatusMeta
+  statusLabel: string
   isInFlight: boolean
   occurredTime: string
   occurredDate: string
@@ -237,8 +249,10 @@ export function InvocationTable({ records, isLoading, error, emptyLabel }: Invoc
       records.map((record) => {
         const rowKey = invocationStableKey(record)
         const occurred = new Date(record.occurredAt)
-        const normalizedStatus = (resolveInvocationDisplayStatus(record) || 'unknown').toLowerCase()
-        const meta = resolveStatusMeta(normalizedStatus)
+        const displayStatus = resolveInvocationDisplayStatus(record)
+        const normalizedStatus = (displayStatus || 'unknown').toLowerCase()
+        const meta = resolveStatusMeta(displayStatus)
+        const statusLabel = meta.labelKey ? t(meta.labelKey) : meta.label ?? t('table.status.unknown')
         const recordId = record.id
         const isInFlight = normalizedStatus === 'running' || normalizedStatus === 'pending'
         const occurredValid = !Number.isNaN(occurred.getTime())
@@ -261,6 +275,7 @@ export function InvocationTable({ records, isLoading, error, emptyLabel }: Invoc
           rowKey,
           recordId,
           meta,
+          statusLabel,
           isInFlight,
           occurredTime,
           occurredDate,
@@ -345,7 +360,7 @@ export function InvocationTable({ records, isLoading, error, emptyLabel }: Invoc
               </div>
 
               <div className="mt-2 flex min-w-0 flex-wrap items-center gap-2">
-                <Badge variant={row.meta.variant}>{t(row.meta.key)}</Badge>
+                <Badge variant={row.meta.variant}>{row.statusLabel}</Badge>
                 <div className="min-w-0 flex-1">
                   <div data-testid="invocation-account-name">
                     {renderAccountValue(row.accountLabel, row.accountId, row.accountClickable, 'text-xs font-medium text-base-content')}
@@ -524,7 +539,7 @@ export function InvocationTable({ records, isLoading, error, emptyLabel }: Invoc
                             >
                               {renderAccountValue(row.accountLabel, row.accountId, row.accountClickable)}
                             </span>
-                            <span className="sr-only">{t(row.meta.key)}</span>
+                            <span className="sr-only">{row.statusLabel}</span>
                           </Badge>
                           <span
                             className="block w-full truncate whitespace-nowrap text-center text-[11px] text-base-content/70"

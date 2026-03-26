@@ -316,6 +316,28 @@ describe('InvocationTable', () => {
     expect(html).not.toContain('运行中')
   })
 
+  it('preserves nonstandard terminal statuses in the badge label', () => {
+    const html = renderTable([
+      {
+        id: 25,
+        invokeId: 'invocation-http-502',
+        occurredAt: '2026-03-07T03:13:49Z',
+        createdAt: '2026-03-07T03:13:49Z',
+        source: 'proxy',
+        proxyDisplayName: 'legacy-edge',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'http_502',
+        failureClass: 'service_failure',
+        totalTokens: 1024,
+        cost: 0.0021,
+      },
+    ])
+
+    expect(html).toContain('HTTP 502')
+    expect(html).not.toContain('>失败<')
+  })
+
   it('renders reasoning effort and reasoning-token output breakdown in the summary rows', () => {
     const records: ApiInvocation[] = [
       {

@@ -916,7 +916,7 @@ describe("PromptCacheConversationTable", () => {
     expect(document.body.textContent).toContain("首字总耗时 / HTTP 压缩");
     expect(document.body.textContent).not.toContain("输入 / 缓存");
     expect(document.body.textContent).toContain("Proxy West");
-    expect(document.body.textContent).toContain("失败");
+    expect(document.body.textContent).toContain("HTTP 502");
     expect(document.body.textContent).toContain("page 2 failed");
     expect(document.body.textContent).toContain("已加载 2 / 3 条保留调用记录");
 
