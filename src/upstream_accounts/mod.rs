@@ -793,6 +793,7 @@ pub(crate) struct UpstreamAccountListResponse {
     page_size: usize,
     metrics: UpstreamAccountListMetrics,
     groups: Vec<UpstreamAccountGroupSummary>,
+    forward_proxy_nodes: Vec<ForwardProxyBindingNodeResponse>,
     has_ungrouped_accounts: bool,
     routing: PoolRoutingSettingsResponse,
 }
@@ -896,6 +897,13 @@ pub(crate) struct TagListResponse {
 pub(crate) struct UpstreamAccountGroupSummary {
     group_name: String,
     note: Option<String>,
+    bound_proxy_keys: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct UpstreamAccountGroupMetadata {
+    note: Option<String>,
+    bound_proxy_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1625,6 +1633,8 @@ pub(crate) struct AccountStickyKeysQuery {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpdateUpstreamAccountGroupRequest {
     note: Option<String>,
+    #[serde(default)]
+    bound_proxy_keys: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2622,6 +2632,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
         CREATE TABLE IF NOT EXISTS pool_upstream_account_group_notes (
             group_name TEXT PRIMARY KEY,
             note TEXT NOT NULL,
+            bound_proxy_keys_json TEXT NOT NULL DEFAULT '[]',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
@@ -2630,6 +2641,19 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to ensure pool_upstream_account_group_notes table existence")?;
+    let existing_group_note_columns =
+        load_sqlite_table_columns(pool, "pool_upstream_account_group_notes").await?;
+    if !existing_group_note_columns.contains("bound_proxy_keys_json") {
+        sqlx::query(
+            r#"
+            ALTER TABLE pool_upstream_account_group_notes
+            ADD COLUMN bound_proxy_keys_json TEXT NOT NULL DEFAULT '[]'
+            "#,
+        )
+        .execute(pool)
+        .await
+        .context("failed to add pool_upstream_account_group_notes.bound_proxy_keys_json")?;
+    }
 
     sqlx::query(
         r#"
@@ -2911,6 +2935,7 @@ pub(crate) async fn list_upstream_accounts(
     let groups = load_upstream_account_groups(&state.pool)
         .await
         .map_err(internal_error_tuple)?;
+    let forward_proxy_nodes = build_forward_proxy_binding_nodes_response(state.as_ref()).await;
     let has_ungrouped_accounts = has_ungrouped_upstream_accounts(&state.pool)
         .await
         .map_err(internal_error_tuple)?;
@@ -2925,6 +2950,7 @@ pub(crate) async fn list_upstream_accounts(
         page_size,
         metrics,
         groups,
+        forward_proxy_nodes,
         has_ungrouped_accounts,
         routing: build_pool_routing_settings_response(state.as_ref(), &routing),
     }))
@@ -3051,20 +3077,51 @@ pub(crate) async fn update_upstream_account_group(
         )
     })?;
     let note = normalize_optional_text(payload.note);
+    let bound_proxy_keys_was_updated = payload.bound_proxy_keys.is_some();
+    let bound_proxy_keys = payload
+        .bound_proxy_keys
+        .map(normalize_bound_proxy_keys)
+        .unwrap_or_else(Vec::new);
 
-    let mut tx = state.pool.begin().await.map_err(internal_error_tuple)?;
+    let mut tx = state
+        .pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(internal_error_tuple)?;
     if !group_has_accounts_conn(tx.as_mut(), &group_name)
         .await
         .map_err(internal_error_tuple)?
     {
         return Err((StatusCode::NOT_FOUND, "group not found".to_string()));
     }
-    save_group_note_record_conn(tx.as_mut(), &group_name, note.clone())
+    let existing_metadata = load_group_metadata_conn(tx.as_mut(), &group_name)
         .await
-        .map_err(internal_error_tuple)?;
+        .map_err(internal_error_tuple)?
+        .unwrap_or_default();
+    save_group_metadata_record_conn(
+        tx.as_mut(),
+        &group_name,
+        UpstreamAccountGroupMetadata {
+            note,
+            bound_proxy_keys: if bound_proxy_keys_was_updated {
+                bound_proxy_keys
+            } else {
+                existing_metadata.bound_proxy_keys
+            },
+        },
+    )
+    .await
+    .map_err(internal_error_tuple)?;
     tx.commit().await.map_err(internal_error_tuple)?;
 
-    Ok(Json(UpstreamAccountGroupSummary { group_name, note }))
+    let saved = load_group_metadata(&state.pool, Some(&group_name))
+        .await
+        .map_err(internal_error_tuple)?;
+    Ok(Json(UpstreamAccountGroupSummary {
+        group_name,
+        note: saved.note,
+        bound_proxy_keys: saved.bound_proxy_keys,
+    }))
 }
 
 pub(crate) async fn get_upstream_account(
@@ -6685,8 +6742,9 @@ async fn probe_imported_oauth_credentials(
             format_utc_iso(Utc::now() + ChronoDuration::seconds(response.expires_in.max(0)));
     }
 
-    let usage_result = fetch_usage_snapshot(
-        &state.http_clients.shared,
+    let usage_result = fetch_usage_snapshot_via_forward_proxy(
+        state,
+        &ForwardProxyRouteScope::Automatic,
         &state.config,
         &credentials.access_token,
         claims
@@ -6720,8 +6778,9 @@ async fn probe_imported_oauth_credentials(
             credentials.token_type = response.token_type;
             token_expires_at =
                 format_utc_iso(Utc::now() + ChronoDuration::seconds(response.expires_in.max(0)));
-            match fetch_usage_snapshot(
-                &state.http_clients.shared,
+            match fetch_usage_snapshot_via_forward_proxy(
+                state,
+                &ForwardProxyRouteScope::Automatic,
                 &state.config,
                 &credentials.access_token,
                 claims
@@ -6964,8 +7023,15 @@ async fn sync_oauth_account(
         bail!("unexpected credential kind for OAuth account")
     };
 
-    let usage_result = fetch_usage_snapshot(
-        &state.http_clients.shared,
+    let usage_scope = ForwardProxyRouteScope::from_group_binding(
+        latest_row.group_name.as_deref(),
+        load_group_metadata(&state.pool, latest_row.group_name.as_deref())
+            .await?
+            .bound_proxy_keys,
+    );
+    let usage_result = fetch_usage_snapshot_via_forward_proxy(
+        state,
+        &usage_scope,
         &state.config,
         &credentials.access_token,
         latest_row.chatgpt_account_id.as_deref(),
@@ -7006,8 +7072,9 @@ async fn sync_oauth_account(
                     latest_row = load_upstream_account_row(&state.pool, row.id)
                         .await?
                         .ok_or_else(|| anyhow!("account disappeared during retry refresh"))?;
-                    match fetch_usage_snapshot(
-                        &state.http_clients.shared,
+                    match fetch_usage_snapshot_via_forward_proxy(
+                        state,
+                        &usage_scope,
                         &state.config,
                         &refreshed.access_token,
                         latest_row.chatgpt_account_id.as_deref(),
@@ -8083,9 +8150,9 @@ async fn count_recent_account_conversations(
 async fn load_upstream_account_groups(
     pool: &Pool<Sqlite>,
 ) -> Result<Vec<UpstreamAccountGroupSummary>> {
-    let rows = sqlx::query_as::<_, (String, Option<String>)>(
+    let rows = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
         r#"
-        SELECT groups.group_name, notes.note
+        SELECT groups.group_name, notes.note, notes.bound_proxy_keys_json
         FROM (
             SELECT DISTINCT TRIM(group_name) AS group_name
             FROM pool_upstream_accounts
@@ -8101,7 +8168,15 @@ async fn load_upstream_account_groups(
 
     Ok(rows
         .into_iter()
-        .map(|(group_name, note)| UpstreamAccountGroupSummary { group_name, note })
+        .map(
+            |(group_name, note, bound_proxy_keys_json)| UpstreamAccountGroupSummary {
+                group_name,
+                note: normalize_optional_text(note),
+                bound_proxy_keys: decode_group_bound_proxy_keys_json(
+                    bound_proxy_keys_json.as_deref(),
+                ),
+            },
+        )
         .collect())
 }
 async fn load_upstream_account_summaries(
@@ -8851,6 +8926,112 @@ async fn group_has_accounts_conn(conn: &mut SqliteConnection, group_name: &str) 
     Ok(group_account_count_conn(conn, group_name).await? > 0)
 }
 
+fn normalize_bound_proxy_keys(bound_proxy_keys: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    bound_proxy_keys
+        .into_iter()
+        .filter_map(|value| normalize_optional_text(Some(value)))
+        .filter(|value| seen.insert(value.clone()))
+        .collect()
+}
+
+fn decode_group_bound_proxy_keys_json(raw: Option<&str>) -> Vec<String> {
+    raw.and_then(|value| serde_json::from_str::<Vec<String>>(value).ok())
+        .map(normalize_bound_proxy_keys)
+        .unwrap_or_default()
+}
+
+fn encode_group_bound_proxy_keys_json(bound_proxy_keys: &[String]) -> Result<String> {
+    serde_json::to_string(bound_proxy_keys).context("failed to encode group bound proxy keys")
+}
+
+async fn load_group_metadata_conn(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    group_name: &str,
+) -> Result<Option<UpstreamAccountGroupMetadata>> {
+    sqlx::query_as::<_, (String, Option<String>)>(
+        r#"
+        SELECT note, bound_proxy_keys_json
+        FROM pool_upstream_account_group_notes
+        WHERE group_name = ?1
+        "#,
+    )
+    .bind(group_name)
+    .fetch_optional(executor)
+    .await
+    .map(|row| {
+        row.map(
+            |(note, bound_proxy_keys_json)| UpstreamAccountGroupMetadata {
+                note: normalize_optional_text(Some(note)),
+                bound_proxy_keys: decode_group_bound_proxy_keys_json(
+                    bound_proxy_keys_json.as_deref(),
+                ),
+            },
+        )
+    })
+    .map_err(Into::into)
+}
+
+async fn load_group_metadata(
+    pool: &Pool<Sqlite>,
+    group_name: Option<&str>,
+) -> Result<UpstreamAccountGroupMetadata> {
+    let Some(group_name) = group_name else {
+        return Ok(UpstreamAccountGroupMetadata::default());
+    };
+    let mut conn = pool.acquire().await?;
+    Ok(load_group_metadata_conn(&mut *conn, group_name)
+        .await?
+        .unwrap_or_default())
+}
+
+async fn save_group_metadata_record_conn(
+    conn: &mut SqliteConnection,
+    group_name: &str,
+    metadata: UpstreamAccountGroupMetadata,
+) -> Result<()> {
+    let normalized_note = normalize_optional_text(metadata.note);
+    let normalized_bound_proxy_keys = normalize_bound_proxy_keys(metadata.bound_proxy_keys);
+    if normalized_note.is_none() && normalized_bound_proxy_keys.is_empty() {
+        sqlx::query(
+            r#"
+            DELETE FROM pool_upstream_account_group_notes
+            WHERE group_name = ?1
+            "#,
+        )
+        .bind(group_name)
+        .execute(conn)
+        .await?;
+        return Ok(());
+    }
+
+    let now_iso = format_utc_iso(Utc::now());
+    let bound_proxy_keys_json = encode_group_bound_proxy_keys_json(&normalized_bound_proxy_keys)?;
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_account_group_notes (
+            group_name,
+            note,
+            bound_proxy_keys_json,
+            created_at,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?4)
+        ON CONFLICT(group_name) DO UPDATE SET
+            note = excluded.note,
+            bound_proxy_keys_json = excluded.bound_proxy_keys_json,
+            updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(group_name)
+    .bind(normalized_note.unwrap_or_default())
+    .bind(bound_proxy_keys_json)
+    .bind(now_iso)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
 #[allow(dead_code)]
 async fn save_group_note_record(
     pool: &Pool<Sqlite>,
@@ -8866,34 +9047,11 @@ async fn save_group_note_record_conn(
     group_name: &str,
     note: Option<String>,
 ) -> Result<()> {
-    if let Some(note) = note {
-        let now_iso = format_utc_iso(Utc::now());
-        sqlx::query(
-            r#"
-            INSERT INTO pool_upstream_account_group_notes (group_name, note, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?3)
-            ON CONFLICT(group_name) DO UPDATE SET
-                note = excluded.note,
-                updated_at = excluded.updated_at
-            "#,
-        )
-        .bind(group_name)
-        .bind(note)
-        .bind(now_iso)
-        .execute(conn)
-        .await?;
-    } else {
-        sqlx::query(
-            r#"
-            DELETE FROM pool_upstream_account_group_notes
-            WHERE group_name = ?1
-            "#,
-        )
-        .bind(group_name)
-        .execute(conn)
-        .await?;
-    }
-    Ok(())
+    let mut metadata = load_group_metadata_conn(&mut *conn, group_name)
+        .await?
+        .unwrap_or_default();
+    metadata.note = note;
+    save_group_metadata_record_conn(conn, group_name, metadata).await
 }
 
 async fn save_group_note_after_account_write(
@@ -9168,7 +9326,7 @@ async fn load_group_note_snapshot_conn(
     .fetch_optional(executor)
     .await?
     .flatten();
-    Ok(group_note.or_else(|| fallback_note.map(str::to_string)))
+    Ok(normalize_optional_text(group_note).or_else(|| fallback_note.map(str::to_string)))
 }
 
 fn next_login_session_updated_at(previous_updated_at: Option<&str>) -> String {
@@ -11892,6 +12050,124 @@ async fn fetch_usage_snapshot(
     })
 }
 
+fn usage_snapshot_error_is_network_failure(err: &anyhow::Error) -> bool {
+    let normalized = err.to_string().to_ascii_lowercase();
+    normalized.contains("failed to request usage snapshot")
+        || normalized.contains("failed to read usage snapshot response")
+        || normalized.contains("timed out")
+        || normalized.contains("connection")
+        || normalized.contains("transport")
+}
+
+async fn fetch_usage_snapshot_via_forward_proxy(
+    state: &AppState,
+    scope: &ForwardProxyRouteScope,
+    config: &AppConfig,
+    access_token: &str,
+    chatgpt_account_id: Option<&str>,
+) -> Result<NormalizedUsageSnapshot> {
+    let primary_result = request_usage_snapshot_with_user_agent_via_forward_proxy(
+        state,
+        scope,
+        config,
+        access_token,
+        chatgpt_account_id,
+        &config.user_agent,
+    )
+    .await;
+
+    if primary_result.is_ok() || config.user_agent == UPSTREAM_USAGE_BROWSER_USER_AGENT {
+        return primary_result;
+    }
+
+    let primary_error = match primary_result {
+        Ok(snapshot) => return Ok(snapshot),
+        Err(err) => err,
+    };
+
+    warn!(
+        error = ?primary_error,
+        configured_user_agent = %config.user_agent,
+        fallback_user_agent = %UPSTREAM_USAGE_BROWSER_USER_AGENT,
+        "usage snapshot request failed; retrying with browser user agent"
+    );
+
+    request_usage_snapshot_with_user_agent_via_forward_proxy(
+        state,
+        scope,
+        config,
+        access_token,
+        chatgpt_account_id,
+        UPSTREAM_USAGE_BROWSER_USER_AGENT,
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "initial usage snapshot attempt with configured user agent failed: {primary_error:#}"
+        )
+    })
+}
+
+async fn request_usage_snapshot_with_user_agent_via_forward_proxy(
+    state: &AppState,
+    scope: &ForwardProxyRouteScope,
+    config: &AppConfig,
+    access_token: &str,
+    chatgpt_account_id: Option<&str>,
+    user_agent: &str,
+) -> Result<NormalizedUsageSnapshot> {
+    let selected_proxy = select_forward_proxy_for_scope(state, scope).await?;
+    let client = match state
+        .http_clients
+        .client_for_forward_proxy(selected_proxy.endpoint_url.as_ref())
+    {
+        Ok(client) => client,
+        Err(err) => {
+            record_forward_proxy_scope_result(
+                state,
+                scope,
+                &selected_proxy.key,
+                ForwardProxyRouteResultKind::NetworkFailure,
+            )
+            .await;
+            return Err(err).context("failed to initialize usage snapshot forward proxy client");
+        }
+    };
+
+    let result = request_usage_snapshot_with_user_agent(
+        &client,
+        config,
+        access_token,
+        chatgpt_account_id,
+        user_agent,
+    )
+    .await;
+
+    match &result {
+        Ok(_) => {
+            record_forward_proxy_scope_result(
+                state,
+                scope,
+                &selected_proxy.key,
+                ForwardProxyRouteResultKind::CompletedRequest,
+            )
+            .await;
+        }
+        Err(err) if usage_snapshot_error_is_network_failure(err) => {
+            record_forward_proxy_scope_result(
+                state,
+                scope,
+                &selected_proxy.key,
+                ForwardProxyRouteResultKind::NetworkFailure,
+            )
+            .await;
+        }
+        Err(_) => {}
+    }
+
+    result
+}
+
 async fn request_usage_snapshot_with_user_agent(
     client: &Client,
     config: &AppConfig,
@@ -13251,6 +13527,8 @@ pub(crate) struct PoolResolvedAccount {
     pub(crate) display_name: String,
     pub(crate) kind: String,
     pub(crate) auth: PoolResolvedAuth,
+    pub(crate) group_name: Option<String>,
+    pub(crate) bound_proxy_keys: Vec<String>,
     pub(crate) upstream_base_url: Url,
     pub(crate) routing_source: PoolRoutingSelectionSource,
 }
@@ -13826,6 +14104,7 @@ async fn prepare_pool_account(
     let Some(encrypted_credentials) = row.encrypted_credentials.as_deref() else {
         return Ok(None);
     };
+    let group_metadata = load_group_metadata(&state.pool, row.group_name.as_deref()).await?;
     let upstream_base_url =
         resolve_pool_account_upstream_base_url(row, &state.config.openai_upstream_base_url)?;
     let credentials = decrypt_credentials(crypto_key, encrypted_credentials)?;
@@ -13837,6 +14116,8 @@ async fn prepare_pool_account(
             auth: PoolResolvedAuth::ApiKey {
                 authorization: format!("Bearer {}", value.api_key),
             },
+            group_name: row.group_name.clone(),
+            bound_proxy_keys: group_metadata.bound_proxy_keys.clone(),
             upstream_base_url,
             routing_source: PoolRoutingSelectionSource::FreshAssignment,
         })),
@@ -13996,6 +14277,8 @@ async fn prepare_pool_account(
                     access_token: value.access_token,
                     chatgpt_account_id: row.chatgpt_account_id.clone(),
                 },
+                group_name: row.group_name.clone(),
+                bound_proxy_keys: group_metadata.bound_proxy_keys,
                 upstream_base_url,
                 routing_source: PoolRoutingSelectionSource::FreshAssignment,
             }))

@@ -3,10 +3,8 @@ import {
   fetchSettings,
   updateForwardProxySettings,
   updatePricingSettings,
-  updateProxySettings,
   type ForwardProxySettings,
   type PricingSettings,
-  type ProxySettings,
   type SettingsPayload,
 } from '../lib/api'
 
@@ -33,7 +31,6 @@ function isSamePricingSettings(lhs: PricingSettings, rhs: PricingSettings): bool
 export function useSettings() {
   const [settings, setSettings] = useState<SettingsPayload | null>(null)
   const [isLoading, setIsLoading] = useState(true)
-  const [isProxySaving, setIsProxySaving] = useState(false)
   const [isForwardProxySaving, setIsForwardProxySaving] = useState(false)
   const [isPricingSaving, setIsPricingSaving] = useState(false)
   const [pricingRollbackVersion, setPricingRollbackVersion] = useState(0)
@@ -67,56 +64,6 @@ export function useSettings() {
       setSettings(serverSnapshotRef.current)
     }
   }, [])
-
-  const saveProxy = useCallback(
-    async (nextProxy: ProxySettings) => {
-      if (!serverSnapshotRef.current) return
-      const normalizedProxy = {
-        hijackEnabled: nextProxy.hijackEnabled,
-        mergeUpstreamEnabled: nextProxy.hijackEnabled ? nextProxy.mergeUpstreamEnabled : false,
-        enabledModels: nextProxy.models.filter((candidate) => nextProxy.enabledModels.includes(candidate)),
-        fastModeRewriteMode: nextProxy.fastModeRewriteMode,
-        upstream429MaxRetries: nextProxy.upstream429MaxRetries,
-      }
-      setSettings((current) => {
-        if (!current) return current
-        return {
-          ...current,
-          proxy: {
-            ...current.proxy,
-            ...normalizedProxy,
-          },
-        }
-      })
-      setIsProxySaving(true)
-      try {
-        const savedProxy = await updateProxySettings(normalizedProxy)
-        const confirmedSnapshot: SettingsPayload | null = serverSnapshotRef.current
-          ? {
-              ...serverSnapshotRef.current,
-              proxy: savedProxy,
-            }
-          : null
-        if (confirmedSnapshot) {
-          serverSnapshotRef.current = confirmedSnapshot
-        }
-        setSettings((current) => {
-          if (!current) return confirmedSnapshot ?? current
-          return {
-            ...current,
-            proxy: savedProxy,
-          }
-        })
-        setError(null)
-      } catch (err) {
-        rollback()
-        setError(err instanceof Error ? err.message : String(err))
-      } finally {
-        setIsProxySaving(false)
-      }
-    },
-    [rollback],
-  )
 
   const savePricing = useCallback(
     async (nextPricing: PricingSettings) => {
@@ -214,7 +161,6 @@ export function useSettings() {
             proxyUrls: candidate.proxyUrls,
             subscriptionUrls: candidate.subscriptionUrls,
             subscriptionUpdateIntervalSecs: candidate.subscriptionUpdateIntervalSecs,
-            insertDirect: candidate.insertDirect,
           })
 
           // Ignore stale payload when a newer draft is already queued.
@@ -259,13 +205,11 @@ export function useSettings() {
   return {
     settings,
     isLoading,
-    isProxySaving,
     isForwardProxySaving,
     isPricingSaving,
     pricingRollbackVersion,
     error,
     refresh: load,
-    saveProxy,
     saveForwardProxy,
     savePricing,
   }

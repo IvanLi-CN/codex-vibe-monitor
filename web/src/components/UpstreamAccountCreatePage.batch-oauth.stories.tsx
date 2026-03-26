@@ -379,11 +379,11 @@ export const GroupNoteDraft: Story = {
     const documentScope = within(doc.body)
     await userEvent.click(
       await documentScope.findByRole('button', {
-        name: /编辑分组备注|edit group note/i,
+        name: /编辑分组设置|edit group settings|编辑分组备注|edit group note/i,
       }),
     )
     await expect(
-      documentScope.getByRole('dialog', { name: /编辑分组备注|edit group note/i }),
+      documentScope.getByRole('dialog', { name: /分组设置|group settings|分组备注|group note/i }),
     ).toBeInTheDocument()
     await expect(documentScope.getByText(/new-team/i)).toBeInTheDocument()
   },

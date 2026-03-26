@@ -8,23 +8,10 @@ import type {
   ForwardProxySettings,
   PricingEntry,
   PricingSettings,
-  ProxyFastModeRewriteMode,
-  ProxySettings,
   SettingsPayload,
 } from '../lib/api'
 
-const PRESET_MODELS = ['gpt-5.3-codex', 'gpt-5.2-codex', 'gpt-5.1-codex-max', 'gpt-5.1-codex-mini', 'gpt-5.2']
 const STORYBOOK_SETTINGS_STORAGE_PREFIX = 'storybook.settings-page.mock'
-
-const DEFAULT_PROXY_SETTINGS: ProxySettings = {
-  hijackEnabled: true,
-  mergeUpstreamEnabled: true,
-  defaultHijackEnabled: false,
-  models: PRESET_MODELS,
-  enabledModels: ['gpt-5.3-codex', 'gpt-5.2-codex', 'gpt-5.1-codex-mini'],
-  fastModeRewriteMode: 'disabled',
-  upstream429MaxRetries: 3,
-}
 
 const DEFAULT_PRICING_ENTRIES: PricingEntry[] = [
   {
@@ -60,7 +47,6 @@ const DEFAULT_FORWARD_PROXY_SETTINGS: Omit<ForwardProxySettings, 'nodes'> = {
   ],
   subscriptionUrls: ['https://example.com/subscription.base64'],
   subscriptionUpdateIntervalSecs: 3600,
-  insertDirect: true,
 }
 
 const MOCK_SUBSCRIPTION_NODE_TEMPLATES: Array<Pick<ForwardProxyNode, 'displayName' | 'endpointUrl'>> = [
@@ -81,7 +67,6 @@ const MOCK_SUBSCRIPTION_NODE_TEMPLATES: Array<Pick<ForwardProxyNode, 'displayNam
 ]
 
 type StorySettingsOverrides = {
-  proxy?: Partial<ProxySettings>
   forwardProxy?: Partial<Omit<ForwardProxySettings, 'nodes'>>
   pricing?: Partial<PricingSettings>
 }
@@ -109,16 +94,6 @@ function labelFromProxyUrl(rawUrl: string): string {
   }
 }
 
-function normalizeProxyFastModeRewriteMode(value: unknown): ProxyFastModeRewriteMode {
-  return value === 'fill_missing' || value === 'force_priority' ? value : 'disabled'
-}
-
-function normalizeProxyUpstream429MaxRetries(value: unknown): number {
-  if (typeof value !== 'number' || !Number.isFinite(value)) return 3
-  const normalized = Math.trunc(value)
-  return Math.min(5, Math.max(0, normalized))
-}
-
 function buildNodesFromSettings(settings: ForwardProxySettings): ForwardProxyNode[] {
   const manualNodes: ForwardProxyNode[] = settings.proxyUrls.map((proxyUrl, index) => ({
     key: proxyUrl,
@@ -126,7 +101,7 @@ function buildNodesFromSettings(settings: ForwardProxySettings): ForwardProxyNod
     displayName: labelFromProxyUrl(proxyUrl),
     endpointUrl: proxyUrl,
     weight: Number((1.1 - index * 0.22).toFixed(2)),
-    penalized: index >= 3,
+    penalized: index >= 2,
     stats: statsPreset(index),
   }))
 
@@ -144,19 +119,7 @@ function buildNodesFromSettings(settings: ForwardProxySettings): ForwardProxyNod
     }
   })
 
-  const nodes: ForwardProxyNode[] = [...manualNodes, ...subscriptionNodes]
-  if (settings.insertDirect || nodes.length === 0) {
-    nodes.push({
-      key: '__direct__',
-      source: 'direct',
-      displayName: 'Direct',
-      weight: 0.88,
-      penalized: false,
-      stats: statsPreset(nodes.length),
-    })
-  }
-
-  return nodes
+  return [...manualNodes, ...subscriptionNodes]
 }
 
 function cloneSettings(payload: SettingsPayload): SettingsPayload {
@@ -164,17 +127,6 @@ function cloneSettings(payload: SettingsPayload): SettingsPayload {
 }
 
 function createStorySettings(overrides?: StorySettingsOverrides): SettingsPayload {
-  const proxy: ProxySettings = {
-    ...DEFAULT_PROXY_SETTINGS,
-    ...overrides?.proxy,
-    models: overrides?.proxy?.models ? [...overrides.proxy.models] : [...DEFAULT_PROXY_SETTINGS.models],
-    enabledModels: overrides?.proxy?.enabledModels
-      ? [...overrides.proxy.enabledModels]
-      : [...DEFAULT_PROXY_SETTINGS.enabledModels],
-    fastModeRewriteMode: normalizeProxyFastModeRewriteMode(overrides?.proxy?.fastModeRewriteMode),
-    upstream429MaxRetries: normalizeProxyUpstream429MaxRetries(overrides?.proxy?.upstream429MaxRetries),
-  }
-
   const forwardProxyBase = {
     ...DEFAULT_FORWARD_PROXY_SETTINGS,
     ...overrides?.forwardProxy,
@@ -192,12 +144,11 @@ function createStorySettings(overrides?: StorySettingsOverrides): SettingsPayloa
   forwardProxy.nodes = buildNodesFromSettings(forwardProxy)
 
   const pricing: PricingSettings = {
-    catalogVersion: overrides?.pricing?.catalogVersion ?? 'storybook-2026-02-27',
+    catalogVersion: overrides?.pricing?.catalogVersion ?? 'storybook-2026-03-26',
     entries: overrides?.pricing?.entries ? [...overrides.pricing.entries] : DEFAULT_PRICING_ENTRIES,
   }
 
   return {
-    proxy,
     forwardProxy,
     pricing,
   }
@@ -276,46 +227,15 @@ function StorybookSettingsMock({
         return jsonResponse(cloneSettings(settingsRef.current))
       }
 
-      if (path === '/api/settings/proxy' && method === 'PUT') {
-        const body = parseBody<{
-          hijackEnabled: boolean
-          mergeUpstreamEnabled: boolean
-          enabledModels: string[]
-          fastModeRewriteMode: ProxyFastModeRewriteMode
-          upstream429MaxRetries: number
-        }>({
-          hijackEnabled: false,
-          mergeUpstreamEnabled: false,
-          enabledModels: [],
-          fastModeRewriteMode: 'disabled',
-          upstream429MaxRetries: settingsRef.current.proxy.upstream429MaxRetries,
-        })
-        const normalizedEnabledModels = settingsRef.current.proxy.models.filter((model) =>
-          (body.enabledModels || []).includes(model),
-        )
-        settingsRef.current.proxy = {
-          ...settingsRef.current.proxy,
-          hijackEnabled: Boolean(body.hijackEnabled),
-          mergeUpstreamEnabled: Boolean(body.hijackEnabled && body.mergeUpstreamEnabled),
-          enabledModels: normalizedEnabledModels,
-          fastModeRewriteMode: normalizeProxyFastModeRewriteMode(body.fastModeRewriteMode),
-          upstream429MaxRetries: normalizeProxyUpstream429MaxRetries(body.upstream429MaxRetries),
-        }
-        persistSettings(storageKey, settingsRef.current)
-        return jsonResponse(settingsRef.current.proxy)
-      }
-
       if (path === '/api/settings/forward-proxy' && method === 'PUT') {
         const body = parseBody<{
           proxyUrls: string[]
           subscriptionUrls: string[]
           subscriptionUpdateIntervalSecs: number
-          insertDirect: boolean
         }>({
           proxyUrls: [],
           subscriptionUrls: [],
           subscriptionUpdateIntervalSecs: 3600,
-          insertDirect: true,
         })
 
         const nextForwardProxy: ForwardProxySettings = {
@@ -323,7 +243,6 @@ function StorybookSettingsMock({
           proxyUrls: (body.proxyUrls || []).map((item) => item.trim()).filter(Boolean),
           subscriptionUrls: (body.subscriptionUrls || []).map((item) => item.trim()).filter(Boolean),
           subscriptionUpdateIntervalSecs: Math.max(60, Math.floor(body.subscriptionUpdateIntervalSecs || 3600)),
-          insertDirect: body.insertDirect !== false,
           nodes: [],
         }
         nextForwardProxy.nodes = buildNodesFromSettings(nextForwardProxy)
@@ -454,33 +373,15 @@ export const Default: Story = {
   render: () => <SettingsPage />,
 }
 
-export const FastModeFillMissing: Story = {
+export const SubscriptionHeavy: Story = {
   parameters: {
     mockSettings: createStorySettings({
-      proxy: {
-        fastModeRewriteMode: 'fill_missing',
-      },
-    }),
-  },
-  render: () => <SettingsPage />,
-}
-
-export const FastModeForcePriority: Story = {
-  parameters: {
-    mockSettings: createStorySettings({
-      proxy: {
-        fastModeRewriteMode: 'force_priority',
-      },
-    }),
-  },
-  render: () => <SettingsPage />,
-}
-
-export const Upstream429RetriesMax: Story = {
-  parameters: {
-    mockSettings: createStorySettings({
-      proxy: {
-        upstream429MaxRetries: 5,
+      forwardProxy: {
+        proxyUrls: ['socks5://127.0.0.1:1080'],
+        subscriptionUrls: [
+          'https://example.com/subscription.base64',
+          'https://example.com/backup-subscription.txt',
+        ],
       },
     }),
   },
@@ -488,10 +389,16 @@ export const Upstream429RetriesMax: Story = {
 }
 
 export const PenalizedPool: Story = {
-  render: () => {
-    return <SettingsPage />
+  parameters: {
+    mockSettings: createStorySettings({
+      forwardProxy: {
+        proxyUrls: [
+          'http://127.0.0.1:7890',
+          'socks5://127.0.0.1:1080',
+          'trojan://storybook-secret@trojan.example.com:443?security=tls&type=ws&host=cdn.example.com&path=%2Fedge#trojan-edge',
+        ],
+      },
+    }),
   },
-  play: async () => {
-    // Keep this story variant listed for quick manual checks in Storybook.
-  },
+  render: () => <SettingsPage />,
 }

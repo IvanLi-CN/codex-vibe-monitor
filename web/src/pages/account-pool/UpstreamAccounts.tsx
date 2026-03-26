@@ -57,9 +57,7 @@ import {
 } from '../../lib/api'
 import {
   buildGroupNameSuggestions,
-  isExistingGroup,
   normalizeGroupName,
-  resolveGroupNote,
 } from '../../lib/upstreamAccountGroups'
 import { validateUpstreamBaseUrl } from '../../lib/upstreamBaseUrl'
 import { generatePoolRoutingKey } from '../../lib/poolRouting'
@@ -115,11 +113,12 @@ type UpstreamAccountsLocationState = {
   } | null
 }
 
-type GroupNoteEditorState = {
+type GroupSettingsEditorState = {
   open: boolean
   groupName: string
   note: string
   existing: boolean
+  boundProxyKeys: string[]
 }
 
 type OauthRecoveryHint = {
@@ -770,6 +769,7 @@ export default function UpstreamAccountsPage() {
   const {
     items,
     groups = [],
+    forwardProxyNodes = [],
     hasUngroupedAccounts = false,
     writesEnabled,
     selectedId,
@@ -813,14 +813,14 @@ export default function UpstreamAccountsPage() {
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
   const [pageCreatedTagIds, setPageCreatedTagIds] = useState<number[]>([])
   const [stickyConversationLimit, setStickyConversationLimit] = useState<number>(50)
-  const [groupDraftNotes, setGroupDraftNotes] = useState<Record<string, string>>({})
   const [duplicateWarning, setDuplicateWarning] =
     useState<UpstreamAccountsLocationState['duplicateWarning']>(null)
-  const [groupNoteEditor, setGroupNoteEditor] = useState<GroupNoteEditorState>({
+  const [groupNoteEditor, setGroupNoteEditor] = useState<GroupSettingsEditorState>({
     open: false,
     groupName: '',
     note: '',
     existing: false,
+    boundProxyKeys: [],
   })
   const [groupNoteBusy, setGroupNoteBusy] = useState(false)
   const [groupNoteError, setGroupNoteError] = useState<string | null>(null)
@@ -1023,16 +1023,6 @@ export default function UpstreamAccountsPage() {
   }, [items, selectedAccountIds])
 
   useEffect(() => {
-    setGroupDraftNotes((current) => {
-      const nextEntries = Object.entries(current).filter(([groupName]) => !isExistingGroup(groups, groupName))
-      if (nextEntries.length === Object.keys(current).length) {
-        return current
-      }
-      return Object.fromEntries(nextEntries)
-    })
-  }, [groups])
-
-  useEffect(() => {
     const validTagIds = new Set(tagItems.map((tag) => tag.id))
     setSelectedTagIds((current) => {
       const next = current.filter((tagId) => validTagIds.has(tagId))
@@ -1098,29 +1088,35 @@ export default function UpstreamAccountsPage() {
 
   const availableGroups = useMemo(() => {
     return {
-      names: buildGroupNameSuggestions(items.map((item) => item.groupName), groups, groupDraftNotes),
+      names: buildGroupNameSuggestions(items.map((item) => item.groupName), groups, {}),
       hasUngrouped: hasUngroupedAccounts,
     }
-  }, [groupDraftNotes, groups, hasUngroupedAccounts, items])
+  }, [groups, hasUngroupedAccounts, items])
 
-  const resolveGroupNoteForName = (groupName: string) => resolveGroupNote(groups, groupDraftNotes, groupName)
-  const resolvePendingGroupNoteForName = (groupName: string) => {
+  const resolveGroupSummaryForName = (groupName: string) => {
     const normalized = normalizeGroupName(groupName)
-    if (!normalized || isExistingGroup(groups, normalized)) return ''
-    return groupDraftNotes[normalized]?.trim() ?? ''
+    if (!normalized) return null
+    return groups.find((group) => normalizeGroupName(group.groupName) === normalized) ?? null
   }
-  const hasGroupNote = (groupName: string) => resolveGroupNoteForName(groupName).trim().length > 0
+  const resolveGroupNoteForName = (groupName: string) => resolveGroupSummaryForName(groupName)?.note ?? ''
+  const resolveGroupBoundProxyKeysForName = (groupName: string) =>
+    resolveGroupSummaryForName(groupName)?.boundProxyKeys ?? []
+  const hasGroupSettings = (groupName: string) =>
+    resolveGroupNoteForName(groupName).trim().length > 0 ||
+    resolveGroupBoundProxyKeysForName(groupName).length > 0
 
   const openGroupNoteEditor = (groupName: string) => {
     if (!writesEnabled) return
     const normalized = normalizeGroupName(groupName)
     if (!normalized) return
+    const existingGroup = resolveGroupSummaryForName(normalized)
     setGroupNoteError(null)
     setGroupNoteEditor({
       open: true,
       groupName: normalized,
-      note: resolveGroupNoteForName(normalized),
-      existing: isExistingGroup(groups, normalized),
+      note: existingGroup?.note ?? '',
+      existing: existingGroup != null,
+      boundProxyKeys: existingGroup?.boundProxyKeys ?? [],
     })
   }
 
@@ -1135,31 +1131,16 @@ export default function UpstreamAccountsPage() {
     const normalizedGroupName = normalizeGroupName(groupNoteEditor.groupName)
     if (!normalizedGroupName) return
     const normalizedNote = groupNoteEditor.note.trim()
+    const normalizedBoundProxyKeys = Array.from(
+      new Set(groupNoteEditor.boundProxyKeys.map((value) => value.trim()).filter((value) => value.length > 0)),
+    )
     setGroupNoteError(null)
-    if (!groupNoteEditor.existing) {
-      setGroupDraftNotes((current) => {
-        const next = { ...current }
-        if (normalizedNote) {
-          next[normalizedGroupName] = normalizedNote
-        } else {
-          delete next[normalizedGroupName]
-        }
-        return next
-      })
-      setGroupNoteEditor((current) => ({ ...current, open: false }))
-      return
-    }
 
     setGroupNoteBusy(true)
     try {
       await saveGroupNote(normalizedGroupName, {
         note: normalizedNote || undefined,
-      })
-      setGroupDraftNotes((current) => {
-        if (!(normalizedGroupName in current)) return current
-        const next = { ...current }
-        delete next[normalizedGroupName]
-        return next
+        boundProxyKeys: normalizedBoundProxyKeys,
       })
       setGroupNoteEditor((current) => ({ ...current, open: false }))
     } catch (err) {
@@ -1418,7 +1399,6 @@ export default function UpstreamAccountsPage() {
         isMother: draft.isMother,
         note: draft.note.trim() || undefined,
         tagIds: draft.tagIds,
-        groupNote: resolvePendingGroupNoteForName(draft.groupName) || undefined,
         upstreamBaseUrl:
           source.kind === 'api_key_codex' ? draft.upstreamBaseUrl.trim() || null : undefined,
         apiKey: source.kind === 'api_key_codex' && draft.apiKey.trim() ? draft.apiKey.trim() : undefined,
@@ -2817,7 +2797,7 @@ export default function UpstreamAccountsPage() {
                               <Button
                                 type="button"
                                 size="icon"
-                                variant={hasGroupNote(draft.groupName) ? 'secondary' : 'outline'}
+                                variant={hasGroupSettings(draft.groupName) ? 'secondary' : 'outline'}
                                 className="shrink-0 rounded-full"
                                 aria-label={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
                                 title={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
@@ -3163,12 +3143,18 @@ export default function UpstreamAccountsPage() {
         container={detailDrawerPortalContainer}
         groupName={groupNoteEditor.groupName}
         note={groupNoteEditor.note}
+        boundProxyKeys={groupNoteEditor.boundProxyKeys}
+        availableProxyNodes={forwardProxyNodes}
         busy={groupNoteBusy}
         error={groupNoteError}
         existing={groupNoteEditor.existing}
         onNoteChange={(value) => {
           setGroupNoteError(null)
           setGroupNoteEditor((current) => ({ ...current, note: value }))
+        }}
+        onBoundProxyKeysChange={(value) => {
+          setGroupNoteError(null)
+          setGroupNoteEditor((current) => ({ ...current, boundProxyKeys: value }))
         }}
         onClose={closeGroupNoteEditor}
         onSave={() => void handleSaveGroupNote()}
@@ -3182,6 +3168,12 @@ export default function UpstreamAccountsPage() {
         closeLabel={t('accountPool.upstreamAccounts.actions.closeDetails')}
         existingBadgeLabel={t('accountPool.upstreamAccounts.groupNotes.badges.existing')}
         draftBadgeLabel={t('accountPool.upstreamAccounts.groupNotes.badges.draft')}
+        proxyBindingsLabel={t('accountPool.upstreamAccounts.groupNotes.proxyBindings.label')}
+        proxyBindingsHint={t('accountPool.upstreamAccounts.groupNotes.proxyBindings.hint')}
+        proxyBindingsAutomaticLabel={t('accountPool.upstreamAccounts.groupNotes.proxyBindings.automatic')}
+        proxyBindingsEmptyLabel={t('accountPool.upstreamAccounts.groupNotes.proxyBindings.empty')}
+        proxyBindingsMissingLabel={t('accountPool.upstreamAccounts.groupNotes.proxyBindings.missing')}
+        proxyBindingsUnavailableLabel={t('accountPool.upstreamAccounts.groupNotes.proxyBindings.unavailable')}
       />
 
       {listError ? (

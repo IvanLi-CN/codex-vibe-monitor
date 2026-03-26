@@ -1,4 +1,6 @@
 import { AppIcon } from './AppIcon'
+import type { ForwardProxyBindingNode } from '../lib/api'
+import { cn } from '../lib/utils'
 import { Button } from './ui/button'
 import {
   Dialog,
@@ -10,6 +12,10 @@ import {
   DialogTitle,
 } from './ui/dialog'
 
+type GroupProxyOption = ForwardProxyBindingNode & {
+  missing?: boolean
+}
+
 interface UpstreamAccountGroupNoteDialogProps {
   open: boolean
   container?: HTMLElement | null
@@ -18,7 +24,10 @@ interface UpstreamAccountGroupNoteDialogProps {
   busy?: boolean
   error?: string | null
   existing: boolean
+  boundProxyKeys?: string[]
+  availableProxyNodes?: ForwardProxyBindingNode[]
   onNoteChange: (value: string) => void
+  onBoundProxyKeysChange?: (value: string[]) => void
   onClose: () => void
   onSave: () => void
   title: string
@@ -31,6 +40,24 @@ interface UpstreamAccountGroupNoteDialogProps {
   closeLabel: string
   existingBadgeLabel: string
   draftBadgeLabel: string
+  proxyBindingsLabel?: string
+  proxyBindingsHint?: string
+  proxyBindingsAutomaticLabel?: string
+  proxyBindingsEmptyLabel?: string
+  proxyBindingsMissingLabel?: string
+  proxyBindingsUnavailableLabel?: string
+}
+
+function normalizeBoundProxyKeys(values?: string[]): string[] {
+  if (!Array.isArray(values)) return []
+  return Array.from(new Set(values.map((value) => value.trim()).filter((value) => value.length > 0)))
+}
+
+function toggleBoundProxyKey(keys: string[], target: string): string[] {
+  if (keys.includes(target)) {
+    return keys.filter((key) => key !== target)
+  }
+  return [...keys, target]
 }
 
 export function UpstreamAccountGroupNoteDialog({
@@ -41,7 +68,10 @@ export function UpstreamAccountGroupNoteDialog({
   busy = false,
   error,
   existing,
+  boundProxyKeys,
+  availableProxyNodes,
   onNoteChange,
+  onBoundProxyKeysChange,
   onClose,
   onSave,
   title,
@@ -54,7 +84,37 @@ export function UpstreamAccountGroupNoteDialog({
   closeLabel,
   existingBadgeLabel,
   draftBadgeLabel,
+  proxyBindingsLabel,
+  proxyBindingsHint,
+  proxyBindingsAutomaticLabel,
+  proxyBindingsEmptyLabel,
+  proxyBindingsMissingLabel,
+  proxyBindingsUnavailableLabel,
 }: UpstreamAccountGroupNoteDialogProps) {
+  const normalizedBoundProxyKeys = normalizeBoundProxyKeys(boundProxyKeys)
+  const proxyOptions = (() => {
+    const available = Array.isArray(availableProxyNodes) ? availableProxyNodes : []
+    const availableByKey = new Map(available.map((node) => [node.key, node]))
+    const options: GroupProxyOption[] = [...available]
+    for (const key of normalizedBoundProxyKeys) {
+      if (!availableByKey.has(key)) {
+        options.push({
+          key,
+          source: 'missing',
+          displayName: key,
+          penalized: false,
+          selectable: false,
+          missing: true,
+        })
+      }
+    }
+    return options
+  })()
+  const showProxyBindings =
+    Boolean(onBoundProxyKeysChange) ||
+    proxyOptions.length > 0 ||
+    normalizedBoundProxyKeys.length > 0
+
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => (!busy ? (nextOpen ? undefined : onClose()) : undefined)}>
       <DialogContent container={container} className="overflow-hidden border-base-300 bg-base-100 p-0">
@@ -81,6 +141,7 @@ export function UpstreamAccountGroupNoteDialog({
               <div>{error}</div>
             </div>
           ) : null}
+
           <label className="field">
             <span className="field-label">{noteLabel}</span>
             <textarea
@@ -91,6 +152,83 @@ export function UpstreamAccountGroupNoteDialog({
               onChange={(event) => onNoteChange(event.target.value)}
             />
           </label>
+
+          {showProxyBindings ? (
+            <section className="space-y-3 rounded-2xl border border-base-300/80 bg-base-200/25 px-4 py-4">
+              <div className="space-y-1">
+                <h3 className="text-sm font-semibold text-base-content">
+                  {proxyBindingsLabel ?? 'Bound proxy nodes'}
+                </h3>
+                <p className="text-xs leading-5 text-base-content/68">
+                  {proxyBindingsHint ?? 'Leave empty to use automatic routing.'}
+                </p>
+              </div>
+
+              {normalizedBoundProxyKeys.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-base-300/80 bg-base-100/65 px-3 py-2 text-xs text-base-content/65">
+                  {proxyBindingsAutomaticLabel ?? 'No nodes bound. This group uses automatic routing.'}
+                </div>
+              ) : null}
+
+              {proxyOptions.length === 0 ? (
+                <div className="rounded-xl border border-dashed border-base-300/80 bg-base-100/65 px-3 py-2 text-xs text-base-content/65">
+                  {proxyBindingsEmptyLabel ?? 'No proxy nodes available.'}
+                </div>
+              ) : (
+                <div className="grid gap-2">
+                  {proxyOptions.map((node) => {
+                    const selected = normalizedBoundProxyKeys.includes(node.key)
+                    const disabled = busy || (!selected && !node.selectable)
+                    const badgeLabel = node.missing
+                      ? proxyBindingsMissingLabel ?? 'Missing'
+                      : !node.selectable
+                        ? proxyBindingsUnavailableLabel ?? 'Unavailable'
+                        : null
+                    return (
+                      <button
+                        key={node.key}
+                        type="button"
+                        disabled={disabled}
+                        onClick={() => {
+                          if (!onBoundProxyKeysChange) return
+                          onBoundProxyKeysChange(toggleBoundProxyKey(normalizedBoundProxyKeys, node.key))
+                        }}
+                        className={cn(
+                          'flex items-center gap-3 rounded-xl border px-3 py-3 text-left transition-colors',
+                          selected
+                            ? 'border-primary/45 bg-primary/10'
+                            : 'border-base-300/80 bg-base-100/75',
+                          disabled ? 'cursor-not-allowed opacity-60' : 'hover:border-primary/40',
+                        )}
+                      >
+                        <div className="flex h-5 w-5 items-center justify-center rounded-full border border-base-300/80 bg-base-100">
+                          {selected ? <AppIcon name="check" className="h-3.5 w-3.5 text-primary" aria-hidden /> : null}
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <span className="truncate text-sm font-medium text-base-content">{node.displayName}</span>
+                            {badgeLabel ? (
+                              <span className="rounded-full border border-base-300/80 bg-base-200/80 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/65">
+                                {badgeLabel}
+                              </span>
+                            ) : null}
+                            {node.penalized ? (
+                              <span className="rounded-full border border-warning/35 bg-warning/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-warning">
+                                Penalized
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className="mt-1 text-xs text-base-content/62">
+                            {node.key}
+                          </div>
+                        </div>
+                      </button>
+                    )
+                  })}
+                </div>
+              )}
+            </section>
+          ) : null}
         </div>
 
         <DialogFooter className="border-t border-base-300/80 px-6 py-5">

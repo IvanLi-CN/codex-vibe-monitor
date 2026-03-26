@@ -396,18 +396,31 @@ const baseTranslations = {
       "Optional note",
     "accountPool.upstreamAccounts.batchOauth.tooltip.noteBody":
       "Store row-specific reminders here. This does not affect the OAuth flow and stays hidden unless you expand it.",
-    "accountPool.upstreamAccounts.groupNotes.actions.edit": "Edit group note",
+    "accountPool.upstreamAccounts.groupNotes.actions.edit":
+      "Edit group settings",
     "accountPool.upstreamAccounts.groupNotes.tooltip.body":
-      "Edit the shared note for this group. Existing groups save immediately; brand-new groups stay local until an account actually lands in the group.",
-    "accountPool.upstreamAccounts.groupNotes.dialogTitle": "Group note",
+      "Edit the shared note and bound forward proxy nodes for this group.",
+    "accountPool.upstreamAccounts.groupNotes.dialogTitle": "Group settings",
     "accountPool.upstreamAccounts.groupNotes.existingDescription":
-      "This group already exists. Saving here updates the shared note for every account in the group immediately.",
+      "This group already exists. Saving here updates the shared note and proxy bindings immediately.",
     "accountPool.upstreamAccounts.groupNotes.draftDescription":
-      "This group does not exist yet. Saving here stores a local draft and the note will be persisted when the first account is actually created in this group.",
+      "This group is not populated yet. Saving here creates its shared settings in advance.",
     "accountPool.upstreamAccounts.groupNotes.notePlaceholder":
       "Write a shared note for this group",
     "accountPool.upstreamAccounts.groupNotes.badges.existing": "Saved group",
     "accountPool.upstreamAccounts.groupNotes.badges.draft": "Draft group",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.label":
+      "Bound proxy nodes",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.hint":
+      "Leave empty to keep automatic routing. When multiple nodes are selected, the group will stay on the current node until repeated network failures force a switch.",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.automatic":
+      "No nodes bound. This group uses automatic routing.",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.empty":
+      "No proxy nodes available right now.",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.missing":
+      "Missing",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.unavailable":
+      "Unavailable",
     "accountPool.upstreamAccounts.batchOauth.tooltip.completeTitle":
       "Submit callback",
     "accountPool.upstreamAccounts.batchOauth.tooltip.completeBody":
@@ -911,7 +924,7 @@ const baseTranslations = {
       "{{previous}} is no longer the mother account for {{group}}.",
     "settings.title": "Settings",
     "settings.description":
-      "Configure proxy behavior and pricing catalog for cost estimation.",
+      "Configure forward proxy routing and the pricing catalog used for cost estimation.",
     "settings.loading": "Loading settings…",
     "settings.loadError": "Settings request failed: {{error}}",
     "settings.saving": "Saving…",
@@ -945,10 +958,7 @@ const baseTranslations = {
     "settings.proxy.upstream429RetriesMany": "{{count}} retries",
     "settings.forwardProxy.title": "Forward proxy routing",
     "settings.forwardProxy.description":
-      "Configure upstream forwarding proxies, subscription refresh interval, and live health metrics.",
-    "settings.forwardProxy.insertDirectLabel": "Insert direct connection",
-    "settings.forwardProxy.insertDirectHint":
-      "Keep a direct route as a special proxy entry for unified scheduling and fallback.",
+      "Configure upstream forwarding proxies, automatic routing inventory, subscription refresh interval, and live health metrics.",
     "settings.forwardProxy.proxyUrls": "Proxy URLs",
     "settings.forwardProxy.proxyUrlsPlaceholder":
       "Examples:\nhttp://127.0.0.1:7890\nsocks5://127.0.0.1:1080\nuser:pass@proxy.example.com:8443",
@@ -1862,18 +1872,30 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.batchOauth.tooltip.noteTitle": "备注（可选）",
     "accountPool.upstreamAccounts.batchOauth.tooltip.noteBody":
       "只用于记录这行账号的附加说明，不影响 OAuth 流程；默认收起，避免占用表格空间。",
-    "accountPool.upstreamAccounts.groupNotes.actions.edit": "编辑分组备注",
+    "accountPool.upstreamAccounts.groupNotes.actions.edit": "编辑分组设置",
     "accountPool.upstreamAccounts.groupNotes.tooltip.body":
-      "编辑这个分组的共享备注。已有分组会立即保存；全新分组会先保存在当前页面，等真正有账号落进该分组时再持久化。",
-    "accountPool.upstreamAccounts.groupNotes.dialogTitle": "分组备注",
+      "编辑这个分组的共享备注和绑定的正向代理节点。",
+    "accountPool.upstreamAccounts.groupNotes.dialogTitle": "分组设置",
     "accountPool.upstreamAccounts.groupNotes.existingDescription":
-      "这个分组已经存在，保存后会立即更新该分组下所有账号共用的备注。",
+      "这个分组已经存在，保存后会立即更新共享备注和代理绑定。",
     "accountPool.upstreamAccounts.groupNotes.draftDescription":
-      "这个分组还没有实际账号，当前保存只会写入本页草稿；等首个账号真正创建到该分组时才会持久化。",
+      "这个分组还没有实际账号，现在保存会提前创建它的共享设置。",
     "accountPool.upstreamAccounts.groupNotes.notePlaceholder":
       "填写这个分组的共享备注",
     "accountPool.upstreamAccounts.groupNotes.badges.existing": "已存在分组",
     "accountPool.upstreamAccounts.groupNotes.badges.draft": "草稿分组",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.label":
+      "绑定代理节点",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.hint":
+      "留空时继续走自动路由。选择多个节点后，只有连续网络失败达到阈值才会切到下一个节点。",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.automatic":
+      "当前没有绑定节点，这个分组会继续使用自动路由。",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.empty":
+      "当前没有可用的代理节点。",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.missing":
+      "已失效",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.unavailable":
+      "不可选",
     "accountPool.upstreamAccounts.batchOauth.tooltip.completeTitle": "提交回调",
     "accountPool.upstreamAccounts.batchOauth.tooltip.completeBody":
       "浏览器登录成功后，把上方回调链接粘贴完整，再点击这里完成这一行账号的入池。",
@@ -2337,7 +2359,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.mother.notifications.cleared":
       "{{previous}} 已不再是 {{group}} 的母号。",
     "settings.title": "设置",
-    "settings.description": "集中配置代理行为与价格目录，用于成本估算。",
+    "settings.description": "集中配置正向代理路由与价格目录，用于成本估算。",
     "settings.loading": "正在加载设置…",
     "settings.loadError": "设置请求失败：{{error}}",
     "settings.saving": "保存中…",
@@ -2369,10 +2391,7 @@ const baseTranslations = {
     "settings.proxy.upstream429RetriesMany": "重试 {{count}} 次",
     "settings.forwardProxy.title": "正向代理路由",
     "settings.forwardProxy.description":
-      "配置上游请求代理、订阅自动刷新周期与运行期健康指标。",
-    "settings.forwardProxy.insertDirectLabel": "插入直连",
-    "settings.forwardProxy.insertDirectHint":
-      "将直连作为特殊代理加入统一调度，便于兜底与对比。",
+      "配置上游请求代理、自动路由节点池、订阅自动刷新周期与运行期健康指标。",
     "settings.forwardProxy.proxyUrls": "代理 URL",
     "settings.forwardProxy.proxyUrlsPlaceholder":
       "示例：\nhttp://127.0.0.1:7890\nsocks5://127.0.0.1:1080\nuser:pass@proxy.example.com:8443",

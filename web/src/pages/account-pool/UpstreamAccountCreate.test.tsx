@@ -2844,7 +2844,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     setComboboxValue('input[name="batchOauthDefaultGroupName"]', "new-team");
     await flushAsync();
 
-    clickButton(/Edit group note/i);
+    clickButton(/Edit group settings|Edit group note/i);
     await flushAsync();
     const draftGroupNoteField =
       document.body.querySelector("textarea") ??
@@ -4327,7 +4327,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     await flushAsync();
     expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
 
-    clickButton(/Edit group note/i);
+    clickButton(/Edit group settings|Edit group note/i);
     await flushAsync();
     const updatedGroupNoteField =
       document.body.querySelector("textarea") ??
