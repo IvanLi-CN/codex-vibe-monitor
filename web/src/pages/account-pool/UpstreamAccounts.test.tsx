@@ -168,6 +168,15 @@ function findButton(pattern: RegExp) {
   ) as HTMLButtonElement | undefined
 }
 
+function findExactTextElements(text: string, root: ParentNode = document.body) {
+  return Array.from(root.querySelectorAll('*')).filter(
+    (candidate) =>
+      candidate instanceof HTMLElement &&
+      candidate.children.length === 0 &&
+      candidate.textContent?.trim() === text,
+  ) as HTMLElement[]
+}
+
 async function flushAsync() {
   await act(async () => {
     await Promise.resolve();
@@ -1936,6 +1945,81 @@ describe("UpstreamAccountsPage sync state isolation", () => {
     expect(document.body.textContent).toContain("Last successful sync");
     expect(document.body.textContent).toContain("5h window");
     expect(document.body.textContent).not.toContain("Latest account action");
+  });
+
+  it("renders missing secondary windows as weak dash placeholders inside the detail drawer", async () => {
+    mockAccountsPage({
+      item: {
+        displayName: "Missing weekly limit key",
+        primaryWindow: {
+          usedPercent: 18,
+          usedText: "18 requests",
+          limitText: "120 requests",
+          resetsAt: "2026-03-16T06:55:00.000Z",
+          windowDurationMins: 300,
+        },
+        secondaryWindow: null,
+        localLimits: {
+          primaryLimit: 120,
+          secondaryLimit: null,
+          limitUnit: "requests",
+        },
+      },
+      selectedSummary: {
+        displayName: "Missing weekly limit key",
+        primaryWindow: {
+          usedPercent: 18,
+          usedText: "18 requests",
+          limitText: "120 requests",
+          resetsAt: "2026-03-16T06:55:00.000Z",
+          windowDurationMins: 300,
+        },
+        secondaryWindow: null,
+        localLimits: {
+          primaryLimit: 120,
+          secondaryLimit: null,
+          limitUnit: "requests",
+        },
+      },
+      detail: {
+        displayName: "Missing weekly limit key",
+        primaryWindow: {
+          usedPercent: 18,
+          usedText: "18 requests",
+          limitText: "120 requests",
+          resetsAt: "2026-03-16T06:55:00.000Z",
+          windowDurationMins: 300,
+        },
+        secondaryWindow: null,
+        localLimits: {
+          primaryLimit: 120,
+          secondaryLimit: null,
+          limitUnit: "requests",
+        },
+        history: [
+          {
+            capturedAt: "2026-03-16T02:00:00.000Z",
+            primaryUsedPercent: 18,
+            secondaryUsedPercent: null,
+            creditsBalance: null,
+          },
+        ],
+      },
+    });
+    render({
+      pathname: "/account-pool/upstream-accounts",
+      state: {
+        selectedAccountId: 5,
+        openDetail: true,
+      },
+    });
+    await flushAsync();
+
+    const dialog = document.body.querySelector('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    expect(document.body.textContent).toContain("18 requests");
+    expect(document.body.textContent).not.toContain("No quota history yet");
+    expect(findExactTextElements("-", dialog ?? document.body).length).toBeGreaterThanOrEqual(4);
   });
 
   it("keeps refresh enabled while an account action is pending", () => {

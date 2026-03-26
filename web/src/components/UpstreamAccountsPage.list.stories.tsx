@@ -182,6 +182,23 @@ export const CompactLongLabels: Story = {
   },
 }
 
+export const MissingWindowPlaceholders: Story = {
+  render: () => (
+    <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />
+  ),
+  play: async ({ canvasElement, step }) => {
+    await step('render missing secondary windows with weak dash placeholders instead of 0%', async () => {
+      const row = await findAccountRow(
+        canvasElement,
+        /Team key - missing weekly limit/i,
+      )
+      expect(within(row).getAllByText('-').length).toBeGreaterThanOrEqual(3)
+      await expect(within(row).queryByText(/^0%$/i)).not.toBeInTheDocument()
+      await expect(within(row).getByText(/18 requests/i)).toBeInTheDocument()
+    })
+  },
+}
+
 export const StatusFilters: Story = {
   render: () => (
     <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />

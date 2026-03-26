@@ -1179,6 +1179,8 @@ function createStore(): StoryStore {
     storyId?.endsWith('--quota-exhausted-oauth') === true
   const upstreamRejected402Story =
     storyId?.endsWith('--upstream-rejected-402') === true
+  const missingWindowPlaceholdersStory =
+    storyId?.endsWith('--missing-window-placeholders') === true
   const denseRosterStory =
     storyId?.endsWith('--dense-roster') === true ||
     storyId?.endsWith('--operational') === true ||
@@ -1232,29 +1234,53 @@ function createStore(): StoryStore {
   })
   const apiKey = createApiKeyAccount(
     102,
-    compactStory
+    missingWindowPlaceholdersStory
       ? {
-          enabled: false,
-          enableStatus: 'disabled',
-          workStatus: 'idle',
-          healthStatus: 'normal',
-          syncState: 'idle',
-          status: 'disabled',
-          displayStatus: 'disabled',
-          lastError: null,
-          lastErrorAt: null,
-          tags: [
-            compactDefaultTags[0],
-            compactDefaultTags[1],
-            compactDefaultTags[2],
-            compactDefaultTags[3],
-          ],
+          displayName: 'Team key - missing weekly limit',
+          primaryWindow: buildWindow(
+            18,
+            300,
+            '18 requests',
+            '120 requests',
+            '2026-03-11T13:00:00.000Z',
+          ),
+          secondaryWindow: null,
+          localLimits: {
+            primaryLimit: 120,
+            secondaryLimit: null,
+            limitUnit: 'requests',
+          },
+          history: buildHistory(0).map((point) => ({
+            ...point,
+            primaryUsedPercent: 18,
+            secondaryUsedPercent: null,
+            creditsBalance: null,
+          })),
+          note: 'Secondary quota window is intentionally missing in this story.',
         }
-      : tagFilterStory
+      : compactStory
         ? {
-            tags: [compactDefaultTags[0], compactDefaultTags[3]],
+            enabled: false,
+            enableStatus: 'disabled',
+            workStatus: 'idle',
+            healthStatus: 'normal',
+            syncState: 'idle',
+            status: 'disabled',
+            displayStatus: 'disabled',
+            lastError: null,
+            lastErrorAt: null,
+            tags: [
+              compactDefaultTags[0],
+              compactDefaultTags[1],
+              compactDefaultTags[2],
+              compactDefaultTags[3],
+            ],
           }
-        : undefined,
+        : tagFilterStory
+          ? {
+              tags: [compactDefaultTags[0], compactDefaultTags[3]],
+            }
+          : undefined,
   )
   const duplicateOauth = duplicateStory
     ? createOauthAccount(103, {
