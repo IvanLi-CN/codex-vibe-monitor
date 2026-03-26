@@ -64,6 +64,7 @@
 - Given Live 页对话区块可见，When 页面渲染完成，Then 区块标题显示为 `对话`，且不再出现 `Prompt Cache Key 对话` 残留文案。
 - Given 任一 Prompt Cache 对话行可见，When 点击 preview icon，Then 仅该行在表内展开最近 5 条调用记录，再次点击可收起，且展开按钮使用明确的折叠 / 展开 icon。
 - Given 最近 5 条调用记录或历史抽屉可见，When 调用记录渲染完成，Then 必须直接复用实况“最新记录”同款 `InvocationTable`，而不是 `InvocationRecordsTable` 或独立卡片样式。
+- Given 预览或抽屉中的调用记录包含非标准终态，When `InvocationTable` 渲染状态标签，Then 必须保留如 `HTTP 502`、`invalid_api_key` 等原始终态信息，而不是统一压成通用“失败”。
 - Given 当前筛选结果中存在多个对话，When 点击头部“展开所有记录 / 收起所有记录”，Then 仅当前可见结果集一起展开或收起，不写入本地持久化。
 - Given 当前筛选结果中存在多个对话，When 头部批量按钮渲染，Then 按钮始终同时显示文案与状态 chevron icon：未全展开时显示展开 icon，已全展开时显示收起 icon。
 - Given 点击历史抽屉 icon，When 抽屉打开，Then 以时间倒序展示该 Prompt Cache Key 的全部保留调用记录，并自动续拉后续页直到拉满。
