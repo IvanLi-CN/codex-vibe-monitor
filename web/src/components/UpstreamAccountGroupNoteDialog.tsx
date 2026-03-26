@@ -3,6 +3,7 @@ import { AppIcon } from './AppIcon'
 import type { ForwardProxyBindingNode } from '../lib/api'
 import { cn } from '../lib/utils'
 import { Button } from './ui/button'
+import { ForwardProxyRequestTrendChart } from './ForwardProxyRequestTrendChart'
 import {
   Dialog,
   DialogCloseIcon,
@@ -51,6 +52,10 @@ interface UpstreamAccountGroupNoteDialogProps {
   proxyBindingsChartSuccessLabel?: string
   proxyBindingsChartFailureLabel?: string
   proxyBindingsChartEmptyLabel?: string
+  proxyBindingsChartTotalLabel?: string
+  proxyBindingsChartAriaLabel?: string
+  proxyBindingsChartInteractionHint?: string
+  proxyBindingsChartLocaleTag?: string
 }
 
 function normalizeBoundProxyKeys(values?: string[]): string[] {
@@ -63,46 +68,6 @@ function toggleBoundProxyKey(keys: string[], target: string): string[] {
     return keys.filter((key) => key !== target)
   }
   return [...keys, target]
-}
-
-function buildVisibleBarHeights(successCount: number, failureCount: number, scaleMax: number, totalHeightPx: number) {
-  if (scaleMax <= 0 || totalHeightPx <= 0) {
-    return { empty: totalHeightPx, failure: 0, success: 0 }
-  }
-
-  let success = successCount > 0 ? Math.max((successCount / scaleMax) * totalHeightPx, 1) : 0
-  let failure = failureCount > 0 ? Math.max((failureCount / scaleMax) * totalHeightPx, 1) : 0
-  const maxVisible = Math.max(totalHeightPx, 0)
-  let overflow = success + failure - maxVisible
-
-  const shrink = (value: number, minVisible: number, amount: number) => {
-    if (amount <= 0 || value <= minVisible) return { nextValue: value, remaining: amount }
-    const delta = Math.min(value - minVisible, amount)
-    return { nextValue: value - delta, remaining: amount - delta }
-  }
-
-  if (overflow > 0) {
-    const first = success >= failure ? 'success' : 'failure'
-    const second = first == 'success' ? 'failure' : 'success'
-    for (const key of [first, second] as const) {
-      const minVisible = key == 'success' ? (successCount > 0 ? 1 : 0) : failureCount > 0 ? 1 : 0
-      const current = key == 'success' ? success : failure
-      const result = shrink(current, minVisible, overflow)
-      if (key == 'success') {
-        success = result.nextValue
-      } else {
-        failure = result.nextValue
-      }
-      overflow = result.remaining
-    }
-  }
-
-  const used = Math.min(success + failure, maxVisible)
-  return {
-    empty: Math.max(maxVisible - used, 0),
-    failure,
-    success,
-  }
 }
 
 function sumProxyTraffic(node: ForwardProxyBindingNode) {
@@ -124,6 +89,10 @@ function ProxyOptionTrafficChart({
   successLabel,
   failureLabel,
   emptyLabel,
+  totalLabel,
+  ariaLabel,
+  interactionHint,
+  localeTag,
 }: {
   node: ForwardProxyBindingNode
   scaleMax: number
@@ -131,6 +100,10 @@ function ProxyOptionTrafficChart({
   successLabel: string
   failureLabel: string
   emptyLabel: string
+  totalLabel: string
+  ariaLabel: string
+  interactionHint: string
+  localeTag: string
 }) {
   const buckets = useMemo(() => (Array.isArray(node.last24h) ? node.last24h : []), [node.last24h])
   const totals = useMemo(() => sumProxyTraffic(node), [node])
@@ -160,27 +133,21 @@ function ProxyOptionTrafficChart({
           {emptyLabel}
         </div>
       ) : (
-        <div
-          role="img"
-          aria-label={`${node.displayName} ${label}: ${totals.success} ${successLabel}, ${totals.failure} ${failureLabel}`}
-          className="mt-2 flex h-12 items-end gap-px rounded-xl border border-base-300/70 bg-base-100/70 px-2 py-1.5"
-          data-chart-kind="proxy-binding-request-trend"
-        >
-          {buckets.map((bucket) => {
-            const total = bucket.successCount + bucket.failureCount
-            const heights = buildVisibleBarHeights(bucket.successCount, bucket.failureCount, scaleMax, 32)
-            return (
-              <div
-                key={`${node.key}-${bucket.bucketStart}`}
-                className="flex h-8 min-w-0 flex-1 flex-col overflow-hidden rounded-[3px] bg-base-300/35"
-              >
-                <div className="bg-transparent" style={{ height: `${heights.empty}px` }} />
-                <div className={cn(total > 0 ? 'bg-error/85' : 'bg-transparent')} style={{ height: `${heights.failure}px` }} />
-                <div className={cn(total > 0 ? 'bg-success/85' : 'bg-transparent')} style={{ height: `${heights.success}px` }} />
-              </div>
-            )
-          })}
-        </div>
+        <ForwardProxyRequestTrendChart
+          buckets={buckets}
+          scaleMax={scaleMax}
+          localeTag={localeTag}
+          tooltipLabels={{
+            success: successLabel,
+            failure: failureLabel,
+            total: totalLabel,
+          }}
+          ariaLabel={`${node.displayName} ${ariaLabel}`}
+          interactionHint={interactionHint}
+          variant="dialog"
+          className="mt-2"
+          dataChartKind="proxy-binding-request-trend"
+        />
       )}
     </div>
   )
@@ -220,6 +187,10 @@ export function UpstreamAccountGroupNoteDialog({
   proxyBindingsChartSuccessLabel,
   proxyBindingsChartFailureLabel,
   proxyBindingsChartEmptyLabel,
+  proxyBindingsChartTotalLabel,
+  proxyBindingsChartAriaLabel,
+  proxyBindingsChartInteractionHint,
+  proxyBindingsChartLocaleTag,
 }: UpstreamAccountGroupNoteDialogProps) {
   const normalizedBoundProxyKeys = normalizeBoundProxyKeys(boundProxyKeys)
   const proxyOptions = (() => {
@@ -377,6 +348,13 @@ export function UpstreamAccountGroupNoteDialog({
                           successLabel={proxyBindingsChartSuccessLabel ?? 'ok'}
                           failureLabel={proxyBindingsChartFailureLabel ?? 'fail'}
                           emptyLabel={proxyBindingsChartEmptyLabel ?? 'No 24h data'}
+                          totalLabel={proxyBindingsChartTotalLabel ?? 'total'}
+                          ariaLabel={proxyBindingsChartAriaLabel ?? 'Last 24h request volume chart'}
+                          interactionHint={
+                            proxyBindingsChartInteractionHint ??
+                            'Hover or tap for details. Focus the chart and use arrow keys to switch points.'
+                          }
+                          localeTag={proxyBindingsChartLocaleTag ?? 'en-US'}
                         />
                       </button>
                     )

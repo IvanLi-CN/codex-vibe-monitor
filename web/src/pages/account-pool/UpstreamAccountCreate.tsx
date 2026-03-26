@@ -1293,7 +1293,7 @@ function DuplicateAccountDetailDialog({
 }
 
 export default function UpstreamAccountCreatePage() {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
   const locationState = (location.state as CreatePageLocationState) ?? null;
@@ -7121,6 +7121,10 @@ export default function UpstreamAccountCreatePage() {
         proxyBindingsChartEmptyLabel={t(
           "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartEmpty",
         )}
+        proxyBindingsChartTotalLabel={t("live.proxy.table.requestTooltip.total")}
+        proxyBindingsChartAriaLabel={t("live.proxy.table.requestTrendAria")}
+        proxyBindingsChartInteractionHint={t("live.chart.tooltip.instructions")}
+        proxyBindingsChartLocaleTag={locale === "zh" ? "zh-CN" : "en-US"}
       />
       <DuplicateAccountDetailDialog
         open={duplicateDetailOpen}

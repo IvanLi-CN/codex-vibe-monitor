@@ -164,6 +164,17 @@
   image:
   ![Batch OAuth ready group settings with bindings](./assets/batch-oauth-ready-group-settings-with-bindings.png)
 
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: viewport
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Account Pool/Components/Upstream Account Group Settings Dialog/Hard Bound Multiple Nodes
+  state: request-trend-tooltip-details
+  evidence_note: 验证分组绑定节点右侧的 24 小时请求图已复用参考界面的共享 inline chart tooltip，悬浮柱状图时会显示时间桶、Success、Failure 和 Total requests 详情。
+  image:
+  ![Bound proxy node request trend tooltip](./assets/group-settings-chart-tooltip.png)
+
 ## 变更记录
 
 - 2026-03-26: 创建 spec，冻结 `/v1/*` 新语义、分组绑定 forward proxy 的运行时规则、接口契约与视觉证据目标。

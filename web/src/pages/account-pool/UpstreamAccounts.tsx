@@ -696,7 +696,7 @@ function RoutingSettingsDialog({
 }
 
 export default function UpstreamAccountsPage() {
-  const { t } = useTranslation()
+  const { t, locale } = useTranslation()
   const location = useLocation()
   const navigate = useNavigate()
   const [groupFilterQuery, setGroupFilterQuery] = useState('')
@@ -3178,6 +3178,10 @@ export default function UpstreamAccountsPage() {
         proxyBindingsChartSuccessLabel={t('accountPool.upstreamAccounts.groupNotes.proxyBindings.chartSuccess')}
         proxyBindingsChartFailureLabel={t('accountPool.upstreamAccounts.groupNotes.proxyBindings.chartFailure')}
         proxyBindingsChartEmptyLabel={t('accountPool.upstreamAccounts.groupNotes.proxyBindings.chartEmpty')}
+        proxyBindingsChartTotalLabel={t('live.proxy.table.requestTooltip.total')}
+        proxyBindingsChartAriaLabel={t('live.proxy.table.requestTrendAria')}
+        proxyBindingsChartInteractionHint={t('live.chart.tooltip.instructions')}
+        proxyBindingsChartLocaleTag={locale === 'zh' ? 'zh-CN' : 'en-US'}
       />
 
       {listError ? (

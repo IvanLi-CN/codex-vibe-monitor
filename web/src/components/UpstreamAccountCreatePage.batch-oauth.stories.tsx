@@ -89,6 +89,15 @@ export const Ready: Story = {
       documentScope.getByText(/绑定代理节点|bound proxy nodes/i),
     ).toBeInTheDocument()
     await expect(documentScope.getByText(/JP Edge 01/i)).toBeInTheDocument()
+    const chart = await documentScope.findByLabelText(/JP Edge 01 .*request volume chart/i)
+    const firstBar = chart.querySelector('[data-inline-chart-index="0"]')
+    if (!(firstBar instanceof HTMLElement)) {
+      throw new Error('missing first proxy request trend bar in batch oauth ready story')
+    }
+    await userEvent.hover(firstBar)
+    await expect(documentScope.getByRole('tooltip')).toBeInTheDocument()
+    await expect(documentScope.getByText(/成功|success/i)).toBeInTheDocument()
+    await expect(documentScope.getByText(/失败|failure/i)).toBeInTheDocument()
   },
 }
 

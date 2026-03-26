@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { expect, userEvent, within } from 'storybook/test'
 import type { ForwardProxyBindingNode } from '../lib/api'
 import { UpstreamAccountGroupNoteDialog } from './UpstreamAccountGroupNoteDialog'
 
@@ -104,9 +105,13 @@ function DialogHarness({
           proxyBindingsMissingLabel="Missing"
           proxyBindingsUnavailableLabel="Unavailable"
           proxyBindingsChartLabel="24h request trend"
-          proxyBindingsChartSuccessLabel="ok"
-          proxyBindingsChartFailureLabel="fail"
+          proxyBindingsChartSuccessLabel="Success"
+          proxyBindingsChartFailureLabel="Failure"
           proxyBindingsChartEmptyLabel="No 24h data"
+          proxyBindingsChartTotalLabel="Total requests"
+          proxyBindingsChartAriaLabel="Last 24h request volume chart"
+          proxyBindingsChartInteractionHint="Hover or tap for details. Focus the chart and use arrow keys to switch points."
+          proxyBindingsChartLocaleTag="en-US"
         />
       </div>
     </div>
@@ -141,6 +146,19 @@ export const AutomaticRouting: Story = {}
 export const HardBoundMultipleNodes: Story = {
   args: {
     boundProxyKeys: ['jp-edge-01', 'sg-edge-02'],
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const chart = await canvas.findByLabelText(/JP Edge 01 Last 24h request volume chart/i)
+    const firstBar = chart.querySelector('[data-inline-chart-index="0"]')
+    if (!(firstBar instanceof HTMLElement)) {
+      throw new Error('missing first request trend bar')
+    }
+    await userEvent.hover(firstBar)
+    await expect(within(document.body).getByRole('tooltip')).toBeInTheDocument()
+    await expect(within(document.body).getByText(/Success/i)).toBeInTheDocument()
+    await expect(within(document.body).getByText(/Failure/i)).toBeInTheDocument()
+    await expect(within(document.body).getByText(/Total requests/i)).toBeInTheDocument()
   },
 }
 
