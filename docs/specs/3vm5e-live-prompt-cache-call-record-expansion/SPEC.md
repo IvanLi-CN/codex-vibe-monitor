@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 部分完成（4/5）
+- Status: 已完成（5/5，PR #246）
 - Created: 2026-03-26
 - Last: 2026-03-26
 
@@ -84,7 +84,7 @@
 - [x] M2: 后端对话响应补齐 `recentInvocations[]`，并通过 limit/source-scope/empty-preview 回归测试。
 - [x] M3: Live 页与 Prompt Cache 表格完成批量展开、行内 preview 与历史抽屉交互。
 - [x] M4: 前端 normalize、Vitest 与 Storybook 覆盖齐备。
-- [ ] M5: 视觉证据、review-loop 与 PR 收敛到 merge-ready。
+- [x] M5: 视觉证据、review-loop 与 PR 收敛到 merge-ready。
 
 ## Visual Evidence
 

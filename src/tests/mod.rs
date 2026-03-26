@@ -24627,6 +24627,16 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
         "gpt-5.4",
     )
     .await;
+    sqlx::query(
+        "UPDATE codex_invocations SET failure_kind = ?1, failure_class = ?2, error_message = ?3 WHERE invoke_id = ?4",
+    )
+    .bind("upstream_response_failed")
+    .bind("none")
+    .bind("[upstream_response_failed] legacy upstream failure")
+    .bind("preview-05")
+    .execute(&state.pool)
+    .await
+    .expect("mark preview-05 as legacy failure");
     insert_row(
         &state.pool,
         "preview-06",
@@ -24719,12 +24729,24 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
         .iter()
         .find(|item| item.invoke_id == "preview-03")
         .expect("failed preview should be included");
-    assert_eq!(failed_preview.status, "http_502");
+    assert_eq!(failed_preview.status, "failed");
     assert_eq!(
         failed_preview.failure_class.as_deref(),
         Some("service_failure")
     );
     assert_eq!(failed_preview.route_mode.as_deref(), Some("pool"));
+
+    let legacy_failed_preview = conversation
+        .recent_invocations
+        .iter()
+        .find(|item| item.invoke_id == "preview-05")
+        .expect("legacy failed preview should be included");
+    assert_eq!(legacy_failed_preview.status, "failed");
+    assert_eq!(
+        legacy_failed_preview.failure_class.as_deref(),
+        Some("service_failure")
+    );
+    assert_eq!(legacy_failed_preview.route_mode.as_deref(), Some("pool"));
 
     let proxy_only_rows = query_prompt_cache_conversation_recent_invocations(
         &state.pool,

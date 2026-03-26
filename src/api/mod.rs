@@ -162,10 +162,6 @@ fn invocation_display_status_sql() -> String {
     )
 }
 
-fn invocation_raw_status_sql() -> &'static str {
-    "COALESCE(NULLIF(TRIM(status), ''), 'unknown')"
-}
-
 #[derive(Debug, Clone, Copy)]
 enum InvocationSortOrder {
     Asc,
@@ -2602,7 +2598,7 @@ pub(crate) async fn query_prompt_cache_conversation_recent_invocations(
     let mut query =
         QueryBuilder::<Sqlite>::new("WITH ranked AS (SELECT id, invoke_id, occurred_at, ");
     query
-        .push(invocation_raw_status_sql())
+        .push(invocation_display_status_sql())
         .push(" AS status, ")
         .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
         .push(" AS failure_class, ")
