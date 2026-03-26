@@ -1168,6 +1168,8 @@ function createStore(): StoryStore {
     storyId?.endsWith('--oauth-retry-terminal-state') === true
   const quotaExhaustedOauthStory =
     storyId?.endsWith('--quota-exhausted-oauth') === true
+  const upstreamRejected402Story =
+    storyId?.endsWith('--upstream-rejected-402') === true
   const denseRosterStory =
     storyId?.endsWith('--dense-roster') === true ||
     storyId?.endsWith('--operational') === true ||
@@ -1603,6 +1605,76 @@ function createStore(): StoryStore {
         }),
       ]
     : []
+  const upstreamRejected402Accounts = upstreamRejected402Story
+    ? [
+        createOauthAccount(501, {
+          displayName: 'Workspace deactivated 402 routing state',
+          groupName: 'production',
+          isMother: false,
+          status: 'error',
+          displayStatus: 'upstream_rejected',
+          enableStatus: 'enabled',
+          workStatus: 'idle',
+          healthStatus: 'upstream_rejected',
+          syncState: 'idle',
+          planType: 'team',
+          email: 'workspace-blocked@example.com',
+          chatgptAccountId: 'org_workspace_blocked',
+          chatgptUserId: 'user_workspace_blocked',
+          lastSuccessfulSyncAt: '2026-03-26T07:59:42.000Z',
+          lastActivityAt: '2026-03-26T08:11:47.000Z',
+          lastError:
+            'initial usage snapshot attempt with configured user agent failed: usage endpoint returned 402 Payment Required: {"detail":{"code":"deactivated_workspace"}}',
+          lastErrorAt: '2026-03-26T08:11:47.000Z',
+          lastAction: 'sync_hard_unavailable',
+          lastActionSource: 'sync_maintenance',
+          lastActionReasonCode: 'upstream_http_402',
+          lastActionReasonMessage:
+            'initial usage snapshot attempt with configured user agent failed: usage endpoint returned 402 Payment Required: {"detail":{"code":"deactivated_workspace"}}',
+          lastActionAt: '2026-03-26T08:11:47.000Z',
+          lastActionHttpStatus: 402,
+          lastActionInvokeId: 'inv_story_workspace_402',
+          primaryWindow: buildWindow(
+            38,
+            300,
+            '38% used',
+            '5h rolling window',
+            '2026-03-26T11:59:42.000Z',
+          ),
+          secondaryWindow: buildWindow(
+            19,
+            10080,
+            '19% used',
+            '7d rolling window',
+            '2026-04-02T00:00:00.000Z',
+          ),
+          tags: pickStoryTags('vip', 'prodApac'),
+          note: 'Workspace was deactivated upstream; the account should show upstream rejected while preserving the 402 context.',
+          recentActions: [
+            buildRecentAction(
+              9301,
+              '2026-03-26T08:11:47.000Z',
+              'sync_hard_unavailable',
+              'sync_maintenance',
+              'upstream_http_402',
+              'initial usage snapshot attempt with configured user agent failed: usage endpoint returned 402 Payment Required: {"detail":{"code":"deactivated_workspace"}}',
+              'upstream_http_402',
+              402,
+            ),
+            buildRecentAction(
+              9300,
+              '2026-03-26T07:59:42.000Z',
+              'sync_succeeded',
+              'sync_manual',
+              'sync_ok',
+              'Manual sync refreshed the account before the workspace was deactivated.',
+              null,
+              null,
+            ),
+          ],
+        }),
+      ]
+    : []
   const operationalRosterAccounts = compactStory
     ? []
     : buildOperationalRosterAccounts(denseRosterStory ? 3 : 1)
@@ -1610,6 +1682,8 @@ function createStore(): StoryStore {
     ? oauthRetryTerminalStateAccounts
     : quotaExhaustedOauthStory
     ? quotaExhaustedOauthAccounts
+    : upstreamRejected402Story
+    ? upstreamRejected402Accounts
     : availabilityBadgeStory
       ? availabilityBadgeAccounts
       : [

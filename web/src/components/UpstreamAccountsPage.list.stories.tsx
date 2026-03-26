@@ -322,3 +322,33 @@ export const OauthRetryTerminalState: Story = {
     ).toBeInTheDocument()
   },
 }
+
+export const UpstreamRejected402: Story = {
+  render: () => (
+    <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />
+  ),
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const row = await documentScope.findByRole('button', {
+      name: /Workspace deactivated 402 routing state/i,
+    })
+
+    await expect(row).toHaveTextContent(/上游拒绝|Upstream rejected/i)
+    await expect(row).not.toHaveTextContent(/其它异常|Other error/i)
+    await expect(row).toHaveTextContent(/HTTP 402/i)
+
+    await userEvent.click(row)
+
+    await expect(
+      await documentScope.findByText(/^上游拒绝$|^Upstream rejected$/i),
+    ).toBeInTheDocument()
+    await expect(
+      await documentScope.findByText(
+        /Plan or billing rejected upstream access \(402\)|上游因套餐或计费拒绝访问（402）/i,
+      ),
+    ).toBeInTheDocument()
+    await expect(
+      await documentScope.findByText(/deactivated_workspace/i),
+    ).toBeInTheDocument()
+  },
+}
