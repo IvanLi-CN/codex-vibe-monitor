@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.27.0",
+  "base_stable_version": "1.26.5",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-26T11:44:37Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.27.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "e832901559f149c9a4c738f8648a382038da7159",
+  "pr_number": 246,
+  "pr_title": "feat(live): add prompt cache invocation drill-downs",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.27.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.27.0,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "5f40370f64c97afbc2b7894c356dbccb9981ac91",
+  "type_label": "type:minor"
+}
