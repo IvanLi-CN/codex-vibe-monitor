@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 部分完成（4/5）
+- Status: 已完成（5/5，PR #244）
 - Created: 2026-03-26
 - Last: 2026-03-26
 
@@ -81,7 +81,7 @@
 - [x] M2: 后端状态派生改为优先消费结构化 `402` 信号，并补齐 route/sync 双回归。
 - [x] M3: 补齐 Storybook 402 场景与前端断言，固定列表/详情显示结果。
 - [x] M4: 完成本地验证、Storybook 视觉证据与浏览器 smoke。
-- [ ] M5: 快车道收敛到 merge-ready PR，并回填 spec / README 状态。
+- [x] M5: 快车道收敛到 merge-ready PR，并回填 spec / README 状态。
 
 ## Visual Evidence
 
@@ -89,7 +89,7 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: owner-approved-and-submitted
   story_id_or_title: Account Pool/Pages/Upstream Accounts/List — Upstream Rejected 402
   state: roster row
   evidence_note: 列表行显示 `上游拒绝` 与 `HTTP 402`，不再退回“其它异常”。
@@ -100,7 +100,7 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: owner-approved-and-submitted
   story_id_or_title: Account Pool/Pages/Upstream Accounts/List — Upstream Rejected 402
   state: detail header
   evidence_note: 详情头部显示 `启用 / 空闲 / 同步空闲 / 上游拒绝`，与列表状态一致。
@@ -111,7 +111,7 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: owner-approved-and-submitted
   story_id_or_title: Account Pool/Pages/Upstream Accounts/List — Upstream Rejected 402
   state: health and events
   evidence_note: 健康与事件页签保留 `HTTP 402`、`upstream_http_402` 文案和 `deactivated_workspace` 原始消息。
@@ -127,3 +127,4 @@
 
 - 2026-03-26: 创建 follow-up spec，冻结 402 `deactivated_workspace` 账号应显示“上游拒绝”的修复范围与验收口径。
 - 2026-03-26: 完成后端结构化 `402` 状态派生修复、route/sync 双回归、Storybook 402 场景、前端断言与本地视觉证据采集。
+- 2026-03-26: 分支 `th/9t4zq-upstream-http-402-rejected` 已推送，PR #244 已创建并打上 `type:patch` / `channel:stable`，进入 merge-ready 状态。
