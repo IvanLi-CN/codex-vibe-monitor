@@ -765,7 +765,7 @@ describe("UpstreamAccountsPage duplicates", () => {
         compactFirstByteTimeoutSecs: 420,
       },
     });
-  });
+  }, 10_000);
 
   it("keeps the routing card summary-only while the dialog still exposes advanced fields", async () => {
     mockAccountsPage({

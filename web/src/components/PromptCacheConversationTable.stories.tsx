@@ -11,6 +11,34 @@ import type {
 } from "../lib/api";
 import { PromptCacheConversationTable } from "./PromptCacheConversationTable";
 
+type StoryPromptCacheConversationPreview =
+  PromptCacheConversationInvocationPreview &
+    Partial<
+      Pick<
+        ApiInvocation,
+        | "source"
+        | "inputTokens"
+        | "outputTokens"
+        | "cacheInputTokens"
+        | "reasoningTokens"
+        | "reasoningEffort"
+        | "errorMessage"
+        | "failureKind"
+        | "isActionable"
+        | "responseContentEncoding"
+        | "requestedServiceTier"
+        | "serviceTier"
+        | "tReqReadMs"
+        | "tReqParseMs"
+        | "tUpstreamConnectMs"
+        | "tUpstreamTtfbMs"
+        | "tUpstreamStreamMs"
+        | "tRespParseMs"
+        | "tPersistMs"
+        | "tTotalMs"
+      >
+    >;
+
 function jsonResponse(payload: unknown, status = 200) {
   return new Response(JSON.stringify(payload), {
     status,
@@ -25,6 +53,9 @@ function buildAccountDetail(
   displayName: string,
   overrides?: Partial<UpstreamAccountDetail>,
 ): UpstreamAccountDetail {
+  const normalizedEmail = displayName.includes("@")
+    ? displayName
+    : `${displayName.toLowerCase().replace(/\s+/g, "-")}@example.com`;
   return {
     id,
     kind: "oauth_codex",
@@ -34,7 +65,7 @@ function buildAccountDetail(
     isMother: false,
     status: "active",
     enabled: true,
-    email: `${displayName.toLowerCase().replace(/\s+/g, "-")}@example.com`,
+    email: normalizedEmail,
     chatgptAccountId: `org_${id}`,
     chatgptUserId: `user_${id}`,
     planType: "team",
@@ -82,178 +113,407 @@ function buildAccountDetail(
 }
 
 const accountDetails = new Map<number, UpstreamAccountDetail>([
-  [11, buildAccountDetail(11, "Pool Alpha", { isMother: true })],
-  [12, buildAccountDetail(12, "Pool Beta")],
-  [21, buildAccountDetail(21, "Pool Delta")],
-  [22, buildAccountDetail(22, "Pool Epsilon")],
-  [31, buildAccountDetail(31, "Pool Low")],
-  [41, buildAccountDetail(41, "Pool High")],
+  [
+    11,
+    buildAccountDetail(11, "growth.6vv4@relay.example", {
+      isMother: true,
+      note: "Primary prompt-cache routing account",
+    }),
+  ],
+  [
+    12,
+    buildAccountDetail(12, "backup.f3x2@ops.example", {
+      note: "Fallback for burst traffic",
+    }),
+  ],
+  [
+    13,
+    buildAccountDetail(13, "audit.q9k8@ops.example", {
+      note: "Shared overflow path for recovery retries",
+    }),
+  ],
+  [
+    21,
+    buildAccountDetail(21, "growth.6vv4@relay.example", {
+      note: "Shared growth workspace account",
+    }),
+  ],
+  [
+    22,
+    buildAccountDetail(22, "mia.7rmmq@support.example", {
+      note: "Secondary escalation workspace account",
+    }),
+  ],
+  [31, buildAccountDetail(31, "sweep.q1h2@watch.example")],
+  [41, buildAccountDetail(41, "burst.f9m4@watch.example")],
 ]);
 
-function buildPreview(
-  overrides: Partial<PromptCacheConversationInvocationPreview> & {
+function buildInvocationRecord(
+  overrides: Partial<ApiInvocation> & {
     id: number;
     invokeId: string;
     occurredAt: string;
   },
-): PromptCacheConversationInvocationPreview {
+): ApiInvocation {
   return {
     id: overrides.id,
     invokeId: overrides.invokeId,
     occurredAt: overrides.occurredAt,
-    status: overrides.status ?? "completed",
-    failureClass: overrides.failureClass ?? null,
-    routeMode: overrides.routeMode ?? null,
+    createdAt: overrides.createdAt ?? overrides.occurredAt,
+    source: overrides.source ?? "pool",
+    routeMode: overrides.routeMode ?? "pool",
+    proxyDisplayName: overrides.proxyDisplayName ?? "tokyo-edge-01",
+    upstreamAccountId: overrides.upstreamAccountId ?? null,
+    upstreamAccountName: overrides.upstreamAccountName ?? undefined,
+    endpoint: overrides.endpoint ?? "/v1/responses",
     model: overrides.model ?? "gpt-5.4",
+    status: overrides.status ?? "completed",
+    inputTokens: overrides.inputTokens ?? 0,
+    outputTokens: overrides.outputTokens ?? 0,
+    cacheInputTokens: overrides.cacheInputTokens ?? 0,
+    reasoningTokens: overrides.reasoningTokens,
+    reasoningEffort: overrides.reasoningEffort,
     totalTokens: overrides.totalTokens ?? 0,
     cost: overrides.cost ?? 0,
-    proxyDisplayName: overrides.proxyDisplayName ?? null,
-    upstreamAccountId: overrides.upstreamAccountId ?? null,
-    upstreamAccountName: overrides.upstreamAccountName ?? null,
-    endpoint: overrides.endpoint ?? null,
+    errorMessage: overrides.errorMessage,
+    failureKind: overrides.failureKind,
+    failureClass: overrides.failureClass ?? undefined,
+    isActionable: overrides.isActionable,
+    promptCacheKey: overrides.promptCacheKey,
+    responseContentEncoding: overrides.responseContentEncoding ?? "gzip",
+    requestedServiceTier: overrides.requestedServiceTier ?? "priority",
+    serviceTier: overrides.serviceTier ?? "priority",
+    tReqReadMs: overrides.tReqReadMs ?? 24,
+    tReqParseMs: overrides.tReqParseMs ?? 6,
+    tUpstreamConnectMs: overrides.tUpstreamConnectMs ?? 480,
+    tUpstreamTtfbMs: overrides.tUpstreamTtfbMs ?? 120,
+    tUpstreamStreamMs: overrides.tUpstreamStreamMs ?? 640,
+    tRespParseMs: overrides.tRespParseMs ?? 10,
+    tPersistMs: overrides.tPersistMs ?? 8,
+    tTotalMs: overrides.tTotalMs ?? 1280,
   };
 }
 
-function buildHistoryRecord(
-  preview: PromptCacheConversationInvocationPreview,
-): ApiInvocation {
+function buildPreviewFromRecord(
+  record: ApiInvocation,
+) : StoryPromptCacheConversationPreview {
   return {
-    id: preview.id,
-    invokeId: preview.invokeId,
-    occurredAt: preview.occurredAt,
-    status: preview.status,
-    failureClass: preview.failureClass ?? undefined,
-    totalTokens: preview.totalTokens,
-    cost: preview.cost ?? undefined,
-    endpoint: preview.endpoint ?? undefined,
-    promptCacheKey: undefined,
-    routeMode: preview.routeMode ?? undefined,
-    upstreamAccountId: preview.upstreamAccountId ?? undefined,
-    upstreamAccountName: preview.upstreamAccountName ?? undefined,
-    proxyDisplayName: preview.proxyDisplayName ?? undefined,
-    createdAt: preview.occurredAt,
+    id: record.id,
+    invokeId: record.invokeId,
+    occurredAt: record.occurredAt,
+    source: record.source,
+    status: record.status ?? "unknown",
+    failureClass: record.failureClass ?? null,
+    routeMode: record.routeMode ?? null,
+    model: record.model ?? null,
+    inputTokens: record.inputTokens,
+    outputTokens: record.outputTokens,
+    cacheInputTokens: record.cacheInputTokens,
+    reasoningTokens: record.reasoningTokens,
+    reasoningEffort: record.reasoningEffort,
+    totalTokens: record.totalTokens ?? 0,
+    cost: record.cost ?? null,
+    errorMessage: record.errorMessage,
+    failureKind: record.failureKind,
+    isActionable: record.isActionable,
+    proxyDisplayName: record.proxyDisplayName ?? null,
+    upstreamAccountId: record.upstreamAccountId ?? null,
+    upstreamAccountName: record.upstreamAccountName ?? null,
+    endpoint: record.endpoint ?? null,
+    responseContentEncoding: record.responseContentEncoding,
+    requestedServiceTier: record.requestedServiceTier,
+    serviceTier: record.serviceTier,
+    tReqReadMs: record.tReqReadMs,
+    tReqParseMs: record.tReqParseMs,
+    tUpstreamConnectMs: record.tUpstreamConnectMs,
+    tUpstreamTtfbMs: record.tUpstreamTtfbMs,
+    tUpstreamStreamMs: record.tUpstreamStreamMs,
+    tRespParseMs: record.tRespParseMs,
+    tPersistMs: record.tPersistMs,
+    tTotalMs: record.tTotalMs,
   };
 }
 
-const conversationOnePreviews = [
-  buildPreview({
+const CONVERSATION_ONE_KEY = "019d2b8f-f8d0-72c3-bb67-a3f0d24a01f1";
+const CONVERSATION_TWO_KEY = "019d2b8a-2df4-7580-bffc-6b4b1d8207c2";
+
+const conversationOneHistory = [
+  buildInvocationRecord({
     id: 501,
-    invokeId: "invoke-pck-01-05",
-    occurredAt: "2026-03-03T12:44:10.000Z",
-    totalTokens: 1184,
-    cost: 0.028,
-    proxyDisplayName: "Proxy Central",
+    invokeId: "invoke-pck-01-06",
+    promptCacheKey: CONVERSATION_ONE_KEY,
+    occurredAt: "2026-03-27T03:14:47.000Z",
     upstreamAccountId: 11,
-    upstreamAccountName: "Pool Alpha",
-    endpoint: "/v1/responses",
+    upstreamAccountName: "growth.6vv4@relay.example",
+    proxyDisplayName: "tokyo-edge-01",
+    totalTokens: 65944,
+    inputTokens: 61280,
+    cacheInputTokens: 58624,
+    outputTokens: 4664,
+    reasoningTokens: 810,
+    reasoningEffort: "high",
+    cost: 0.0431,
+    responseContentEncoding: "gzip, br",
+    tUpstreamConnectMs: 612,
+    tUpstreamTtfbMs: 126,
+    tUpstreamStreamMs: 698,
+    tTotalMs: 1492,
   }),
-  buildPreview({
+  buildInvocationRecord({
     id: 500,
-    invokeId: "invoke-pck-01-04",
-    occurredAt: "2026-03-03T11:58:00.000Z",
-    totalTokens: 940,
-    cost: 0.022,
-    proxyDisplayName: "Proxy Central",
-    upstreamAccountId: 12,
-    upstreamAccountName: "Pool Beta",
-    endpoint: "/v1/responses",
-  }),
-  buildPreview({
-    id: 499,
-    invokeId: "invoke-pck-01-03",
-    occurredAt: "2026-03-03T11:10:00.000Z",
-    status: "http_502",
-    totalTokens: 670,
-    cost: 0.016,
-    proxyDisplayName: "Proxy Relay",
-    upstreamAccountId: null,
-    upstreamAccountName: null,
-    endpoint: "/v1/chat/completions",
-  }),
-  buildPreview({
-    id: 498,
-    invokeId: "invoke-pck-01-02",
-    occurredAt: "2026-03-03T10:44:00.000Z",
-    totalTokens: 1460,
-    cost: 0.034,
-    proxyDisplayName: "Proxy Relay",
+    invokeId: "invoke-pck-01-05",
+    promptCacheKey: CONVERSATION_ONE_KEY,
+    occurredAt: "2026-03-27T03:14:42.000Z",
     upstreamAccountId: 11,
-    upstreamAccountName: "Pool Alpha",
-    endpoint: "/v1/responses",
+    upstreamAccountName: "growth.6vv4@relay.example",
+    proxyDisplayName: "tokyo-edge-01",
+    totalTokens: 59790,
+    inputTokens: 54870,
+    cacheInputTokens: 52120,
+    outputTokens: 4920,
+    reasoningTokens: 740,
+    reasoningEffort: "high",
+    cost: 0.016,
+    responseContentEncoding: "gzip",
+    tUpstreamConnectMs: 534,
+    tUpstreamTtfbMs: 118,
+    tUpstreamStreamMs: 620,
+    tTotalMs: 1328,
   }),
-  buildPreview({
-    id: 497,
-    invokeId: "invoke-pck-01-01",
-    occurredAt: "2026-03-03T09:32:00.000Z",
-    totalTokens: 1024,
-    cost: 0.024,
-    proxyDisplayName: "Proxy North",
+  buildInvocationRecord({
+    id: 499,
+    invokeId: "invoke-pck-01-04",
+    promptCacheKey: CONVERSATION_ONE_KEY,
+    occurredAt: "2026-03-27T03:14:34.000Z",
     upstreamAccountId: 12,
-    upstreamAccountName: "Pool Beta",
-    endpoint: "/v1/responses",
+    upstreamAccountName: "backup.f3x2@ops.example",
+    proxyDisplayName: "osaka-edge-02",
+    totalTokens: 59688,
+    inputTokens: 55024,
+    cacheInputTokens: 52310,
+    outputTokens: 4664,
+    reasoningTokens: 702,
+    reasoningEffort: "medium",
+    cost: 0.0161,
+    responseContentEncoding: "gzip",
+    tUpstreamConnectMs: 688,
+    tUpstreamTtfbMs: 144,
+    tUpstreamStreamMs: 720,
+    tTotalMs: 1586,
+  }),
+  buildInvocationRecord({
+    id: 498,
+    invokeId: "invoke-pck-01-03",
+    promptCacheKey: CONVERSATION_ONE_KEY,
+    occurredAt: "2026-03-27T03:14:27.000Z",
+    upstreamAccountId: 13,
+    upstreamAccountName: "audit.q9k8@ops.example",
+    proxyDisplayName: "osaka-edge-02",
+    endpoint: "/v1/chat/completions",
+    status: "http_502",
+    failureClass: "service_failure",
+    errorMessage: "upstream gateway closed before first byte",
+    totalTokens: 59549,
+    inputTokens: 59549,
+    cacheInputTokens: 0,
+    outputTokens: 0,
+    cost: 0.0161,
+    responseContentEncoding: "identity",
+    serviceTier: "auto",
+    tUpstreamConnectMs: 1208,
+    tUpstreamTtfbMs: null,
+    tUpstreamStreamMs: null,
+    tTotalMs: 30018,
+    isActionable: true,
+  }),
+  buildInvocationRecord({
+    id: 497,
+    invokeId: "invoke-pck-01-02",
+    promptCacheKey: CONVERSATION_ONE_KEY,
+    occurredAt: "2026-03-27T03:14:02.000Z",
+    upstreamAccountId: 11,
+    upstreamAccountName: "growth.6vv4@relay.example",
+    proxyDisplayName: "singapore-edge-03",
+    totalTokens: 59393,
+    inputTokens: 54480,
+    cacheInputTokens: 51120,
+    outputTokens: 4913,
+    reasoningTokens: 684,
+    reasoningEffort: "medium",
+    cost: 0.0276,
+    responseContentEncoding: "gzip, br",
+    tUpstreamConnectMs: 544,
+    tUpstreamTtfbMs: 132,
+    tUpstreamStreamMs: 603,
+    tTotalMs: 1315,
+  }),
+  buildInvocationRecord({
+    id: 496,
+    invokeId: "invoke-pck-01-01",
+    promptCacheKey: CONVERSATION_ONE_KEY,
+    occurredAt: "2026-03-27T03:12:59.000Z",
+    upstreamAccountId: 11,
+    upstreamAccountName: "growth.6vv4@relay.example",
+    proxyDisplayName: "singapore-edge-03",
+    totalTokens: 61120,
+    inputTokens: 56240,
+    cacheInputTokens: 53440,
+    outputTokens: 4880,
+    reasoningTokens: 701,
+    reasoningEffort: "medium",
+    cost: 0.0294,
+    responseContentEncoding: "gzip",
+    tUpstreamConnectMs: 572,
+    tUpstreamTtfbMs: 138,
+    tUpstreamStreamMs: 648,
+    tTotalMs: 1384,
   }),
 ];
 
-const conversationTwoPreviews = [
-  buildPreview({
+const conversationTwoHistory = [
+  buildInvocationRecord({
     id: 601,
-    invokeId: "invoke-pck-02-03",
-    occurredAt: "2026-03-03T11:40:28.000Z",
-    totalTokens: 804,
-    cost: 0.019,
-    proxyDisplayName: "Proxy South",
+    invokeId: "invoke-pck-02-06",
+    promptCacheKey: CONVERSATION_TWO_KEY,
+    occurredAt: "2026-03-27T03:19:19.000Z",
     upstreamAccountId: 21,
-    upstreamAccountName: "Pool Delta",
-    endpoint: "/v1/responses",
+    upstreamAccountName: "growth.6vv4@relay.example",
+    proxyDisplayName: "frankfurt-edge-04",
+    totalTokens: 74630,
+    inputTokens: 69420,
+    cacheInputTokens: 66200,
+    outputTokens: 5210,
+    reasoningTokens: 890,
+    reasoningEffort: "high",
+    cost: 0.0313,
+    responseContentEncoding: "gzip, br",
+    tUpstreamConnectMs: 618,
+    tUpstreamTtfbMs: 141,
+    tUpstreamStreamMs: 810,
+    tTotalMs: 1686,
   }),
-  buildPreview({
+  buildInvocationRecord({
     id: 600,
-    invokeId: "invoke-pck-02-02",
-    occurredAt: "2026-03-03T10:15:00.000Z",
-    status: "invalid_api_key",
-    totalTokens: 56,
-    cost: 0.001,
-    proxyDisplayName: "Proxy South",
-    upstreamAccountId: 22,
-    upstreamAccountName: "Pool Epsilon",
-    endpoint: "/v1/chat/completions",
-  }),
-  buildPreview({
-    id: 599,
-    invokeId: "invoke-pck-02-01",
-    occurredAt: "2026-03-03T09:45:00.000Z",
-    totalTokens: 742,
-    cost: 0.017,
-    proxyDisplayName: "Proxy South",
+    invokeId: "invoke-pck-02-05",
+    promptCacheKey: CONVERSATION_TWO_KEY,
+    occurredAt: "2026-03-27T03:18:56.000Z",
     upstreamAccountId: 21,
-    upstreamAccountName: "Pool Delta",
-    endpoint: "/v1/responses",
+    upstreamAccountName: "growth.6vv4@relay.example",
+    proxyDisplayName: "frankfurt-edge-04",
+    totalTokens: 72206,
+    inputTokens: 67320,
+    cacheInputTokens: 64100,
+    outputTokens: 4886,
+    reasoningTokens: 840,
+    reasoningEffort: "high",
+    cost: 0.0305,
+    responseContentEncoding: "gzip",
+    tUpstreamConnectMs: 602,
+    tUpstreamTtfbMs: 136,
+    tUpstreamStreamMs: 774,
+    tTotalMs: 1598,
+  }),
+  buildInvocationRecord({
+    id: 599,
+    invokeId: "invoke-pck-02-04",
+    promptCacheKey: CONVERSATION_TWO_KEY,
+    occurredAt: "2026-03-27T03:18:45.000Z",
+    upstreamAccountId: 22,
+    upstreamAccountName: "mia.7rmmq@support.example",
+    proxyDisplayName: "frankfurt-edge-04",
+    totalTokens: 71379,
+    inputTokens: 66410,
+    cacheInputTokens: 63144,
+    outputTokens: 4969,
+    reasoningTokens: 812,
+    reasoningEffort: "medium",
+    cost: 0.0275,
+    responseContentEncoding: "gzip",
+    tUpstreamConnectMs: 644,
+    tUpstreamTtfbMs: 149,
+    tUpstreamStreamMs: 792,
+    tTotalMs: 1642,
+  }),
+  buildInvocationRecord({
+    id: 598,
+    invokeId: "invoke-pck-02-03",
+    promptCacheKey: CONVERSATION_TWO_KEY,
+    occurredAt: "2026-03-27T03:18:32.000Z",
+    upstreamAccountId: 22,
+    upstreamAccountName: "mia.7rmmq@support.example",
+    proxyDisplayName: "madrid-edge-05",
+    totalTokens: 68983,
+    inputTokens: 64210,
+    cacheInputTokens: 61002,
+    outputTokens: 4773,
+    reasoningTokens: 788,
+    reasoningEffort: "medium",
+    cost: 0.0371,
+    responseContentEncoding: "gzip, br",
+    tUpstreamConnectMs: 700,
+    tUpstreamTtfbMs: 155,
+    tUpstreamStreamMs: 840,
+    tTotalMs: 1764,
+  }),
+  buildInvocationRecord({
+    id: 597,
+    invokeId: "invoke-pck-02-02",
+    promptCacheKey: CONVERSATION_TWO_KEY,
+    occurredAt: "2026-03-27T03:18:15.000Z",
+    upstreamAccountId: 21,
+    upstreamAccountName: "growth.6vv4@relay.example",
+    proxyDisplayName: "madrid-edge-05",
+    totalTokens: 63629,
+    inputTokens: 59040,
+    cacheInputTokens: 56120,
+    outputTokens: 4589,
+    reasoningTokens: 701,
+    reasoningEffort: "medium",
+    cost: 0.0327,
+    responseContentEncoding: "gzip",
+    tUpstreamConnectMs: 582,
+    tUpstreamTtfbMs: 133,
+    tUpstreamStreamMs: 728,
+    tTotalMs: 1503,
+  }),
+  buildInvocationRecord({
+    id: 596,
+    invokeId: "invoke-pck-02-01",
+    promptCacheKey: CONVERSATION_TWO_KEY,
+    occurredAt: "2026-03-27T03:17:44.000Z",
+    upstreamAccountId: 21,
+    upstreamAccountName: "growth.6vv4@relay.example",
+    proxyDisplayName: "madrid-edge-05",
+    totalTokens: 61208,
+    inputTokens: 56990,
+    cacheInputTokens: 53910,
+    outputTokens: 4218,
+    reasoningTokens: 655,
+    reasoningEffort: "medium",
+    cost: 0.0289,
+    responseContentEncoding: "gzip",
+    tUpstreamConnectMs: 560,
+    tUpstreamTtfbMs: 129,
+    tUpstreamStreamMs: 684,
+    tTotalMs: 1436,
   }),
 ];
+
+const conversationOnePreviews = conversationOneHistory
+  .slice(0, 5)
+  .map(buildPreviewFromRecord);
+const conversationTwoPreviews = conversationTwoHistory
+  .slice(0, 5)
+  .map(buildPreviewFromRecord);
 
 const historyRecordsByKey = new Map<string, ApiInvocation[]>([
   [
-    "pck-chat-20260303-01",
-    [
-      ...conversationOnePreviews.map(buildHistoryRecord),
-      buildHistoryRecord(
-        buildPreview({
-          id: 496,
-          invokeId: "invoke-pck-01-00",
-          occurredAt: "2026-03-03T08:10:00.000Z",
-          totalTokens: 880,
-          cost: 0.021,
-          proxyDisplayName: "Proxy North",
-          upstreamAccountId: 11,
-          upstreamAccountName: "Pool Alpha",
-          endpoint: "/v1/responses",
-        }),
-      ),
-    ],
+    CONVERSATION_ONE_KEY,
+    conversationOneHistory,
   ],
   [
-    "pck-chat-20260303-02",
-    conversationTwoPreviews.map(buildHistoryRecord),
+    CONVERSATION_TWO_KEY,
+    conversationTwoHistory,
   ],
 ]);
 
@@ -329,147 +589,139 @@ function StorybookPromptCacheAccountMock({
 }
 
 const stats: PromptCacheConversationsResponse = {
-  rangeStart: "2026-03-02T00:00:00.000Z",
-  rangeEnd: "2026-03-03T00:00:00.000Z",
+  rangeStart: "2026-03-26T03:00:00.000Z",
+  rangeEnd: "2026-03-27T03:20:00.000Z",
   selectionMode: "count",
   selectedLimit: 50,
   selectedActivityHours: null,
   implicitFilter: { kind: null, filteredCount: 0 },
   conversations: [
     {
-      promptCacheKey: "pck-chat-20260303-01",
-      requestCount: 41,
-      totalTokens: 56124,
-      totalCost: 1.2842,
-      createdAt: "2026-02-24T03:26:11.000Z",
-      lastActivityAt: "2026-03-03T12:44:10.000Z",
+      promptCacheKey: CONVERSATION_ONE_KEY,
+      requestCount: 15,
+      totalTokens: 784054,
+      totalCost: 0.403,
+      createdAt: "2026-03-27T03:12:32.000Z",
+      lastActivityAt: "2026-03-27T03:14:47.000Z",
       upstreamAccounts: [
         {
           upstreamAccountId: 11,
-          upstreamAccountName: "Pool Alpha",
-          requestCount: 19,
-          totalTokens: 26480,
-          totalCost: 0.6124,
-          lastActivityAt: "2026-03-03T12:44:10.000Z",
+          upstreamAccountName: "growth.6vv4@relay.example",
+          requestCount: 9,
+          totalTokens: 431220,
+          totalCost: 0.2214,
+          lastActivityAt: "2026-03-27T03:14:47.000Z",
         },
         {
           upstreamAccountId: 12,
-          upstreamAccountName: "Pool Beta",
-          requestCount: 12,
-          totalTokens: 17820,
-          totalCost: 0.4018,
-          lastActivityAt: "2026-03-03T11:21:00.000Z",
-        },
-        {
-          upstreamAccountId: null,
-          upstreamAccountName: null,
-          requestCount: 10,
-          totalTokens: 11824,
-          totalCost: 0.27,
-          lastActivityAt: "2026-03-03T10:00:00.000Z",
+          upstreamAccountName: "backup.f3x2@ops.example",
+          requestCount: 4,
+          totalTokens: 221944,
+          totalCost: 0.1137,
+          lastActivityAt: "2026-03-27T03:14:34.000Z",
         },
         {
           upstreamAccountId: 13,
-          upstreamAccountName: "Pool Hidden",
-          requestCount: 3,
-          totalTokens: 500,
-          totalCost: 0.01,
-          lastActivityAt: "2026-03-02T08:00:00.000Z",
+          upstreamAccountName: "audit.q9k8@ops.example",
+          requestCount: 2,
+          totalTokens: 130890,
+          totalCost: 0.0679,
+          lastActivityAt: "2026-03-27T03:14:27.000Z",
         },
       ],
       recentInvocations: conversationOnePreviews,
       last24hRequests: [
         {
-          occurredAt: "2026-03-02T13:00:00.000Z",
+          occurredAt: "2026-03-26T07:14:00.000Z",
           status: "completed",
           isSuccess: true,
-          requestTokens: 980,
-          cumulativeTokens: 980,
+          requestTokens: 84210,
+          cumulativeTokens: 84210,
         },
         {
-          occurredAt: "2026-03-02T15:12:00.000Z",
+          occurredAt: "2026-03-26T12:10:00.000Z",
           status: "completed",
           isSuccess: true,
-          requestTokens: 1210,
-          cumulativeTokens: 2190,
+          requestTokens: 126430,
+          cumulativeTokens: 210640,
         },
         {
-          occurredAt: "2026-03-02T17:53:00.000Z",
-          status: "upstream_stream_error",
+          occurredAt: "2026-03-26T18:42:00.000Z",
+          status: "http_502",
           isSuccess: false,
-          requestTokens: 670,
-          cumulativeTokens: 2860,
+          requestTokens: 59549,
+          cumulativeTokens: 270189,
         },
         {
-          occurredAt: "2026-03-02T20:40:00.000Z",
+          occurredAt: "2026-03-27T01:35:00.000Z",
           status: "completed",
           isSuccess: true,
-          requestTokens: 1460,
-          cumulativeTokens: 4320,
+          requestTokens: 213920,
+          cumulativeTokens: 484109,
         },
         {
-          occurredAt: "2026-03-03T10:44:00.000Z",
+          occurredAt: "2026-03-27T03:14:47.000Z",
           status: "completed",
           isSuccess: true,
-          requestTokens: 1184,
-          cumulativeTokens: 5504,
+          requestTokens: 299945,
+          cumulativeTokens: 784054,
         },
       ],
     },
     {
-      promptCacheKey: "pck-chat-20260303-02",
-      requestCount: 16,
-      totalTokens: 18209,
-      totalCost: 0.4628,
-      createdAt: "2026-02-20T08:09:33.000Z",
-      lastActivityAt: "2026-03-03T11:40:28.000Z",
+      promptCacheKey: CONVERSATION_TWO_KEY,
+      requestCount: 13,
+      totalTokens: 774794,
+      totalCost: 0.4501,
+      createdAt: "2026-03-27T03:07:14.000Z",
+      lastActivityAt: "2026-03-27T03:19:19.000Z",
       upstreamAccounts: [
         {
           upstreamAccountId: 21,
-          upstreamAccountName: "Pool Delta",
-          requestCount: 9,
-          totalTokens: 10120,
-          totalCost: 0.2588,
-          lastActivityAt: "2026-03-03T11:40:28.000Z",
+          upstreamAccountName: "growth.6vv4@relay.example",
+          requestCount: 8,
+          totalTokens: 452106,
+          totalCost: 0.2623,
+          lastActivityAt: "2026-03-27T03:19:19.000Z",
         },
         {
           upstreamAccountId: 22,
-          upstreamAccountName: "Pool Epsilon",
-          requestCount: 7,
-          totalTokens: 8089,
-          totalCost: 0.204,
-          lastActivityAt: "2026-03-03T09:30:00.000Z",
+          upstreamAccountName: "mia.7rmmq@support.example",
+          requestCount: 5,
+          totalTokens: 322688,
+          totalCost: 0.1878,
+          lastActivityAt: "2026-03-27T03:18:45.000Z",
         },
       ],
       recentInvocations: conversationTwoPreviews,
       last24hRequests: [
         {
-          occurredAt: "2026-03-02T14:16:00.000Z",
+          occurredAt: "2026-03-26T08:22:00.000Z",
           status: "completed",
           isSuccess: true,
-          requestTokens: 742,
-          cumulativeTokens: 742,
+          requestTokens: 102448,
+          cumulativeTokens: 102448,
         },
         {
-          occurredAt: "2026-03-02T14:51:00.000Z",
-          status: "invalid_api_key",
-          isSuccess: false,
-          requestTokens: 56,
-          cumulativeTokens: 798,
-        },
-        {
-          occurredAt: "2026-03-02T18:05:00.000Z",
+          occurredAt: "2026-03-26T12:38:00.000Z",
           status: "completed",
           isSuccess: true,
-          requestTokens: 930,
-          cumulativeTokens: 1728,
+          requestTokens: 148930,
+          cumulativeTokens: 251378,
         },
         {
-          occurredAt: "2026-03-03T11:40:28.000Z",
+          occurredAt: "2026-03-26T18:55:00.000Z",
           status: "completed",
           isSuccess: true,
-          requestTokens: 804,
-          cumulativeTokens: 2532,
+          requestTokens: 168441,
+          cumulativeTokens: 419819,
+        },
+        {
+          occurredAt: "2026-03-27T03:19:19.000Z",
+          status: "completed",
+          isSuccess: true,
+          requestTokens: 354975,
+          cumulativeTokens: 774794,
         },
       ],
     },
@@ -485,7 +737,7 @@ const sharedScaleStats: PromptCacheConversationsResponse = {
   implicitFilter: { kind: null, filteredCount: 0 },
   conversations: [
     {
-      promptCacheKey: "pck-low-volume",
+      promptCacheKey: "019d2b69-ca16-73f2-bf97-0e9b9a1f0c31",
       requestCount: 3,
       totalTokens: 420,
       totalCost: 0.01,
@@ -494,7 +746,7 @@ const sharedScaleStats: PromptCacheConversationsResponse = {
       upstreamAccounts: [
         {
           upstreamAccountId: 31,
-          upstreamAccountName: "Pool Low",
+          upstreamAccountName: "sweep.q1h2@watch.example",
           requestCount: 3,
           totalTokens: 420,
           totalCost: 0.01,
@@ -502,17 +754,19 @@ const sharedScaleStats: PromptCacheConversationsResponse = {
         },
       ],
       recentInvocations: [
-        buildPreview({
-          id: 701,
-          invokeId: "invoke-low-01",
-          occurredAt: "2026-03-02T05:00:00.000Z",
-          totalTokens: 120,
-          cost: 0.003,
-          proxyDisplayName: "Proxy Low",
-          upstreamAccountId: 31,
-          upstreamAccountName: "Pool Low",
-          endpoint: "/v1/responses",
-        }),
+        buildPreviewFromRecord(
+          buildInvocationRecord({
+            id: 701,
+            invokeId: "invoke-low-01",
+            promptCacheKey: "019d2b69-ca16-73f2-bf97-0e9b9a1f0c31",
+            occurredAt: "2026-03-02T05:00:00.000Z",
+            totalTokens: 120,
+            cost: 0.003,
+            proxyDisplayName: "hong-kong-edge-01",
+            upstreamAccountId: 31,
+            upstreamAccountName: "sweep.q1h2@watch.example",
+          }),
+        ),
       ],
       last24hRequests: [
         {
@@ -532,7 +786,7 @@ const sharedScaleStats: PromptCacheConversationsResponse = {
       ],
     },
     {
-      promptCacheKey: "pck-high-volume",
+      promptCacheKey: "019d2b77-b081-7180-80bd-5cc31df7f9b4",
       requestCount: 8,
       totalTokens: 8600,
       totalCost: 0.21,
@@ -541,7 +795,7 @@ const sharedScaleStats: PromptCacheConversationsResponse = {
       upstreamAccounts: [
         {
           upstreamAccountId: 41,
-          upstreamAccountName: "Pool High",
+          upstreamAccountName: "burst.f9m4@watch.example",
           requestCount: 8,
           totalTokens: 8600,
           totalCost: 0.21,
@@ -549,17 +803,19 @@ const sharedScaleStats: PromptCacheConversationsResponse = {
         },
       ],
       recentInvocations: [
-        buildPreview({
-          id: 801,
-          invokeId: "invoke-high-01",
-          occurredAt: "2026-03-02T23:40:00.000Z",
-          totalTokens: 2200,
-          cost: 0.052,
-          proxyDisplayName: "Proxy High",
-          upstreamAccountId: 41,
-          upstreamAccountName: "Pool High",
-          endpoint: "/v1/responses",
-        }),
+        buildPreviewFromRecord(
+          buildInvocationRecord({
+            id: 801,
+            invokeId: "invoke-high-01",
+            promptCacheKey: "019d2b77-b081-7180-80bd-5cc31df7f9b4",
+            occurredAt: "2026-03-02T23:40:00.000Z",
+            totalTokens: 2200,
+            cost: 0.052,
+            proxyDisplayName: "london-edge-02",
+            upstreamAccountId: 41,
+            upstreamAccountName: "burst.f9m4@watch.example",
+          }),
+        ),
       ],
       last24hRequests: [
         {
@@ -610,7 +866,7 @@ const meta = {
             <div className="min-h-screen bg-base-200 px-4 py-6 text-base-content sm:px-6">
               <main className="mx-auto w-full max-w-[1200px] space-y-4">
                 <h2 className="text-xl font-semibold">
-                  Prompt Cache 对话统计（Storybook Mock）
+                  对话
                 </h2>
                 <Story />
               </main>
@@ -729,5 +985,8 @@ export const DrawerOpen: Story = {
     await expect(
       documentScope.getByText(/Loaded 6 \/ 6 retained record\(s\)/i),
     ).toBeInTheDocument();
+    await expect(
+      documentScope.getAllByTestId("invocation-table-scroll").length,
+    ).toBeGreaterThan(0);
   },
 };
