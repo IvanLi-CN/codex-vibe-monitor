@@ -4280,7 +4280,7 @@ async fn list_upstream_accounts_clamps_work_status_for_abnormal_or_syncing_accou
         reauth_item
             .get("workStatus")
             .and_then(serde_json::Value::as_str),
-        Some("idle")
+        Some("unavailable")
     );
     assert_eq!(
         reauth_item
