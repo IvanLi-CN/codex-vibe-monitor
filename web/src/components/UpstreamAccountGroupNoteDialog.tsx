@@ -123,7 +123,7 @@ function ProxyOptionTrafficChart({
   const totals = useMemo(() => sumProxyTraffic(node), [node])
 
   return (
-    <div className="w-full md:w-[13.5rem] md:max-w-[13.5rem]">
+    <div className="w-full sm:w-[13.5rem] sm:max-w-[13.5rem] sm:self-end">
       <div className="flex items-center justify-between gap-3">
         <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-base-content/55">
           {label}
@@ -247,7 +247,7 @@ export function UpstreamAccountGroupNoteDialog({
     <Dialog open={open} onOpenChange={(nextOpen) => (!busy ? (nextOpen ? undefined : onClose()) : undefined)}>
       <DialogContent
         container={container}
-        className="flex w-[min(72rem,calc(100vw-2rem))] max-w-[72rem] max-h-[calc(100dvh-2rem)] flex-col overflow-hidden border-base-300 bg-base-100 p-0 sm:w-[min(72rem,calc(100vw-4rem))] sm:max-h-[calc(100dvh-4rem)]"
+        className="flex max-h-[calc(100dvh-2rem)] flex-col overflow-hidden border-base-300 bg-base-100 p-0 sm:max-h-[calc(100dvh-4rem)]"
       >
         <div className="flex items-start justify-between gap-4 border-b border-base-300/80 px-6 py-5">
           <DialogHeader className="min-w-0">
@@ -330,7 +330,7 @@ export function UpstreamAccountGroupNoteDialog({
                               onBoundProxyKeysChange(toggleBoundProxyKey(normalizedBoundProxyKeys, node.key))
                             }}
                             className={cn(
-                              'flex flex-col items-start gap-3 rounded-xl border px-3 py-3 text-left transition-colors md:flex-row md:items-center md:justify-between',
+                              'flex flex-col items-start gap-3 rounded-xl border px-3 py-3 text-left transition-colors',
                               selected
                                 ? 'border-primary/45 bg-primary/10'
                                 : 'border-base-300/80 bg-base-100/75',

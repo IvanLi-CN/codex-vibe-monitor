@@ -120,7 +120,8 @@ describe("UpstreamAccountGroupNoteDialog", () => {
 
     const dialog = document.querySelector('[role="dialog"]') as HTMLElement | null;
     expect(dialog).not.toBeNull();
-    expect(dialog?.className).toContain("max-w-[72rem]");
+    expect(dialog?.className).not.toContain("max-w-[72rem]");
+    expect(dialog?.className).toContain("w-[min(34rem,calc(100vw-2rem))]");
 
     const truncatedTitle = document.querySelector(
       '[title="Ivan-hinet-vless-vision-01KF874741GBN6MQYD6TNMYDVS"]',
