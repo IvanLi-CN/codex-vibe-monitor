@@ -121,12 +121,20 @@ function ProxyOptionTrafficChart({
 }) {
   const buckets = useMemo(() => (Array.isArray(node.last24h) ? node.last24h : []), [node.last24h])
   const totals = useMemo(() => sumProxyTraffic(node), [node])
+  const windowBadgeLabel = useMemo(() => {
+    if (/24/.test(label)) return '24H'
+    return label
+  }, [label])
 
   return (
     <div className="w-full sm:min-w-[16rem] sm:max-w-[16rem]">
       <div className="flex items-center justify-between gap-3">
-        <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-base-content/55">
-          {label}
+        <span
+          className="inline-flex h-6 min-w-[2.9rem] shrink-0 items-center justify-center rounded-md border border-base-300/80 bg-base-100/75 px-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-base-content/55 whitespace-nowrap"
+          title={label}
+          aria-label={label}
+        >
+          {windowBadgeLabel}
         </span>
         <div className="flex items-center gap-3 text-[11px] font-medium">
           <span className="inline-flex items-center gap-1 text-success">
