@@ -3837,9 +3837,28 @@ describe("UpstreamAccountsPage api key details", () => {
       groups: [],
       forwardProxyNodes: [
         {
+          key: "__direct__",
+          displayName: "Direct",
+          protocolLabel: "DIRECT",
+          source: "direct",
+          penalized: false,
+          selectable: true,
+          last24h: [],
+        },
+        {
           key: "jp-edge-01",
           displayName: "JP Edge 01",
+          protocolLabel: "HTTP",
           source: "inventory",
+          penalized: false,
+          selectable: true,
+          last24h: [],
+        },
+        {
+          key: "vless://e8d10b05-aec8-4cee-be7d-2f5eee61b0a7@hinet-ep.707979.xyz:53842?encryption=none&security=reality&type=tcp&sni=skypapi.onedrive.com&fp=chrome&pbk=abc123&sid=long-subscription-node#Ivan-hinet-vless-vision-01KF874741GBN6MQYD6TNMYDVS",
+          displayName: "Ivan-hinet-vless-vision-01KF874741GBN6MQYD6TNMYDVS",
+          protocolLabel: "VLESS",
+          source: "subscription",
           penalized: false,
           selectable: true,
           last24h: [],
@@ -3869,6 +3888,10 @@ describe("UpstreamAccountsPage api key details", () => {
       throw new Error("missing group settings dialog");
     }
     expect(groupSettingsDialog.textContent || "").toContain("Bound proxy nodes");
+    expect(groupSettingsDialog.textContent || "").toContain("Direct");
+    expect(groupSettingsDialog.textContent || "").toContain("DIRECT");
+    expect(groupSettingsDialog.textContent || "").toContain("VLESS");
+    expect(groupSettingsDialog.textContent || "").not.toContain("vless://");
 
     const groupNoteField = groupSettingsDialog.querySelector("textarea");
     if (!(groupNoteField instanceof HTMLTextAreaElement)) {

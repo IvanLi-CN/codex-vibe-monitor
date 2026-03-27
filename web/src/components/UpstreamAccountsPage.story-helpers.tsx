@@ -106,27 +106,45 @@ function buildRequestBuckets(seed: number, baseline: number, failuresEvery: numb
   })
 }
 
+const directBindingKey = '__direct__'
+const subscriptionSsKey =
+  'ss://2022-blake3-aes-128-gcm:EOYQdB4zxDFr9WNrv8HiXg%3D%3D%3A%2FnzEl7kJLV8e@example-hk-01.707979.xyz:443#Ivan-hinet-ss2022-01KF87EBR50MM9JKM9R9BCA9WZ'
+const subscriptionVlessKey =
+  'vless://e8d10b05-aec8-4cee-be7d-2f5eee61b0a7@hinet-ep.707979.xyz:53842?encryption=none&security=reality&type=tcp&sni=skypapi.onedrive.com&fp=chrome&pbk=abc123&sid=long-subscription-node#Ivan-hinet-vless-vision-01KF874741GBN6MQYD6TNMYDVS'
+
 const defaultForwardProxyNodes: ForwardProxyBindingNode[] = [
+  {
+    key: directBindingKey,
+    source: 'direct',
+    displayName: 'Direct',
+    protocolLabel: 'DIRECT',
+    penalized: false,
+    selectable: true,
+    last24h: buildRequestBuckets(0, 20, 8),
+  },
   {
     key: 'jp-edge-01',
     source: 'manual',
     displayName: 'JP Edge 01',
+    protocolLabel: 'HTTP',
     penalized: false,
     selectable: true,
     last24h: buildRequestBuckets(1, 18, 6),
   },
   {
-    key: 'sg-edge-02',
+    key: subscriptionSsKey,
     source: 'subscription',
-    displayName: 'SG Edge 02',
+    displayName: 'Ivan-hinet-ss2022-01KF87EBR50MM9JKM9R9BCA9WZ',
+    protocolLabel: 'SS',
     penalized: false,
     selectable: true,
     last24h: buildRequestBuckets(7, 13, 5),
   },
   {
-    key: 'us-edge-03',
+    key: subscriptionVlessKey,
     source: 'subscription',
-    displayName: 'US Edge 03',
+    displayName: 'Ivan-hinet-vless-vision-01KF874741GBN6MQYD6TNMYDVS',
+    protocolLabel: 'VLESS',
     penalized: true,
     selectable: true,
     last24h: buildRequestBuckets(13, 10, 4),
@@ -135,6 +153,7 @@ const defaultForwardProxyNodes: ForwardProxyBindingNode[] = [
     key: 'drain-node',
     source: 'manual',
     displayName: 'Drain Node',
+    protocolLabel: 'HTTP',
     penalized: true,
     selectable: false,
     last24h: buildRequestBuckets(17, 5, 3),
@@ -1981,7 +2000,7 @@ function createStore(): StoryStore {
       rescue: 'Emergency pool for overflow and incident recovery.',
     },
     groupBoundProxyKeys: {
-      production: ['jp-edge-01', 'sg-edge-02'],
+      production: [directBindingKey, subscriptionVlessKey],
       staging: ['drain-node'],
       overflow: ['missing-node-legacy'],
     },

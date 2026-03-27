@@ -5720,9 +5720,28 @@ describe("UpstreamAccountCreatePage api key", () => {
       saveGroupNote,
       forwardProxyNodes: [
         {
+          key: "__direct__",
+          displayName: "Direct",
+          protocolLabel: "DIRECT",
+          source: "direct",
+          penalized: false,
+          selectable: true,
+          last24h: [],
+        },
+        {
           key: "jp-edge-01",
           displayName: "JP Edge 01",
+          protocolLabel: "HTTP",
           source: "inventory",
+          penalized: false,
+          selectable: true,
+          last24h: [],
+        },
+        {
+          key: "ss://2022-blake3-aes-128-gcm:EOYQdB4zxDFr9WNrv8HiXg%3D%3D%3A%2FnzEl7kJLV8e@example-hk-01.707979.xyz:443#Ivan-hinet-ss2022-01KF87EBR50MM9JKM9R9BCA9WZ",
+          displayName: "Ivan-hinet-ss2022-01KF87EBR50MM9JKM9R9BCA9WZ",
+          protocolLabel: "SS",
+          source: "subscription",
           penalized: false,
           selectable: true,
           last24h: [],
@@ -5745,6 +5764,10 @@ describe("UpstreamAccountCreatePage api key", () => {
       throw new Error("missing group settings dialog");
     }
     expect(groupSettingsDialog.textContent || "").toContain("Bound proxy nodes");
+    expect(groupSettingsDialog.textContent || "").toContain("Direct");
+    expect(groupSettingsDialog.textContent || "").toContain("DIRECT");
+    expect(groupSettingsDialog.textContent || "").toContain("SS");
+    expect(groupSettingsDialog.textContent || "").not.toContain("ss://");
 
     const groupNoteField = groupSettingsDialog.querySelector("textarea");
     if (!(groupNoteField instanceof HTMLTextAreaElement)) {

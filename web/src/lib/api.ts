@@ -1,4 +1,5 @@
 import { getBrowserTimeZone } from "./timeZone";
+import { normalizeForwardProxyProtocolLabel } from "./forwardProxyDisplay";
 
 const rawBase = import.meta.env.VITE_API_BASE_URL ?? "";
 const API_BASE = rawBase.endsWith("/") ? rawBase.slice(0, -1) : rawBase;
@@ -801,6 +802,7 @@ export interface ForwardProxyBindingNode {
   key: string;
   source: string;
   displayName: string;
+  protocolLabel: string;
   penalized: boolean;
   selectable: boolean;
   last24h: ForwardProxyHourlyBucket[];
@@ -1162,6 +1164,9 @@ function normalizeForwardProxyBindingNode(
       typeof payload.displayName === "string" && payload.displayName.trim()
         ? payload.displayName.trim()
         : key,
+    protocolLabel: normalizeForwardProxyProtocolLabel(
+      typeof payload.protocolLabel === "string" ? payload.protocolLabel : undefined,
+    ),
     penalized: Boolean(payload.penalized),
     selectable: payload.selectable === true,
     last24h: bucketsRaw
