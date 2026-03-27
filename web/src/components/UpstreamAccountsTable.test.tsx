@@ -57,6 +57,7 @@ const labels = {
       working: 'Working',
       idle: 'Idle',
       rate_limited: 'Rate limited',
+      unavailable: 'Unavailable',
     })[status] ?? status,
   workStatusCount: (count: number) => `Working ${count}`,
   enableStatus: (status: string) =>
@@ -598,7 +599,7 @@ describe('UpstreamAccountsTable', () => {
         displayStatus: 'upstream_rejected',
         enabled: true,
         enableStatus: 'enabled',
-        workStatus: 'idle',
+        workStatus: 'unavailable',
         healthStatus: 'upstream_rejected',
         syncState: 'idle',
         planType: 'team',

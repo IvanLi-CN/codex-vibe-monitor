@@ -230,6 +230,34 @@ export const StatusFilters: Story = {
   },
 }
 
+export const UnavailableWorkStatusFilter: Story = {
+  render: () => (
+    <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await choosePageSize(canvasElement, 50)
+    await chooseCommandOptions(
+      canvasElement,
+      /工作状态|work status/i,
+      [/不可用|unavailable/i],
+    )
+
+    await expect(
+      await canvas.findByText(/Needs reauth unavailable work status/i),
+    ).toBeInTheDocument()
+    await expect(
+      await canvas.findByText(/Upstream unavailable work status/i),
+    ).toBeInTheDocument()
+    await expect(
+      await canvas.findByText(/Upstream rejected unavailable work status/i),
+    ).toBeInTheDocument()
+    await expect(
+      canvas.queryByText(/Rate limited filter control/i),
+    ).not.toBeInTheDocument()
+  },
+}
+
 export const BulkSelection: Story = {
   render: () => (
     <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />
@@ -346,6 +374,7 @@ export const OauthRetryTerminalState: Story = {
     const dialog = await documentScope.findByRole('dialog', {
       name: /Retry refresh failure settled as needs reauth/i,
     })
+    await expect(await within(dialog).findByText(/^Unavailable$/i)).toBeInTheDocument()
     await expect(dialog).toHaveTextContent(/需要重新授权|Needs reauth/i)
     await expect(dialog).not.toHaveTextContent(/同步中|Syncing/i)
     await expect(
@@ -372,6 +401,10 @@ export const UpstreamRejected402: Story = {
 
     await userEvent.click(row)
 
+    const dialog = await documentScope.findByRole('dialog', {
+      name: /Workspace deactivated 402 routing state/i,
+    })
+    await expect(await within(dialog).findByText(/^Unavailable$/i)).toBeInTheDocument()
     await expect(
       await documentScope.findByText(/^上游拒绝$|^Upstream rejected$/i),
     ).toBeInTheDocument()

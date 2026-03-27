@@ -1152,6 +1152,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     render("/account-pool/upstream-accounts");
 
     clickCombobox(/work status/i);
+    clickCommandItem(/^unavailable$/i);
     clickCommandItem(/^rate limited$/i);
     clickCommandItem(/^working$/i);
     clickCombobox(/enable status/i);
@@ -1163,7 +1164,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect(hookMocks.useUpstreamAccounts).toHaveBeenLastCalledWith({
       groupSearch: undefined,
       groupUngrouped: undefined,
-      workStatus: ["rate_limited", "working"],
+      workStatus: ["unavailable", "rate_limited", "working"],
       enableStatus: ["enabled"],
       healthStatus: ["needs_reauth", "normal"],
       page: 1,
@@ -2886,6 +2887,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
     render("/account-pool/upstream-accounts");
 
     clickFirstRosterRow();
+    expect(document.body.textContent).toContain("Unavailable");
     clickTab(/Health & events/i);
     expect(document.body.textContent).toContain(
       "The OAuth data plane rejected this request",
@@ -2902,7 +2904,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
         status: "error",
         displayStatus: "upstream_rejected",
         healthStatus: "upstream_rejected",
-        workStatus: "idle",
+        workStatus: "unavailable",
         lastAction: "sync_hard_unavailable",
         lastActionSource: "sync_maintenance",
         lastActionReasonCode: "upstream_http_402",
@@ -2917,7 +2919,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
         status: "error",
         displayStatus: "upstream_rejected",
         healthStatus: "upstream_rejected",
-        workStatus: "idle",
+        workStatus: "unavailable",
         lastAction: "sync_hard_unavailable",
         lastActionSource: "sync_maintenance",
         lastActionReasonCode: "upstream_http_402",
@@ -2950,6 +2952,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
 
     clickFirstRosterRow();
     await flushAsync();
+    expect(document.body.textContent).toContain("Unavailable");
     clickTab(/Health & events/i);
     await flushAsync();
 

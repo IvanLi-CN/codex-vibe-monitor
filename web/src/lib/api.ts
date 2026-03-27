@@ -1735,7 +1735,7 @@ export interface UpstreamAccountSummary {
   groupName?: string | null;
   isMother: boolean;
   status: "active" | "syncing" | "needs_reauth" | "error" | "disabled" | string;
-  workStatus?: "working" | "idle" | "rate_limited" | string;
+  workStatus?: "working" | "idle" | "rate_limited" | "unavailable" | string;
   enableStatus?: "enabled" | "disabled" | string;
   healthStatus?:
     | "normal"
@@ -2402,7 +2402,13 @@ function normalizeUpstreamAccountSummary(
             ? "error_other"
             : "normal";
   const workStatus =
-    typeof payload.workStatus === "string" ? payload.workStatus : "idle";
+    typeof payload.workStatus === "string"
+      ? payload.workStatus
+      : enableStatus !== "enabled" || syncState === "syncing"
+        ? "idle"
+        : healthStatus !== "normal"
+          ? "unavailable"
+          : "idle";
   if (id == null || !displayName || !kind || !provider) return null;
   return {
     id,

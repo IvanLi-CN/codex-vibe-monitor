@@ -6,7 +6,7 @@
 
 - `groupSearch`：按分组名模糊匹配；空值表示不过滤。
 - `groupUngrouped=true`：只返回未分组账号。
-- `workStatus=working|idle|rate_limited`：按系统工作状态筛选；支持重复参数，同一维度内按 OR 匹配，例如 `workStatus=working&workStatus=rate_limited`。只有 `enableStatus=enabled`、`healthStatus=normal` 且 `syncState=idle` 的账号才可能返回 `working` 或 `rate_limited`，其它账号统一返回 `idle`。
+- `workStatus=working|idle|rate_limited|unavailable`：按系统工作状态筛选；支持重复参数，同一维度内按 OR 匹配，例如 `workStatus=working&workStatus=rate_limited`。只有 `enableStatus=enabled` 且 `syncState=idle` 的账号才可能返回非 `idle` 工作态：`healthStatus=normal` 时可能返回 `working` 或 `rate_limited`，其它不可调度异常账号返回 `unavailable`；`disabled` 或 `syncing` 账号继续统一返回 `idle`。
 - `enableStatus=enabled|disabled`：按启用状态筛选；支持重复参数，同一维度内按 OR 匹配。
 - `healthStatus=normal|needs_reauth|upstream_unavailable|upstream_rejected|error_other`：按账号固有健康状态筛选；支持重复参数，同一维度内按 OR 匹配。
 - `tagIds=1&tagIds=2...`：标签多选全匹配；只有同时包含全部已选 tag 的账号才返回。
