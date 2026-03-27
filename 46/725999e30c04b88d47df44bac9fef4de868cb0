@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.30.0",
+  "base_stable_version": "1.29.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-27T08:36:59Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.30.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "8ae8befb522548425b607b52804a4b85821668ce",
+  "pr_number": 253,
+  "pr_title": "feat(account-pool): bind forward proxies to groups",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.30.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.30.0,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "46725999e30c04b88d47df44bac9fef4de868cb0",
+  "type_label": "type:minor"
+}
