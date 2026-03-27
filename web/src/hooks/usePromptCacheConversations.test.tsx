@@ -4,6 +4,7 @@ import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type {
   BroadcastPayload,
+  PromptCacheConversation,
   PromptCacheConversationInvocationPreview,
   PromptCacheConversationSelection,
   PromptCacheConversationsResponse,
@@ -139,26 +140,50 @@ function createResponse(
   promptCacheKey: string,
   preview: PromptCacheConversationInvocationPreview[] = [],
 ): PromptCacheConversationsResponse {
+  return createResponseWithConversations([
+    {
+      promptCacheKey,
+      requestCount: 1,
+      totalTokens: 30,
+      totalCost: 0.12,
+      createdAt: "2026-03-10T01:00:00Z",
+      lastActivityAt: "2026-03-10T02:00:00Z",
+      upstreamAccounts: [],
+      recentInvocations: preview,
+      last24hRequests: [],
+    },
+  ]);
+}
+
+function createConversation(
+  promptCacheKey: string,
+  overrides: Partial<PromptCacheConversation> = {},
+): PromptCacheConversation {
+  return {
+    promptCacheKey,
+    requestCount: overrides.requestCount ?? 1,
+    totalTokens: overrides.totalTokens ?? 30,
+    totalCost: overrides.totalCost ?? 0.12,
+    createdAt: overrides.createdAt ?? "2026-03-10T01:00:00Z",
+    lastActivityAt: overrides.lastActivityAt ?? "2026-03-10T02:00:00Z",
+    upstreamAccounts: overrides.upstreamAccounts ?? [],
+    recentInvocations: overrides.recentInvocations ?? [],
+    last24hRequests: overrides.last24hRequests ?? [],
+  };
+}
+
+function createResponseWithConversations(
+  conversations: PromptCacheConversation[],
+  selectedLimit = 50,
+): PromptCacheConversationsResponse {
   return {
     rangeStart: "2026-03-10T00:00:00Z",
     rangeEnd: "2026-03-11T00:00:00Z",
     selectionMode: "count",
-    selectedLimit: 50,
+    selectedLimit,
     selectedActivityHours: null,
     implicitFilter: { kind: null, filteredCount: 0 },
-    conversations: [
-      {
-        promptCacheKey,
-        requestCount: 1,
-        totalTokens: 30,
-        totalCost: 0.12,
-        createdAt: "2026-03-10T01:00:00Z",
-        lastActivityAt: "2026-03-10T02:00:00Z",
-        upstreamAccounts: [],
-        recentInvocations: preview,
-        last24hRequests: [],
-      },
-    ],
+    conversations,
   };
 }
 
@@ -169,6 +194,9 @@ function Probe({ selection }: { selection: PromptCacheConversationSelection }) {
     <div>
       <div data-testid="prompt-cache-key">
         {stats?.conversations[0]?.promptCacheKey ?? ""}
+      </div>
+      <div data-testid="conversation-keys">
+        {stats?.conversations.map((item) => item.promptCacheKey).join(",") ?? ""}
       </div>
       <div data-testid="preview-invoke-id">
         {stats?.conversations[0]?.recentInvocations[0]?.invokeId ?? ""}
@@ -294,5 +322,82 @@ describe("usePromptCacheConversations", () => {
     expect(text("preview-count")).toBe("1");
     expect(text("preview-service-tier")).toBe("auto");
     expect(apiMocks.fetchPromptCacheConversations).toHaveBeenCalledTimes(2);
+  });
+
+  it("forces an immediate refetch when an unseen live key arrives while the table is full", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-10T03:00:00Z"));
+    const refresh = deferred<PromptCacheConversationsResponse>();
+    apiMocks.fetchPromptCacheConversations
+      .mockResolvedValueOnce(
+        createResponseWithConversations(
+          [
+            createConversation("pck-newest", {
+              createdAt: "2026-03-10T02:00:00Z",
+              lastActivityAt: "2026-03-10T02:00:00Z",
+            }),
+            createConversation("pck-older", {
+              createdAt: "2026-03-10T01:00:00Z",
+              lastActivityAt: "2026-03-10T01:00:00Z",
+            }),
+          ],
+          2,
+        ),
+      )
+      .mockImplementationOnce(async () => refresh.promise);
+
+    render(<Probe selection={{ mode: "count", limit: 2 }} />);
+    await flushAsync();
+    expect(text("conversation-keys")).toBe("pck-newest,pck-older");
+
+    act(() => {
+      sseMocks.listeners.forEach((listener) => {
+        listener({
+          type: "records",
+          records: [
+            {
+              id: 902,
+              invokeId: "invoke-live-hidden",
+              occurredAt: "2026-03-10T02:30:00Z",
+              createdAt: "2026-03-10T02:30:00Z",
+              status: "running",
+              promptCacheKey: "pck-live-hidden",
+              totalTokens: 0,
+              cost: 0,
+            },
+          ],
+        });
+      });
+    });
+
+    expect(text("conversation-keys")).toBe("pck-newest,pck-older");
+    expect(apiMocks.fetchPromptCacheConversations).toHaveBeenCalledTimes(2);
+
+    refresh.resolve(
+      createResponseWithConversations(
+        [
+          createConversation("pck-live-hidden", {
+            createdAt: "2026-03-10T02:30:00Z",
+            lastActivityAt: "2026-03-10T02:30:00Z",
+            recentInvocations: [
+              createPreview({
+                id: 902,
+                invokeId: "invoke-live-hidden",
+                occurredAt: "2026-03-10T02:30:00Z",
+                status: "completed",
+              }),
+            ],
+          }),
+          createConversation("pck-newest", {
+            createdAt: "2026-03-10T02:00:00Z",
+            lastActivityAt: "2026-03-10T02:00:00Z",
+          }),
+        ],
+        2,
+      ),
+    );
+    await flushAsync();
+
+    expect(text("conversation-keys")).toBe("pck-live-hidden,pck-newest");
   });
 });

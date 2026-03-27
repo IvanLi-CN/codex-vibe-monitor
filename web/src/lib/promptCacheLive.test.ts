@@ -97,10 +97,6 @@ describe("mergePromptCacheConversationsResponse", () => {
         createdAt: "2026-03-10T02:00:00Z",
         lastActivityAt: "2026-03-10T02:00:00Z",
       }),
-      createConversation("pck-older", {
-        createdAt: "2026-03-10T01:00:00Z",
-        lastActivityAt: "2026-03-10T01:00:00Z",
-      }),
     ]);
 
     const merged = mergePromptCacheConversationsResponse(
@@ -122,6 +118,81 @@ describe("mergePromptCacheConversationsResponse", () => {
     expect(merged?.conversations.map((item) => item.promptCacheKey)).toEqual([
       "pck-live-new",
       "pck-newest",
+    ]);
+  });
+
+  it("keeps full capped rows stable until an unseen live key gets authoritative history", () => {
+    const base = createResponse([
+      createConversation("pck-newest", {
+        createdAt: "2026-03-10T02:00:00Z",
+        lastActivityAt: "2026-03-10T02:00:00Z",
+      }),
+      createConversation("pck-older", {
+        createdAt: "2026-03-10T01:00:00Z",
+        lastActivityAt: "2026-03-10T01:00:00Z",
+      }),
+    ]);
+
+    const merged = mergePromptCacheConversationsResponse(
+      base,
+      {
+        "pck-live-unknown": [
+          createLiveRecord({
+            id: 302,
+            invokeId: "invoke-live-unknown",
+            occurredAt: "2026-03-10T02:30:00Z",
+            promptCacheKey: "pck-live-unknown",
+          }),
+        ],
+      },
+      { mode: "count", limit: 2 },
+      Date.parse("2026-03-10T03:00:00Z"),
+    );
+
+    expect(merged?.conversations.map((item) => item.promptCacheKey)).toEqual([
+      "pck-newest",
+      "pck-older",
+    ]);
+  });
+
+  it("uses known conversation history when an old key reappears outside the current snapshot", () => {
+    const base = createResponse([
+      createConversation("pck-newest", {
+        createdAt: "2026-03-10T02:00:00Z",
+        lastActivityAt: "2026-03-10T02:00:00Z",
+      }),
+      createConversation("pck-older", {
+        createdAt: "2026-03-10T01:00:00Z",
+        lastActivityAt: "2026-03-10T01:00:00Z",
+      }),
+    ]);
+
+    const merged = mergePromptCacheConversationsResponse(
+      base,
+      {
+        "pck-live-old": [
+          createLiveRecord({
+            id: 303,
+            invokeId: "invoke-live-old",
+            occurredAt: "2026-03-10T02:30:00Z",
+            promptCacheKey: "pck-live-old",
+          }),
+        ],
+      },
+      { mode: "count", limit: 3 },
+      Date.parse("2026-03-10T03:00:00Z"),
+      {
+        "pck-live-old": {
+          createdAt: "2026-03-01T00:00:00Z",
+          lastActivityAt: "2026-03-01T00:00:00Z",
+        },
+      },
+    );
+
+    expect(merged?.conversations.map((item) => item.promptCacheKey)).toEqual([
+      "pck-newest",
+      "pck-older",
+      "pck-live-old",
     ]);
   });
 

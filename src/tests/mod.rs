@@ -25066,6 +25066,57 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
         "gpt-5.4",
     )
     .await;
+    sqlx::query(
+        "UPDATE codex_invocations \
+         SET input_tokens = ?1, \
+             output_tokens = ?2, \
+             cache_input_tokens = ?3, \
+             reasoning_tokens = ?4, \
+             error_message = ?5, \
+             failure_kind = ?6, \
+             failure_class = ?7, \
+             is_actionable = ?8, \
+             t_req_read_ms = ?9, \
+             t_req_parse_ms = ?10, \
+             t_upstream_connect_ms = ?11, \
+             t_upstream_ttfb_ms = ?12, \
+             t_upstream_stream_ms = ?13, \
+             t_resp_parse_ms = ?14, \
+             t_persist_ms = ?15, \
+             t_total_ms = ?16, \
+             payload = json_set( \
+                 payload, \
+                 '$.reasoningEffort', ?17, \
+                 '$.responseContentEncoding', ?18, \
+                 '$.requestedServiceTier', ?19, \
+                 '$.serviceTier', ?20 \
+             ) \
+         WHERE invoke_id = ?21",
+    )
+    .bind(120_i64)
+    .bind(80_i64)
+    .bind(40_i64)
+    .bind(12_i64)
+    .bind("[upstream_response_failed] preview extra error")
+    .bind("upstream_response_failed")
+    .bind("service_failure")
+    .bind(1_i64)
+    .bind(10.0_f64)
+    .bind(11.0_f64)
+    .bind(12.0_f64)
+    .bind(13.0_f64)
+    .bind(14.0_f64)
+    .bind(15.0_f64)
+    .bind(16.0_f64)
+    .bind(91.0_f64)
+    .bind("high")
+    .bind("br")
+    .bind("flex")
+    .bind("scale")
+    .bind("preview-06")
+    .execute(&state.pool)
+    .await
+    .expect("augment preview-06 extras");
     insert_row(
         &state.pool,
         "preview-crs-hidden",
@@ -25128,6 +25179,7 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
     assert_eq!(latest.endpoint.as_deref(), Some("/v1/responses"));
     assert_eq!(latest.failure_class.as_deref(), Some("none"));
     assert_eq!(latest.route_mode.as_deref(), Some("pool"));
+    assert_eq!(latest.source.as_deref(), Some(SOURCE_CRS));
 
     let id_only = conversation
         .recent_invocations
@@ -25161,6 +25213,44 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
     );
     assert_eq!(legacy_failed_preview.route_mode.as_deref(), Some("pool"));
 
+    let enriched_preview = conversation
+        .recent_invocations
+        .iter()
+        .find(|item| item.invoke_id == "preview-06")
+        .expect("preview-06 should be included");
+    assert_eq!(enriched_preview.source.as_deref(), Some(SOURCE_PROXY));
+    assert_eq!(enriched_preview.input_tokens, Some(120));
+    assert_eq!(enriched_preview.output_tokens, Some(80));
+    assert_eq!(enriched_preview.cache_input_tokens, Some(40));
+    assert_eq!(enriched_preview.reasoning_tokens, Some(12));
+    assert_eq!(enriched_preview.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(
+        enriched_preview.error_message.as_deref(),
+        Some("[upstream_response_failed] preview extra error")
+    );
+    assert_eq!(
+        enriched_preview.failure_kind.as_deref(),
+        Some("upstream_response_failed")
+    );
+    assert_eq!(enriched_preview.is_actionable, Some(true));
+    assert_eq!(
+        enriched_preview.response_content_encoding.as_deref(),
+        Some("br")
+    );
+    assert_eq!(
+        enriched_preview.requested_service_tier.as_deref(),
+        Some("flex")
+    );
+    assert_eq!(enriched_preview.service_tier.as_deref(), Some("scale"));
+    assert_eq!(enriched_preview.t_req_read_ms, Some(10.0));
+    assert_eq!(enriched_preview.t_req_parse_ms, Some(11.0));
+    assert_eq!(enriched_preview.t_upstream_connect_ms, Some(12.0));
+    assert_eq!(enriched_preview.t_upstream_ttfb_ms, Some(13.0));
+    assert_eq!(enriched_preview.t_upstream_stream_ms, Some(14.0));
+    assert_eq!(enriched_preview.t_resp_parse_ms, Some(15.0));
+    assert_eq!(enriched_preview.t_persist_ms, Some(16.0));
+    assert_eq!(enriched_preview.t_total_ms, Some(91.0));
+
     let proxy_only_rows = query_prompt_cache_conversation_recent_invocations(
         &state.pool,
         InvocationSourceScope::ProxyOnly,
@@ -25188,6 +25278,17 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
             .iter()
             .all(|item| item.invoke_id != "preview-crs-hidden")
     );
+    let proxy_enriched_row = proxy_only_rows
+        .iter()
+        .find(|item| item.invoke_id == "preview-06")
+        .expect("preview-06 row should be present");
+    assert_eq!(proxy_enriched_row.source.as_deref(), Some(SOURCE_PROXY));
+    assert_eq!(proxy_enriched_row.input_tokens, Some(120));
+    assert_eq!(
+        proxy_enriched_row.requested_service_tier.as_deref(),
+        Some("flex")
+    );
+    assert_eq!(proxy_enriched_row.t_total_ms, Some(91.0));
 }
 
 #[tokio::test]

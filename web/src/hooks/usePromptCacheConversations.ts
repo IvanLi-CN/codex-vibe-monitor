@@ -6,8 +6,11 @@ import {
   type PromptCacheConversationsResponse,
 } from "../lib/api";
 import {
+  getPromptCacheConversationVisibleLimit,
+  mergePromptCacheConversationHistory,
   mergePromptCacheConversationsResponse,
   mergePromptCacheLiveRecordMap,
+  type PromptCacheConversationHistoryByKey,
   reconcilePromptCacheLiveRecordMap,
 } from "../lib/promptCacheLive";
 import { subscribeToSse, subscribeToSseOpen } from "../lib/sse";
@@ -61,6 +64,9 @@ export function usePromptCacheConversations(
 ) {
   const [authoritativeStats, setAuthoritativeStats] =
     useState<PromptCacheConversationsResponse | null>(null);
+  const [knownConversationHistoryByKey, setKnownConversationHistoryByKey] = useState<
+    PromptCacheConversationHistoryByKey
+  >({});
   const [liveRecordsByKey, setLiveRecordsByKey] = useState<
     Record<string, ApiInvocation[]>
   >({});
@@ -68,6 +74,9 @@ export function usePromptCacheConversations(
   const [error, setError] = useState<string | null>(null);
   const selectionRef = useRef(selection);
   const hasHydratedRef = useRef(false);
+  const authoritativeStatsRef = useRef<PromptCacheConversationsResponse | null>(null);
+  const knownConversationHistoryRef =
+    useRef<PromptCacheConversationHistoryByKey>({});
   const inFlightRef = useRef(false);
   const pendingLoadRef = useRef<LoadOptions | null>(null);
   const pendingOpenResyncRef = useRef(false);
@@ -86,6 +95,14 @@ export function usePromptCacheConversations(
   useEffect(() => {
     selectionRef.current = selection;
   }, [selection]);
+
+  useEffect(() => {
+    authoritativeStatsRef.current = authoritativeStats;
+  }, [authoritativeStats]);
+
+  useEffect(() => {
+    knownConversationHistoryRef.current = knownConversationHistoryByKey;
+  }, [knownConversationHistoryByKey]);
 
   const invalidateCurrentRequest = useCallback(() => {
     requestSeqRef.current += 1;
@@ -114,6 +131,9 @@ export function usePromptCacheConversations(
       if (requestSeq !== requestSeqRef.current) return;
       if (!isSameSelection(selectionRef.current, requestedSelection)) return;
       setAuthoritativeStats(response);
+      setKnownConversationHistoryByKey((current) =>
+        mergePromptCacheConversationHistory(current, response),
+      );
       setLiveRecordsByKey((current) =>
         reconcilePromptCacheLiveRecordMap(current, response),
       );
@@ -158,9 +178,11 @@ export function usePromptCacheConversations(
     [runLoad],
   );
 
-  const triggerSseRefresh = useCallback(() => {
+  const triggerSseRefresh = useCallback((force = false) => {
     const now = Date.now();
-    const delay = getPromptCacheSseRefreshDelay(lastRefreshAtRef.current, now);
+    const delay = force
+      ? 0
+      : getPromptCacheSseRefreshDelay(lastRefreshAtRef.current, now);
     const run = () => {
       refreshTimerRef.current = null;
       lastRefreshAtRef.current = Date.now();
@@ -204,10 +226,28 @@ export function usePromptCacheConversations(
   useEffect(() => {
     const unsubscribe = subscribeToSse((payload) => {
       if (payload.type !== "records") return;
+      const stats = authoritativeStatsRef.current;
+      const visibleLimit = getPromptCacheConversationVisibleLimit(
+        selectionRef.current,
+      );
+      const shouldForceResync = stats != null &&
+        stats.conversations.length >= visibleLimit &&
+        payload.records.some((record) => {
+          const promptCacheKey = record.promptCacheKey?.trim();
+          if (!promptCacheKey) return false;
+          if (
+            stats.conversations.some(
+              (conversation) => conversation.promptCacheKey === promptCacheKey,
+            )
+          ) {
+            return false;
+          }
+          return !knownConversationHistoryRef.current[promptCacheKey]?.createdAt;
+        });
       setLiveRecordsByKey((current) =>
         mergePromptCacheLiveRecordMap(current, payload.records),
       );
-      triggerSseRefresh();
+      triggerSseRefresh(shouldForceResync);
     });
     return unsubscribe;
   }, [triggerSseRefresh]);
@@ -242,8 +282,10 @@ export function usePromptCacheConversations(
         authoritativeStats,
         liveRecordsByKey,
         selection,
+        Date.now(),
+        knownConversationHistoryByKey,
       ),
-    [authoritativeStats, liveRecordsByKey, selection],
+    [authoritativeStats, knownConversationHistoryByKey, liveRecordsByKey, selection],
   );
 
   return {

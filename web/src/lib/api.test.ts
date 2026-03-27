@@ -1197,6 +1197,26 @@ describe("account pool frontend API helpers", () => {
                   upstreamAccountId: 42,
                   upstreamAccountName: "Pool Alpha",
                   endpoint: "/v1/responses",
+                  source: "proxy",
+                  inputTokens: 18,
+                  outputTokens: 12,
+                  cacheInputTokens: 6,
+                  reasoningTokens: 3,
+                  reasoningEffort: "high",
+                  errorMessage: "[upstream_response_failed] preview error",
+                  failureKind: "upstream_response_failed",
+                  isActionable: true,
+                  responseContentEncoding: "br",
+                  requestedServiceTier: "flex",
+                  serviceTier: "scale",
+                  tReqReadMs: 10,
+                  tReqParseMs: 11,
+                  tUpstreamConnectMs: 12,
+                  tUpstreamTtfbMs: 13,
+                  tUpstreamStreamMs: 14,
+                  tRespParseMs: 15,
+                  tPersistMs: 16,
+                  tTotalMs: 91,
                 },
               ],
               last24hRequests: [],
@@ -1233,5 +1253,40 @@ describe("account pool frontend API helpers", () => {
     expect(response.conversations[0]?.recentInvocations[0]?.endpoint).toBe(
       "/v1/responses",
     );
+    expect(response.conversations[0]?.recentInvocations[0]?.source).toBe("proxy");
+    expect(response.conversations[0]?.recentInvocations[0]?.inputTokens).toBe(18);
+    expect(response.conversations[0]?.recentInvocations[0]?.outputTokens).toBe(12);
+    expect(response.conversations[0]?.recentInvocations[0]?.cacheInputTokens).toBe(6);
+    expect(response.conversations[0]?.recentInvocations[0]?.reasoningTokens).toBe(3);
+    expect(response.conversations[0]?.recentInvocations[0]?.reasoningEffort).toBe(
+      "high",
+    );
+    expect(response.conversations[0]?.recentInvocations[0]?.failureKind).toBe(
+      "upstream_response_failed",
+    );
+    expect(response.conversations[0]?.recentInvocations[0]?.isActionable).toBe(true);
+    expect(
+      response.conversations[0]?.recentInvocations[0]?.responseContentEncoding,
+    ).toBe("br");
+    expect(
+      response.conversations[0]?.recentInvocations[0]?.requestedServiceTier,
+    ).toBe("flex");
+    expect(response.conversations[0]?.recentInvocations[0]?.serviceTier).toBe(
+      "scale",
+    );
+    expect(response.conversations[0]?.recentInvocations[0]?.tReqReadMs).toBe(10);
+    expect(response.conversations[0]?.recentInvocations[0]?.tReqParseMs).toBe(11);
+    expect(response.conversations[0]?.recentInvocations[0]?.tUpstreamConnectMs).toBe(
+      12,
+    );
+    expect(response.conversations[0]?.recentInvocations[0]?.tUpstreamTtfbMs).toBe(
+      13,
+    );
+    expect(response.conversations[0]?.recentInvocations[0]?.tUpstreamStreamMs).toBe(
+      14,
+    );
+    expect(response.conversations[0]?.recentInvocations[0]?.tRespParseMs).toBe(15);
+    expect(response.conversations[0]?.recentInvocations[0]?.tPersistMs).toBe(16);
+    expect(response.conversations[0]?.recentInvocations[0]?.tTotalMs).toBe(91);
   });
 });

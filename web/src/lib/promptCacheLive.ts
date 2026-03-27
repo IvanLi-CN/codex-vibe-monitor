@@ -19,6 +19,11 @@ const PROMPT_CACHE_PREVIEW_LIMIT = 5;
 const PROMPT_CACHE_LIVE_RECORDS_PER_KEY_LIMIT = 8;
 const PROMPT_CACHE_UPSTREAM_ACCOUNT_LIMIT = 3;
 
+export type PromptCacheConversationHistoryByKey = Record<
+  string,
+  Pick<PromptCacheConversation, "createdAt" | "lastActivityAt">
+>;
+
 type PromptCacheConversationPreviewExtras = Partial<
   Pick<
     ApiInvocation,
@@ -69,6 +74,14 @@ function withinPromptCacheSelectionWindow(
       ? selection.activityHours
       : PROMPT_CACHE_COUNT_MODE_WINDOW_HOURS;
   return occurredAtEpoch >= now - hours * 3_600_000;
+}
+
+export function getPromptCacheConversationVisibleLimit(
+  selection: PromptCacheConversationSelection,
+) {
+  return selection.mode === "count"
+    ? selection.limit
+    : PROMPT_CACHE_ACTIVITY_MODE_LIMIT;
 }
 
 function comparePromptCacheConversationOrder(
@@ -397,10 +410,11 @@ function buildOptimisticUpstreamAccounts(
 function buildOptimisticConversation(
   promptCacheKey: string,
   liveRecords: ApiInvocation[],
+  createdAtOverride?: string | null,
 ): PromptCacheConversation {
   const uniqueRecords = mergeInvocationRecordCollections(liveRecords);
   const previewRecords = uniqueRecords.slice(0, PROMPT_CACHE_PREVIEW_LIMIT);
-  const createdAt = uniqueRecords
+  const derivedCreatedAt = uniqueRecords
     .map((record) => record.occurredAt)
     .reduce((earliest, occurredAt) =>
       earliest == null || occurredAt < earliest ? occurredAt : earliest,
@@ -426,12 +440,39 @@ function buildOptimisticConversation(
         typeof record.cost === "number" && Number.isFinite(record.cost) ? record.cost : 0;
       return sum + cost;
     }, 0),
-    createdAt: createdAt ?? new Date().toISOString(),
+    createdAt:
+      createdAtOverride?.trim() || derivedCreatedAt || new Date().toISOString(),
     lastActivityAt: lastActivityAt ?? new Date().toISOString(),
     upstreamAccounts: buildOptimisticUpstreamAccounts(uniqueRecords),
     recentInvocations: previewRecords.map(buildPromptCachePreviewFromInvocation),
     last24hRequests: mergePromptCacheRequestPoints([], uniqueRecords),
   };
+}
+
+export function mergePromptCacheConversationHistory(
+  current: PromptCacheConversationHistoryByKey,
+  stats: PromptCacheConversationsResponse | null,
+) {
+  if (!stats) return current;
+
+  let changed = false;
+  const next = { ...current };
+  for (const conversation of stats.conversations) {
+    const existing = current[conversation.promptCacheKey];
+    if (
+      existing?.createdAt === conversation.createdAt &&
+      existing?.lastActivityAt === conversation.lastActivityAt
+    ) {
+      continue;
+    }
+    next[conversation.promptCacheKey] = {
+      createdAt: conversation.createdAt,
+      lastActivityAt: conversation.lastActivityAt,
+    };
+    changed = true;
+  }
+
+  return changed ? next : current;
 }
 
 export function mergePromptCacheLiveRecordMap(
@@ -531,6 +572,7 @@ export function mergePromptCacheConversationsResponse(
   liveRecordsByKey: Record<string, ApiInvocation[]>,
   selection: PromptCacheConversationSelection,
   now = Date.now(),
+  knownConversationHistoryByKey: PromptCacheConversationHistoryByKey = {},
 ) {
   if (!base) return null;
 
@@ -573,19 +615,30 @@ export function mergePromptCacheConversationsResponse(
   });
 
   const knownKeys = new Set(nextConversations.map((item) => item.promptCacheKey));
+  const maxVisibleConversations = getPromptCacheConversationVisibleLimit(selection);
   for (const [promptCacheKey, records] of Object.entries(liveRecordsByKey)) {
     if (knownKeys.has(promptCacheKey)) continue;
     const filteredRecords = records.filter((record) =>
       withinPromptCacheSelectionWindow(record.occurredAt, selection, now),
     );
     if (filteredRecords.length === 0) continue;
-    nextConversations.push(buildOptimisticConversation(promptCacheKey, filteredRecords));
+    const knownConversation = knownConversationHistoryByKey[promptCacheKey];
+    if (
+      !knownConversation?.createdAt &&
+      nextConversations.length >= maxVisibleConversations
+    ) {
+      continue;
+    }
+    nextConversations.push(
+      buildOptimisticConversation(
+        promptCacheKey,
+        filteredRecords,
+        knownConversation?.createdAt,
+      ),
+    );
   }
 
   nextConversations.sort(comparePromptCacheConversationOrder);
-
-  const maxVisibleConversations =
-    selection.mode === "count" ? selection.limit : PROMPT_CACHE_ACTIVITY_MODE_LIMIT;
 
   return {
     ...base,
