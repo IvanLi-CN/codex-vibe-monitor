@@ -12,15 +12,16 @@ function createRecord(
     occurredAt: string;
   },
 ): ApiInvocation {
+  const { id, invokeId, occurredAt, ...rest } = overrides;
   return {
-    id: overrides.id,
-    invokeId: overrides.invokeId,
-    occurredAt: overrides.occurredAt,
-    createdAt: overrides.createdAt ?? overrides.occurredAt,
-    status: overrides.status ?? "completed",
-    totalTokens: overrides.totalTokens ?? 100,
-    cost: overrides.cost ?? 0.01,
-    ...overrides,
+    id,
+    invokeId,
+    occurredAt,
+    createdAt: rest.createdAt ?? occurredAt,
+    status: rest.status ?? "completed",
+    totalTokens: rest.totalTokens ?? 100,
+    cost: rest.cost ?? 0.01,
+    ...rest,
   };
 }
 
