@@ -16006,6 +16006,7 @@ mod tests {
                 PromptCacheConversationsCacheState {
                     entries: HashMap::new(),
                     in_flight: HashMap::new(),
+                    generation: 0,
                 },
             )),
             maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
@@ -16185,6 +16186,7 @@ mod tests {
                 PromptCacheConversationsCacheState {
                     entries: HashMap::new(),
                     in_flight: HashMap::new(),
+                    generation: 0,
                 },
             )),
             maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),

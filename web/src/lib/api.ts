@@ -1,4 +1,5 @@
 import { getBrowserTimeZone } from "./timeZone";
+import { normalizeForwardProxyProtocolLabel } from "./forwardProxyDisplay";
 
 const rawBase = import.meta.env.VITE_API_BASE_URL ?? "";
 const API_BASE = rawBase.endsWith("/") ? rawBase.slice(0, -1) : rawBase;
@@ -801,6 +802,7 @@ export interface ForwardProxyBindingNode {
   key: string;
   source: string;
   displayName: string;
+  protocolLabel: string;
   penalized: boolean;
   selectable: boolean;
   last24h: ForwardProxyHourlyBucket[];
@@ -904,6 +906,26 @@ export interface PromptCacheConversationInvocationPreview {
   upstreamAccountId: number | null;
   upstreamAccountName: string | null;
   endpoint: string | null;
+  source?: ApiInvocation["source"];
+  inputTokens?: ApiInvocation["inputTokens"];
+  outputTokens?: ApiInvocation["outputTokens"];
+  cacheInputTokens?: ApiInvocation["cacheInputTokens"];
+  reasoningTokens?: ApiInvocation["reasoningTokens"];
+  reasoningEffort?: ApiInvocation["reasoningEffort"];
+  errorMessage?: ApiInvocation["errorMessage"];
+  failureKind?: ApiInvocation["failureKind"];
+  isActionable?: ApiInvocation["isActionable"];
+  responseContentEncoding?: ApiInvocation["responseContentEncoding"];
+  requestedServiceTier?: ApiInvocation["requestedServiceTier"];
+  serviceTier?: ApiInvocation["serviceTier"];
+  tReqReadMs?: ApiInvocation["tReqReadMs"];
+  tReqParseMs?: ApiInvocation["tReqParseMs"];
+  tUpstreamConnectMs?: ApiInvocation["tUpstreamConnectMs"];
+  tUpstreamTtfbMs?: ApiInvocation["tUpstreamTtfbMs"];
+  tUpstreamStreamMs?: ApiInvocation["tUpstreamStreamMs"];
+  tRespParseMs?: ApiInvocation["tRespParseMs"];
+  tPersistMs?: ApiInvocation["tPersistMs"];
+  tTotalMs?: ApiInvocation["tTotalMs"];
 }
 
 export interface PromptCacheConversation {
@@ -1142,6 +1164,9 @@ function normalizeForwardProxyBindingNode(
       typeof payload.displayName === "string" && payload.displayName.trim()
         ? payload.displayName.trim()
         : key,
+    protocolLabel: normalizeForwardProxyProtocolLabel(
+      typeof payload.protocolLabel === "string" ? payload.protocolLabel : undefined,
+    ),
     penalized: Boolean(payload.penalized),
     selectable: payload.selectable === true,
     last24h: bucketsRaw
@@ -1397,6 +1422,52 @@ function normalizePromptCacheConversationInvocationPreview(
       typeof payload.endpoint === "string" && payload.endpoint.trim()
         ? payload.endpoint.trim()
         : null,
+    source:
+      typeof payload.source === "string" && payload.source.trim()
+        ? payload.source.trim()
+        : undefined,
+    inputTokens: normalizeFiniteNumber(payload.inputTokens),
+    outputTokens: normalizeFiniteNumber(payload.outputTokens),
+    cacheInputTokens: normalizeFiniteNumber(payload.cacheInputTokens),
+    reasoningTokens: normalizeFiniteNumber(payload.reasoningTokens),
+    reasoningEffort:
+      typeof payload.reasoningEffort === "string" && payload.reasoningEffort.trim()
+        ? payload.reasoningEffort.trim()
+        : undefined,
+    errorMessage:
+      typeof payload.errorMessage === "string" && payload.errorMessage.trim()
+        ? payload.errorMessage
+        : undefined,
+    failureKind:
+      typeof payload.failureKind === "string" && payload.failureKind.trim()
+        ? payload.failureKind.trim()
+        : undefined,
+    isActionable:
+      typeof payload.isActionable === "boolean"
+        ? payload.isActionable
+        : undefined,
+    responseContentEncoding:
+      typeof payload.responseContentEncoding === "string" &&
+      payload.responseContentEncoding.trim()
+        ? payload.responseContentEncoding.trim()
+        : undefined,
+    requestedServiceTier:
+      typeof payload.requestedServiceTier === "string" &&
+      payload.requestedServiceTier.trim()
+        ? payload.requestedServiceTier.trim()
+        : undefined,
+    serviceTier:
+      typeof payload.serviceTier === "string" && payload.serviceTier.trim()
+        ? payload.serviceTier.trim()
+        : undefined,
+    tReqReadMs: normalizeFiniteNumber(payload.tReqReadMs),
+    tReqParseMs: normalizeFiniteNumber(payload.tReqParseMs),
+    tUpstreamConnectMs: normalizeFiniteNumber(payload.tUpstreamConnectMs),
+    tUpstreamTtfbMs: normalizeFiniteNumber(payload.tUpstreamTtfbMs),
+    tUpstreamStreamMs: normalizeFiniteNumber(payload.tUpstreamStreamMs),
+    tRespParseMs: normalizeFiniteNumber(payload.tRespParseMs),
+    tPersistMs: normalizeFiniteNumber(payload.tPersistMs),
+    tTotalMs: normalizeFiniteNumber(payload.tTotalMs),
   };
 }
 

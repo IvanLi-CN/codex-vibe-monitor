@@ -25906,6 +25906,87 @@ async fn prompt_cache_conversations_cache_reuses_recent_result_within_ttl() {
 }
 
 #[tokio::test]
+async fn prompt_cache_conversations_cache_invalidation_exposes_new_proxy_capture_immediately() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+    let occurred_a = format_naive(
+        (now - ChronoDuration::minutes(80))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let occurred_b = format_naive(
+        (now - ChronoDuration::minutes(30))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind("pck-cache-live-1")
+    .bind(&occurred_a)
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(10)
+    .bind(0.01)
+    .bind(r#"{"promptCacheKey":"pck-broadcast-1"}"#)
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert initial prompt cache row");
+
+    let Json(first) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+        }),
+    )
+    .await
+    .expect("first fetch should populate prompt cache stats");
+    let first_count = first
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-broadcast-1")
+        .map(|item| item.request_count)
+        .expect("pck-broadcast-1 should be present");
+    assert_eq!(first_count, 1);
+
+    persist_and_broadcast_proxy_capture(
+        state.as_ref(),
+        Instant::now(),
+        test_proxy_capture_record("pck-cache-live-2", &occurred_b),
+    )
+    .await
+    .expect("persist+broadcast should invalidate prompt cache conversation cache");
+
+    let Json(second) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+        }),
+    )
+    .await
+    .expect("second fetch should see the freshly persisted proxy capture");
+    let second_count = second
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-broadcast-1")
+        .map(|item| item.request_count)
+        .expect("pck-broadcast-1 should remain present");
+    assert_eq!(second_count, 2);
+}
+
+#[tokio::test]
 async fn prompt_cache_conversations_concurrent_requests_same_limit_do_not_stall() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -25981,7 +26062,10 @@ async fn prompt_cache_conversation_flight_guard_cleans_in_flight_on_drop() {
         let mut state = cache.lock().await;
         state.in_flight.insert(
             PromptCacheConversationSelection::Count(20),
-            PromptCacheConversationInFlight { signal },
+            PromptCacheConversationInFlight {
+                signal,
+                generation: 0,
+            },
         );
     }
 
@@ -25989,6 +26073,7 @@ async fn prompt_cache_conversation_flight_guard_cleans_in_flight_on_drop() {
         let _guard = PromptCacheConversationFlightGuard::new(
             cache.clone(),
             PromptCacheConversationSelection::Count(20),
+            0,
         );
     }
 

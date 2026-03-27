@@ -1,13 +1,24 @@
-import { Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
+import {
+  Fragment,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { useTranslation } from "../i18n";
 import type {
   ApiInvocation,
   PromptCacheConversation,
-  PromptCacheConversationInvocationPreview,
   PromptCacheConversationUpstreamAccount,
   PromptCacheConversationsResponse,
 } from "../lib/api";
 import { fetchInvocationRecords } from "../lib/api";
+import { mergeInvocationRecordCollections } from "../lib/invocationLiveMerge";
+import { invocationStableKey } from "../lib/invocation";
+import { buildInvocationFromPromptCachePreview } from "../lib/promptCacheLive";
+import { subscribeToSse, subscribeToSseOpen } from "../lib/sse";
 import { InvocationAccountDetailDrawer } from "./InvocationAccountDetailDrawer";
 import { AccountDetailDrawerShell } from "./AccountDetailDrawerShell";
 import { AppIcon } from "./AppIcon";
@@ -31,32 +42,7 @@ interface PromptCacheConversationTableProps {
 const PROMPT_CACHE_NOW_TICK_MS = 30_000;
 const PROMPT_CACHE_CHART_MAX_WINDOW_MS = 24 * 3_600_000;
 const PROMPT_CACHE_HISTORY_PAGE_SIZE = 200;
-
-type PromptCachePreviewRecordExtras = Partial<
-  Pick<
-    ApiInvocation,
-    | "source"
-    | "inputTokens"
-    | "outputTokens"
-    | "cacheInputTokens"
-    | "reasoningTokens"
-    | "reasoningEffort"
-    | "errorMessage"
-    | "failureKind"
-    | "isActionable"
-    | "responseContentEncoding"
-    | "requestedServiceTier"
-    | "serviceTier"
-    | "tReqReadMs"
-    | "tReqParseMs"
-    | "tUpstreamConnectMs"
-    | "tUpstreamTtfbMs"
-    | "tUpstreamStreamMs"
-    | "tRespParseMs"
-    | "tPersistMs"
-    | "tTotalMs"
-  >
->;
+const PROMPT_CACHE_HISTORY_RESYNC_THROTTLE_MS = 1_000;
 
 function parseEpoch(raw?: string | null) {
   if (!raw) return null;
@@ -102,71 +88,6 @@ function canOpenPromptCacheUpstreamAccount(
     typeof account.upstreamAccountId === "number" &&
     Number.isFinite(account.upstreamAccountId)
   );
-}
-
-function normalizePromptCacheInvocationPreview(
-  preview: PromptCacheConversationInvocationPreview,
-): PromptCacheConversationInvocationPreview {
-  return {
-    id: preview.id,
-    invokeId: preview.invokeId,
-    occurredAt: preview.occurredAt,
-    status: preview.status?.trim() || "unknown",
-    failureClass: preview.failureClass ?? null,
-    routeMode: preview.routeMode?.trim() || null,
-    model: preview.model?.trim() || null,
-    totalTokens: preview.totalTokens ?? 0,
-    cost: preview.cost ?? null,
-    proxyDisplayName: preview.proxyDisplayName?.trim() || null,
-    upstreamAccountId: preview.upstreamAccountId ?? null,
-    upstreamAccountName: preview.upstreamAccountName?.trim() || null,
-    endpoint: preview.endpoint?.trim() || null,
-  };
-}
-
-function buildInvocationTableRecordFromPreview(
-  preview: PromptCacheConversationInvocationPreview,
-): ApiInvocation {
-  const normalizedPreview = normalizePromptCacheInvocationPreview(preview);
-  const previewExtras = preview as PromptCacheConversationInvocationPreview &
-    PromptCachePreviewRecordExtras;
-
-  return {
-    id: normalizedPreview.id,
-    invokeId: normalizedPreview.invokeId,
-    occurredAt: normalizedPreview.occurredAt,
-    source: previewExtras.source ?? undefined,
-    status: normalizedPreview.status,
-    failureClass: normalizedPreview.failureClass ?? undefined,
-    failureKind: previewExtras.failureKind ?? undefined,
-    isActionable: previewExtras.isActionable,
-    model: normalizedPreview.model ?? undefined,
-    inputTokens: previewExtras.inputTokens,
-    outputTokens: previewExtras.outputTokens,
-    cacheInputTokens: previewExtras.cacheInputTokens,
-    reasoningTokens: previewExtras.reasoningTokens,
-    reasoningEffort: previewExtras.reasoningEffort,
-    totalTokens: normalizedPreview.totalTokens,
-    cost: normalizedPreview.cost ?? undefined,
-    errorMessage: previewExtras.errorMessage ?? undefined,
-    endpoint: normalizedPreview.endpoint ?? undefined,
-    routeMode: normalizedPreview.routeMode ?? undefined,
-    upstreamAccountId: normalizedPreview.upstreamAccountId,
-    upstreamAccountName: normalizedPreview.upstreamAccountName ?? undefined,
-    proxyDisplayName: normalizedPreview.proxyDisplayName ?? undefined,
-    responseContentEncoding: previewExtras.responseContentEncoding ?? undefined,
-    requestedServiceTier: previewExtras.requestedServiceTier ?? undefined,
-    serviceTier: previewExtras.serviceTier ?? undefined,
-    tReqReadMs: previewExtras.tReqReadMs,
-    tReqParseMs: previewExtras.tReqParseMs,
-    tUpstreamConnectMs: previewExtras.tUpstreamConnectMs,
-    tUpstreamTtfbMs: previewExtras.tUpstreamTtfbMs,
-    tUpstreamStreamMs: previewExtras.tUpstreamStreamMs,
-    tRespParseMs: previewExtras.tRespParseMs,
-    tPersistMs: previewExtras.tPersistMs,
-    tTotalMs: previewExtras.tTotalMs,
-    createdAt: normalizedPreview.occurredAt,
-  };
 }
 
 function SummaryBlock({
@@ -334,29 +255,33 @@ function PromptCacheConversationHistoryDrawer({
 }) {
   const titleId = useId();
   const requestSeqRef = useRef(0);
+  const hasHydratedRef = useRef(false);
+  const inFlightRef = useRef(false);
+  const pendingLoadRef = useRef<{ silent?: boolean } | null>(null);
+  const pendingOpenResyncRef = useRef(false);
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const lastRefreshAtRef = useRef(0);
   const [records, setRecords] = useState<ApiInvocation[]>([]);
+  const [liveRecords, setLiveRecords] = useState<ApiInvocation[]>([]);
   const [total, setTotal] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!open || !promptCacheKey) {
-      requestSeqRef.current += 1;
-      setRecords([]);
-      setTotal(0);
-      setIsLoading(false);
-      setError(null);
-      return;
-    }
+  const clearPendingRefreshTimer = useCallback(() => {
+    if (!refreshTimerRef.current) return;
+    clearTimeout(refreshTimerRef.current);
+    refreshTimerRef.current = null;
+  }, []);
 
+  const runLoad = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
+    if (!open || !promptCacheKey) return;
+
+    inFlightRef.current = true;
     const requestSeq = requestSeqRef.current + 1;
     requestSeqRef.current = requestSeq;
-    setRecords([]);
-    setTotal(0);
-    setIsLoading(true);
-    setError(null);
-
-    void (async () => {
+    const shouldShowLoading = !(silent && hasHydratedRef.current);
+    if (shouldShowLoading) setIsLoading(true);
+    try {
       let page = 1;
       let snapshotId: number | undefined;
       let loaded: ApiInvocation[] = [];
@@ -385,17 +310,163 @@ function PromptCacheConversationHistoryDrawer({
         page += 1;
       }
 
-      if (requestSeq === requestSeqRef.current) {
-        setIsLoading(false);
+      if (requestSeq !== requestSeqRef.current) return;
+      hasHydratedRef.current = true;
+      const loadedStableKeys = new Set(loaded.map(invocationStableKey));
+      setLiveRecords((current) =>
+        current.filter(
+          (record) => !loadedStableKeys.has(invocationStableKey(record)),
+        ),
+      );
+      setError(null);
+      if (pendingOpenResyncRef.current) {
+        pendingOpenResyncRef.current = false;
+        const pendingSilent = pendingLoadRef.current?.silent ?? true;
+        pendingLoadRef.current = { silent: pendingSilent };
       }
-    })().catch((err) => {
+    } catch (err) {
       if (requestSeq !== requestSeqRef.current) return;
       setError(err instanceof Error ? err.message : String(err));
-      setIsLoading(false);
-    });
+    } finally {
+      if (requestSeq === requestSeqRef.current && shouldShowLoading) {
+        setIsLoading(false);
+      }
+      if (requestSeq === requestSeqRef.current) {
+        inFlightRef.current = false;
+      }
+      const pendingLoad = pendingLoadRef.current;
+      if (requestSeq === requestSeqRef.current && pendingLoad) {
+        pendingLoadRef.current = null;
+        void runLoad(pendingLoad);
+      }
+    }
   }, [open, promptCacheKey]);
 
-  const loadedCount = records.length;
+  const load = useCallback(
+    async (options: { silent?: boolean } = {}) => {
+      const silent = options.silent ?? false;
+      if (inFlightRef.current) {
+        const pendingSilent = pendingLoadRef.current?.silent ?? true;
+        pendingLoadRef.current = { silent: pendingSilent && silent };
+        return;
+      }
+      await runLoad({ silent });
+    },
+    [runLoad],
+  );
+
+  const triggerSseRefresh = useCallback(() => {
+    const now = Date.now();
+    const delay = Math.max(
+      0,
+      PROMPT_CACHE_HISTORY_RESYNC_THROTTLE_MS - (now - lastRefreshAtRef.current),
+    );
+    const run = () => {
+      refreshTimerRef.current = null;
+      lastRefreshAtRef.current = Date.now();
+      void load({ silent: true });
+    };
+    if (delay === 0) {
+      clearPendingRefreshTimer();
+      run();
+      return;
+    }
+    if (refreshTimerRef.current) return;
+    refreshTimerRef.current = setTimeout(run, delay);
+  }, [clearPendingRefreshTimer, load]);
+
+  const triggerOpenResync = useCallback(
+    (force = false) => {
+      if (!hasHydratedRef.current) {
+        pendingOpenResyncRef.current = true;
+        return;
+      }
+      const now = Date.now();
+      if (!force && now - lastRefreshAtRef.current < PROMPT_CACHE_HISTORY_RESYNC_THROTTLE_MS) {
+        return;
+      }
+      lastRefreshAtRef.current = now;
+      void load({ silent: true });
+    },
+    [load],
+  );
+
+  useEffect(() => {
+    requestSeqRef.current += 1;
+    hasHydratedRef.current = false;
+    inFlightRef.current = false;
+    pendingLoadRef.current = null;
+    pendingOpenResyncRef.current = false;
+    lastRefreshAtRef.current = 0;
+    clearPendingRefreshTimer();
+
+    if (!open || !promptCacheKey) {
+      setRecords([]);
+      setLiveRecords([]);
+      setTotal(0);
+      setIsLoading(false);
+      setError(null);
+      return;
+    }
+
+    setRecords([]);
+    setLiveRecords([]);
+    setTotal(0);
+    setIsLoading(false);
+    setError(null);
+    void load();
+  }, [clearPendingRefreshTimer, load, open, promptCacheKey]);
+
+  useEffect(() => {
+    if (!open || !promptCacheKey) return;
+    const unsubscribe = subscribeToSse((payload) => {
+      if (payload.type !== "records") return;
+      const matching = payload.records.filter(
+        (record) => record.promptCacheKey?.trim() === promptCacheKey,
+      );
+      if (matching.length === 0) return;
+      setLiveRecords((current) =>
+        mergeInvocationRecordCollections(matching, current).slice(
+          0,
+          PROMPT_CACHE_HISTORY_PAGE_SIZE,
+        ),
+      );
+      triggerSseRefresh();
+    });
+    return unsubscribe;
+  }, [open, promptCacheKey, triggerSseRefresh]);
+
+  useEffect(() => {
+    if (!open) return;
+    const unsubscribe = subscribeToSseOpen(() => {
+      triggerOpenResync(true);
+    });
+    return unsubscribe;
+  }, [open, triggerOpenResync]);
+
+  useEffect(
+    () => () => {
+      clearPendingRefreshTimer();
+      pendingLoadRef.current = null;
+      pendingOpenResyncRef.current = false;
+    },
+    [clearPendingRefreshTimer],
+  );
+
+  const visibleRecords = useMemo(
+    () => mergeInvocationRecordCollections(liveRecords, records),
+    [liveRecords, records],
+  );
+  const effectiveTotal = useMemo(() => {
+    const loadedStableKeys = new Set(records.map(invocationStableKey));
+    const optimisticCount = liveRecords.reduce(
+      (count, record) =>
+        count + (loadedStableKeys.has(invocationStableKey(record)) ? 0 : 1),
+      0,
+    );
+    return total + optimisticCount;
+  }, [liveRecords, records, total]);
+  const loadedCount = visibleRecords.length;
 
   return (
     <AccountDetailDrawerShell
@@ -418,13 +489,13 @@ function PromptCacheConversationHistoryDrawer({
             </p>
           </div>
           <div className="text-sm text-base-content/70">
-            {total > 0 && loadedCount >= total
+            {effectiveTotal > 0 && loadedCount >= effectiveTotal
               ? t("live.conversations.drawer.progressComplete", {
-                  count: total,
+                  count: effectiveTotal,
                 })
               : t("live.conversations.drawer.progress", {
                   loaded: loadedCount,
-                  total,
+                  total: effectiveTotal,
                 })}
           </div>
         </div>
@@ -432,12 +503,12 @@ function PromptCacheConversationHistoryDrawer({
     >
       <div className="space-y-3">
         <PromptCacheConversationInvocationTable
-          records={records}
+          records={visibleRecords}
           isLoading={isLoading}
           error={error}
           emptyLabel={t("live.conversations.drawer.empty")}
         />
-        {isLoading && records.length > 0 ? (
+        {isLoading && visibleRecords.length > 0 ? (
           <div className="flex items-center justify-center gap-2 py-2 text-sm text-base-content/60">
             <Spinner size="sm" aria-label={t("chart.loadingDetailed")} />
             <span>{t("live.conversations.drawer.loadingMore")}</span>
@@ -765,7 +836,7 @@ export function PromptCacheConversationTable({
                     <div className="rounded-lg border border-base-300/70 bg-base-200/30 p-3">
                       <PromptCacheConversationInvocationTable
                         records={conversation.recentInvocations.map(
-                          buildInvocationTableRecordFromPreview,
+                          buildInvocationFromPromptCachePreview,
                         )}
                         isLoading={false}
                         emptyLabel={previewLabels.empty}
@@ -973,7 +1044,7 @@ export function PromptCacheConversationTable({
                         <div className="border-t border-base-300/60 pt-3">
                           <PromptCacheConversationInvocationTable
                             records={conversation.recentInvocations.map(
-                              buildInvocationTableRecordFromPreview,
+                              buildInvocationFromPromptCachePreview,
                             )}
                             isLoading={false}
                             emptyLabel={previewLabels.empty}

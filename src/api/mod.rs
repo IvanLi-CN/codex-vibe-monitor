@@ -2006,26 +2006,48 @@ pub(crate) async fn fetch_prompt_cache_conversations_cached(
     loop {
         let mut wait_on: Option<watch::Receiver<bool>> = None;
         let mut flight_guard: Option<PromptCacheConversationFlightGuard> = None;
+        let build_generation: u64;
         {
             let mut cache = state.prompt_cache_conversation_cache.lock().await;
+            let generation = cache.generation;
             if let Some(entry) = cache.entries.get(&selection)
+                && entry.generation == generation
                 && entry.cached_at.elapsed()
                     <= Duration::from_secs(PROMPT_CACHE_CONVERSATION_CACHE_TTL_SECS)
             {
                 return Ok(entry.response.clone());
             }
 
-            if let Some(in_flight) = cache.in_flight.get(&selection) {
-                wait_on = Some(in_flight.signal.subscribe());
-            } else {
+            let in_flight_generation = cache
+                .in_flight
+                .get(&selection)
+                .map(|flight| flight.generation);
+            match in_flight_generation {
+                Some(current_generation) if current_generation == generation => {
+                    if let Some(in_flight) = cache.in_flight.get(&selection) {
+                        wait_on = Some(in_flight.signal.subscribe());
+                    }
+                }
+                Some(_) => {
+                    cache.in_flight.remove(&selection);
+                }
+                None => {}
+            }
+
+            if wait_on.is_none() {
                 let (signal, _receiver) = watch::channel(false);
-                cache
-                    .in_flight
-                    .insert(selection, PromptCacheConversationInFlight { signal });
+                cache.in_flight.insert(
+                    selection,
+                    PromptCacheConversationInFlight { signal, generation },
+                );
+                build_generation = generation;
                 flight_guard = Some(PromptCacheConversationFlightGuard::new(
                     state.prompt_cache_conversation_cache.clone(),
                     selection,
+                    generation,
                 ));
+            } else {
+                build_generation = generation;
             }
         }
 
@@ -2043,15 +2065,26 @@ pub(crate) async fn fetch_prompt_cache_conversations_cached(
         }
 
         let mut cache = state.prompt_cache_conversation_cache.lock().await;
-        if let Some(in_flight) = cache.in_flight.remove(&selection) {
+        let in_flight = match cache.in_flight.remove(&selection) {
+            Some(in_flight) if in_flight.generation == build_generation => Some(in_flight),
+            Some(in_flight) => {
+                cache.in_flight.insert(selection, in_flight);
+                None
+            }
+            None => None,
+        };
+        if let Some(in_flight) = in_flight {
             if let Ok(response) = &result {
-                cache.entries.insert(
-                    selection,
-                    PromptCacheConversationsCacheEntry {
-                        cached_at: Instant::now(),
-                        response: response.clone(),
-                    },
-                );
+                if cache.generation == build_generation {
+                    cache.entries.insert(
+                        selection,
+                        PromptCacheConversationsCacheEntry {
+                            cached_at: Instant::now(),
+                            generation: build_generation,
+                            response: response.clone(),
+                        },
+                    );
+                }
             }
             let _ = in_flight.signal.send(true);
         }
@@ -4923,12 +4956,14 @@ pub(crate) struct PromptCacheConversationRequestPointResponse {
 #[derive(Debug, Clone)]
 pub(crate) struct PromptCacheConversationsCacheEntry {
     pub(crate) cached_at: Instant,
+    pub(crate) generation: u64,
     pub(crate) response: PromptCacheConversationsResponse,
 }
 
 #[derive(Debug)]
 pub(crate) struct PromptCacheConversationInFlight {
     pub(crate) signal: watch::Sender<bool>,
+    pub(crate) generation: u64,
 }
 
 #[derive(Debug, Default)]
@@ -4937,12 +4972,14 @@ pub(crate) struct PromptCacheConversationsCacheState {
         HashMap<PromptCacheConversationSelection, PromptCacheConversationsCacheEntry>,
     pub(crate) in_flight:
         HashMap<PromptCacheConversationSelection, PromptCacheConversationInFlight>,
+    pub(crate) generation: u64,
 }
 
 #[derive(Debug)]
 pub(crate) struct PromptCacheConversationFlightGuard {
     pub(crate) cache: Arc<Mutex<PromptCacheConversationsCacheState>>,
     pub(crate) selection: PromptCacheConversationSelection,
+    pub(crate) generation: u64,
     pub(crate) active: bool,
 }
 
@@ -4950,10 +4987,12 @@ impl PromptCacheConversationFlightGuard {
     pub(crate) fn new(
         cache: Arc<Mutex<PromptCacheConversationsCacheState>>,
         selection: PromptCacheConversationSelection,
+        generation: u64,
     ) -> Self {
         Self {
             cache,
             selection,
+            generation,
             active: true,
         }
     }
@@ -4971,10 +5010,15 @@ impl Drop for PromptCacheConversationFlightGuard {
 
         let cache = self.cache.clone();
         let selection = self.selection;
+        let generation = self.generation;
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
                 let mut state = cache.lock().await;
                 if let Some(in_flight) = state.in_flight.remove(&selection) {
+                    if in_flight.generation != generation {
+                        state.in_flight.insert(selection, in_flight);
+                        return;
+                    }
                     let _ = in_flight.signal.send(true);
                 }
             });
@@ -4984,8 +5028,27 @@ impl Drop for PromptCacheConversationFlightGuard {
         if let Ok(mut state) = cache.try_lock()
             && let Some(in_flight) = state.in_flight.remove(&selection)
         {
+            if in_flight.generation != generation {
+                state.in_flight.insert(selection, in_flight);
+                return;
+            }
             let _ = in_flight.signal.send(true);
         }
+    }
+}
+
+pub(crate) async fn invalidate_prompt_cache_conversations_cache(
+    cache: &Arc<Mutex<PromptCacheConversationsCacheState>>,
+) {
+    let in_flight = {
+        let mut state = cache.lock().await;
+        state.generation = state.generation.wrapping_add(1);
+        state.entries.clear();
+        std::mem::take(&mut state.in_flight)
+    };
+
+    for flight in in_flight.into_values() {
+        let _ = flight.signal.send(true);
     }
 }
 

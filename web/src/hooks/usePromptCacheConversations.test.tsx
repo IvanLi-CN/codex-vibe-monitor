@@ -3,6 +3,8 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import type {
+  BroadcastPayload,
+  PromptCacheConversationInvocationPreview,
   PromptCacheConversationSelection,
   PromptCacheConversationsResponse,
 } from "../lib/api";
@@ -18,6 +20,11 @@ const apiMocks = vi.hoisted(() => ({
     >(),
 }));
 
+const sseMocks = vi.hoisted(() => ({
+  listeners: new Set<(payload: BroadcastPayload) => void>(),
+  openListeners: new Set<() => void>(),
+}));
+
 vi.mock("../lib/api", async () => {
   const actual =
     await vi.importActual<typeof import("../lib/api")>("../lib/api");
@@ -28,8 +35,14 @@ vi.mock("../lib/api", async () => {
 });
 
 vi.mock("../lib/sse", () => ({
-  subscribeToSse: () => () => {},
-  subscribeToSseOpen: () => () => {},
+  subscribeToSse: (listener: (payload: BroadcastPayload) => void) => {
+    sseMocks.listeners.add(listener);
+    return () => sseMocks.listeners.delete(listener);
+  },
+  subscribeToSseOpen: (listener: () => void) => {
+    sseMocks.openListeners.add(listener);
+    return () => sseMocks.openListeners.delete(listener);
+  },
 }));
 
 let host: HTMLDivElement | null = null;
@@ -50,6 +63,9 @@ afterEach(() => {
   host?.remove();
   host = null;
   root = null;
+  sseMocks.listeners.clear();
+  sseMocks.openListeners.clear();
+  vi.useRealTimers();
   vi.clearAllMocks();
 });
 
@@ -93,8 +109,34 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+function createPreview(
+  overrides: Partial<PromptCacheConversationInvocationPreview> & {
+    id: number;
+    invokeId: string;
+    occurredAt: string;
+    status: string;
+  },
+): PromptCacheConversationInvocationPreview {
+  return {
+    id: overrides.id,
+    invokeId: overrides.invokeId,
+    occurredAt: overrides.occurredAt,
+    status: overrides.status,
+    failureClass: overrides.failureClass ?? "none",
+    routeMode: overrides.routeMode ?? "pool",
+    model: overrides.model ?? "gpt-5.4",
+    totalTokens: overrides.totalTokens ?? 0,
+    cost: overrides.cost ?? 0,
+    proxyDisplayName: overrides.proxyDisplayName ?? null,
+    upstreamAccountId: overrides.upstreamAccountId ?? null,
+    upstreamAccountName: overrides.upstreamAccountName ?? null,
+    endpoint: overrides.endpoint ?? "/v1/responses",
+  };
+}
+
 function createResponse(
   promptCacheKey: string,
+  preview: PromptCacheConversationInvocationPreview[] = [],
 ): PromptCacheConversationsResponse {
   return {
     rangeStart: "2026-03-10T00:00:00Z",
@@ -112,6 +154,7 @@ function createResponse(
         createdAt: "2026-03-10T01:00:00Z",
         lastActivityAt: "2026-03-10T02:00:00Z",
         upstreamAccounts: [],
+        recentInvocations: preview,
         last24hRequests: [],
       },
     ],
@@ -125,6 +168,15 @@ function Probe({ selection }: { selection: PromptCacheConversationSelection }) {
     <div>
       <div data-testid="prompt-cache-key">
         {stats?.conversations[0]?.promptCacheKey ?? ""}
+      </div>
+      <div data-testid="preview-invoke-id">
+        {stats?.conversations[0]?.recentInvocations[0]?.invokeId ?? ""}
+      </div>
+      <div data-testid="preview-status">
+        {stats?.conversations[0]?.recentInvocations[0]?.status ?? ""}
+      </div>
+      <div data-testid="preview-count">
+        {String(stats?.conversations[0]?.recentInvocations.length ?? 0)}
       </div>
       <div data-testid="loading">{isLoading ? "true" : "false"}</div>
       <div data-testid="error">{error ?? ""}</div>
@@ -156,5 +208,67 @@ describe("usePromptCacheConversations", () => {
     await flushAsync();
     expect(text("prompt-cache-key")).toBe("pck-window");
     expect(text("error")).toBe("");
+  });
+
+  it("applies live prompt cache records immediately and reconciles them after refetch", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-10T03:00:00Z"));
+    const refresh = deferred<PromptCacheConversationsResponse>();
+    apiMocks.fetchPromptCacheConversations
+      .mockResolvedValueOnce(createResponse("pck-live"))
+      .mockImplementationOnce(async () => refresh.promise);
+
+    render(<Probe selection={{ mode: "count", limit: 50 }} />);
+    await flushAsync();
+
+    act(() => {
+      sseMocks.listeners.forEach((listener) => {
+        listener({
+          type: "records",
+          records: [
+            {
+              id: 901,
+              invokeId: "invoke-live-01",
+              occurredAt: "2026-03-10T02:30:00Z",
+              createdAt: "2026-03-10T02:30:00Z",
+              status: "running",
+              promptCacheKey: "pck-live",
+              totalTokens: 0,
+              cost: 0,
+              proxyDisplayName: "Proxy Running",
+            },
+          ],
+        });
+      });
+    });
+
+    expect(text("preview-invoke-id")).toBe("invoke-live-01");
+    expect(text("preview-status")).toBe("running");
+    expect(text("preview-count")).toBe("1");
+
+    await act(async () => {
+      refresh.resolve(
+        createResponse("pck-live", [
+          createPreview({
+            id: 901,
+            invokeId: "invoke-live-01",
+            occurredAt: "2026-03-10T02:30:00Z",
+            status: "completed",
+            totalTokens: 182491,
+            cost: 0.0484,
+            proxyDisplayName: "Proxy Final",
+            upstreamAccountId: 17,
+            upstreamAccountName: "pool-account-17",
+          }),
+        ]),
+      );
+      await refresh.promise;
+    });
+    await flushAsync();
+
+    expect(text("preview-invoke-id")).toBe("invoke-live-01");
+    expect(text("preview-status")).toBe("completed");
+    expect(text("preview-count")).toBe("1");
+    expect(apiMocks.fetchPromptCacheConversations).toHaveBeenCalledTimes(2);
   });
 });

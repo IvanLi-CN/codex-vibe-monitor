@@ -1,9 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchPromptCacheConversations,
+  type ApiInvocation,
   type PromptCacheConversationSelection,
   type PromptCacheConversationsResponse,
 } from "../lib/api";
+import {
+  mergePromptCacheConversationsResponse,
+  mergePromptCacheLiveRecordMap,
+  reconcilePromptCacheLiveRecordMap,
+} from "../lib/promptCacheLive";
 import { subscribeToSse, subscribeToSseOpen } from "../lib/sse";
 
 export const PROMPT_CACHE_SSE_REFRESH_THROTTLE_MS = 5_000;
@@ -53,9 +59,11 @@ function isSameSelection(
 export function usePromptCacheConversations(
   selection: PromptCacheConversationSelection,
 ) {
-  const [stats, setStats] = useState<PromptCacheConversationsResponse | null>(
-    null,
-  );
+  const [authoritativeStats, setAuthoritativeStats] =
+    useState<PromptCacheConversationsResponse | null>(null);
+  const [liveRecordsByKey, setLiveRecordsByKey] = useState<
+    Record<string, ApiInvocation[]>
+  >({});
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const selectionRef = useRef(selection);
@@ -86,7 +94,8 @@ export function usePromptCacheConversations(
     inFlightRef.current = false;
     pendingLoadRef.current = null;
     pendingOpenResyncRef.current = false;
-  }, []);
+    clearPendingRefreshTimer();
+  }, [clearPendingRefreshTimer]);
 
   const runLoad = useCallback(async ({ silent = false }: LoadOptions = {}) => {
     inFlightRef.current = true;
@@ -104,7 +113,10 @@ export function usePromptCacheConversations(
       );
       if (requestSeq !== requestSeqRef.current) return;
       if (!isSameSelection(selectionRef.current, requestedSelection)) return;
-      setStats(response);
+      setAuthoritativeStats(response);
+      setLiveRecordsByKey((current) =>
+        reconcilePromptCacheLiveRecordMap(current, response),
+      );
       hasHydratedRef.current = true;
       setError(null);
       if (pendingOpenResyncRef.current) {
@@ -192,6 +204,9 @@ export function usePromptCacheConversations(
   useEffect(() => {
     const unsubscribe = subscribeToSse((payload) => {
       if (payload.type !== "records") return;
+      setLiveRecordsByKey((current) =>
+        mergePromptCacheLiveRecordMap(current, payload.records),
+      );
       triggerSseRefresh();
     });
     return unsubscribe;
@@ -219,6 +234,16 @@ export function usePromptCacheConversations(
       pendingOpenResyncRef.current = false;
     },
     [clearPendingRefreshTimer],
+  );
+
+  const stats = useMemo(
+    () =>
+      mergePromptCacheConversationsResponse(
+        authoritativeStats,
+        liveRecordsByKey,
+        selection,
+      ),
+    [authoritativeStats, liveRecordsByKey, selection],
   );
 
   return {
