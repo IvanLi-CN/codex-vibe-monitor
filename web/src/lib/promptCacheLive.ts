@@ -432,17 +432,6 @@ function buildOptimisticConversation(
   };
 }
 
-function getConversationPreviewStableKeys(conversation: PromptCacheConversation) {
-  return new Set(
-    conversation.recentInvocations.map((preview) =>
-      invocationStableKey({
-        invokeId: preview.invokeId,
-        occurredAt: preview.occurredAt,
-      }),
-    ),
-  );
-}
-
 export function mergePromptCacheLiveRecordMap(
   current: Record<string, ApiInvocation[]>,
   incoming: ApiInvocation[],

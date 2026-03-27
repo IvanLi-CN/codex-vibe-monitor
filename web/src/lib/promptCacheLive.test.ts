@@ -62,16 +62,27 @@ function createLiveRecord(
     promptCacheKey: string;
   },
 ): ApiInvocation {
+  const {
+    id,
+    invokeId,
+    occurredAt,
+    promptCacheKey,
+    createdAt,
+    status,
+    totalTokens,
+    cost,
+    ...rest
+  } = overrides;
   return {
-    id: overrides.id,
-    invokeId: overrides.invokeId,
-    occurredAt: overrides.occurredAt,
-    createdAt: overrides.createdAt ?? overrides.occurredAt,
-    promptCacheKey: overrides.promptCacheKey,
-    status: overrides.status ?? "completed",
-    totalTokens: overrides.totalTokens ?? 100,
-    cost: overrides.cost ?? 0.01,
-    ...overrides,
+    id,
+    invokeId,
+    occurredAt,
+    createdAt: createdAt ?? occurredAt,
+    promptCacheKey,
+    status: status ?? "completed",
+    totalTokens: totalTokens ?? 100,
+    cost: cost ?? 0.01,
+    ...rest,
   };
 }
 
