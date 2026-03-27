@@ -31929,6 +31929,271 @@ async fn archive_manifest_refresh_leaves_missing_batches_pending_for_retry() {
 }
 
 #[tokio::test]
+async fn retention_archives_duplicate_upstream_activity_across_chunks() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("retention-archive-manifest-dedupe").await;
+    config.retention_batch_rows = BACKFILL_ACCOUNT_BIND_BATCH_SIZE + 5;
+
+    let account_id = 995_i64;
+    let created_at = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind(account_id)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Duplicate archive account")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&pool)
+    .await
+    .expect("insert duplicate archive account");
+
+    let base_occurred_at = parse_shanghai_local_naive(&shanghai_local_days_ago(120, 9, 0, 0))
+        .expect("valid shanghai local");
+    let row_count = BACKFILL_ACCOUNT_BIND_BATCH_SIZE + 5;
+    let mut newest_occurred_at = String::new();
+    for idx in 0..row_count {
+        let occurred_at = format_naive(base_occurred_at + ChronoDuration::seconds(idx as i64));
+        newest_occurred_at = occurred_at.clone();
+        let response_raw = config
+            .proxy_raw_dir
+            .join(format!("duplicate-account-{idx}.bin.gz"));
+        write_gzip_test_file(
+            &response_raw,
+            format!("{{\"index\":{idx},\"accountId\":{account_id}}}").as_bytes(),
+        );
+        insert_retention_invocation(
+            &pool,
+            &format!("duplicate-account-{idx}"),
+            &occurred_at,
+            SOURCE_PROXY,
+            "success",
+            Some(
+                &json!({ "endpoint": "/v1/responses", "upstreamAccountId": account_id })
+                    .to_string(),
+            ),
+            "{\"ok\":true}",
+            None,
+            Some(&response_raw),
+            Some(42),
+            Some(0.42),
+        )
+        .await;
+    }
+
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run retention archive for duplicate account rows");
+    assert_eq!(summary.invocation_rows_archived, row_count);
+    assert!(summary.raw_files_removed >= row_count);
+
+    let manifest_rows = sqlx::query_as::<_, (i64, String)>(
+        r#"
+        SELECT account_id, last_activity_at
+        FROM archive_batch_upstream_activity
+        "#,
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("load deduped archive manifest rows");
+    assert_eq!(
+        manifest_rows,
+        vec![(account_id, newest_occurred_at.clone())]
+    );
+
+    let last_activity_at: Option<String> =
+        sqlx::query_scalar("SELECT last_activity_at FROM pool_upstream_accounts WHERE id = ?1")
+            .bind(account_id)
+            .fetch_one(&pool)
+            .await
+            .expect("load updated account activity");
+    assert_eq!(
+        last_activity_at.as_deref(),
+        Some(newest_occurred_at.as_str())
+    );
+
+    let live_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations")
+        .fetch_one(&pool)
+        .await
+        .expect("count remaining live invocations");
+    assert_eq!(live_count, 0);
+    assert_eq!(
+        fs::read_dir(&config.proxy_raw_dir)
+            .expect("read raw dir after archive cleanup")
+            .count(),
+        0
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn archive_manifest_refresh_dedupes_duplicate_account_rows_from_archive_file() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("archive-manifest-refresh-dedupe").await;
+    let primary_account_id = 996_i64;
+    let secondary_account_id = 997_i64;
+    let created_at = format_utc_iso(Utc::now());
+    for (account_id, display_name) in [
+        (primary_account_id, "Manifest duplicate primary"),
+        (secondary_account_id, "Manifest duplicate secondary"),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_accounts (
+                id, kind, provider, display_name, status, enabled, created_at, updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(account_id)
+        .bind("api_key_codex")
+        .bind("codex")
+        .bind(display_name)
+        .bind("active")
+        .bind(1_i64)
+        .bind(&created_at)
+        .bind(&created_at)
+        .execute(&pool)
+        .await
+        .expect("insert manifest refresh account");
+    }
+
+    let base_occurred_at = parse_shanghai_local_naive(&shanghai_local_days_ago(120, 8, 0, 0))
+        .expect("valid shanghai local");
+    let month_key = format_naive(base_occurred_at)[..7].to_string();
+    let archive_path = archive_batch_file_path(&config, "codex_invocations", &month_key)
+        .expect("resolve archive manifest refresh path");
+    fs::create_dir_all(archive_path.parent().expect("archive parent"))
+        .expect("create archive manifest refresh parent");
+
+    let archive_db_path = temp_dir.join("archive-manifest-refresh-dedupe.sqlite");
+    fs::File::create(&archive_db_path).expect("create archive sqlite file");
+    let archive_pool = SqlitePool::connect(&sqlite_url_for_path(&archive_db_path))
+        .await
+        .expect("open archive sqlite");
+    let create_sql = CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL.replace("archive_db.", "");
+    sqlx::query(&create_sql)
+        .execute(&archive_pool)
+        .await
+        .expect("create archive schema");
+
+    let repeated_rows = BACKFILL_ACCOUNT_BIND_BATCH_SIZE + 5;
+    let mut primary_latest = String::new();
+    let mut secondary_latest = String::new();
+    for idx in 0..repeated_rows {
+        let occurred_at = format_naive(base_occurred_at + ChronoDuration::seconds(idx as i64));
+        primary_latest = occurred_at.clone();
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, raw_response, created_at, payload
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+        )
+        .bind(idx as i64 + 1)
+        .bind(format!("manifest-refresh-primary-{idx}"))
+        .bind(&occurred_at)
+        .bind("{}")
+        .bind(&occurred_at)
+        .bind(json!({ "upstreamAccountId": primary_account_id }).to_string())
+        .execute(&archive_pool)
+        .await
+        .expect("insert repeated primary manifest row");
+    }
+    for idx in 0..2 {
+        let occurred_at = format_naive(
+            base_occurred_at + ChronoDuration::seconds(repeated_rows as i64 + idx as i64 + 1),
+        );
+        secondary_latest = occurred_at.clone();
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, raw_response, created_at, payload
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+        )
+        .bind(repeated_rows as i64 + idx as i64 + 1)
+        .bind(format!("manifest-refresh-secondary-{idx}"))
+        .bind(&occurred_at)
+        .bind("{}")
+        .bind(&occurred_at)
+        .bind(json!({ "upstreamAccountId": secondary_account_id }).to_string())
+        .execute(&archive_pool)
+        .await
+        .expect("insert repeated secondary manifest row");
+    }
+    archive_pool.close().await;
+    deflate_sqlite_file_to_gzip(&archive_db_path, &archive_path)
+        .expect("compress manifest refresh archive");
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))
+        "#,
+    )
+    .bind("codex_invocations")
+    .bind(&month_key)
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind(sha256_hex_file(&archive_path).expect("archive sha"))
+    .bind((repeated_rows + 2) as i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(format_naive(base_occurred_at))
+    .bind(secondary_latest.clone())
+    .execute(&pool)
+    .await
+    .expect("insert manifest refresh batch");
+
+    let refresh = refresh_archive_upstream_activity_manifest(&pool, false)
+        .await
+        .expect("refresh manifest rows for duplicate accounts");
+    assert_eq!(refresh.pending_batches, 1);
+    assert_eq!(refresh.refreshed_batches, 1);
+    assert_eq!(refresh.account_rows_written, 2);
+
+    let manifest_rows = sqlx::query_as::<_, (i64, String)>(
+        r#"
+        SELECT account_id, last_activity_at
+        FROM archive_batch_upstream_activity
+        ORDER BY account_id ASC
+        "#,
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("load refreshed manifest rows");
+    assert_eq!(
+        manifest_rows,
+        vec![
+            (primary_account_id, primary_latest),
+            (secondary_account_id, secondary_latest),
+        ]
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn startup_persistent_prep_skips_mutations_for_dry_run_commands() {
     let (pool, config, temp_dir) = retention_test_pool_and_config("startup-prep-dry-run").await;
     let occurred_at = shanghai_local_days_ago(45, 9, 0, 0);
