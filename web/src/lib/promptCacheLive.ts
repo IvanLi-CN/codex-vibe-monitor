@@ -218,17 +218,30 @@ function mergePromptCacheRequestPoints(
   basePoints: PromptCacheConversationRequestPoint[],
   liveRecords: ApiInvocation[],
 ) {
+  const seenPointKeys = new Set(
+    basePoints.map(
+      (point) => `${point.occurredAt}::${point.status}::${point.requestTokens}`,
+    ),
+  );
   const combined = [
     ...basePoints.map((point, index) => ({
       ...point,
       _epoch: parseOccurredAtEpoch(point.occurredAt) ?? Number.MIN_SAFE_INTEGER,
       _order: index,
     })),
-    ...liveRecords.map((record, index) => ({
-      ...buildPromptCacheRequestPointFromInvocation(record),
-      _epoch: parseOccurredAtEpoch(record.occurredAt) ?? Number.MIN_SAFE_INTEGER,
-      _order: basePoints.length + index,
-    })),
+    ...liveRecords.flatMap((record, index) => {
+      const point = buildPromptCacheRequestPointFromInvocation(record);
+      const pointKey = `${point.occurredAt}::${point.status}::${point.requestTokens}`;
+      if (seenPointKeys.has(pointKey)) {
+        return [];
+      }
+      seenPointKeys.add(pointKey);
+      return [{
+        ...point,
+        _epoch: parseOccurredAtEpoch(record.occurredAt) ?? Number.MIN_SAFE_INTEGER,
+        _order: basePoints.length + index,
+      }];
+    }),
   ].sort((left, right) => left._epoch - right._epoch || left._order - right._order);
 
   let cumulativeTokens = 0;
@@ -537,6 +550,12 @@ export function mergePromptCacheConversationsResponse(
       withinPromptCacheSelectionWindow(record.occurredAt, selection, now),
     );
     if (filteredRecords.length === 0) continue;
+    if (
+      selection.mode === "count" &&
+      nextConversations.length >= selection.limit
+    ) {
+      continue;
+    }
     nextConversations.push(buildOptimisticConversation(promptCacheKey, filteredRecords));
   }
 
