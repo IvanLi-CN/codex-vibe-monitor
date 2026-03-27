@@ -2,9 +2,9 @@
 
 ## 状态
 
-- Status: 已完成（5/5）
+- Status: 已实现，待 PR / CI 收敛
 - Created: 2026-03-22
-- Last: 2026-03-22
+- Last: 2026-03-26
 
 ## 背景 / 问题陈述
 
@@ -104,6 +104,11 @@
 - Given 用户发起批量同步，When job 运行中，Then 页面通过 SSE 持续收到 snapshot 与 row 进度，并在完成后刷新列表。
 - Given 用户在批量同步创建请求尚未返回时连续点击，When 请求命中前后端限制，Then 只会保留 1 个运行中的同步 job，后续创建请求复用现有 job。
 - Given 批量同步中包含 disabled 账号，When job 结束，Then disabled 账号被标记为失败或跳过原因，其余账号仍继续同步。
+- Given 批量同步发出 `completed`、`failed` 或 `cancelled` 终态事件，When 前端接收 SSE 或重新读取 `GET /api/pool/upstream-accounts/bulk-sync-jobs/:jobId`，Then 两者暴露的 `snapshot.status` 必须一致且均为终态，而不是残留 `running`。
+- Given 批量同步进入任一终态，When 页面重新渲染批量工具条，Then 除当前无关的其它批量按钮必须立即解锁，且不能因为终态 payload 内的陈旧 `running` 状态继续被禁用。
+- Given 批量同步以 `completed` 结束且 `failed=0`、`skipped=0`，When 页面收到终态事件，Then 右下角同步进度气泡自动收起，同时仍会刷新账号列表。
+- Given 批量同步以 `failed`、`cancelled` 结束，或 `completed` 但存在任一 `failed/skipped` 行，When 页面收到终态事件，Then 同步进度以悬浮气泡形式保持可见、展示终态结果，并允许用户手动点击“收起”关闭而不清空当前跨页选择。
+- Given 用户在账号列表中查看或滚动内容，When 同步进度气泡出现，Then 它必须以浮层形式悬浮在视口右下角，不占用列表正文的文档流高度。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
 
@@ -111,6 +116,7 @@
 
 - Rust: `cargo test upstream_accounts -- --nocapture`
 - Web: `cd web && bun run test -- src/components/UpstreamAccountsTable.test.tsx src/pages/account-pool/UpstreamAccounts.test.tsx`
+- Storybook: `cd web && bun run build-storybook`
 
 ### Quality checks
 
@@ -124,6 +130,8 @@
 - [x] M3: 后端新增批量 mutation 与批量同步 job/SSE。
 - [x] M4: 前端落地状态筛选、跨页选择、批量工具条、分页 footer 与批量对话框。
 - [x] M5: 补齐相关测试、更新 README 索引，并收敛到 merge-ready。
+- [x] M6: 修正批量同步终态 `snapshot.status` 传播、前端终态解锁/收起逻辑与对应回归测试。
+- [ ] M7: 完成终态面板 Storybook 视觉证据入库授权，并继续快车道 PR 收敛。
 
 ## 风险 / 假设
 
@@ -131,22 +139,39 @@
 - 假设：跨页选择仅在当前筛选集合内有效，任一筛选条件变更即清空。
 - 风险：批量同步需要同时维护 actor 串行和 SSE 快照一致性，若 row 终态与 snapshot 聚合不同步，前端进度面板会出现闪烁或错误计数。
 - 风险：批量标签增减依赖逐账号读取并更新标签集合，若结果摘要口径不清晰，容易让用户误判部分成功。
+- 风险：终态 SSE 若继续复用未终态化的 snapshot，前端会把整批同步视为仍在运行，导致批量工具条误锁、进度卡片既不自动收起也无法手动关闭。
+- 风险：视觉证据需要截图文件随分支提交；若主人不允许提交该图片，需要保留当前本地证据并在快车道阶段记录该阻断。
 
-## Visual Evidence (PR)
+## Visual Evidence
 
 - source_type: storybook_canvas
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Account Pool / Pages / Upstream Accounts / Operational
   state: bulk-selection-toolbar-and-pagination
   evidence_note: 验证账号列表面板已具备跨页批量工具条、账号状态筛选位，以及分页 footer 中的页码与每页条数控件；当前页勾选后会展示批量启用、停用、分组、标签、同步与删除入口。
   image:
   ![上游账号列表批量工具条与分页控件](./assets/upstream-accounts-bulk-toolbar-pagination-storybook.png)
 
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: browser-viewport
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Account Pool / Pages / Upstream Accounts / List — Bulk Sync Failure Dismiss
+  state: bulk-sync-terminal-failure
+  evidence_note: 验证批量同步终态失败时，进度以右下角悬浮气泡展示，保留失败行与终态统计，批量工具条已解锁，并提供图标式“收起”按钮供手动关闭且不挤压列表正文。
+  image:
+  ![批量同步右下角悬浮气泡与图标式收起按钮](./assets/upstream-accounts-bulk-sync-floating-bubble-icon-dismiss-storybook.png)
+
 ## 变更记录（Change log）
 
 - 2026-03-22: 创建 spec，冻结分页、展示状态、跨页选择、批量操作与批量同步的范围和契约。
 - 2026-03-22: 完成后端列表分页、`displayStatus` 分类器、批量 mutation、批量同步 job/SSE，以及前端跨页选择、分页 footer、状态筛选和批量交互 UI。
 - 2026-03-22: 本地验证通过 `cargo fmt --check`、`cargo check`、`cargo test upstream_accounts -- --nocapture`、`cd web && bun run build` 与定向 Vitest 回归，按 fast-track 收口到 merge-ready。
+- 2026-03-26: 修正批量同步终态事件仍携带 `running snapshot.status` 的回归问题，前端改为按事件类型强制收敛终态、立即解锁批量工具条，并区分“全成功自动收起”与“非成功终态手动收起”。
+- 2026-03-26: 补齐后端终态 SSE / snapshot 一致性测试、前端 EventSource 回归测试与 Storybook 终态场景；本地验证通过 `cargo test finish_bulk_sync_job_ -- --nocapture`、`cargo test bulk_upstream_account_sync_job -- --nocapture`、`cd web && bun run test -- src/pages/account-pool/UpstreamAccounts.test.tsx` 与 `cd web && bun run build-storybook`。
+- 2026-03-26: 已生成并获主人确认的批量同步终态失败 mock-only Storybook 视觉证据，证据路径收敛为稳定资产文件并进入 spec `## Visual Evidence`。
+- 2026-03-26: 根据最新交互反馈，将批量同步终态面板改为右下角悬浮气泡展示，避免占用账号列表正文文档流，并进一步把“收起”动作改成图标式按钮，补充对应的 Storybook / Vitest 断言。
