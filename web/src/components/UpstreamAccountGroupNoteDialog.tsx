@@ -123,7 +123,7 @@ function ProxyOptionTrafficChart({
   const totals = useMemo(() => sumProxyTraffic(node), [node])
 
   return (
-    <div className="w-full sm:min-w-[13.5rem] sm:max-w-[13.5rem]">
+    <div className="w-full sm:min-w-[16rem] sm:max-w-[16rem]">
       <div className="flex items-center justify-between gap-3">
         <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-base-content/55">
           {label}
@@ -330,7 +330,7 @@ export function UpstreamAccountGroupNoteDialog({
                               onBoundProxyKeysChange(toggleBoundProxyKey(normalizedBoundProxyKeys, node.key))
                             }}
                             className={cn(
-                              'grid gap-3 rounded-xl border px-3 py-3 text-left transition-colors sm:grid-cols-[minmax(0,1fr)_13.5rem] sm:items-center sm:gap-4',
+                              'grid gap-3 rounded-xl border px-3 py-3 text-left transition-colors sm:grid-cols-[minmax(0,1fr)_16rem] sm:items-center sm:gap-4',
                               selected
                                 ? 'border-primary/45 bg-primary/10'
                                 : 'border-base-300/80 bg-base-100/75',
