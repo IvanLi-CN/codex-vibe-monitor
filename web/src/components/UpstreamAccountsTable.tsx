@@ -297,6 +297,7 @@ function CompactWindowLine({
   text,
   resetText,
   missing,
+  hideLabelWhenMissing,
   accentClassName,
   title,
   labelClassName,
@@ -306,13 +307,20 @@ function CompactWindowLine({
   text: string
   resetText?: string
   missing?: boolean
+  hideLabelWhenMissing?: boolean
   accentClassName?: string
   title?: string
   labelClassName?: string
 }) {
+  const hideLabel = missing && hideLabelWhenMissing
+  const displayLabel = hideLabel ? '' : label
   const displayText = missing ? WINDOW_PLACEHOLDER : text
   const displayResetText = missing ? WINDOW_PLACEHOLDER : (resetText ?? '—')
-  const summary = missing ? `${label} ${WINDOW_PLACEHOLDER}` : resetText ? `${text} · ${resetText}` : text
+  const summary = missing
+    ? WINDOW_PLACEHOLDER
+    : resetText
+      ? `${text} · ${resetText}`
+      : text
 
   return (
     <div
@@ -321,11 +329,11 @@ function CompactWindowLine({
     >
       <span
         className={cn(
-          'truncate whitespace-nowrap text-[10px] font-semibold uppercase tracking-[0.06em] leading-4 text-base-content/48 font-mono tabular-nums',
+          'min-w-[2ch] truncate whitespace-nowrap text-[10px] font-semibold uppercase tracking-[0.06em] leading-4 text-base-content/48 font-mono tabular-nums',
           labelClassName,
         )}
       >
-        {label}
+        {displayLabel}
       </span>
       <span
         className={
@@ -706,6 +714,7 @@ export function UpstreamAccountsTable({
                       text={item.secondaryWindow?.usedText ?? WINDOW_PLACEHOLDER}
                       resetText={secondaryResetText}
                       missing={secondaryWindowMissing}
+                      hideLabelWhenMissing={item.localLimits?.secondaryLimit === null}
                       accentClassName="bg-secondary"
                       title={secondaryWindowTitle}
                       labelClassName={secondaryWindowUnexpected ? 'text-warning/78' : undefined}
