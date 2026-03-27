@@ -2596,6 +2596,23 @@ struct ArchivedAccountLastActivityRow {
     last_activity_at: String,
 }
 
+fn dedupe_archive_upstream_last_activity(
+    values: impl IntoIterator<Item = (i64, String)>,
+) -> Vec<(i64, String)> {
+    let mut deduped = BTreeMap::<i64, String>::new();
+    for (account_id, last_activity_at) in values {
+        deduped
+            .entry(account_id)
+            .and_modify(|current| {
+                if *current < last_activity_at {
+                    *current = last_activity_at.clone();
+                }
+            })
+            .or_insert(last_activity_at);
+    }
+    deduped.into_iter().collect()
+}
+
 #[derive(Debug, Default)]
 struct ArchiveBackfillSummary {
     scanned_batches: u64,
@@ -5138,14 +5155,15 @@ async fn refresh_archive_upstream_activity_manifest(
                 continue;
             }
         };
+        let deduped_values = dedupe_archive_upstream_last_activity(values);
         summary.refreshed_batches += 1;
-        summary.account_rows_written += values.len();
+        summary.account_rows_written += deduped_values.len();
         if dry_run {
             continue;
         }
 
         let mut tx = pool.begin().await?;
-        write_archive_batch_upstream_activity(tx.as_mut(), batch.id, &values).await?;
+        write_archive_batch_upstream_activity(tx.as_mut(), batch.id, &deduped_values).await?;
         tx.commit().await?;
     }
 
@@ -5198,10 +5216,10 @@ async fn load_archive_upstream_activity_from_file(
     archive_pool.close().await;
     drop(temp_cleanup);
 
-    Ok(rows
-        .into_iter()
-        .map(|row| (row.account_id, row.last_activity_at))
-        .collect())
+    Ok(dedupe_archive_upstream_last_activity(
+        rows.into_iter()
+            .map(|row| (row.account_id, row.last_activity_at)),
+    ))
 }
 
 async fn backfill_upstream_account_last_activity_from_archives(
@@ -5563,9 +5581,10 @@ async fn archive_rows_into_month_batch(
                         .await?,
                 );
             }
-            rows.into_iter()
-                .map(|row| (row.account_id, row.last_activity_at))
-                .collect::<Vec<_>>()
+            dedupe_archive_upstream_last_activity(
+                rows.into_iter()
+                    .map(|row| (row.account_id, row.last_activity_at)),
+            )
         } else {
             Vec::new()
         };
@@ -5721,10 +5740,11 @@ async fn archive_rows_into_segment_batch(
                     .await?,
             );
         }
-        let upstream_last_activity = upstream_last_activity
-            .into_iter()
-            .map(|row| (row.account_id, row.last_activity_at))
-            .collect::<Vec<_>>();
+        let upstream_last_activity = dedupe_archive_upstream_last_activity(
+            upstream_last_activity
+                .into_iter()
+                .map(|row| (row.account_id, row.last_activity_at)),
+        );
 
         let mut insert = QueryBuilder::<Sqlite>::new(format!(
             "INSERT OR IGNORE INTO archive_db.{} ({}) SELECT {} FROM main.{} WHERE id IN (",
@@ -5791,7 +5811,8 @@ async fn upsert_archived_upstream_last_activity(
     tx: &mut sqlx::SqliteConnection,
     values: &[(i64, String)],
 ) -> Result<()> {
-    for (account_id, occurred_at) in values {
+    let deduped_values = dedupe_archive_upstream_last_activity(values.iter().cloned());
+    for (account_id, occurred_at) in &deduped_values {
         sqlx::query(
             r#"
             UPDATE pool_upstream_accounts
@@ -5871,6 +5892,8 @@ async fn upsert_archive_batch_manifest(
     .bind(batch.archive_expires_at.as_deref())
     .execute(&mut *tx)
     .await?;
+    let deduped_upstream_last_activity =
+        dedupe_archive_upstream_last_activity(batch.upstream_last_activity.iter().cloned());
     let archive_batch_id = sqlx::query_scalar::<_, i64>(
         r#"
         SELECT id
@@ -5887,11 +5910,15 @@ async fn upsert_archive_batch_manifest(
     .fetch_one(&mut *tx)
     .await?;
     if batch.dataset == "codex_invocations" {
-        write_archive_batch_upstream_activity(tx, archive_batch_id, &batch.upstream_last_activity)
-            .await?;
+        write_archive_batch_upstream_activity(
+            tx,
+            archive_batch_id,
+            &deduped_upstream_last_activity,
+        )
+        .await?;
     }
-    if batch.dataset == "codex_invocations" && !batch.upstream_last_activity.is_empty() {
-        upsert_archived_upstream_last_activity(tx, &batch.upstream_last_activity).await?;
+    if batch.dataset == "codex_invocations" && !deduped_upstream_last_activity.is_empty() {
+        upsert_archived_upstream_last_activity(tx, &deduped_upstream_last_activity).await?;
     }
     Ok(())
 }
@@ -5901,11 +5928,12 @@ async fn write_archive_batch_upstream_activity(
     archive_batch_id: i64,
     values: &[(i64, String)],
 ) -> Result<()> {
+    let deduped_values = dedupe_archive_upstream_last_activity(values.iter().cloned());
     sqlx::query("DELETE FROM archive_batch_upstream_activity WHERE archive_batch_id = ?1")
         .bind(archive_batch_id)
         .execute(&mut *tx)
         .await?;
-    for chunk in values.chunks(BACKFILL_ACCOUNT_BIND_BATCH_SIZE) {
+    for chunk in deduped_values.chunks(BACKFILL_ACCOUNT_BIND_BATCH_SIZE) {
         let mut insert = QueryBuilder::<Sqlite>::new(
             "INSERT INTO archive_batch_upstream_activity (archive_batch_id, account_id, last_activity_at) ",
         );
@@ -5914,6 +5942,11 @@ async fn write_archive_batch_upstream_activity(
                 .push_bind(account_id)
                 .push_bind(last_activity_at);
         });
+        insert.push(
+            " ON CONFLICT(archive_batch_id, account_id) DO UPDATE SET last_activity_at = CASE \
+             WHEN excluded.last_activity_at > last_activity_at THEN excluded.last_activity_at \
+             ELSE last_activity_at END",
+        );
         insert.build().execute(&mut *tx).await?;
     }
     sqlx::query(
