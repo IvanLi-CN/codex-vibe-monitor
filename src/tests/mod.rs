@@ -19263,6 +19263,7 @@ async fn capture_target_pool_route_marks_response_failed_stream_as_route_failure
     upstream_handle.abort();
 }
 
+#[tokio::test]
 async fn capture_target_pool_route_marks_server_overloaded_after_forward_as_retryable_without_cooldown()
  {
     #[derive(sqlx::FromRow)]
