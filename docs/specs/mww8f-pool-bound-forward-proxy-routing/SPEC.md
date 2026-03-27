@@ -2,9 +2,9 @@
 
 ## 状态
 
-- Status: 已实现
+- Status: 已完成
 - Created: 2026-03-26
-- Last: 2026-03-26
+- Last: 2026-03-27
 
 ## 背景
 
@@ -124,7 +124,7 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Account Pool/Components/Upstream Account Group Settings Dialog/Automatic Routing
   state: existing-group-auto-routing
   evidence_note: 验证已存在分组在未绑定代理节点时保持自动路由文案，并在每个候选节点右侧展示 24 小时成功/失败趋势供参考。
@@ -135,10 +135,11 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Account Pool/Components/Upstream Account Group Settings Dialog/Hard Bound Multiple Nodes
   state: bound-multiple-nodes
   evidence_note: 验证分组设置支持多选绑定代理节点，并清晰展示当前硬绑定集合与右侧 24 小时请求趋势对比。
+  PR: include
   image:
   ![Bound multiple proxy nodes](./assets/group-settings-hard-bound-multiple-nodes.png)
 
@@ -146,7 +147,7 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Account Pool/Components/Upstream Account Group Settings Dialog/Missing Or Unavailable Bindings
   state: missing-bound-nodes
   evidence_note: 验证已保存但当前 inventory 缺失的绑定节点会被标记为失效，并在无历史桶数据时展示明确的空态图表提示。
@@ -157,10 +158,11 @@
   target_program: mock-only
   capture_scope: viewport
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Account Pool/Pages/Upstream Account Create/Batch OAuth/Ready
   state: existing-group-settings-from-create-page
   evidence_note: 验证创建页里的真实分组设置入口已经和列表页使用同一套组件与数据契约，选中现有分组后会展示绑定代理节点与 24 小时趋势。
+  PR: include
   image:
   ![Batch OAuth ready group settings with bindings](./assets/batch-oauth-ready-group-settings-with-bindings.png)
 
@@ -168,13 +170,15 @@
   target_program: mock-only
   capture_scope: viewport
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Account Pool/Components/Upstream Account Group Settings Dialog/Hard Bound Multiple Nodes
   state: request-trend-tooltip-details
   evidence_note: 验证分组绑定节点右侧的 24 小时请求图已复用参考界面的共享 inline chart tooltip，悬浮柱状图时会显示时间桶、Success、Failure 和 Total requests 详情。
+  PR: include
   image:
   ![Bound proxy node request trend tooltip](./assets/group-settings-chart-tooltip.png)
 
 ## 变更记录
 
 - 2026-03-26: 创建 spec，冻结 `/v1/*` 新语义、分组绑定 forward proxy 的运行时规则、接口契约与视觉证据目标。
+- 2026-03-27: 视觉证据完成主人确认，spec 状态切换为已完成，并标记 PR 可复用截图。
