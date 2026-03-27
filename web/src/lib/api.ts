@@ -759,24 +759,6 @@ export interface VersionResponse {
   frontend: string;
 }
 
-export type ProxyFastModeRewriteMode =
-  | "disabled"
-  | "fill_missing"
-  | "force_priority";
-
-const DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES = 3;
-const MAX_PROXY_UPSTREAM_429_MAX_RETRIES = 5;
-
-export interface ProxySettings {
-  hijackEnabled: boolean;
-  mergeUpstreamEnabled: boolean;
-  models: string[];
-  enabledModels: string[];
-  defaultHijackEnabled: boolean;
-  fastModeRewriteMode: ProxyFastModeRewriteMode;
-  upstream429MaxRetries: number;
-}
-
 export interface PricingEntry {
   model: string;
   inputPer1m: number;
@@ -815,11 +797,19 @@ export interface ForwardProxyNode {
   stats: ForwardProxyNodeStats;
 }
 
+export interface ForwardProxyBindingNode {
+  key: string;
+  source: string;
+  displayName: string;
+  penalized: boolean;
+  selectable: boolean;
+  last24h: ForwardProxyHourlyBucket[];
+}
+
 export interface ForwardProxySettings {
   proxyUrls: string[];
   subscriptionUrls: string[];
   subscriptionUpdateIntervalSecs: number;
-  insertDirect: boolean;
   nodes: ForwardProxyNode[];
 }
 
@@ -988,7 +978,6 @@ function forwardProxyValidationTimeoutMs(
 }
 
 export interface SettingsPayload {
-  proxy: ProxySettings;
   forwardProxy: ForwardProxySettings;
   pricing: PricingSettings;
 }
@@ -1018,11 +1007,10 @@ function normalizeTimeseriesPoint(raw: unknown): TimeseriesPoint | null {
     failureCount: normalizeFiniteNumber(payload.failureCount) ?? 0,
     totalTokens: normalizeFiniteNumber(payload.totalTokens) ?? 0,
     totalCost: normalizeFiniteNumber(payload.totalCost) ?? 0,
-    firstByteSampleCount: normalizeFiniteNumber(payload.firstByteSampleCount) ?? 0,
-    firstByteAvgMs:
-      normalizeFiniteNumber(payload.firstByteAvgMs) ?? null,
-    firstByteP95Ms:
-      normalizeFiniteNumber(payload.firstByteP95Ms) ?? null,
+    firstByteSampleCount:
+      normalizeFiniteNumber(payload.firstByteSampleCount) ?? 0,
+    firstByteAvgMs: normalizeFiniteNumber(payload.firstByteAvgMs) ?? null,
+    firstByteP95Ms: normalizeFiniteNumber(payload.firstByteP95Ms) ?? null,
     firstResponseByteTotalSampleCount:
       normalizeFiniteNumber(payload.firstResponseByteTotalSampleCount) ?? 0,
     firstResponseByteTotalAvgMs:
@@ -1048,49 +1036,6 @@ function normalizeTimeseriesResponse(raw: unknown): TimeseriesResponse {
     points: pointsRaw
       .map(normalizeTimeseriesPoint)
       .filter((point): point is TimeseriesPoint => point != null),
-  };
-}
-
-function normalizeProxyFastModeRewriteMode(
-  value: unknown,
-): ProxyFastModeRewriteMode {
-  return value === "fill_missing" || value === "force_priority"
-    ? value
-    : "disabled";
-}
-
-function normalizeProxyUpstream429MaxRetries(value: unknown): number {
-  if (typeof value !== "number" || !Number.isFinite(value))
-    return DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES;
-  const normalized = Math.trunc(value);
-  return Math.min(MAX_PROXY_UPSTREAM_429_MAX_RETRIES, Math.max(0, normalized));
-}
-
-function normalizeProxySettings(raw: unknown): ProxySettings {
-  const payload = (raw ?? {}) as Record<string, unknown>;
-  const models = normalizeStringArray(payload.models);
-  const hasEnabledModelsField = Object.prototype.hasOwnProperty.call(
-    payload,
-    "enabledModels",
-  );
-  const enabledModelsRaw = normalizeStringArray(payload.enabledModels);
-  const allowSet = new Set(models);
-  const enabledModels = (
-    hasEnabledModelsField ? enabledModelsRaw : models
-  ).filter((modelId) => allowSet.has(modelId));
-
-  return {
-    hijackEnabled: Boolean(payload.hijackEnabled),
-    mergeUpstreamEnabled: Boolean(payload.mergeUpstreamEnabled),
-    models,
-    enabledModels,
-    defaultHijackEnabled: Boolean(payload.defaultHijackEnabled),
-    fastModeRewriteMode: normalizeProxyFastModeRewriteMode(
-      payload.fastModeRewriteMode ?? payload.fast_mode_rewrite_mode,
-    ),
-    upstream429MaxRetries: normalizeProxyUpstream429MaxRetries(
-      payload.upstream429MaxRetries ?? payload.upstream_429_max_retries,
-    ),
   };
 }
 
@@ -1183,6 +1128,28 @@ function normalizeForwardProxyNode(raw: unknown): ForwardProxyNode | null {
   };
 }
 
+function normalizeForwardProxyBindingNode(
+  raw: unknown,
+): ForwardProxyBindingNode | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const key = typeof payload.key === "string" ? payload.key.trim() : "";
+  if (!key) return null;
+  const bucketsRaw = Array.isArray(payload.last24h) ? payload.last24h : [];
+  return {
+    key,
+    source: typeof payload.source === "string" ? payload.source : "manual",
+    displayName:
+      typeof payload.displayName === "string" && payload.displayName.trim()
+        ? payload.displayName.trim()
+        : key,
+    penalized: Boolean(payload.penalized),
+    selectable: payload.selectable === true,
+    last24h: bucketsRaw
+      .map(normalizeForwardProxyHourlyBucket)
+      .filter((item): item is ForwardProxyHourlyBucket => item != null),
+  };
+}
+
 function normalizeForwardProxySettings(raw: unknown): ForwardProxySettings {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const nodesRaw = Array.isArray(payload.nodes) ? payload.nodes : [];
@@ -1195,7 +1162,6 @@ function normalizeForwardProxySettings(raw: unknown): ForwardProxySettings {
     subscriptionUrls: normalizeStringArray(payload.subscriptionUrls),
     subscriptionUpdateIntervalSecs:
       normalizeFiniteNumber(payload.subscriptionUpdateIntervalSecs) ?? 3600,
-    insertDirect: payload.insertDirect !== false,
     nodes: nodes.map((node) => ({
       ...node,
       stats: node.stats ?? emptyForwardProxyNodeStats(),
@@ -1675,7 +1641,6 @@ function normalizeForwardProxyValidationResult(
 function normalizeSettingsPayload(raw: unknown): SettingsPayload {
   const payload = (raw ?? {}) as Record<string, unknown>;
   return {
-    proxy: normalizeProxySettings(payload.proxy),
     forwardProxy: normalizeForwardProxySettings(payload.forwardProxy),
     pricing: normalizePricingSettings(payload.pricing),
   };
@@ -1844,6 +1809,7 @@ export interface UpstreamAccountDetail extends UpstreamAccountSummary {
 export interface UpstreamAccountGroupSummary {
   groupName: string;
   note?: string | null;
+  boundProxyKeys?: string[];
 }
 
 export interface PoolRoutingSettings {
@@ -1883,6 +1849,7 @@ export interface UpstreamAccountListResponse {
   writesEnabled: boolean;
   items: UpstreamAccountSummary[];
   groups: UpstreamAccountGroupSummary[];
+  forwardProxyNodes?: ForwardProxyBindingNode[];
   hasUngroupedAccounts: boolean;
   total?: number;
   page?: number;
@@ -2252,6 +2219,7 @@ export interface FetchTagsQuery {
 
 export interface UpdateUpstreamAccountGroupPayload {
   note?: string;
+  boundProxyKeys?: string[];
 }
 
 function normalizeRateWindowSnapshot(raw: unknown): RateWindowSnapshot | null {
@@ -2646,6 +2614,9 @@ function normalizeUpstreamAccountGroupSummary(
   return {
     groupName,
     note: typeof payload.note === "string" ? payload.note : null,
+    boundProxyKeys: normalizeStringArray(payload.boundProxyKeys).map((item) =>
+      item.trim(),
+    ).filter((item) => item.length > 0),
   };
 }
 
@@ -2666,6 +2637,11 @@ function normalizeUpstreamAccountListResponse(
     groups: groupsRaw
       .map(normalizeUpstreamAccountGroupSummary)
       .filter((item): item is UpstreamAccountGroupSummary => item != null),
+    forwardProxyNodes: Array.isArray(payload.forwardProxyNodes)
+      ? payload.forwardProxyNodes
+          .map(normalizeForwardProxyBindingNode)
+          .filter((item): item is ForwardProxyBindingNode => item != null)
+      : [],
     hasUngroupedAccounts: payload.hasUngroupedAccounts === true,
     total,
     page,
@@ -3172,20 +3148,6 @@ export async function fetchSettings(): Promise<SettingsPayload> {
   return normalizeSettingsPayload(response);
 }
 
-export async function updateProxySettings(payload: {
-  hijackEnabled: boolean;
-  mergeUpstreamEnabled: boolean;
-  enabledModels: string[];
-  fastModeRewriteMode: ProxyFastModeRewriteMode;
-  upstream429MaxRetries: number;
-}): Promise<ProxySettings> {
-  const response = await fetchJson<unknown>("/api/settings/proxy", {
-    method: "PUT",
-    body: JSON.stringify(payload),
-  });
-  return normalizeProxySettings(response);
-}
-
 export async function updatePricingSettings(
   payload: PricingSettings,
 ): Promise<PricingSettings> {
@@ -3200,7 +3162,6 @@ export async function updateForwardProxySettings(payload: {
   proxyUrls: string[];
   subscriptionUrls: string[];
   subscriptionUpdateIntervalSecs: number;
-  insertDirect: boolean;
 }): Promise<ForwardProxySettings> {
   const response = await fetchJson<unknown>("/api/settings/forward-proxy", {
     method: "PUT",

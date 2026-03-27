@@ -410,11 +410,11 @@ export const DetailDrawerGroupNotes: Story = {
     await userEvent.click(within(dialog).getByRole('tab', { name: /编辑|edit/i }))
     await userEvent.click(
       await within(dialog).findByRole('button', {
-        name: /编辑分组备注|edit group note/i,
+        name: /编辑分组设置|edit group settings|编辑分组备注|edit group note/i,
       }),
     )
     await expect(
-      documentScope.getByRole('dialog', { name: /编辑分组备注|edit group note/i }),
+      documentScope.getByRole('dialog', { name: /分组设置|group settings|分组备注|group note/i }),
     ).toBeInTheDocument()
     await expect(documentScope.getByText(/production/i)).toBeInTheDocument()
   },

@@ -13,7 +13,6 @@ import {
   fetchUpstreamAccounts,
   fetchUpstreamStickyConversations,
   updateOauthLoginSession,
-  updateProxySettings,
   updatePoolRoutingSettings,
   validateForwardProxyCandidate,
 } from "./api";
@@ -576,32 +575,38 @@ describe("createOauthMailboxSession", () => {
   });
 });
 
-describe("proxy settings normalization", () => {
+describe("settings normalization", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it("defaults invalid fast rewrite mode to disabled when fetching settings", async () => {
+  it("normalizes forward proxy settings when fetching settings", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => {
         return new Response(
           JSON.stringify({
-            proxy: {
-              hijackEnabled: true,
-              mergeUpstreamEnabled: true,
-              defaultHijackEnabled: false,
-              models: ["gpt-5.3-codex"],
-              enabledModels: ["gpt-5.3-codex"],
-              fastModeRewriteMode: "wat",
-              upstream429MaxRetries: 99,
-            },
             forwardProxy: {
-              proxyUrls: [],
-              subscriptionUrls: [],
-              subscriptionUpdateIntervalSecs: 3600,
-              insertDirect: true,
-              nodes: [],
+              proxyUrls: ["socks5://127.0.0.1:1080"],
+              subscriptionUrls: ["https://example.com/subscription.txt"],
+              subscriptionUpdateIntervalSecs: 900,
+              nodes: [
+                {
+                  key: "jp-edge-01",
+                  source: "manual",
+                  displayName: "JP Edge 01",
+                  endpointUrl: "socks5://127.0.0.1:1080",
+                  weight: 0.9,
+                  penalized: false,
+                  stats: {
+                    oneMinute: { attempts: 2 },
+                    fifteenMinutes: { attempts: 10 },
+                    oneHour: { attempts: 20 },
+                    oneDay: { attempts: 30 },
+                    sevenDays: { attempts: 40 },
+                  },
+                },
+              ],
             },
             pricing: {
               catalogVersion: "v1",
@@ -614,85 +619,71 @@ describe("proxy settings normalization", () => {
     );
 
     const settings = await fetchSettings();
-    expect(settings.proxy.fastModeRewriteMode).toBe("disabled");
-    expect(settings.proxy.upstream429MaxRetries).toBe(5);
+    expect(settings.forwardProxy.subscriptionUpdateIntervalSecs).toBe(900);
+    expect(settings.forwardProxy.nodes).toHaveLength(1);
+    expect(settings.forwardProxy.nodes[0].displayName).toBe("JP Edge 01");
   });
 
-  it("defaults invalid upstream 429 retry count to 3 when fetching settings", async () => {
+  it("normalizes bound proxy keys and binding nodes in upstream account list", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => {
         return new Response(
           JSON.stringify({
-            proxy: {
-              hijackEnabled: true,
-              mergeUpstreamEnabled: true,
-              defaultHijackEnabled: false,
-              models: ["gpt-5.3-codex"],
-              enabledModels: ["gpt-5.3-codex"],
-              fastModeRewriteMode: "disabled",
-              upstream429MaxRetries: "bad",
-            },
-            forwardProxy: {
-              proxyUrls: [],
-              subscriptionUrls: [],
-              subscriptionUpdateIntervalSecs: 3600,
-              insertDirect: true,
-              nodes: [],
-            },
-            pricing: {
-              catalogVersion: "v1",
-              entries: [],
-            },
+            writesEnabled: true,
+            items: [],
+            groups: [
+              {
+                groupName: "production",
+                note: "Premium traffic",
+                boundProxyKeys: ["jp-edge-01", "sg-edge-02", "jp-edge-01"],
+              },
+            ],
+            forwardProxyNodes: [
+              {
+                key: "jp-edge-01",
+                source: "manual",
+                displayName: "JP Edge 01",
+                penalized: false,
+                selectable: true,
+                last24h: [
+                  {
+                    bucketStart: "2026-03-01T00:00:00Z",
+                    bucketEnd: "2026-03-01T01:00:00Z",
+                    successCount: 5,
+                    failureCount: 1,
+                  },
+                ],
+              },
+              {
+                key: "drain-node",
+                source: "manual",
+                displayName: "Drain Node",
+                penalized: true,
+                selectable: false,
+                last24h: [],
+              },
+            ],
+            hasUngroupedAccounts: false,
+            total: 0,
+            page: 1,
+            pageSize: 20,
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         );
       }) as typeof fetch,
     );
 
-    const settings = await fetchSettings();
-    expect(settings.proxy.upstream429MaxRetries).toBe(3);
-  });
-
-  it("sends upstream 429 retry count in proxy settings update payload", async () => {
-    const fetchMock = vi.fn(
-      async (_input: RequestInfo | URL, init?: RequestInit) => {
-        expect(init?.method).toBe("PUT");
-        expect(typeof init?.body).toBe("string");
-        expect(JSON.parse(String(init?.body))).toEqual({
-          hijackEnabled: true,
-          mergeUpstreamEnabled: false,
-          enabledModels: ["gpt-5.3-codex"],
-          fastModeRewriteMode: "force_priority",
-          upstream429MaxRetries: 4,
-        });
-        return new Response(
-          JSON.stringify({
-            hijackEnabled: true,
-            mergeUpstreamEnabled: false,
-            defaultHijackEnabled: false,
-            models: ["gpt-5.3-codex"],
-            enabledModels: ["gpt-5.3-codex"],
-            fastModeRewriteMode: "force_priority",
-            upstream429MaxRetries: 4,
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        );
-      },
-    );
-    vi.stubGlobal("fetch", fetchMock as typeof fetch);
-
-    const response = await updateProxySettings({
-      hijackEnabled: true,
-      mergeUpstreamEnabled: false,
-      enabledModels: ["gpt-5.3-codex"],
-      fastModeRewriteMode: "force_priority",
-      upstream429MaxRetries: 4,
-    });
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(response.fastModeRewriteMode).toBe("force_priority");
-    expect(response.upstream429MaxRetries).toBe(4);
+    const response = await fetchUpstreamAccounts();
+    expect(response.groups[0].boundProxyKeys).toEqual([
+      "jp-edge-01",
+      "sg-edge-02",
+      "jp-edge-01",
+    ]);
+    expect(response.forwardProxyNodes ?? []).toHaveLength(2);
+    expect(response.forwardProxyNodes?.[1]?.selectable).toBe(false);
+    expect(response.forwardProxyNodes?.[0]?.last24h[0]?.successCount).toBe(5);
+    expect(response.forwardProxyNodes?.[1]?.last24h).toEqual([]);
   });
 });
 

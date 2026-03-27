@@ -123,7 +123,7 @@ function DialogCloseIcon({ className, ...props }: React.ComponentPropsWithoutRef
   return (
     <DialogClose
       className={cn(
-        'inline-flex h-10 w-10 items-center justify-center rounded-full text-base-content/78 transition-colors',
+        'inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-full text-base-content/78 transition-colors',
         'hover:bg-base-200 hover:text-base-content focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary',
         'disabled:pointer-events-none disabled:opacity-50',
         className,

@@ -73,6 +73,7 @@ export const Ready: Story = {
   render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new?mode=batchOauth" />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
+    const documentScope = within(canvasElement.ownerDocument.body)
     const originalClipboard = navigator.clipboard
     const originalExecCommand = document.execCommand?.bind(document)
     let copiedValue = ''
@@ -93,6 +94,27 @@ export const Ready: Story = {
       await expect(canvas.getByRole('button', { name: /copy oauth url/i })).toBeEnabled()
       await expect(canvas.getByText(/oauth url generated and copied/i)).toBeInTheDocument()
       await expect(copiedValue).toMatch(/https:\/\/auth\.openai\.com\/authorize/i)
+      await expect(canvas.getByDisplayValue(/https:\/\/auth\.openai\.com\/authorize/i)).toBeInTheDocument()
+      await expect(canvas.getByRole('button', { name: /complete oauth login/i })).toBeInTheDocument()
+      await userEvent.click(
+        await documentScope.findByRole('button', {
+          name: /编辑分组设置|edit group settings|编辑分组备注|edit group note/i,
+        }),
+      )
+      await expect(
+        documentScope.getByRole('dialog', { name: /分组设置|group settings|分组备注|group note/i }),
+      ).toBeInTheDocument()
+      await expect(documentScope.getByText(/绑定代理节点|bound proxy nodes/i)).toBeInTheDocument()
+      await expect(documentScope.getByText(/JP Edge 01/i)).toBeInTheDocument()
+      const chart = await documentScope.findByLabelText(/JP Edge 01 .*request volume chart/i)
+      const firstBar = chart.querySelector('[data-inline-chart-index="0"]')
+      if (!(firstBar instanceof HTMLElement)) {
+        throw new Error('missing first proxy request trend bar in batch oauth ready story')
+      }
+      await userEvent.hover(firstBar)
+      await expect(documentScope.getByRole('tooltip')).toBeInTheDocument()
+      await expect(documentScope.getByText(/成功|success/i)).toBeInTheDocument()
+      await expect(documentScope.getByText(/失败|failure/i)).toBeInTheDocument()
     } finally {
       Object.defineProperty(navigator, 'clipboard', {
         configurable: true,
@@ -444,13 +466,16 @@ export const GroupNoteDraft: Story = {
     const documentScope = within(doc.body)
     await userEvent.click(
       await documentScope.findByRole('button', {
-        name: /编辑分组备注|edit group note/i,
+        name: /编辑分组设置|edit group settings|编辑分组备注|edit group note/i,
       }),
     )
     await expect(
-      documentScope.getByRole('dialog', { name: /编辑分组备注|edit group note/i }),
+      documentScope.getByRole('dialog', { name: /分组设置|group settings|分组备注|group note/i }),
     ).toBeInTheDocument()
     await expect(documentScope.getByText(/new-team/i)).toBeInTheDocument()
+    await expect(
+      documentScope.getByText(/绑定代理节点|bound proxy nodes/i),
+    ).toBeInTheDocument()
   },
 }
 

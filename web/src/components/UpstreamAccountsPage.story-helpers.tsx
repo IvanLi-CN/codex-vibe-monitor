@@ -6,6 +6,7 @@ import type {
   CreateApiKeyAccountPayload,
   CompleteOauthLoginSessionPayload,
   EffectiveRoutingRule,
+  ForwardProxyBindingNode,
   LoginSessionStatusResponse,
   OauthMailboxStatus,
   PoolRoutingMaintenanceSettings,
@@ -31,6 +32,8 @@ type StoryStore = {
   accounts: UpstreamAccountSummary[]
   details: Record<number, UpstreamAccountDetail>
   groupNotes: Record<string, string>
+  groupBoundProxyKeys: Record<string, string[]>
+  forwardProxyNodes: ForwardProxyBindingNode[]
   nextId: number
   sessions: Record<
     string,
@@ -81,6 +84,55 @@ const compactDefaultTags: AccountTagSummary[] = [
     id: 4,
     name: 'sticky-pool',
     routingRule: defaultEffectiveRoutingRule,
+  },
+]
+
+function buildRequestBuckets(seed: number, baseline: number, failuresEvery: number): ForwardProxyBindingNode['last24h'] {
+  const start = Date.parse('2026-03-01T00:00:00.000Z')
+  return Array.from({ length: 24 }, (_, index) => {
+    const bucketStart = new Date(start + index * 3600_000).toISOString()
+    const bucketEnd = new Date(start + (index + 1) * 3600_000).toISOString()
+    return {
+      bucketStart,
+      bucketEnd,
+      successCount: Math.max(0, Math.round(baseline + Math.sin((index + seed) / 2.3) * (baseline * 0.3))),
+      failureCount: index % failuresEvery === 0 ? Math.max(0, 1 + ((seed + index) % 2)) : 0,
+    }
+  })
+}
+
+const defaultForwardProxyNodes: ForwardProxyBindingNode[] = [
+  {
+    key: 'jp-edge-01',
+    source: 'manual',
+    displayName: 'JP Edge 01',
+    penalized: false,
+    selectable: true,
+    last24h: buildRequestBuckets(1, 18, 6),
+  },
+  {
+    key: 'sg-edge-02',
+    source: 'subscription',
+    displayName: 'SG Edge 02',
+    penalized: false,
+    selectable: true,
+    last24h: buildRequestBuckets(7, 13, 5),
+  },
+  {
+    key: 'us-edge-03',
+    source: 'subscription',
+    displayName: 'US Edge 03',
+    penalized: true,
+    selectable: true,
+    last24h: buildRequestBuckets(13, 10, 4),
+  },
+  {
+    key: 'drain-node',
+    source: 'manual',
+    displayName: 'Drain Node',
+    penalized: true,
+    selectable: false,
+    last24h: buildRequestBuckets(17, 5, 3),
   },
 ]
 
@@ -863,11 +915,20 @@ function listGroupSummaries(store: StoryStore) {
     const groupName = normalizeGroupName(account.groupName)
     if (groupName) names.add(groupName)
   }
+  for (const groupName of Object.keys(store.groupNotes)) {
+    const normalized = normalizeGroupName(groupName)
+    if (normalized) names.add(normalized)
+  }
+  for (const groupName of Object.keys(store.groupBoundProxyKeys)) {
+    const normalized = normalizeGroupName(groupName)
+    if (normalized) names.add(normalized)
+  }
   return Array.from(names)
     .sort((left, right) => left.localeCompare(right))
     .map((groupName) => ({
       groupName,
       note: store.groupNotes[groupName] ?? null,
+      boundProxyKeys: [...(store.groupBoundProxyKeys[groupName] ?? [])],
     }))
 }
 
@@ -1741,6 +1802,7 @@ function createStore(): StoryStore {
       maintenance: clone(defaultRoutingMaintenance),
       timeouts: clone(defaultRoutingTimeouts),
     },
+    forwardProxyNodes: clone(defaultForwardProxyNodes),
     groupNotes: {
       production: 'Premium traffic group note.',
       staging: 'Staging fallback group note.',
@@ -1765,6 +1827,11 @@ function createStore(): StoryStore {
       ops: 'Internal operational accounts for migration and support tooling.',
       'staging-overflow': 'Fallback keys that often ride the weekly edge.',
       rescue: 'Emergency pool for overflow and incident recovery.',
+    },
+    groupBoundProxyKeys: {
+      production: ['jp-edge-01', 'sg-edge-02'],
+      staging: ['drain-node'],
+      overflow: ['missing-node-legacy'],
     },
     accounts,
     details,
@@ -2113,6 +2180,7 @@ export function StorybookUpstreamAccountsMock({
         const payload: UpstreamAccountListResponse = {
           writesEnabled: store.writesEnabled,
           groups: listGroupSummaries(store),
+          forwardProxyNodes: clone(store.forwardProxyNodes),
           hasUngroupedAccounts: store.accounts.some(
             (account) => !normalizeGroupName(account.groupName),
           ),
@@ -2604,9 +2672,9 @@ export function StorybookUpstreamAccountsMock({
       }
 
       const groupMatch = path.match(
-        /^\/api\/pool\/upstream-accounts\/groups\/(.+)$/,
+        /^\/api\/pool\/upstream-account-groups\/(.+)$/,
       )
-      if (groupMatch && method === 'PATCH') {
+      if (groupMatch && method === 'PUT') {
         const groupName = decodeURIComponent(groupMatch[1])
         const body = parseBody<UpdateUpstreamAccountGroupPayload>(
           init?.body,
@@ -2616,9 +2684,27 @@ export function StorybookUpstreamAccountsMock({
         if (!normalized)
           return jsonResponse({ message: 'missing mock group' }, 404)
         const note = body.note?.trim() ?? ''
+        const boundProxyKeys = Array.isArray(body.boundProxyKeys)
+          ? Array.from(
+              new Set(
+                body.boundProxyKeys
+                  .map((value) => value.trim())
+                  .filter(Boolean),
+              ),
+            )
+          : []
         if (note) store.groupNotes[normalized] = note
         else delete store.groupNotes[normalized]
-        return jsonResponse({ groupName: normalized, note: note || null })
+        if (boundProxyKeys.length > 0) {
+          store.groupBoundProxyKeys[normalized] = boundProxyKeys
+        } else {
+          delete store.groupBoundProxyKeys[normalized]
+        }
+        return jsonResponse({
+          groupName: normalized,
+          note: note || null,
+          boundProxyKeys,
+        })
       }
 
       if (detailMatch && method === 'DELETE') {
