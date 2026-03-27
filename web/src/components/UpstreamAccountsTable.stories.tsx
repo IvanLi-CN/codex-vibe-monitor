@@ -197,6 +197,7 @@ const labels = {
   action: (action?: string | null) =>
     ({
       route_hard_unavailable: 'Hard unavailable',
+      route_retryable_failure: 'Temporary upstream failure',
       route_cooldown_started: 'Route cooldown',
       sync_failed: 'Sync failed',
     })[action ?? ''] ?? action ?? null,
@@ -208,6 +209,7 @@ const labels = {
   actionReason: (reason?: string | null) =>
     ({
       upstream_http_429_quota_exhausted: 'Weekly cap exhausted',
+      upstream_server_overloaded: 'Upstream is temporarily overloaded',
       reauth_required: 'Needs reauth',
     })[reason ?? ''] ?? reason ?? null,
   latestActionFieldAction: 'Action',
@@ -264,6 +266,7 @@ const chineseLabels = {
   action: (action?: string | null) =>
     ({
       route_hard_unavailable: '硬拒绝',
+      route_retryable_failure: '临时上游失败',
       route_cooldown_started: '冷却开始',
       sync_failed: '同步失败',
     })[action ?? ''] ?? action ?? null,
@@ -275,6 +278,7 @@ const chineseLabels = {
   actionReason: (reason?: string | null) =>
     ({
       upstream_http_429_quota_exhausted: '周限额耗尽',
+      upstream_server_overloaded: '上游暂时过载',
       reauth_required: '需要重新授权',
     })[reason ?? ''] ?? reason ?? null,
   latestActionFieldAction: '动作',

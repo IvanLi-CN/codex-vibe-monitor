@@ -665,6 +665,62 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect(document.body.textContent).toContain("invk_action_001");
   });
 
+  it("renders retryable upstream overload actions without cooldown wording", async () => {
+    mockAccountsPage({
+      selectedSummary: {
+        status: "active",
+        displayStatus: "active",
+        healthStatus: "normal",
+        workStatus: "working",
+        lastAction: "route_retryable_failure",
+        lastActionSource: "call",
+        lastActionReasonCode: "upstream_server_overloaded",
+        lastActionReasonMessage:
+          "[upstream_response_failed] server_is_overloaded: Our servers are currently overloaded. Please try again later.",
+        lastActionHttpStatus: 200,
+      },
+      detail: {
+        status: "active",
+        displayStatus: "active",
+        healthStatus: "normal",
+        workStatus: "working",
+        lastAction: "route_retryable_failure",
+        lastActionSource: "call",
+        lastActionReasonCode: "upstream_server_overloaded",
+        lastActionReasonMessage:
+          "[upstream_response_failed] server_is_overloaded: Our servers are currently overloaded. Please try again later.",
+        lastActionHttpStatus: 200,
+        recentActions: [
+          {
+            id: 73,
+            occurredAt: "2026-03-27T07:06:29.000Z",
+            action: "route_retryable_failure",
+            source: "call",
+            reasonCode: "upstream_server_overloaded",
+            reasonMessage:
+              "[upstream_response_failed] server_is_overloaded: Our servers are currently overloaded. Please try again later.",
+            httpStatus: 200,
+            failureKind: "upstream_response_failed",
+            invokeId: "invk_overloaded_001",
+            stickyKey: "sticky-overloaded-001",
+            createdAt: "2026-03-27T07:06:29.000Z",
+          },
+        ],
+      },
+    });
+    render("/account-pool/upstream-accounts");
+
+    clickFirstRosterRow();
+    await flushAsync();
+    clickTab(/Health & events/i);
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Temporary upstream failure");
+    expect(document.body.textContent).toContain("Upstream is temporarily overloaded");
+    expect(document.body.textContent).toContain("HTTP 200");
+    expect(document.body.textContent).not.toContain("Route cooldown");
+  });
+
   it("renders blocked recovery actions with translated source and reason labels", async () => {
     mockAccountsPage({
       selectedSummary: {
