@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.30.1",
+  "base_stable_version": "1.30.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-27T09:05:24Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.30.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "f8aad5c23a2d3917f119200a18f195f40138be34",
+  "pr_number": 255,
+  "pr_title": "fix: retry transient server overload responses",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.30.1",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.30.1,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "0366f27fed87b33281a692a8a76fd439ee3c2d93",
+  "type_label": "type:patch"
+}
