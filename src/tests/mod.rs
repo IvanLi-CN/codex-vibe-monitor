@@ -25987,6 +25987,86 @@ async fn prompt_cache_conversations_cache_invalidation_exposes_new_proxy_capture
 }
 
 #[tokio::test]
+async fn prompt_cache_conversations_cache_ignores_proxy_captures_without_prompt_cache_key() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+    let occurred_a = format_naive(
+        (now - ChronoDuration::minutes(80))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let occurred_b = format_naive(
+        (now - ChronoDuration::minutes(30))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind("pck-cache-unrelated-1")
+    .bind(&occurred_a)
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(10)
+    .bind(0.01)
+    .bind(r#"{"promptCacheKey":"pck-unrelated"}"#)
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert prompt cache seed row");
+
+    let Json(first) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+        }),
+    )
+    .await
+    .expect("first fetch should populate prompt cache stats");
+    let first_count = first
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-unrelated")
+        .map(|item| item.request_count)
+        .expect("pck-unrelated should be present");
+    assert_eq!(first_count, 1);
+
+    let mut unrelated_record = test_proxy_capture_record("pck-cache-unrelated-2", &occurred_b);
+    unrelated_record.payload =
+        Some("{\"endpoint\":\"/v1/responses\",\"statusCode\":200}".to_string());
+    persist_and_broadcast_proxy_capture(state.as_ref(), Instant::now(), unrelated_record)
+        .await
+        .expect("persist+broadcast should keep prompt cache cache warm for unrelated traffic");
+
+    let Json(second) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+        }),
+    )
+    .await
+    .expect("second fetch should still use cached result");
+    let second_count = second
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-unrelated")
+        .map(|item| item.request_count)
+        .expect("pck-unrelated should remain present");
+    assert_eq!(second_count, 1);
+}
+
+#[tokio::test]
 async fn prompt_cache_conversations_concurrent_requests_same_limit_do_not_stall() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

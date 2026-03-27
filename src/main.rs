@@ -19436,7 +19436,13 @@ async fn persist_and_broadcast_proxy_capture(
     let Some(inserted_record) = inserted else {
         return Ok(());
     };
-    invalidate_prompt_cache_conversations_cache(&state.prompt_cache_conversation_cache).await;
+    if inserted_record
+        .prompt_cache_key
+        .as_deref()
+        .is_some_and(|key| !key.trim().is_empty())
+    {
+        invalidate_prompt_cache_conversations_cache(&state.prompt_cache_conversation_cache).await;
+    }
     if state.broadcaster.receiver_count() == 0 {
         return Ok(());
     }

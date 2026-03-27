@@ -539,12 +539,6 @@ export function mergePromptCacheConversationsResponse(
       withinPromptCacheSelectionWindow(record.occurredAt, selection, now),
     );
     if (filteredRecords.length === 0) continue;
-    if (
-      selection.mode === "count" &&
-      nextConversations.length >= selection.limit
-    ) {
-      continue;
-    }
     nextConversations.push(buildOptimisticConversation(promptCacheKey, filteredRecords));
   }
 

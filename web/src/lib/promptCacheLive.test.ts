@@ -87,7 +87,7 @@ function createLiveRecord(
 }
 
 describe("mergePromptCacheConversationsResponse", () => {
-  it("does not let unseen live conversations displace count-capped authoritative rows", () => {
+  it("lets unseen live conversations displace older rows in count-capped mode", () => {
     const base = createResponse([
       createConversation("pck-newest", {
         createdAt: "2026-03-10T02:00:00Z",
@@ -116,8 +116,8 @@ describe("mergePromptCacheConversationsResponse", () => {
     );
 
     expect(merged?.conversations.map((item) => item.promptCacheKey)).toEqual([
+      "pck-live-new",
       "pck-newest",
-      "pck-older",
     ]);
   });
 

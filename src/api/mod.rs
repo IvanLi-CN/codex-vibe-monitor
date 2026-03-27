@@ -2065,6 +2065,7 @@ pub(crate) async fn fetch_prompt_cache_conversations_cached(
         }
 
         let mut cache = state.prompt_cache_conversation_cache.lock().await;
+        let stale_result = result.is_ok() && cache.generation != build_generation;
         let in_flight = match cache.in_flight.remove(&selection) {
             Some(in_flight) if in_flight.generation == build_generation => Some(in_flight),
             Some(in_flight) => {
@@ -2075,7 +2076,7 @@ pub(crate) async fn fetch_prompt_cache_conversations_cached(
         };
         if let Some(in_flight) = in_flight {
             if let Ok(response) = &result {
-                if cache.generation == build_generation {
+                if !stale_result && cache.generation == build_generation {
                     cache.entries.insert(
                         selection,
                         PromptCacheConversationsCacheEntry {
@@ -2087,6 +2088,10 @@ pub(crate) async fn fetch_prompt_cache_conversations_cached(
                 }
             }
             let _ = in_flight.signal.send(true);
+        }
+
+        if stale_result {
+            continue;
         }
 
         return result;
