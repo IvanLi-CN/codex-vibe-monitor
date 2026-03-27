@@ -32,6 +32,32 @@ const PROMPT_CACHE_NOW_TICK_MS = 30_000;
 const PROMPT_CACHE_CHART_MAX_WINDOW_MS = 24 * 3_600_000;
 const PROMPT_CACHE_HISTORY_PAGE_SIZE = 200;
 
+type PromptCachePreviewRecordExtras = Partial<
+  Pick<
+    ApiInvocation,
+    | "source"
+    | "inputTokens"
+    | "outputTokens"
+    | "cacheInputTokens"
+    | "reasoningTokens"
+    | "reasoningEffort"
+    | "errorMessage"
+    | "failureKind"
+    | "isActionable"
+    | "responseContentEncoding"
+    | "requestedServiceTier"
+    | "serviceTier"
+    | "tReqReadMs"
+    | "tReqParseMs"
+    | "tUpstreamConnectMs"
+    | "tUpstreamTtfbMs"
+    | "tUpstreamStreamMs"
+    | "tRespParseMs"
+    | "tPersistMs"
+    | "tTotalMs"
+  >
+>;
+
 function parseEpoch(raw?: string | null) {
   if (!raw) return null;
   const epoch = Date.parse(raw);
@@ -102,21 +128,43 @@ function buildInvocationTableRecordFromPreview(
   preview: PromptCacheConversationInvocationPreview,
 ): ApiInvocation {
   const normalizedPreview = normalizePromptCacheInvocationPreview(preview);
+  const previewExtras = preview as PromptCacheConversationInvocationPreview &
+    PromptCachePreviewRecordExtras;
 
   return {
     id: normalizedPreview.id,
     invokeId: normalizedPreview.invokeId,
     occurredAt: normalizedPreview.occurredAt,
+    source: previewExtras.source ?? undefined,
     status: normalizedPreview.status,
     failureClass: normalizedPreview.failureClass ?? undefined,
+    failureKind: previewExtras.failureKind ?? undefined,
+    isActionable: previewExtras.isActionable,
     model: normalizedPreview.model ?? undefined,
+    inputTokens: previewExtras.inputTokens,
+    outputTokens: previewExtras.outputTokens,
+    cacheInputTokens: previewExtras.cacheInputTokens,
+    reasoningTokens: previewExtras.reasoningTokens,
+    reasoningEffort: previewExtras.reasoningEffort,
     totalTokens: normalizedPreview.totalTokens,
     cost: normalizedPreview.cost ?? undefined,
+    errorMessage: previewExtras.errorMessage ?? undefined,
     endpoint: normalizedPreview.endpoint ?? undefined,
     routeMode: normalizedPreview.routeMode ?? undefined,
     upstreamAccountId: normalizedPreview.upstreamAccountId,
     upstreamAccountName: normalizedPreview.upstreamAccountName ?? undefined,
     proxyDisplayName: normalizedPreview.proxyDisplayName ?? undefined,
+    responseContentEncoding: previewExtras.responseContentEncoding ?? undefined,
+    requestedServiceTier: previewExtras.requestedServiceTier ?? undefined,
+    serviceTier: previewExtras.serviceTier ?? undefined,
+    tReqReadMs: previewExtras.tReqReadMs,
+    tReqParseMs: previewExtras.tReqParseMs,
+    tUpstreamConnectMs: previewExtras.tUpstreamConnectMs,
+    tUpstreamTtfbMs: previewExtras.tUpstreamTtfbMs,
+    tUpstreamStreamMs: previewExtras.tUpstreamStreamMs,
+    tRespParseMs: previewExtras.tRespParseMs,
+    tPersistMs: previewExtras.tPersistMs,
+    tTotalMs: previewExtras.tTotalMs,
     createdAt: normalizedPreview.occurredAt,
   };
 }

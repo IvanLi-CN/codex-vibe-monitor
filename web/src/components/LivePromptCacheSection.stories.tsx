@@ -9,11 +9,40 @@ import {
 import { Button } from "./ui/button";
 import { SelectField } from "./ui/select-field";
 import type {
+  ApiInvocation,
   PromptCacheConversation,
   PromptCacheConversationInvocationPreview,
   PromptCacheConversationSelection,
   PromptCacheConversationsResponse,
 } from "../lib/api";
+
+type StoryPromptCacheConversationPreview =
+  PromptCacheConversationInvocationPreview &
+    Partial<
+      Pick<
+        ApiInvocation,
+        | "source"
+        | "inputTokens"
+        | "outputTokens"
+        | "cacheInputTokens"
+        | "reasoningTokens"
+        | "reasoningEffort"
+        | "errorMessage"
+        | "failureKind"
+        | "isActionable"
+        | "responseContentEncoding"
+        | "requestedServiceTier"
+        | "serviceTier"
+        | "tReqReadMs"
+        | "tReqParseMs"
+        | "tUpstreamConnectMs"
+        | "tUpstreamTtfbMs"
+        | "tUpstreamStreamMs"
+        | "tRespParseMs"
+        | "tPersistMs"
+        | "tTotalMs"
+      >
+    >;
 
 type PromptCacheSelectionOption =
   | {
@@ -137,11 +166,17 @@ function buildUpstreamAccounts(seed: number, totalTokens: number, lastActivityAt
   const secondaryTokens = Math.max(120, Math.round(totalTokens * 0.31));
   const tertiaryTokens = Math.max(80, Math.round(totalTokens * 0.17));
   const hiddenTokens = Math.max(40, totalTokens - primaryTokens - secondaryTokens - tertiaryTokens);
+  const accountSet = [
+    `growth.${(seed % 7) + 2}vv${seed % 10}@relay.example`,
+    `backup.f${(seed % 9) + 1}x${(seed % 8) + 2}@ops.example`,
+    `audit.q${(seed % 8) + 1}k${(seed % 7) + 3}@ops.example`,
+    `burst.f${(seed % 7) + 2}m${(seed % 6) + 4}@watch.example`,
+  ];
 
   return [
     {
       upstreamAccountId: 100 + seed,
-      upstreamAccountName: `Pool ${(seed % 4) + 1} Alpha`,
+      upstreamAccountName: accountSet[0],
       requestCount: 8 + (seed % 5),
       totalTokens: primaryTokens,
       totalCost: Number((primaryTokens / 42000).toFixed(4)),
@@ -149,15 +184,15 @@ function buildUpstreamAccounts(seed: number, totalTokens: number, lastActivityAt
     },
     {
       upstreamAccountId: 200 + seed,
-      upstreamAccountName: `Pool ${(seed % 3) + 1} Beta`,
+      upstreamAccountName: accountSet[1],
       requestCount: 6 + (seed % 4),
       totalTokens: secondaryTokens,
       totalCost: Number((secondaryTokens / 42000).toFixed(4)),
       lastActivityAt: isoAt(0.8 + (seed % 3) * 0.2, 0),
     },
     {
-      upstreamAccountId: seed % 2 === 0 ? 300 + seed : null,
-      upstreamAccountName: seed % 2 === 0 ? null : null,
+      upstreamAccountId: 300 + seed,
+      upstreamAccountName: accountSet[2],
       requestCount: 4 + (seed % 3),
       totalTokens: tertiaryTokens,
       totalCost: Number((tertiaryTokens / 42000).toFixed(4)),
@@ -165,7 +200,7 @@ function buildUpstreamAccounts(seed: number, totalTokens: number, lastActivityAt
     },
     {
       upstreamAccountId: 400 + seed,
-      upstreamAccountName: `Pool Hidden ${seed + 1}`,
+      upstreamAccountName: accountSet[3],
       requestCount: 1,
       totalTokens: hiddenTokens,
       totalCost: Number((hiddenTokens / 42000).toFixed(4)),
@@ -178,30 +213,72 @@ function buildRecentInvocations(
   seed: number,
   lastActivityAt: string,
   totalTokens: number,
-): PromptCacheConversationInvocationPreview[] {
+) : StoryPromptCacheConversationPreview[] {
   return Array.from({ length: 3 }, (_, index) => {
     const offsetMinutes = index * 18;
     const occurredAt = new Date(
       Date.parse(lastActivityAt) - offsetMinutes * 60_000,
     ).toISOString();
     const tokens = Math.max(120, Math.round(totalTokens / (6 + index)));
+    const inputTokens = Math.max(80, tokens - (640 + index * 40));
+    const outputTokens = Math.max(32, tokens - inputTokens);
+    const cacheInputTokens = Math.max(0, inputTokens - (560 + index * 24));
+    const isFailure = index === 1 && seed % 4 === 2;
+    const requestedPriority = index !== 1;
 
     return {
       id: seed * 100 + index + 1,
       invokeId: `live-section-${seed + 1}-${index + 1}`,
       occurredAt,
-      status: index === 1 && seed % 4 === 2 ? "http_502" : "completed",
-      failureClass: index === 1 && seed % 4 === 2 ? "service_failure" : "none",
+      source: "pool",
+      status: isFailure ? "http_502" : "completed",
+      failureClass: isFailure ? "service_failure" : "none",
       routeMode: "pool",
       model: index === 2 ? "gpt-5.4-mini" : "gpt-5.4",
+      inputTokens,
+      outputTokens,
+      cacheInputTokens,
+      reasoningTokens: isFailure ? undefined : 160 + index * 48,
+      reasoningEffort: isFailure ? undefined : index === 0 ? "high" : "medium",
       totalTokens: tokens,
       cost: Number((tokens / 42000).toFixed(4)),
-      proxyDisplayName: `Proxy ${(seed % 3) + 1}`,
+      errorMessage: isFailure
+        ? "upstream gateway closed before first byte"
+        : undefined,
+      failureKind: isFailure ? "upstream_timeout" : undefined,
+      isActionable: isFailure ? true : undefined,
+      proxyDisplayName: ["tokyo-edge-01", "osaka-edge-02", "singapore-edge-03"][
+        (seed + index) % 3
+      ],
       upstreamAccountId: 100 + seed,
-      upstreamAccountName: `Pool ${(seed % 4) + 1} Alpha`,
+      upstreamAccountName: `growth.${(seed % 7) + 2}vv${seed % 10}@relay.example`,
       endpoint: index === 1 ? "/v1/chat/completions" : "/v1/responses",
+      responseContentEncoding: isFailure ? "identity" : index === 0 ? "gzip, br" : "gzip",
+      requestedServiceTier: requestedPriority ? "priority" : "auto",
+      serviceTier: isFailure ? "auto" : "priority",
+      tReqReadMs: 18 + index * 2,
+      tReqParseMs: 5 + index,
+      tUpstreamConnectMs: isFailure ? 1200 : 520 + index * 44,
+      tUpstreamTtfbMs: isFailure ? null : 120 + index * 12,
+      tUpstreamStreamMs: isFailure ? null : 620 + index * 56,
+      tRespParseMs: isFailure ? undefined : 10 + index,
+      tPersistMs: isFailure ? undefined : 8 + index,
+      tTotalMs: isFailure ? 30020 : 1320 + index * 96,
     };
   });
+}
+
+function buildPromptCacheKey(seed: number, variant: "count" | "window") {
+  const prefix = variant === "count" ? "019d2c" : "019d2d";
+  const groupTwo = (0x8100 + seed).toString(16).padStart(4, "0");
+  const groupThree = (0x7100 + ((seed * 13) % 256)).toString(16).padStart(4, "0");
+  const groupFour = (0xb100 + ((seed * 17) % 256)).toString(16).padStart(4, "0");
+  const tail = `${(seed * 97 + 0x9f0000).toString(16).slice(-6)}a${(
+    seed * 29 + 0x4f000
+  )
+    .toString(16)
+    .slice(-5)}`;
+  return `${prefix}-${groupTwo}-${groupThree}-${groupFour}-${tail}`;
 }
 
 function buildDenseConversation(seed: number, variant: "count" | "window") {
@@ -225,9 +302,7 @@ function buildDenseConversation(seed: number, variant: "count" | "window") {
     (variant === "count" ? 12000 : 4800);
 
   return {
-    promptCacheKey: `${variant === "count" ? "pck-live-count" : "pck-window"}-${String(
-      seed + 1,
-    ).padStart(2, "0")}-team-${(seed % 4) + 1}`,
+        promptCacheKey: buildPromptCacheKey(seed + (variant === "count" ? 20 : 40), variant),
     requestCount: pointCount * 3 + 4 + seed,
     totalTokens,
     totalCost: Number((totalTokens / 42000).toFixed(4)),
@@ -312,9 +387,7 @@ function buildActivityWindowStats(hours: number): PromptCacheConversationsRespon
         (index + 4) * 1450;
 
       return {
-        promptCacheKey: `pck-window-${String(index + 4).padStart(2, "0")}-team-${
-          (index % 4) + 1
-        }`,
+        promptCacheKey: buildPromptCacheKey(index + 7, "window"),
         requestCount: pointCount * 4 + 3 + index,
         totalTokens,
         totalCost: Number((totalTokens / 42000).toFixed(4)),
