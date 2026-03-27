@@ -193,6 +193,7 @@ export const MissingWindowPlaceholders: Story = {
         /Team key - missing weekly limit/i,
       )
       expect(within(row).getAllByText('-').length).toBeGreaterThanOrEqual(3)
+      await expect(within(row).queryByText(/^7D$/i)).not.toBeInTheDocument()
       await expect(within(row).queryByText(/^0%$/i)).not.toBeInTheDocument()
       await expect(within(row).getByText(/18 requests/i)).toBeInTheDocument()
     })
