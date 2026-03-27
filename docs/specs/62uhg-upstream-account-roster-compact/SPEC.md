@@ -64,7 +64,7 @@
 - 同步列必须同时显示最近成功同步时间与上次调用时间，两者各占一行且值不换行；没有调用记录时显示占位值。
 - 账号可调用时显示 `工作 / 空闲` 标记；`working` 标记文案必须显示最近 `30` 分钟活跃 sticky route 数量，`idle` 保持纯文本；若账号因限流不可调用，则继续显示 `限流` 标记；`disabled`、`syncing` 与异常健康态不显示工作态标记。
 - `5 小时` / `7 天` 必须在同一列中上下排列；每一行都要包含窗口名、当前使用文案、重置时间与百分比，且值不换行。
-- 当 `secondaryWindow == null` 时，列表仍必须保留对应窗口标签，但当前使用文案、重置时间与百分比统一显示 ASCII `-`，并使用弱一级文字颜色；真实存在且为 `0%` 的窗口不得误判成占位态。
+- 当 `secondaryWindow == null` 时，列表必须把当前使用文案、重置时间与百分比统一显示为弱一级 ASCII `-` 占位；若同时 `secondaryLimit === null`，则不得继续显示误导性的 `7D` 次级窗口标签；真实存在且为 `0%` 的窗口不得误判成占位态。
 - 选中态、整行点击、键盘 Enter/Space 触发、右侧详情 chevron 入口必须保持现有行为。
 
 ### SHOULD
@@ -82,7 +82,7 @@
 - Given 某账号因限流不可调用，When 列表渲染，Then 标记带继续显示 `限流` 徽章；Given 某账号因禁用、同步中或异常健康态不可调用，When 列表渲染，Then 标记带不显示 `工作 / 空闲` 徽章，其它徽章与布局保持不变。
 - Given 某账号同时有母号、重复账号、状态、类型、Plan 和超过 `3` 个 tags，When 列表渲染，Then 标记带按固定顺序显示，且 tag 区域以 `+N` 汇总剩余项。
 - Given OAuth 与 API Key 账号都存在窗口数据，When 列表渲染，Then `5 小时` / `7 天` 统一出现在同一列的两行摘要中，仍能区分两种窗口。
-- Given 某账号 `secondaryWindow == null`，When 列表渲染，Then 次级窗口行仍保留窗口名，但使用值、重置时间与百分比统一显示 ASCII `-`，且不再错误显示 `0%`。
+- Given 某账号 `secondaryWindow == null` 且 `secondaryLimit === null`，When 列表渲染，Then 次级窗口行不得再显示误导性的 `7D` 标签，使用值、重置时间与百分比统一显示 ASCII `-`，且不再错误显示 `0%`。
 - Given 现有账号列表选中逻辑与详情入口，When 点击整行或按 Enter/Space，Then 仍然选中账号并可继续打开号池详情抽屉。
 - Given Storybook `Account Pool/Pages/Upstream Accounts/List — CompactLongLabels` 暗色主题，When 测量 `Compact 不支持` 对 `OAuth/pro` 与 tags `+N` 对可见 tag 的 DOM `top/height`，并检查 API Key 行，Then 各自 `top` 偏差都不超过 `0.5px`、高度保持 `20px`，且列表中不出现 `Compact 可用` badge。
 
@@ -121,7 +121,7 @@
   submission_gate: pending-owner-approval
   story_id_or_title: Account Pool/Pages/Upstream Accounts/List — Missing Window Placeholders
   state: dark-theme / missing secondary window placeholder
-  evidence_note: 验证号池列表在 `secondaryWindow == null` 时保留次级窗口标签，并把使用值、重置时间、百分比统一切到弱一级 ASCII `-` 占位，不误伤真实 `0%` 快照。
+  evidence_note: 验证号池列表在 `secondaryWindow == null` 且 `secondaryLimit === null` 时，不再显示误导性的 `7D` 标签，并把使用值、重置时间、百分比统一切到弱一级 ASCII `-` 占位，不误伤真实 `0%` 快照。
   image:
   ![上游账号列表缺失次级窗口占位](./assets/upstream-accounts-missing-window-placeholders-dark.png)
 
@@ -150,3 +150,4 @@ None. Pending explicit owner approval for PR-bound screenshots.
 - 2026-03-25: 修复 `CompactLongLabels` 场景里 `Compact 不支持` 与 tags `+1` 的 `1.5px` 垂直下沉；把 `title` 直接挂回 badge 本体，移除额外 `span > Badge(div)` 包裹，并补齐 Storybook play DOM 对齐断言、组件结构回归与新一轮暗色主题视觉证据。
 - 2026-03-25: 根据最新界面反馈，列表中的 `Compact 可用` 标记不再显示；仅保留 `Compact 不支持` 作为异常提示，支持状态继续保留在详情抽屉字段中。
 - 2026-03-27: 统一缺失窗口占位语义；当 `secondaryWindow == null` 时，列表次级窗口行保留标签但把使用值、重置时间和百分比统一切到弱一级 ASCII `-`，并补充 Storybook / Vitest / 页面集成验证与新的 mock-only 视觉证据。
+- 2026-03-27: 根据后续验收反馈，进一步收紧无周限额场景：当 `secondaryWindow == null` 且 `secondaryLimit === null` 时，列表不再显示误导性的 `7D` 标签，仅保留弱一级 `-` 占位与空轨道。
