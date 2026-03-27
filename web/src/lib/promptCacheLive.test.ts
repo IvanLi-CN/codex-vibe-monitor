@@ -6,6 +6,7 @@ import type {
   PromptCacheConversationRequestPoint,
 } from "./api";
 import {
+  buildPromptCachePreviewFromInvocation,
   mergePromptCacheConversationsResponse,
   reconcilePromptCacheLiveRecordMap,
 } from "./promptCacheLive";
@@ -125,8 +126,16 @@ describe("mergePromptCacheConversationsResponse", () => {
   });
 
   it("dedupes last24h request points when the same invocation is already present after resync", () => {
+    const authoritativeRecord = createLiveRecord({
+      id: 901,
+      invokeId: "invoke-live-01",
+      occurredAt: "2026-03-10T02:30:00Z",
+      promptCacheKey: "pck-live",
+      totalTokens: 182491,
+    });
     const base = createResponse([
       createConversation("pck-live", {
+        recentInvocations: [buildPromptCachePreviewFromInvocation(authoritativeRecord)],
         last24hRequests: [
           createRequestPoint({
             occurredAt: "2026-03-10T02:30:00Z",
@@ -141,13 +150,7 @@ describe("mergePromptCacheConversationsResponse", () => {
       base,
       {
         "pck-live": [
-          createLiveRecord({
-            id: 901,
-            invokeId: "invoke-live-01",
-            occurredAt: "2026-03-10T02:30:00Z",
-            promptCacheKey: "pck-live",
-            totalTokens: 182491,
-          }),
+          authoritativeRecord,
         ],
       },
       { mode: "count", limit: 2 },
@@ -163,18 +166,29 @@ describe("mergePromptCacheConversationsResponse", () => {
     ]);
   });
 
-  it("keeps distinct live request points that share the same timestamp and token count", () => {
+  it("keeps a distinct live request point even when an authoritative point shares the same shape", () => {
+    const authoritativeRecord = createLiveRecord({
+      id: 1001,
+      invokeId: "invoke-authoritative",
+      occurredAt: "2026-03-10T02:30:00Z",
+      promptCacheKey: "pck-live-points",
+      totalTokens: 182491,
+    });
     const merged = mergePromptCacheConversationsResponse(
-      createResponse([createConversation("pck-live-points")]),
+      createResponse([
+        createConversation("pck-live-points", {
+          recentInvocations: [buildPromptCachePreviewFromInvocation(authoritativeRecord)],
+          last24hRequests: [
+            createRequestPoint({
+              occurredAt: "2026-03-10T02:30:00Z",
+              requestTokens: 182491,
+              cumulativeTokens: 182491,
+            }),
+          ],
+        }),
+      ]),
       {
         "pck-live-points": [
-          createLiveRecord({
-            id: 1001,
-            invokeId: "invoke-live-a",
-            occurredAt: "2026-03-10T02:30:00Z",
-            promptCacheKey: "pck-live-points",
-            totalTokens: 182491,
-          }),
           createLiveRecord({
             id: 1002,
             invokeId: "invoke-live-b",
@@ -198,6 +212,36 @@ describe("mergePromptCacheConversationsResponse", () => {
         occurredAt: "2026-03-10T02:30:00Z",
         requestTokens: 182491,
         cumulativeTokens: 364982,
+      }),
+    ]);
+  });
+
+  it("marks running live request points as in-flight instead of successful", () => {
+    const merged = mergePromptCacheConversationsResponse(
+      createResponse([createConversation("pck-running")]),
+      {
+        "pck-running": [
+          createLiveRecord({
+            id: 1101,
+            invokeId: "invoke-running",
+            occurredAt: "2026-03-10T02:45:00Z",
+            promptCacheKey: "pck-running",
+            status: "running",
+            totalTokens: 2400,
+          }),
+        ],
+      },
+      { mode: "count", limit: 2 },
+      Date.parse("2026-03-10T03:00:00Z"),
+    );
+
+    expect(merged?.conversations[0]?.last24hRequests).toEqual([
+      createRequestPoint({
+        occurredAt: "2026-03-10T02:45:00Z",
+        status: "running",
+        isSuccess: false,
+        requestTokens: 2400,
+        cumulativeTokens: 2400,
       }),
     ]);
   });

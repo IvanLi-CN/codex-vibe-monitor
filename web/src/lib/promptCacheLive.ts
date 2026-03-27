@@ -97,7 +97,7 @@ function isPromptCacheInvocationSuccessful(record: ApiInvocation) {
   const failureClass = normalizeFailureClass(record.failureClass);
   if (failureClass && failureClass !== "none") return false;
   const normalizedStatus = record.status?.trim().toLowerCase() ?? "";
-  if (normalizedStatus === "running" || normalizedStatus === "pending") return true;
+  if (normalizedStatus === "running" || normalizedStatus === "pending") return false;
   if (normalizedStatus === "success" || normalizedStatus === "completed") return true;
   if (normalizedStatus.startsWith("http_4") || normalizedStatus.startsWith("http_5")) {
     return false;
@@ -214,24 +214,14 @@ function buildPromptCacheRequestPointFromInvocation(
   };
 }
 
-function promptCacheRequestPointKey(
-  point: Pick<
-    PromptCacheConversationRequestPoint,
-    "occurredAt" | "status" | "requestTokens"
-  >,
-) {
-  return `${point.occurredAt}::${point.status}::${point.requestTokens}`;
-}
-
 function mergePromptCacheRequestPoints(
   basePoints: PromptCacheConversationRequestPoint[],
   liveRecords: ApiInvocation[],
+  authoritativePreviewRecords: ApiInvocation[] = [],
 ) {
-  const matchedPointCounts = new Map<string, number>();
-  for (const point of basePoints) {
-    const key = promptCacheRequestPointKey(point);
-    matchedPointCounts.set(key, (matchedPointCounts.get(key) ?? 0) + 1);
-  }
+  const authoritativePreviewKeys = new Set(
+    authoritativePreviewRecords.map((record) => invocationStableKey(record)),
+  );
   const combined = [
     ...basePoints.map((point, index) => ({
       ...point,
@@ -239,13 +229,10 @@ function mergePromptCacheRequestPoints(
       _order: index,
     })),
     ...liveRecords.flatMap((record, index) => {
-      const point = buildPromptCacheRequestPointFromInvocation(record);
-      const pointKey = promptCacheRequestPointKey(point);
-      const matchedCount = matchedPointCounts.get(pointKey) ?? 0;
-      if (matchedCount > 0) {
-        matchedPointCounts.set(pointKey, matchedCount - 1);
+      if (authoritativePreviewKeys.has(invocationStableKey(record))) {
         return [];
       }
+      const point = buildPromptCacheRequestPointFromInvocation(record);
       return [{
         ...point,
         _epoch: parseOccurredAtEpoch(record.occurredAt) ?? Number.MIN_SAFE_INTEGER,
@@ -527,9 +514,12 @@ export function mergePromptCacheConversationsResponse(
       return conversation;
     }
 
+    const authoritativePreviewRecords = conversation.recentInvocations.map(
+      buildInvocationFromPromptCachePreview,
+    );
     const mergedPreviewRecords = mergeInvocationRecordCollections(
       liveRecords,
-      conversation.recentInvocations.map(buildInvocationFromPromptCachePreview),
+      authoritativePreviewRecords,
     ).slice(0, PROMPT_CACHE_PREVIEW_LIMIT);
     const latestActivityEpoch = Math.max(
       parseOccurredAtEpoch(conversation.lastActivityAt) ?? Number.MIN_SAFE_INTEGER,
@@ -548,6 +538,7 @@ export function mergePromptCacheConversationsResponse(
       last24hRequests: mergePromptCacheRequestPoints(
         conversation.last24hRequests,
         liveRecords,
+        authoritativePreviewRecords,
       ),
     };
   });
