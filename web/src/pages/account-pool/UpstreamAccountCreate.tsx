@@ -4292,6 +4292,21 @@ export default function UpstreamAccountCreatePage() {
     }));
   };
 
+  const resolveBatchOauthCopyFeedback = (
+    rowId: string,
+    result: Awaited<ReturnType<typeof copyText>>,
+    successHint: string,
+  ) => {
+    const fallbackHint = t(
+      "accountPool.upstreamAccounts.batchOauth.copyInlineFallback",
+    );
+    setBatchManualCopyRowId(result.ok ? null : rowId);
+    return {
+      sessionHint: result.ok ? successHint : fallbackHint,
+      actionError: result.ok ? null : fallbackHint,
+    };
+  };
+
   const handleBatchGenerateOauthUrl = async (rowId: string) => {
     const row = batchRows.find((item) => item.id === rowId);
     if (!row) return;
@@ -4327,25 +4342,39 @@ export default function UpstreamAccountCreatePage() {
         mailboxSessionId: row.mailboxSession?.sessionId,
         mailboxAddress: row.mailboxSession?.emailAddress,
       });
-        createdPendingOauthSessionSignaturesRef.current[response.loginId] =
-          buildPendingOauthSessionSnapshot(
-            response.loginId,
-            oauthLoginSessionPayload,
-            response.updatedAt ?? null,
-          ).signature;
-      setBatchManualCopyRowId((current) =>
-        current === rowId ? null : current,
-      );
+      createdPendingOauthSessionSignaturesRef.current[response.loginId] =
+        buildPendingOauthSessionSnapshot(
+          response.loginId,
+          oauthLoginSessionPayload,
+          response.updatedAt ?? null,
+        ).signature;
+      const generatedHint = t("accountPool.upstreamAccounts.oauth.generated", {
+        expiresAt: formatDateTime(response.expiresAt),
+      });
+      let sessionHint = generatedHint;
+      let actionError: string | null = null;
+      if (response.authUrl) {
+        const copyResult = await copyText(response.authUrl, {
+          preferExecCommand: true,
+        });
+        const copyFeedback = resolveBatchOauthCopyFeedback(
+          rowId,
+          copyResult,
+          t("accountPool.upstreamAccounts.batchOauth.generatedAndCopied"),
+        );
+        sessionHint = copyFeedback.sessionHint;
+        actionError = copyFeedback.actionError;
+      } else {
+        setBatchManualCopyRowId((current) => (current === rowId ? null : current));
+      }
       updateBatchRow(rowId, (current) => ({
         ...current,
         busyAction: null,
         callbackUrl: "",
         session: response,
-        sessionHint: t("accountPool.upstreamAccounts.oauth.generated", {
-          expiresAt: formatDateTime(response.expiresAt),
-        }),
+        sessionHint,
         needsRefresh: false,
-        actionError: null,
+        actionError,
       }));
     } catch (err) {
       updateBatchRow(rowId, (current) => ({
@@ -4389,16 +4418,16 @@ export default function UpstreamAccountCreatePage() {
       preferExecCommand: true,
     });
 
-    setBatchManualCopyRowId(result.ok ? null : rowId);
+    const copyFeedback = resolveBatchOauthCopyFeedback(
+      rowId,
+      result,
+      t("accountPool.upstreamAccounts.oauth.copied"),
+    );
 
     updateBatchRow(rowId, (current) => ({
       ...current,
-      sessionHint: result.ok
-        ? t("accountPool.upstreamAccounts.oauth.copied")
-        : t("accountPool.upstreamAccounts.batchOauth.copyInlineFallback"),
-      actionError: result.ok
-        ? null
-        : t("accountPool.upstreamAccounts.batchOauth.copyInlineFallback"),
+      sessionHint: copyFeedback.sessionHint,
+      actionError: copyFeedback.actionError,
     }));
   };
 

@@ -73,9 +73,74 @@ export const Ready: Story = {
   render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new?mode=batchOauth" />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
-    await userEvent.click(canvas.getByRole('button', { name: /generate oauth url/i }))
-    await expect(canvas.getByDisplayValue(/https:\/\/auth\.openai\.com\/authorize/i)).toBeInTheDocument()
-    await expect(canvas.getByRole('button', { name: /complete oauth login/i })).toBeInTheDocument()
+    const originalClipboard = navigator.clipboard
+    const originalExecCommand = document.execCommand?.bind(document)
+    let copiedValue = ''
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: () => false,
+    })
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: async (value: string) => {
+          copiedValue = value
+        },
+      },
+    })
+    try {
+      await userEvent.click(canvas.getByRole('button', { name: /generate oauth url/i }))
+      await expect(canvas.getByRole('button', { name: /copy oauth url/i })).toBeEnabled()
+      await expect(canvas.getByText(/oauth url generated and copied/i)).toBeInTheDocument()
+      await expect(copiedValue).toMatch(/https:\/\/auth\.openai\.com\/authorize/i)
+    } finally {
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: originalClipboard,
+      })
+      Object.defineProperty(document, 'execCommand', {
+        configurable: true,
+        value: originalExecCommand,
+      })
+    }
+  },
+}
+
+export const GenerateAutoCopyFallback: Story = {
+  render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new?mode=batchOauth" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const originalClipboard = navigator.clipboard
+    const originalExecCommand = document.execCommand?.bind(document)
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: () => false,
+    })
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        writeText: async () => {
+          throw new Error('clipboard blocked')
+        },
+      },
+    })
+    try {
+      await userEvent.click(canvas.getByRole('button', { name: /generate oauth url/i }))
+
+      const documentScope = within(document.body)
+      await expect(documentScope.getByText(/manual copy required/i)).toBeInTheDocument()
+      await expect(documentScope.getByText(/copy failed\. select the auth url field and copy it manually\./i)).toBeInTheDocument()
+      await expect(documentScope.getByText(/https:\/\/auth\.openai\.com\/authorize/i)).toBeInTheDocument()
+    } finally {
+      Object.defineProperty(navigator, 'clipboard', {
+        configurable: true,
+        value: originalClipboard,
+      })
+      Object.defineProperty(document, 'execCommand', {
+        configurable: true,
+        value: originalExecCommand,
+      })
+    }
   },
 }
 
@@ -396,11 +461,13 @@ export const ActionTooltips: Story = {
 
     const generateButton = canvas.getByRole('button', { name: /generate oauth url/i })
     await userEvent.hover(generateButton)
+    await new Promise((resolve) => window.setTimeout(resolve, 330))
     await expect(within(document.body).getByText(/generate a fresh oauth url for this row/i)).toBeInTheDocument()
 
     await userEvent.click(generateButton)
     const copyOauthButton = await canvas.findByRole('button', { name: /copy oauth url/i })
     await userEvent.hover(copyOauthButton)
+    await new Promise((resolve) => window.setTimeout(resolve, 330))
     await expect(within(document.body).getByRole('button', { name: /regenerate oauth url/i })).toBeInTheDocument()
     await expect(within(document.body).getByText(/expires at/i)).toBeInTheDocument()
 

@@ -97,6 +97,7 @@ describe("BatchOauthActionButton", () => {
     render(<BatchOauthActionButton mode="copy" {...baseProps} />);
 
     const button = getButton(/copy oauth url/i);
+    expect(button.getAttribute("title")).toBeNull();
     act(() => {
       button.dispatchEvent(
         new MouseEvent("contextmenu", {
@@ -109,6 +110,29 @@ describe("BatchOauthActionButton", () => {
     expect(document.body.textContent).toContain("Current link expires in 14:59.");
     expect(document.body.textContent).toContain("Expires at 2026-03-26 18:00:00.");
     expect(document.body.textContent).toContain("Regenerate OAuth URL");
+  });
+
+  it("waits briefly before opening the passive hover bubble", () => {
+    render(<BatchOauthActionButton mode="generate" {...baseProps} />);
+
+    const button = getButton(/copy oauth url/i);
+    act(() => {
+      button.dispatchEvent(
+        new MouseEvent("mouseover", {
+          bubbles: true,
+          relatedTarget: null,
+        }),
+      );
+      vi.advanceTimersByTime(319);
+    });
+
+    expect(document.body.textContent).not.toContain("Copy OAuth URL");
+
+    act(() => {
+      vi.advanceTimersByTime(1);
+    });
+
+    expect(document.body.textContent).toContain("Copy OAuth URL");
   });
 
   it("opens on touch long press without triggering the primary click", () => {
