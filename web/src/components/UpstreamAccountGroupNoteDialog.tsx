@@ -128,30 +128,36 @@ function ProxyOptionTrafficChart({
 
   return (
     <div className="w-full sm:min-w-[16rem] sm:max-w-[16rem]">
-      <div className="flex items-center justify-between gap-3">
+      <div className="flex items-center justify-between gap-2">
         <span
-          className="inline-flex h-6 min-w-[2.9rem] shrink-0 items-center justify-center rounded-md border border-base-300/80 bg-base-100/75 px-2 text-[10px] font-semibold uppercase tracking-[0.12em] text-base-content/55 whitespace-nowrap"
+          className="inline-flex h-5 min-w-[2.5rem] shrink-0 items-center justify-center rounded-md border border-base-300/80 bg-base-100/75 px-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-base-content/55 whitespace-nowrap"
           title={label}
           aria-label={label}
         >
           {windowBadgeLabel}
         </span>
-        <div className="flex items-center gap-3 text-[11px] font-medium">
-          <span className="inline-flex items-center gap-1 text-success">
+        <div className="flex items-center gap-2 text-[11px] font-semibold tabular-nums">
+          <span
+            className="inline-flex items-center gap-1 text-success"
+            aria-label={`${successLabel} ${totals.success}`}
+            title={`${successLabel} ${totals.success}`}
+          >
             <span className="h-1.5 w-1.5 rounded-full bg-success" aria-hidden />
-            <span className="font-mono tabular-nums">{totals.success}</span>
-            <span className="text-base-content/55">{successLabel}</span>
+            <span>{totals.success}</span>
           </span>
-          <span className="inline-flex items-center gap-1 text-error">
+          <span
+            className="inline-flex items-center gap-1 text-error"
+            aria-label={`${failureLabel} ${totals.failure}`}
+            title={`${failureLabel} ${totals.failure}`}
+          >
             <span className="h-1.5 w-1.5 rounded-full bg-error" aria-hidden />
-            <span className="font-mono tabular-nums">{totals.failure}</span>
-            <span className="text-base-content/55">{failureLabel}</span>
+            <span>{totals.failure}</span>
           </span>
         </div>
       </div>
 
       {buckets.length === 0 ? (
-        <div className="mt-2 flex h-12 items-center justify-center rounded-xl border border-dashed border-base-300/80 bg-base-100/70 px-3 text-[11px] text-base-content/50">
+        <div className="mt-1 flex h-10 items-center justify-center rounded-xl border border-dashed border-base-300/80 bg-base-100/70 px-3 text-[11px] text-base-content/50">
           {emptyLabel}
         </div>
       ) : (
@@ -167,7 +173,7 @@ function ProxyOptionTrafficChart({
           ariaLabel={`${node.displayName} ${ariaLabel}`}
           interactionHint={interactionHint}
           variant="dialog"
-          className="mt-2"
+          className="mt-1"
           dataChartKind="proxy-binding-request-trend"
         />
       )}
@@ -338,7 +344,7 @@ export function UpstreamAccountGroupNoteDialog({
                               onBoundProxyKeysChange(toggleBoundProxyKey(normalizedBoundProxyKeys, node.key))
                             }}
                             className={cn(
-                              'grid gap-3 rounded-xl border px-3 py-3 text-left transition-colors sm:grid-cols-[minmax(0,1fr)_16rem] sm:items-center sm:gap-4',
+                              'grid gap-2 rounded-xl border px-3 py-2 text-left transition-colors sm:grid-cols-[minmax(0,1fr)_16rem] sm:items-center sm:gap-3',
                               selected
                                 ? 'border-primary/45 bg-primary/10'
                                 : 'border-base-300/80 bg-base-100/75',
@@ -350,28 +356,26 @@ export function UpstreamAccountGroupNoteDialog({
                                 {selected ? <AppIcon name="check" className="h-3.5 w-3.5 text-primary" aria-hidden /> : null}
                               </div>
                               <div className="min-w-0 flex-1">
-                                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                                <div className="flex min-w-0 items-center gap-2">
                                   <span
-                                    className="min-w-0 max-w-full truncate text-sm font-medium text-base-content"
+                                    className="min-w-0 flex-1 truncate text-sm font-medium text-base-content"
                                     title={node.displayName}
                                   >
                                     {node.displayName}
                                   </span>
+                                  <span className="shrink-0 rounded-md border border-base-300/80 bg-base-200/65 px-1.5 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-[0.08em] text-base-content/68">
+                                    {node.protocolLabel}
+                                  </span>
                                   {badgeLabel ? (
-                                    <span className="rounded-full border border-base-300/80 bg-base-200/80 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/65">
+                                    <span className="shrink-0 rounded-full border border-base-300/80 bg-base-200/80 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/65">
                                       {badgeLabel}
                                     </span>
                                   ) : null}
                                   {node.penalized ? (
-                                    <span className="rounded-full border border-warning/35 bg-warning/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-warning">
+                                    <span className="shrink-0 rounded-full border border-warning/35 bg-warning/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-warning">
                                       Penalized
                                     </span>
                                   ) : null}
-                                </div>
-                                <div className="mt-1 flex items-center gap-2">
-                                  <span className="rounded-md border border-base-300/80 bg-base-200/65 px-1.5 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-[0.08em] text-base-content/68">
-                                    {node.protocolLabel}
-                                  </span>
                                 </div>
                               </div>
                             </div>
