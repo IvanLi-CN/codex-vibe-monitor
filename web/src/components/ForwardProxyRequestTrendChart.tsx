@@ -130,7 +130,7 @@ export function ForwardProxyRequestTrendChart({
   }
 
   const isDialog = variant === 'dialog'
-  const chartHeight = isDialog ? 22 : 40
+  const chartHeight = isDialog ? 20 : 40
 
   return (
     <InlineChartTooltipSurface

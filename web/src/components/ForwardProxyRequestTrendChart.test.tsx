@@ -135,4 +135,40 @@ describe('ForwardProxyRequestTrendChart', () => {
     expect(tooltip?.textContent).toContain('Total requests')
     expect(tooltip?.textContent).toContain('13')
   })
+
+  it('keeps dialog bar segments within the compact 20px bar container', () => {
+    render(
+      <ForwardProxyRequestTrendChart
+        buckets={[
+          {
+            bucketStart: '2026-03-01T00:00:00.000Z',
+            bucketEnd: '2026-03-01T01:00:00.000Z',
+            successCount: 18,
+            failureCount: 2,
+          },
+        ]}
+        scaleMax={20}
+        localeTag="en-US"
+        tooltipLabels={{
+          success: 'Success',
+          failure: 'Failure',
+          total: 'Total requests',
+        }}
+        ariaLabel="Compact dialog trend"
+        interactionHint="Hover or tap for details. Focus the chart and use arrow keys to switch points."
+        variant="dialog"
+      />,
+    )
+
+    const bar = document.querySelector('[data-inline-chart-index="0"]') as HTMLElement | null
+    expect(bar).not.toBeNull()
+    expect(bar?.className).toContain('h-5')
+
+    const segmentHeights = Array.from(bar?.children ?? [])
+      .map((child) => Number.parseFloat((child as HTMLElement).style.height || '0'))
+      .filter((value) => Number.isFinite(value))
+    const totalHeight = segmentHeights.reduce((sum, value) => sum + value, 0)
+
+    expect(totalHeight).toBe(20)
+  })
 })
