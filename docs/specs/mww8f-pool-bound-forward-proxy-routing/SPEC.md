@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 已实现，待截图提交授权 / PR 收敛
+- Status: 已完成
 - Created: 2026-03-26
 - Last: 2026-03-27
 
@@ -144,7 +144,7 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval-for-push
+  submission_gate: approved
   story_id_or_title: Account Pool/Components/Upstream Account Group Settings Dialog/Hard Bound Multiple Nodes
   state: direct-protocol-scroll-layout
   evidence_note: 验证分组绑定弹窗在桌面宽度下展示 `Direct`、协议标签和右侧 24 小时趋势；长标题被截断，底部操作栏始终可见，节点列表保持独立滚动。
@@ -156,7 +156,7 @@
   target_program: mock-only
   capture_scope: viewport
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval-for-push
+  submission_gate: approved
   story_id_or_title: Account Pool/Components/Upstream Account Group Settings Dialog/Hard Bound Multiple Nodes
   state: request-trend-tooltip-details
   evidence_note: 验证分组绑定节点右侧的 24 小时请求图会在悬浮时显示时间桶、Success、Failure 与 Total requests 详情，且 tooltip 与参考界面复用同一套 inline chart surface。
@@ -168,7 +168,7 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval-for-push
+  submission_gate: approved
   story_id_or_title: Account Pool/Pages/Upstream Account Create/Batch OAuth/Ready
   state: existing-group-settings-from-create-page
   evidence_note: 验证创建页里的真实分组设置入口已经和列表页使用同一套组件与数据契约，选中现有分组后会展示 `Direct`、协议标签和绑定节点趋势，不再泄露原始订阅地址。
@@ -180,4 +180,4 @@
 
 - 2026-03-26: 创建 spec，冻结 `/v1/*` 新语义、分组绑定 forward proxy 的运行时规则、接口契约与视觉证据目标。
 - 2026-03-27: 视觉证据完成主人确认，spec 状态切换为已完成，并标记 PR 可复用截图。
-- 2026-03-27: 增补线上 follow-up：分组绑定弹窗改为协议标签展示 + 独立滚动布局，并在分组绑定路径恢复显式 `Direct` 选项；后续补齐桌面宽度约束、刷新 Storybook 证据并等待截图提交授权。
+- 2026-03-27: 增补线上 follow-up：分组绑定弹窗改为协议标签展示 + 独立滚动布局，并在分组绑定路径恢复显式 `Direct` 选项；补齐桌面宽度约束与高密度卡片布局后，重新生成并批准复用 Storybook 证据。
