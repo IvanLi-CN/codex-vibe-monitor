@@ -130,7 +130,7 @@ export function ForwardProxyRequestTrendChart({
   }
 
   const isDialog = variant === 'dialog'
-  const chartHeight = isDialog ? 26 : 40
+  const chartHeight = isDialog ? 22 : 40
 
   return (
     <InlineChartTooltipSurface
@@ -140,14 +140,14 @@ export function ForwardProxyRequestTrendChart({
       interactionHint={interactionHint}
       linkedActiveIndex={linkedActiveIndex}
       onActiveIndexChange={onActiveIndexChange}
-      className={cn('py-0.5', className)}
-      chartClassName={isDialog ? 'flex h-9 min-w-0 w-full items-end' : 'flex h-11 items-end'}
+      className={cn(isDialog ? 'py-0' : 'py-0.5', className)}
+      chartClassName={isDialog ? 'flex h-8 min-w-0 w-full items-end' : 'flex h-11 items-end'}
     >
       {({ highlightedIndex, getItemProps }) => (
         <div
           className={cn(
             isDialog
-              ? 'flex h-9 min-w-0 w-full items-end gap-px rounded-xl border border-base-300/70 bg-base-100/70 px-2 py-1'
+              ? 'flex h-8 min-w-0 w-full items-end gap-px rounded-xl border border-base-300/70 bg-base-100/70 px-1.5 py-1'
               : 'flex h-11 items-end gap-px sm:gap-[1.5px] md:gap-[2px]',
           )}
           data-chart-kind={dataChartKind}
@@ -166,7 +166,7 @@ export function ForwardProxyRequestTrendChart({
                 key={`${bucket.bucketStart}-bar`}
                 className={cn(
                   isDialog
-                    ? 'relative flex h-6 min-w-0 flex-1 cursor-pointer flex-col overflow-hidden rounded-[3px] border border-transparent bg-base-300/35 transition-[transform,background-color,border-color,box-shadow] duration-150 ease-out motion-reduce:transition-none'
+                    ? 'relative flex h-5 min-w-0 flex-1 cursor-pointer flex-col overflow-hidden rounded-[3px] border border-transparent bg-base-300/35 transition-[transform,background-color,border-color,box-shadow] duration-150 ease-out motion-reduce:transition-none'
                     : 'relative flex h-10 w-[2px] cursor-pointer flex-col overflow-hidden rounded-[3px] border border-transparent bg-base-300/45 transition-[transform,background-color,border-color,box-shadow] duration-150 ease-out motion-reduce:transition-none sm:w-[3px] md:w-[4px] lg:w-[6px]',
                   isActive && 'z-[1] border-primary/60 bg-base-200/70 shadow-[0_0_0_1px_rgba(96,165,250,0.15)]',
                 )}
