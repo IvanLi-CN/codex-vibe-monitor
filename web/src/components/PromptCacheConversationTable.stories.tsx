@@ -611,7 +611,7 @@ const meta = {
             <div className="min-h-screen bg-base-200 px-4 py-6 text-base-content sm:px-6">
               <main className="mx-auto w-full max-w-[1200px] space-y-4">
                 <h2 className="text-xl font-semibold">
-                  对话（Storybook Mock）
+                  对话
                 </h2>
                 <Story />
               </main>
