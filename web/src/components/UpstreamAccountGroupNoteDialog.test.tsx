@@ -48,7 +48,7 @@ describe("UpstreamAccountGroupNoteDialog", () => {
         last24h: [],
       },
       {
-        key: "vless://e8d10b05-aec8-4cee-be7d-2f5eee61b0a7@hinet-ep.707979.xyz:53842?encryption=none&security=reality&type=tcp&sni=skypapi.onedrive.com&fp=chrome&pbk=abc123&sid=long-subscription-node#Ivan-hinet-vless-vision-01KF874741GBN6MQYD6TNMYDVS",
+        key: "vless://11111111-2222-3333-4444-555555555555@fixture-vless-edge.example.invalid:443?encryption=none&security=tls&type=ws&host=cdn.example.invalid&path=%2Ffixture&fp=chrome&pbk=fixture-public-key&sid=fixture-subscription-node#Ivan-hinet-vless-vision-01KF874741GBN6MQYD6TNMYDVS",
         source: "subscription",
         displayName: "Ivan-hinet-vless-vision-01KF874741GBN6MQYD6TNMYDVS",
         protocolLabel: "VLESS",
@@ -128,5 +128,74 @@ describe("UpstreamAccountGroupNoteDialog", () => {
     ) as HTMLElement | null;
     expect(truncatedTitle).not.toBeNull();
     expect(truncatedTitle?.className).toContain("truncate");
+  });
+
+  it("adds identity hints for duplicate and missing bindings without exposing stored keys", () => {
+    const nodes: ForwardProxyBindingNode[] = [
+      {
+        key: "shared-edge-a",
+        source: "subscription",
+        displayName: "Shared Edge",
+        protocolLabel: "HTTP",
+        penalized: false,
+        selectable: true,
+        last24h: [],
+      },
+      {
+        key: "shared-edge-b",
+        source: "subscription",
+        displayName: "Shared Edge",
+        protocolLabel: "HTTP",
+        penalized: false,
+        selectable: true,
+        last24h: [],
+      },
+    ];
+
+    render(
+      <UpstreamAccountGroupNoteDialog
+        open
+        groupName="overflow"
+        note=""
+        existing
+        boundProxyKeys={["shared-edge-a", "legacy-missing-binding"]}
+        availableProxyNodes={nodes}
+        onNoteChange={() => undefined}
+        onBoundProxyKeysChange={() => undefined}
+        onClose={() => undefined}
+        onSave={() => undefined}
+        title="Edit group settings"
+        existingDescription="Existing group"
+        draftDescription="Draft group"
+        noteLabel="Group note"
+        notePlaceholder="Add note"
+        cancelLabel="Cancel"
+        saveLabel="Save"
+        closeLabel="Close"
+        existingBadgeLabel="Persisted group"
+        draftBadgeLabel="Draft group"
+        proxyBindingsLabel="Bound proxy nodes"
+        proxyBindingsHint="Leave empty to keep automatic routing."
+        proxyBindingsAutomaticLabel="Automatic routing"
+        proxyBindingsEmptyLabel="No proxy nodes available."
+        proxyBindingsMissingLabel="Missing"
+        proxyBindingsUnavailableLabel="Unavailable"
+        proxyBindingsChartLabel="24h request trend"
+        proxyBindingsChartSuccessLabel="Success"
+        proxyBindingsChartFailureLabel="Failure"
+        proxyBindingsChartEmptyLabel="No 24h data"
+        proxyBindingsChartTotalLabel="Total requests"
+        proxyBindingsChartAriaLabel="Last 24h request volume chart"
+        proxyBindingsChartInteractionHint="Hover or tap for details."
+        proxyBindingsChartLocaleTag="en-US"
+      />,
+    );
+
+    const text = document.body.textContent || "";
+    expect(text).not.toContain("legacy-missing-binding");
+
+    const identityHints = Array.from(document.querySelectorAll('[title^="ID "]'));
+    expect(identityHints.length).toBeGreaterThanOrEqual(3);
+    expect(text).toContain("Missing");
   });
 });

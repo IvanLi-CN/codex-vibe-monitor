@@ -15,6 +15,7 @@ import {
 } from './ui/dialog'
 
 type GroupProxyOption = ForwardProxyBindingNode & {
+  identityHint?: string
   missing?: boolean
 }
 
@@ -82,6 +83,15 @@ function buildMissingProxyOption(key: string, missingLabel: string): GroupProxyO
     last24h: [],
     missing: !isDirect,
   }
+}
+
+function buildProxyIdentityHint(key: string): string {
+  let hash = 0x811c9dc5
+  for (let index = 0; index < key.length; index += 1) {
+    hash ^= key.charCodeAt(index)
+    hash = Math.imul(hash, 0x01000193)
+  }
+  return `ID ${((hash >>> 0).toString(36).toUpperCase()).slice(-6).padStart(6, '0')}`
 }
 
 function sumProxyTraffic(node: ForwardProxyBindingNode) {
@@ -240,7 +250,18 @@ export function UpstreamAccountGroupNoteDialog({
         )
       }
     }
-    return options
+    const displayNameCounts = new Map<string, number>()
+    for (const node of options) {
+      const normalizedDisplayName = node.displayName.trim()
+      displayNameCounts.set(normalizedDisplayName, (displayNameCounts.get(normalizedDisplayName) ?? 0) + 1)
+    }
+    return options.map((node) => {
+      const duplicateDisplayName = (displayNameCounts.get(node.displayName.trim()) ?? 0) > 1
+      return {
+        ...node,
+        identityHint: node.missing || duplicateDisplayName ? buildProxyIdentityHint(node.key) : undefined,
+      }
+    })
   }, [availableProxyNodes, normalizedBoundProxyKeys, proxyBindingsMissingLabel])
   const proxyChartScaleMax = useMemo(
     () =>
@@ -368,6 +389,14 @@ export function UpstreamAccountGroupNoteDialog({
                                   <span className="shrink-0 rounded-md border border-base-300/80 bg-base-200/65 px-1.5 py-0.5 text-[10px] font-mono font-semibold uppercase tracking-[0.08em] text-base-content/68">
                                     {node.protocolLabel}
                                   </span>
+                                  {node.identityHint ? (
+                                    <span
+                                      className="shrink-0 rounded-md border border-base-300/80 bg-base-100/80 px-1.5 py-0.5 text-[10px] font-mono font-semibold tracking-[0.08em] text-base-content/55"
+                                      title={node.identityHint}
+                                    >
+                                      {node.identityHint}
+                                    </span>
+                                  ) : null}
                                   {badgeLabel ? (
                                     <span className="shrink-0 rounded-full border border-base-300/80 bg-base-200/80 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-base-content/65">
                                       {badgeLabel}

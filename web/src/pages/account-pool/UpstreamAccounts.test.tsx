@@ -3855,7 +3855,7 @@ describe("UpstreamAccountsPage api key details", () => {
           last24h: [],
         },
         {
-          key: "vless://e8d10b05-aec8-4cee-be7d-2f5eee61b0a7@hinet-ep.707979.xyz:53842?encryption=none&security=reality&type=tcp&sni=skypapi.onedrive.com&fp=chrome&pbk=abc123&sid=long-subscription-node#Ivan-hinet-vless-vision-01KF874741GBN6MQYD6TNMYDVS",
+          key: "vless://11111111-2222-3333-4444-555555555555@fixture-vless-edge.example.invalid:443?encryption=none&security=tls&type=ws&host=cdn.example.invalid&path=%2Ffixture&fp=chrome&pbk=fixture-public-key&sid=fixture-subscription-node#Ivan-hinet-vless-vision-01KF874741GBN6MQYD6TNMYDVS",
           displayName: "Ivan-hinet-vless-vision-01KF874741GBN6MQYD6TNMYDVS",
           protocolLabel: "VLESS",
           source: "subscription",

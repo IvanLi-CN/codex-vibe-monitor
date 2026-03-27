@@ -5738,7 +5738,7 @@ describe("UpstreamAccountCreatePage api key", () => {
           last24h: [],
         },
         {
-          key: "ss://2022-blake3-aes-128-gcm:EOYQdB4zxDFr9WNrv8HiXg%3D%3D%3A%2FnzEl7kJLV8e@example-hk-01.707979.xyz:443#Ivan-hinet-ss2022-01KF87EBR50MM9JKM9R9BCA9WZ",
+          key: "ss://2022-blake3-aes-128-gcm:fixture-passphrase@fixture-ss-edge.example.invalid:443#Ivan-hinet-ss2022-01KF87EBR50MM9JKM9R9BCA9WZ",
           displayName: "Ivan-hinet-ss2022-01KF87EBR50MM9JKM9R9BCA9WZ",
           protocolLabel: "SS",
           source: "subscription",
