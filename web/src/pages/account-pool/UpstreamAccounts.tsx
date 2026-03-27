@@ -28,6 +28,7 @@ import { Switch } from '../../components/ui/switch'
 import { AccountTagField } from '../../components/AccountTagField'
 import { AccountTagFilterCombobox } from '../../components/AccountTagFilterCombobox'
 import { EffectiveRoutingRuleCard } from '../../components/EffectiveRoutingRuleCard'
+import { MultiSelectFilterCombobox } from '../../components/MultiSelectFilterCombobox'
 import { UpstreamAccountGroupCombobox } from '../../components/UpstreamAccountGroupCombobox'
 import { UpstreamAccountGroupNoteDialog } from '../../components/UpstreamAccountGroupNoteDialog'
 import { UpstreamAccountUsageCard } from '../../components/UpstreamAccountUsageCard'
@@ -57,7 +58,9 @@ import {
 } from '../../lib/api'
 import {
   buildGroupNameSuggestions,
+  isExistingGroup,
   normalizeGroupName,
+  resolveGroupNote,
 } from '../../lib/upstreamAccountGroups'
 import { validateUpstreamBaseUrl } from '../../lib/upstreamBaseUrl'
 import { generatePoolRoutingKey } from '../../lib/poolRouting'
@@ -105,6 +108,7 @@ type UpstreamAccountsLocationState = {
   selectedAccountId?: number
   openDetail?: boolean
   openDeleteConfirm?: boolean
+  postCreateWarning?: string | null
   duplicateWarning?: {
     accountId: number
     displayName: string
@@ -701,9 +705,9 @@ export default function UpstreamAccountsPage() {
   const navigate = useNavigate()
   const [groupFilterQuery, setGroupFilterQuery] = useState('')
   const [selectedTagIds, setSelectedTagIds] = useState<number[]>([])
-  const [workStatusFilter, setWorkStatusFilter] = useState('all')
-  const [enableStatusFilter, setEnableStatusFilter] = useState('all')
-  const [healthStatusFilter, setHealthStatusFilter] = useState('all')
+  const [workStatusFilter, setWorkStatusFilter] = useState<string[]>([])
+  const [enableStatusFilter, setEnableStatusFilter] = useState<string[]>([])
+  const [healthStatusFilter, setHealthStatusFilter] = useState<string[]>([])
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [selectedAccountIds, setSelectedAccountIds] = useState<number[]>([])
@@ -720,9 +724,9 @@ export default function UpstreamAccountsPage() {
           ? undefined
           : normalizedQuery,
       groupUngrouped: normalizedQuery ? normalizedLowerQuery === ungroupedLabel : undefined,
-      workStatus: workStatusFilter === 'all' ? undefined : workStatusFilter,
-      enableStatus: enableStatusFilter === 'all' ? undefined : enableStatusFilter,
-      healthStatus: healthStatusFilter === 'all' ? undefined : healthStatusFilter,
+      workStatus: workStatusFilter.length > 0 ? workStatusFilter : undefined,
+      enableStatus: enableStatusFilter.length > 0 ? enableStatusFilter : undefined,
+      healthStatus: healthStatusFilter.length > 0 ? healthStatusFilter : undefined,
       page,
       pageSize,
       tagIds: selectedTagIds.length > 0 ? selectedTagIds : undefined,
@@ -730,7 +734,6 @@ export default function UpstreamAccountsPage() {
   }, [enableStatusFilter, groupFilterQuery, healthStatusFilter, page, pageSize, selectedTagIds, t, workStatusFilter])
   const workStatusFilterOptions = useMemo(
     () => [
-      { value: 'all', label: t('accountPool.upstreamAccounts.workStatusFilter.all') },
       { value: 'working', label: t('accountPool.upstreamAccounts.workStatus.working') },
       { value: 'idle', label: t('accountPool.upstreamAccounts.workStatus.idle') },
       { value: 'rate_limited', label: t('accountPool.upstreamAccounts.workStatus.rate_limited') },
@@ -739,7 +742,6 @@ export default function UpstreamAccountsPage() {
   )
   const enableStatusFilterOptions = useMemo(
     () => [
-      { value: 'all', label: t('accountPool.upstreamAccounts.enableStatusFilter.all') },
       { value: 'enabled', label: t('accountPool.upstreamAccounts.enableStatus.enabled') },
       { value: 'disabled', label: t('accountPool.upstreamAccounts.enableStatus.disabled') },
     ],
@@ -747,7 +749,6 @@ export default function UpstreamAccountsPage() {
   )
   const healthStatusFilterOptions = useMemo(
     () => [
-      { value: 'all', label: t('accountPool.upstreamAccounts.healthStatusFilter.all') },
       { value: 'normal', label: t('accountPool.upstreamAccounts.healthStatus.normal') },
       { value: 'needs_reauth', label: t('accountPool.upstreamAccounts.healthStatus.needs_reauth') },
       {
@@ -813,6 +814,9 @@ export default function UpstreamAccountsPage() {
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
   const [pageCreatedTagIds, setPageCreatedTagIds] = useState<number[]>([])
   const [stickyConversationLimit, setStickyConversationLimit] = useState<number>(50)
+  const [groupDraftNotes, setGroupDraftNotes] = useState<Record<string, string>>({})
+  const [groupDraftBoundProxyKeys, setGroupDraftBoundProxyKeys] = useState<Record<string, string[]>>({})
+  const [postCreateWarning, setPostCreateWarning] = useState<string | null>(null)
   const [duplicateWarning, setDuplicateWarning] =
     useState<UpstreamAccountsLocationState['duplicateWarning']>(null)
   const [groupNoteEditor, setGroupNoteEditor] = useState<GroupSettingsEditorState>({
@@ -884,19 +888,19 @@ export default function UpstreamAccountsPage() {
     clearBulkSelection()
   }, [clearBulkSelection])
 
-  const handleWorkStatusFilterChange = useCallback((value: string) => {
+  const handleWorkStatusFilterChange = useCallback((value: string[]) => {
     setWorkStatusFilter(value)
     setPage(1)
     clearBulkSelection()
   }, [clearBulkSelection])
 
-  const handleEnableStatusFilterChange = useCallback((value: string) => {
+  const handleEnableStatusFilterChange = useCallback((value: string[]) => {
     setEnableStatusFilter(value)
     setPage(1)
     clearBulkSelection()
   }, [clearBulkSelection])
 
-  const handleHealthStatusFilterChange = useCallback((value: string) => {
+  const handleHealthStatusFilterChange = useCallback((value: string[]) => {
     setHealthStatusFilter(value)
     setPage(1)
     clearBulkSelection()
@@ -1023,6 +1027,23 @@ export default function UpstreamAccountsPage() {
   }, [items, selectedAccountIds])
 
   useEffect(() => {
+    setGroupDraftNotes((current) => {
+      const nextEntries = Object.entries(current).filter(([groupName]) => !isExistingGroup(groups, groupName))
+      if (nextEntries.length === Object.keys(current).length) {
+        return current
+      }
+      return Object.fromEntries(nextEntries)
+    })
+    setGroupDraftBoundProxyKeys((current) => {
+      const nextEntries = Object.entries(current).filter(([groupName]) => !isExistingGroup(groups, groupName))
+      if (nextEntries.length === Object.keys(current).length) {
+        return current
+      }
+      return Object.fromEntries(nextEntries)
+    })
+  }, [groups])
+
+  useEffect(() => {
     const validTagIds = new Set(tagItems.map((tag) => tag.id))
     setSelectedTagIds((current) => {
       const next = current.filter((tagId) => validTagIds.has(tagId))
@@ -1050,6 +1071,7 @@ export default function UpstreamAccountsPage() {
     selectAccount(state.selectedAccountId)
     setIsDetailDrawerOpen(Boolean(state.openDetail))
     setIsDeleteConfirmOpen(Boolean(state.openDeleteConfirm))
+    setPostCreateWarning(state.postCreateWarning ?? null)
     setDuplicateWarning(state.duplicateWarning ?? null)
     navigate(location.pathname, { replace: true, state: null })
   }, [location.pathname, location.state, navigate, selectAccount])
@@ -1087,23 +1109,71 @@ export default function UpstreamAccountsPage() {
   }, [effectiveMetrics, t])
 
   const availableGroups = useMemo(() => {
+    const draftNames = Object.fromEntries([
+      ...Object.keys(groupDraftNotes).map((groupName) => [groupName, '']),
+      ...Object.keys(groupDraftBoundProxyKeys).map((groupName) => [groupName, '']),
+    ])
     return {
-      names: buildGroupNameSuggestions(items.map((item) => item.groupName), groups, {}),
+      names: buildGroupNameSuggestions(items.map((item) => item.groupName), groups, draftNames),
       hasUngrouped: hasUngroupedAccounts,
     }
-  }, [groups, hasUngroupedAccounts, items])
+  }, [groupDraftBoundProxyKeys, groupDraftNotes, groups, hasUngroupedAccounts, items])
 
   const resolveGroupSummaryForName = (groupName: string) => {
     const normalized = normalizeGroupName(groupName)
     if (!normalized) return null
     return groups.find((group) => normalizeGroupName(group.groupName) === normalized) ?? null
   }
-  const resolveGroupNoteForName = (groupName: string) => resolveGroupSummaryForName(groupName)?.note ?? ''
+  const resolveGroupNoteForName = (groupName: string) => resolveGroupNote(groups, groupDraftNotes, groupName)
+  const resolvePendingGroupNoteForName = (groupName: string) => {
+    const normalized = normalizeGroupName(groupName)
+    if (!normalized || isExistingGroup(groups, normalized)) return ''
+    return groupDraftNotes[normalized]?.trim() ?? ''
+  }
   const resolveGroupBoundProxyKeysForName = (groupName: string) =>
-    resolveGroupSummaryForName(groupName)?.boundProxyKeys ?? []
+    resolveGroupSummaryForName(groupName)?.boundProxyKeys ??
+    groupDraftBoundProxyKeys[normalizeGroupName(groupName)] ??
+    []
   const hasGroupSettings = (groupName: string) =>
     resolveGroupNoteForName(groupName).trim().length > 0 ||
     resolveGroupBoundProxyKeysForName(groupName).length > 0
+
+  const persistDraftGroupSettings = useCallback(async (groupName: string) => {
+    const normalizedGroupName = normalizeGroupName(groupName)
+    if (!normalizedGroupName) return
+    const hasDraftNote = normalizedGroupName in groupDraftNotes
+    const hasDraftBindings = normalizedGroupName in groupDraftBoundProxyKeys
+    if (!hasDraftNote && !hasDraftBindings) return
+
+    const normalizedNote = hasDraftNote
+      ? groupDraftNotes[normalizedGroupName]?.trim() ?? ''
+      : ''
+    const normalizedBoundProxyKeys = Array.from(
+      new Set(
+        (groupDraftBoundProxyKeys[normalizedGroupName] ?? [])
+          .map((value) => value.trim())
+          .filter((value) => value.length > 0),
+      ),
+    )
+
+    await saveGroupNote(normalizedGroupName, {
+      note: normalizedNote || undefined,
+      boundProxyKeys: normalizedBoundProxyKeys,
+    })
+
+    setGroupDraftNotes((current) => {
+      if (!(normalizedGroupName in current)) return current
+      const next = { ...current }
+      delete next[normalizedGroupName]
+      return next
+    })
+    setGroupDraftBoundProxyKeys((current) => {
+      if (!(normalizedGroupName in current)) return current
+      const next = { ...current }
+      delete next[normalizedGroupName]
+      return next
+    })
+  }, [groupDraftBoundProxyKeys, groupDraftNotes, saveGroupNote])
 
   const openGroupNoteEditor = (groupName: string) => {
     if (!writesEnabled) return
@@ -1114,9 +1184,9 @@ export default function UpstreamAccountsPage() {
     setGroupNoteEditor({
       open: true,
       groupName: normalized,
-      note: existingGroup?.note ?? '',
+      note: resolveGroupNoteForName(normalized),
       existing: existingGroup != null,
-      boundProxyKeys: existingGroup?.boundProxyKeys ?? [],
+      boundProxyKeys: resolveGroupBoundProxyKeysForName(normalized),
     })
   }
 
@@ -1136,11 +1206,46 @@ export default function UpstreamAccountsPage() {
     )
     setGroupNoteError(null)
 
+    if (!groupNoteEditor.existing) {
+      setGroupDraftNotes((current) => {
+        const next = { ...current }
+        if (normalizedNote) {
+          next[normalizedGroupName] = normalizedNote
+        } else {
+          delete next[normalizedGroupName]
+        }
+        return next
+      })
+      setGroupDraftBoundProxyKeys((current) => {
+        const next = { ...current }
+        if (normalizedBoundProxyKeys.length > 0) {
+          next[normalizedGroupName] = normalizedBoundProxyKeys
+        } else {
+          delete next[normalizedGroupName]
+        }
+        return next
+      })
+      setGroupNoteEditor((current) => ({ ...current, open: false }))
+      return
+    }
+
     setGroupNoteBusy(true)
     try {
       await saveGroupNote(normalizedGroupName, {
         note: normalizedNote || undefined,
         boundProxyKeys: normalizedBoundProxyKeys,
+      })
+      setGroupDraftNotes((current) => {
+        if (!(normalizedGroupName in current)) return current
+        const next = { ...current }
+        delete next[normalizedGroupName]
+        return next
+      })
+      setGroupDraftBoundProxyKeys((current) => {
+        if (!(normalizedGroupName in current)) return current
+        const next = { ...current }
+        delete next[normalizedGroupName]
+        return next
       })
       setGroupNoteEditor((current) => ({ ...current, open: false }))
     } catch (err) {
@@ -1393,11 +1498,14 @@ export default function UpstreamAccountsPage() {
       return { ...current, accountActions: nextActions }
     })
     try {
+      const normalizedGroupName = normalizeGroupName(draft.groupName)
+      const pendingGroupNote = resolvePendingGroupNoteForName(normalizedGroupName)
       const response = await saveAccount(source.id, {
         displayName: draft.displayName.trim() || undefined,
         groupName: draft.groupName.trim(),
         isMother: draft.isMother,
         note: draft.note.trim() || undefined,
+        groupNote: pendingGroupNote || undefined,
         tagIds: draft.tagIds,
         upstreamBaseUrl:
           source.kind === 'api_key_codex' ? draft.upstreamBaseUrl.trim() || null : undefined,
@@ -1406,9 +1514,26 @@ export default function UpstreamAccountsPage() {
         localSecondaryLimit: source.kind === 'api_key_codex' ? normalizeNumberInput(draft.localSecondaryLimit) : undefined,
         localLimitUnit: source.kind === 'api_key_codex' ? draft.localLimitUnit.trim() || undefined : undefined,
       })
+      let partialWarning: string | null = null
+      try {
+        await persistDraftGroupSettings(normalizedGroupName)
+      } catch (error) {
+        partialWarning = t('accountPool.upstreamAccounts.partialSuccess.savedButGroupSettingsFailed', {
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
       notifyMotherChange(response)
       if (selectedIdRef.current === source.id) {
         setDraft((current) => ({ ...current, apiKey: '' }))
+      }
+      if (partialWarning) {
+        setActionError((current) => ({
+          ...current,
+          accountMessages: {
+            ...current.accountMessages,
+            [source.id]: partialWarning,
+          },
+        }))
       }
     } catch (err) {
       setActionError((current) => ({
@@ -1861,6 +1986,24 @@ export default function UpstreamAccountsPage() {
               </Alert>
             ) : null}
 
+            {postCreateWarning ? (
+              <Alert variant="warning">
+                <AppIcon name="alert-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                <div className="flex min-w-0 flex-1 flex-col gap-2">
+                  <p className="font-medium">{t('accountPool.upstreamAccounts.partialSuccess.title')}</p>
+                  <p className="text-sm text-warning/90">{postCreateWarning}</p>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setPostCreateWarning(null)}
+                >
+                  {t('accountPool.upstreamAccounts.actions.dismissDuplicateWarning')}
+                </Button>
+              </Alert>
+            ) : null}
+
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               {metrics.map((metric) => (
                 <Card key={metric.label} className="border-base-300/80 bg-base-100/72">
@@ -1928,36 +2071,51 @@ export default function UpstreamAccountsPage() {
               </div>
 
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-12">
-                <SelectField
-                  label={t('accountPool.upstreamAccounts.workStatusFilterLabel')}
-                  className={cn('min-w-0', formFieldSpanVariants({ size: 'compact' }))}
-                  value={workStatusFilter}
-                  options={workStatusFilterOptions}
-                  size="filter"
-                  triggerClassName="border-base-300/90 bg-base-100"
-                  aria-label={t('accountPool.upstreamAccounts.workStatusFilterLabel')}
-                  onValueChange={handleWorkStatusFilterChange}
-                />
-                <SelectField
-                  label={t('accountPool.upstreamAccounts.enableStatusFilterLabel')}
-                  className={cn('min-w-0', formFieldSpanVariants({ size: 'compact' }))}
-                  value={enableStatusFilter}
-                  options={enableStatusFilterOptions}
-                  size="filter"
-                  triggerClassName="border-base-300/90 bg-base-100"
-                  aria-label={t('accountPool.upstreamAccounts.enableStatusFilterLabel')}
-                  onValueChange={handleEnableStatusFilterChange}
-                />
-                <SelectField
-                  label={t('accountPool.upstreamAccounts.healthStatusFilterLabel')}
-                  className={cn('min-w-0', formFieldSpanVariants({ size: 'compact' }))}
-                  value={healthStatusFilter}
-                  options={healthStatusFilterOptions}
-                  size="filter"
-                  triggerClassName="border-base-300/90 bg-base-100"
-                  aria-label={t('accountPool.upstreamAccounts.healthStatusFilterLabel')}
-                  onValueChange={handleHealthStatusFilterChange}
-                />
+                <label className={cn('field min-w-0', formFieldSpanVariants({ size: 'compact' }))}>
+                  <span className="field-label">{t('accountPool.upstreamAccounts.workStatusFilterLabel')}</span>
+                  <MultiSelectFilterCombobox
+                    size="filter"
+                    options={workStatusFilterOptions}
+                    value={workStatusFilter}
+                    placeholder={t('accountPool.upstreamAccounts.workStatusFilter.all')}
+                    searchPlaceholder={t('accountPool.upstreamAccounts.workStatusFilter.searchPlaceholder')}
+                    emptyLabel={t('accountPool.upstreamAccounts.workStatusFilter.empty')}
+                    clearLabel={t('accountPool.upstreamAccounts.workStatusFilter.clear')}
+                    ariaLabel={t('accountPool.upstreamAccounts.workStatusFilterLabel')}
+                    triggerClassName="border-base-300/90 bg-base-100"
+                    onValueChange={handleWorkStatusFilterChange}
+                  />
+                </label>
+                <label className={cn('field min-w-0', formFieldSpanVariants({ size: 'compact' }))}>
+                  <span className="field-label">{t('accountPool.upstreamAccounts.enableStatusFilterLabel')}</span>
+                  <MultiSelectFilterCombobox
+                    size="filter"
+                    options={enableStatusFilterOptions}
+                    value={enableStatusFilter}
+                    placeholder={t('accountPool.upstreamAccounts.enableStatusFilter.all')}
+                    searchPlaceholder={t('accountPool.upstreamAccounts.enableStatusFilter.searchPlaceholder')}
+                    emptyLabel={t('accountPool.upstreamAccounts.enableStatusFilter.empty')}
+                    clearLabel={t('accountPool.upstreamAccounts.enableStatusFilter.clear')}
+                    ariaLabel={t('accountPool.upstreamAccounts.enableStatusFilterLabel')}
+                    triggerClassName="border-base-300/90 bg-base-100"
+                    onValueChange={handleEnableStatusFilterChange}
+                  />
+                </label>
+                <label className={cn('field min-w-0', formFieldSpanVariants({ size: 'compact' }))}>
+                  <span className="field-label">{t('accountPool.upstreamAccounts.healthStatusFilterLabel')}</span>
+                  <MultiSelectFilterCombobox
+                    size="filter"
+                    options={healthStatusFilterOptions}
+                    value={healthStatusFilter}
+                    placeholder={t('accountPool.upstreamAccounts.healthStatusFilter.all')}
+                    searchPlaceholder={t('accountPool.upstreamAccounts.healthStatusFilter.searchPlaceholder')}
+                    emptyLabel={t('accountPool.upstreamAccounts.healthStatusFilter.empty')}
+                    clearLabel={t('accountPool.upstreamAccounts.healthStatusFilter.clear')}
+                    ariaLabel={t('accountPool.upstreamAccounts.healthStatusFilterLabel')}
+                    triggerClassName="border-base-300/90 bg-base-100"
+                    onValueChange={handleHealthStatusFilterChange}
+                  />
+                </label>
                 <label className={cn('field min-w-0', formFieldSpanVariants({ size: 'wide' }))}>
                   <span className="field-label">{t('accountPool.upstreamAccounts.groupFilterLabel')}</span>
                   <UpstreamAccountGroupCombobox

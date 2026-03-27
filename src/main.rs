@@ -6213,6 +6213,10 @@ struct InvocationHourlyRollupDelta {
     first_byte_sum_ms: f64,
     first_byte_max_ms: f64,
     first_byte_histogram: ApproxHistogramCounts,
+    first_response_byte_total_sample_count: i64,
+    first_response_byte_total_sum_ms: f64,
+    first_response_byte_total_max_ms: f64,
+    first_response_byte_total_histogram: ApproxHistogramCounts,
 }
 
 #[derive(Debug, Default)]
@@ -6305,6 +6309,58 @@ fn record_proxy_perf_stage_sample(
     add_approx_histogram_sample(&mut entry.histogram, value_ms);
 }
 
+fn accumulate_invocation_hourly_overall_rollups(
+    overall: &mut BTreeMap<(i64, String), InvocationHourlyRollupDelta>,
+    rows: &[InvocationHourlySourceRecord],
+) -> Result<()> {
+    for row in rows {
+        let bucket_start_epoch = invocation_bucket_start_epoch(&row.occurred_at)?;
+        let overall_entry = overall
+            .entry((bucket_start_epoch, row.source.clone()))
+            .or_insert_with(|| InvocationHourlyRollupDelta {
+                first_byte_histogram: empty_approx_histogram(),
+                first_response_byte_total_histogram: empty_approx_histogram(),
+                ..InvocationHourlyRollupDelta::default()
+            });
+        overall_entry.total_count += 1;
+        match row.status.as_deref() {
+            Some("success") => overall_entry.success_count += 1,
+            Some(_) => overall_entry.failure_count += 1,
+            None => {}
+        }
+        overall_entry.total_tokens += row.total_tokens.unwrap_or_default();
+        overall_entry.total_cost += row.cost.unwrap_or_default();
+        if row.status.as_deref() == Some("success")
+            && let Some(ttfb_ms) = row.t_upstream_ttfb_ms
+            && ttfb_ms.is_finite()
+            && ttfb_ms > 0.0
+        {
+            overall_entry.first_byte_sample_count += 1;
+            overall_entry.first_byte_sum_ms += ttfb_ms;
+            overall_entry.first_byte_max_ms = overall_entry.first_byte_max_ms.max(ttfb_ms);
+            add_approx_histogram_sample(&mut overall_entry.first_byte_histogram, ttfb_ms);
+        }
+        if let Some(first_response_byte_total_ms) = resolve_first_response_byte_total_ms(
+            row.t_req_read_ms,
+            row.t_req_parse_ms,
+            row.t_upstream_connect_ms,
+            row.t_upstream_ttfb_ms,
+        ) {
+            overall_entry.first_response_byte_total_sample_count += 1;
+            overall_entry.first_response_byte_total_sum_ms += first_response_byte_total_ms;
+            overall_entry.first_response_byte_total_max_ms = overall_entry
+                .first_response_byte_total_max_ms
+                .max(first_response_byte_total_ms);
+            add_approx_histogram_sample(
+                &mut overall_entry.first_response_byte_total_histogram,
+                first_response_byte_total_ms,
+            );
+        }
+    }
+
+    Ok(())
+}
+
 async fn upsert_invocation_hourly_rollups_tx(
     tx: &mut SqliteConnection,
     rows: &[InvocationHourlySourceRecord],
@@ -6336,30 +6392,7 @@ async fn upsert_invocation_hourly_rollups_tx(
     for row in rows {
         let bucket_start_epoch = invocation_bucket_start_epoch(&row.occurred_at)?;
         if upsert_overall {
-            let overall_entry = overall
-                .entry((bucket_start_epoch, row.source.clone()))
-                .or_insert_with(|| InvocationHourlyRollupDelta {
-                    first_byte_histogram: empty_approx_histogram(),
-                    ..InvocationHourlyRollupDelta::default()
-                });
-            overall_entry.total_count += 1;
-            match row.status.as_deref() {
-                Some("success") => overall_entry.success_count += 1,
-                Some(_) => overall_entry.failure_count += 1,
-                None => {}
-            }
-            overall_entry.total_tokens += row.total_tokens.unwrap_or_default();
-            overall_entry.total_cost += row.cost.unwrap_or_default();
-            if row.status.as_deref() == Some("success")
-                && let Some(ttfb_ms) = row.t_upstream_ttfb_ms
-                && ttfb_ms.is_finite()
-                && ttfb_ms > 0.0
-            {
-                overall_entry.first_byte_sample_count += 1;
-                overall_entry.first_byte_sum_ms += ttfb_ms;
-                overall_entry.first_byte_max_ms = overall_entry.first_byte_max_ms.max(ttfb_ms);
-                add_approx_histogram_sample(&mut overall_entry.first_byte_histogram, ttfb_ms);
-            }
+            accumulate_invocation_hourly_overall_rollups(&mut overall, std::slice::from_ref(row))?;
         }
 
         if upsert_failures {
@@ -6527,10 +6560,18 @@ async fn upsert_invocation_hourly_rollups_tx(
     }
 
     if upsert_overall {
+        #[derive(sqlx::FromRow)]
+        struct InvocationRollupHistogramRow {
+            first_byte_histogram: String,
+            first_response_byte_total_histogram: String,
+        }
+
         for ((bucket_start_epoch, source), delta) in overall {
-            let current_histogram = sqlx::query_scalar::<_, String>(
+            let current_histograms = sqlx::query_as::<_, InvocationRollupHistogramRow>(
                 r#"
-                SELECT first_byte_histogram
+                SELECT
+                    first_byte_histogram,
+                    first_response_byte_total_histogram
                 FROM invocation_rollup_hourly
                 WHERE bucket_start_epoch = ?1 AND source = ?2
                 "#,
@@ -6539,11 +6580,22 @@ async fn upsert_invocation_hourly_rollups_tx(
             .bind(&source)
             .fetch_optional(&mut *tx)
             .await?;
-            let mut merged_histogram = current_histogram
-                .as_deref()
-                .map(decode_approx_histogram)
+            let mut merged_first_byte_histogram = current_histograms
+                .as_ref()
+                .map(|row| decode_approx_histogram(&row.first_byte_histogram))
                 .unwrap_or_else(empty_approx_histogram);
-            merge_approx_histogram_into(&mut merged_histogram, &delta.first_byte_histogram)?;
+            merge_approx_histogram_into(
+                &mut merged_first_byte_histogram,
+                &delta.first_byte_histogram,
+            )?;
+            let mut merged_first_response_byte_total_histogram = current_histograms
+                .as_ref()
+                .map(|row| decode_approx_histogram(&row.first_response_byte_total_histogram))
+                .unwrap_or_else(empty_approx_histogram);
+            merge_approx_histogram_into(
+                &mut merged_first_response_byte_total_histogram,
+                &delta.first_response_byte_total_histogram,
+            )?;
             sqlx::query(
                 r#"
                 INSERT INTO invocation_rollup_hourly (
@@ -6558,9 +6610,13 @@ async fn upsert_invocation_hourly_rollups_tx(
                     first_byte_sum_ms,
                     first_byte_max_ms,
                     first_byte_histogram,
+                    first_response_byte_total_sample_count,
+                    first_response_byte_total_sum_ms,
+                    first_response_byte_total_max_ms,
+                    first_response_byte_total_histogram,
                     updated_at
                 )
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, datetime('now'))
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, datetime('now'))
                 ON CONFLICT(bucket_start_epoch, source) DO UPDATE SET
                     total_count = invocation_rollup_hourly.total_count + excluded.total_count,
                     success_count = invocation_rollup_hourly.success_count + excluded.success_count,
@@ -6571,6 +6627,10 @@ async fn upsert_invocation_hourly_rollups_tx(
                     first_byte_sum_ms = invocation_rollup_hourly.first_byte_sum_ms + excluded.first_byte_sum_ms,
                     first_byte_max_ms = MAX(invocation_rollup_hourly.first_byte_max_ms, excluded.first_byte_max_ms),
                     first_byte_histogram = excluded.first_byte_histogram,
+                    first_response_byte_total_sample_count = invocation_rollup_hourly.first_response_byte_total_sample_count + excluded.first_response_byte_total_sample_count,
+                    first_response_byte_total_sum_ms = invocation_rollup_hourly.first_response_byte_total_sum_ms + excluded.first_response_byte_total_sum_ms,
+                    first_response_byte_total_max_ms = MAX(invocation_rollup_hourly.first_response_byte_total_max_ms, excluded.first_response_byte_total_max_ms),
+                    first_response_byte_total_histogram = excluded.first_response_byte_total_histogram,
                     updated_at = datetime('now')
                 "#,
             )
@@ -6584,7 +6644,13 @@ async fn upsert_invocation_hourly_rollups_tx(
             .bind(delta.first_byte_sample_count)
             .bind(delta.first_byte_sum_ms)
             .bind(delta.first_byte_max_ms)
-            .bind(encode_approx_histogram(&merged_histogram)?)
+            .bind(encode_approx_histogram(&merged_first_byte_histogram)?)
+            .bind(delta.first_response_byte_total_sample_count)
+            .bind(delta.first_response_byte_total_sum_ms)
+            .bind(delta.first_response_byte_total_max_ms)
+            .bind(encode_approx_histogram(
+                &merged_first_response_byte_total_histogram,
+            )?)
             .execute(&mut *tx)
             .await?;
         }
@@ -7218,6 +7284,212 @@ async fn replay_live_forward_proxy_attempt_hourly_rollups_tx(
     save_hourly_rollup_live_progress_tx(tx, HOURLY_ROLLUP_DATASET_FORWARD_PROXY_ATTEMPTS, last_id)
         .await?;
     Ok(rows.len() as u64)
+}
+
+async fn backfill_invocation_rollup_hourly_from_sources(pool: &Pool<Sqlite>) -> Result<usize> {
+    let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
+        r#"
+        SELECT id, file_path, coverage_start_at, coverage_end_at
+        FROM archive_batches
+        WHERE dataset = 'codex_invocations'
+          AND status = ?1
+        ORDER BY month_key ASC, created_at ASC, id ASC
+        "#,
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .fetch_all(pool)
+    .await?;
+    let mut overall: BTreeMap<(i64, String), InvocationHourlyRollupDelta> = BTreeMap::new();
+    let mut seen_ids = HashSet::new();
+
+    for archive_file in archive_files {
+        let archive_path = PathBuf::from(&archive_file.file_path);
+        if !archive_path.exists() {
+            warn!(
+                dataset = HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                file_path = archive_file.file_path,
+                "skipping missing archive batch during invocation hourly rollup backfill"
+            );
+            continue;
+        }
+
+        let temp_path = PathBuf::from(format!(
+            "{}.{}.sqlite",
+            archive_path.display(),
+            retention_temp_suffix()
+        ));
+        if temp_path.exists() {
+            let _ = fs::remove_file(&temp_path);
+        }
+        let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+        inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
+        let archive_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&sqlite_url_for_path(&temp_path))
+            .await
+            .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
+        let mut archive_cursor_id = 0_i64;
+        loop {
+            let mut rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(
+                r#"
+                SELECT
+                    id,
+                    occurred_at,
+                    source,
+                    status,
+                    detail_level,
+                    total_tokens,
+                    cost,
+                    error_message,
+                    failure_kind,
+                    failure_class,
+                    is_actionable,
+                    payload,
+                    t_total_ms,
+                    t_req_read_ms,
+                    t_req_parse_ms,
+                    t_upstream_connect_ms,
+                    t_upstream_ttfb_ms,
+                    t_upstream_stream_ms,
+                    t_resp_parse_ms,
+                    t_persist_ms
+                FROM codex_invocations
+                WHERE id > ?1
+                ORDER BY id ASC
+                LIMIT ?2
+                "#,
+            )
+            .bind(archive_cursor_id)
+            .bind(BACKFILL_BATCH_SIZE)
+            .fetch_all(&archive_pool)
+            .await?;
+            if rows.is_empty() {
+                break;
+            }
+            archive_cursor_id = rows.last().map(|row| row.id).unwrap_or(archive_cursor_id);
+            rows.retain(|row| seen_ids.insert(row.id));
+            if rows.is_empty() {
+                continue;
+            }
+            accumulate_invocation_hourly_overall_rollups(&mut overall, &rows)?;
+        }
+        archive_pool.close().await;
+        drop(temp_cleanup);
+    }
+
+    let mut cursor_id = 0_i64;
+    loop {
+        let mut rows = sqlx::query_as::<_, InvocationHourlySourceRecord>(
+            r#"
+            SELECT
+                id,
+                occurred_at,
+                source,
+                status,
+                detail_level,
+                total_tokens,
+                cost,
+                error_message,
+                failure_kind,
+                failure_class,
+                is_actionable,
+                payload,
+                t_total_ms,
+                t_req_read_ms,
+                t_req_parse_ms,
+                t_upstream_connect_ms,
+                t_upstream_ttfb_ms,
+                t_upstream_stream_ms,
+                t_resp_parse_ms,
+                t_persist_ms
+            FROM codex_invocations
+            WHERE id > ?1
+            ORDER BY id ASC
+            LIMIT ?2
+            "#,
+        )
+        .bind(cursor_id)
+        .bind(BACKFILL_BATCH_SIZE)
+        .fetch_all(pool)
+        .await?;
+        if rows.is_empty() {
+            break;
+        }
+        cursor_id = rows.last().map(|row| row.id).unwrap_or(cursor_id);
+        rows.retain(|row| seen_ids.insert(row.id));
+        if rows.is_empty() {
+            continue;
+        }
+        accumulate_invocation_hourly_overall_rollups(&mut overall, &rows)?;
+    }
+
+    if overall.is_empty() {
+        return Ok(0);
+    }
+
+    let mut tx = pool.begin().await?;
+    for ((bucket_start_epoch, source), delta) in &overall {
+        sqlx::query(
+            r#"
+            INSERT INTO invocation_rollup_hourly (
+                bucket_start_epoch,
+                source,
+                total_count,
+                success_count,
+                failure_count,
+                total_tokens,
+                total_cost,
+                first_byte_sample_count,
+                first_byte_sum_ms,
+                first_byte_max_ms,
+                first_byte_histogram,
+                first_response_byte_total_sample_count,
+                first_response_byte_total_sum_ms,
+                first_response_byte_total_max_ms,
+                first_response_byte_total_histogram,
+                updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, datetime('now'))
+            ON CONFLICT(bucket_start_epoch, source) DO UPDATE SET
+                total_count = excluded.total_count,
+                success_count = excluded.success_count,
+                failure_count = excluded.failure_count,
+                total_tokens = excluded.total_tokens,
+                total_cost = excluded.total_cost,
+                first_byte_sample_count = excluded.first_byte_sample_count,
+                first_byte_sum_ms = excluded.first_byte_sum_ms,
+                first_byte_max_ms = excluded.first_byte_max_ms,
+                first_byte_histogram = excluded.first_byte_histogram,
+                first_response_byte_total_sample_count = excluded.first_response_byte_total_sample_count,
+                first_response_byte_total_sum_ms = excluded.first_response_byte_total_sum_ms,
+                first_response_byte_total_max_ms = excluded.first_response_byte_total_max_ms,
+                first_response_byte_total_histogram = excluded.first_response_byte_total_histogram,
+                updated_at = datetime('now')
+            "#,
+        )
+        .bind(*bucket_start_epoch)
+        .bind(source)
+        .bind(delta.total_count)
+        .bind(delta.success_count)
+        .bind(delta.failure_count)
+        .bind(delta.total_tokens)
+        .bind(delta.total_cost)
+        .bind(delta.first_byte_sample_count)
+        .bind(delta.first_byte_sum_ms)
+        .bind(delta.first_byte_max_ms)
+        .bind(encode_approx_histogram(&delta.first_byte_histogram)?)
+        .bind(delta.first_response_byte_total_sample_count)
+        .bind(delta.first_response_byte_total_sum_ms)
+        .bind(delta.first_response_byte_total_max_ms)
+        .bind(encode_approx_histogram(
+            &delta.first_response_byte_total_histogram,
+        )?)
+        .execute(tx.as_mut())
+        .await?;
+    }
+    tx.commit().await?;
+
+    Ok(overall.len())
 }
 
 async fn sync_hourly_rollups_from_live_tables(pool: &Pool<Sqlite>) -> Result<()> {
@@ -8114,7 +8386,7 @@ async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHand
         )
         .route(
             "/api/pool/upstream-accounts",
-            get(list_upstream_accounts).post(bulk_update_upstream_accounts),
+            get(list_upstream_accounts_from_uri).post(bulk_update_upstream_accounts),
         )
         .route(
             "/api/pool/upstream-accounts/bulk-sync-jobs",
@@ -9606,6 +9878,10 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             first_byte_sum_ms REAL NOT NULL DEFAULT 0,
             first_byte_max_ms REAL NOT NULL DEFAULT 0,
             first_byte_histogram TEXT NOT NULL DEFAULT '[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]',
+            first_response_byte_total_sample_count INTEGER NOT NULL DEFAULT 0,
+            first_response_byte_total_sum_ms REAL NOT NULL DEFAULT 0,
+            first_response_byte_total_max_ms REAL NOT NULL DEFAULT 0,
+            first_response_byte_total_histogram TEXT NOT NULL DEFAULT '[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]',
             updated_at TEXT NOT NULL DEFAULT (datetime('now')),
             PRIMARY KEY (bucket_start_epoch, source)
         )
@@ -9614,6 +9890,40 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure invocation_rollup_hourly table existence")?;
+
+    let invocation_rollup_hourly_columns =
+        load_sqlite_table_columns(pool, "invocation_rollup_hourly").await?;
+    let mut added_first_response_byte_total_rollup_columns = false;
+    for (column, ty) in [
+        (
+            "first_response_byte_total_sample_count",
+            "INTEGER NOT NULL DEFAULT 0",
+        ),
+        (
+            "first_response_byte_total_sum_ms",
+            "REAL NOT NULL DEFAULT 0",
+        ),
+        (
+            "first_response_byte_total_max_ms",
+            "REAL NOT NULL DEFAULT 0",
+        ),
+        (
+            "first_response_byte_total_histogram",
+            "TEXT NOT NULL DEFAULT '[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]'",
+        ),
+    ] {
+        if !invocation_rollup_hourly_columns.contains(column) {
+            added_first_response_byte_total_rollup_columns = true;
+            let statement =
+                format!("ALTER TABLE invocation_rollup_hourly ADD COLUMN {column} {ty}");
+            sqlx::query(&statement)
+                .execute(pool)
+                .await
+                .with_context(|| {
+                    format!("failed to add invocation_rollup_hourly column {column}")
+                })?;
+        }
+    }
 
     sqlx::query(
         r#"
@@ -9624,6 +9934,13 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     .execute(pool)
     .await
     .context("failed to ensure index idx_invocation_rollup_hourly_source_bucket")?;
+    if added_first_response_byte_total_rollup_columns {
+        let rebuilt_rows = backfill_invocation_rollup_hourly_from_sources(pool).await?;
+        info!(
+            rebuilt_rows,
+            "backfilled invocation hourly rollups after adding first-response-byte-total columns"
+        );
+    }
 
     sqlx::query(
         r#"

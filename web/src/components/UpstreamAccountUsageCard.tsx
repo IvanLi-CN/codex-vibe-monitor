@@ -5,6 +5,8 @@ import { Badge } from './ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card'
 import type { RateWindowSnapshot, UpstreamAccountHistoryPoint } from '../lib/api'
 
+const WINDOW_PLACEHOLDER = '-'
+
 interface UpstreamAccountUsageCardProps {
   title: string
   description: string
@@ -38,6 +40,7 @@ export function UpstreamAccountUsageCard({
   noteLabel,
   accentClassName = 'text-primary',
 }: UpstreamAccountUsageCardProps) {
+  const missingWindow = window == null
   const chartData = history
     .slice(-14)
     .map((point) => ({
@@ -46,11 +49,18 @@ export function UpstreamAccountUsageCard({
     }))
     .filter((point) => point.value != null)
 
-  const chartEmpty = chartData.length === 0
+  const displayChartData = missingWindow ? [] : chartData
+  const chartEmpty = displayChartData.length === 0
   const usedPercent = Math.max(0, Math.min(window?.usedPercent ?? 0, 100))
-  const resetLabel = window?.resetsAt
-    ? historyLabel(window.resetsAt)
-    : emptyLabel
+  const ringValue = missingWindow ? WINDOW_PLACEHOLDER : `${Math.round(usedPercent)}%`
+  const usedLabel = missingWindow ? WINDOW_PLACEHOLDER : (window?.usedText ?? emptyLabel)
+  const limitLabel = missingWindow ? WINDOW_PLACEHOLDER : (window?.limitText ?? emptyLabel)
+  const resetLabel = missingWindow
+    ? WINDOW_PLACEHOLDER
+    : window?.resetsAt
+      ? historyLabel(window.resetsAt)
+      : emptyLabel
+  const chartEmptyLabel = missingWindow ? WINDOW_PLACEHOLDER : emptyLabel
   const tooltipFormatter: Formatter<ValueType, NameType> = (value) => {
     const rawValue = Array.isArray(value) ? value[0] : value
     const numericValue = typeof rawValue === 'number' ? rawValue : Number(rawValue ?? 0)
@@ -71,13 +81,21 @@ export function UpstreamAccountUsageCard({
       <CardContent className="grid gap-4 lg:grid-cols-[auto,minmax(0,1fr)] lg:items-center">
         <div className="flex items-center gap-4">
           <div className="progress-ring" style={{ ['--value' as string]: usedPercent }}>
-            <span className={`text-lg font-semibold ${accentClassName}`}>{Math.round(usedPercent)}%</span>
+            <span className={missingWindow ? 'text-lg font-semibold text-base-content/55' : `text-lg font-semibold ${accentClassName}`}>
+              {ringValue}
+            </span>
           </div>
-          <div className="space-y-1 text-sm text-base-content/75">
-            <p className="text-base font-semibold text-base-content">{window?.usedText ?? emptyLabel}</p>
-            <p>{window?.limitText ?? emptyLabel}</p>
+          <div className={missingWindow ? 'space-y-1 text-sm text-base-content/55' : 'space-y-1 text-sm text-base-content/75'}>
+            <p className={missingWindow ? 'text-base font-semibold text-base-content/55' : 'text-base font-semibold text-base-content'}>
+              {usedLabel}
+            </p>
+            <p>{limitLabel}</p>
             <p className="inline-flex items-center gap-1">
-              <AppIcon name="timer-refresh-outline" className="h-4 w-4 text-base-content/50" aria-hidden />
+              <AppIcon
+                name="timer-refresh-outline"
+                className={missingWindow ? 'h-4 w-4 text-base-content/55' : 'h-4 w-4 text-base-content/50'}
+                aria-hidden
+              />
               <span>{resetLabel}</span>
             </p>
           </div>
@@ -86,12 +104,12 @@ export function UpstreamAccountUsageCard({
         <div className="rounded-2xl border border-base-300/70 bg-base-100/65 p-3">
           {chartEmpty ? (
             <div className="flex h-28 items-center justify-center rounded-xl border border-dashed border-base-300/75 bg-base-200/35 text-sm text-base-content/55">
-              {emptyLabel}
+              {chartEmptyLabel}
             </div>
           ) : (
             <div className="h-28 w-full">
               <ResponsiveContainer>
-                <LineChart data={chartData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+                <LineChart data={displayChartData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
                   <XAxis dataKey="label" hide />
                   <YAxis hide domain={[0, 100]} />
                   <Tooltip

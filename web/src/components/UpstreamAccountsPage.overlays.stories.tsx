@@ -62,6 +62,27 @@ export const DetailDrawer: Story = {
   },
 }
 
+export const MissingWindowPlaceholders: Story = {
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts',
+        state: {
+          selectedAccountId: 102,
+          openDetail: true,
+        },
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const dialog = await documentScope.findByRole('dialog', { name: /Team key - missing weekly limit/i })
+    await expect(within(dialog).getByText(/18 requests/i)).toBeInTheDocument()
+    expect(within(dialog).getAllByText('-').length).toBeGreaterThanOrEqual(4)
+    await expect(within(dialog).queryByText(/还没有额度历史|No quota history yet/i)).not.toBeInTheDocument()
+  },
+}
+
 export const DeleteConfirmation: Story = {
   render: () => (
     <AccountPoolStoryRouter

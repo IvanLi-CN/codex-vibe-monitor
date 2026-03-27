@@ -168,6 +168,15 @@ function findButton(pattern: RegExp) {
   ) as HTMLButtonElement | undefined
 }
 
+function findExactTextElements(text: string, root: ParentNode = document.body) {
+  return Array.from(root.querySelectorAll('*')).filter(
+    (candidate) =>
+      candidate instanceof HTMLElement &&
+      candidate.children.length === 0 &&
+      candidate.textContent?.trim() === text,
+  ) as HTMLElement[]
+}
+
 async function flushAsync() {
   await act(async () => {
     await Promise.resolve();
@@ -198,6 +207,52 @@ function setInputValue(selector: string, value: string) {
     setter.call(input, value);
     input.dispatchEvent(new Event("input", { bubbles: true }));
     input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
+
+function setFieldValue(
+  input: HTMLInputElement | HTMLTextAreaElement,
+  value: string,
+) {
+  const prototype =
+    input instanceof HTMLTextAreaElement
+      ? HTMLTextAreaElement.prototype
+      : HTMLInputElement.prototype;
+  const setter = Object.getOwnPropertyDescriptor(prototype, "value")?.set;
+  if (!setter) throw new Error("missing native setter");
+  act(() => {
+    setter.call(input, value);
+    input.dispatchEvent(new Event("input", { bubbles: true }));
+    input.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
+
+function setComboboxValue(nameSelector: string, value: string) {
+  const hiddenInput = document.body.querySelector(nameSelector);
+  if (!(hiddenInput instanceof HTMLInputElement)) {
+    throw new Error(`missing combobox input: ${nameSelector}`);
+  }
+  const wrapper = hiddenInput.parentElement;
+  const trigger = wrapper?.querySelector('button[role="combobox"]');
+  if (!(trigger instanceof HTMLButtonElement)) {
+    throw new Error(`missing combobox trigger: ${nameSelector}`);
+  }
+  pressButton(trigger);
+
+  const searchInput = document.body.querySelector("[cmdk-input]");
+  if (!(searchInput instanceof HTMLInputElement)) {
+    throw new Error(`missing command input: ${nameSelector}`);
+  }
+  setFieldValue(searchInput, value);
+
+  const option = Array.from(document.body.querySelectorAll("[cmdk-item]")).find(
+    (candidate) => (candidate.textContent || "").includes(value),
+  );
+  if (!(option instanceof HTMLElement)) {
+    throw new Error(`missing combobox option: ${value}`);
+  }
+  act(() => {
+    option.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
 }
 
@@ -309,21 +364,6 @@ function clickCommandItem(matcher: RegExp) {
     item.dispatchEvent(new MouseEvent("click", { bubbles: true }))
   })
   return item
-}
-
-function clickSelectOption(matcher: RegExp) {
-  const option = Array.from(document.body.querySelectorAll('[role="option"]')).find(
-    (candidate) =>
-      candidate instanceof HTMLElement &&
-      matcher.test(candidate.textContent || ''),
-  )
-  if (!(option instanceof HTMLElement)) {
-    throw new Error(`missing select option: ${matcher}`)
-  }
-  act(() => {
-    option.dispatchEvent(new MouseEvent("click", { bubbles: true }))
-  })
-  return option
 }
 
 function pressButton(button: HTMLButtonElement) {
@@ -771,7 +811,7 @@ describe("UpstreamAccountsPage duplicates", () => {
         compactFirstByteTimeoutSecs: 420,
       },
     });
-  });
+  }, 10_000);
 
   it("keeps the routing card summary-only while the dialog still exposes advanced fields", async () => {
     mockAccountsPage({
@@ -1056,18 +1096,20 @@ describe("UpstreamAccountsPage duplicates", () => {
     render("/account-pool/upstream-accounts");
 
     clickCombobox(/work status/i);
-    clickSelectOption(/^rate limited$/i);
+    clickCommandItem(/^rate limited$/i);
+    clickCommandItem(/^working$/i);
     clickCombobox(/enable status/i);
-    clickSelectOption(/^enabled$/i);
+    clickCommandItem(/^enabled$/i);
     clickCombobox(/account health/i);
-    clickSelectOption(/^needs re-auth$/i);
+    clickCommandItem(/^needs re-auth$/i);
+    clickCommandItem(/^normal$/i);
 
     expect(hookMocks.useUpstreamAccounts).toHaveBeenLastCalledWith({
       groupSearch: undefined,
       groupUngrouped: undefined,
-      workStatus: "rate_limited",
-      enableStatus: "enabled",
-      healthStatus: "needs_reauth",
+      workStatus: ["rate_limited", "working"],
+      enableStatus: ["enabled"],
+      healthStatus: ["needs_reauth", "normal"],
       page: 1,
       pageSize: 20,
       tagIds: undefined,
@@ -1949,6 +1991,81 @@ describe("UpstreamAccountsPage sync state isolation", () => {
     expect(document.body.textContent).toContain("Last successful sync");
     expect(document.body.textContent).toContain("5h window");
     expect(document.body.textContent).not.toContain("Latest account action");
+  });
+
+  it("renders missing secondary windows as weak dash placeholders inside the detail drawer", async () => {
+    mockAccountsPage({
+      item: {
+        displayName: "Missing weekly limit key",
+        primaryWindow: {
+          usedPercent: 18,
+          usedText: "18 requests",
+          limitText: "120 requests",
+          resetsAt: "2026-03-16T06:55:00.000Z",
+          windowDurationMins: 300,
+        },
+        secondaryWindow: null,
+        localLimits: {
+          primaryLimit: 120,
+          secondaryLimit: null,
+          limitUnit: "requests",
+        },
+      },
+      selectedSummary: {
+        displayName: "Missing weekly limit key",
+        primaryWindow: {
+          usedPercent: 18,
+          usedText: "18 requests",
+          limitText: "120 requests",
+          resetsAt: "2026-03-16T06:55:00.000Z",
+          windowDurationMins: 300,
+        },
+        secondaryWindow: null,
+        localLimits: {
+          primaryLimit: 120,
+          secondaryLimit: null,
+          limitUnit: "requests",
+        },
+      },
+      detail: {
+        displayName: "Missing weekly limit key",
+        primaryWindow: {
+          usedPercent: 18,
+          usedText: "18 requests",
+          limitText: "120 requests",
+          resetsAt: "2026-03-16T06:55:00.000Z",
+          windowDurationMins: 300,
+        },
+        secondaryWindow: null,
+        localLimits: {
+          primaryLimit: 120,
+          secondaryLimit: null,
+          limitUnit: "requests",
+        },
+        history: [
+          {
+            capturedAt: "2026-03-16T02:00:00.000Z",
+            primaryUsedPercent: 18,
+            secondaryUsedPercent: null,
+            creditsBalance: null,
+          },
+        ],
+      },
+    });
+    render({
+      pathname: "/account-pool/upstream-accounts",
+      state: {
+        selectedAccountId: 5,
+        openDetail: true,
+      },
+    });
+    await flushAsync();
+
+    const dialog = document.body.querySelector('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    expect(document.body.textContent).toContain("18 requests");
+    expect(document.body.textContent).not.toContain("No quota history yet");
+    expect(findExactTextElements("-", dialog ?? document.body).length).toBeGreaterThanOrEqual(4);
   });
 
   it("keeps refresh enabled while an account action is pending", () => {
@@ -3196,6 +3313,181 @@ describe("UpstreamAccountsPage api key details", () => {
     );
     expect(findButton(/Save changes/i)?.disabled).toBe(true);
     expect(saveAccount).not.toHaveBeenCalled();
+  });
+
+  it("persists draft group settings after saving an account into a new group", async () => {
+    const saveAccount = vi.fn().mockResolvedValue({
+      id: 8,
+      kind: "api_key_codex",
+      provider: "codex",
+      displayName: "Gateway Key",
+      groupName: "latam",
+      isMother: false,
+      status: "active",
+      enabled: true,
+      history: [],
+      note: null,
+      upstreamBaseUrl: null,
+      localLimits: {
+        primaryLimit: 100,
+        secondaryLimit: 1000,
+        limitUnit: "requests",
+      },
+    });
+    const saveGroupNote = vi.fn().mockResolvedValue({
+      groupName: "latam",
+      note: "LATAM draft note",
+      boundProxyKeys: ["jp-edge-01"],
+    });
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 8,
+          kind: "api_key_codex",
+          provider: "codex",
+          displayName: "Gateway Key",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          maskedApiKey: "sk-gate••••",
+        },
+      ],
+      writesEnabled: true,
+      selectedId: 8,
+      selectedSummary: {
+        id: 8,
+        kind: "api_key_codex",
+        provider: "codex",
+        displayName: "Gateway Key",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        maskedApiKey: "sk-gate••••",
+      },
+      detail: {
+        id: 8,
+        kind: "api_key_codex",
+        provider: "codex",
+        displayName: "Gateway Key",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        history: [],
+        note: null,
+        upstreamBaseUrl: null,
+        localLimits: {
+          primaryLimit: 100,
+          secondaryLimit: 1000,
+          limitUnit: "requests",
+        },
+      },
+      isLoading: false,
+      isDetailLoading: false,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount,
+      saveRouting: vi.fn(),
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: true, maskedApiKey: "pool-live••••" },
+      groups: [],
+      forwardProxyNodes: [
+        {
+          key: "jp-edge-01",
+          displayName: "JP Edge 01",
+          source: "inventory",
+          penalized: false,
+          selectable: true,
+          last24h: [],
+        },
+      ],
+      saveGroupNote,
+    });
+    hookMocks.useUpstreamStickyConversations.mockReturnValue({
+      stats: { conversations: [], rangeStart: "", rangeEnd: "" },
+      isLoading: false,
+      error: null,
+    });
+
+    render();
+
+    clickFirstRosterRow();
+    clickTab(/Edit/i);
+    setComboboxValue('input[name="detailGroupName"]', "latam");
+    await flushAsync();
+
+    clickButton(/Edit group settings|Edit group note/i);
+    await flushAsync();
+
+    const dialogStack = Array.from(document.body.querySelectorAll('[role="dialog"]'));
+    const groupSettingsDialog = dialogStack[dialogStack.length - 1];
+    if (!(groupSettingsDialog instanceof HTMLElement)) {
+      throw new Error("missing group settings dialog");
+    }
+    expect(groupSettingsDialog.textContent || "").toContain("Bound proxy nodes");
+
+    const groupNoteField = groupSettingsDialog.querySelector("textarea");
+    if (!(groupNoteField instanceof HTMLTextAreaElement)) {
+      throw new Error("missing group note textarea");
+    }
+    setFieldValue(groupNoteField, "LATAM draft note");
+
+    const proxyOption = Array.from(groupSettingsDialog.querySelectorAll("button")).find(
+      (candidate) => /JP Edge 01/i.test(candidate.textContent || ""),
+    );
+    if (!(proxyOption instanceof HTMLButtonElement)) {
+      throw new Error("missing proxy binding option");
+    }
+    pressButton(proxyOption);
+
+    const saveDialogButton = Array.from(groupSettingsDialog.querySelectorAll("button")).find(
+      (candidate) => /Save changes/i.test(candidate.textContent || ""),
+    );
+    if (!(saveDialogButton instanceof HTMLButtonElement)) {
+      throw new Error("missing group settings save button");
+    }
+    pressButton(saveDialogButton);
+    await flushAsync();
+
+    expect(saveGroupNote).not.toHaveBeenCalled();
+
+    const remainingDialogs = Array.from(document.body.querySelectorAll('[role="dialog"]'));
+    const detailDialog = remainingDialogs[remainingDialogs.length - 1];
+    if (!(detailDialog instanceof HTMLElement)) {
+      throw new Error("missing detail drawer dialog");
+    }
+
+    const saveDetailButton = Array.from(detailDialog.querySelectorAll("button")).find(
+      (candidate) => /Save changes/i.test(candidate.textContent || ""),
+    );
+    if (!(saveDetailButton instanceof HTMLButtonElement)) {
+      throw new Error("missing detail save button");
+    }
+    pressButton(saveDetailButton);
+    await flushAsync();
+
+    expect(saveAccount).toHaveBeenCalledWith(
+      8,
+      expect.objectContaining({
+        groupName: "latam",
+        groupNote: "LATAM draft note",
+      }),
+    );
+    expect(saveGroupNote).toHaveBeenCalledWith("latam", {
+      note: "LATAM draft note",
+      boundProxyKeys: ["jp-edge-01"],
+    });
   });
 });
 

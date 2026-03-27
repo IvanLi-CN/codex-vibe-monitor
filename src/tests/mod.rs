@@ -3964,9 +3964,9 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
             group_search: Some("prod".to_string()),
             group_ungrouped: None,
             status: None,
-            work_status: None,
-            enable_status: None,
-            health_status: None,
+            work_status: Vec::new(),
+            enable_status: Vec::new(),
+            health_status: Vec::new(),
             page: None,
             page_size: None,
             tag_ids: vec![vip_tag_id, burst_safe_tag_id, vip_tag_id],
@@ -3994,9 +3994,9 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
             group_search: None,
             group_ungrouped: Some(true),
             status: None,
-            work_status: None,
-            enable_status: None,
-            health_status: None,
+            work_status: Vec::new(),
+            enable_status: Vec::new(),
+            health_status: Vec::new(),
             page: None,
             page_size: None,
             tag_ids: vec![vip_tag_id, burst_safe_tag_id],
@@ -4064,9 +4064,9 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
             group_search: None,
             group_ungrouped: None,
             status: Some("active".to_string()),
-            work_status: None,
-            enable_status: None,
-            health_status: None,
+            work_status: Vec::new(),
+            enable_status: Vec::new(),
+            health_status: Vec::new(),
             page: Some(2),
             page_size: Some(20),
             tag_ids: Vec::new(),
@@ -4099,9 +4099,9 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
             group_search: None,
             group_ungrouped: None,
             status: Some("disabled".to_string()),
-            work_status: None,
-            enable_status: None,
-            health_status: None,
+            work_status: Vec::new(),
+            enable_status: Vec::new(),
+            health_status: Vec::new(),
             page: Some(1),
             page_size: Some(20),
             tag_ids: Vec::new(),
@@ -4148,9 +4148,9 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
             group_search: None,
             group_ungrouped: None,
             status: None,
-            work_status: Some("rate_limited".to_string()),
-            enable_status: Some("enabled".to_string()),
-            health_status: Some("normal".to_string()),
+            work_status: vec!["rate_limited".to_string()],
+            enable_status: vec!["enabled".to_string()],
+            health_status: vec!["normal".to_string()],
             page: Some(1),
             page_size: Some(20),
             tag_ids: Vec::new(),
@@ -4256,9 +4256,9 @@ async fn list_upstream_accounts_clamps_work_status_for_abnormal_or_syncing_accou
             group_search: None,
             group_ungrouped: None,
             status: None,
-            work_status: None,
-            enable_status: None,
-            health_status: None,
+            work_status: Vec::new(),
+            enable_status: Vec::new(),
+            health_status: Vec::new(),
             page: Some(1),
             page_size: Some(20),
             tag_ids: Vec::new(),
@@ -4403,9 +4403,9 @@ async fn list_upstream_accounts_keeps_generic_retry_cooldown_idle() {
             group_search: None,
             group_ungrouped: None,
             status: None,
-            work_status: None,
-            enable_status: None,
-            health_status: None,
+            work_status: Vec::new(),
+            enable_status: Vec::new(),
+            health_status: Vec::new(),
             page: Some(1),
             page_size: Some(20),
             tag_ids: Vec::new(),
@@ -27187,6 +27187,29 @@ async fn insert_timeseries_invocation(
     status: &str,
     t_upstream_ttfb_ms: Option<f64>,
 ) {
+    insert_timeseries_invocation_with_stages(
+        pool,
+        invoke_id,
+        occurred_at,
+        status,
+        None,
+        None,
+        None,
+        t_upstream_ttfb_ms,
+    )
+    .await;
+}
+
+async fn insert_timeseries_invocation_with_stages(
+    pool: &SqlitePool,
+    invoke_id: &str,
+    occurred_at: &str,
+    status: &str,
+    t_req_read_ms: Option<f64>,
+    t_req_parse_ms: Option<f64>,
+    t_upstream_connect_ms: Option<f64>,
+    t_upstream_ttfb_ms: Option<f64>,
+) {
     sqlx::query(
         r#"
         INSERT INTO codex_invocations (
@@ -27196,10 +27219,13 @@ async fn insert_timeseries_invocation(
             status,
             total_tokens,
             cost,
+            t_req_read_ms,
+            t_req_parse_ms,
+            t_upstream_connect_ms,
             t_upstream_ttfb_ms,
             raw_response
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
         "#,
     )
     .bind(invoke_id)
@@ -27208,6 +27234,9 @@ async fn insert_timeseries_invocation(
     .bind(status)
     .bind(10_i64)
     .bind(0.01_f64)
+    .bind(t_req_read_ms)
+    .bind(t_req_parse_ms)
+    .bind(t_upstream_connect_ms)
     .bind(t_upstream_ttfb_ms)
     .bind("{}")
     .execute(pool)
@@ -27224,6 +27253,52 @@ async fn insert_invocation_rollup(
     failure_count: i64,
     total_tokens: i64,
     total_cost: f64,
+) {
+    insert_invocation_rollup_with_latency_samples(
+        pool,
+        stats_date,
+        source,
+        total_count,
+        success_count,
+        failure_count,
+        total_tokens,
+        total_cost,
+        &[],
+        &[],
+    )
+    .await;
+}
+
+fn encode_histogram_from_samples(samples: &[f64]) -> String {
+    let mut histogram = empty_approx_histogram();
+    for sample in samples {
+        add_approx_histogram_sample(&mut histogram, *sample);
+    }
+    encode_approx_histogram(&histogram).expect("encode approximate histogram from samples")
+}
+
+fn sum_f64_samples(samples: &[f64]) -> f64 {
+    samples.iter().copied().sum::<f64>()
+}
+
+fn max_f64_sample(samples: &[f64]) -> f64 {
+    samples
+        .iter()
+        .copied()
+        .fold(0.0_f64, |current, value| current.max(value))
+}
+
+async fn insert_invocation_rollup_with_latency_samples(
+    pool: &SqlitePool,
+    stats_date: NaiveDate,
+    source: &str,
+    total_count: i64,
+    success_count: i64,
+    failure_count: i64,
+    total_tokens: i64,
+    total_cost: f64,
+    first_byte_samples: &[f64],
+    first_response_byte_total_samples: &[f64],
 ) {
     sqlx::query(
         r#"
@@ -27272,9 +27347,13 @@ async fn insert_invocation_rollup(
             first_byte_sum_ms,
             first_byte_max_ms,
             first_byte_histogram,
+            first_response_byte_total_sample_count,
+            first_response_byte_total_sum_ms,
+            first_response_byte_total_max_ms,
+            first_response_byte_total_histogram,
             updated_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0.0, 0.0, ?8, datetime('now'))
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, datetime('now'))
         "#,
     )
     .bind(bucket_start_epoch)
@@ -27284,10 +27363,16 @@ async fn insert_invocation_rollup(
     .bind(failure_count)
     .bind(total_tokens)
     .bind(total_cost)
-    .bind(
-        encode_approx_histogram(&empty_approx_histogram())
-            .expect("encode empty approximate histogram"),
-    )
+    .bind(first_byte_samples.len() as i64)
+    .bind(sum_f64_samples(first_byte_samples))
+    .bind(max_f64_sample(first_byte_samples))
+    .bind(encode_histogram_from_samples(first_byte_samples))
+    .bind(first_response_byte_total_samples.len() as i64)
+    .bind(sum_f64_samples(first_response_byte_total_samples))
+    .bind(max_f64_sample(first_response_byte_total_samples))
+    .bind(encode_histogram_from_samples(
+        first_response_byte_total_samples,
+    ))
     .execute(pool)
     .await
     .expect("insert invocation hourly rollup");
@@ -27303,6 +27388,33 @@ async fn insert_invocation_hourly_rollup_bucket(
     total_tokens: i64,
     total_cost: f64,
 ) {
+    insert_invocation_hourly_rollup_bucket_with_latency_samples(
+        pool,
+        bucket_start,
+        source,
+        total_count,
+        success_count,
+        failure_count,
+        total_tokens,
+        total_cost,
+        &[],
+        &[],
+    )
+    .await;
+}
+
+async fn insert_invocation_hourly_rollup_bucket_with_latency_samples(
+    pool: &SqlitePool,
+    bucket_start: DateTime<Utc>,
+    source: &str,
+    total_count: i64,
+    success_count: i64,
+    failure_count: i64,
+    total_tokens: i64,
+    total_cost: f64,
+    first_byte_samples: &[f64],
+    first_response_byte_total_samples: &[f64],
+) {
     sqlx::query(
         r#"
         INSERT INTO invocation_rollup_hourly (
@@ -27317,9 +27429,13 @@ async fn insert_invocation_hourly_rollup_bucket(
             first_byte_sum_ms,
             first_byte_max_ms,
             first_byte_histogram,
+            first_response_byte_total_sample_count,
+            first_response_byte_total_sum_ms,
+            first_response_byte_total_max_ms,
+            first_response_byte_total_histogram,
             updated_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0.0, 0.0, ?8, datetime('now'))
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, datetime('now'))
         "#,
     )
     .bind(bucket_start.timestamp())
@@ -27329,10 +27445,16 @@ async fn insert_invocation_hourly_rollup_bucket(
     .bind(failure_count)
     .bind(total_tokens)
     .bind(total_cost)
-    .bind(
-        encode_approx_histogram(&empty_approx_histogram())
-            .expect("encode empty approximate histogram"),
-    )
+    .bind(first_byte_samples.len() as i64)
+    .bind(sum_f64_samples(first_byte_samples))
+    .bind(max_f64_sample(first_byte_samples))
+    .bind(encode_histogram_from_samples(first_byte_samples))
+    .bind(first_response_byte_total_samples.len() as i64)
+    .bind(sum_f64_samples(first_response_byte_total_samples))
+    .bind(max_f64_sample(first_response_byte_total_samples))
+    .bind(encode_histogram_from_samples(
+        first_response_byte_total_samples,
+    ))
     .execute(pool)
     .await
     .expect("insert invocation hourly rollup bucket");
@@ -27688,6 +27810,273 @@ async fn timeseries_daily_bucket_includes_first_byte_stats() {
     );
 }
 
+#[tokio::test]
+async fn timeseries_includes_first_response_byte_total_avg_and_p95_for_complete_stage_samples() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(
+        (Utc::now() - ChronoDuration::minutes(5))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    insert_timeseries_invocation_with_stages(
+        &state.pool,
+        "first-response-byte-total-1",
+        &occurred_at,
+        "success",
+        Some(100.0),
+        Some(200.0),
+        Some(300.0),
+        Some(400.0),
+    )
+    .await;
+    insert_timeseries_invocation_with_stages(
+        &state.pool,
+        "first-response-byte-total-2",
+        &occurred_at,
+        "success",
+        Some(200.0),
+        Some(300.0),
+        Some(400.0),
+        Some(1_100.0),
+    )
+    .await;
+    insert_timeseries_invocation_with_stages(
+        &state.pool,
+        "first-response-byte-total-3",
+        &occurred_at,
+        "success",
+        Some(500.0),
+        Some(500.0),
+        Some(1_000.0),
+        Some(2_000.0),
+    )
+    .await;
+
+    let Json(response) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "1h".to_string(),
+            bucket: Some("15m".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch timeseries");
+    let bucket = response
+        .points
+        .iter()
+        .find(|point| point.total_count >= 3)
+        .expect("should include populated bucket");
+
+    assert_eq!(bucket.first_response_byte_total_sample_count, 3);
+    assert_f64_close(
+        bucket
+            .first_response_byte_total_avg_ms
+            .expect("first response byte total avg should be present"),
+        (1_000.0 + 2_000.0 + 4_000.0) / 3.0,
+    );
+    assert_f64_close(
+        bucket
+            .first_response_byte_total_p95_ms
+            .expect("first response byte total p95 should be present"),
+        3_800.0,
+    );
+}
+
+#[tokio::test]
+async fn timeseries_ignores_incomplete_first_response_byte_total_samples() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(
+        (Utc::now() - ChronoDuration::minutes(10))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    insert_timeseries_invocation_with_stages(
+        &state.pool,
+        "first-response-byte-total-valid",
+        &occurred_at,
+        "success",
+        Some(250.0),
+        Some(250.0),
+        Some(250.0),
+        Some(250.0),
+    )
+    .await;
+    insert_timeseries_invocation_with_stages(
+        &state.pool,
+        "first-response-byte-total-missing-read",
+        &occurred_at,
+        "success",
+        None,
+        Some(250.0),
+        Some(250.0),
+        Some(250.0),
+    )
+    .await;
+    insert_timeseries_invocation_with_stages(
+        &state.pool,
+        "first-response-byte-total-missing-connect",
+        &occurred_at,
+        "success",
+        Some(250.0),
+        Some(250.0),
+        None,
+        Some(250.0),
+    )
+    .await;
+    insert_timeseries_invocation_with_stages(
+        &state.pool,
+        "first-response-byte-total-negative-parse",
+        &occurred_at,
+        "success",
+        Some(250.0),
+        Some(-1.0),
+        Some(250.0),
+        Some(250.0),
+    )
+    .await;
+
+    let Json(response) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "1h".to_string(),
+            bucket: Some("15m".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch timeseries");
+    let bucket = response
+        .points
+        .iter()
+        .find(|point| point.total_count >= 4)
+        .expect("should include populated bucket");
+
+    assert_eq!(bucket.first_response_byte_total_sample_count, 1);
+    assert_f64_close(
+        bucket
+            .first_response_byte_total_avg_ms
+            .expect("first response byte total avg should be present"),
+        1_000.0,
+    );
+    assert_f64_close(
+        bucket
+            .first_response_byte_total_p95_ms
+            .expect("first response byte total p95 should be present"),
+        1_000.0,
+    );
+}
+
+#[tokio::test]
+async fn timeseries_includes_failed_first_response_byte_total_samples() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(
+        (Utc::now() - ChronoDuration::minutes(8))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    insert_timeseries_invocation_with_stages(
+        &state.pool,
+        "first-response-byte-total-failed",
+        &occurred_at,
+        "failed",
+        Some(190.0),
+        Some(200.0),
+        Some(43_400.0),
+        Some(100.0),
+    )
+    .await;
+
+    let Json(response) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "1h".to_string(),
+            bucket: Some("15m".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch timeseries");
+    let bucket = response
+        .points
+        .iter()
+        .find(|point| point.total_count >= 1)
+        .expect("should include populated bucket");
+
+    assert_eq!(bucket.failure_count, 1);
+    assert_eq!(bucket.first_response_byte_total_sample_count, 1);
+    assert_f64_close(
+        bucket
+            .first_response_byte_total_avg_ms
+            .expect("first response byte total avg should be present"),
+        43_890.0,
+    );
+    assert_f64_close(
+        bucket
+            .first_response_byte_total_p95_ms
+            .expect("first response byte total p95 should be present"),
+        43_890.0,
+    );
+}
+
+#[tokio::test]
+async fn timeseries_excludes_zero_ttfb_sentinel_from_first_response_byte_total_samples() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(
+        (Utc::now() - ChronoDuration::minutes(7))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    insert_timeseries_invocation_with_stages(
+        &state.pool,
+        "first-response-byte-total-zero-ttfb",
+        &occurred_at,
+        "failed",
+        Some(190.0),
+        Some(200.0),
+        Some(43_400.0),
+        Some(0.0),
+    )
+    .await;
+
+    let Json(response) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "1h".to_string(),
+            bucket: Some("15m".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch timeseries");
+    let bucket = response
+        .points
+        .iter()
+        .find(|point| point.total_count >= 1)
+        .expect("should include populated bucket");
+
+    assert_eq!(bucket.failure_count, 1);
+    assert_eq!(bucket.first_response_byte_total_sample_count, 0);
+    assert!(bucket.first_response_byte_total_avg_ms.is_none());
+    assert!(bucket.first_response_byte_total_p95_ms.is_none());
+}
+
 #[test]
 fn bucket_aggregate_uses_histogram_for_mixed_rollup_and_exact_p95() {
     let mut bucket = BucketAggregate {
@@ -27755,16 +28144,31 @@ async fn timeseries_daily_stays_continuous_after_rollup_archive() {
     )
     .await;
     let archived_date = Utc::now().with_timezone(&Shanghai).date_naive() - ChronoDuration::days(12);
-    let live_date = Utc::now().with_timezone(&Shanghai).date_naive() - ChronoDuration::days(2);
-    let live_occurred_at = format_naive(live_date.and_hms_opt(15, 30, 0).expect("valid live time"));
+    let live_date = Utc::now().with_timezone(&Shanghai).date_naive();
+    let live_occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
 
-    insert_invocation_rollup(&state.pool, archived_date, SOURCE_PROXY, 3, 2, 1, 300, 3.0).await;
-    insert_timeseries_invocation(
+    insert_invocation_rollup_with_latency_samples(
+        &state.pool,
+        archived_date,
+        SOURCE_PROXY,
+        3,
+        2,
+        1,
+        300,
+        3.0,
+        &[],
+        &[30_000.0],
+    )
+    .await;
+    insert_timeseries_invocation_with_stages(
         &state.pool,
         "timeseries-live-after-rollup",
         &live_occurred_at,
         "success",
-        Some(120.0),
+        Some(5_000.0),
+        Some(10_000.0),
+        Some(14_500.0),
+        Some(500.0),
     )
     .await;
 
@@ -27794,6 +28198,32 @@ async fn timeseries_daily_stays_continuous_after_rollup_archive() {
     assert_eq!(archived_bucket.total_count, 3);
     assert_eq!(live_bucket.total_count, 1);
     assert_eq!(live_bucket.first_byte_sample_count, 1);
+    assert_eq!(archived_bucket.first_response_byte_total_sample_count, 1);
+    assert_f64_close(
+        archived_bucket
+            .first_response_byte_total_avg_ms
+            .expect("archived first response byte total avg should be present"),
+        30_000.0,
+    );
+    assert_f64_close(
+        archived_bucket
+            .first_response_byte_total_p95_ms
+            .expect("archived first response byte total p95 should be present"),
+        30_000.0,
+    );
+    assert_eq!(live_bucket.first_response_byte_total_sample_count, 1);
+    assert_f64_close(
+        live_bucket
+            .first_response_byte_total_avg_ms
+            .expect("live first response byte total avg should be present"),
+        30_000.0,
+    );
+    assert_f64_close(
+        live_bucket
+            .first_response_byte_total_p95_ms
+            .expect("live first response byte total p95 should be present"),
+        30_000.0,
+    );
 
     let summed_count: i64 = response.points.iter().map(|point| point.total_count).sum();
     let summed_tokens: i64 = response.points.iter().map(|point| point.total_tokens).sum();
@@ -33110,6 +33540,309 @@ async fn bootstrap_hourly_rollups_ignores_missing_replay_markers() {
     assert_eq!(invocation_total_before, 1);
     assert_eq!(invocation_total_after, invocation_total_before);
     assert_eq!(repaired_marker_count, 0);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn ensure_schema_backfills_first_response_byte_totals_for_legacy_invocation_rollups() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("legacy-rollup-first-response-byte-total-backfill").await;
+    let old_invocation = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 9, 0, 0);
+    insert_retention_invocation(
+        &pool,
+        "legacy-rollup-first-response-byte-total-backfill",
+        &old_invocation,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(42),
+        Some(0.42),
+    )
+    .await;
+    sqlx::query(
+        r#"
+        UPDATE codex_invocations
+        SET t_req_read_ms = ?1,
+            t_req_parse_ms = ?2,
+            t_upstream_connect_ms = ?3,
+            t_upstream_ttfb_ms = ?4
+        WHERE invoke_id = ?5
+        "#,
+    )
+    .bind(120.0_f64)
+    .bind(80.0_f64)
+    .bind(43_000.0_f64)
+    .bind(690.0_f64)
+    .bind("legacy-rollup-first-response-byte-total-backfill")
+    .execute(&pool)
+    .await
+    .expect("seed staged latency fields");
+
+    sync_hourly_rollups_from_live_tables(&pool)
+        .await
+        .expect("seed live hourly rollups before retention");
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("archive old invocation before schema migration");
+    assert_eq!(summary.invocation_rows_archived, 1);
+
+    sqlx::query("ALTER TABLE invocation_rollup_hourly RENAME TO invocation_rollup_hourly_current")
+        .execute(&pool)
+        .await
+        .expect("rename current invocation rollup table");
+    sqlx::query(
+        r#"
+        CREATE TABLE invocation_rollup_hourly (
+            bucket_start_epoch INTEGER NOT NULL,
+            source TEXT NOT NULL,
+            total_count INTEGER NOT NULL,
+            success_count INTEGER NOT NULL,
+            failure_count INTEGER NOT NULL,
+            total_tokens INTEGER NOT NULL,
+            total_cost REAL NOT NULL,
+            first_byte_sample_count INTEGER NOT NULL DEFAULT 0,
+            first_byte_sum_ms REAL NOT NULL DEFAULT 0,
+            first_byte_max_ms REAL NOT NULL DEFAULT 0,
+            first_byte_histogram TEXT NOT NULL DEFAULT '[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]',
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (bucket_start_epoch, source)
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy invocation rollup table");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram,
+            updated_at
+        )
+        SELECT
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram,
+            updated_at
+        FROM invocation_rollup_hourly_current
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("copy legacy invocation rollup rows");
+    sqlx::query("DROP TABLE invocation_rollup_hourly_current")
+        .execute(&pool)
+        .await
+        .expect("drop current invocation rollup table copy");
+
+    ensure_schema(&pool)
+        .await
+        .expect("ensure schema should backfill first-response-byte totals");
+
+    let row = sqlx::query_as::<_, (i64, f64, f64, String)>(
+        r#"
+        SELECT
+            first_response_byte_total_sample_count,
+            first_response_byte_total_sum_ms,
+            first_response_byte_total_max_ms,
+            first_response_byte_total_histogram
+        FROM invocation_rollup_hourly
+        WHERE source = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load backfilled invocation rollup row");
+
+    assert_eq!(
+        row.0, 1,
+        "legacy rollup row should gain one first-response sample"
+    );
+    assert_eq!(row.1, 43_890.0);
+    assert_eq!(row.2, 43_890.0);
+    assert_ne!(
+        row.3, "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]",
+        "backfill should write a non-empty histogram"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn ensure_schema_backfill_deduplicates_detail_prune_archives() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("legacy-rollup-detail-prune-dedup").await;
+    let prune_invocation =
+        shanghai_local_days_ago((config.invocation_success_full_days + 2) as i64, 9, 0, 0);
+    insert_retention_invocation(
+        &pool,
+        "legacy-rollup-detail-prune-dedup",
+        &prune_invocation,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(42),
+        Some(0.42),
+    )
+    .await;
+    sqlx::query(
+        r#"
+        UPDATE codex_invocations
+        SET t_req_read_ms = ?1,
+            t_req_parse_ms = ?2,
+            t_upstream_connect_ms = ?3,
+            t_upstream_ttfb_ms = ?4
+        WHERE invoke_id = ?5
+        "#,
+    )
+    .bind(120.0_f64)
+    .bind(80.0_f64)
+    .bind(43_000.0_f64)
+    .bind(690.0_f64)
+    .bind("legacy-rollup-detail-prune-dedup")
+    .execute(&pool)
+    .await
+    .expect("seed staged latency fields");
+
+    sync_hourly_rollups_from_live_tables(&pool)
+        .await
+        .expect("seed live hourly rollups before detail prune");
+    run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run retention to produce detail-prune archive");
+
+    let live_row_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations WHERE invoke_id = ?1")
+            .bind("legacy-rollup-detail-prune-dedup")
+            .fetch_one(&pool)
+            .await
+            .expect("load detail-pruned live invocation count");
+    assert_eq!(
+        live_row_count, 1,
+        "detail-pruned invocation should remain live"
+    );
+
+    sqlx::query("ALTER TABLE invocation_rollup_hourly RENAME TO invocation_rollup_hourly_current")
+        .execute(&pool)
+        .await
+        .expect("rename current invocation rollup table");
+    sqlx::query(
+        r#"
+        CREATE TABLE invocation_rollup_hourly (
+            bucket_start_epoch INTEGER NOT NULL,
+            source TEXT NOT NULL,
+            total_count INTEGER NOT NULL,
+            success_count INTEGER NOT NULL,
+            failure_count INTEGER NOT NULL,
+            total_tokens INTEGER NOT NULL,
+            total_cost REAL NOT NULL,
+            first_byte_sample_count INTEGER NOT NULL DEFAULT 0,
+            first_byte_sum_ms REAL NOT NULL DEFAULT 0,
+            first_byte_max_ms REAL NOT NULL DEFAULT 0,
+            first_byte_histogram TEXT NOT NULL DEFAULT '[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]',
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (bucket_start_epoch, source)
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy invocation rollup table");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram,
+            updated_at
+        )
+        SELECT
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram,
+            updated_at
+        FROM invocation_rollup_hourly_current
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("copy legacy invocation rollup rows");
+    sqlx::query("DROP TABLE invocation_rollup_hourly_current")
+        .execute(&pool)
+        .await
+        .expect("drop current invocation rollup table copy");
+
+    ensure_schema(&pool)
+        .await
+        .expect("ensure schema should deduplicate detail-prune archive rows");
+
+    let row = sqlx::query_as::<_, (i64, i64, f64)>(
+        r#"
+        SELECT
+            total_count,
+            first_response_byte_total_sample_count,
+            first_response_byte_total_sum_ms
+        FROM invocation_rollup_hourly
+        WHERE source = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load deduplicated invocation rollup row");
+
+    assert_eq!(
+        row.0, 1,
+        "detail-prune archive and live row should not double-count"
+    );
+    assert_eq!(
+        row.1, 1,
+        "detail-prune archive should still contribute latency sample"
+    );
+    assert_eq!(row.2, 43_890.0);
 
     cleanup_temp_test_dir(&temp_dir);
 }

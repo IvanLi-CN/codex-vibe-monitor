@@ -423,6 +423,12 @@ export const ActionTooltips: Story = {
     await userEvent.hover(generateButton)
     await expect(within(document.body).getByText(/generate a fresh oauth url for this row/i)).toBeInTheDocument()
 
+    await userEvent.click(generateButton)
+    const copyOauthButton = await canvas.findByRole('button', { name: /copy oauth url/i })
+    await userEvent.hover(copyOauthButton)
+    await expect(within(document.body).getByRole('button', { name: /regenerate oauth url/i })).toBeInTheDocument()
+    await expect(within(document.body).getByText(/expires at/i)).toBeInTheDocument()
+
     const copyCodeButton = canvas.getByRole('button', { name: /copy verification code/i })
     const tooltipTrigger = copyCodeButton.parentElement
     if (!(tooltipTrigger instanceof HTMLElement)) {

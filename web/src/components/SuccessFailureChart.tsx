@@ -11,6 +11,8 @@ interface SuccessFailureChartProps {
   points: TimeseriesPoint[]
   isLoading: boolean
   bucketSeconds?: number
+  tooltipDefaultIndex?: number
+  tooltipActive?: boolean
 }
 
 interface ChartDatum {
@@ -18,17 +20,17 @@ interface ChartDatum {
   success: number
   failure: number
   successRate: number | null
-  firstByteAvgMs: number | null
-  firstByteP95Ms: number | null
-  firstByteSampleCount: number
+  firstResponseByteTotalAvgMs: number | null
+  firstResponseByteTotalP95Ms: number | null
+  firstResponseByteTotalSampleCount: number
 }
 
 interface SuccessFailureTooltipLabels {
   failure: string
   success: string
   successRate: string
-  firstByteAvg: string
-  firstByteP95: string
+  firstResponseByteTotalAvg: string
+  firstResponseByteTotalP95: string
 }
 
 interface SuccessFailureTooltipContentProps {
@@ -38,7 +40,8 @@ interface SuccessFailureTooltipContentProps {
   noValueLabel: string
   numberFormatter: Intl.NumberFormat
   percentFormatter: Intl.NumberFormat
-  latencyFormatter: Intl.NumberFormat
+  latencyMsFormatter: Intl.NumberFormat
+  localeTag: string
   tooltipBg: string
   tooltipBorder: string
   axisText: string
@@ -49,9 +52,23 @@ function formatSuccessRate(value: number | null, formatter: Intl.NumberFormat, n
   return `${formatter.format(value * 100)}%`
 }
 
-function formatLatencyMs(value: number | null, formatter: Intl.NumberFormat, noValueLabel: string) {
+function formatLatencyMs(
+  value: number | null,
+  formatter: Intl.NumberFormat,
+  localeTag: string,
+  noValueLabel: string,
+) {
   if (value == null || !Number.isFinite(value)) return noValueLabel
-  return `${formatter.format(value)} ms`
+  if (value < 1000) {
+    return `${formatter.format(value)} ms`
+  }
+  const seconds = value / 1000
+  const precision = Math.abs(seconds) >= 100 ? 1 : Math.abs(seconds) >= 1 ? 2 : 3
+  const rounded = Number(seconds.toFixed(precision))
+  return `${rounded.toLocaleString(localeTag, {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: precision,
+  })} s`
 }
 
 export function SuccessFailureTooltipContent({
@@ -61,7 +78,8 @@ export function SuccessFailureTooltipContent({
   noValueLabel,
   numberFormatter,
   percentFormatter,
-  latencyFormatter,
+  latencyMsFormatter,
+  localeTag,
   tooltipBg,
   tooltipBorder,
   axisText,
@@ -80,17 +98,27 @@ export function SuccessFailureTooltipContent({
       value: formatSuccessRate(datum.successRate, percentFormatter, noValueLabel),
     },
     {
-      label: labels.firstByteAvg,
+      label: labels.firstResponseByteTotalAvg,
       value:
-        datum.firstByteSampleCount > 0
-          ? formatLatencyMs(datum.firstByteAvgMs, latencyFormatter, noValueLabel)
+        datum.firstResponseByteTotalSampleCount > 0
+          ? formatLatencyMs(
+              datum.firstResponseByteTotalAvgMs,
+              latencyMsFormatter,
+              localeTag,
+              noValueLabel,
+            )
           : noValueLabel,
     },
     {
-      label: labels.firstByteP95,
+      label: labels.firstResponseByteTotalP95,
       value:
-        datum.firstByteSampleCount > 0
-          ? formatLatencyMs(datum.firstByteP95Ms, latencyFormatter, noValueLabel)
+        datum.firstResponseByteTotalSampleCount > 0
+          ? formatLatencyMs(
+              datum.firstResponseByteTotalP95Ms,
+              latencyMsFormatter,
+              localeTag,
+              noValueLabel,
+            )
           : noValueLabel,
     },
   ]
@@ -117,19 +145,25 @@ export function SuccessFailureTooltipContent({
   )
 }
 
-export function SuccessFailureChart({ points, isLoading, bucketSeconds }: SuccessFailureChartProps) {
+export function SuccessFailureChart({
+  points,
+  isLoading,
+  bucketSeconds,
+  tooltipDefaultIndex,
+  tooltipActive,
+}: SuccessFailureChartProps) {
   const { t, locale } = useTranslation()
   const { themeMode } = useTheme()
   const localeTag = locale === 'zh' ? 'zh-CN' : 'en-US'
   const noValueLabel = '—'
   const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag, { maximumFractionDigits: 0 }), [localeTag])
   const percentFormatter = useMemo(() => new Intl.NumberFormat(localeTag, { maximumFractionDigits: 1 }), [localeTag])
-  const latencyFormatter = useMemo(() => new Intl.NumberFormat(localeTag, { maximumFractionDigits: 1 }), [localeTag])
+  const latencyMsFormatter = useMemo(() => new Intl.NumberFormat(localeTag, { maximumFractionDigits: 1 }), [localeTag])
   const chartColors = useMemo(
     () => ({
       ...chartBaseTokens(themeMode),
       ...chartStatusTokens(themeMode),
-      firstByteAvg: themeMode === 'dark' ? '#60a5fa' : '#1d4ed8',
+      firstResponseByteTotalAvg: themeMode === 'dark' ? '#60a5fa' : '#1d4ed8',
     }),
     [themeMode],
   )
@@ -155,9 +189,9 @@ export function SuccessFailureChart({ points, isLoading, bucketSeconds }: Succes
       success,
       failure,
       successRate: total > 0 ? success / total : null,
-      firstByteAvgMs: point.firstByteAvgMs ?? null,
-      firstByteP95Ms: point.firstByteP95Ms ?? null,
-      firstByteSampleCount: point.firstByteSampleCount ?? 0,
+      firstResponseByteTotalAvgMs: point.firstResponseByteTotalAvgMs ?? null,
+      firstResponseByteTotalP95Ms: point.firstResponseByteTotalP95Ms ?? null,
+      firstResponseByteTotalSampleCount: point.firstResponseByteTotalSampleCount ?? 0,
     }
   })
 
@@ -167,8 +201,8 @@ export function SuccessFailureChart({ points, isLoading, bucketSeconds }: Succes
     failure: t('stats.cards.failures'),
     success: t('stats.cards.success'),
     successRate: t('stats.successFailure.tooltip.successRate'),
-    firstByteAvg: t('stats.successFailure.tooltip.firstByteAvg'),
-    firstByteP95: t('stats.successFailure.tooltip.firstByteP95'),
+    firstResponseByteTotalAvg: t('stats.successFailure.tooltip.firstByteAvg'),
+    firstResponseByteTotalP95: t('stats.successFailure.tooltip.firstByteP95'),
   }
 
   return (
@@ -198,13 +232,15 @@ export function SuccessFailureChart({ points, isLoading, bucketSeconds }: Succes
           <YAxis
             yAxisId="latency"
             orientation="right"
-            tickFormatter={(v) => formatLatencyMs(v as number, latencyFormatter, noValueLabel)}
-            width={90}
+            tickFormatter={(v) => formatLatencyMs(v as number, latencyMsFormatter, localeTag, noValueLabel)}
+            width={96}
             axisLine={{ stroke: chartColors.gridLine }}
             tickLine={{ stroke: chartColors.gridLine }}
             tick={{ fill: chartColors.axisText, fontSize: 12 }}
           />
           <Tooltip
+            active={tooltipActive}
+            defaultIndex={tooltipDefaultIndex}
             content={({ active, payload, label }) => {
               const datum = payload?.[0]?.payload as ChartDatum | undefined
               if (!active || !datum || typeof label !== 'string') return null
@@ -216,7 +252,8 @@ export function SuccessFailureChart({ points, isLoading, bucketSeconds }: Succes
                   noValueLabel={noValueLabel}
                   numberFormatter={numberFormatter}
                   percentFormatter={percentFormatter}
-                  latencyFormatter={latencyFormatter}
+                  latencyMsFormatter={latencyMsFormatter}
+                  localeTag={localeTag}
                   tooltipBg={chartColors.tooltipBg}
                   tooltipBorder={chartColors.tooltipBorder}
                   axisText={chartColors.axisText}
@@ -246,9 +283,9 @@ export function SuccessFailureChart({ points, isLoading, bucketSeconds }: Succes
           <Line
             yAxisId="latency"
             type="monotone"
-            dataKey="firstByteAvgMs"
+            dataKey="firstResponseByteTotalAvgMs"
             name={t('stats.successFailure.legend.firstByteAvg')}
-            stroke={chartColors.firstByteAvg}
+            stroke={chartColors.firstResponseByteTotalAvg}
             strokeWidth={2}
             dot={false}
             connectNulls={false}

@@ -124,6 +124,30 @@ const records: ApiInvocation[] = [
   },
 ]
 
+const missingWindowDrawerRecords: ApiInvocation[] = [
+  {
+    id: 1023,
+    invokeId: 'inv_storybook_missing_window_drawer',
+    occurredAt: '2026-03-16T10:25:00Z',
+    createdAt: '2026-03-16T10:25:00Z',
+    source: 'proxy',
+    routeMode: 'pool',
+    upstreamAccountId: 23,
+    upstreamAccountName: 'Team key - missing weekly limit',
+    proxyDisplayName: 'Tokyo-Edge-Quota-Mock',
+    responseContentEncoding: 'gzip',
+    endpoint: '/v1/responses',
+    model: 'gpt-5.4',
+    status: 'success',
+    inputTokens: 1410,
+    outputTokens: 188,
+    totalTokens: 1598,
+    cost: 0.0042,
+    tUpstreamTtfbMs: 121.4,
+    tTotalMs: 688.3,
+  },
+]
+
 const accountProxySemanticsRecords: ApiInvocation[] = [
   {
     id: 3001,
@@ -828,6 +852,78 @@ const accountDetails = new Map<number, UpstreamAccountDetail>([
       note: null,
       upstreamBaseUrl: null,
       history: [],
+    },
+  ],
+  [
+    23,
+    {
+      id: 23,
+      kind: 'api_key',
+      provider: 'openai',
+      displayName: 'Team key - missing weekly limit',
+      groupName: 'quota-fallback',
+      isMother: false,
+      status: 'active',
+      enabled: true,
+      email: null,
+      chatgptAccountId: null,
+      chatgptUserId: null,
+      planType: 'team',
+      maskedApiKey: 'sk-live••••••missing',
+      lastSyncedAt: '2026-03-16T10:20:00Z',
+      lastSuccessfulSyncAt: '2026-03-16T10:19:00Z',
+      lastError: null,
+      lastErrorAt: null,
+      tokenExpiresAt: null,
+      lastRefreshedAt: '2026-03-16T10:19:30Z',
+      primaryWindow: {
+        usedPercent: 18,
+        usedText: '18 requests',
+        limitText: '120 requests',
+        resetsAt: '2026-03-16T13:00:00Z',
+        windowDurationMins: 300,
+      },
+      secondaryWindow: null,
+      credits: null,
+      localLimits: {
+        primaryLimit: 120,
+        secondaryLimit: null,
+        limitUnit: 'requests',
+      },
+      duplicateInfo: null,
+      tags: [],
+      effectiveRoutingRule: {
+        guardEnabled: false,
+        lookbackHours: null,
+        maxConversations: null,
+        allowCutOut: true,
+        allowCutIn: true,
+        sourceTagIds: [],
+        sourceTagNames: [],
+        guardRules: [],
+      },
+      note: 'Secondary quota window is intentionally missing in this story.',
+      upstreamBaseUrl: null,
+      history: [
+        {
+          capturedAt: '2026-03-16T04:00:00Z',
+          primaryUsedPercent: 12,
+          secondaryUsedPercent: null,
+          creditsBalance: null,
+        },
+        {
+          capturedAt: '2026-03-16T08:00:00Z',
+          primaryUsedPercent: 15,
+          secondaryUsedPercent: null,
+          creditsBalance: null,
+        },
+        {
+          capturedAt: '2026-03-16T10:00:00Z',
+          primaryUsedPercent: 18,
+          secondaryUsedPercent: null,
+          creditsBalance: null,
+        },
+      ],
     },
   ],
 ])
@@ -1735,6 +1831,37 @@ export const AccountDrawer: Story = {
     await userEvent.click(within(dialog).getByRole('tab', { name: /健康|health/i }))
     await expect(within(dialog).getByText(/Two upstream 429 responses were observed during the latest compact capability probe\./i)).toBeInTheDocument()
     await expect(within(dialog).getByText(/去号池查看完整详情|Open in account pool/i)).toBeInTheDocument()
+  },
+}
+
+export const MissingWindowPlaceholders: Story = {
+  args: {
+    records: missingWindowDrawerRecords,
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Opens the current-page read-only account drawer for an account whose weekly quota window is missing, so the overview usage cards can be reviewed in placeholder mode without conflating it with a real `0%` snapshot.',
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const documentScope = within(canvasElement.ownerDocument.body)
+    await userEvent.click(
+      await canvas.findByRole('button', { name: 'Team key - missing weekly limit' }),
+    )
+    const dialog = await documentScope.findByRole('dialog', {
+      name: /Team key - missing weekly limit/i,
+    })
+    await expect(within(dialog).getByText(/18 requests/i)).toBeInTheDocument()
+    expect(within(dialog).getAllByText('-').length).toBeGreaterThanOrEqual(4)
+    await expect(
+      within(dialog).queryByText(/还没有额度历史|No quota history yet/i),
+    ).not.toBeInTheDocument()
   },
 }
 

@@ -199,6 +199,11 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.actions.openDetails": "Open details",
     "accountPool.upstreamAccounts.actions.dismissDuplicateWarning":
       "Dismiss warning",
+    "accountPool.upstreamAccounts.partialSuccess.title": "Saved with follow-up warning",
+    "accountPool.upstreamAccounts.partialSuccess.createdButGroupSettingsFailed":
+      "The account was created, but saving the draft group settings failed: {error}",
+    "accountPool.upstreamAccounts.partialSuccess.savedButGroupSettingsFailed":
+      "The account was saved, but persisting the draft group settings failed: {error}",
     "accountPool.upstreamAccounts.actions.closeDetails": "Close details",
     "accountPool.upstreamAccounts.groupFilterLabel": "Account groups",
     "accountPool.upstreamAccounts.groupFilter.all": "All groups",
@@ -213,10 +218,28 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.statusFilter.all": "All statuses",
     "accountPool.upstreamAccounts.workStatusFilterLabel": "Work status",
     "accountPool.upstreamAccounts.workStatusFilter.all": "All work statuses",
+    "accountPool.upstreamAccounts.workStatusFilter.searchPlaceholder":
+      "Search work statuses...",
+    "accountPool.upstreamAccounts.workStatusFilter.empty":
+      "No matching work statuses.",
+    "accountPool.upstreamAccounts.workStatusFilter.clear":
+      "Clear work status filters",
     "accountPool.upstreamAccounts.enableStatusFilterLabel": "Enable status",
     "accountPool.upstreamAccounts.enableStatusFilter.all": "All enable statuses",
+    "accountPool.upstreamAccounts.enableStatusFilter.searchPlaceholder":
+      "Search enable statuses...",
+    "accountPool.upstreamAccounts.enableStatusFilter.empty":
+      "No matching enable statuses.",
+    "accountPool.upstreamAccounts.enableStatusFilter.clear":
+      "Clear enable status filters",
     "accountPool.upstreamAccounts.healthStatusFilterLabel": "Account health",
     "accountPool.upstreamAccounts.healthStatusFilter.all": "All account health statuses",
+    "accountPool.upstreamAccounts.healthStatusFilter.searchPlaceholder":
+      "Search account health statuses...",
+    "accountPool.upstreamAccounts.healthStatusFilter.empty":
+      "No matching account health statuses.",
+    "accountPool.upstreamAccounts.healthStatusFilter.clear":
+      "Clear account health filters",
     "accountPool.upstreamAccounts.tagFilterLabel": "Account tags",
     "accountPool.upstreamAccounts.tagFilterPlaceholder": "All tags",
     "accountPool.upstreamAccounts.tagFilterSearchPlaceholder": "Search tags...",
@@ -376,6 +399,10 @@ const baseTranslations = {
       "Copy OAuth URL",
     "accountPool.upstreamAccounts.batchOauth.tooltip.copyBody":
       "Copy the generated login URL, open it in the browser that will complete the login, and return here with the callback URL.",
+    "accountPool.upstreamAccounts.batchOauth.oauthAction.remaining":
+      "Current link expires in {{time}}.",
+    "accountPool.upstreamAccounts.batchOauth.oauthAction.expiresAt":
+      "Expires at {{timestamp}}.",
     "accountPool.upstreamAccounts.batchOauth.tooltip.copyCodeTitle":
       "Copy verification code",
     "accountPool.upstreamAccounts.batchOauth.tooltip.editMailboxTitle":
@@ -1124,10 +1151,10 @@ const baseTranslations = {
     "stats.settlementHour": "Settlement hour",
     "stats.trendTitle": "Trend",
     "stats.successFailureTitle": "Success vs failures",
-    "stats.successFailure.legend.firstByteAvg": "First byte avg (ms)",
+    "stats.successFailure.legend.firstByteAvg": "System to first byte avg",
     "stats.successFailure.tooltip.successRate": "Success rate",
-    "stats.successFailure.tooltip.firstByteAvg": "First byte avg",
-    "stats.successFailure.tooltip.firstByteP95": "First byte P95",
+    "stats.successFailure.tooltip.firstByteAvg": "System to first byte avg",
+    "stats.successFailure.tooltip.firstByteP95": "System to first byte P95",
     "stats.errors.title": "Error reasons",
     "stats.errors.scope.label": "Failure scope",
     "stats.errors.scope.service": "Service failures",
@@ -1161,7 +1188,7 @@ const baseTranslations = {
     "live.window.label": "Window size",
     "live.option.records": "{{count}} records",
     "live.latest.title": "Latest records",
-    "live.conversations.title": "Prompt Cache Key conversations",
+    "live.conversations.title": "Conversations",
     "live.conversations.description":
       "Group requests by Prompt Cache Key. Filter by conversation count or recent activity window, while totals remain full-history metrics.",
     "live.conversations.selectionLabel": "Conversation filter",
@@ -1173,7 +1200,7 @@ const baseTranslations = {
     "live.conversations.option.count": "{{count}} conversations",
     "live.conversations.option.activityHours":
       "Active in last {{hours}} hour(s)",
-    "live.conversations.empty": "No prompt cache key conversations yet.",
+    "live.conversations.empty": "No conversations available.",
     "live.conversations.implicitFilter.inactiveOutside24h":
       "{{count}} newer conversation(s) were hidden because count mode only includes conversations active in the last 24 hours.",
     "live.conversations.implicitFilter.cappedTo50":
@@ -1704,6 +1731,11 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.actions.enable": "启用",
     "accountPool.upstreamAccounts.actions.openDetails": "打开详情",
     "accountPool.upstreamAccounts.actions.dismissDuplicateWarning": "收起提示",
+    "accountPool.upstreamAccounts.partialSuccess.title": "保存成功，但后续步骤有警告",
+    "accountPool.upstreamAccounts.partialSuccess.createdButGroupSettingsFailed":
+      "账号已创建，但保存分组草稿设置失败：{error}",
+    "accountPool.upstreamAccounts.partialSuccess.savedButGroupSettingsFailed":
+      "账号已保存，但持久化分组草稿设置失败：{error}",
     "accountPool.upstreamAccounts.actions.closeDetails": "关闭详情",
     "accountPool.upstreamAccounts.groupFilterLabel": "账号分组",
     "accountPool.upstreamAccounts.groupFilter.all": "全部分组",
@@ -1717,10 +1749,19 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.statusFilter.all": "全部状态",
     "accountPool.upstreamAccounts.workStatusFilterLabel": "工作状态",
     "accountPool.upstreamAccounts.workStatusFilter.all": "全部工作状态",
+    "accountPool.upstreamAccounts.workStatusFilter.searchPlaceholder": "搜索工作状态...",
+    "accountPool.upstreamAccounts.workStatusFilter.empty": "没有匹配的工作状态。",
+    "accountPool.upstreamAccounts.workStatusFilter.clear": "清空工作状态筛选",
     "accountPool.upstreamAccounts.enableStatusFilterLabel": "启用状态",
     "accountPool.upstreamAccounts.enableStatusFilter.all": "全部启用状态",
+    "accountPool.upstreamAccounts.enableStatusFilter.searchPlaceholder": "搜索启用状态...",
+    "accountPool.upstreamAccounts.enableStatusFilter.empty": "没有匹配的启用状态。",
+    "accountPool.upstreamAccounts.enableStatusFilter.clear": "清空启用状态筛选",
     "accountPool.upstreamAccounts.healthStatusFilterLabel": "账号状态",
     "accountPool.upstreamAccounts.healthStatusFilter.all": "全部账号状态",
+    "accountPool.upstreamAccounts.healthStatusFilter.searchPlaceholder": "搜索账号状态...",
+    "accountPool.upstreamAccounts.healthStatusFilter.empty": "没有匹配的账号状态。",
+    "accountPool.upstreamAccounts.healthStatusFilter.clear": "清空账号状态筛选",
     "accountPool.upstreamAccounts.tagFilterLabel": "账号标签",
     "accountPool.upstreamAccounts.tagFilterPlaceholder": "全部标签",
     "accountPool.upstreamAccounts.tagFilterSearchPlaceholder": "搜索标签...",
@@ -1862,6 +1903,10 @@ const baseTranslations = {
       "复制 OAuth 地址",
     "accountPool.upstreamAccounts.batchOauth.tooltip.copyBody":
       "把当前登录链接复制出去，在要完成登录的浏览器中打开；登录完成后，再把回调链接粘贴回这一行。",
+    "accountPool.upstreamAccounts.batchOauth.oauthAction.remaining":
+      "当前链接剩余有效时间：{{time}}。",
+    "accountPool.upstreamAccounts.batchOauth.oauthAction.expiresAt":
+      "过期时间：{{timestamp}}。",
     "accountPool.upstreamAccounts.batchOauth.tooltip.copyCodeTitle":
       "复制验证码",
     "accountPool.upstreamAccounts.batchOauth.tooltip.editMailboxTitle":
@@ -2556,10 +2601,10 @@ const baseTranslations = {
     "stats.settlementHour": "结算小时",
     "stats.trendTitle": "趋势",
     "stats.successFailureTitle": "成功/失败次数",
-    "stats.successFailure.legend.firstByteAvg": "首字耗时均值（ms）",
+    "stats.successFailure.legend.firstByteAvg": "首字总耗时均值",
     "stats.successFailure.tooltip.successRate": "成功率",
-    "stats.successFailure.tooltip.firstByteAvg": "首字耗时均值",
-    "stats.successFailure.tooltip.firstByteP95": "首字耗时 P95",
+    "stats.successFailure.tooltip.firstByteAvg": "首字总耗时均值",
+    "stats.successFailure.tooltip.firstByteP95": "首字总耗时 P95",
     "stats.errors.title": "错误原因分布",
     "stats.errors.scope.label": "失败范围",
     "stats.errors.scope.service": "服务端故障",
@@ -2593,7 +2638,7 @@ const baseTranslations = {
     "live.window.label": "窗口大小",
     "live.option.records": "{{count}} 条记录",
     "live.latest.title": "最新记录",
-    "live.conversations.title": "Prompt Cache Key 对话",
+    "live.conversations.title": "对话",
     "live.conversations.description":
       "按 Prompt Cache Key 聚合对话，可按数量或最近活动时间筛选，累计指标按全历史计算。",
     "live.conversations.selectionLabel": "对话筛选",
@@ -2604,7 +2649,7 @@ const baseTranslations = {
     "live.conversations.actions.openHistory": "打开全部调用记录",
     "live.conversations.option.count": "{{count}} 个对话",
     "live.conversations.option.activityHours": "近 {{hours}} 小时活动",
-    "live.conversations.empty": "暂无 Prompt Cache Key 对话数据。",
+    "live.conversations.empty": "暂无对话数据。",
     "live.conversations.implicitFilter.inactiveOutside24h":
       "有 {{count}} 个更新创建的对话因未在近 24 小时活动而未显示；数量模式只统计近 24 小时活跃对话。",
     "live.conversations.implicitFilter.cappedTo50":

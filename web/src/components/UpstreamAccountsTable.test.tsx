@@ -336,6 +336,54 @@ describe('UpstreamAccountsTable', () => {
     expect(html).toContain('truncate whitespace-nowrap')
   })
 
+  it('renders missing secondary windows with weak ASCII placeholders instead of 0%', () => {
+    const html = renderTable([
+      {
+        id: 18,
+        kind: 'api_key_codex',
+        provider: 'codex',
+        displayName: 'Missing weekly limit key',
+        groupName: null,
+        isMother: false,
+        status: 'active',
+        displayStatus: 'active',
+        enabled: true,
+        enableStatus: 'enabled',
+        workStatus: 'idle',
+        healthStatus: 'normal',
+        syncState: 'idle',
+        planType: 'local',
+        lastSuccessfulSyncAt: '2026-03-16T01:55:00.000Z',
+        lastActivityAt: '2026-03-16T02:05:00.000Z',
+        primaryWindow: {
+          usedPercent: 18,
+          usedText: '18 requests',
+          limitText: '120 requests',
+          resetsAt: '2026-03-16T06:55:00.000Z',
+          windowDurationMins: 300,
+        },
+        secondaryWindow: null,
+        credits: null,
+        localLimits: {
+          primaryLimit: 120,
+          secondaryLimit: null,
+          limitUnit: 'requests',
+        },
+        duplicateInfo: null,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
+    ])
+
+    expect(html).toContain('Missing weekly limit key')
+    expect(html).toContain('18 requests')
+    expect(html).toContain('7D')
+    expect((html.match(/>-</g) ?? []).length).toBe(3)
+    expect(html).toContain('text-base-content/55')
+    expect(html).not.toContain('>0%</span>')
+    expect(html).not.toContain('>—<')
+  })
+
   it('renders counted working badges and keeps the rate-limited exception visible', () => {
     const html = renderTable([
       {

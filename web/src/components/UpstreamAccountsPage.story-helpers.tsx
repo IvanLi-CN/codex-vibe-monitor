@@ -979,9 +979,18 @@ function filterAccountsForQuery(store: StoryStore, url: URL) {
     .getAll('tagIds')
     .map((value) => Number(value))
     .filter(Number.isFinite)
-  const workStatus = (url.searchParams.get('workStatus') || '').trim()
-  const enableStatus = (url.searchParams.get('enableStatus') || '').trim()
-  const healthStatus = (url.searchParams.get('healthStatus') || '').trim()
+  const workStatuses = url.searchParams
+    .getAll('workStatus')
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0)
+  const enableStatuses = url.searchParams
+    .getAll('enableStatus')
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0)
+  const healthStatuses = url.searchParams
+    .getAll('healthStatus')
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0)
 
   return store.accounts.filter((account) => {
     const normalizedGroup =
@@ -999,10 +1008,10 @@ function filterAccountsForQuery(store: StoryStore, url: URL) {
         ? normalizedGroup.includes(groupSearch)
         : true
     if (!matchesGroup) return false
-    if (workStatus && derivedWorkStatus !== workStatus) return false
-    if (enableStatus && storyEnableStatus(account) !== enableStatus)
+    if (workStatuses.length > 0 && !workStatuses.includes(derivedWorkStatus)) return false
+    if (enableStatuses.length > 0 && !enableStatuses.includes(storyEnableStatus(account)))
       return false
-    if (healthStatus && derivedHealthStatus !== healthStatus) return false
+    if (healthStatuses.length > 0 && !healthStatuses.includes(derivedHealthStatus)) return false
     if (tagIds.length === 0) return true
     const accountTagIds = new Set(account.tags.map((tag) => tag.id))
     return tagIds.every((tagId) => accountTagIds.has(tagId))
@@ -1231,6 +1240,8 @@ function createStore(): StoryStore {
     storyId?.endsWith('--quota-exhausted-oauth') === true
   const upstreamRejected402Story =
     storyId?.endsWith('--upstream-rejected-402') === true
+  const missingWindowPlaceholdersStory =
+    storyId?.endsWith('--missing-window-placeholders') === true
   const denseRosterStory =
     storyId?.endsWith('--dense-roster') === true ||
     storyId?.endsWith('--operational') === true ||
@@ -1284,29 +1295,53 @@ function createStore(): StoryStore {
   })
   const apiKey = createApiKeyAccount(
     102,
-    compactStory
+    missingWindowPlaceholdersStory
       ? {
-          enabled: false,
-          enableStatus: 'disabled',
-          workStatus: 'idle',
-          healthStatus: 'normal',
-          syncState: 'idle',
-          status: 'disabled',
-          displayStatus: 'disabled',
-          lastError: null,
-          lastErrorAt: null,
-          tags: [
-            compactDefaultTags[0],
-            compactDefaultTags[1],
-            compactDefaultTags[2],
-            compactDefaultTags[3],
-          ],
+          displayName: 'Team key - missing weekly limit',
+          primaryWindow: buildWindow(
+            18,
+            300,
+            '18 requests',
+            '120 requests',
+            '2026-03-11T13:00:00.000Z',
+          ),
+          secondaryWindow: null,
+          localLimits: {
+            primaryLimit: 120,
+            secondaryLimit: null,
+            limitUnit: 'requests',
+          },
+          history: buildHistory(0).map((point) => ({
+            ...point,
+            primaryUsedPercent: 18,
+            secondaryUsedPercent: null,
+            creditsBalance: null,
+          })),
+          note: 'Secondary quota window is intentionally missing in this story.',
         }
-      : tagFilterStory
+      : compactStory
         ? {
-            tags: [compactDefaultTags[0], compactDefaultTags[3]],
+            enabled: false,
+            enableStatus: 'disabled',
+            workStatus: 'idle',
+            healthStatus: 'normal',
+            syncState: 'idle',
+            status: 'disabled',
+            displayStatus: 'disabled',
+            lastError: null,
+            lastErrorAt: null,
+            tags: [
+              compactDefaultTags[0],
+              compactDefaultTags[1],
+              compactDefaultTags[2],
+              compactDefaultTags[3],
+            ],
           }
-        : undefined,
+        : tagFilterStory
+          ? {
+              tags: [compactDefaultTags[0], compactDefaultTags[3]],
+            }
+          : undefined,
   )
   const duplicateOauth = duplicateStory
     ? createOauthAccount(103, {

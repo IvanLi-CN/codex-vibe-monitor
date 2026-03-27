@@ -388,6 +388,32 @@ export const CompactLongLabels: Story = {
   },
 }
 
+export const MissingSecondaryWindow: Story = {
+  args: {
+    items: [
+      {
+        ...items[1],
+        displayName: 'Team key - missing weekly limit',
+        primaryWindow: {
+          usedPercent: 18,
+          usedText: '18 requests',
+          limitText: '120 requests',
+          resetsAt: '2026-03-11T13:00:00.000Z',
+          windowDurationMins: 300,
+        },
+        secondaryWindow: null,
+        localLimits: {
+          primaryLimit: 120,
+          secondaryLimit: null,
+          limitUnit: 'requests',
+        },
+      },
+    ],
+    selectedId: 12,
+    labels: chineseLabels,
+  },
+}
+
 export const AvailabilityBadges: Story = {
   args: {
     items: [
