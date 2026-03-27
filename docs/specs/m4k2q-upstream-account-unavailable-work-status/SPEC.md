@@ -93,7 +93,7 @@
 - `cargo test stale_quota_route_failure_does_not_hide_newer_sync_error`
 - `cargo test blocked_api_key_manual_recovery_does_not_export_as_active_rate_limited`
 - `cargo test oauth_sync_retry_after_refresh_settles_to_needs_reauth_without_stale_syncing`
-- `cd web && bun run test -- src/components/UpstreamAccountsTable.test.tsx src/pages/account-pool/UpstreamAccounts.test.tsx src/lib/api.test.ts`
+- `cd web && bunx vitest run src/components/UpstreamAccountsTable.test.tsx src/pages/account-pool/UpstreamAccounts.test.tsx src/lib/api.test.ts`
 - `cd web && bun run build-storybook`
 
 ## 计划资产（Plan assets）
