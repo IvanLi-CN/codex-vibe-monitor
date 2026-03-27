@@ -16,6 +16,7 @@ const INVOCATION_ROUTE_MODE_SQL: &str =
     "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.routeMode') AS TEXT) END";
 const INVOCATION_UPSTREAM_ACCOUNT_ID_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
 const INVOCATION_UPSTREAM_ACCOUNT_NAME_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountName') AS TEXT) END";
+const INVOCATION_REASONING_EFFORT_SQL: &str = "CASE WHEN json_valid(payload) AND json_type(payload, '$.reasoningEffort') = 'text' THEN json_extract(payload, '$.reasoningEffort') END";
 const INVOCATION_RESPONSE_CONTENT_ENCODING_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.responseContentEncoding') AS TEXT) END";
 const INVOCATION_POOL_ATTEMPT_COUNT_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.poolAttemptCount') AS INTEGER) END";
 const INVOCATION_POOL_DISTINCT_ACCOUNT_COUNT_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.poolDistinctAccountCount') AS INTEGER) END";
@@ -35,12 +36,16 @@ fn build_invocation_select_query() -> QueryBuilder<'static, Sqlite> {
          CASE WHEN json_valid(payload) THEN json_extract(payload, '$.proxyDisplayName') END AS proxy_display_name, \
          model, input_tokens, output_tokens, \
          cache_input_tokens, reasoning_tokens, \
-         CASE WHEN json_valid(payload) THEN json_extract(payload, '$.reasoningEffort') END AS reasoning_effort, \
-         total_tokens, cost, status, error_message, \
-         CASE WHEN json_valid(payload) THEN json_extract(payload, '$.endpoint') END AS endpoint, \
          ",
     );
     query
+        .push(INVOCATION_REASONING_EFFORT_SQL)
+        .push(
+            " AS reasoning_effort, \
+         total_tokens, cost, status, error_message, \
+         CASE WHEN json_valid(payload) THEN json_extract(payload, '$.endpoint') END AS endpoint, \
+         ",
+        )
         .push(INVOCATION_FAILURE_KIND_SQL)
         .push(
             " AS failure_kind, \
@@ -2661,7 +2666,9 @@ pub(crate) async fn query_prompt_cache_conversation_recent_invocations(
         .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
         .push(" AS failure_class, ")
         .push(INVOCATION_ROUTE_MODE_SQL)
-        .push(" AS route_mode, model, COALESCE(total_tokens, 0) AS total_tokens, cost, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, CASE WHEN json_valid(payload) THEN json_extract(payload, '$.reasoningEffort') END AS reasoning_effort, error_message, ")
+        .push(" AS route_mode, model, COALESCE(total_tokens, 0) AS total_tokens, cost, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, ")
+        .push(INVOCATION_REASONING_EFFORT_SQL)
+        .push(" AS reasoning_effort, error_message, ")
         .push(INVOCATION_FAILURE_KIND_SQL)
         .push(" AS failure_kind, CASE WHEN ")
         .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)

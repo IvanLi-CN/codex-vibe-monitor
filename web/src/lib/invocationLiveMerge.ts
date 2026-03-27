@@ -126,29 +126,38 @@ function compareRecordRuntimeProgress(current: ApiInvocation, next: ApiInvocatio
   return 0;
 }
 
-export function choosePreferredInvocationRecord(
+function compareInvocationRecordPreference(
   current: ApiInvocation | undefined,
   next: ApiInvocation,
 ) {
-  if (!current) return next;
+  if (!current) return 1;
 
   const currentRank = recordLifecycleRank(current);
   const nextRank = recordLifecycleRank(next);
   if (nextRank !== currentRank) {
-    return nextRank > currentRank ? next : current;
+    return nextRank > currentRank ? 1 : -1;
   }
 
   const runtimeProgress = compareRecordRuntimeProgress(current, next);
   if (runtimeProgress !== 0) {
-    return runtimeProgress > 0 ? next : current;
+    return runtimeProgress;
   }
 
   const currentScore = recordCompletenessScore(current);
   const nextScore = recordCompletenessScore(next);
   if (nextScore !== currentScore) {
-    return nextScore > currentScore ? next : current;
+    return nextScore > currentScore ? 1 : -1;
   }
 
+  return 0;
+}
+
+export function choosePreferredInvocationRecord(
+  current: ApiInvocation | undefined,
+  next: ApiInvocation,
+) {
+  if (!current) return next;
+  if (compareInvocationRecordPreference(current, next) > 0) return next;
   return current;
 }
 
@@ -250,7 +259,9 @@ export function mergeInvocationRecordCollections(...collections: ApiInvocation[]
     for (const record of records) {
       const key = invocationStableKey(record);
       const current = dedupe.get(key);
-      const preferred = choosePreferredInvocationRecord(current, record);
+      const comparison = compareInvocationRecordPreference(current, record);
+      const preferred =
+        current == null || comparison >= 0 ? record : current;
       const fallback = preferred === record ? current : record;
       dedupe.set(key, mergeInvocationRecordDetails(preferred, fallback));
     }

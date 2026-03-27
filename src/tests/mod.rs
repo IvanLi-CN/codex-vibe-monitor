@@ -25024,6 +25024,13 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
         "gpt-5.4-mini",
     )
     .await;
+    sqlx::query(
+        "UPDATE codex_invocations SET payload = json_set(payload, '$.reasoningEffort', 7) WHERE invoke_id = ?1",
+    )
+    .bind("preview-04")
+    .execute(&state.pool)
+    .await
+    .expect("mark preview-04 reasoning effort as non-text");
     insert_row(
         &state.pool,
         "preview-05",
@@ -25188,6 +25195,7 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
         .expect("id-only preview should be included");
     assert_eq!(id_only.upstream_account_id, Some(202));
     assert_eq!(id_only.upstream_account_name, None);
+    assert_eq!(id_only.reasoning_effort, None);
 
     let failed_preview = conversation
         .recent_invocations
