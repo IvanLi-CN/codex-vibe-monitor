@@ -131,6 +131,7 @@ function createPreview(
     upstreamAccountId: overrides.upstreamAccountId ?? null,
     upstreamAccountName: overrides.upstreamAccountName ?? null,
     endpoint: overrides.endpoint ?? "/v1/responses",
+    requestedServiceTier: overrides.requestedServiceTier,
   };
 }
 
@@ -177,6 +178,9 @@ function Probe({ selection }: { selection: PromptCacheConversationSelection }) {
       </div>
       <div data-testid="preview-count">
         {String(stats?.conversations[0]?.recentInvocations.length ?? 0)}
+      </div>
+      <div data-testid="preview-service-tier">
+        {stats?.conversations[0]?.recentInvocations[0]?.requestedServiceTier ?? ""}
       </div>
       <div data-testid="loading">{isLoading ? "true" : "false"}</div>
       <div data-testid="error">{error ?? ""}</div>
@@ -247,6 +251,25 @@ describe("usePromptCacheConversations", () => {
     expect(text("preview-count")).toBe("1");
 
     await act(async () => {
+      sseMocks.listeners.forEach((listener) => {
+        listener({
+          type: "records",
+          records: [
+            {
+              id: 901,
+              invokeId: "invoke-live-01",
+              occurredAt: "2026-03-10T02:30:00Z",
+              createdAt: "2026-03-10T02:30:00Z",
+              status: "completed",
+              promptCacheKey: "pck-live",
+              totalTokens: 182491,
+              cost: 0.0484,
+              proxyDisplayName: "Proxy Final",
+              requestedServiceTier: "auto",
+            },
+          ],
+        });
+      });
       refresh.resolve(
         createResponse("pck-live", [
           createPreview({
@@ -269,6 +292,7 @@ describe("usePromptCacheConversations", () => {
     expect(text("preview-invoke-id")).toBe("invoke-live-01");
     expect(text("preview-status")).toBe("completed");
     expect(text("preview-count")).toBe("1");
+    expect(text("preview-service-tier")).toBe("auto");
     expect(apiMocks.fetchPromptCacheConversations).toHaveBeenCalledTimes(2);
   });
 });

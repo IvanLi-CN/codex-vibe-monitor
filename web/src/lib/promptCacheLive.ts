@@ -8,7 +8,10 @@ import type {
   PromptCacheConversationUpstreamAccount,
 } from "./api";
 import { invocationStableKey } from "./invocation";
-import { mergeInvocationRecordCollections } from "./invocationLiveMerge";
+import {
+  choosePreferredInvocationRecord,
+  mergeInvocationRecordCollections,
+} from "./invocationLiveMerge";
 
 const PROMPT_CACHE_COUNT_MODE_WINDOW_HOURS = 24;
 const PROMPT_CACHE_ACTIVITY_MODE_LIMIT = 50;
@@ -241,6 +244,85 @@ function mergePromptCacheRequestPoints(
   });
 }
 
+function authoritativePreviewLacksLiveExtras(
+  authoritative: ApiInvocation,
+  live: ApiInvocation,
+) {
+  const hasString = (value: string | null | undefined) =>
+    typeof value === "string" && value.trim().length > 0;
+  const hasNumber = (value: number | null | undefined) =>
+    typeof value === "number" && Number.isFinite(value);
+
+  if (!hasString(authoritative.source) && hasString(live.source)) return true;
+  if (!hasNumber(authoritative.inputTokens) && hasNumber(live.inputTokens)) return true;
+  if (!hasNumber(authoritative.outputTokens) && hasNumber(live.outputTokens)) return true;
+  if (
+    !hasNumber(authoritative.cacheInputTokens) &&
+    hasNumber(live.cacheInputTokens)
+  ) {
+    return true;
+  }
+  if (
+    !hasNumber(authoritative.reasoningTokens) &&
+    hasNumber(live.reasoningTokens)
+  ) {
+    return true;
+  }
+  if (
+    !hasString(authoritative.reasoningEffort) &&
+    hasString(live.reasoningEffort)
+  ) {
+    return true;
+  }
+  if (!hasString(authoritative.errorMessage) && hasString(live.errorMessage)) {
+    return true;
+  }
+  if (!hasString(authoritative.failureKind) && hasString(live.failureKind)) {
+    return true;
+  }
+  if (authoritative.isActionable == null && typeof live.isActionable === "boolean") {
+    return true;
+  }
+  if (
+    !hasString(authoritative.responseContentEncoding) &&
+    hasString(live.responseContentEncoding)
+  ) {
+    return true;
+  }
+  if (
+    !hasString(authoritative.requestedServiceTier) &&
+    hasString(live.requestedServiceTier)
+  ) {
+    return true;
+  }
+  if (!hasString(authoritative.serviceTier) && hasString(live.serviceTier)) {
+    return true;
+  }
+  if (!hasNumber(authoritative.tReqReadMs) && hasNumber(live.tReqReadMs)) return true;
+  if (!hasNumber(authoritative.tReqParseMs) && hasNumber(live.tReqParseMs)) return true;
+  if (
+    !hasNumber(authoritative.tUpstreamConnectMs) &&
+    hasNumber(live.tUpstreamConnectMs)
+  ) {
+    return true;
+  }
+  if (!hasNumber(authoritative.tUpstreamTtfbMs) && hasNumber(live.tUpstreamTtfbMs)) {
+    return true;
+  }
+  if (
+    !hasNumber(authoritative.tUpstreamStreamMs) &&
+    hasNumber(live.tUpstreamStreamMs)
+  ) {
+    return true;
+  }
+  if (!hasNumber(authoritative.tRespParseMs) && hasNumber(live.tRespParseMs)) {
+    return true;
+  }
+  if (!hasNumber(authoritative.tPersistMs) && hasNumber(live.tPersistMs)) return true;
+  if (!hasNumber(authoritative.tTotalMs) && hasNumber(live.tTotalMs)) return true;
+  return false;
+}
+
 function buildOptimisticUpstreamAccounts(
   records: ApiInvocation[],
 ): PromptCacheConversationUpstreamAccount[] {
@@ -377,11 +459,27 @@ export function reconcilePromptCacheLiveRecordMap(
     const conversation = stats.conversations.find(
       (item) => item.promptCacheKey === promptCacheKey,
     );
-    const previewStableKeys = conversation
-      ? getConversationPreviewStableKeys(conversation)
-      : new Set<string>();
+    const authoritativePreviewByKey = new Map<string, ApiInvocation>();
+    if (conversation) {
+      for (const preview of conversation.recentInvocations) {
+        authoritativePreviewByKey.set(
+          invocationStableKey({
+            invokeId: preview.invokeId,
+            occurredAt: preview.occurredAt,
+          }),
+          buildInvocationFromPromptCachePreview(preview),
+        );
+      }
+    }
     const remaining = records.filter(
-      (record) => !previewStableKeys.has(invocationStableKey(record)),
+      (record) => {
+        const authoritative = authoritativePreviewByKey.get(invocationStableKey(record));
+        if (!authoritative) return true;
+        if (authoritativePreviewLacksLiveExtras(authoritative, record)) return true;
+        return (
+          choosePreferredInvocationRecord(authoritative, record) === record
+        );
+      },
     );
     if (remaining.length > 0) {
       next[promptCacheKey] = remaining;

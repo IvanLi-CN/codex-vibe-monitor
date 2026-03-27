@@ -9,6 +9,14 @@ function comparableNumber(value: number | null | undefined) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
+function hasMeaningfulString(value: string | null | undefined) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function hasComparableNumber(value: number | null | undefined) {
+  return comparableNumber(value) !== null;
+}
+
 function recordLifecycleRank(record: ApiInvocation) {
   const status = normalizeStatus(record.status);
   if (status === "running" || status === "pending") return 1;
@@ -17,6 +25,7 @@ function recordLifecycleRank(record: ApiInvocation) {
 
 function recordCompletenessScore(record: ApiInvocation) {
   let score = 0;
+  if (record.source?.trim()) score += 1;
   if (record.model?.trim()) score += 1;
   if (record.proxyDisplayName?.trim()) score += 1;
   if (record.endpoint?.trim()) score += 1;
@@ -30,6 +39,27 @@ function recordCompletenessScore(record: ApiInvocation) {
     score += 1;
   }
   if (record.responseContentEncoding?.trim()) score += 1;
+  if (record.requestedServiceTier?.trim()) score += 1;
+  if (record.serviceTier?.trim()) score += 1;
+  if (record.reasoningEffort?.trim()) score += 1;
+  if (typeof record.inputTokens === "number" && Number.isFinite(record.inputTokens)) {
+    score += 1;
+  }
+  if (typeof record.outputTokens === "number" && Number.isFinite(record.outputTokens)) {
+    score += 1;
+  }
+  if (
+    typeof record.cacheInputTokens === "number" &&
+    Number.isFinite(record.cacheInputTokens)
+  ) {
+    score += 1;
+  }
+  if (
+    typeof record.reasoningTokens === "number" &&
+    Number.isFinite(record.reasoningTokens)
+  ) {
+    score += 1;
+  }
   if (
     typeof record.tUpstreamConnectMs === "number" &&
     Number.isFinite(record.tUpstreamConnectMs) &&
@@ -122,6 +152,90 @@ export function choosePreferredInvocationRecord(
   return current;
 }
 
+function mergeInvocationRecordDetails(
+  preferred: ApiInvocation,
+  fallback: ApiInvocation | undefined,
+) {
+  if (!fallback) return preferred;
+
+  const merged: ApiInvocation = { ...preferred };
+
+  const fillStringFields: Array<keyof ApiInvocation> = [
+    "source",
+    "status",
+    "routeMode",
+    "model",
+    "errorMessage",
+    "failureKind",
+    "failureClass",
+    "endpoint",
+    "upstreamAccountName",
+    "proxyDisplayName",
+    "responseContentEncoding",
+    "requestedServiceTier",
+    "serviceTier",
+    "reasoningEffort",
+    "promptCacheKey",
+    "requesterIp",
+    "upstreamRequestId",
+    "poolAttemptTerminalReason",
+    "upstreamErrorCode",
+    "upstreamErrorMessage",
+  ];
+
+  for (const field of fillStringFields) {
+    const preferredValue = merged[field];
+    const fallbackValue = fallback[field];
+    if (
+      !hasMeaningfulString(
+        typeof preferredValue === "string" ? preferredValue : undefined,
+      ) &&
+      hasMeaningfulString(typeof fallbackValue === "string" ? fallbackValue : undefined)
+    ) {
+      merged[field] = fallbackValue as never;
+    }
+  }
+
+  const fillNumberFields: Array<keyof ApiInvocation> = [
+    "inputTokens",
+    "outputTokens",
+    "cacheInputTokens",
+    "reasoningTokens",
+    "totalTokens",
+    "cost",
+    "upstreamAccountId",
+    "poolAttemptCount",
+    "poolDistinctAccountCount",
+    "tReqReadMs",
+    "tReqParseMs",
+    "tUpstreamConnectMs",
+    "tUpstreamTtfbMs",
+    "tUpstreamStreamMs",
+    "tRespParseMs",
+    "tPersistMs",
+    "tTotalMs",
+  ];
+
+  for (const field of fillNumberFields) {
+    const preferredValue = merged[field];
+    const fallbackValue = fallback[field];
+    if (
+      !hasComparableNumber(
+        typeof preferredValue === "number" ? preferredValue : undefined,
+      ) &&
+      hasComparableNumber(typeof fallbackValue === "number" ? fallbackValue : undefined)
+    ) {
+      merged[field] = fallbackValue as never;
+    }
+  }
+
+  if (merged.isActionable == null && typeof fallback.isActionable === "boolean") {
+    merged.isActionable = fallback.isActionable;
+  }
+
+  return merged;
+}
+
 export function sortInvocationRecords(records: ApiInvocation[]) {
   return [...records].sort(
     (left, right) =>
@@ -135,7 +249,10 @@ export function mergeInvocationRecordCollections(...collections: ApiInvocation[]
   for (const records of collections) {
     for (const record of records) {
       const key = invocationStableKey(record);
-      dedupe.set(key, choosePreferredInvocationRecord(dedupe.get(key), record));
+      const current = dedupe.get(key);
+      const preferred = choosePreferredInvocationRecord(current, record);
+      const fallback = preferred === record ? current : record;
+      dedupe.set(key, mergeInvocationRecordDetails(preferred, fallback));
     }
   }
 
