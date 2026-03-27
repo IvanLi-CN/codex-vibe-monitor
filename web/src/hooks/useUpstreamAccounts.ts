@@ -32,6 +32,7 @@ import {
   type CompleteOauthLoginSessionPayload,
   type CreateOauthLoginSessionPayload,
   type FetchUpstreamAccountsQuery,
+  type ForwardProxyBindingNode,
   type ImportValidatedOauthAccountsPayload,
   type ImportedOauthImportResponse,
   type ImportedOauthValidationJobResponse,
@@ -59,6 +60,7 @@ const DEFAULT_FETCH_UPSTREAM_ACCOUNTS_QUERY: FetchUpstreamAccountsQuery = {}
 export function useUpstreamAccounts(query: FetchUpstreamAccountsQuery = DEFAULT_FETCH_UPSTREAM_ACCOUNTS_QUERY) {
   const [items, setItems] = useState<UpstreamAccountSummary[]>([])
   const [groups, setGroups] = useState<UpstreamAccountGroupSummary[]>([])
+  const [forwardProxyNodes, setForwardProxyNodes] = useState<ForwardProxyBindingNode[]>([])
   const [hasUngroupedAccounts, setHasUngroupedAccounts] = useState(false)
   const [writesEnabled, setWritesEnabled] = useState(true)
   const [routing, setRouting] = useState<PoolRoutingSettings | null>(null)
@@ -139,6 +141,7 @@ export function useUpstreamAccounts(query: FetchUpstreamAccountsQuery = DEFAULT_
 
         setItems(response.items)
         setGroups(response.groups)
+        setForwardProxyNodes(response.forwardProxyNodes ?? [])
         setHasUngroupedAccounts(response.hasUngroupedAccounts)
         setWritesEnabled(response.writesEnabled)
         setRouting(response.routing ?? null)
@@ -513,6 +516,7 @@ export function useUpstreamAccounts(query: FetchUpstreamAccountsQuery = DEFAULT_
   return {
     items,
     groups,
+    forwardProxyNodes,
     hasUngroupedAccounts,
     writesEnabled,
     routing,

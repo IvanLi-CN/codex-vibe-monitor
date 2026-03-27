@@ -4180,11 +4180,9 @@ pub(crate) struct VersionResponse {
 pub(crate) async fn get_settings(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<SettingsResponse>, ApiError> {
-    let proxy = state.proxy_model_settings.read().await.clone();
     let pricing = state.pricing_catalog.read().await.clone();
     let forward_proxy = build_forward_proxy_settings_response(state.as_ref()).await?;
     Ok(Json(SettingsResponse {
-        proxy: proxy.into(),
         forward_proxy,
         pricing: PricingSettingsResponse::from_catalog(&pricing),
     }))
@@ -4193,7 +4191,7 @@ pub(crate) async fn get_settings(
 pub(crate) async fn removed_proxy_model_settings_endpoint() -> (StatusCode, &'static str) {
     (
         StatusCode::NOT_FOUND,
-        "endpoint removed; use /api/settings and /api/settings/proxy",
+        "endpoint removed; legacy reverse proxy settings are no longer supported",
     )
 }
 

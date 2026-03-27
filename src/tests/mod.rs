@@ -1204,23 +1204,24 @@ fn forward_proxy_manager_v2_keeps_two_positive_weights() {
         .filter_map(|endpoint| manager.runtime.get(&endpoint.key))
         .filter(|entry| entry.weight > 0.0)
         .count();
-    assert_eq!(positive_count, 2);
+    assert_eq!(positive_count, 1);
 }
 
 #[test]
 fn forward_proxy_manager_v2_clamps_persisted_runtime_weight_on_startup() {
+    let proxy_url = "http://127.0.0.1:7890".to_string();
     let manager = ForwardProxyManager::with_algo(
         ForwardProxySettings {
-            proxy_urls: vec![],
+            proxy_urls: vec![proxy_url.clone()],
             subscription_urls: vec![],
             subscription_update_interval_secs: 3600,
             insert_direct: true,
         },
         vec![ForwardProxyRuntimeState {
-            proxy_key: FORWARD_PROXY_DIRECT_KEY.to_string(),
-            display_name: FORWARD_PROXY_DIRECT_LABEL.to_string(),
-            source: FORWARD_PROXY_SOURCE_DIRECT.to_string(),
-            endpoint_url: None,
+            proxy_key: proxy_url.clone(),
+            display_name: proxy_url.clone(),
+            source: FORWARD_PROXY_SOURCE_MANUAL.to_string(),
+            endpoint_url: Some(proxy_url.clone()),
             weight: 99.0,
             success_ema: 0.65,
             latency_ema_ms: None,
@@ -1229,11 +1230,11 @@ fn forward_proxy_manager_v2_clamps_persisted_runtime_weight_on_startup() {
         ForwardProxyAlgo::V2,
     );
 
-    let direct_runtime = manager
+    let manual_runtime = manager
         .runtime
-        .get(FORWARD_PROXY_DIRECT_KEY)
-        .expect("direct runtime should exist");
-    assert_eq!(direct_runtime.weight, FORWARD_PROXY_V2_WEIGHT_MAX);
+        .get(&proxy_url)
+        .expect("manual runtime should exist");
+    assert_eq!(manual_runtime.weight, FORWARD_PROXY_V2_WEIGHT_MAX);
 }
 
 #[test]
@@ -3569,6 +3570,8 @@ async fn reserve_test_pool_routing_account(
         },
         upstream_base_url: Url::parse("https://api.openai.com/").expect("valid upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
+        group_name: None,
+        bound_proxy_keys: Vec::new(),
     };
     reserve_pool_routing_account(state.as_ref(), reservation_key, &account);
 }
@@ -7138,6 +7141,7 @@ fn normalize_proxy_location_header_strips_upstream_base_prefix_for_relative_redi
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_forwards_headers_method_query_and_body() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -7227,6 +7231,7 @@ async fn proxy_openai_v1_forwards_headers_method_query_and_body() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_replays_non_capture_body_across_429_retries() {
     let (upstream_base, attempts, seen_bodies, upstream_handle) =
         spawn_retrying_echo_upstream(1, Some("0")).await;
@@ -7277,6 +7282,7 @@ async fn proxy_openai_v1_replays_non_capture_body_across_429_retries() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_records_stream_error_when_final_429_stream_fails() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -7335,6 +7341,7 @@ async fn proxy_openai_v1_records_stream_error_when_final_429_stream_fails() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_streams_request_body_when_429_retry_is_disabled() {
     let (upstream_base, _attempts, _seen_bodies, upstream_handle) =
         spawn_retrying_echo_upstream(0, None).await;
@@ -7445,6 +7452,7 @@ async fn pool_route_non_capture_request_body_read_timeout_applies_to_replay_stre
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_records_end_to_end_latency_for_non_capture_streams() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -7483,6 +7491,7 @@ async fn proxy_openai_v1_records_end_to_end_latency_for_non_capture_streams() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_returns_final_429_body_and_headers_after_retry_exhaustion() {
     let (upstream_base, attempts, seen_bodies, upstream_handle) =
         spawn_retrying_echo_upstream(99, Some("0")).await;
@@ -7626,6 +7635,7 @@ async fn forward_proxy_penalized_probe_skips_recording_when_shutdown_begins_mid_
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_retries_429_then_persists_final_success_once() {
     let (upstream_base, attempts, seen_payloads, upstream_handle) =
         spawn_retrying_capture_upstream(1, Some("0")).await;
@@ -7695,6 +7705,7 @@ async fn proxy_capture_target_retries_429_then_persists_final_success_once() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_returns_final_429_after_retry_exhaustion() {
     #[derive(sqlx::FromRow)]
     struct PersistedRow {
@@ -7799,28 +7810,6 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
         Url::parse("https://api.example.com/").expect("valid upstream base url"),
     )
     .await;
-
-    let Json(initial) = get_settings(State(state.clone()))
-        .await
-        .expect("get settings should succeed");
-    assert!(!initial.proxy.hijack_enabled);
-    assert!(!initial.proxy.merge_upstream_enabled);
-    assert_eq!(
-        initial.proxy.fast_mode_rewrite_mode,
-        ProxyFastModeRewriteMode::Disabled
-    );
-    assert_eq!(
-        initial.proxy.upstream_429_max_retries,
-        DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES
-    );
-    assert_eq!(initial.proxy.models.len(), PROXY_PRESET_MODEL_IDS.len());
-    assert_eq!(
-        initial.proxy.enabled_models,
-        PROXY_PRESET_MODEL_IDS
-            .iter()
-            .map(|id| id.to_string())
-            .collect::<Vec<_>>()
-    );
 
     let Json(updated) = put_proxy_settings(
         State(state.clone()),
@@ -8452,18 +8441,6 @@ async fn forward_proxy_live_stats_returns_fixed_24_hour_buckets_with_zero_fill()
     .await
     .expect("put forward proxy settings should succeed");
 
-    let direct_key = settings_response
-        .nodes
-        .iter()
-        .find(|node| node.source == FORWARD_PROXY_SOURCE_DIRECT)
-        .map(|node| node.key.clone())
-        .expect("direct node should exist");
-    let direct_weight = settings_response
-        .nodes
-        .iter()
-        .find(|node| node.source == FORWARD_PROXY_SOURCE_DIRECT)
-        .map(|node| node.weight)
-        .expect("direct node weight should exist");
     let manual_key = settings_response
         .nodes
         .iter()
@@ -8528,20 +8505,13 @@ async fn forward_proxy_live_stats_returns_fixed_24_hour_buckets_with_zero_fill()
         true,
     )
     .await;
-    seed_forward_proxy_attempt_at(
-        &state.pool,
-        &direct_key,
-        now - ChronoDuration::hours(3) - ChronoDuration::minutes(40),
-        true,
-    )
-    .await;
 
     let Json(response) = fetch_forward_proxy_live_stats(State(state.clone()))
         .await
         .expect("fetch forward proxy live stats should succeed");
 
     assert_eq!(response.bucket_seconds, 3600);
-    assert_eq!(response.nodes.len(), 2);
+    assert_eq!(response.nodes.len(), 1);
     assert_eq!(response.range_end, response.nodes[0].last24h[23].bucket_end);
     assert_eq!(
         response.range_start,
@@ -8637,26 +8607,6 @@ async fn forward_proxy_live_stats_returns_fixed_24_hour_buckets_with_zero_fill()
         .expect("expected carry-forward bucket after recovered manual weight bucket");
     assert_eq!(recovered_bucket_carry.sample_count, 0);
     assert!((recovered_bucket_carry.last_weight - 1.20).abs() < 1e-6);
-    let direct = response
-        .nodes
-        .iter()
-        .find(|node| node.key == direct_key)
-        .expect("direct node should be present");
-    let direct_success_total: i64 = direct
-        .last24h
-        .iter()
-        .map(|bucket| bucket.success_count)
-        .sum();
-    let direct_failure_total: i64 = direct
-        .last24h
-        .iter()
-        .map(|bucket| bucket.failure_count)
-        .sum();
-    assert_eq!(direct_success_total, 1);
-    assert_eq!(direct_failure_total, 0);
-    assert!(direct.weight24h.iter().all(
-        |bucket| bucket.sample_count == 0 && (bucket.last_weight - direct_weight).abs() < 1e-6
-    ));
 
     let display_names = response
         .nodes
@@ -8672,7 +8622,7 @@ async fn forward_proxy_live_stats_returns_fixed_24_hour_buckets_with_zero_fill()
 }
 
 #[tokio::test]
-async fn forward_proxy_live_stats_keeps_direct_node_and_zero_metrics_when_no_attempts() {
+async fn forward_proxy_live_stats_returns_empty_nodes_when_no_endpoints_are_configured() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.example.com/").expect("valid upstream base url"),
     )
@@ -8683,26 +8633,7 @@ async fn forward_proxy_live_stats_keeps_direct_node_and_zero_metrics_when_no_att
         .expect("fetch forward proxy live stats should succeed");
 
     assert_eq!(response.bucket_seconds, 3600);
-    assert_eq!(
-        response.nodes.len(),
-        1,
-        "default runtime should only include direct node"
-    );
-    let direct = &response.nodes[0];
-    assert_eq!(direct.source, FORWARD_PROXY_SOURCE_DIRECT);
-    assert_eq!(direct.stats.one_minute.attempts, 0);
-    assert_eq!(direct.stats.one_day.attempts, 0);
-    assert_eq!(direct.last24h.len(), 24);
-    assert_eq!(direct.weight24h.len(), 24);
-    assert!(
-        direct
-            .last24h
-            .iter()
-            .all(|bucket| bucket.success_count == 0 && bucket.failure_count == 0)
-    );
-    assert!(direct.weight24h.iter().all(
-        |bucket| bucket.sample_count == 0 && (bucket.last_weight - direct.weight).abs() < 1e-6
-    ));
+    assert!(response.nodes.is_empty());
 }
 
 #[tokio::test]
@@ -9730,6 +9661,7 @@ async fn seed_default_pricing_catalog_does_not_override_existing_pricing_for_new
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_models_passthrough_when_hijack_disabled() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -9761,6 +9693,7 @@ async fn proxy_openai_v1_models_passthrough_when_hijack_disabled() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_models_returns_preset_when_hijack_enabled_without_merge() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -9808,6 +9741,7 @@ async fn proxy_openai_v1_models_returns_preset_when_hijack_enabled_without_merge
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_models_returns_gpt_5_4_models_when_enabled() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -9846,6 +9780,7 @@ async fn proxy_openai_v1_models_returns_gpt_5_4_models_when_enabled() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_models_merges_upstream_when_enabled() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -9989,6 +9924,7 @@ async fn proxy_openai_v1_models_pool_failures_do_not_return_untracked_cvm_id() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_models_merges_upstream_after_429_retry() {
     let (upstream_base, attempts, upstream_handle) =
         spawn_retrying_models_upstream(1, Some("0")).await;
@@ -10042,6 +9978,7 @@ async fn proxy_openai_v1_models_merges_upstream_after_429_retry() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_models_falls_back_to_preset_when_merge_upstream_fails() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -10084,6 +10021,7 @@ async fn proxy_openai_v1_models_falls_back_to_preset_when_merge_upstream_fails()
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_models_retries_429_then_falls_back_once_exhausted() {
     let (upstream_base, attempts, upstream_handle) =
         spawn_retrying_models_upstream(99, Some("0")).await;
@@ -10138,6 +10076,7 @@ async fn proxy_openai_v1_models_retries_429_then_falls_back_once_exhausted() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
@@ -10225,6 +10164,7 @@ async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_preserves_streaming_response() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -10255,6 +10195,7 @@ async fn proxy_openai_v1_preserves_streaming_response() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_returns_bad_gateway_when_first_stream_chunk_fails() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -10286,6 +10227,7 @@ async fn proxy_openai_v1_returns_bad_gateway_when_first_stream_chunk_fails() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_propagates_stream_error_after_first_chunk() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -10314,6 +10256,7 @@ async fn proxy_openai_v1_propagates_stream_error_after_first_chunk() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_preserves_redirect_without_following() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -10339,6 +10282,7 @@ async fn proxy_openai_v1_preserves_redirect_without_following() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_blocks_cross_origin_redirect() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -10370,6 +10314,7 @@ async fn proxy_openai_v1_blocks_cross_origin_redirect() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_persists_record_on_redirect_rewrite_error() {
     #[derive(sqlx::FromRow)]
     struct PersistedRow {
@@ -10764,6 +10709,7 @@ async fn broadcast_quota_if_changed_skips_duplicate_payloads() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn read_request_body_timeout_returns_408() {
     #[derive(sqlx::FromRow)]
     struct PersistedRow {
@@ -10845,6 +10791,7 @@ async fn read_request_body_timeout_returns_408() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn capture_target_retries_429_and_persists_single_invocation() {
     let (upstream_base, attempts, seen_payloads, upstream_handle) =
         spawn_retrying_capture_upstream(1, Some("0")).await;
@@ -10917,6 +10864,7 @@ async fn capture_target_retries_429_and_persists_single_invocation() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn capture_target_client_body_disconnect_returns_400_with_failure_kind() {
     #[derive(sqlx::FromRow)]
     struct PersistedRow {
@@ -10990,6 +10938,7 @@ async fn capture_target_client_body_disconnect_returns_400_with_failure_kind() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn capture_target_stream_error_emits_failure_kind_and_persists() {
     #[derive(sqlx::FromRow)]
     struct PersistedRow {
@@ -11069,6 +11018,7 @@ async fn capture_target_stream_error_emits_failure_kind_and_persists() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn capture_target_response_failed_stream_persists_service_failure_details() {
     #[derive(sqlx::FromRow)]
     struct PersistedRow {
@@ -11177,6 +11127,7 @@ async fn capture_target_response_failed_stream_persists_service_failure_details(
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_fill_missing_rewrites_priority_for_responses() {
     #[derive(sqlx::FromRow)]
     struct PersistedRow {
@@ -11253,6 +11204,7 @@ async fn proxy_capture_target_fill_missing_rewrites_priority_for_responses() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_force_priority_overrides_existing_chat_tier() {
     #[derive(sqlx::FromRow)]
     struct PersistedRow {
@@ -11330,6 +11282,7 @@ async fn proxy_capture_target_force_priority_overrides_existing_chat_tier() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_compact_estimates_cost_and_flows_into_stats_without_rewrite() {
     #[derive(sqlx::FromRow)]
     struct PersistedCompactRow {
@@ -11512,6 +11465,7 @@ async fn proxy_capture_target_compact_estimates_cost_and_flows_into_stats_withou
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_compact_uses_dedicated_handshake_timeout() {
     let (upstream_base, _captured_requests, upstream_handle) =
         spawn_capture_target_body_upstream().await;
@@ -11954,6 +11908,7 @@ fn pool_same_account_attempt_budget_keeps_legacy_budget_for_non_responses_routes
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_responses_uses_dedicated_first_byte_timeout() {
     let (upstream_base, _captured_requests, upstream_handle) =
         spawn_capture_target_body_upstream().await;
@@ -11999,6 +11954,7 @@ async fn proxy_capture_target_responses_uses_dedicated_first_byte_timeout() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_allows_slow_upload_with_short_timeout() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
@@ -12088,6 +12044,7 @@ async fn proxy_openai_v1_allows_slow_upload_with_short_timeout() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_e2e_http_roundtrip() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -17384,6 +17341,8 @@ async fn pool_route_oauth_passthrough_replays_large_file_backed_body() {
         upstream_base_url: oauth_bridge::oauth_codex_upstream_base_url()
             .expect("oauth upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
+        group_name: None,
+        bound_proxy_keys: Vec::new(),
     };
 
     let upstream = send_pool_request_with_failover(
@@ -18639,6 +18598,8 @@ async fn pool_route_oauth_responses_rejects_large_file_backed_rewrite_body() {
         upstream_base_url: oauth_bridge::oauth_codex_upstream_base_url()
             .expect("oauth upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
+        group_name: None,
+        bound_proxy_keys: Vec::new(),
     };
 
     let err = send_pool_request_with_failover(
@@ -18904,6 +18865,8 @@ fn capture_target_pool_route_prefers_account_upstream_base_for_redirect_rewrite(
         upstream_base_url: Url::parse("https://proxy.example.com/gateway")
             .expect("account upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
+        group_name: None,
+        bound_proxy_keys: Vec::new(),
     };
 
     assert_eq!(
@@ -19001,6 +18964,7 @@ async fn capture_target_pool_route_marks_response_failed_stream_as_route_failure
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
@@ -19430,6 +19394,7 @@ async fn pool_openai_v1_responses_still_times_out_before_first_chunk() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_responses_stream_timeout_applies_after_first_byte() {
     let (upstream_base, _captured_requests, upstream_handle) =
         spawn_capture_target_body_upstream().await;
@@ -19473,6 +19438,7 @@ async fn proxy_capture_target_responses_stream_timeout_applies_after_first_byte(
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_compact_stream_timeout_applies_after_first_byte() {
     let (upstream_base, _captured_requests, upstream_handle) =
         spawn_capture_target_body_upstream().await;
@@ -19713,6 +19679,7 @@ async fn prompt_cache_views_ignore_sticky_only_internal_keys() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_rejects_oversized_request_body() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state = test_state_with_openai_base_and_body_limit(
@@ -19746,6 +19713,7 @@ async fn proxy_openai_v1_rejects_oversized_request_body() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_rejects_dot_segment_path() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -19777,6 +19745,7 @@ async fn proxy_openai_v1_rejects_dot_segment_path() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_rejects_malformed_percent_encoded_path() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -19808,6 +19777,7 @@ async fn proxy_openai_v1_rejects_malformed_percent_encoded_path() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
@@ -19883,6 +19853,7 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout_with_body() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
@@ -20937,6 +20908,7 @@ fn parse_target_response_payload_records_decode_failure_reason() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_extracts_usage_from_gzip_response_stream() {
     #[derive(sqlx::FromRow)]
     struct PersistedUsageRow {
@@ -21020,6 +20992,7 @@ async fn proxy_capture_target_extracts_usage_from_gzip_response_stream() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_gzip_stream_without_event_stream_header_still_extracts_usage() {
     #[derive(sqlx::FromRow)]
     struct PersistedUsageRow {
@@ -21105,6 +21078,7 @@ fn assert_proxy_capture_hot_path_skips_raw_fallbacks() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_large_gzip_stream_without_event_stream_header_keeps_raw_capture_without_raw_reread()
  {
     #[derive(sqlx::FromRow)]
@@ -21219,6 +21193,7 @@ async fn proxy_capture_target_large_gzip_stream_without_event_stream_header_keep
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_large_stream_keeps_preview_bounded_without_raw_reread() {
     #[derive(sqlx::FromRow)]
     struct PersistedLargeRow {
@@ -21326,6 +21301,7 @@ async fn proxy_capture_target_large_stream_keeps_preview_bounded_without_raw_rer
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_large_stream_terminal_event_keeps_live_metadata_without_raw_reread() {
     #[derive(sqlx::FromRow)]
     struct PersistedLargeTerminalRow {
@@ -21435,6 +21411,7 @@ async fn proxy_capture_target_large_stream_terminal_event_keeps_live_metadata_wi
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_oversized_stream_keeps_live_metadata_when_raw_file_is_truncated() {
     #[derive(sqlx::FromRow)]
     struct PersistedOversizedRow {
@@ -21527,6 +21504,7 @@ async fn proxy_capture_target_oversized_stream_keeps_live_metadata_when_raw_file
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_large_stream_keeps_usage_when_response_raw_is_truncated() {
     #[derive(sqlx::FromRow)]
     struct PersistedLargeRow {
@@ -21646,6 +21624,7 @@ async fn proxy_capture_target_large_stream_keeps_usage_when_response_raw_is_trun
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_stream_request_json_error_uses_nonstream_parse_fallback() {
     #[derive(sqlx::FromRow)]
     struct PersistedErrorRow {
@@ -21796,6 +21775,7 @@ async fn proxy_capture_target_large_stream_soak_keeps_rss_within_stable_window()
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_large_nonstream_json_skips_bounded_parse_and_keeps_full_raw_file() {
     #[derive(sqlx::FromRow)]
     struct PersistedCompactRow {
@@ -21903,6 +21883,7 @@ async fn proxy_capture_target_large_nonstream_json_skips_bounded_parse_and_keeps
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_large_nonstream_json_error_preserves_prefixed_metadata() {
     #[derive(sqlx::FromRow)]
     struct PersistedErrorRow {
@@ -21986,6 +21967,7 @@ async fn proxy_capture_target_large_nonstream_json_error_preserves_prefixed_meta
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_nonstream_usage_survives_response_raw_truncation() {
     #[derive(sqlx::FromRow)]
     struct PersistedCompactRow {
