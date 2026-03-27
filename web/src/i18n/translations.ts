@@ -870,6 +870,8 @@ const baseTranslations = {
       "Unknown",
     "accountPool.upstreamAccounts.latestAction.actions.route_recovered":
       "Route recovered",
+    "accountPool.upstreamAccounts.latestAction.actions.route_retryable_failure":
+      "Temporary upstream failure",
     "accountPool.upstreamAccounts.latestAction.actions.route_cooldown_started":
       "Route cooldown",
     "accountPool.upstreamAccounts.latestAction.actions.route_hard_unavailable":
@@ -909,6 +911,8 @@ const baseTranslations = {
       "Manual recovery is required before the account can return to routing",
     "accountPool.upstreamAccounts.latestAction.reasons.transport_failure":
       "Transport failure",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_server_overloaded":
+      "Upstream is temporarily overloaded",
     "accountPool.upstreamAccounts.latestAction.reasons.reauth_required":
       "Reauthentication required",
     "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_401":
@@ -2336,6 +2340,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.latestAction.fields.message": "消息",
     "accountPool.upstreamAccounts.latestAction.actions.route_recovered":
       "路由恢复成功",
+    "accountPool.upstreamAccounts.latestAction.actions.route_retryable_failure":
+      "临时上游失败",
     "accountPool.upstreamAccounts.latestAction.actions.route_cooldown_started":
       "进入冷却",
     "accountPool.upstreamAccounts.latestAction.actions.route_hard_unavailable":
@@ -2373,6 +2379,8 @@ const baseTranslations = {
       "账号返回路由前仍需要人工恢复",
     "accountPool.upstreamAccounts.latestAction.reasons.transport_failure":
       "网络或传输失败",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_server_overloaded":
+      "上游暂时过载",
     "accountPool.upstreamAccounts.latestAction.reasons.reauth_required":
       "需要重新登录",
     "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_401":

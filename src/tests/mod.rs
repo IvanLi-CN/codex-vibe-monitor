@@ -12124,6 +12124,17 @@ struct PoolFirstChunkRetryUpstreamState {
 }
 
 #[derive(Clone)]
+struct PoolResponseFailedRetryUpstreamState {
+    attempts: Arc<StdMutex<HashMap<String, usize>>>,
+    fail_before_success: Arc<HashMap<String, usize>>,
+}
+
+#[derive(Clone)]
+struct PoolLateResponseFailedUpstreamState {
+    attempts: Arc<StdMutex<HashMap<String, usize>>>,
+}
+
+#[derive(Clone)]
 struct PoolDelayedFirstChunkUpstreamState {
     first_chunk_delay: Duration,
 }
@@ -12431,6 +12442,101 @@ async fn pool_first_chunk_retry_upstream(
             "authorization": authorization,
             "attempt": attempt,
         })),
+    )
+        .into_response()
+}
+
+async fn pool_response_failed_retry_upstream(
+    State(state): State<PoolResponseFailedRetryUpstreamState>,
+    headers: HeaderMap,
+) -> Response {
+    let authorization = headers
+        .get(http_header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+
+    let attempt = {
+        let mut attempts = state
+            .attempts
+            .lock()
+            .expect("lock pool response.failed retry attempts");
+        let entry = attempts.entry(authorization.clone()).or_insert(0);
+        *entry += 1;
+        *entry
+    };
+
+    if attempt
+        <= state
+            .fail_before_success
+            .get(&authorization)
+            .copied()
+            .unwrap_or(0)
+    {
+        let payload = [
+            "event: response.failed\n",
+            r#"data: {"type":"response.failed","response":{"id":"resp_overloaded_retry","model":"gpt-5.4","status":"failed","error":{"code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}}"#,
+            "\n\n",
+        ]
+        .concat();
+        return (
+            StatusCode::OK,
+            [(
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("text/event-stream"),
+            )],
+            Body::from(payload),
+        )
+            .into_response();
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "ok": true,
+            "authorization": authorization,
+            "attempt": attempt,
+        })),
+    )
+        .into_response()
+}
+
+async fn pool_late_response_failed_upstream(
+    State(state): State<PoolLateResponseFailedUpstreamState>,
+    headers: HeaderMap,
+) -> Response {
+    let authorization = headers
+        .get(http_header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+
+    {
+        let mut attempts = state
+            .attempts
+            .lock()
+            .expect("lock pool late response.failed attempts");
+        let entry = attempts.entry(authorization).or_insert(0);
+        *entry += 1;
+    }
+
+    let payload = [
+        "event: response.created\n",
+        r#"data: {"type":"response.created","response":{"id":"resp_overloaded_late","model":"gpt-5.4","status":"in_progress"}}"#,
+        "\n\n",
+        "event: response.failed\n",
+        r#"data: {"type":"response.failed","response":{"id":"resp_overloaded_late","model":"gpt-5.4","status":"failed","error":{"code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}}"#,
+        "\n\n",
+    ]
+    .concat();
+
+    (
+        StatusCode::OK,
+        [(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("text/event-stream"),
+        )],
+        Body::from(payload),
     )
         .into_response()
 }
@@ -13066,6 +13172,65 @@ async fn spawn_pool_first_chunk_retry_upstream(
         axum::serve(listener, app)
             .await
             .expect("pool first chunk retry upstream should run");
+    });
+    (format!("http://{addr}"), attempts, handle)
+}
+
+async fn spawn_pool_response_failed_retry_upstream(
+    fail_before_success: &[(&str, usize)],
+) -> (
+    String,
+    Arc<StdMutex<HashMap<String, usize>>>,
+    JoinHandle<()>,
+) {
+    let attempts = Arc::new(StdMutex::new(HashMap::new()));
+    let fail_before_success = Arc::new(
+        fail_before_success
+            .iter()
+            .map(|(authorization, failures)| ((*authorization).to_string(), *failures))
+            .collect::<HashMap<_, _>>(),
+    );
+    let app = Router::new()
+        .route("/v1/responses", post(pool_response_failed_retry_upstream))
+        .with_state(PoolResponseFailedRetryUpstreamState {
+            attempts: attempts.clone(),
+            fail_before_success,
+        });
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind pool response.failed retry upstream");
+    let addr = listener
+        .local_addr()
+        .expect("pool response.failed retry upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("pool response.failed retry upstream should run");
+    });
+    (format!("http://{addr}"), attempts, handle)
+}
+
+async fn spawn_pool_late_response_failed_upstream() -> (
+    String,
+    Arc<StdMutex<HashMap<String, usize>>>,
+    JoinHandle<()>,
+) {
+    let attempts = Arc::new(StdMutex::new(HashMap::new()));
+    let app = Router::new()
+        .route("/v1/responses", post(pool_late_response_failed_upstream))
+        .with_state(PoolLateResponseFailedUpstreamState {
+            attempts: attempts.clone(),
+        });
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind pool late response.failed upstream");
+    let addr = listener
+        .local_addr()
+        .expect("pool late response.failed upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("pool late response.failed upstream should run");
     });
     (format!("http://{addr}"), attempts, handle)
 }
@@ -17073,6 +17238,141 @@ async fn pool_openai_v1_responses_stream_timeout_does_not_cap_same_account_retry
 }
 
 #[tokio::test]
+async fn pool_openai_v1_responses_retries_same_account_on_server_overloaded_before_forwarding() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptRouteRow {
+        distinct_account_index: i64,
+        status: String,
+    }
+
+    #[derive(Debug, sqlx::FromRow)]
+    struct AccountActionRow {
+        action: Option<String>,
+        reason_code: Option<String>,
+        cooldown_until: Option<String>,
+    }
+
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_response_failed_retry_upstream(&[("Bearer route-one", 2)]).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Retry Route One",
+        "route-one",
+        None,
+        None,
+        Some(upstream_base.as_str()),
+    )
+    .await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5.4","stream":true,"input":"hello","stickyKey":"sticky-overloaded-retry-001"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read retryable overloaded response");
+    let response_payload: Value =
+        serde_json::from_slice(&body).expect("decode retryable overloaded success body");
+    assert_eq!(response_payload["ok"].as_bool(), Some(true));
+    assert_eq!(
+        response_payload["authorization"].as_str(),
+        Some("Bearer route-one"),
+    );
+    let body_text = String::from_utf8(body.to_vec()).expect("utf8 retryable overloaded body");
+    assert!(!body_text.contains("response.failed"));
+    assert!(!body_text.contains("server_is_overloaded"));
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    wait_for_pool_attempt_row_count(&state.pool, 3).await;
+
+    let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
+        r#"
+        SELECT distinct_account_index, status
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load overloaded retry attempt rows");
+    assert_eq!(attempt_rows.len(), 3);
+    assert_eq!(
+        attempt_rows[0].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
+    );
+    assert_eq!(
+        attempt_rows[1].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
+    );
+    assert_eq!(
+        attempt_rows[2].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
+    );
+    assert!(
+        attempt_rows
+            .iter()
+            .all(|row| row.distinct_account_index == 1)
+    );
+
+    let row = sqlx::query_as::<_, AccountActionRow>(
+        r#"
+        SELECT last_action AS action, last_action_reason_code AS reason_code, cooldown_until
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load overloaded retry account state");
+    assert_eq!(row.action.as_deref(), Some("route_recovered"));
+    assert!(row.reason_code.is_none());
+    assert!(row.cooldown_until.is_none());
+
+    let recent_actions: Vec<String> = sqlx::query_scalar(
+        r#"
+        SELECT action
+        FROM pool_upstream_account_events
+        WHERE account_id = ?1
+        ORDER BY id DESC
+        LIMIT 5
+        "#,
+    )
+    .bind(account_id)
+    .fetch_all(&state.pool)
+    .await
+    .expect("load overloaded retry account events");
+    assert!(
+        !recent_actions
+            .iter()
+            .any(|action| action == "route_cooldown_started")
+    );
+
+    let attempts = attempts.lock().expect("lock retryable overloaded attempts");
+    assert_eq!(attempts.get("Bearer route-one").copied(), Some(3));
+    drop(attempts);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn pool_route_marks_oauth_missing_scopes_as_error_and_persists_upstream_details() {
     let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
         .lock()
@@ -18959,6 +19259,136 @@ async fn capture_target_pool_route_marks_response_failed_stream_as_route_failure
             .is_none(),
         "logical stream failure should detach the sticky binding",
     );
+
+    upstream_handle.abort();
+}
+
+async fn capture_target_pool_route_marks_server_overloaded_after_forward_as_retryable_without_cooldown()
+ {
+    #[derive(sqlx::FromRow)]
+    struct RouteStateRow {
+        status: String,
+        last_action: Option<String>,
+        last_action_reason_code: Option<String>,
+        last_action_http_status: Option<i64>,
+        cooldown_until: Option<String>,
+        last_route_failure_kind: Option<String>,
+    }
+
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_late_response_failed_upstream().await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Primary",
+        "upstream-primary",
+        None,
+        None,
+        Some(upstream_base.as_str()),
+    )
+    .await;
+    record_pool_route_success(
+        &state.pool,
+        account_id,
+        Utc::now(),
+        Some("sticky-cap-overloaded-late"),
+        None,
+    )
+    .await
+    .expect("seed sticky route");
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "stream": true,
+        "input": "hello",
+        "stickyKey": "sticky-cap-overloaded-late"
+    }))
+    .expect("serialize request body");
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(request_body),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read late overloaded response body");
+    let body_text = String::from_utf8(body.to_vec()).expect("utf8 late overloaded body");
+    assert!(body_text.contains("response.created"));
+    assert!(body_text.contains("server_is_overloaded"));
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    let route_state = sqlx::query_as::<_, RouteStateRow>(
+        r#"
+        SELECT
+            status,
+            last_action,
+            last_action_reason_code,
+            last_action_http_status,
+            cooldown_until,
+            last_route_failure_kind
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load late overloaded route state");
+    assert_eq!(route_state.status, "active");
+    assert_eq!(
+        route_state.last_action.as_deref(),
+        Some("route_retryable_failure")
+    );
+    assert_eq!(
+        route_state.last_action_reason_code.as_deref(),
+        Some("upstream_server_overloaded")
+    );
+    assert_eq!(route_state.last_action_http_status, Some(200));
+    assert!(route_state.cooldown_until.is_none());
+    assert_eq!(
+        route_state.last_route_failure_kind.as_deref(),
+        Some("upstream_response_failed")
+    );
+    assert_eq!(
+        load_test_sticky_route_account_id(&state.pool, "sticky-cap-overloaded-late").await,
+        Some(account_id),
+        "retryable overload should keep the sticky binding",
+    );
+
+    let recent_actions: Vec<String> = sqlx::query_scalar(
+        r#"
+        SELECT action
+        FROM pool_upstream_account_events
+        WHERE account_id = ?1
+        ORDER BY id DESC
+        LIMIT 5
+        "#,
+    )
+    .bind(account_id)
+    .fetch_all(&state.pool)
+    .await
+    .expect("load late overloaded events");
+    assert!(
+        !recent_actions
+            .iter()
+            .any(|action| action == "route_cooldown_started")
+    );
+
+    let attempts = attempts.lock().expect("lock late overloaded attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
+    drop(attempts);
 
     upstream_handle.abort();
 }

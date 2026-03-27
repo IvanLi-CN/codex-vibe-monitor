@@ -81,6 +81,7 @@ const labels = {
   action: (action?: string | null) =>
     ({
       route_hard_unavailable: 'Hard unavailable',
+      route_retryable_failure: 'Temporary upstream failure',
       route_cooldown_started: 'Route cooldown',
       sync_failed: 'Sync failed',
       sync_recovery_blocked: 'Recovery blocked',
@@ -105,6 +106,7 @@ const labels = {
     ({
       upstream_http_402: 'Plan or billing rejected',
       upstream_http_429_quota_exhausted: 'Weekly cap exhausted',
+      upstream_server_overloaded: 'Upstream is temporarily overloaded',
       quota_still_exhausted: 'Still exhausted',
       reauth_required: 'Needs reauth',
     })[reason ?? ''] ??
