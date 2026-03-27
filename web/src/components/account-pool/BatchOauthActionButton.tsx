@@ -345,6 +345,11 @@ export function BatchOauthActionButton({
           focusFirstPopoverControl();
         }}
         onCloseAutoFocus={(event) => event.preventDefault()}
+        onInteractOutside={(event) => {
+          if (manualCopyValue) {
+            event.preventDefault();
+          }
+        }}
         onMouseEnter={openHoverPopover}
         onMouseLeave={() => {
           if (!pinnedOpen && !manualCopyValue) {

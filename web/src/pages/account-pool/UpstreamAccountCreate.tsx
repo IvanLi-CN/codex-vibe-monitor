@@ -4429,7 +4429,9 @@ export default function UpstreamAccountCreatePage() {
     const fallbackHint = t(
       "accountPool.upstreamAccounts.batchOauth.copyInlineFallback",
     );
-    setBatchManualCopyRowId(result.ok ? null : rowId);
+    setBatchManualCopyRowId((current) =>
+      result.ok ? (current === rowId ? null : current) : rowId,
+    );
     return {
       sessionHint: result.ok ? successHint : fallbackHint,
       actionError: result.ok ? null : fallbackHint,
@@ -4480,8 +4482,15 @@ export default function UpstreamAccountCreatePage() {
       const generatedHint = t("accountPool.upstreamAccounts.oauth.generated", {
         expiresAt: formatDateTime(response.expiresAt),
       });
-      let sessionHint = generatedHint;
-      let actionError: string | null = null;
+      updateBatchRow(rowId, (current) => ({
+        ...current,
+        busyAction: null,
+        callbackUrl: "",
+        session: response,
+        sessionHint: generatedHint,
+        needsRefresh: false,
+        actionError: null,
+      }));
       if (response.authUrl) {
         const copyResult = await copyText(response.authUrl, {
           preferExecCommand: true,
@@ -4491,20 +4500,14 @@ export default function UpstreamAccountCreatePage() {
           copyResult,
           t("accountPool.upstreamAccounts.batchOauth.generatedAndCopied"),
         );
-        sessionHint = copyFeedback.sessionHint;
-        actionError = copyFeedback.actionError;
+        updateBatchRow(rowId, (current) => ({
+          ...current,
+          sessionHint: copyFeedback.sessionHint,
+          actionError: copyFeedback.actionError,
+        }));
       } else {
         setBatchManualCopyRowId((current) => (current === rowId ? null : current));
       }
-      updateBatchRow(rowId, (current) => ({
-        ...current,
-        busyAction: null,
-        callbackUrl: "",
-        session: response,
-        sessionHint,
-        needsRefresh: false,
-        actionError,
-      }));
     } catch (err) {
       updateBatchRow(rowId, (current) => ({
         ...current,
