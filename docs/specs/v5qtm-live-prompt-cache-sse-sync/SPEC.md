@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 已实现，待截图提交授权 / PR 收敛
+- Status: 已实现，PR 收敛中
 - Created: 2026-03-27
 - Last: 2026-03-27
 
@@ -81,7 +81,7 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: owner-approved
   story_id_or_title: Monitoring/PromptCacheConversationTable / Live Sync Settled
   state: settled preview after live-sync convergence
   evidence_note: 验证 Prompt Cache 对话行在 SSE 合流后，行内 preview 会把最新完成请求顶到最前，并保持与 `InvocationTable` 一致的字段展示。
