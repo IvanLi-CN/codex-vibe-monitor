@@ -2090,10 +2090,6 @@ pub(crate) async fn fetch_prompt_cache_conversations_cached(
             let _ = in_flight.signal.send(true);
         }
 
-        if stale_result {
-            continue;
-        }
-
         return result;
     }
 }

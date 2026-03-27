@@ -26067,6 +26067,75 @@ async fn prompt_cache_conversations_cache_ignores_proxy_captures_without_prompt_
 }
 
 #[tokio::test]
+async fn prompt_cache_conversations_cache_returns_under_sustained_invalidations() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+
+    for index in 0..256 {
+        let occurred = format_naive(
+            (now - ChronoDuration::minutes(120 - index as i64))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(format!("pck-cache-sustained-{index}"))
+        .bind(&occurred)
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(10 + index as i64)
+        .bind(0.01)
+        .bind(format!(r#"{{"promptCacheKey":"pck-sustained-{index:03}"}}"#))
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert sustained-invalidations seed row");
+    }
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let invalidator_stop = stop.clone();
+    let cache = state.prompt_cache_conversation_cache.clone();
+    let invalidator = tokio::spawn(async move {
+        while !invalidator_stop.load(Ordering::Relaxed) {
+            invalidate_prompt_cache_conversations_cache(&cache).await;
+            tokio::task::yield_now().await;
+        }
+    });
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        fetch_prompt_cache_conversations(
+            State(state.clone()),
+            Query(PromptCacheConversationsQuery {
+                limit: Some(20),
+                activity_hours: None,
+            }),
+        ),
+    )
+    .await;
+
+    stop.store(true, Ordering::Relaxed);
+    invalidator.await.expect("invalidator task should exit cleanly");
+
+    let Json(response) = result
+        .expect("prompt cache fetch should not hang under sustained invalidations")
+        .expect("prompt cache fetch should succeed");
+    assert!(
+        !response.conversations.is_empty(),
+        "sustained invalidations should still return a usable snapshot",
+    );
+}
+
+#[tokio::test]
 async fn prompt_cache_conversations_concurrent_requests_same_limit_do_not_stall() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

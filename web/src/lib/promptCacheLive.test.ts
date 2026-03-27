@@ -291,4 +291,57 @@ describe("reconcilePromptCacheLiveRecordMap", () => {
       "pck-hidden-running": [liveRecord],
     });
   });
+
+  it("drops completed live records once they fall outside a full authoritative preview window", () => {
+    const droppedRecord = createLiveRecord({
+      id: 2001,
+      invokeId: "invoke-preview-tail-drop",
+      occurredAt: "2026-03-10T02:24:00Z",
+      promptCacheKey: "pck-preview-full",
+      status: "completed",
+      totalTokens: 3200,
+    });
+
+    const reconciled = reconcilePromptCacheLiveRecordMap(
+      { "pck-preview-full": [droppedRecord] },
+      createResponse([
+        createConversation("pck-preview-full", {
+          recentInvocations: [
+            createLiveRecord({
+              id: 2105,
+              invokeId: "invoke-preview-5",
+              occurredAt: "2026-03-10T02:29:00Z",
+              promptCacheKey: "pck-preview-full",
+            }),
+            createLiveRecord({
+              id: 2104,
+              invokeId: "invoke-preview-4",
+              occurredAt: "2026-03-10T02:28:00Z",
+              promptCacheKey: "pck-preview-full",
+            }),
+            createLiveRecord({
+              id: 2103,
+              invokeId: "invoke-preview-3",
+              occurredAt: "2026-03-10T02:27:00Z",
+              promptCacheKey: "pck-preview-full",
+            }),
+            createLiveRecord({
+              id: 2102,
+              invokeId: "invoke-preview-2",
+              occurredAt: "2026-03-10T02:26:00Z",
+              promptCacheKey: "pck-preview-full",
+            }),
+            createLiveRecord({
+              id: 2101,
+              invokeId: "invoke-preview-1",
+              occurredAt: "2026-03-10T02:25:00Z",
+              promptCacheKey: "pck-preview-full",
+            }),
+          ].map(buildPromptCachePreviewFromInvocation),
+        }),
+      ]),
+    );
+
+    expect(reconciled).toEqual({});
+  });
 });

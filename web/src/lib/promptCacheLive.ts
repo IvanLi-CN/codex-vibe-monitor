@@ -458,6 +458,29 @@ export function reconcilePromptCacheLiveRecordMap(
 ) {
   if (!stats) return current;
 
+  const fallsOutsideAuthoritativePreviewWindow = (
+    record: ApiInvocation,
+    previews: PromptCacheConversation["recentInvocations"],
+  ) => {
+    if (previews.length < PROMPT_CACHE_PREVIEW_LIMIT) return false;
+    const previewTail = previews.at(-1);
+    if (!previewTail) return false;
+    const recordEpoch = parseOccurredAtEpoch(record.occurredAt);
+    const previewTailEpoch = parseOccurredAtEpoch(previewTail.occurredAt);
+    if (recordEpoch == null || previewTailEpoch == null) return false;
+    if (recordEpoch !== previewTailEpoch) {
+      return recordEpoch < previewTailEpoch;
+    }
+    const recordId =
+      typeof record.id === "number" && Number.isFinite(record.id) ? record.id : null;
+    const previewTailId =
+      typeof previewTail.id === "number" && Number.isFinite(previewTail.id)
+        ? previewTail.id
+        : null;
+    if (recordId == null || previewTailId == null) return false;
+    return recordId <= previewTailId;
+  };
+
   const next: Record<string, ApiInvocation[]> = {};
   for (const [promptCacheKey, records] of Object.entries(current)) {
     const conversation = stats.conversations.find(
@@ -483,7 +506,13 @@ export function reconcilePromptCacheLiveRecordMap(
     const remaining = records.filter(
       (record) => {
         const authoritative = authoritativePreviewByKey.get(invocationStableKey(record));
-        if (!authoritative) return true;
+        if (!authoritative) {
+          if (promptCacheInvocationIsPending(record)) return true;
+          return !fallsOutsideAuthoritativePreviewWindow(
+            record,
+            conversation.recentInvocations,
+          );
+        }
         if (authoritativePreviewLacksLiveExtras(authoritative, record)) return true;
         return (
           choosePreferredInvocationRecord(authoritative, record) === record
