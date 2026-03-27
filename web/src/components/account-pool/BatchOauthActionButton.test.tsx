@@ -112,6 +112,13 @@ describe("BatchOauthActionButton", () => {
     expect(document.body.textContent).toContain("Regenerate OAuth URL");
   });
 
+  it("keeps a native title fallback only when the trigger is disabled", () => {
+    render(<BatchOauthActionButton mode="copy" {...baseProps} disabled />);
+
+    const button = getButton(/copy oauth url/i);
+    expect(button.getAttribute("title")).toBe("Copy OAuth URL");
+  });
+
   it("waits briefly before opening the passive hover bubble", () => {
     render(<BatchOauthActionButton mode="generate" {...baseProps} />);
 

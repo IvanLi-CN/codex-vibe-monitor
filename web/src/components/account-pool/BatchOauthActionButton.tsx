@@ -284,6 +284,7 @@ export function BatchOauthActionButton({
           variant={mode === "copy" ? "secondary" : "default"}
           className={cn("h-9 w-9 shrink-0 rounded-full", className)}
           aria-label={primaryAriaLabel}
+          title={disabled ? primaryAriaLabel : undefined}
           disabled={disabled}
           onMouseEnter={schedulePassivePopoverOpen}
           onMouseLeave={() => {
