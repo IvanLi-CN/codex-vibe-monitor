@@ -26094,7 +26094,9 @@ async fn prompt_cache_conversations_cache_returns_under_sustained_invalidations(
         .bind("success")
         .bind(10 + index as i64)
         .bind(0.01)
-        .bind(format!(r#"{{"promptCacheKey":"pck-sustained-{index:03}"}}"#))
+        .bind(format!(
+            r#"{{"promptCacheKey":"pck-sustained-{index:03}"}}"#
+        ))
         .bind("{}")
         .execute(&state.pool)
         .await
@@ -26124,7 +26126,9 @@ async fn prompt_cache_conversations_cache_returns_under_sustained_invalidations(
     .await;
 
     stop.store(true, Ordering::Relaxed);
-    invalidator.await.expect("invalidator task should exit cleanly");
+    invalidator
+        .await
+        .expect("invalidator task should exit cleanly");
 
     let Json(response) = result
         .expect("prompt cache fetch should not hang under sustained invalidations")
