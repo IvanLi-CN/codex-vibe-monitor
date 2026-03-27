@@ -5,7 +5,10 @@ import type {
   PromptCacheConversationsResponse,
   PromptCacheConversationRequestPoint,
 } from "./api";
-import { mergePromptCacheConversationsResponse } from "./promptCacheLive";
+import {
+  mergePromptCacheConversationsResponse,
+  reconcilePromptCacheLiveRecordMap,
+} from "./promptCacheLive";
 
 function createRequestPoint(
   overrides: Partial<PromptCacheConversationRequestPoint> & {
@@ -158,5 +161,90 @@ describe("mergePromptCacheConversationsResponse", () => {
         cumulativeTokens: 182491,
       }),
     ]);
+  });
+
+  it("keeps distinct live request points that share the same timestamp and token count", () => {
+    const merged = mergePromptCacheConversationsResponse(
+      createResponse([createConversation("pck-live-points")]),
+      {
+        "pck-live-points": [
+          createLiveRecord({
+            id: 1001,
+            invokeId: "invoke-live-a",
+            occurredAt: "2026-03-10T02:30:00Z",
+            promptCacheKey: "pck-live-points",
+            totalTokens: 182491,
+          }),
+          createLiveRecord({
+            id: 1002,
+            invokeId: "invoke-live-b",
+            occurredAt: "2026-03-10T02:30:00Z",
+            promptCacheKey: "pck-live-points",
+            totalTokens: 182491,
+          }),
+        ],
+      },
+      { mode: "count", limit: 2 },
+      Date.parse("2026-03-10T03:00:00Z"),
+    );
+
+    expect(merged?.conversations[0]?.last24hRequests).toEqual([
+      createRequestPoint({
+        occurredAt: "2026-03-10T02:30:00Z",
+        requestTokens: 182491,
+        cumulativeTokens: 182491,
+      }),
+      createRequestPoint({
+        occurredAt: "2026-03-10T02:30:00Z",
+        requestTokens: 182491,
+        cumulativeTokens: 364982,
+      }),
+    ]);
+  });
+});
+
+describe("reconcilePromptCacheLiveRecordMap", () => {
+  it("drops unseen terminal-only keys when the authoritative resync still omits them", () => {
+    const reconciled = reconcilePromptCacheLiveRecordMap(
+      {
+        "pck-hidden": [
+          createLiveRecord({
+            id: 1201,
+            invokeId: "invoke-hidden",
+            occurredAt: "2026-03-10T02:30:00Z",
+            promptCacheKey: "pck-hidden",
+            status: "completed",
+          }),
+        ],
+      },
+      createResponse([
+        createConversation("pck-visible-a"),
+        createConversation("pck-visible-b"),
+      ]),
+    );
+
+    expect(reconciled).toEqual({});
+  });
+
+  it("keeps unseen running keys until a later authoritative resync can confirm them", () => {
+    const liveRecord = createLiveRecord({
+      id: 1202,
+      invokeId: "invoke-running-hidden",
+      occurredAt: "2026-03-10T02:30:00Z",
+      promptCacheKey: "pck-hidden-running",
+      status: "running",
+    });
+
+    const reconciled = reconcilePromptCacheLiveRecordMap(
+      { "pck-hidden-running": [liveRecord] },
+      createResponse([
+        createConversation("pck-visible-a"),
+        createConversation("pck-visible-b"),
+      ]),
+    );
+
+    expect(reconciled).toEqual({
+      "pck-hidden-running": [liveRecord],
+    });
   });
 });

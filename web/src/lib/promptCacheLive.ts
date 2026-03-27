@@ -214,15 +214,24 @@ function buildPromptCacheRequestPointFromInvocation(
   };
 }
 
+function promptCacheRequestPointKey(
+  point: Pick<
+    PromptCacheConversationRequestPoint,
+    "occurredAt" | "status" | "requestTokens"
+  >,
+) {
+  return `${point.occurredAt}::${point.status}::${point.requestTokens}`;
+}
+
 function mergePromptCacheRequestPoints(
   basePoints: PromptCacheConversationRequestPoint[],
   liveRecords: ApiInvocation[],
 ) {
-  const seenPointKeys = new Set(
-    basePoints.map(
-      (point) => `${point.occurredAt}::${point.status}::${point.requestTokens}`,
-    ),
-  );
+  const matchedPointCounts = new Map<string, number>();
+  for (const point of basePoints) {
+    const key = promptCacheRequestPointKey(point);
+    matchedPointCounts.set(key, (matchedPointCounts.get(key) ?? 0) + 1);
+  }
   const combined = [
     ...basePoints.map((point, index) => ({
       ...point,
@@ -231,11 +240,12 @@ function mergePromptCacheRequestPoints(
     })),
     ...liveRecords.flatMap((record, index) => {
       const point = buildPromptCacheRequestPointFromInvocation(record);
-      const pointKey = `${point.occurredAt}::${point.status}::${point.requestTokens}`;
-      if (seenPointKeys.has(pointKey)) {
+      const pointKey = promptCacheRequestPointKey(point);
+      const matchedCount = matchedPointCounts.get(pointKey) ?? 0;
+      if (matchedCount > 0) {
+        matchedPointCounts.set(pointKey, matchedCount - 1);
         return [];
       }
-      seenPointKeys.add(pointKey);
       return [{
         ...point,
         _epoch: parseOccurredAtEpoch(record.occurredAt) ?? Number.MIN_SAFE_INTEGER,
@@ -255,6 +265,11 @@ function mergePromptCacheRequestPoints(
       cumulativeTokens,
     };
   });
+}
+
+function promptCacheInvocationIsPending(record: ApiInvocation) {
+  const normalizedStatus = record.status?.trim().toLowerCase() ?? "";
+  return normalizedStatus === "running" || normalizedStatus === "pending";
 }
 
 function authoritativePreviewLacksLiveExtras(
@@ -461,17 +476,22 @@ export function reconcilePromptCacheLiveRecordMap(
     const conversation = stats.conversations.find(
       (item) => item.promptCacheKey === promptCacheKey,
     );
-    const authoritativePreviewByKey = new Map<string, ApiInvocation>();
-    if (conversation) {
-      for (const preview of conversation.recentInvocations) {
-        authoritativePreviewByKey.set(
-          invocationStableKey({
-            invokeId: preview.invokeId,
-            occurredAt: preview.occurredAt,
-          }),
-          buildInvocationFromPromptCachePreview(preview),
-        );
+    if (!conversation) {
+      const pendingRecords = records.filter(promptCacheInvocationIsPending);
+      if (pendingRecords.length > 0) {
+        next[promptCacheKey] = pendingRecords;
       }
+      continue;
+    }
+    const authoritativePreviewByKey = new Map<string, ApiInvocation>();
+    for (const preview of conversation.recentInvocations) {
+      authoritativePreviewByKey.set(
+        invocationStableKey({
+          invokeId: preview.invokeId,
+          occurredAt: preview.occurredAt,
+        }),
+        buildInvocationFromPromptCachePreview(preview),
+      );
     }
     const remaining = records.filter(
       (record) => {
