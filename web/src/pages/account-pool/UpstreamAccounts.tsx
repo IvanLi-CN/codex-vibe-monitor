@@ -280,7 +280,8 @@ function accountWorkStatus(item?: AccountStatusSnapshot | null) {
   if (!item) return 'idle'
   if (accountEnableStatus(item) !== 'enabled') return 'idle'
   if (accountSyncState(item) === 'syncing') return 'idle'
-  if (accountHealthStatus(item) !== 'normal') return 'idle'
+  if (item?.workStatus === 'rate_limited') return 'rate_limited'
+  if (accountHealthStatus(item) !== 'normal') return 'unavailable'
   return item?.workStatus ?? 'idle'
 }
 
@@ -737,6 +738,7 @@ export default function UpstreamAccountsPage() {
       { value: 'working', label: t('accountPool.upstreamAccounts.workStatus.working') },
       { value: 'idle', label: t('accountPool.upstreamAccounts.workStatus.idle') },
       { value: 'rate_limited', label: t('accountPool.upstreamAccounts.workStatus.rate_limited') },
+      { value: 'unavailable', label: t('accountPool.upstreamAccounts.workStatus.unavailable') },
     ],
     [t],
   )

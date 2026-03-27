@@ -866,7 +866,8 @@ function storyWorkStatus(
 ) {
   if (storyEnableStatus(item) === 'disabled') return 'idle'
   if (syncState === 'syncing') return 'idle'
-  if (healthStatus !== 'normal') return 'idle'
+  if (item.workStatus === 'rate_limited') return 'rate_limited'
+  if (healthStatus !== 'normal') return 'unavailable'
   return typeof item.workStatus === 'string' && item.workStatus
     ? item.workStatus
     : 'idle'
@@ -1240,6 +1241,8 @@ function createStore(): StoryStore {
     storyId?.endsWith('--quota-exhausted-oauth') === true
   const upstreamRejected402Story =
     storyId?.endsWith('--upstream-rejected-402') === true
+  const unavailableWorkStatusStory =
+    storyId?.endsWith('--unavailable-work-status-filter') === true
   const missingWindowPlaceholdersStory =
     storyId?.endsWith('--missing-window-placeholders') === true
   const denseRosterStory =
@@ -1771,6 +1774,60 @@ function createStore(): StoryStore {
         }),
       ]
     : []
+  const unavailableWorkStatusAccounts = unavailableWorkStatusStory
+    ? [
+        createOauthAccount(601, {
+          displayName: 'Needs reauth unavailable work status',
+          groupName: 'rescue',
+          isMother: false,
+          status: 'needs_reauth',
+          displayStatus: 'needs_reauth',
+          enableStatus: 'enabled',
+          workStatus: 'unavailable',
+          healthStatus: 'needs_reauth',
+          syncState: 'idle',
+          lastError: 'refresh token expired',
+          lastErrorAt: '2026-03-27T08:11:47.000Z',
+          tags: pickStoryTags('rescue'),
+        }),
+        createOauthAccount(602, {
+          displayName: 'Upstream unavailable work status',
+          groupName: 'rescue',
+          isMother: false,
+          status: 'active',
+          displayStatus: 'upstream_unavailable',
+          enableStatus: 'enabled',
+          workStatus: 'unavailable',
+          healthStatus: 'upstream_unavailable',
+          syncState: 'idle',
+          lastError: 'gateway temporarily unavailable',
+          lastErrorAt: '2026-03-27T08:21:47.000Z',
+          tags: pickStoryTags('rescue'),
+        }),
+        createOauthAccount(603, {
+          displayName: 'Upstream rejected unavailable work status',
+          groupName: 'rescue',
+          isMother: false,
+          status: 'error',
+          displayStatus: 'upstream_rejected',
+          enableStatus: 'enabled',
+          workStatus: 'unavailable',
+          healthStatus: 'upstream_rejected',
+          syncState: 'idle',
+          lastError: 'oauth bridge upstream rejected request: 403 forbidden',
+          lastErrorAt: '2026-03-27T08:31:47.000Z',
+          tags: pickStoryTags('rescue'),
+        }),
+        createApiKeyAccount(604, {
+          displayName: 'Rate limited filter control',
+          groupName: 'overflow',
+          workStatus: 'rate_limited',
+          healthStatus: 'normal',
+          syncState: 'idle',
+          tags: pickStoryTags('overflow'),
+        }),
+      ]
+    : []
   const operationalRosterAccounts = compactStory
     ? []
     : buildOperationalRosterAccounts(denseRosterStory ? 3 : 1)
@@ -1780,6 +1837,8 @@ function createStore(): StoryStore {
     ? quotaExhaustedOauthAccounts
     : upstreamRejected402Story
     ? upstreamRejected402Accounts
+    : unavailableWorkStatusStory
+    ? unavailableWorkStatusAccounts
     : availabilityBadgeStory
       ? availabilityBadgeAccounts
       : [

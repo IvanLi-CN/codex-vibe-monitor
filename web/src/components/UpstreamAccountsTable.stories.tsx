@@ -173,6 +173,7 @@ const labels = {
       working: 'Working',
       idle: 'Idle',
       rate_limited: 'Rate limited',
+      unavailable: 'Unavailable',
     })[status] ?? status,
   workStatusCount: (count: number) => `Working ${count}`,
   enableStatus: (status: string) =>
@@ -242,6 +243,7 @@ const chineseLabels = {
       working: '工作中',
       idle: '空闲',
       rate_limited: '限流中',
+      unavailable: '不可用',
     })[status] ?? status,
   workStatusCount: (count: number) => `工作中 ${count}`,
   enableStatus: (status: string) =>
@@ -445,7 +447,7 @@ export const AvailabilityBadges: Story = {
         displayName: 'Unavailable badge hidden',
         isMother: false,
         displayStatus: 'upstream_unavailable',
-        workStatus: 'working',
+        workStatus: 'unavailable',
         healthStatus: 'upstream_unavailable',
         activeConversationCount: 2,
         tags: [],

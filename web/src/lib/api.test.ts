@@ -1005,6 +1005,16 @@ describe("account pool frontend API helpers", () => {
                 displayStatus: "disabled",
                 enabled: false,
               },
+              {
+                id: 11,
+                kind: "oauth_codex",
+                provider: "codex",
+                displayName: "Legacy upstream rejected",
+                isMother: false,
+                status: "error",
+                displayStatus: "upstream_rejected",
+                enabled: true,
+              },
             ],
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
@@ -1024,6 +1034,12 @@ describe("account pool frontend API helpers", () => {
       enableStatus: "disabled",
       workStatus: "idle",
       healthStatus: "normal",
+      syncState: "idle",
+    });
+    expect(response.items[2]).toMatchObject({
+      enableStatus: "enabled",
+      workStatus: "unavailable",
+      healthStatus: "upstream_rejected",
       syncState: "idle",
     });
   });
