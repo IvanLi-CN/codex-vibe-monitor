@@ -214,14 +214,24 @@ describe('UpstreamAccountGroupNoteDialog', () => {
           selectable: true,
           last24h: [],
         },
+        {
+          key: 'legacy-missing-binding',
+          source: 'missing',
+          displayName: 'Legacy Missing Binding',
+          protocolLabel: 'UNKNOWN',
+          penalized: false,
+          selectable: false,
+          last24h: [],
+        },
       ],
     })
 
     const text = bodyText()
     expect(text).not.toContain('legacy-missing-binding')
+    expect(text).toContain('Legacy Missing Binding')
 
     const identityHints = Array.from(document.querySelectorAll('[title^="ID "]'))
-    expect(identityHints.length).toBeGreaterThanOrEqual(3)
+    expect(identityHints.length).toBeGreaterThanOrEqual(2)
     expect(text).toContain('Missing')
   })
 

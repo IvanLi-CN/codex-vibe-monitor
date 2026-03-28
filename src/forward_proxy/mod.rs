@@ -769,6 +769,7 @@ pub(crate) async fn build_forward_proxy_binding_nodes_response(
                 .map(|item| item.display_name.clone())
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| proxy_key.clone()),
+            protocol_label: "UNKNOWN".to_string(),
             penalized: false,
             selectable: false,
             last24h: Vec::new(),

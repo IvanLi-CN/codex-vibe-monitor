@@ -71,12 +71,12 @@ function toggleBoundProxyKey(keys: string[], target: string): string[] {
   return [...keys, target]
 }
 
-function buildMissingProxyOption(key: string, missingLabel: string): GroupProxyOption {
+function buildMissingProxyOption(key: string, _missingLabel: string): GroupProxyOption {
   const isDirect = key === '__direct__'
   return {
     key,
     source: isDirect ? 'direct' : 'missing',
-    displayName: isDirect ? 'Direct' : missingLabel,
+    displayName: isDirect ? 'Direct' : key,
     protocolLabel: isDirect ? 'DIRECT' : 'UNKNOWN',
     penalized: false,
     selectable: isDirect,

@@ -412,13 +412,22 @@ async fn forward_proxy_binding_nodes_restore_display_name_for_missing_bound_keys
         .await
         .expect("build binding nodes response");
 
-    assert_eq!(nodes.len(), 1);
-    assert_eq!(nodes[0].key, proxy_key);
-    assert_eq!(nodes[0].display_name, "东京专线 A");
-    assert_eq!(nodes[0].source, "missing");
-    assert!(!nodes[0].selectable);
-    assert!(!nodes[0].penalized);
-    assert!(nodes[0].last24h.is_empty());
+    assert!(
+        nodes
+            .iter()
+            .any(|node| node.key == FORWARD_PROXY_DIRECT_KEY),
+        "direct binding candidate should still be present",
+    );
+    let missing_node = nodes
+        .iter()
+        .find(|node| node.key == proxy_key)
+        .expect("missing bound node should be present");
+    assert_eq!(missing_node.display_name, "东京专线 A");
+    assert_eq!(missing_node.source, "missing");
+    assert_eq!(missing_node.protocol_label, "UNKNOWN");
+    assert!(!missing_node.selectable);
+    assert!(!missing_node.penalized);
+    assert!(missing_node.last24h.is_empty());
 }
 
 #[tokio::test]
@@ -8954,7 +8963,8 @@ async fn forward_proxy_binding_nodes_preserve_direct_hourly_buckets() {
     )
     .await;
 
-    let nodes = build_forward_proxy_binding_nodes_response(state.as_ref())
+    let extra_proxy_keys = Vec::<String>::new();
+    let nodes = build_forward_proxy_binding_nodes_response(state.as_ref(), &extra_proxy_keys)
         .await
         .expect("build forward proxy binding nodes should succeed");
     let direct = nodes
