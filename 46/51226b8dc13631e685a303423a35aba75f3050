@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.30.10",
+  "base_stable_version": "1.30.9",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-28T13:29:25Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.30.10",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "e2b4468ef417f99b854b2b4fcc5f210c1edcd18d",
+  "pr_number": 262,
+  "pr_title": "fix(web): unify upstream account detail routing",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.30.10",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.30.10,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "4651226b8dc13631e685a303423a35aba75f3050",
+  "type_label": "type:patch"
+}
