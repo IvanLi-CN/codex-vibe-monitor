@@ -6,7 +6,7 @@ pub(crate) struct ForwardProxyAttemptStatsRow {
     pub(crate) proxy_key: String,
     pub(crate) attempts: i64,
     pub(crate) success_count: i64,
-    pub(crate) avg_latency_ms: Option<f64>,
+    pub(crate) latency_sum_ms: Option<f64>,
 }
 
 #[derive(Debug, FromRow)]
@@ -26,12 +26,20 @@ pub(crate) struct ForwardProxyWeightHourlyStatsRow {
     pub(crate) max_weight: f64,
     pub(crate) avg_weight: f64,
     pub(crate) last_weight: f64,
+    pub(crate) last_sample_epoch_us: i64,
 }
 
 #[derive(Debug, FromRow)]
 pub(crate) struct ForwardProxyWeightLastBeforeRangeRow {
     pub(crate) proxy_key: String,
     pub(crate) last_weight: f64,
+    pub(crate) last_sample_epoch_us: i64,
+}
+
+#[derive(Debug, Clone, FromRow)]
+pub(crate) struct ForwardProxyKeyAliasRow {
+    pub(crate) proxy_key: String,
+    pub(crate) endpoint_url: Option<String>,
 }
 
 fn ceil_hour_epoch(epoch: i64) -> i64 {
@@ -110,12 +118,21 @@ pub(crate) async fn load_forward_proxy_runtime_states(
             latency_ema_ms,
             consecutive_failures
         FROM forward_proxy_runtime
+        ORDER BY updated_at DESC
         "#,
     )
     .fetch_all(pool)
     .await
     .context("failed to load forward_proxy_runtime rows")?;
-    Ok(rows.into_iter().map(Into::into).collect())
+
+    let mut runtime = HashMap::new();
+    for row in rows {
+        let mut state: ForwardProxyRuntimeState = row.into();
+        state.proxy_key =
+            canonical_forward_proxy_storage_key(&state.proxy_key, state.endpoint_url.as_deref());
+        runtime.entry(state.proxy_key.clone()).or_insert(state);
+    }
+    Ok(runtime.into_values().collect())
 }
 
 pub(crate) async fn persist_forward_proxy_runtime_state(
@@ -236,6 +253,39 @@ pub(crate) async fn load_forward_proxy_metadata_history(
     Ok(rows
         .into_iter()
         .map(|row| (row.proxy_key.clone(), row))
+        .collect())
+}
+
+pub(crate) fn canonical_forward_proxy_storage_key(
+    proxy_key: &str,
+    endpoint_url: Option<&str>,
+) -> String {
+    endpoint_url
+        .and_then(normalize_single_proxy_key)
+        .or_else(|| normalize_single_proxy_key(proxy_key))
+        .unwrap_or_else(|| proxy_key.to_string())
+}
+
+pub(crate) async fn load_forward_proxy_key_aliases(
+    pool: &Pool<Sqlite>,
+) -> Result<HashMap<String, String>> {
+    let rows = sqlx::query_as::<_, ForwardProxyKeyAliasRow>(
+        r#"
+        SELECT proxy_key, endpoint_url
+        FROM forward_proxy_metadata_history
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .context("failed to load forward_proxy key aliases")?;
+
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| {
+            let canonical =
+                canonical_forward_proxy_storage_key(&row.proxy_key, row.endpoint_url.as_deref());
+            (canonical != row.proxy_key).then_some((row.proxy_key, canonical))
+        })
         .collect())
 }
 
@@ -386,7 +436,7 @@ pub(crate) async fn query_forward_proxy_window_stats(
             proxy_key,
             COUNT(*) AS attempts,
             SUM(CASE WHEN is_success != 0 THEN 1 ELSE 0 END) AS success_count,
-            AVG(CASE WHEN is_success != 0 THEN latency_ms END) AS avg_latency_ms
+            SUM(CASE WHEN is_success != 0 THEN latency_ms END) AS latency_sum_ms
         FROM forward_proxy_attempts
         WHERE occurred_at >= datetime('now', ?1)
         GROUP BY proxy_key
@@ -397,19 +447,33 @@ pub(crate) async fn query_forward_proxy_window_stats(
     .await
     .with_context(|| format!("failed to query forward proxy attempt stats for {window}"))?;
 
-    Ok(rows
-        .into_iter()
-        .map(|row| {
-            (
-                row.proxy_key,
-                ForwardProxyAttemptWindowStats {
-                    attempts: row.attempts,
-                    success_count: row.success_count,
-                    avg_latency_ms: row.avg_latency_ms,
-                },
-            )
-        })
-        .collect())
+    let alias_map = load_forward_proxy_key_aliases(pool).await?;
+    let mut grouped = HashMap::new();
+    let mut latency_totals = HashMap::new();
+
+    for row in rows {
+        let proxy_key = alias_map
+            .get(&row.proxy_key)
+            .cloned()
+            .unwrap_or(row.proxy_key.clone());
+        let stats = grouped
+            .entry(proxy_key.clone())
+            .or_insert_with(ForwardProxyAttemptWindowStats::default);
+        stats.attempts += row.attempts;
+        stats.success_count += row.success_count;
+        *latency_totals.entry(proxy_key).or_insert(0.0) += row.latency_sum_ms.unwrap_or(0.0);
+    }
+
+    for (proxy_key, stats) in &mut grouped {
+        if stats.success_count > 0 {
+            stats.avg_latency_ms = latency_totals
+                .get(proxy_key)
+                .copied()
+                .map(|value| value / stats.success_count as f64);
+        }
+    }
+
+    Ok(grouped)
 }
 
 pub(crate) async fn query_forward_proxy_hourly_stats(
@@ -439,15 +503,20 @@ pub(crate) async fn query_forward_proxy_hourly_stats(
         )
     })?;
 
+    let alias_map = load_forward_proxy_key_aliases(pool).await?;
     let mut grouped: HashMap<String, HashMap<i64, ForwardProxyHourlyStatsPoint>> = HashMap::new();
     for row in rows {
-        grouped.entry(row.proxy_key).or_default().insert(
-            row.bucket_start_epoch,
-            ForwardProxyHourlyStatsPoint {
-                success_count: row.success_count,
-                failure_count: row.failure_count,
-            },
-        );
+        let proxy_key = alias_map
+            .get(&row.proxy_key)
+            .cloned()
+            .unwrap_or(row.proxy_key.clone());
+        let point = grouped
+            .entry(proxy_key)
+            .or_default()
+            .entry(row.bucket_start_epoch)
+            .or_default();
+        point.success_count += row.success_count;
+        point.failure_count += row.failure_count;
     }
 
     Ok(grouped)
@@ -467,7 +536,8 @@ pub(crate) async fn query_forward_proxy_weight_hourly_stats(
             min_weight,
             max_weight,
             avg_weight,
-            last_weight
+            last_weight,
+            last_sample_epoch_us
         FROM forward_proxy_weight_hourly
         WHERE bucket_start_epoch >= ?1
           AND bucket_start_epoch < ?2
@@ -483,19 +553,45 @@ pub(crate) async fn query_forward_proxy_weight_hourly_stats(
         )
     })?;
 
+    let alias_map = load_forward_proxy_key_aliases(pool).await?;
     let mut grouped: HashMap<String, HashMap<i64, ForwardProxyWeightHourlyStatsPoint>> =
         HashMap::new();
+    let mut latest_sample_epochs: HashMap<(String, i64), i64> = HashMap::new();
+
     for row in rows {
-        grouped.entry(row.proxy_key).or_default().insert(
-            row.bucket_start_epoch,
-            ForwardProxyWeightHourlyStatsPoint {
-                sample_count: row.sample_count,
+        let proxy_key = alias_map
+            .get(&row.proxy_key)
+            .cloned()
+            .unwrap_or(row.proxy_key.clone());
+        let key = (proxy_key.clone(), row.bucket_start_epoch);
+        let point = grouped
+            .entry(proxy_key.clone())
+            .or_default()
+            .entry(row.bucket_start_epoch)
+            .or_insert_with(|| ForwardProxyWeightHourlyStatsPoint {
+                sample_count: 0,
                 min_weight: row.min_weight,
                 max_weight: row.max_weight,
-                avg_weight: row.avg_weight,
+                avg_weight: 0.0,
                 last_weight: row.last_weight,
-            },
-        );
+            });
+        let combined_sample_count = point.sample_count + row.sample_count;
+        point.avg_weight = if combined_sample_count > 0 {
+            ((point.avg_weight * point.sample_count as f64)
+                + (row.avg_weight * row.sample_count as f64))
+                / combined_sample_count as f64
+        } else {
+            row.avg_weight
+        };
+        point.sample_count = combined_sample_count;
+        point.min_weight = point.min_weight.min(row.min_weight);
+        point.max_weight = point.max_weight.max(row.max_weight);
+
+        let current_latest = latest_sample_epochs.get(&key).copied().unwrap_or(i64::MIN);
+        if row.last_sample_epoch_us >= current_latest {
+            point.last_weight = row.last_weight;
+            latest_sample_epochs.insert(key, row.last_sample_epoch_us);
+        }
     }
 
     Ok(grouped)
@@ -512,7 +608,7 @@ pub(crate) async fn query_forward_proxy_weight_last_before(
 
     let mut builder = QueryBuilder::<Sqlite>::new(
         r#"
-        SELECT latest.proxy_key, latest.last_weight
+        SELECT latest.proxy_key, latest.last_weight, latest.last_sample_epoch_us
         FROM forward_proxy_weight_hourly AS latest
         INNER JOIN (
             SELECT proxy_key, MAX(bucket_start_epoch) AS bucket_start_epoch
@@ -544,10 +640,24 @@ pub(crate) async fn query_forward_proxy_weight_last_before(
             format!("failed to query forward proxy weight carry values before {range_start_epoch}")
         })?;
 
-    Ok(rows
-        .into_iter()
-        .map(|row| (row.proxy_key, row.last_weight))
-        .collect())
+    let alias_map = load_forward_proxy_key_aliases(pool).await?;
+    let mut grouped = HashMap::new();
+    let mut latest_sample_epochs = HashMap::new();
+    for row in rows {
+        let proxy_key = alias_map
+            .get(&row.proxy_key)
+            .cloned()
+            .unwrap_or(row.proxy_key.clone());
+        let current_latest = latest_sample_epochs
+            .get(&proxy_key)
+            .copied()
+            .unwrap_or(i64::MIN);
+        if row.last_sample_epoch_us >= current_latest {
+            grouped.insert(proxy_key.clone(), row.last_weight);
+            latest_sample_epochs.insert(proxy_key, row.last_sample_epoch_us);
+        }
+    }
+    Ok(grouped)
 }
 
 pub(crate) async fn build_forward_proxy_settings_response(
@@ -616,6 +726,7 @@ pub(crate) async fn build_forward_proxy_settings_response(
 
 pub(crate) async fn build_forward_proxy_binding_nodes_response(
     state: &AppState,
+    extra_proxy_keys: &[String],
 ) -> Result<Vec<ForwardProxyBindingNodeResponse>> {
     const BUCKET_SECONDS: i64 = 3600;
     const BUCKET_COUNT: i64 = 24;
@@ -626,6 +737,45 @@ pub(crate) async fn build_forward_proxy_binding_nodes_response(
         let manager = state.forward_proxy.lock().await;
         manager.binding_nodes()
     };
+    let current_node_keys = nodes
+        .iter()
+        .map(|node| node.key.clone())
+        .collect::<HashSet<_>>();
+
+    let mut seen = nodes
+        .iter()
+        .map(|node| node.key.clone())
+        .collect::<HashSet<_>>();
+    let extra_keys = extra_proxy_keys
+        .iter()
+        .map(|key| key.trim())
+        .filter(|key| !key.is_empty())
+        .map(ToOwned::to_owned)
+        .filter(|key| seen.insert(key.clone()))
+        .collect::<Vec<_>>();
+    let mut metadata_keys = nodes
+        .iter()
+        .map(|node| node.key.clone())
+        .collect::<Vec<_>>();
+    metadata_keys.extend(extra_keys.iter().cloned());
+    let metadata_map = load_forward_proxy_metadata_history(&state.pool, &metadata_keys).await?;
+
+    for proxy_key in extra_keys {
+        let metadata = metadata_map.get(&proxy_key);
+        nodes.push(ForwardProxyBindingNodeResponse {
+            key: proxy_key.clone(),
+            source: "missing".to_string(),
+            display_name: metadata
+                .map(|item| item.display_name.clone())
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| proxy_key.clone()),
+            protocol_label: "UNKNOWN".to_string(),
+            penalized: false,
+            selectable: false,
+            last24h: Vec::new(),
+        });
+    }
+
     if nodes.is_empty() {
         return Ok(nodes);
     }
@@ -637,13 +787,19 @@ pub(crate) async fn build_forward_proxy_binding_nodes_response(
         query_forward_proxy_hourly_stats(&state.pool, range_start_epoch, range_end_epoch).await?;
 
     for node in &mut nodes {
-        node.last24h = build_forward_proxy_hourly_buckets(
-            hourly_map.get(&node.key),
-            range_start_epoch,
-            BUCKET_SECONDS,
-            BUCKET_COUNT,
-        )?;
+        let hourly = hourly_map.get(&node.key);
+        node.last24h = if current_node_keys.contains(&node.key) || hourly.is_some() {
+            build_forward_proxy_hourly_buckets(
+                hourly,
+                range_start_epoch,
+                BUCKET_SECONDS,
+                BUCKET_COUNT,
+            )?
+        } else {
+            Vec::new()
+        };
     }
+    nodes.sort_by(|lhs, rhs| lhs.display_name.cmp(&rhs.display_name));
 
     Ok(nodes)
 }
@@ -2495,6 +2651,7 @@ impl ForwardProxyRouteScope {
             .into_iter()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
+            .map(|value| normalize_single_proxy_key(&value).unwrap_or(value))
             .collect::<Vec<_>>();
         match (
             normalized_group_name,
@@ -3992,7 +4149,7 @@ pub(crate) fn query_flag_true(query: &HashMap<String, String>, key: &str) -> boo
     })
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct ForwardProxyAttemptWindowStats {
     pub(crate) attempts: i64,
     pub(crate) success_count: i64,
