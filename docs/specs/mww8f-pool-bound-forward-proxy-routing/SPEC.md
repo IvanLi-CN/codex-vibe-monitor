@@ -94,6 +94,7 @@
   - `selectable`
 - 新保存的 `boundProxyKeys` 必须写入稳定节点身份键；稳定键默认忽略纯展示字段，如 share-link fragment、`ps`、仅用于命名的 label，但保留协议、主机、端口、账号/UUID/密码与传输配置等真实连接身份字段。
 - 若当前 inventory 中仍能定位到同一真实节点，`forwardProxyNodes[].aliasKeys` 必须返回可映射到当前稳定键的历史 legacy key，供前端在编辑弹窗中自动规范化旧绑定并继续保存。
+- `forwardProxyNodes[].aliasKeys` 对 `vless/trojan` 必须同时覆盖“显式写出默认参数”和“省略默认参数”这两类旧式 share-link 哈希，只要真实连接身份不变，都应映射回同一当前稳定键。
 - `forwardProxyNodes[].displayName` 只负责展示，不参与绑定匹配；非 ASCII 名称必须按人类可读文本返回。
 - `PUT /api/pool/upstream-account-groups/:groupName` 支持更新 `note` 与 `boundProxyKeys`；若分组不存在实际账号，返回 `404`。
 - 当 `boundProxyKeys` 非空但当前选中集合里没有任何 `selectable=true` 的节点时，`PUT /api/pool/upstream-account-groups/:groupName` 必须返回 `400`，拒绝把“零可选节点”状态再次写回 metadata。

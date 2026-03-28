@@ -1547,28 +1547,33 @@ fn legacy_bound_proxy_keys_still_route_to_matching_stable_endpoints() {
 
 #[test]
 fn legacy_vless_and_trojan_bound_proxy_keys_route_to_matching_stable_endpoints() {
-    let legacy_vless_proxy_url = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=tcp#东京节点";
-    let normalized_vless_proxy_url =
-        normalize_share_link_scheme(legacy_vless_proxy_url, "vless").expect("normalize vless url");
-    let legacy_vless_proxy_key = {
+    let explicit_vless_proxy_url = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?encryption=none&security=none&type=tcp#东京节点";
+    let normalized_vless_proxy_url = normalize_share_link_scheme(explicit_vless_proxy_url, "vless")
+        .expect("normalize vless url");
+    let explicit_legacy_vless_proxy_key = {
         let parsed = Url::parse(&normalized_vless_proxy_url).expect("parse normalized vless url");
         stable_forward_proxy_key(&canonical_share_link_identity(&parsed))
     };
-    assert_eq!(
-        legacy_bound_proxy_key_aliases(&normalized_vless_proxy_url, ForwardProxyProtocol::Vless),
-        vec![legacy_vless_proxy_key.clone()]
-    );
+    let omitted_default_vless_proxy_key = stable_forward_proxy_key(&canonical_share_link_identity(
+        &Url::parse("vless://11111111-1111-1111-1111-111111111111@vless.example.com:443#东京节点")
+            .expect("parse omitted-default vless url"),
+    ));
+    let vless_aliases =
+        legacy_bound_proxy_key_aliases(&normalized_vless_proxy_url, ForwardProxyProtocol::Vless);
+    assert!(vless_aliases.contains(&explicit_legacy_vless_proxy_key));
+    assert!(vless_aliases.contains(&omitted_default_vless_proxy_key));
     assert!(
         legacy_bound_proxy_key_aliases(&normalized_vless_proxy_url, ForwardProxyProtocol::Trojan)
             .is_empty()
     );
     let stable_vless_proxy_key =
-        normalize_single_proxy_key(legacy_vless_proxy_url).expect("stable vless proxy key");
-    assert_ne!(legacy_vless_proxy_key, stable_vless_proxy_key);
+        normalize_single_proxy_key(explicit_vless_proxy_url).expect("stable vless proxy key");
+    assert_ne!(explicit_legacy_vless_proxy_key, stable_vless_proxy_key);
+    assert_ne!(omitted_default_vless_proxy_key, stable_vless_proxy_key);
 
     let mut vless_manager = ForwardProxyManager::new(
         ForwardProxySettings {
-            proxy_urls: vec![legacy_vless_proxy_url.to_string()],
+            proxy_urls: vec![explicit_vless_proxy_url.to_string()],
             subscription_urls: vec![],
             subscription_update_interval_secs: 3600,
             insert_direct: false,
@@ -1582,37 +1587,43 @@ fn legacy_vless_and_trojan_bound_proxy_keys_route_to_matching_stable_endpoints()
     }
     let vless_scope = ForwardProxyRouteScope::from_group_binding(
         Some("东京组"),
-        vec![legacy_vless_proxy_key.clone()],
+        vec![omitted_default_vless_proxy_key.clone()],
     );
     let selected_vless = vless_manager
         .select_proxy_for_scope(&vless_scope)
         .expect("legacy vless bound key should still select proxy");
     assert_eq!(selected_vless.key, stable_vless_proxy_key);
 
-    let legacy_trojan_proxy_url =
-        "trojan://password@trojan.example.com:443?type=kcp&seed=alpha#东京节点";
+    let explicit_trojan_proxy_url =
+        "trojan://password@trojan.example.com:443?security=tls&type=tcp#东京节点";
     let normalized_trojan_proxy_url =
-        normalize_share_link_scheme(legacy_trojan_proxy_url, "trojan")
+        normalize_share_link_scheme(explicit_trojan_proxy_url, "trojan")
             .expect("normalize trojan url");
-    let legacy_trojan_proxy_key = {
+    let explicit_legacy_trojan_proxy_key = {
         let parsed = Url::parse(&normalized_trojan_proxy_url).expect("parse normalized trojan url");
         stable_forward_proxy_key(&canonical_share_link_identity(&parsed))
     };
-    assert_eq!(
-        legacy_bound_proxy_key_aliases(&normalized_trojan_proxy_url, ForwardProxyProtocol::Trojan),
-        vec![legacy_trojan_proxy_key.clone()]
-    );
+    let omitted_default_trojan_proxy_key =
+        stable_forward_proxy_key(&canonical_share_link_identity(
+            &Url::parse("trojan://password@trojan.example.com:443#东京节点")
+                .expect("parse omitted-default trojan url"),
+        ));
+    let trojan_aliases =
+        legacy_bound_proxy_key_aliases(&normalized_trojan_proxy_url, ForwardProxyProtocol::Trojan);
+    assert!(trojan_aliases.contains(&explicit_legacy_trojan_proxy_key));
+    assert!(trojan_aliases.contains(&omitted_default_trojan_proxy_key));
     assert!(
         legacy_bound_proxy_key_aliases(&normalized_trojan_proxy_url, ForwardProxyProtocol::Vless)
             .is_empty()
     );
     let stable_trojan_proxy_key =
-        normalize_single_proxy_key(legacy_trojan_proxy_url).expect("stable trojan proxy key");
-    assert_ne!(legacy_trojan_proxy_key, stable_trojan_proxy_key);
+        normalize_single_proxy_key(explicit_trojan_proxy_url).expect("stable trojan proxy key");
+    assert_ne!(explicit_legacy_trojan_proxy_key, stable_trojan_proxy_key);
+    assert_ne!(omitted_default_trojan_proxy_key, stable_trojan_proxy_key);
 
     let mut trojan_manager = ForwardProxyManager::new(
         ForwardProxySettings {
-            proxy_urls: vec![legacy_trojan_proxy_url.to_string()],
+            proxy_urls: vec![explicit_trojan_proxy_url.to_string()],
             subscription_urls: vec![],
             subscription_update_interval_secs: 3600,
             insert_direct: false,
@@ -1626,7 +1637,7 @@ fn legacy_vless_and_trojan_bound_proxy_keys_route_to_matching_stable_endpoints()
     }
     let trojan_scope = ForwardProxyRouteScope::from_group_binding(
         Some("东京组"),
-        vec![legacy_trojan_proxy_key.clone()],
+        vec![omitted_default_trojan_proxy_key.clone()],
     );
     let selected_trojan = trojan_manager
         .select_proxy_for_scope(&trojan_scope)

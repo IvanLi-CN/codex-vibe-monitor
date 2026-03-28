@@ -4403,7 +4403,7 @@ mod tests {
             .find(|candidate| candidate.key == canonical_key)
             .expect("vless binding node should be present");
 
-        assert_eq!(node.alias_keys, vec![legacy_alias]);
+        assert!(node.alias_keys.contains(&legacy_alias));
     }
 
     #[test]

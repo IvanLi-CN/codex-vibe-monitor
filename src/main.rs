@@ -22815,9 +22815,46 @@ pub(crate) fn legacy_bound_proxy_key_aliases(
         return Vec::new();
     }
 
-    vec![stable_forward_proxy_key(&canonical_share_link_identity(
-        &parsed,
-    ))]
+    let default_specs = match protocol {
+        ForwardProxyProtocol::Vless => &[
+            LegacyDefaultQueryParamSpec {
+                keys: &["encryption"],
+                explicit_keys: &["encryption"],
+                default_value: "none",
+            },
+            LegacyDefaultQueryParamSpec {
+                keys: &["security"],
+                explicit_keys: &["security"],
+                default_value: "none",
+            },
+            LegacyDefaultQueryParamSpec {
+                keys: &["type", "net"],
+                explicit_keys: &["type", "net"],
+                default_value: "tcp",
+            },
+        ][..],
+        ForwardProxyProtocol::Trojan => &[
+            LegacyDefaultQueryParamSpec {
+                keys: &["security"],
+                explicit_keys: &["security"],
+                default_value: "tls",
+            },
+            LegacyDefaultQueryParamSpec {
+                keys: &["type", "net"],
+                explicit_keys: &["type", "net"],
+                default_value: "tcp",
+            },
+        ][..],
+        _ => &[][..],
+    };
+
+    let mut aliases = legacy_share_link_identity_variants(&parsed, default_specs)
+        .into_iter()
+        .map(|identity| stable_forward_proxy_key(&identity))
+        .collect::<Vec<_>>();
+    aliases.sort();
+    aliases.dedup();
+    aliases
 }
 
 fn normalize_proxy_endpoints_from_urls(urls: &[String], source: &str) -> Vec<ForwardProxyEndpoint> {
@@ -23048,6 +23085,91 @@ fn canonical_query_string(query_pairs: Vec<(String, String)>) -> String {
         .join("&")
 }
 
+#[derive(Clone, Copy)]
+struct LegacyDefaultQueryParamSpec {
+    keys: &'static [&'static str],
+    explicit_keys: &'static [&'static str],
+    default_value: &'static str,
+}
+
+fn legacy_share_link_identity_variants(
+    url: &Url,
+    default_specs: &[LegacyDefaultQueryParamSpec],
+) -> Vec<String> {
+    let original_query_pairs = sorted_query_pairs(url);
+    let mut static_pairs = Vec::new();
+    let mut handled_keys = HashSet::new();
+    let mut variant_choices: Vec<Vec<Option<(String, String)>>> = Vec::new();
+
+    for spec in default_specs {
+        let matching_pairs = original_query_pairs
+            .iter()
+            .filter(|(key, _)| spec.keys.contains(&key.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        for key in spec.keys {
+            handled_keys.insert(*key);
+        }
+
+        let all_default = matching_pairs.is_empty()
+            || matching_pairs
+                .iter()
+                .all(|(_, value)| value.trim().eq_ignore_ascii_case(spec.default_value));
+        if !all_default {
+            static_pairs.extend(matching_pairs);
+            continue;
+        }
+
+        let mut explicit_pairs = matching_pairs
+            .iter()
+            .map(|(key, _)| (key.clone(), spec.default_value.to_string()))
+            .collect::<Vec<_>>();
+        for key in spec.explicit_keys {
+            if explicit_pairs.iter().any(|(existing, _)| existing == key) {
+                continue;
+            }
+            explicit_pairs.push(((*key).to_string(), spec.default_value.to_string()));
+        }
+
+        let mut choices = vec![None];
+        choices.extend(explicit_pairs.into_iter().map(Some));
+        variant_choices.push(choices);
+    }
+
+    static_pairs.extend(
+        original_query_pairs
+            .into_iter()
+            .filter(|(key, _)| !handled_keys.contains(key.as_str())),
+    );
+    static_pairs.sort();
+
+    let mut variants = vec![static_pairs];
+    for choices in variant_choices {
+        let mut next = Vec::new();
+        let mut seen = HashSet::new();
+        for variant in &variants {
+            for choice in &choices {
+                let mut updated = variant.clone();
+                if let Some((key, value)) = choice {
+                    updated.push((key.clone(), value.clone()));
+                }
+                updated.sort();
+                let query = canonical_query_string(updated.clone());
+                if seen.insert(query) {
+                    next.push(updated);
+                }
+            }
+        }
+        variants = next;
+    }
+
+    variants
+        .into_iter()
+        .map(|query_pairs| share_link_identity_with_query_pairs(url, query_pairs))
+        .collect()
+}
+
 fn canonical_stream_query_pairs(
     url: &Url,
     default_security: Option<&str>,
@@ -23232,22 +23354,17 @@ fn canonical_trojan_share_link_identity(url: &Url) -> String {
 }
 
 fn canonical_share_link_identity(url: &Url) -> String {
+    share_link_identity_with_query_pairs(url, sorted_query_pairs(url))
+}
+
+fn share_link_identity_with_query_pairs(url: &Url, query_pairs: Vec<(String, String)>) -> String {
     let scheme = url.scheme().to_ascii_lowercase();
     let username = percent_decode_once_lossy(url.username());
     let password = url.password().map(percent_decode_once_lossy);
     let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
     let port = url.port_or_known_default().unwrap_or_default();
     let path = url.path();
-    let mut query_pairs = url
-        .query_pairs()
-        .map(|(key, value)| (key.into_owned(), value.into_owned()))
-        .collect::<Vec<_>>();
-    query_pairs.sort();
-    let query = query_pairs
-        .into_iter()
-        .map(|(key, value)| format!("{key}={value}"))
-        .collect::<Vec<_>>()
-        .join("&");
+    let query = canonical_query_string(query_pairs);
 
     let mut identity = format!("{scheme}://");
     if !username.is_empty() {
