@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.30.9",
+  "base_stable_version": "1.30.8",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-28T10:37:40Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.30.9",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "24c74861d8b5062b564e0f7990a7b3aa87e0091f",
+  "pr_number": 254,
+  "pr_title": "fix(web): streamline batch oauth action feedback",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.30.9",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.30.9,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "abc38a3c31c197b51850f5a7f16b94fd6e00b6ce",
+  "type_label": "type:patch"
+}
