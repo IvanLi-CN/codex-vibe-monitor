@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import RecordsPage from './Records'
 import { createDefaultCustomRange, createDefaultInvocationRecordsDraft } from '../lib/invocationRecords'
@@ -109,13 +110,13 @@ function render(ui: React.ReactNode) {
   document.body.appendChild(host)
   root = createRoot(host)
   act(() => {
-    root?.render(ui)
+    root?.render(<MemoryRouter>{ui}</MemoryRouter>)
   })
 }
 
 function rerender(ui: React.ReactNode) {
   act(() => {
-    root?.render(ui)
+    root?.render(<MemoryRouter>{ui}</MemoryRouter>)
   })
 }
 

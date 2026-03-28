@@ -48,11 +48,13 @@ export default function DashboardPage() {
           />
         </div>
       </section>
-      <SharedUpstreamAccountDetailDrawer
-        open={upstreamAccountId != null}
-        accountId={upstreamAccountId}
-        onClose={closeUpstreamAccount}
-      />
+      {upstreamAccountId != null ? (
+        <SharedUpstreamAccountDetailDrawer
+          open
+          accountId={upstreamAccountId}
+          onClose={closeUpstreamAccount}
+        />
+      ) : null}
     </div>
   )
 }
