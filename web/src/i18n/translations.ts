@@ -491,6 +491,8 @@ const baseTranslations = {
       "Completed rows stay visible on this page so you can finish the rest of the batch without losing context.",
     "accountPool.upstreamAccounts.batchOauth.regenerateRequired":
       "Metadata changed. Generate a fresh OAuth URL for this row before completing login.",
+    "accountPool.upstreamAccounts.batchOauth.generatedAndCopied":
+      "OAuth URL generated and copied. Complete sign-in elsewhere, then paste the callback URL back into this row.",
     "accountPool.upstreamAccounts.batchOauth.copyInlineFallback":
       "Copy failed. Select the Auth URL field and copy it manually.",
     "accountPool.upstreamAccounts.batchOauth.completed":
@@ -1995,6 +1997,8 @@ const baseTranslations = {
       "已完成的行会保留在当前页面，方便继续处理剩余账号。",
     "accountPool.upstreamAccounts.batchOauth.regenerateRequired":
       "元数据已变更，请先为这一行重新生成 OAuth 地址再完成登录。",
+    "accountPool.upstreamAccounts.batchOauth.generatedAndCopied":
+      "OAuth 地址已生成并复制。请在其他浏览器完成登录，再把回调链接粘贴回这一行。",
     "accountPool.upstreamAccounts.batchOauth.copyInlineFallback":
       "复制失败，请直接选中授权地址字段手动复制。",
     "accountPool.upstreamAccounts.batchOauth.completed":

@@ -66,6 +66,7 @@ export const Generate: Story = {
     const button = canvas.getByRole("button", { name: /generate oauth url/i });
 
     await userEvent.hover(button);
+    await new Promise((resolve) => window.setTimeout(resolve, 330));
     await expect(
       within(document.body).getByText(/generate oauth url/i),
     ).toBeInTheDocument();

@@ -1558,6 +1558,25 @@ export default function UpstreamAccountCreatePage() {
   const oauthMailboxToneResetRef = useRef<number | null>(null);
   const batchMailboxToneResetRef = useRef<Record<string, number>>({});
   const batchRowsRef = useRef<BatchOauthRow[]>(initialBatchRows);
+  const batchSessionFeedbackStateByRowRef = useRef<
+    Record<
+      string,
+      Pick<LoginSessionStatusResponse, "loginId" | "status" | "authUrl"> | null
+    >
+  >(
+    Object.fromEntries(
+      initialBatchRows.map((row) => [
+        row.id,
+        row.session
+          ? {
+              loginId: row.session.loginId,
+              status: row.session.status,
+              authUrl: row.session.authUrl ?? null,
+            }
+          : null,
+      ]),
+    ),
+  );
   const pendingOauthSessionSyncRef = useRef<
     Record<string, PendingOauthSessionSyncRecord>
   >({});
@@ -1652,6 +1671,18 @@ export default function UpstreamAccountCreatePage() {
   }, []);
   useEffect(() => {
     batchRowsRef.current = batchRows;
+    batchSessionFeedbackStateByRowRef.current = Object.fromEntries(
+      batchRows.map((row) => [
+        row.id,
+        row.session
+          ? {
+              loginId: row.session.loginId,
+              status: row.session.status,
+              authUrl: row.session.authUrl ?? null,
+            }
+          : null,
+      ]),
+    );
   }, [batchRows]);
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -4421,6 +4452,47 @@ export default function UpstreamAccountCreatePage() {
     }));
   };
 
+  const canApplyBatchOauthCopyFeedback = (rowId: string, loginId: string) => {
+    const session = batchSessionFeedbackStateByRowRef.current[rowId];
+    if (
+      !session ||
+      session.loginId !== loginId ||
+      session.status !== "pending" ||
+      !session.authUrl
+    ) {
+      return false;
+    }
+    const currentRow = batchRowsRef.current.find((item) => item.id === rowId);
+    if (currentRow?.session?.loginId !== loginId) {
+      return true;
+    }
+    return isActivePendingOauthSession(currentRow.session);
+  };
+
+  const resolveBatchOauthCopyFeedback = (
+    rowId: string,
+    loginId: string,
+    result: Awaited<ReturnType<typeof copyText>>,
+    successHint: string,
+  ) => {
+    if (!canApplyBatchOauthCopyFeedback(rowId, loginId)) {
+      return null;
+    }
+    const fallbackHint = t(
+      "accountPool.upstreamAccounts.batchOauth.copyInlineFallback",
+    );
+    setBatchManualCopyRowId((current) => {
+      if (!canApplyBatchOauthCopyFeedback(rowId, loginId)) {
+        return current;
+      }
+      return result.ok ? (current === rowId ? null : current) : rowId;
+    });
+    return {
+      sessionHint: result.ok ? successHint : fallbackHint,
+      actionError: result.ok ? null : fallbackHint,
+    };
+  };
+
   const handleBatchGenerateOauthUrl = async (rowId: string) => {
     const row = batchRows.find((item) => item.id === rowId);
     if (!row) return;
@@ -4456,26 +4528,57 @@ export default function UpstreamAccountCreatePage() {
         mailboxSessionId: row.mailboxSession?.sessionId,
         mailboxAddress: row.mailboxSession?.emailAddress,
       });
-        createdPendingOauthSessionSignaturesRef.current[response.loginId] =
-          buildPendingOauthSessionSnapshot(
-            response.loginId,
-            oauthLoginSessionPayload,
-            response.updatedAt ?? null,
-          ).signature;
-      setBatchManualCopyRowId((current) =>
-        current === rowId ? null : current,
-      );
+      createdPendingOauthSessionSignaturesRef.current[response.loginId] =
+        buildPendingOauthSessionSnapshot(
+          response.loginId,
+          oauthLoginSessionPayload,
+          response.updatedAt ?? null,
+        ).signature;
+      const generatedHint = t("accountPool.upstreamAccounts.oauth.generated", {
+        expiresAt: formatDateTime(response.expiresAt),
+      });
+      batchSessionFeedbackStateByRowRef.current[rowId] = {
+        loginId: response.loginId,
+        status: response.status,
+        authUrl: response.authUrl ?? null,
+      };
       updateBatchRow(rowId, (current) => ({
         ...current,
         busyAction: null,
         callbackUrl: "",
         session: response,
-        sessionHint: t("accountPool.upstreamAccounts.oauth.generated", {
-          expiresAt: formatDateTime(response.expiresAt),
-        }),
+        sessionHint: generatedHint,
         needsRefresh: false,
         actionError: null,
       }));
+      if (response.authUrl) {
+        const copyResult = await copyText(response.authUrl, {
+          preferExecCommand: true,
+        });
+        const copyFeedback = resolveBatchOauthCopyFeedback(
+          rowId,
+          response.loginId,
+          copyResult,
+          t("accountPool.upstreamAccounts.batchOauth.generatedAndCopied"),
+        );
+        if (!copyFeedback) {
+          return;
+        }
+        updateBatchRow(rowId, (current) => ({
+          ...(current.session?.loginId !== response.loginId
+            ? current
+            : {
+                ...current,
+                sessionHint: copyFeedback.sessionHint,
+                actionError: copyFeedback.actionError,
+              }),
+        }));
+      } else if (
+        batchSessionFeedbackStateByRowRef.current[rowId]?.loginId ===
+        response.loginId
+      ) {
+        setBatchManualCopyRowId((current) => (current === rowId ? null : current));
+      }
     } catch (err) {
       updateBatchRow(rowId, (current) => ({
         ...current,
@@ -4518,16 +4621,20 @@ export default function UpstreamAccountCreatePage() {
       preferExecCommand: true,
     });
 
-    setBatchManualCopyRowId(result.ok ? null : rowId);
+    const copyFeedback = resolveBatchOauthCopyFeedback(
+      rowId,
+      row.session.loginId,
+      result,
+      t("accountPool.upstreamAccounts.oauth.copied"),
+    );
+    if (!copyFeedback) {
+      return;
+    }
 
     updateBatchRow(rowId, (current) => ({
       ...current,
-      sessionHint: result.ok
-        ? t("accountPool.upstreamAccounts.oauth.copied")
-        : t("accountPool.upstreamAccounts.batchOauth.copyInlineFallback"),
-      actionError: result.ok
-        ? null
-        : t("accountPool.upstreamAccounts.batchOauth.copyInlineFallback"),
+      sessionHint: copyFeedback.sessionHint,
+      actionError: copyFeedback.actionError,
     }));
   };
 
