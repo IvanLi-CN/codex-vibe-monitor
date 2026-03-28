@@ -30488,6 +30488,63 @@ async fn invocation_hourly_rollup_ignores_null_status_for_success_failure_counts
     assert_f64_close(row.total_cost, 0.07);
 }
 
+#[test]
+fn invocation_archive_pruned_success_details_require_empty_legacy_http_200_error_message() {
+    let failed_legacy_http_200 = InvocationHourlySourceRecord {
+        id: 1,
+        occurred_at: "2026-03-28 00:00:00".to_string(),
+        source: SOURCE_PROXY.to_string(),
+        status: Some("http_200".to_string()),
+        detail_level: DETAIL_LEVEL_STRUCTURED_ONLY.to_string(),
+        total_tokens: None,
+        cost: None,
+        error_message: Some("upstream parse failed".to_string()),
+        failure_kind: None,
+        failure_class: None,
+        is_actionable: None,
+        payload: None,
+        t_total_ms: None,
+        t_req_read_ms: None,
+        t_req_parse_ms: None,
+        t_upstream_connect_ms: None,
+        t_upstream_ttfb_ms: None,
+        t_upstream_stream_ms: None,
+        t_resp_parse_ms: None,
+        t_persist_ms: None,
+    };
+    assert!(
+        !invocation_archive_has_pruned_success_details(&[failed_legacy_http_200]),
+        "legacy http_200 rows with a non-empty error message must not suppress archive rollups",
+    );
+
+    let success_like_legacy_http_200 = InvocationHourlySourceRecord {
+        id: 2,
+        occurred_at: "2026-03-28 00:00:00".to_string(),
+        source: SOURCE_PROXY.to_string(),
+        status: Some("http_200".to_string()),
+        detail_level: DETAIL_LEVEL_STRUCTURED_ONLY.to_string(),
+        total_tokens: None,
+        cost: None,
+        error_message: Some("   ".to_string()),
+        failure_kind: None,
+        failure_class: None,
+        is_actionable: None,
+        payload: None,
+        t_total_ms: None,
+        t_req_read_ms: None,
+        t_req_parse_ms: None,
+        t_upstream_connect_ms: None,
+        t_upstream_ttfb_ms: None,
+        t_upstream_stream_ms: None,
+        t_resp_parse_ms: None,
+        t_persist_ms: None,
+    };
+    assert!(
+        invocation_archive_has_pruned_success_details(&[success_like_legacy_http_200]),
+        "legacy http_200 rows with an empty error message should still count as pruned success-like rows",
+    );
+}
+
 #[tokio::test]
 async fn hourly_timeseries_omits_pre_cutoff_partial_hour_rollups() {
     let mut config = test_config();

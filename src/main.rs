@@ -6944,7 +6944,10 @@ fn invocation_archive_target_needs_full_payload(target: &str) -> bool {
 fn invocation_archive_has_pruned_success_details(rows: &[InvocationHourlySourceRecord]) -> bool {
     rows.iter().any(|row| {
         row.detail_level != DETAIL_LEVEL_FULL
-            && invocation_status_is_success_like(row.status.as_deref(), None)
+            && invocation_status_is_success_like(
+                row.status.as_deref(),
+                row.error_message.as_deref(),
+            )
     })
 }
 
