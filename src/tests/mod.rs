@@ -314,6 +314,22 @@ fn stable_proxy_keys_ignore_share_link_display_name_only_changes() {
             "trojan://password@trojan.example.com:443?security=tls&type=tcp#Tokyo%20Edge"
         ),
     );
+    assert_ne!(
+        normalize_single_proxy_key(
+            "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?type=tcp&headerType=http&host=cdn-a.example.com#节点A"
+        ),
+        normalize_single_proxy_key(
+            "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?type=tcp&headerType=http&host=cdn-b.example.com#节点B"
+        ),
+    );
+    assert_ne!(
+        normalize_single_proxy_key(
+            "trojan://password@trojan.example.com:443?type=kcp&seed=alpha#节点A"
+        ),
+        normalize_single_proxy_key(
+            "trojan://password@trojan.example.com:443?type=kcp&seed=beta#节点B"
+        ),
+    );
     assert_eq!(
         normalize_single_proxy_key(
             "ss://2022-blake3-aes-128-gcm:%2B%2F%3D@127.0.0.1:8388#东京节点"
