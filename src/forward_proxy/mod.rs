@@ -636,7 +636,11 @@ pub(crate) async fn build_forward_proxy_binding_nodes_response(
 
     for node in &mut nodes {
         node.last24h = build_forward_proxy_hourly_buckets(
-            hourly_map.get(&node.key),
+            if node.key == FORWARD_PROXY_DIRECT_KEY {
+                None
+            } else {
+                hourly_map.get(&node.key)
+            },
             range_start_epoch,
             BUCKET_SECONDS,
             BUCKET_COUNT,
@@ -2601,9 +2605,6 @@ impl ForwardProxyManager {
                 merged.push(endpoint);
             }
         }
-        if seen.insert(FORWARD_PROXY_DIRECT_KEY.to_string()) {
-            merged.push(ForwardProxyEndpoint::direct());
-        }
         self.endpoints = merged;
 
         let algo = self.algo;
@@ -2707,12 +2708,13 @@ impl ForwardProxyManager {
     }
 
     fn selectable_bound_proxy_keys(&self, bound_proxy_keys: &[String]) -> Vec<String> {
-        let selectable = self
+        let mut selectable = self
             .endpoints
             .iter()
             .filter(|endpoint| endpoint.is_bound_selectable())
             .map(|endpoint| endpoint.key.as_str())
             .collect::<HashSet<_>>();
+        selectable.insert(FORWARD_PROXY_DIRECT_KEY);
         let mut seen = HashSet::new();
         let mut available = Vec::new();
         for key in bound_proxy_keys {
@@ -2817,6 +2819,11 @@ impl ForwardProxyManager {
             .entry(group_name.to_string())
             .or_default();
         state.current_proxy_key = Some(selected_key.clone());
+        if selected_key == FORWARD_PROXY_DIRECT_KEY {
+            return Ok(SelectedForwardProxy::from_endpoint(
+                &ForwardProxyEndpoint::direct(),
+            ));
+        }
         let endpoint = self
             .endpoints
             .iter()
@@ -2925,6 +2932,15 @@ impl ForwardProxyManager {
                 }
             })
             .collect::<Vec<_>>();
+        nodes.push(ForwardProxyBindingNodeResponse {
+            key: FORWARD_PROXY_DIRECT_KEY.to_string(),
+            source: FORWARD_PROXY_SOURCE_DIRECT.to_string(),
+            display_name: FORWARD_PROXY_DIRECT_LABEL.to_string(),
+            protocol_label: ForwardProxyProtocol::Direct.label().to_string(),
+            penalized: false,
+            selectable: true,
+            last24h: Vec::new(),
+        });
         nodes.sort_by(|lhs, rhs| lhs.display_name.cmp(&rhs.display_name));
         nodes
     }
@@ -4152,6 +4168,8 @@ mod tests {
     fn binding_nodes_include_selectable_direct_with_protocol_label() {
         let manager = manager_with_manual_proxy();
 
+        assert!(!manager.runtime.contains_key(FORWARD_PROXY_DIRECT_KEY));
+
         let direct = manager
             .binding_nodes()
             .into_iter()
@@ -4161,6 +4179,7 @@ mod tests {
         assert_eq!(direct.display_name, FORWARD_PROXY_DIRECT_LABEL);
         assert_eq!(direct.protocol_label, "DIRECT");
         assert!(direct.selectable);
+        assert!(!direct.penalized);
     }
 
     #[test]

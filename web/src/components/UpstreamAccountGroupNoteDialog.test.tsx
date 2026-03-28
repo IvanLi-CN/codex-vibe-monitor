@@ -198,4 +198,69 @@ describe("UpstreamAccountGroupNoteDialog", () => {
     expect(identityHints.length).toBeGreaterThanOrEqual(3);
     expect(text).toContain("Missing");
   });
+
+  it("shows visible identity hints for long truncated node names even when labels are unique", () => {
+    const nodes: ForwardProxyBindingNode[] = [
+      {
+        key: "edge-long-a",
+        source: "subscription",
+        displayName: "ivan-hinet-vless-vision-west-region-priority-a1",
+        protocolLabel: "VLESS",
+        penalized: false,
+        selectable: true,
+        last24h: [],
+      },
+      {
+        key: "edge-long-b",
+        source: "subscription",
+        displayName: "ivan-hinet-vless-vision-west-region-priority-b9",
+        protocolLabel: "VLESS",
+        penalized: false,
+        selectable: true,
+        last24h: [],
+      },
+    ];
+
+    render(
+      <UpstreamAccountGroupNoteDialog
+        open
+        groupName="overflow"
+        note=""
+        existing
+        boundProxyKeys={["edge-long-a"]}
+        availableProxyNodes={nodes}
+        onNoteChange={() => undefined}
+        onBoundProxyKeysChange={() => undefined}
+        onClose={() => undefined}
+        onSave={() => undefined}
+        title="Edit group settings"
+        existingDescription="Existing group"
+        draftDescription="Draft group"
+        noteLabel="Group note"
+        notePlaceholder="Add note"
+        cancelLabel="Cancel"
+        saveLabel="Save"
+        closeLabel="Close"
+        existingBadgeLabel="Persisted group"
+        draftBadgeLabel="Draft group"
+        proxyBindingsLabel="Bound proxy nodes"
+        proxyBindingsHint="Leave empty to keep automatic routing."
+        proxyBindingsAutomaticLabel="Automatic routing"
+        proxyBindingsEmptyLabel="No proxy nodes available."
+        proxyBindingsMissingLabel="Missing"
+        proxyBindingsUnavailableLabel="Unavailable"
+        proxyBindingsChartLabel="24h request trend"
+        proxyBindingsChartSuccessLabel="Success"
+        proxyBindingsChartFailureLabel="Failure"
+        proxyBindingsChartEmptyLabel="No 24h data"
+        proxyBindingsChartTotalLabel="Total requests"
+        proxyBindingsChartAriaLabel="Last 24h request volume chart"
+        proxyBindingsChartInteractionHint="Hover or tap for details."
+        proxyBindingsChartLocaleTag="en-US"
+      />,
+    );
+
+    const identityHints = Array.from(document.querySelectorAll('[title^="ID "]'));
+    expect(identityHints.length).toBeGreaterThanOrEqual(2);
+  });
 });

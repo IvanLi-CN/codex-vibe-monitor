@@ -94,6 +94,13 @@ function buildProxyIdentityHint(key: string): string {
   return `ID ${((hash >>> 0).toString(36).toUpperCase()).slice(-6).padStart(6, '0')}`
 }
 
+function shouldShowProxyIdentityHint(node: GroupProxyOption, duplicateDisplayName: boolean): boolean {
+  if (node.missing || duplicateDisplayName) {
+    return true
+  }
+  return node.displayName.trim().length > 28
+}
+
 function sumProxyTraffic(node: ForwardProxyBindingNode) {
   const buckets = Array.isArray(node.last24h) ? node.last24h : []
   return buckets.reduce(
@@ -259,7 +266,9 @@ export function UpstreamAccountGroupNoteDialog({
       const duplicateDisplayName = (displayNameCounts.get(node.displayName.trim()) ?? 0) > 1
       return {
         ...node,
-        identityHint: node.missing || duplicateDisplayName ? buildProxyIdentityHint(node.key) : undefined,
+        identityHint: shouldShowProxyIdentityHint(node, duplicateDisplayName)
+          ? buildProxyIdentityHint(node.key)
+          : undefined,
       }
     })
   }, [availableProxyNodes, normalizedBoundProxyKeys, proxyBindingsMissingLabel])
