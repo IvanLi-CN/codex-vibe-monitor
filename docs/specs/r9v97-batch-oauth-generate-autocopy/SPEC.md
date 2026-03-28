@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 已实现
+- Status: 已完成（5/5，PR #254）
 - Created: 2026-03-27
 - Last: 2026-03-28
 
@@ -82,7 +82,7 @@
   target_program: mock-only
   capture_scope: browser-viewport
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   image:
   ![批量 OAuth 生成后自动复制](./assets/batch-oauth-generate-autocopy.png)
 
@@ -93,7 +93,7 @@
   target_program: mock-only
   capture_scope: browser-viewport
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   image:
   ![批量 OAuth 主按钮气泡提示](./assets/batch-oauth-bubble-delay.png)
 

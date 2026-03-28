@@ -256,6 +256,7 @@ const PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT: &str = "upstream_handshake_timeo
 const PROXY_FAILURE_UPSTREAM_STREAM_ERROR: &str = "upstream_stream_error";
 const PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED: &str = "pool_attempt_interrupted";
 const PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED: &str = "upstream_response_failed";
+const UPSTREAM_ERROR_CODE_SERVER_IS_OVERLOADED: &str = "server_is_overloaded";
 const PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT: &str = "pool_no_available_account";
 const PROXY_FAILURE_POOL_ALL_ACCOUNTS_RATE_LIMITED: &str = "pool_all_accounts_rate_limited";
 const PROXY_FAILURE_POOL_MAX_DISTINCT_ACCOUNTS_EXHAUSTED: &str = "max_distinct_accounts_exhausted";
@@ -2593,6 +2594,23 @@ struct RawCompressionBacklogAggRow {
 struct ArchivedAccountLastActivityRow {
     account_id: i64,
     last_activity_at: String,
+}
+
+fn dedupe_archive_upstream_last_activity(
+    values: impl IntoIterator<Item = (i64, String)>,
+) -> Vec<(i64, String)> {
+    let mut deduped = BTreeMap::<i64, String>::new();
+    for (account_id, last_activity_at) in values {
+        deduped
+            .entry(account_id)
+            .and_modify(|current| {
+                if *current < last_activity_at {
+                    *current = last_activity_at.clone();
+                }
+            })
+            .or_insert(last_activity_at);
+    }
+    deduped.into_iter().collect()
 }
 
 #[derive(Debug, Default)]
@@ -5137,14 +5155,15 @@ async fn refresh_archive_upstream_activity_manifest(
                 continue;
             }
         };
+        let deduped_values = dedupe_archive_upstream_last_activity(values);
         summary.refreshed_batches += 1;
-        summary.account_rows_written += values.len();
+        summary.account_rows_written += deduped_values.len();
         if dry_run {
             continue;
         }
 
         let mut tx = pool.begin().await?;
-        write_archive_batch_upstream_activity(tx.as_mut(), batch.id, &values).await?;
+        write_archive_batch_upstream_activity(tx.as_mut(), batch.id, &deduped_values).await?;
         tx.commit().await?;
     }
 
@@ -5197,10 +5216,10 @@ async fn load_archive_upstream_activity_from_file(
     archive_pool.close().await;
     drop(temp_cleanup);
 
-    Ok(rows
-        .into_iter()
-        .map(|row| (row.account_id, row.last_activity_at))
-        .collect())
+    Ok(dedupe_archive_upstream_last_activity(
+        rows.into_iter()
+            .map(|row| (row.account_id, row.last_activity_at)),
+    ))
 }
 
 async fn backfill_upstream_account_last_activity_from_archives(
@@ -5562,9 +5581,10 @@ async fn archive_rows_into_month_batch(
                         .await?,
                 );
             }
-            rows.into_iter()
-                .map(|row| (row.account_id, row.last_activity_at))
-                .collect::<Vec<_>>()
+            dedupe_archive_upstream_last_activity(
+                rows.into_iter()
+                    .map(|row| (row.account_id, row.last_activity_at)),
+            )
         } else {
             Vec::new()
         };
@@ -5720,10 +5740,11 @@ async fn archive_rows_into_segment_batch(
                     .await?,
             );
         }
-        let upstream_last_activity = upstream_last_activity
-            .into_iter()
-            .map(|row| (row.account_id, row.last_activity_at))
-            .collect::<Vec<_>>();
+        let upstream_last_activity = dedupe_archive_upstream_last_activity(
+            upstream_last_activity
+                .into_iter()
+                .map(|row| (row.account_id, row.last_activity_at)),
+        );
 
         let mut insert = QueryBuilder::<Sqlite>::new(format!(
             "INSERT OR IGNORE INTO archive_db.{} ({}) SELECT {} FROM main.{} WHERE id IN (",
@@ -5790,7 +5811,8 @@ async fn upsert_archived_upstream_last_activity(
     tx: &mut sqlx::SqliteConnection,
     values: &[(i64, String)],
 ) -> Result<()> {
-    for (account_id, occurred_at) in values {
+    let deduped_values = dedupe_archive_upstream_last_activity(values.iter().cloned());
+    for (account_id, occurred_at) in &deduped_values {
         sqlx::query(
             r#"
             UPDATE pool_upstream_accounts
@@ -5870,6 +5892,8 @@ async fn upsert_archive_batch_manifest(
     .bind(batch.archive_expires_at.as_deref())
     .execute(&mut *tx)
     .await?;
+    let deduped_upstream_last_activity =
+        dedupe_archive_upstream_last_activity(batch.upstream_last_activity.iter().cloned());
     let archive_batch_id = sqlx::query_scalar::<_, i64>(
         r#"
         SELECT id
@@ -5886,11 +5910,15 @@ async fn upsert_archive_batch_manifest(
     .fetch_one(&mut *tx)
     .await?;
     if batch.dataset == "codex_invocations" {
-        write_archive_batch_upstream_activity(tx, archive_batch_id, &batch.upstream_last_activity)
-            .await?;
+        write_archive_batch_upstream_activity(
+            tx,
+            archive_batch_id,
+            &deduped_upstream_last_activity,
+        )
+        .await?;
     }
-    if batch.dataset == "codex_invocations" && !batch.upstream_last_activity.is_empty() {
-        upsert_archived_upstream_last_activity(tx, &batch.upstream_last_activity).await?;
+    if batch.dataset == "codex_invocations" && !deduped_upstream_last_activity.is_empty() {
+        upsert_archived_upstream_last_activity(tx, &deduped_upstream_last_activity).await?;
     }
     Ok(())
 }
@@ -5900,11 +5928,12 @@ async fn write_archive_batch_upstream_activity(
     archive_batch_id: i64,
     values: &[(i64, String)],
 ) -> Result<()> {
+    let deduped_values = dedupe_archive_upstream_last_activity(values.iter().cloned());
     sqlx::query("DELETE FROM archive_batch_upstream_activity WHERE archive_batch_id = ?1")
         .bind(archive_batch_id)
         .execute(&mut *tx)
         .await?;
-    for chunk in values.chunks(BACKFILL_ACCOUNT_BIND_BATCH_SIZE) {
+    for chunk in deduped_values.chunks(BACKFILL_ACCOUNT_BIND_BATCH_SIZE) {
         let mut insert = QueryBuilder::<Sqlite>::new(
             "INSERT INTO archive_batch_upstream_activity (archive_batch_id, account_id, last_activity_at) ",
         );
@@ -5913,6 +5942,11 @@ async fn write_archive_batch_upstream_activity(
                 .push_bind(account_id)
                 .push_bind(last_activity_at);
         });
+        insert.push(
+            " ON CONFLICT(archive_batch_id, account_id) DO UPDATE SET last_activity_at = CASE \
+             WHEN excluded.last_activity_at > last_activity_at THEN excluded.last_activity_at \
+             ELSE last_activity_at END",
+        );
         insert.build().execute(&mut *tx).await?;
     }
     sqlx::query(
@@ -11837,6 +11871,32 @@ pub(crate) fn upstream_error_indicates_quota_exhausted(message: &str) -> bool {
     .any(|needle| normalized.contains(needle))
 }
 
+fn upstream_error_code_is_server_overloaded(code: Option<&str>) -> bool {
+    code.is_some_and(|value| value.eq_ignore_ascii_case(UPSTREAM_ERROR_CODE_SERVER_IS_OVERLOADED))
+}
+
+fn route_http_failure_is_retryable_server_overloaded(
+    status: StatusCode,
+    error_message: &str,
+) -> bool {
+    if status != StatusCode::OK {
+        return false;
+    }
+
+    let normalized = error_message.to_ascii_lowercase();
+    normalized.contains(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
+        && normalized.contains(UPSTREAM_ERROR_CODE_SERVER_IS_OVERLOADED)
+}
+
+fn response_info_is_retryable_server_overloaded(
+    status: StatusCode,
+    response_info: &ResponseCaptureInfo,
+) -> bool {
+    status == StatusCode::OK
+        && response_info.stream_terminal_event.is_some()
+        && upstream_error_code_is_server_overloaded(response_info.upstream_error_code.as_deref())
+}
+
 pub(crate) fn classify_pool_account_http_failure(
     account_kind: &str,
     status: StatusCode,
@@ -13648,6 +13708,186 @@ async fn send_pool_request_with_failover(
                 }
             };
 
+            let first_byte_latency_ms = elapsed_ms(first_byte_started);
+            let response_is_event_stream = response
+                .headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(|value| value.starts_with("text/event-stream"));
+            let (response, first_chunk) = if original_uri.path() == "/v1/responses"
+                && status == StatusCode::OK
+                && response_is_event_stream
+            {
+                match gate_pool_initial_response_stream(
+                    response,
+                    first_chunk,
+                    attempt_pre_first_byte_timeout,
+                    connect_started,
+                )
+                .await
+                {
+                    Ok(PoolInitialSseGateOutcome::Forward {
+                        response,
+                        prefetched_bytes,
+                    }) => (response, prefetched_bytes),
+                    Ok(PoolInitialSseGateOutcome::RetrySameAccount {
+                        message,
+                        upstream_error_code,
+                        upstream_error_message,
+                        upstream_request_id,
+                    }) => {
+                        let finished_at = shanghai_now_string();
+                        if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                            && let Err(record_err) = finalize_pool_upstream_request_attempt(
+                                &state.pool,
+                                pending_attempt_record,
+                                finished_at.as_str(),
+                                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
+                                Some(status),
+                                Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED),
+                                Some(message.as_str()),
+                                Some(connect_latency_ms),
+                                Some(first_byte_latency_ms),
+                                None,
+                                upstream_request_id.as_deref(),
+                                None,
+                                None,
+                            )
+                            .await
+                        {
+                            warn!(
+                                invoke_id = pending_attempt_record.invoke_id,
+                                error = %record_err,
+                                "failed to persist pool retryable response.failed attempt"
+                            );
+                        }
+                        if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                            && let Err(err) = broadcast_pool_upstream_attempts_snapshot(
+                                state.as_ref(),
+                                &pending_attempt_record.invoke_id,
+                            )
+                            .await
+                        {
+                            warn!(
+                                invoke_id = pending_attempt_record.invoke_id,
+                                error = %err,
+                                "failed to broadcast retryable response.failed snapshot"
+                            );
+                        }
+
+                        let has_retry_budget =
+                            same_account_attempt + 1 < same_account_attempt_budget;
+                        if has_retry_budget {
+                            let retry_delay =
+                                fallback_proxy_429_retry_delay(u32::from(same_account_attempt) + 1);
+                            info!(
+                                account_id = account.account_id,
+                                retry_index = same_account_attempt + 1,
+                                max_same_account_attempts = same_account_attempt_budget,
+                                retry_after_ms = retry_delay.as_millis(),
+                                "pool upstream reported retryable response.failed before forwarding; retrying same account"
+                            );
+                            sleep(retry_delay).await;
+                            continue;
+                        }
+
+                        if let Err(route_err) = record_pool_route_retryable_overload_failure(
+                            &state.pool,
+                            account.account_id,
+                            sticky_key,
+                            &message,
+                            trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                        )
+                        .await
+                        {
+                            warn!(account_id = account.account_id, error = %route_err, "failed to record retryable response.failed route state");
+                        }
+                        last_error = Some(PoolUpstreamError {
+                            account: Some(account.clone()),
+                            status,
+                            message: message.clone(),
+                            failure_kind: PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED,
+                            connect_latency_ms,
+                            upstream_error_code,
+                            upstream_error_message,
+                            upstream_request_id,
+                            oauth_responses_debug: oauth_responses_debug.clone(),
+                            attempt_summary: PoolAttemptSummary::default(),
+                        });
+                        exhausted_accounts_all_rate_limited = false;
+                        continue 'account_loop;
+                    }
+                    Err(err) => {
+                        let message = format!("failed to gate first response event: {err}");
+                        let finished_at = shanghai_now_string();
+                        if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                            && let Err(record_err) = finalize_pool_upstream_request_attempt(
+                                &state.pool,
+                                pending_attempt_record,
+                                finished_at.as_str(),
+                                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+                                None,
+                                Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
+                                Some(message.as_str()),
+                                Some(connect_latency_ms),
+                                Some(first_byte_latency_ms),
+                                None,
+                                None,
+                                None,
+                                None,
+                            )
+                            .await
+                        {
+                            warn!(
+                                invoke_id = pending_attempt_record.invoke_id,
+                                error = %record_err,
+                                "failed to persist first-event gate failure attempt"
+                            );
+                        }
+                        if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                            && let Err(err) = broadcast_pool_upstream_attempts_snapshot(
+                                state.as_ref(),
+                                &pending_attempt_record.invoke_id,
+                            )
+                            .await
+                        {
+                            warn!(
+                                invoke_id = pending_attempt_record.invoke_id,
+                                error = %err,
+                                "failed to broadcast first-event gate failure snapshot"
+                            );
+                        }
+                        if let Err(route_err) = record_pool_route_transport_failure(
+                            &state.pool,
+                            account.account_id,
+                            sticky_key,
+                            &message,
+                            trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                        )
+                        .await
+                        {
+                            warn!(account_id = account.account_id, error = %route_err, "failed to record first-event gate transport failure");
+                        }
+                        last_error = Some(PoolUpstreamError {
+                            account: Some(account.clone()),
+                            status: StatusCode::BAD_GATEWAY,
+                            message: message.clone(),
+                            failure_kind: PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
+                            connect_latency_ms,
+                            upstream_error_code: None,
+                            upstream_error_message: None,
+                            upstream_request_id: None,
+                            oauth_responses_debug: oauth_responses_debug.clone(),
+                            attempt_summary: PoolAttemptSummary::default(),
+                        });
+                        exhausted_accounts_all_rate_limited = false;
+                        continue 'account_loop;
+                    }
+                }
+            } else {
+                (response, first_chunk)
+            };
+
             if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
                 && let Err(err) = advance_pool_upstream_request_attempt_phase(
                     state.as_ref(),
@@ -13697,11 +13937,11 @@ async fn send_pool_request_with_failover(
                 oauth_responses_debug,
                 connect_latency_ms,
                 attempt_started_at_utc,
-                first_byte_latency_ms: elapsed_ms(first_byte_started),
+                first_byte_latency_ms,
                 first_chunk,
                 pending_attempt_record: pending_attempt_record.map(|mut pending| {
                     pending.connect_latency_ms = connect_latency_ms;
-                    pending.first_byte_latency_ms = elapsed_ms(first_byte_started);
+                    pending.first_byte_latency_ms = first_byte_latency_ms;
                     pending.compact_support_status = compact_support_observation
                         .as_ref()
                         .map(|value| value.status.to_string());
@@ -15638,16 +15878,28 @@ async fn proxy_openai_v1_capture_target(
                         state_for_task.as_ref(),
                         &reservation_key_for_task,
                     );
-                    record_pool_route_http_failure(
-                        &state_for_task.pool,
-                        account.account_id,
-                        &account.kind,
-                        sticky_key_for_task.as_deref(),
-                        upstream_status,
-                        &route_message,
-                        None,
-                    )
-                    .await
+                    if response_info_is_retryable_server_overloaded(upstream_status, &response_info)
+                    {
+                        record_pool_route_retryable_overload_failure(
+                            &state_for_task.pool,
+                            account.account_id,
+                            sticky_key_for_task.as_deref(),
+                            &route_message,
+                            None,
+                        )
+                        .await
+                    } else {
+                        record_pool_route_http_failure(
+                            &state_for_task.pool,
+                            account.account_id,
+                            &account.kind,
+                            sticky_key_for_task.as_deref(),
+                            upstream_status,
+                            &route_message,
+                            None,
+                        )
+                        .await
+                    }
                 };
                 if let Err(err) = route_result {
                     warn!(account_id = account.account_id, error = %err, "failed to record pool capture route state");
@@ -17003,6 +17255,120 @@ fn extract_upstream_request_id(value: &Value) -> Option<String> {
             extract_upstream_error_message(value)
                 .and_then(|message| extract_request_id_from_message(&message))
         })
+}
+
+fn find_first_sse_event_boundary(bytes: &[u8]) -> Option<usize> {
+    let mut index = 0usize;
+    while index + 1 < bytes.len() {
+        if bytes[index] == b'\n' && bytes[index + 1] == b'\n' {
+            return Some(index + 2);
+        }
+        if index + 3 < bytes.len()
+            && bytes[index] == b'\r'
+            && bytes[index + 1] == b'\n'
+            && bytes[index + 2] == b'\r'
+            && bytes[index + 3] == b'\n'
+        {
+            return Some(index + 4);
+        }
+        index += 1;
+    }
+    None
+}
+
+fn rebuild_proxy_upstream_response_stream(
+    status: StatusCode,
+    headers: &HeaderMap,
+    stream: Pin<Box<dyn futures_util::Stream<Item = Result<Bytes, io::Error>> + Send>>,
+) -> Result<ProxyUpstreamResponseBody, String> {
+    let mut response_builder = Response::builder().status(status);
+    for (name, value) in headers {
+        response_builder = response_builder.header(name, value);
+    }
+    response_builder
+        .body(Body::from_stream(stream))
+        .map(ProxyUpstreamResponseBody::Axum)
+        .map_err(|err| format!("failed to rebuild upstream response stream: {err}"))
+}
+
+enum PoolInitialSseGateOutcome {
+    Forward {
+        response: ProxyUpstreamResponseBody,
+        prefetched_bytes: Option<Bytes>,
+    },
+    RetrySameAccount {
+        message: String,
+        upstream_error_code: Option<String>,
+        upstream_error_message: Option<String>,
+        upstream_request_id: Option<String>,
+    },
+}
+
+async fn gate_pool_initial_response_stream(
+    response: ProxyUpstreamResponseBody,
+    prefetched_first_chunk: Option<Bytes>,
+    total_timeout: Duration,
+    started: Instant,
+) -> Result<PoolInitialSseGateOutcome, String> {
+    let status = response.status();
+    let headers = response.headers().clone();
+    let mut stream = response.into_bytes_stream();
+    let mut buffered = Vec::new();
+    if let Some(chunk) = prefetched_first_chunk {
+        buffered.extend_from_slice(&chunk);
+    }
+
+    let mut gate_stream_error: Option<io::Error> = None;
+    loop {
+        if let Some(event_end) = find_first_sse_event_boundary(&buffered) {
+            let response_info = parse_stream_response_payload(&buffered[..event_end]);
+            if response_info_is_retryable_server_overloaded(status, &response_info) {
+                return Ok(PoolInitialSseGateOutcome::RetrySameAccount {
+                    message: format_upstream_response_failed_message(&response_info),
+                    upstream_error_code: response_info.upstream_error_code,
+                    upstream_error_message: response_info.upstream_error_message,
+                    upstream_request_id: response_info.upstream_request_id,
+                });
+            }
+            break;
+        }
+        if buffered.len() >= RAW_RESPONSE_PREVIEW_LIMIT {
+            break;
+        }
+
+        let Some(timeout_budget) = remaining_timeout_budget(total_timeout, started.elapsed())
+        else {
+            break;
+        };
+        let next_chunk = match timeout(timeout_budget, stream.next()).await {
+            Ok(next_chunk) => next_chunk,
+            Err(_) => break,
+        };
+        let Some(next_chunk) = next_chunk else {
+            break;
+        };
+        match next_chunk {
+            Ok(chunk) => buffered.extend_from_slice(&chunk),
+            Err(err) => {
+                gate_stream_error = Some(io::Error::other(err.to_string()));
+                break;
+            }
+        }
+    }
+
+    let remaining_stream: Pin<
+        Box<dyn futures_util::Stream<Item = Result<Bytes, io::Error>> + Send>,
+    > = if let Some(err) = gate_stream_error {
+        Box::pin(stream::once(async move { Err(err) }))
+    } else {
+        stream
+    };
+    let rebuilt_response =
+        rebuild_proxy_upstream_response_stream(status, &headers, remaining_stream)?;
+    Ok(PoolInitialSseGateOutcome::Forward {
+        response: rebuilt_response,
+        prefetched_bytes: (!buffered.is_empty()).then_some(Bytes::from(buffered)),
+    })
 }
 
 fn extract_request_id_from_message(message: &str) -> Option<String> {
@@ -19070,6 +19436,13 @@ async fn persist_and_broadcast_proxy_capture(
     let Some(inserted_record) = inserted else {
         return Ok(());
     };
+    if inserted_record
+        .prompt_cache_key
+        .as_deref()
+        .is_some_and(|key| !key.trim().is_empty())
+    {
+        invalidate_prompt_cache_conversations_cache(&state.prompt_cache_conversation_cache).await;
+    }
     if state.broadcaster.receiver_count() == 0 {
         return Ok(());
     }

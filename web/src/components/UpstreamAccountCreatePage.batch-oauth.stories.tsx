@@ -106,6 +106,10 @@ export const Ready: Story = {
       ).toBeInTheDocument()
       await expect(documentScope.getByText(/绑定代理节点|bound proxy nodes/i)).toBeInTheDocument()
       await expect(documentScope.getByText(/JP Edge 01/i)).toBeInTheDocument()
+      await expect(documentScope.getByText(/^Direct$/i)).toBeInTheDocument()
+      await expect(documentScope.getByText(/^DIRECT$/i)).toBeInTheDocument()
+      await expect(documentScope.queryByText(/ss:\/\//i)).not.toBeInTheDocument()
+      await expect(documentScope.queryByText(/vless:\/\//i)).not.toBeInTheDocument()
       const chart = await documentScope.findByLabelText(/JP Edge 01 .*request volume chart/i)
       const firstBar = chart.querySelector('[data-inline-chart-index="0"]')
       if (!(firstBar instanceof HTMLElement)) {

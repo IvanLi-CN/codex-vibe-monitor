@@ -4280,7 +4280,7 @@ async fn list_upstream_accounts_clamps_work_status_for_abnormal_or_syncing_accou
         reauth_item
             .get("workStatus")
             .and_then(serde_json::Value::as_str),
-        Some("idle")
+        Some("unavailable")
     );
     assert_eq!(
         reauth_item
@@ -8622,6 +8622,79 @@ async fn forward_proxy_live_stats_returns_fixed_24_hour_buckets_with_zero_fill()
 }
 
 #[tokio::test]
+async fn forward_proxy_binding_nodes_preserve_direct_hourly_buckets() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.example.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let _ = put_forward_proxy_settings(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(ForwardProxySettingsUpdateRequest {
+            proxy_urls: vec!["socks5://127.0.0.1:1080".to_string()],
+            subscription_urls: vec![],
+            subscription_update_interval_secs: 3600,
+            insert_direct: true,
+        }),
+    )
+    .await
+    .expect("put forward proxy settings should succeed");
+
+    let now = Utc::now();
+    seed_forward_proxy_attempt_at(
+        &state.pool,
+        FORWARD_PROXY_DIRECT_KEY,
+        now - ChronoDuration::hours(2) - ChronoDuration::minutes(5),
+        true,
+    )
+    .await;
+    seed_forward_proxy_attempt_at(
+        &state.pool,
+        FORWARD_PROXY_DIRECT_KEY,
+        now - ChronoDuration::hours(1) - ChronoDuration::minutes(11),
+        false,
+    )
+    .await;
+    seed_forward_proxy_attempt_at(
+        &state.pool,
+        FORWARD_PROXY_DIRECT_KEY,
+        now - ChronoDuration::hours(31),
+        true,
+    )
+    .await;
+
+    let nodes = build_forward_proxy_binding_nodes_response(state.as_ref())
+        .await
+        .expect("build forward proxy binding nodes should succeed");
+    let direct = nodes
+        .iter()
+        .find(|node| node.key == FORWARD_PROXY_DIRECT_KEY)
+        .expect("direct binding node should be present");
+
+    assert_eq!(direct.protocol_label, "DIRECT");
+    assert_eq!(direct.last24h.len(), 24);
+    assert_eq!(
+        direct
+            .last24h
+            .iter()
+            .map(|bucket| bucket.success_count)
+            .sum::<i64>(),
+        1,
+        "in-range direct successes should remain visible",
+    );
+    assert_eq!(
+        direct
+            .last24h
+            .iter()
+            .map(|bucket| bucket.failure_count)
+            .sum::<i64>(),
+        1,
+        "in-range direct failures should remain visible",
+    );
+}
+
+#[tokio::test]
 async fn forward_proxy_live_stats_returns_empty_nodes_when_no_endpoints_are_configured() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.example.com/").expect("valid upstream base url"),
@@ -12124,6 +12197,17 @@ struct PoolFirstChunkRetryUpstreamState {
 }
 
 #[derive(Clone)]
+struct PoolResponseFailedRetryUpstreamState {
+    attempts: Arc<StdMutex<HashMap<String, usize>>>,
+    fail_before_success: Arc<HashMap<String, usize>>,
+}
+
+#[derive(Clone)]
+struct PoolLateResponseFailedUpstreamState {
+    attempts: Arc<StdMutex<HashMap<String, usize>>>,
+}
+
+#[derive(Clone)]
 struct PoolDelayedFirstChunkUpstreamState {
     first_chunk_delay: Duration,
 }
@@ -12431,6 +12515,101 @@ async fn pool_first_chunk_retry_upstream(
             "authorization": authorization,
             "attempt": attempt,
         })),
+    )
+        .into_response()
+}
+
+async fn pool_response_failed_retry_upstream(
+    State(state): State<PoolResponseFailedRetryUpstreamState>,
+    headers: HeaderMap,
+) -> Response {
+    let authorization = headers
+        .get(http_header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+
+    let attempt = {
+        let mut attempts = state
+            .attempts
+            .lock()
+            .expect("lock pool response.failed retry attempts");
+        let entry = attempts.entry(authorization.clone()).or_insert(0);
+        *entry += 1;
+        *entry
+    };
+
+    if attempt
+        <= state
+            .fail_before_success
+            .get(&authorization)
+            .copied()
+            .unwrap_or(0)
+    {
+        let payload = [
+            "event: response.failed\n",
+            r#"data: {"type":"response.failed","response":{"id":"resp_overloaded_retry","model":"gpt-5.4","status":"failed","error":{"code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}}"#,
+            "\n\n",
+        ]
+        .concat();
+        return (
+            StatusCode::OK,
+            [(
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("text/event-stream"),
+            )],
+            Body::from(payload),
+        )
+            .into_response();
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "ok": true,
+            "authorization": authorization,
+            "attempt": attempt,
+        })),
+    )
+        .into_response()
+}
+
+async fn pool_late_response_failed_upstream(
+    State(state): State<PoolLateResponseFailedUpstreamState>,
+    headers: HeaderMap,
+) -> Response {
+    let authorization = headers
+        .get(http_header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+
+    {
+        let mut attempts = state
+            .attempts
+            .lock()
+            .expect("lock pool late response.failed attempts");
+        let entry = attempts.entry(authorization).or_insert(0);
+        *entry += 1;
+    }
+
+    let payload = [
+        "event: response.created\n",
+        r#"data: {"type":"response.created","response":{"id":"resp_overloaded_late","model":"gpt-5.4","status":"in_progress"}}"#,
+        "\n\n",
+        "event: response.failed\n",
+        r#"data: {"type":"response.failed","response":{"id":"resp_overloaded_late","model":"gpt-5.4","status":"failed","error":{"code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}}"#,
+        "\n\n",
+    ]
+    .concat();
+
+    (
+        StatusCode::OK,
+        [(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("text/event-stream"),
+        )],
+        Body::from(payload),
     )
         .into_response()
 }
@@ -13066,6 +13245,65 @@ async fn spawn_pool_first_chunk_retry_upstream(
         axum::serve(listener, app)
             .await
             .expect("pool first chunk retry upstream should run");
+    });
+    (format!("http://{addr}"), attempts, handle)
+}
+
+async fn spawn_pool_response_failed_retry_upstream(
+    fail_before_success: &[(&str, usize)],
+) -> (
+    String,
+    Arc<StdMutex<HashMap<String, usize>>>,
+    JoinHandle<()>,
+) {
+    let attempts = Arc::new(StdMutex::new(HashMap::new()));
+    let fail_before_success = Arc::new(
+        fail_before_success
+            .iter()
+            .map(|(authorization, failures)| ((*authorization).to_string(), *failures))
+            .collect::<HashMap<_, _>>(),
+    );
+    let app = Router::new()
+        .route("/v1/responses", post(pool_response_failed_retry_upstream))
+        .with_state(PoolResponseFailedRetryUpstreamState {
+            attempts: attempts.clone(),
+            fail_before_success,
+        });
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind pool response.failed retry upstream");
+    let addr = listener
+        .local_addr()
+        .expect("pool response.failed retry upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("pool response.failed retry upstream should run");
+    });
+    (format!("http://{addr}"), attempts, handle)
+}
+
+async fn spawn_pool_late_response_failed_upstream() -> (
+    String,
+    Arc<StdMutex<HashMap<String, usize>>>,
+    JoinHandle<()>,
+) {
+    let attempts = Arc::new(StdMutex::new(HashMap::new()));
+    let app = Router::new()
+        .route("/v1/responses", post(pool_late_response_failed_upstream))
+        .with_state(PoolLateResponseFailedUpstreamState {
+            attempts: attempts.clone(),
+        });
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind pool late response.failed upstream");
+    let addr = listener
+        .local_addr()
+        .expect("pool late response.failed upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("pool late response.failed upstream should run");
     });
     (format!("http://{addr}"), attempts, handle)
 }
@@ -17073,6 +17311,141 @@ async fn pool_openai_v1_responses_stream_timeout_does_not_cap_same_account_retry
 }
 
 #[tokio::test]
+async fn pool_openai_v1_responses_retries_same_account_on_server_overloaded_before_forwarding() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptRouteRow {
+        distinct_account_index: i64,
+        status: String,
+    }
+
+    #[derive(Debug, sqlx::FromRow)]
+    struct AccountActionRow {
+        action: Option<String>,
+        reason_code: Option<String>,
+        cooldown_until: Option<String>,
+    }
+
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_response_failed_retry_upstream(&[("Bearer route-one", 2)]).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Retry Route One",
+        "route-one",
+        None,
+        None,
+        Some(upstream_base.as_str()),
+    )
+    .await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5.4","stream":true,"input":"hello","stickyKey":"sticky-overloaded-retry-001"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read retryable overloaded response");
+    let response_payload: Value =
+        serde_json::from_slice(&body).expect("decode retryable overloaded success body");
+    assert_eq!(response_payload["ok"].as_bool(), Some(true));
+    assert_eq!(
+        response_payload["authorization"].as_str(),
+        Some("Bearer route-one"),
+    );
+    let body_text = String::from_utf8(body.to_vec()).expect("utf8 retryable overloaded body");
+    assert!(!body_text.contains("response.failed"));
+    assert!(!body_text.contains("server_is_overloaded"));
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    wait_for_pool_attempt_row_count(&state.pool, 3).await;
+
+    let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
+        r#"
+        SELECT distinct_account_index, status
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load overloaded retry attempt rows");
+    assert_eq!(attempt_rows.len(), 3);
+    assert_eq!(
+        attempt_rows[0].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
+    );
+    assert_eq!(
+        attempt_rows[1].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
+    );
+    assert_eq!(
+        attempt_rows[2].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
+    );
+    assert!(
+        attempt_rows
+            .iter()
+            .all(|row| row.distinct_account_index == 1)
+    );
+
+    let row = sqlx::query_as::<_, AccountActionRow>(
+        r#"
+        SELECT last_action AS action, last_action_reason_code AS reason_code, cooldown_until
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load overloaded retry account state");
+    assert_eq!(row.action.as_deref(), Some("route_recovered"));
+    assert!(row.reason_code.is_none());
+    assert!(row.cooldown_until.is_none());
+
+    let recent_actions: Vec<String> = sqlx::query_scalar(
+        r#"
+        SELECT action
+        FROM pool_upstream_account_events
+        WHERE account_id = ?1
+        ORDER BY id DESC
+        LIMIT 5
+        "#,
+    )
+    .bind(account_id)
+    .fetch_all(&state.pool)
+    .await
+    .expect("load overloaded retry account events");
+    assert!(
+        !recent_actions
+            .iter()
+            .any(|action| action == "route_cooldown_started")
+    );
+
+    let attempts = attempts.lock().expect("lock retryable overloaded attempts");
+    assert_eq!(attempts.get("Bearer route-one").copied(), Some(3));
+    drop(attempts);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn pool_route_marks_oauth_missing_scopes_as_error_and_persists_upstream_details() {
     let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
         .lock()
@@ -18959,6 +19332,137 @@ async fn capture_target_pool_route_marks_response_failed_stream_as_route_failure
             .is_none(),
         "logical stream failure should detach the sticky binding",
     );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn capture_target_pool_route_marks_server_overloaded_after_forward_as_retryable_without_cooldown()
+ {
+    #[derive(sqlx::FromRow)]
+    struct RouteStateRow {
+        status: String,
+        last_action: Option<String>,
+        last_action_reason_code: Option<String>,
+        last_action_http_status: Option<i64>,
+        cooldown_until: Option<String>,
+        last_route_failure_kind: Option<String>,
+    }
+
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_late_response_failed_upstream().await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Primary",
+        "upstream-primary",
+        None,
+        None,
+        Some(upstream_base.as_str()),
+    )
+    .await;
+    record_pool_route_success(
+        &state.pool,
+        account_id,
+        Utc::now(),
+        Some("sticky-cap-overloaded-late"),
+        None,
+    )
+    .await
+    .expect("seed sticky route");
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "stream": true,
+        "input": "hello",
+        "stickyKey": "sticky-cap-overloaded-late"
+    }))
+    .expect("serialize request body");
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(request_body),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read late overloaded response body");
+    let body_text = String::from_utf8(body.to_vec()).expect("utf8 late overloaded body");
+    assert!(body_text.contains("response.created"));
+    assert!(body_text.contains("server_is_overloaded"));
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    let route_state = sqlx::query_as::<_, RouteStateRow>(
+        r#"
+        SELECT
+            status,
+            last_action,
+            last_action_reason_code,
+            last_action_http_status,
+            cooldown_until,
+            last_route_failure_kind
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load late overloaded route state");
+    assert_eq!(route_state.status, "active");
+    assert_eq!(
+        route_state.last_action.as_deref(),
+        Some("route_retryable_failure")
+    );
+    assert_eq!(
+        route_state.last_action_reason_code.as_deref(),
+        Some("upstream_server_overloaded")
+    );
+    assert_eq!(route_state.last_action_http_status, Some(200));
+    assert!(route_state.cooldown_until.is_none());
+    assert_eq!(
+        route_state.last_route_failure_kind.as_deref(),
+        Some("upstream_response_failed")
+    );
+    assert_eq!(
+        load_test_sticky_route_account_id(&state.pool, "sticky-cap-overloaded-late").await,
+        Some(account_id),
+        "retryable overload should keep the sticky binding",
+    );
+
+    let recent_actions: Vec<String> = sqlx::query_scalar(
+        r#"
+        SELECT action
+        FROM pool_upstream_account_events
+        WHERE account_id = ?1
+        ORDER BY id DESC
+        LIMIT 5
+        "#,
+    )
+    .bind(account_id)
+    .fetch_all(&state.pool)
+    .await
+    .expect("load late overloaded events");
+    assert!(
+        !recent_actions
+            .iter()
+            .any(|action| action == "route_cooldown_started")
+    );
+
+    let attempts = attempts.lock().expect("lock late overloaded attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
+    drop(attempts);
 
     upstream_handle.abort();
 }
@@ -24593,6 +25097,13 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
         "gpt-5.4-mini",
     )
     .await;
+    sqlx::query(
+        "UPDATE codex_invocations SET payload = json_set(payload, '$.reasoningEffort', 7) WHERE invoke_id = ?1",
+    )
+    .bind("preview-04")
+    .execute(&state.pool)
+    .await
+    .expect("mark preview-04 reasoning effort as non-text");
     insert_row(
         &state.pool,
         "preview-05",
@@ -24635,6 +25146,57 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
         "gpt-5.4",
     )
     .await;
+    sqlx::query(
+        "UPDATE codex_invocations \
+         SET input_tokens = ?1, \
+             output_tokens = ?2, \
+             cache_input_tokens = ?3, \
+             reasoning_tokens = ?4, \
+             error_message = ?5, \
+             failure_kind = ?6, \
+             failure_class = ?7, \
+             is_actionable = ?8, \
+             t_req_read_ms = ?9, \
+             t_req_parse_ms = ?10, \
+             t_upstream_connect_ms = ?11, \
+             t_upstream_ttfb_ms = ?12, \
+             t_upstream_stream_ms = ?13, \
+             t_resp_parse_ms = ?14, \
+             t_persist_ms = ?15, \
+             t_total_ms = ?16, \
+             payload = json_set( \
+                 payload, \
+                 '$.reasoningEffort', ?17, \
+                 '$.responseContentEncoding', ?18, \
+                 '$.requestedServiceTier', ?19, \
+                 '$.serviceTier', ?20 \
+             ) \
+         WHERE invoke_id = ?21",
+    )
+    .bind(120_i64)
+    .bind(80_i64)
+    .bind(40_i64)
+    .bind(12_i64)
+    .bind("[upstream_response_failed] preview extra error")
+    .bind("upstream_response_failed")
+    .bind("service_failure")
+    .bind(1_i64)
+    .bind(10.0_f64)
+    .bind(11.0_f64)
+    .bind(12.0_f64)
+    .bind(13.0_f64)
+    .bind(14.0_f64)
+    .bind(15.0_f64)
+    .bind(16.0_f64)
+    .bind(91.0_f64)
+    .bind("high")
+    .bind("br")
+    .bind("flex")
+    .bind("scale")
+    .bind("preview-06")
+    .execute(&state.pool)
+    .await
+    .expect("augment preview-06 extras");
     insert_row(
         &state.pool,
         "preview-crs-hidden",
@@ -24697,6 +25259,7 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
     assert_eq!(latest.endpoint.as_deref(), Some("/v1/responses"));
     assert_eq!(latest.failure_class.as_deref(), Some("none"));
     assert_eq!(latest.route_mode.as_deref(), Some("pool"));
+    assert_eq!(latest.source.as_deref(), Some(SOURCE_CRS));
 
     let id_only = conversation
         .recent_invocations
@@ -24705,6 +25268,7 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
         .expect("id-only preview should be included");
     assert_eq!(id_only.upstream_account_id, Some(202));
     assert_eq!(id_only.upstream_account_name, None);
+    assert_eq!(id_only.reasoning_effort, None);
 
     let failed_preview = conversation
         .recent_invocations
@@ -24729,6 +25293,44 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
         Some("service_failure")
     );
     assert_eq!(legacy_failed_preview.route_mode.as_deref(), Some("pool"));
+
+    let enriched_preview = conversation
+        .recent_invocations
+        .iter()
+        .find(|item| item.invoke_id == "preview-06")
+        .expect("preview-06 should be included");
+    assert_eq!(enriched_preview.source.as_deref(), Some(SOURCE_PROXY));
+    assert_eq!(enriched_preview.input_tokens, Some(120));
+    assert_eq!(enriched_preview.output_tokens, Some(80));
+    assert_eq!(enriched_preview.cache_input_tokens, Some(40));
+    assert_eq!(enriched_preview.reasoning_tokens, Some(12));
+    assert_eq!(enriched_preview.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(
+        enriched_preview.error_message.as_deref(),
+        Some("[upstream_response_failed] preview extra error")
+    );
+    assert_eq!(
+        enriched_preview.failure_kind.as_deref(),
+        Some("upstream_response_failed")
+    );
+    assert_eq!(enriched_preview.is_actionable, Some(true));
+    assert_eq!(
+        enriched_preview.response_content_encoding.as_deref(),
+        Some("br")
+    );
+    assert_eq!(
+        enriched_preview.requested_service_tier.as_deref(),
+        Some("flex")
+    );
+    assert_eq!(enriched_preview.service_tier.as_deref(), Some("scale"));
+    assert_eq!(enriched_preview.t_req_read_ms, Some(10.0));
+    assert_eq!(enriched_preview.t_req_parse_ms, Some(11.0));
+    assert_eq!(enriched_preview.t_upstream_connect_ms, Some(12.0));
+    assert_eq!(enriched_preview.t_upstream_ttfb_ms, Some(13.0));
+    assert_eq!(enriched_preview.t_upstream_stream_ms, Some(14.0));
+    assert_eq!(enriched_preview.t_resp_parse_ms, Some(15.0));
+    assert_eq!(enriched_preview.t_persist_ms, Some(16.0));
+    assert_eq!(enriched_preview.t_total_ms, Some(91.0));
 
     let proxy_only_rows = query_prompt_cache_conversation_recent_invocations(
         &state.pool,
@@ -24757,6 +25359,17 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
             .iter()
             .all(|item| item.invoke_id != "preview-crs-hidden")
     );
+    let proxy_enriched_row = proxy_only_rows
+        .iter()
+        .find(|item| item.invoke_id == "preview-06")
+        .expect("preview-06 row should be present");
+    assert_eq!(proxy_enriched_row.source.as_deref(), Some(SOURCE_PROXY));
+    assert_eq!(proxy_enriched_row.input_tokens, Some(120));
+    assert_eq!(
+        proxy_enriched_row.requested_service_tier.as_deref(),
+        Some("flex")
+    );
+    assert_eq!(proxy_enriched_row.t_total_ms, Some(91.0));
 }
 
 #[tokio::test]
@@ -25475,6 +26088,240 @@ async fn prompt_cache_conversations_cache_reuses_recent_result_within_ttl() {
 }
 
 #[tokio::test]
+async fn prompt_cache_conversations_cache_invalidation_exposes_new_proxy_capture_immediately() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+    let occurred_a = format_naive(
+        (now - ChronoDuration::minutes(80))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let occurred_b = format_naive(
+        (now - ChronoDuration::minutes(30))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind("pck-cache-live-1")
+    .bind(&occurred_a)
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(10)
+    .bind(0.01)
+    .bind(r#"{"promptCacheKey":"pck-broadcast-1"}"#)
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert initial prompt cache row");
+
+    let Json(first) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+        }),
+    )
+    .await
+    .expect("first fetch should populate prompt cache stats");
+    let first_count = first
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-broadcast-1")
+        .map(|item| item.request_count)
+        .expect("pck-broadcast-1 should be present");
+    assert_eq!(first_count, 1);
+
+    persist_and_broadcast_proxy_capture(
+        state.as_ref(),
+        Instant::now(),
+        test_proxy_capture_record("pck-cache-live-2", &occurred_b),
+    )
+    .await
+    .expect("persist+broadcast should invalidate prompt cache conversation cache");
+
+    let Json(second) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+        }),
+    )
+    .await
+    .expect("second fetch should see the freshly persisted proxy capture");
+    let second_count = second
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-broadcast-1")
+        .map(|item| item.request_count)
+        .expect("pck-broadcast-1 should remain present");
+    assert_eq!(second_count, 2);
+}
+
+#[tokio::test]
+async fn prompt_cache_conversations_cache_ignores_proxy_captures_without_prompt_cache_key() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+    let occurred_a = format_naive(
+        (now - ChronoDuration::minutes(80))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let occurred_b = format_naive(
+        (now - ChronoDuration::minutes(30))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind("pck-cache-unrelated-1")
+    .bind(&occurred_a)
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(10)
+    .bind(0.01)
+    .bind(r#"{"promptCacheKey":"pck-unrelated"}"#)
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert prompt cache seed row");
+
+    let Json(first) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+        }),
+    )
+    .await
+    .expect("first fetch should populate prompt cache stats");
+    let first_count = first
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-unrelated")
+        .map(|item| item.request_count)
+        .expect("pck-unrelated should be present");
+    assert_eq!(first_count, 1);
+
+    let mut unrelated_record = test_proxy_capture_record("pck-cache-unrelated-2", &occurred_b);
+    unrelated_record.payload =
+        Some("{\"endpoint\":\"/v1/responses\",\"statusCode\":200}".to_string());
+    persist_and_broadcast_proxy_capture(state.as_ref(), Instant::now(), unrelated_record)
+        .await
+        .expect("persist+broadcast should keep prompt cache cache warm for unrelated traffic");
+
+    let Json(second) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+        }),
+    )
+    .await
+    .expect("second fetch should still use cached result");
+    let second_count = second
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-unrelated")
+        .map(|item| item.request_count)
+        .expect("pck-unrelated should remain present");
+    assert_eq!(second_count, 1);
+}
+
+#[tokio::test]
+async fn prompt_cache_conversations_cache_returns_under_sustained_invalidations() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+
+    for index in 0..256 {
+        let occurred = format_naive(
+            (now - ChronoDuration::minutes(120 - index as i64))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(format!("pck-cache-sustained-{index}"))
+        .bind(&occurred)
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(10 + index as i64)
+        .bind(0.01)
+        .bind(format!(
+            r#"{{"promptCacheKey":"pck-sustained-{index:03}"}}"#
+        ))
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert sustained-invalidations seed row");
+    }
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let invalidator_stop = stop.clone();
+    let cache = state.prompt_cache_conversation_cache.clone();
+    let invalidator = tokio::spawn(async move {
+        while !invalidator_stop.load(Ordering::Relaxed) {
+            invalidate_prompt_cache_conversations_cache(&cache).await;
+            tokio::task::yield_now().await;
+        }
+    });
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        fetch_prompt_cache_conversations(
+            State(state.clone()),
+            Query(PromptCacheConversationsQuery {
+                limit: Some(20),
+                activity_hours: None,
+            }),
+        ),
+    )
+    .await;
+
+    stop.store(true, Ordering::Relaxed);
+    invalidator
+        .await
+        .expect("invalidator task should exit cleanly");
+
+    let Json(response) = result
+        .expect("prompt cache fetch should not hang under sustained invalidations")
+        .expect("prompt cache fetch should succeed");
+    assert!(
+        !response.conversations.is_empty(),
+        "sustained invalidations should still return a usable snapshot",
+    );
+}
+
+#[tokio::test]
 async fn prompt_cache_conversations_concurrent_requests_same_limit_do_not_stall() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -25550,7 +26397,10 @@ async fn prompt_cache_conversation_flight_guard_cleans_in_flight_on_drop() {
         let mut state = cache.lock().await;
         state.in_flight.insert(
             PromptCacheConversationSelection::Count(20),
-            PromptCacheConversationInFlight { signal },
+            PromptCacheConversationInFlight {
+                signal,
+                generation: 0,
+            },
         );
     }
 
@@ -25558,6 +26408,7 @@ async fn prompt_cache_conversation_flight_guard_cleans_in_flight_on_drop() {
         let _guard = PromptCacheConversationFlightGuard::new(
             cache.clone(),
             PromptCacheConversationSelection::Count(20),
+            0,
         );
     }
 
@@ -31493,6 +32344,271 @@ async fn archive_manifest_refresh_leaves_missing_batches_pending_for_retry() {
     .expect("load missing manifest account row");
     assert!(row.0.is_none());
     assert_eq!(row.1, 0);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_archives_duplicate_upstream_activity_across_chunks() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("retention-archive-manifest-dedupe").await;
+    config.retention_batch_rows = BACKFILL_ACCOUNT_BIND_BATCH_SIZE + 5;
+
+    let account_id = 995_i64;
+    let created_at = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind(account_id)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Duplicate archive account")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&pool)
+    .await
+    .expect("insert duplicate archive account");
+
+    let base_occurred_at = parse_shanghai_local_naive(&shanghai_local_days_ago(120, 9, 0, 0))
+        .expect("valid shanghai local");
+    let row_count = BACKFILL_ACCOUNT_BIND_BATCH_SIZE + 5;
+    let mut newest_occurred_at = String::new();
+    for idx in 0..row_count {
+        let occurred_at = format_naive(base_occurred_at + ChronoDuration::seconds(idx as i64));
+        newest_occurred_at = occurred_at.clone();
+        let response_raw = config
+            .proxy_raw_dir
+            .join(format!("duplicate-account-{idx}.bin.gz"));
+        write_gzip_test_file(
+            &response_raw,
+            format!("{{\"index\":{idx},\"accountId\":{account_id}}}").as_bytes(),
+        );
+        insert_retention_invocation(
+            &pool,
+            &format!("duplicate-account-{idx}"),
+            &occurred_at,
+            SOURCE_PROXY,
+            "success",
+            Some(
+                &json!({ "endpoint": "/v1/responses", "upstreamAccountId": account_id })
+                    .to_string(),
+            ),
+            "{\"ok\":true}",
+            None,
+            Some(&response_raw),
+            Some(42),
+            Some(0.42),
+        )
+        .await;
+    }
+
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run retention archive for duplicate account rows");
+    assert_eq!(summary.invocation_rows_archived, row_count);
+    assert!(summary.raw_files_removed >= row_count);
+
+    let manifest_rows = sqlx::query_as::<_, (i64, String)>(
+        r#"
+        SELECT account_id, last_activity_at
+        FROM archive_batch_upstream_activity
+        "#,
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("load deduped archive manifest rows");
+    assert_eq!(
+        manifest_rows,
+        vec![(account_id, newest_occurred_at.clone())]
+    );
+
+    let last_activity_at: Option<String> =
+        sqlx::query_scalar("SELECT last_activity_at FROM pool_upstream_accounts WHERE id = ?1")
+            .bind(account_id)
+            .fetch_one(&pool)
+            .await
+            .expect("load updated account activity");
+    assert_eq!(
+        last_activity_at.as_deref(),
+        Some(newest_occurred_at.as_str())
+    );
+
+    let live_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations")
+        .fetch_one(&pool)
+        .await
+        .expect("count remaining live invocations");
+    assert_eq!(live_count, 0);
+    assert_eq!(
+        fs::read_dir(&config.proxy_raw_dir)
+            .expect("read raw dir after archive cleanup")
+            .count(),
+        0
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn archive_manifest_refresh_dedupes_duplicate_account_rows_from_archive_file() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("archive-manifest-refresh-dedupe").await;
+    let primary_account_id = 996_i64;
+    let secondary_account_id = 997_i64;
+    let created_at = format_utc_iso(Utc::now());
+    for (account_id, display_name) in [
+        (primary_account_id, "Manifest duplicate primary"),
+        (secondary_account_id, "Manifest duplicate secondary"),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_accounts (
+                id, kind, provider, display_name, status, enabled, created_at, updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(account_id)
+        .bind("api_key_codex")
+        .bind("codex")
+        .bind(display_name)
+        .bind("active")
+        .bind(1_i64)
+        .bind(&created_at)
+        .bind(&created_at)
+        .execute(&pool)
+        .await
+        .expect("insert manifest refresh account");
+    }
+
+    let base_occurred_at = parse_shanghai_local_naive(&shanghai_local_days_ago(120, 8, 0, 0))
+        .expect("valid shanghai local");
+    let month_key = format_naive(base_occurred_at)[..7].to_string();
+    let archive_path = archive_batch_file_path(&config, "codex_invocations", &month_key)
+        .expect("resolve archive manifest refresh path");
+    fs::create_dir_all(archive_path.parent().expect("archive parent"))
+        .expect("create archive manifest refresh parent");
+
+    let archive_db_path = temp_dir.join("archive-manifest-refresh-dedupe.sqlite");
+    fs::File::create(&archive_db_path).expect("create archive sqlite file");
+    let archive_pool = SqlitePool::connect(&sqlite_url_for_path(&archive_db_path))
+        .await
+        .expect("open archive sqlite");
+    let create_sql = CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL.replace("archive_db.", "");
+    sqlx::query(&create_sql)
+        .execute(&archive_pool)
+        .await
+        .expect("create archive schema");
+
+    let repeated_rows = BACKFILL_ACCOUNT_BIND_BATCH_SIZE + 5;
+    let mut primary_latest = String::new();
+    let mut secondary_latest = String::new();
+    for idx in 0..repeated_rows {
+        let occurred_at = format_naive(base_occurred_at + ChronoDuration::seconds(idx as i64));
+        primary_latest = occurred_at.clone();
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, raw_response, created_at, payload
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+        )
+        .bind(idx as i64 + 1)
+        .bind(format!("manifest-refresh-primary-{idx}"))
+        .bind(&occurred_at)
+        .bind("{}")
+        .bind(&occurred_at)
+        .bind(json!({ "upstreamAccountId": primary_account_id }).to_string())
+        .execute(&archive_pool)
+        .await
+        .expect("insert repeated primary manifest row");
+    }
+    for idx in 0..2 {
+        let occurred_at = format_naive(
+            base_occurred_at + ChronoDuration::seconds(repeated_rows as i64 + idx as i64 + 1),
+        );
+        secondary_latest = occurred_at.clone();
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, raw_response, created_at, payload
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+        )
+        .bind(repeated_rows as i64 + idx as i64 + 1)
+        .bind(format!("manifest-refresh-secondary-{idx}"))
+        .bind(&occurred_at)
+        .bind("{}")
+        .bind(&occurred_at)
+        .bind(json!({ "upstreamAccountId": secondary_account_id }).to_string())
+        .execute(&archive_pool)
+        .await
+        .expect("insert repeated secondary manifest row");
+    }
+    archive_pool.close().await;
+    deflate_sqlite_file_to_gzip(&archive_db_path, &archive_path)
+        .expect("compress manifest refresh archive");
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))
+        "#,
+    )
+    .bind("codex_invocations")
+    .bind(&month_key)
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind(sha256_hex_file(&archive_path).expect("archive sha"))
+    .bind((repeated_rows + 2) as i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(format_naive(base_occurred_at))
+    .bind(secondary_latest.clone())
+    .execute(&pool)
+    .await
+    .expect("insert manifest refresh batch");
+
+    let refresh = refresh_archive_upstream_activity_manifest(&pool, false)
+        .await
+        .expect("refresh manifest rows for duplicate accounts");
+    assert_eq!(refresh.pending_batches, 1);
+    assert_eq!(refresh.refreshed_batches, 1);
+    assert_eq!(refresh.account_rows_written, 2);
+
+    let manifest_rows = sqlx::query_as::<_, (i64, String)>(
+        r#"
+        SELECT account_id, last_activity_at
+        FROM archive_batch_upstream_activity
+        ORDER BY account_id ASC
+        "#,
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("load refreshed manifest rows");
+    assert_eq!(
+        manifest_rows,
+        vec![
+            (primary_account_id, primary_latest),
+            (secondary_account_id, secondary_latest),
+        ]
+    );
 
     cleanup_temp_test_dir(&temp_dir);
 }

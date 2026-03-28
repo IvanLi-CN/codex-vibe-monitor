@@ -39,6 +39,67 @@ type StoryPromptCacheConversationPreview =
       >
     >;
 
+class MockEventSource implements EventTarget {
+  static CONNECTING = 0;
+  static OPEN = 1;
+  static CLOSED = 2;
+
+  readonly url: string;
+  readonly withCredentials = false;
+  readyState = MockEventSource.CONNECTING;
+  onerror: ((this: EventSource, ev: Event) => unknown) | null = null;
+  onmessage: ((this: EventSource, ev: MessageEvent<string>) => unknown) | null = null;
+  onopen: ((this: EventSource, ev: Event) => unknown) | null = null;
+
+  #listeners = new Map<string, Set<EventListenerOrEventListenerObject>>();
+
+  constructor(url: string | URL) {
+    this.url = typeof url === "string" ? url : url.toString();
+    window.setTimeout(() => {
+      if (this.readyState === MockEventSource.CLOSED) return;
+      this.readyState = MockEventSource.OPEN;
+      this.#emit("open", new Event("open"));
+    }, 40);
+  }
+
+  addEventListener(type: string, listener: EventListenerOrEventListenerObject | null) {
+    if (!listener) return;
+    const bucket = this.#listeners.get(type) ?? new Set<EventListenerOrEventListenerObject>();
+    bucket.add(listener);
+    this.#listeners.set(type, bucket);
+  }
+
+  removeEventListener(type: string, listener: EventListenerOrEventListenerObject | null) {
+    if (!listener) return;
+    this.#listeners.get(type)?.delete(listener);
+  }
+
+  dispatchEvent(event: Event) {
+    this.#emit(event.type, event);
+    return true;
+  }
+
+  close() {
+    this.readyState = MockEventSource.CLOSED;
+  }
+
+  #emit(type: string, event: Event) {
+    if (type === "open") this.onopen?.call(this as unknown as EventSource, event);
+    if (type === "error") this.onerror?.call(this as unknown as EventSource, event);
+    if (type === "message") {
+      this.onmessage?.call(this as unknown as EventSource, event as MessageEvent<string>);
+    }
+
+    for (const listener of this.#listeners.get(type) ?? []) {
+      if (typeof listener === "function") {
+        listener(event);
+      } else {
+        listener.handleEvent(event);
+      }
+    }
+  }
+}
+
 function jsonResponse(payload: unknown, status = 200) {
   return new Response(JSON.stringify(payload), {
     status,
@@ -523,11 +584,13 @@ function StorybookPromptCacheAccountMock({
   children: ReactNode;
 }) {
   const originalFetchRef = useRef<typeof window.fetch | null>(null);
+  const originalEventSourceRef = useRef<typeof window.EventSource | null>(null);
   const installedRef = useRef(false);
 
   if (typeof window !== "undefined" && !installedRef.current) {
     installedRef.current = true;
     originalFetchRef.current = window.fetch.bind(window);
+    originalEventSourceRef.current = window.EventSource;
     window.fetch = async (input, init) => {
       const method = (
         init?.method ||
@@ -575,12 +638,16 @@ function StorybookPromptCacheAccountMock({
 
       return (originalFetchRef.current as typeof window.fetch)(input, init);
     };
+    window.EventSource = MockEventSource as unknown as typeof EventSource;
   }
 
   useEffect(() => {
     return () => {
       if (originalFetchRef.current) {
         window.fetch = originalFetchRef.current;
+      }
+      if (originalEventSourceRef.current) {
+        window.EventSource = originalEventSourceRef.current;
       }
     };
   }, []);
@@ -947,6 +1014,71 @@ export const SharedScaleComparison: Story = {
     stats: sharedScaleStats,
     isLoading: false,
     error: null,
+  },
+};
+
+const liveSyncSettledStats: PromptCacheConversationsResponse = {
+  ...stats,
+  conversations: stats.conversations.map((conversation, index) =>
+    index !== 0
+      ? conversation
+      : {
+          ...conversation,
+          lastActivityAt: "2026-03-27T03:15:19.000Z",
+          recentInvocations: [
+            buildPreviewFromRecord(
+              buildInvocationRecord({
+                id: 507,
+                invokeId: "invoke-pck-01-live-sync",
+                promptCacheKey: CONVERSATION_ONE_KEY,
+                occurredAt: "2026-03-27T03:15:19.000Z",
+                upstreamAccountId: 11,
+                upstreamAccountName: "growth.6vv4@relay.example",
+                proxyDisplayName: "tokyo-edge-live-sync",
+                totalTokens: 70214,
+                inputTokens: 64810,
+                cacheInputTokens: 61504,
+                outputTokens: 5404,
+                reasoningTokens: 924,
+                reasoningEffort: "high",
+                cost: 0.0468,
+                responseContentEncoding: "gzip, br",
+                tUpstreamConnectMs: 544,
+                tUpstreamTtfbMs: 118,
+                tUpstreamStreamMs: 680,
+                tTotalMs: 1436,
+              }),
+            ),
+            ...conversation.recentInvocations.slice(0, 4),
+          ],
+          last24hRequests: [
+            ...conversation.last24hRequests.slice(0, -1),
+            {
+              occurredAt: "2026-03-27T03:15:19.000Z",
+              status: "completed",
+              isSuccess: true,
+              requestTokens: 70214,
+              cumulativeTokens: 854323,
+            },
+          ],
+        },
+  ),
+};
+
+export const LiveSyncSettled: Story = {
+  args: {
+    stats: liveSyncSettledStats,
+    isLoading: false,
+    error: null,
+    expandedPromptCacheKeys: [CONVERSATION_ONE_KEY],
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Stable post-sync state after the Prompt Cache row consumes live `records` SSE updates and converges onto the final persisted invocation.",
+      },
+    },
   },
 };
 

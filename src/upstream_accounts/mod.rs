@@ -63,6 +63,7 @@ const UPSTREAM_ACCOUNT_ENABLE_STATUS_DISABLED: &str = "disabled";
 const UPSTREAM_ACCOUNT_WORK_STATUS_WORKING: &str = "working";
 const UPSTREAM_ACCOUNT_WORK_STATUS_IDLE: &str = "idle";
 const UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED: &str = "rate_limited";
+const UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE: &str = "unavailable";
 const UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL: &str = "normal";
 const UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE: &str = "upstream_unavailable";
 const UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED: &str = "upstream_rejected";
@@ -71,6 +72,7 @@ const UPSTREAM_ACCOUNT_SYNC_STATE_IDLE: &str = "idle";
 const UPSTREAM_ACCOUNT_SYNC_STATE_SYNCING: &str = "syncing";
 const UPSTREAM_ACCOUNT_ACTION_ROUTE_RECOVERED: &str = "route_recovered";
 const UPSTREAM_ACCOUNT_ACTION_ROUTE_COOLDOWN_STARTED: &str = "route_cooldown_started";
+const UPSTREAM_ACCOUNT_ACTION_ROUTE_RETRYABLE_FAILURE: &str = "route_retryable_failure";
 const UPSTREAM_ACCOUNT_ACTION_ROUTE_HARD_UNAVAILABLE: &str = "route_hard_unavailable";
 const UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED: &str = "sync_succeeded";
 const UPSTREAM_ACCOUNT_ACTION_SYNC_HARD_UNAVAILABLE: &str = "sync_hard_unavailable";
@@ -95,6 +97,8 @@ const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_RATE_LIMIT: &str =
 const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED: &str =
     "upstream_http_429_quota_exhausted";
 const UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE: &str = "transport_failure";
+const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED: &str =
+    "upstream_server_overloaded";
 const UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED: &str = "reauth_required";
 const BULK_UPSTREAM_ACCOUNT_ACTION_ENABLE: &str = "enable";
 const BULK_UPSTREAM_ACCOUNT_ACTION_DISABLE: &str = "disable";
@@ -3346,6 +3350,14 @@ fn compute_bulk_upstream_account_sync_counts(
     counts
 }
 
+fn with_bulk_upstream_account_sync_snapshot_status(
+    mut snapshot: BulkUpstreamAccountSyncSnapshot,
+    status: &str,
+) -> BulkUpstreamAccountSyncSnapshot {
+    snapshot.status = status.to_string();
+    snapshot
+}
+
 fn build_bulk_upstream_account_sync_snapshot_event(
     snapshot: BulkUpstreamAccountSyncSnapshot,
 ) -> BulkUpstreamAccountSyncSnapshotEvent {
@@ -3657,7 +3669,10 @@ async fn set_bulk_upstream_account_sync_job_terminal(
 }
 
 async fn finish_bulk_upstream_account_sync_job_completed(job: &Arc<BulkUpstreamAccountSyncJob>) {
-    let snapshot = { job.snapshot.lock().await.clone() };
+    let snapshot = with_bulk_upstream_account_sync_snapshot_status(
+        job.snapshot.lock().await.clone(),
+        BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_COMPLETED,
+    );
     set_bulk_upstream_account_sync_job_terminal(
         job,
         BulkUpstreamAccountSyncTerminalEvent::Completed(
@@ -3671,7 +3686,10 @@ async fn finish_bulk_upstream_account_sync_job_failed(
     job: &Arc<BulkUpstreamAccountSyncJob>,
     error: String,
 ) {
-    let snapshot = { job.snapshot.lock().await.clone() };
+    let snapshot = with_bulk_upstream_account_sync_snapshot_status(
+        job.snapshot.lock().await.clone(),
+        BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_FAILED,
+    );
     set_bulk_upstream_account_sync_job_terminal(
         job,
         BulkUpstreamAccountSyncTerminalEvent::Failed(BulkUpstreamAccountSyncFailedEvent {
@@ -3684,7 +3702,10 @@ async fn finish_bulk_upstream_account_sync_job_failed(
 }
 
 async fn finish_bulk_upstream_account_sync_job_cancelled(job: &Arc<BulkUpstreamAccountSyncJob>) {
-    let snapshot = { job.snapshot.lock().await.clone() };
+    let snapshot = with_bulk_upstream_account_sync_snapshot_status(
+        job.snapshot.lock().await.clone(),
+        BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_CANCELLED,
+    );
     set_bulk_upstream_account_sync_job_terminal(
         job,
         BulkUpstreamAccountSyncTerminalEvent::Cancelled(
@@ -10717,6 +10738,7 @@ fn normalize_upstream_account_work_status_filter(value: Option<&str>) -> Option<
         UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED => {
             Some(UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED)
         }
+        UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE => Some(UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE),
         _ => None,
     }
 }
@@ -11028,6 +11050,7 @@ fn derive_upstream_account_health_status(
         last_error_at,
         last_route_failure_at,
         last_route_failure_kind,
+        last_action_reason_code,
     ) {
         return UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL;
     }
@@ -11078,6 +11101,7 @@ fn is_transient_route_failure_error(
     last_error_at: Option<&str>,
     last_route_failure_at: Option<&str>,
     last_route_failure_kind: Option<&str>,
+    last_action_reason_code: Option<&str>,
 ) -> bool {
     if last_error_at.is_none() || last_error_at != last_route_failure_at {
         return false;
@@ -11085,6 +11109,12 @@ fn is_transient_route_failure_error(
     let failure_kind = last_route_failure_kind
         .map(str::trim)
         .filter(|value| !value.is_empty());
+    if matches!(
+        last_action_reason_code,
+        Some(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED)
+    ) {
+        return matches!(failure_kind, Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED));
+    }
     route_failure_kind_is_rate_limited(failure_kind)
         || matches!(
             failure_kind,
@@ -11143,7 +11173,7 @@ fn derive_upstream_account_work_status(
         return UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED;
     }
     if health_status != UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL {
-        return UPSTREAM_ACCOUNT_WORK_STATUS_IDLE;
+        return UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE;
     }
     let active_cutoff = now - ChronoDuration::minutes(POOL_ROUTE_ACTIVE_STICKY_WINDOW_MINUTES);
     if last_selected_at
@@ -13899,6 +13929,17 @@ pub(crate) async fn record_pool_route_http_failure(
     error_message: &str,
     invoke_id: Option<&str>,
 ) -> Result<()> {
+    if route_http_failure_is_retryable_server_overloaded(status, error_message) {
+        return record_pool_route_retryable_overload_failure(
+            pool,
+            account_id,
+            sticky_key,
+            error_message,
+            invoke_id,
+        )
+        .await;
+    }
+
     let classification = classify_pool_account_http_failure(account_kind, status, error_message);
     match classification.disposition {
         UpstreamAccountFailureDisposition::HardUnavailable => {
@@ -13970,6 +14011,53 @@ pub(crate) async fn record_pool_route_http_failure(
             .await
         }
     }
+}
+
+pub(crate) async fn record_pool_route_retryable_overload_failure(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    sticky_key: Option<&str>,
+    error_message: &str,
+    invoke_id: Option<&str>,
+) -> Result<()> {
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET status = ?2,
+            last_error = ?3,
+            last_error_at = ?4,
+            last_route_failure_at = ?4,
+            last_route_failure_kind = ?5,
+            cooldown_until = NULL,
+            updated_at = ?4
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+    .bind(error_message)
+    .bind(&now_iso)
+    .bind(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
+    .execute(pool)
+    .await?;
+    record_upstream_account_action(
+        pool,
+        account_id,
+        UpstreamAccountActionPayload {
+            action: UPSTREAM_ACCOUNT_ACTION_ROUTE_RETRYABLE_FAILURE,
+            source: UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL,
+            reason_code: Some(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED),
+            reason_message: Some(error_message),
+            http_status: Some(StatusCode::OK),
+            failure_kind: Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED),
+            invoke_id,
+            sticky_key,
+            occurred_at: &now_iso,
+        },
+    )
+    .await?;
+    Ok(())
 }
 
 pub(crate) async fn record_pool_route_transport_failure(
@@ -15019,7 +15107,7 @@ mod tests {
     #[test]
     fn list_query_deserializes_repeated_status_filters() {
         let query = parse_list_upstream_accounts_query(
-            &"/api/pool/upstream-accounts?workStatus=working&workStatus=rate_limited&enableStatus=enabled&healthStatus=normal&healthStatus=needs_reauth"
+            &"/api/pool/upstream-accounts?workStatus=working&workStatus=rate_limited&workStatus=unavailable&enableStatus=enabled&healthStatus=normal&healthStatus=needs_reauth"
                 .parse()
                 .expect("parse uri"),
         )
@@ -15030,6 +15118,7 @@ mod tests {
             vec![
                 UPSTREAM_ACCOUNT_WORK_STATUS_WORKING.to_string(),
                 UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED.to_string(),
+                UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE.to_string(),
             ]
         );
         assert_eq!(
@@ -15421,6 +15510,121 @@ mod tests {
         assert_eq!(response.counts.total, counts.total);
         assert_eq!(response.counts.completed, counts.completed);
         assert_eq!(state.upstream_accounts.bulk_sync_jobs.lock().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn finish_bulk_sync_job_completed_exposes_completed_status_in_events_and_response() {
+        let job = Arc::new(BulkUpstreamAccountSyncJob::new(
+            BulkUpstreamAccountSyncSnapshot {
+                job_id: "job-completed".to_string(),
+                status: BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_RUNNING.to_string(),
+                rows: vec![BulkUpstreamAccountSyncRow {
+                    account_id: 5,
+                    display_name: "Existing OAuth".to_string(),
+                    status: BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_SUCCEEDED.to_string(),
+                    detail: None,
+                }],
+            },
+        ));
+        let mut receiver = job.broadcaster.subscribe();
+
+        finish_bulk_upstream_account_sync_job_completed(&job).await;
+
+        match receiver.recv().await.expect("completed event") {
+            BulkUpstreamAccountSyncJobEvent::Completed(payload) => {
+                assert_eq!(
+                    payload.snapshot.status,
+                    BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_COMPLETED
+                );
+                assert_eq!(payload.counts.completed, 1);
+                assert_eq!(payload.counts.failed, 0);
+                assert_eq!(payload.counts.skipped, 0);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        let response =
+            build_bulk_upstream_account_sync_job_response("job-completed".to_string(), &job).await;
+        assert_eq!(
+            response.snapshot.status,
+            BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_COMPLETED
+        );
+    }
+
+    #[tokio::test]
+    async fn finish_bulk_sync_job_failed_exposes_failed_status_in_events_and_response() {
+        let job = Arc::new(BulkUpstreamAccountSyncJob::new(
+            BulkUpstreamAccountSyncSnapshot {
+                job_id: "job-failed".to_string(),
+                status: BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_RUNNING.to_string(),
+                rows: vec![BulkUpstreamAccountSyncRow {
+                    account_id: 5,
+                    display_name: "Existing OAuth".to_string(),
+                    status: BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_FAILED.to_string(),
+                    detail: Some("upstream rejected".to_string()),
+                }],
+            },
+        ));
+        let mut receiver = job.broadcaster.subscribe();
+
+        finish_bulk_upstream_account_sync_job_failed(&job, "job failed".to_string()).await;
+
+        match receiver.recv().await.expect("failed event") {
+            BulkUpstreamAccountSyncJobEvent::Failed(payload) => {
+                assert_eq!(
+                    payload.snapshot.status,
+                    BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_FAILED
+                );
+                assert_eq!(payload.counts.failed, 1);
+                assert_eq!(payload.error, "job failed");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        let response =
+            build_bulk_upstream_account_sync_job_response("job-failed".to_string(), &job).await;
+        assert_eq!(
+            response.snapshot.status,
+            BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_FAILED
+        );
+    }
+
+    #[tokio::test]
+    async fn finish_bulk_sync_job_cancelled_exposes_cancelled_status_in_events_and_response() {
+        let job = Arc::new(BulkUpstreamAccountSyncJob::new(
+            BulkUpstreamAccountSyncSnapshot {
+                job_id: "job-cancelled".to_string(),
+                status: BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_RUNNING.to_string(),
+                rows: vec![BulkUpstreamAccountSyncRow {
+                    account_id: 5,
+                    display_name: "Existing OAuth".to_string(),
+                    status: BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_SKIPPED.to_string(),
+                    detail: Some("disabled accounts cannot be synced".to_string()),
+                }],
+            },
+        ));
+        let mut receiver = job.broadcaster.subscribe();
+
+        finish_bulk_upstream_account_sync_job_cancelled(&job).await;
+
+        match receiver.recv().await.expect("cancelled event") {
+            BulkUpstreamAccountSyncJobEvent::Cancelled(payload) => {
+                assert_eq!(
+                    payload.snapshot.status,
+                    BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_CANCELLED
+                );
+                assert_eq!(payload.counts.skipped, 1);
+                assert_eq!(payload.counts.completed, 1);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        let response =
+            build_bulk_upstream_account_sync_job_response("job-cancelled".to_string(), &job).await;
+        assert_eq!(
+            response.snapshot.status,
+            BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_CANCELLED
+        );
     }
 
     #[test]
@@ -15934,6 +16138,7 @@ mod tests {
                 PromptCacheConversationsCacheState {
                     entries: HashMap::new(),
                     in_flight: HashMap::new(),
+                    generation: 0,
                 },
             )),
             maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
@@ -16113,6 +16318,7 @@ mod tests {
                 PromptCacheConversationsCacheState {
                     entries: HashMap::new(),
                     in_flight: HashMap::new(),
+                    generation: 0,
                 },
             )),
             maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
@@ -17934,7 +18140,10 @@ mod tests {
             summary.health_status,
             UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
         );
-        assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_IDLE);
+        assert_eq!(
+            summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE
+        );
         assert_eq!(
             summary.last_action_reason_code.as_deref(),
             Some("upstream_http_402")
@@ -17957,6 +18166,10 @@ mod tests {
         assert_eq!(
             detail.summary.health_status,
             UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
+        );
+        assert_eq!(
+            detail.summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE
         );
         assert_eq!(
             detail.summary.last_action_reason_code.as_deref(),
@@ -18010,6 +18223,58 @@ mod tests {
             Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
         );
         assert!(row.cooldown_until.is_none());
+    }
+
+    #[tokio::test]
+    async fn record_pool_route_http_failure_keeps_server_overloaded_as_retryable_without_cooldown()
+    {
+        let pool = test_pool().await;
+        let account_id = insert_api_key_account(&pool, "Overloaded Key").await;
+
+        record_pool_route_http_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
+            Some("sticky-overloaded"),
+            StatusCode::OK,
+            "[upstream_response_failed] server_is_overloaded: Our servers are currently overloaded. Please try again later.",
+            Some("invk_overloaded"),
+        )
+        .await
+        .expect("record retryable overload route failure");
+
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load overloaded row")
+            .expect("overloaded row exists");
+        assert_eq!(row.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert_eq!(
+            row.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_ROUTE_RETRYABLE_FAILURE)
+        );
+        assert_eq!(
+            row.last_action_reason_code.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED)
+        );
+        assert_eq!(row.last_action_http_status, Some(200));
+        assert_eq!(
+            row.last_route_failure_kind.as_deref(),
+            Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
+        );
+        assert!(row.cooldown_until.is_none());
+        assert_eq!(row.consecutive_route_failures, 0);
+
+        let summary = build_summary_from_row(
+            &row,
+            None,
+            row.last_activity_at.clone(),
+            vec![],
+            None,
+            0,
+            Utc::now(),
+        );
+        assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
+        assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_IDLE);
     }
 
     #[test]
@@ -18221,7 +18486,10 @@ mod tests {
             summary.health_status,
             UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
         );
-        assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_IDLE);
+        assert_eq!(
+            summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE
+        );
         assert_eq!(
             summary.last_action.as_deref(),
             Some(UPSTREAM_ACCOUNT_ACTION_SYNC_HARD_UNAVAILABLE)
@@ -18248,6 +18516,10 @@ mod tests {
         assert_eq!(
             detail.summary.health_status,
             UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
+        );
+        assert_eq!(
+            detail.summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE
         );
         assert_eq!(
             detail.summary.last_action_reason_code.as_deref(),
@@ -18330,7 +18602,10 @@ mod tests {
             summary.health_status,
             UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER
         );
-        assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_IDLE);
+        assert_eq!(
+            summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE
+        );
         assert_eq!(
             summary.last_action_reason_code.as_deref(),
             Some(UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR)
@@ -18354,7 +18629,7 @@ mod tests {
         );
         assert_eq!(
             detail.summary.work_status,
-            UPSTREAM_ACCOUNT_WORK_STATUS_IDLE
+            UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE
         );
     }
 
@@ -18408,7 +18683,10 @@ mod tests {
             summary.health_status,
             UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER
         );
-        assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_IDLE);
+        assert_eq!(
+            summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE
+        );
         assert_eq!(
             summary.last_action_reason_code.as_deref(),
             Some(UPSTREAM_ACCOUNT_ACTION_REASON_RECOVERY_UNCONFIRMED_MANUAL_REQUIRED)
@@ -18428,7 +18706,7 @@ mod tests {
         );
         assert_eq!(
             detail.summary.work_status,
-            UPSTREAM_ACCOUNT_WORK_STATUS_IDLE
+            UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE
         );
         assert_eq!(
             detail.summary.last_action_reason_code.as_deref(),
@@ -19442,7 +19720,10 @@ mod tests {
         assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH);
         assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH);
         assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH);
-        assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_IDLE);
+        assert_eq!(
+            summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE
+        );
         assert_eq!(summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
 
         let detail = load_upstream_account_detail(&state.pool, account_id)
@@ -19452,6 +19733,10 @@ mod tests {
         assert_eq!(
             detail.summary.display_status,
             UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH
+        );
+        assert_eq!(
+            detail.summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE
         );
         assert_eq!(detail.summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
         assert_eq!(

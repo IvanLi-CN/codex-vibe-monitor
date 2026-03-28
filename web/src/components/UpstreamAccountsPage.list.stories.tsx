@@ -1,5 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
-import { expect, userEvent, within } from 'storybook/test'
+import { expect, userEvent, waitFor, within } from 'storybook/test'
 import { I18nProvider } from '../i18n'
 import UpstreamAccountsPage from '../pages/account-pool/UpstreamAccounts'
 import {
@@ -193,6 +193,7 @@ export const MissingWindowPlaceholders: Story = {
         /Team key - missing weekly limit/i,
       )
       expect(within(row).getAllByText('-').length).toBeGreaterThanOrEqual(3)
+      await expect(within(row).queryByText(/^7D$/i)).not.toBeInTheDocument()
       await expect(within(row).queryByText(/^0%$/i)).not.toBeInTheDocument()
       await expect(within(row).getByText(/18 requests/i)).toBeInTheDocument()
     })
@@ -230,6 +231,34 @@ export const StatusFilters: Story = {
   },
 }
 
+export const UnavailableWorkStatusFilter: Story = {
+  render: () => (
+    <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await choosePageSize(canvasElement, 50)
+    await chooseCommandOptions(
+      canvasElement,
+      /工作状态|work status/i,
+      [/不可用|unavailable/i],
+    )
+
+    await expect(
+      await canvas.findByText(/Needs reauth unavailable work status/i),
+    ).toBeInTheDocument()
+    await expect(
+      await canvas.findByText(/Upstream unavailable work status/i),
+    ).toBeInTheDocument()
+    await expect(
+      await canvas.findByText(/Upstream rejected unavailable work status/i),
+    ).toBeInTheDocument()
+    await expect(
+      canvas.queryByText(/Rate limited filter control/i),
+    ).not.toBeInTheDocument()
+  },
+}
+
 export const BulkSelection: Story = {
   render: () => (
     <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />
@@ -241,6 +270,90 @@ export const BulkSelection: Story = {
     await expect(
       await canvas.findByText(
         /已跨页选中 \d+ 个账号|\d+ accounts selected across pages/i,
+      ),
+    ).toBeInTheDocument()
+  },
+}
+
+export const BulkSyncSuccessAutoHide: Story = {
+  render: () => (
+    <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const documentScope = within(canvasElement.ownerDocument.body)
+
+    await userEvent.click(
+      await documentScope.findByRole('checkbox', { name: /select existing oauth/i }),
+    )
+    await userEvent.click(
+      await documentScope.findByRole('checkbox', { name: /select team key - staging/i }),
+    )
+    const syncButton = await canvas.findByRole('button', {
+      name: /sync selected|批量同步/i,
+    })
+
+    await userEvent.click(syncButton)
+    const progressTitle = await canvas.findByText(/bulk sync progress|批量同步进度/i)
+    await expect(progressTitle).toBeInTheDocument()
+    await expect(progressTitle.closest('.fixed')).not.toBeNull()
+
+    await waitFor(() => {
+      expect(
+        canvas.queryByText(/bulk sync progress|批量同步进度/i),
+      ).not.toBeInTheDocument()
+    })
+
+    await expect(syncButton).toBeEnabled()
+    await expect(
+      await canvas.findByText(
+        /2 accounts selected across pages|已跨页选中 2 个账号/i,
+      ),
+    ).toBeInTheDocument()
+  },
+}
+
+export const BulkSyncFailureDismiss: Story = {
+  render: () => (
+    <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const documentScope = within(canvasElement.ownerDocument.body)
+
+    await userEvent.click(
+      await documentScope.findByRole('checkbox', { name: /select existing oauth/i }),
+    )
+    await userEvent.click(
+      await documentScope.findByRole('checkbox', { name: /select team key - staging/i }),
+    )
+    const syncButton = await canvas.findByRole('button', {
+      name: /sync selected|批量同步/i,
+    })
+
+    await userEvent.click(syncButton)
+    const progressTitle = await canvas.findByText(/bulk sync progress|批量同步进度/i)
+    await expect(progressTitle).toBeInTheDocument()
+    await expect(progressTitle.closest('.fixed')).not.toBeNull()
+    await expect(
+      await canvas.findByText(/refresh token already rotated/i),
+    ).toBeInTheDocument()
+
+    const dismissButton = await canvas.findByRole('button', {
+      name: /dismiss|收起/i,
+    })
+    await expect(syncButton).toBeEnabled()
+    await userEvent.click(dismissButton)
+
+    await waitFor(() => {
+      expect(
+        canvas.queryByText(/bulk sync progress|批量同步进度/i),
+      ).not.toBeInTheDocument()
+    })
+
+    await expect(
+      await canvas.findByText(
+        /2 accounts selected across pages|已跨页选中 2 个账号/i,
       ),
     ).toBeInTheDocument()
   },
@@ -346,6 +459,7 @@ export const OauthRetryTerminalState: Story = {
     const dialog = await documentScope.findByRole('dialog', {
       name: /Retry refresh failure settled as needs reauth/i,
     })
+    await expect(await within(dialog).findByText(/^Unavailable$/i)).toBeInTheDocument()
     await expect(dialog).toHaveTextContent(/需要重新授权|Needs reauth/i)
     await expect(dialog).not.toHaveTextContent(/同步中|Syncing/i)
     await expect(
@@ -372,6 +486,10 @@ export const UpstreamRejected402: Story = {
 
     await userEvent.click(row)
 
+    const dialog = await documentScope.findByRole('dialog', {
+      name: /Workspace deactivated 402 routing state/i,
+    })
+    await expect(await within(dialog).findByText(/^Unavailable$/i)).toBeInTheDocument()
     await expect(
       await documentScope.findByText(/^上游拒绝$|^Upstream rejected$/i),
     ).toBeInTheDocument()

@@ -22,6 +22,9 @@ const hookMocks = vi.hoisted(() => ({
   useUpstreamStickyConversations: vi.fn(),
   usePoolTags: vi.fn(),
 }));
+const apiMocks = vi.hoisted(() => ({
+  createBulkUpstreamAccountSyncJobEventSource: vi.fn(),
+}));
 
 vi.mock("react-router-dom", async () => {
   const actual =
@@ -46,8 +49,80 @@ vi.mock("../../hooks/usePoolTags", () => ({
   usePoolTags: hookMocks.usePoolTags,
 }));
 
+vi.mock("../../lib/api", async () => {
+  const actual =
+    await vi.importActual<typeof import("../../lib/api")>("../../lib/api");
+  return {
+    ...actual,
+    createBulkUpstreamAccountSyncJobEventSource:
+      apiMocks.createBulkUpstreamAccountSyncJobEventSource,
+  };
+});
+
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
+
+class MockBulkSyncEventSource implements EventTarget {
+  private listeners = new Map<string, Set<EventListener>>();
+  readyState = 1;
+  onerror: ((this: EventSource, ev: Event) => unknown) | null = null;
+
+  addEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+  ) {
+    if (!listener) return;
+    const handler =
+      typeof listener === "function"
+        ? listener
+        : ((event: Event) => listener.handleEvent(event)) as EventListener;
+    const current = this.listeners.get(type) ?? new Set<EventListener>();
+    current.add(handler);
+    this.listeners.set(type, current);
+  }
+
+  removeEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+  ) {
+    if (!listener) return;
+    const current = this.listeners.get(type);
+    if (!current) return;
+    const handler =
+      typeof listener === "function"
+        ? listener
+        : ((event: Event) => listener.handleEvent(event)) as EventListener;
+    current.delete(handler);
+    if (current.size === 0) {
+      this.listeners.delete(type);
+    }
+  }
+
+  dispatchEvent(event: Event): boolean {
+    const current = Array.from(this.listeners.get(event.type) ?? []);
+    current.forEach((listener) => listener(event));
+    return true;
+  }
+
+  close() {
+    this.readyState = 2;
+    this.listeners.clear();
+  }
+
+  emit(type: string, payload: unknown) {
+    if (this.readyState === 2) return;
+    this.dispatchEvent(
+      new MessageEvent(type, {
+        data: JSON.stringify(payload),
+      }),
+    );
+  }
+
+  fail() {
+    if (this.readyState === 2) return;
+    this.onerror?.call(this as unknown as EventSource, new Event("error"));
+  }
+}
 
 beforeAll(() => {
   class ResizeObserverMock {
@@ -106,6 +181,10 @@ beforeEach(() => {
   vi.mocked(window.localStorage.getItem).mockImplementation((key: string) =>
     key === "codex-vibe-monitor.locale" ? "en" : null,
   );
+  apiMocks.createBulkUpstreamAccountSyncJobEventSource.mockReset();
+  apiMocks.createBulkUpstreamAccountSyncJobEventSource.mockImplementation(() => {
+    throw new Error("unexpected bulk sync event source");
+  });
   hookMocks.useUpstreamStickyConversations.mockReturnValue({
     stats: null,
     isLoading: false,
@@ -175,6 +254,12 @@ function findExactTextElements(text: string, root: ParentNode = document.body) {
       candidate.children.length === 0 &&
       candidate.textContent?.trim() === text,
   ) as HTMLElement[]
+}
+
+function findFixedContainerByText(pattern: RegExp) {
+  return Array.from(document.body.querySelectorAll('.fixed')).find((candidate) =>
+    pattern.test(candidate.textContent || ''),
+  ) as HTMLElement | undefined
 }
 
 async function flushAsync() {
@@ -434,6 +519,181 @@ function deferred<T>() {
   return { promise, resolve, reject }
 }
 
+function buildBulkSyncCounts(rows: Array<{ status: string }>) {
+  return rows.reduce(
+    (counts, row) => {
+      counts.total += 1;
+      if (row.status === "succeeded") {
+        counts.completed += 1;
+        counts.succeeded += 1;
+      } else if (row.status === "failed") {
+        counts.completed += 1;
+        counts.failed += 1;
+      } else if (row.status === "skipped") {
+        counts.completed += 1;
+        counts.skipped += 1;
+      }
+      return counts;
+    },
+    {
+      total: 0,
+      completed: 0,
+      succeeded: 0,
+      failed: 0,
+      skipped: 0,
+    },
+  );
+}
+
+function buildBulkSyncSnapshot(
+  jobId: string,
+  rows: Array<{
+    accountId: number;
+    displayName: string;
+    status: string;
+    detail?: string | null;
+  }>,
+  status = "running",
+) {
+  return {
+    jobId,
+    status,
+    rows,
+  };
+}
+
+function buildBulkSyncSnapshotEvent(
+  jobId: string,
+  rows: Array<{
+    accountId: number;
+    displayName: string;
+    status: string;
+    detail?: string | null;
+  }>,
+  status = "running",
+) {
+  return {
+    snapshot: buildBulkSyncSnapshot(jobId, rows, status),
+    counts: buildBulkSyncCounts(rows),
+  };
+}
+
+function buildBulkSyncJobResponse(
+  jobId: string,
+  rows: Array<{
+    accountId: number;
+    displayName: string;
+    status: string;
+    detail?: string | null;
+  }>,
+  status = "running",
+) {
+  return {
+    jobId,
+    ...buildBulkSyncSnapshotEvent(jobId, rows, status),
+  };
+}
+
+function mockBulkSyncPage(options?: {
+  refresh?: ReturnType<typeof vi.fn>;
+  startBulkSyncJob?: ReturnType<typeof vi.fn>;
+  getBulkSyncJob?: ReturnType<typeof vi.fn>;
+  stopBulkSyncJob?: ReturnType<typeof vi.fn>;
+}) {
+  const refresh = options?.refresh ?? vi.fn();
+  const startBulkSyncJob =
+    options?.startBulkSyncJob ??
+    vi.fn().mockResolvedValue(
+      buildBulkSyncJobResponse("job-1", [
+        { accountId: 5, displayName: "Existing OAuth", status: "pending" },
+        { accountId: 9, displayName: "Another OAuth", status: "pending" },
+      ]),
+    );
+  hookMocks.useUpstreamAccounts.mockReturnValue({
+    items: [
+      {
+        id: 5,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Existing OAuth",
+        groupName: "prod",
+        status: "active",
+        displayStatus: "active",
+        enabled: true,
+        isMother: true,
+        planType: "team",
+        primaryWindow: null,
+        secondaryWindow: null,
+        credits: null,
+        localLimits: null,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
+      {
+        id: 9,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Another OAuth",
+        groupName: "prod",
+        status: "active",
+        displayStatus: "active",
+        enabled: true,
+        isMother: false,
+        planType: "pro",
+        primaryWindow: null,
+        secondaryWindow: null,
+        credits: null,
+        localLimits: null,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
+    ],
+    hasUngroupedAccounts: true,
+    writesEnabled: true,
+    total: 2,
+    page: 1,
+    pageSize: 20,
+    metrics: {
+      total: 2,
+      oauth: 2,
+      apiKey: 0,
+      attention: 0,
+    },
+    selectedId: 5,
+    selectedSummary: null,
+    detail: null,
+    isLoading: false,
+    isDetailLoading: false,
+    listError: null,
+    detailError: null,
+    error: null,
+    selectAccount: vi.fn(),
+    refresh,
+    loadDetail: vi.fn(),
+    beginOauthLogin: vi.fn(),
+    beginRelogin: vi.fn(),
+    beginOauthMailboxSession: vi.fn(),
+    beginOauthMailboxSessionForAddress: vi.fn(),
+    getOauthMailboxStatuses: vi.fn(),
+    removeOauthMailboxSession: vi.fn(),
+    getLoginSession: vi.fn(),
+    completeOauthLogin: vi.fn(),
+    createApiKeyAccount: vi.fn(),
+    saveAccount: vi.fn(),
+    saveRouting: vi.fn(),
+    saveGroupNote: vi.fn(),
+    runBulkAction: vi.fn(),
+    startBulkSyncJob,
+    getBulkSyncJob: options?.getBulkSyncJob ?? vi.fn(),
+    stopBulkSyncJob: options?.stopBulkSyncJob ?? vi.fn(),
+    runSync: vi.fn(),
+    removeAccount: vi.fn(),
+    groups: [],
+    routing: { apiKeyConfigured: false, maskedApiKey: null },
+  });
+  return { refresh, startBulkSyncJob };
+}
+
 function mockAccountsPage(options?: {
   saveRouting?: ReturnType<typeof vi.fn>
   routing?: {
@@ -663,6 +923,62 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect(document.body.textContent).toContain("Weekly cap exhausted for this account");
     expect(document.body.textContent).toContain("Recent account events");
     expect(document.body.textContent).toContain("invk_action_001");
+  });
+
+  it("renders retryable upstream overload actions without cooldown wording", async () => {
+    mockAccountsPage({
+      selectedSummary: {
+        status: "active",
+        displayStatus: "active",
+        healthStatus: "normal",
+        workStatus: "working",
+        lastAction: "route_retryable_failure",
+        lastActionSource: "call",
+        lastActionReasonCode: "upstream_server_overloaded",
+        lastActionReasonMessage:
+          "[upstream_response_failed] server_is_overloaded: Our servers are currently overloaded. Please try again later.",
+        lastActionHttpStatus: 200,
+      },
+      detail: {
+        status: "active",
+        displayStatus: "active",
+        healthStatus: "normal",
+        workStatus: "working",
+        lastAction: "route_retryable_failure",
+        lastActionSource: "call",
+        lastActionReasonCode: "upstream_server_overloaded",
+        lastActionReasonMessage:
+          "[upstream_response_failed] server_is_overloaded: Our servers are currently overloaded. Please try again later.",
+        lastActionHttpStatus: 200,
+        recentActions: [
+          {
+            id: 73,
+            occurredAt: "2026-03-27T07:06:29.000Z",
+            action: "route_retryable_failure",
+            source: "call",
+            reasonCode: "upstream_server_overloaded",
+            reasonMessage:
+              "[upstream_response_failed] server_is_overloaded: Our servers are currently overloaded. Please try again later.",
+            httpStatus: 200,
+            failureKind: "upstream_response_failed",
+            invokeId: "invk_overloaded_001",
+            stickyKey: "sticky-overloaded-001",
+            createdAt: "2026-03-27T07:06:29.000Z",
+          },
+        ],
+      },
+    });
+    render("/account-pool/upstream-accounts");
+
+    clickFirstRosterRow();
+    await flushAsync();
+    clickTab(/Health & events/i);
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Temporary upstream failure");
+    expect(document.body.textContent).toContain("Upstream is temporarily overloaded");
+    expect(document.body.textContent).toContain("HTTP 200");
+    expect(document.body.textContent).not.toContain("Route cooldown");
   });
 
   it("renders blocked recovery actions with translated source and reason labels", async () => {
@@ -1096,6 +1412,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     render("/account-pool/upstream-accounts");
 
     clickCombobox(/work status/i);
+    clickCommandItem(/^unavailable$/i);
     clickCommandItem(/^rate limited$/i);
     clickCommandItem(/^working$/i);
     clickCombobox(/enable status/i);
@@ -1107,7 +1424,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect(hookMocks.useUpstreamAccounts).toHaveBeenLastCalledWith({
       groupSearch: undefined,
       groupUngrouped: undefined,
-      workStatus: ["rate_limited", "working"],
+      workStatus: ["unavailable", "rate_limited", "working"],
       enableStatus: ["enabled"],
       healthStatus: ["needs_reauth", "normal"],
       page: 1,
@@ -1256,6 +1573,120 @@ describe("UpstreamAccountsPage duplicates", () => {
 
     startBulkSyncRequest.reject(new Error("network interrupted"));
     await flushAsync();
+  });
+
+  it("unlocks bulk actions after a completed event still carries a stale running snapshot status", async () => {
+    const eventSource = new MockBulkSyncEventSource();
+    apiMocks.createBulkUpstreamAccountSyncJobEventSource.mockReturnValue(
+      eventSource as unknown as EventSource,
+    );
+    const { refresh } = mockBulkSyncPage();
+
+    render("/account-pool/upstream-accounts");
+
+    clickCheckboxByLabel(/select existing oauth/i);
+    clickButton(/sync selected/i);
+    await flushAsync();
+
+    expect(findButton(/^Enable$/i)?.disabled).toBe(true);
+    expect(findButton(/^Sync selected$/i)?.disabled).toBe(true);
+
+    eventSource.emit(
+      "completed",
+      buildBulkSyncSnapshotEvent(
+        "job-1",
+        [{ accountId: 5, displayName: "Existing OAuth", status: "succeeded" }],
+        "running",
+      ),
+    );
+    await flushAsync();
+
+    expect(findButton(/^Enable$/i)?.disabled).toBe(false);
+    expect(findButton(/^Disable$/i)?.disabled).toBe(false);
+    expect(findButton(/^Sync selected$/i)?.disabled).toBe(false);
+    expect(document.body.textContent).not.toContain("Bulk sync progress");
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("auto-hides bulk sync progress after a fully successful terminal state", async () => {
+    const eventSource = new MockBulkSyncEventSource();
+    apiMocks.createBulkUpstreamAccountSyncJobEventSource.mockReturnValue(
+      eventSource as unknown as EventSource,
+    );
+    mockBulkSyncPage();
+
+    render("/account-pool/upstream-accounts");
+
+    clickCheckboxByLabel(/select existing oauth/i);
+    clickCheckboxByLabel(/select another oauth/i);
+    clickButton(/sync selected/i);
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Bulk sync progress");
+    expect(findFixedContainerByText(/bulk sync progress/i)).toBeDefined();
+
+    act(() => {
+      eventSource.emit(
+        "completed",
+        buildBulkSyncSnapshotEvent("job-1", [
+          { accountId: 5, displayName: "Existing OAuth", status: "succeeded" },
+          { accountId: 9, displayName: "Another OAuth", status: "succeeded" },
+        ], "completed"),
+      );
+    });
+    await flushAsync();
+
+    expect(document.body.textContent).not.toContain("Bulk sync progress");
+    expect(document.body.textContent).toContain(
+      "2 accounts selected across pages",
+    );
+  });
+
+  it("keeps partial-success bulk sync progress visible until dismissed", async () => {
+    const eventSource = new MockBulkSyncEventSource();
+    apiMocks.createBulkUpstreamAccountSyncJobEventSource.mockReturnValue(
+      eventSource as unknown as EventSource,
+    );
+    mockBulkSyncPage();
+
+    render("/account-pool/upstream-accounts");
+
+    clickCheckboxByLabel(/select existing oauth/i);
+    clickCheckboxByLabel(/select another oauth/i);
+    clickButton(/sync selected/i);
+    await flushAsync();
+
+    act(() => {
+      eventSource.emit(
+        "completed",
+        buildBulkSyncSnapshotEvent("job-1", [
+          {
+            accountId: 5,
+            displayName: "Existing OAuth",
+            status: "failed",
+            detail: "refresh token already rotated",
+          },
+          {
+            accountId: 9,
+            displayName: "Another OAuth",
+            status: "succeeded",
+          },
+        ], "completed"),
+      );
+    });
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Bulk sync progress");
+    expect(document.body.textContent).toContain("refresh token already rotated");
+    expect(findFixedContainerByText(/bulk sync progress/i)).toBeDefined();
+
+    clickButton(/dismiss/i);
+    await flushAsync();
+
+    expect(document.body.textContent).not.toContain("Bulk sync progress");
+    expect(document.body.textContent).toContain(
+      "2 accounts selected across pages",
+    );
   });
 
   it("prioritizes the selected accounts tag union when removing tags in bulk", () => {
@@ -2830,6 +3261,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
     render("/account-pool/upstream-accounts");
 
     clickFirstRosterRow();
+    expect(document.body.textContent).toContain("Unavailable");
     clickTab(/Health & events/i);
     expect(document.body.textContent).toContain(
       "The OAuth data plane rejected this request",
@@ -2846,7 +3278,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
         status: "error",
         displayStatus: "upstream_rejected",
         healthStatus: "upstream_rejected",
-        workStatus: "idle",
+        workStatus: "unavailable",
         lastAction: "sync_hard_unavailable",
         lastActionSource: "sync_maintenance",
         lastActionReasonCode: "upstream_http_402",
@@ -2861,7 +3293,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
         status: "error",
         displayStatus: "upstream_rejected",
         healthStatus: "upstream_rejected",
-        workStatus: "idle",
+        workStatus: "unavailable",
         lastAction: "sync_hard_unavailable",
         lastActionSource: "sync_maintenance",
         lastActionReasonCode: "upstream_http_402",
@@ -2894,6 +3326,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
 
     clickFirstRosterRow();
     await flushAsync();
+    expect(document.body.textContent).toContain("Unavailable");
     clickTab(/Health & events/i);
     await flushAsync();
 
@@ -3404,9 +3837,28 @@ describe("UpstreamAccountsPage api key details", () => {
       groups: [],
       forwardProxyNodes: [
         {
+          key: "__direct__",
+          displayName: "Direct",
+          protocolLabel: "DIRECT",
+          source: "direct",
+          penalized: false,
+          selectable: true,
+          last24h: [],
+        },
+        {
           key: "jp-edge-01",
           displayName: "JP Edge 01",
+          protocolLabel: "HTTP",
           source: "inventory",
+          penalized: false,
+          selectable: true,
+          last24h: [],
+        },
+        {
+          key: "vless://11111111-2222-3333-4444-555555555555@fixture-vless-edge.example.invalid:443?encryption=none&security=tls&type=ws&host=cdn.example.invalid&path=%2Ffixture&fp=chrome&pbk=fixture-public-key&sid=fixture-subscription-node#Ivan-hinet-vless-vision-01KF874741GBN6MQYD6TNMYDVS",
+          displayName: "Ivan-hinet-vless-vision-01KF874741GBN6MQYD6TNMYDVS",
+          protocolLabel: "VLESS",
+          source: "subscription",
           penalized: false,
           selectable: true,
           last24h: [],
@@ -3436,6 +3888,10 @@ describe("UpstreamAccountsPage api key details", () => {
       throw new Error("missing group settings dialog");
     }
     expect(groupSettingsDialog.textContent || "").toContain("Bound proxy nodes");
+    expect(groupSettingsDialog.textContent || "").toContain("Direct");
+    expect(groupSettingsDialog.textContent || "").toContain("DIRECT");
+    expect(groupSettingsDialog.textContent || "").toContain("VLESS");
+    expect(groupSettingsDialog.textContent || "").not.toContain("vless://");
 
     const groupNoteField = groupSettingsDialog.querySelector("textarea");
     if (!(groupNoteField instanceof HTMLTextAreaElement)) {
