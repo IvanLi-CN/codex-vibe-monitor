@@ -4,7 +4,7 @@
 
 - Status: 已实现
 - Created: 2026-03-27
-- Last: 2026-03-27
+- Last: 2026-03-28
 
 ## 背景
 
@@ -49,6 +49,7 @@
 ### 兼容与边界
 
 - 现有 copy mode 点击逻辑保持不变，继续使用 metadata sync flush + stale-session 防护，避免复制过期 / completed / 不可重试失败后的旧 URL。
+- 同一行若在前一次自动复制尚未返回时再次重生成，旧复制 promise 的结果不得回写或覆盖新 session 的提示、错误态与手动复制 bubble。
 - 主按钮存在项目 bubble 提示时，不再额外挂原生 `title` 提示，避免同一悬浮动作出现两层提示。
 - hover / 普通 focus 打开的 bubble 采用轻微延迟；右键、长按和键盘显式展开仍保持立即打开。
 - 单账号 OAuth 页面保持不变。
@@ -59,6 +60,7 @@
 - Given 批量行当前无有效 pending OAuth URL，When 点击主按钮生成，Then `beginOauthLogin` 成功后立刻复制返回的 `authUrl`，并切换到 copy mode。
 - Given 用户在 bubble 中点击 `Regenerate OAuth URL`，When 新 URL 生成成功，Then 立即复制最新 URL，而不是只更新 session。
 - Given 浏览器阻止自动复制，When fresh URL 生成成功但复制失败，Then 打开现有手动复制 bubble，并显示该 fresh URL 供手动复制。
+- Given 同一行在前一次自动复制尚未返回时又生成了新的 OAuth URL，When 较旧的复制 promise 之后才完成，Then 页面仍保持最新 session 的提示与手动复制状态，不得被旧结果覆盖。
 - Given 批量行已经处于 copy mode，When 点击主按钮复制，Then 继续沿用现有 stale-session 防护，不回退到直接复制缓存 URL。
 - Given 单账号 OAuth 页面，When 生成 URL，Then 行为不变。
 

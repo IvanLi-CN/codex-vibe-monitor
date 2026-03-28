@@ -1558,6 +1558,11 @@ export default function UpstreamAccountCreatePage() {
   const oauthMailboxToneResetRef = useRef<number | null>(null);
   const batchMailboxToneResetRef = useRef<Record<string, number>>({});
   const batchRowsRef = useRef<BatchOauthRow[]>(initialBatchRows);
+  const batchSessionLoginIdByRowRef = useRef<Record<string, string | null>>(
+    Object.fromEntries(
+      initialBatchRows.map((row) => [row.id, row.session?.loginId ?? null] as const),
+    ),
+  );
   const pendingOauthSessionSyncRef = useRef<
     Record<string, PendingOauthSessionSyncRecord>
   >({});
@@ -1652,6 +1657,9 @@ export default function UpstreamAccountCreatePage() {
   }, []);
   useEffect(() => {
     batchRowsRef.current = batchRows;
+    batchSessionLoginIdByRowRef.current = Object.fromEntries(
+      batchRows.map((row) => [row.id, row.session?.loginId ?? null] as const),
+    );
   }, [batchRows]);
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -4423,15 +4431,22 @@ export default function UpstreamAccountCreatePage() {
 
   const resolveBatchOauthCopyFeedback = (
     rowId: string,
+    loginId: string,
     result: Awaited<ReturnType<typeof copyText>>,
     successHint: string,
   ) => {
+    if (batchSessionLoginIdByRowRef.current[rowId] !== loginId) {
+      return null;
+    }
     const fallbackHint = t(
       "accountPool.upstreamAccounts.batchOauth.copyInlineFallback",
     );
-    setBatchManualCopyRowId((current) =>
-      result.ok ? (current === rowId ? null : current) : rowId,
-    );
+    setBatchManualCopyRowId((current) => {
+      if (batchSessionLoginIdByRowRef.current[rowId] !== loginId) {
+        return current;
+      }
+      return result.ok ? (current === rowId ? null : current) : rowId;
+    });
     return {
       sessionHint: result.ok ? successHint : fallbackHint,
       actionError: result.ok ? null : fallbackHint,
@@ -4482,6 +4497,7 @@ export default function UpstreamAccountCreatePage() {
       const generatedHint = t("accountPool.upstreamAccounts.oauth.generated", {
         expiresAt: formatDateTime(response.expiresAt),
       });
+      batchSessionLoginIdByRowRef.current[rowId] = response.loginId;
       updateBatchRow(rowId, (current) => ({
         ...current,
         busyAction: null,
@@ -4497,15 +4513,23 @@ export default function UpstreamAccountCreatePage() {
         });
         const copyFeedback = resolveBatchOauthCopyFeedback(
           rowId,
+          response.loginId,
           copyResult,
           t("accountPool.upstreamAccounts.batchOauth.generatedAndCopied"),
         );
+        if (!copyFeedback) {
+          return;
+        }
         updateBatchRow(rowId, (current) => ({
-          ...current,
-          sessionHint: copyFeedback.sessionHint,
-          actionError: copyFeedback.actionError,
+          ...(current.session?.loginId !== response.loginId
+            ? current
+            : {
+                ...current,
+                sessionHint: copyFeedback.sessionHint,
+                actionError: copyFeedback.actionError,
+              }),
         }));
-      } else {
+      } else if (batchSessionLoginIdByRowRef.current[rowId] === response.loginId) {
         setBatchManualCopyRowId((current) => (current === rowId ? null : current));
       }
     } catch (err) {
@@ -4552,9 +4576,13 @@ export default function UpstreamAccountCreatePage() {
 
     const copyFeedback = resolveBatchOauthCopyFeedback(
       rowId,
+      row.session.loginId,
       result,
       t("accountPool.upstreamAccounts.oauth.copied"),
     );
+    if (!copyFeedback) {
+      return;
+    }
 
     updateBatchRow(rowId, (current) => ({
       ...current,
