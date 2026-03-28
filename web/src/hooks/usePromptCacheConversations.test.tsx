@@ -324,6 +324,75 @@ describe("usePromptCacheConversations", () => {
     expect(apiMocks.fetchPromptCacheConversations).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps a completed unseen live key visible while the initial load resolves stale data", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-10T03:00:00Z"));
+    const initial = deferred<PromptCacheConversationsResponse>();
+    const refresh = deferred<PromptCacheConversationsResponse>();
+    apiMocks.fetchPromptCacheConversations
+      .mockImplementationOnce(async () => initial.promise)
+      .mockImplementationOnce(async () => refresh.promise);
+
+    render(<Probe selection={{ mode: "count", limit: 50 }} />);
+    await flushAsync();
+
+    await act(async () => {
+      vi.advanceTimersByTime(1_000);
+      sseMocks.listeners.forEach((listener) => {
+        listener({
+          type: "records",
+          records: [
+            {
+              id: 903,
+              invokeId: "invoke-live-completed",
+              occurredAt: "2026-03-10T02:30:00Z",
+              createdAt: "2026-03-10T02:30:00Z",
+              status: "completed",
+              promptCacheKey: "pck-live-completed",
+              totalTokens: 182491,
+              cost: 0.0484,
+              proxyDisplayName: "Proxy Final",
+            },
+          ],
+        });
+      });
+    });
+
+    initial.resolve(createResponse("pck-base"));
+    await flushAsync();
+
+    expect(text("conversation-keys")).toBe("pck-live-completed,pck-base");
+    expect(text("preview-invoke-id")).toBe("invoke-live-completed");
+    expect(text("preview-status")).toBe("completed");
+    expect(apiMocks.fetchPromptCacheConversations).toHaveBeenCalledTimes(2);
+
+    refresh.resolve(
+      createResponseWithConversations([
+        createConversation("pck-live-completed", {
+          createdAt: "2026-03-10T02:30:00Z",
+          lastActivityAt: "2026-03-10T02:30:00Z",
+          recentInvocations: [
+            createPreview({
+              id: 903,
+              invokeId: "invoke-live-completed",
+              occurredAt: "2026-03-10T02:30:00Z",
+              status: "completed",
+              totalTokens: 182491,
+              cost: 0.0484,
+              proxyDisplayName: "Proxy Final",
+            }),
+          ],
+        }),
+        createConversation("pck-base"),
+      ]),
+    );
+    await flushAsync();
+
+    expect(text("conversation-keys")).toBe("pck-live-completed,pck-base");
+    expect(text("preview-invoke-id")).toBe("invoke-live-completed");
+    expect(text("preview-status")).toBe("completed");
+  });
+
   it("forces an immediate refetch when an unseen live key arrives while the table is full", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-10T03:00:00Z"));

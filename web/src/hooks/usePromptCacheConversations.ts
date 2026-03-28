@@ -85,6 +85,7 @@ export function usePromptCacheConversations(
   const lastOpenResyncAtRef = useRef(0);
   const requestSeqRef = useRef(0);
   const abortControllerRef = useRef<AbortController | null>(null);
+  const liveRecordObservedAtByKeyRef = useRef<Record<string, number>>({});
 
   const clearPendingRefreshTimer = useCallback(() => {
     if (!refreshTimerRef.current) return;
@@ -119,6 +120,7 @@ export function usePromptCacheConversations(
     const requestSeq = requestSeqRef.current + 1;
     requestSeqRef.current = requestSeq;
     const requestedSelection = selectionRef.current;
+    const requestStartedAtMs = Date.now();
     const controller = new AbortController();
     abortControllerRef.current = controller;
     const shouldShowLoading = !(silent && hasHydratedRef.current);
@@ -134,9 +136,21 @@ export function usePromptCacheConversations(
       setKnownConversationHistoryByKey((current) =>
         mergePromptCacheConversationHistory(current, response),
       );
-      setLiveRecordsByKey((current) =>
-        reconcilePromptCacheLiveRecordMap(current, response),
-      );
+      setLiveRecordsByKey((current) => {
+        const next = reconcilePromptCacheLiveRecordMap(current, response, {
+          requestStartedAtMs,
+          liveRecordObservedAtByKey: liveRecordObservedAtByKeyRef.current,
+        });
+        const nextObservedAtByKey: Record<string, number> = {};
+        for (const promptCacheKey of Object.keys(next)) {
+          const observedAt = liveRecordObservedAtByKeyRef.current[promptCacheKey];
+          if (typeof observedAt === "number" && Number.isFinite(observedAt)) {
+            nextObservedAtByKey[promptCacheKey] = observedAt;
+          }
+        }
+        liveRecordObservedAtByKeyRef.current = nextObservedAtByKey;
+        return next;
+      });
       hasHydratedRef.current = true;
       setError(null);
       if (pendingOpenResyncRef.current) {
@@ -244,6 +258,16 @@ export function usePromptCacheConversations(
           }
           return !knownConversationHistoryRef.current[promptCacheKey]?.createdAt;
         });
+      const observedAt = Date.now();
+      for (const record of payload.records) {
+        const promptCacheKey = record.promptCacheKey?.trim();
+        if (!promptCacheKey) continue;
+        const currentObservedAt =
+          liveRecordObservedAtByKeyRef.current[promptCacheKey] ?? 0;
+        if (observedAt > currentObservedAt) {
+          liveRecordObservedAtByKeyRef.current[promptCacheKey] = observedAt;
+        }
+      }
       setLiveRecordsByKey((current) =>
         mergePromptCacheLiveRecordMap(current, payload.records),
       );

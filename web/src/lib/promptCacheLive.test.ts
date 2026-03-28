@@ -319,6 +319,32 @@ describe("mergePromptCacheConversationsResponse", () => {
 });
 
 describe("reconcilePromptCacheLiveRecordMap", () => {
+  it("keeps unseen completed keys when the authoritative response started before the live record arrived", () => {
+    const completedRecord = createLiveRecord({
+      id: 1200,
+      invokeId: "invoke-hidden-completed",
+      occurredAt: "2026-03-10T02:30:00Z",
+      promptCacheKey: "pck-hidden-completed",
+      status: "completed",
+    });
+
+    const reconciled = reconcilePromptCacheLiveRecordMap(
+      { "pck-hidden-completed": [completedRecord] },
+      createResponse([
+        createConversation("pck-visible-a"),
+        createConversation("pck-visible-b"),
+      ]),
+      {
+        requestStartedAtMs: 100,
+        liveRecordObservedAtByKey: { "pck-hidden-completed": 101 },
+      },
+    );
+
+    expect(reconciled).toEqual({
+      "pck-hidden-completed": [completedRecord],
+    });
+  });
+
   it("drops unseen terminal-only keys when the authoritative resync still omits them", () => {
     const reconciled = reconcilePromptCacheLiveRecordMap(
       {

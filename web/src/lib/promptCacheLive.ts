@@ -496,6 +496,10 @@ export function mergePromptCacheLiveRecordMap(
 export function reconcilePromptCacheLiveRecordMap(
   current: Record<string, ApiInvocation[]>,
   stats: PromptCacheConversationsResponse | null,
+  options: {
+    requestStartedAtMs?: number;
+    liveRecordObservedAtByKey?: Record<string, number>;
+  } = {},
 ) {
   if (!stats) return current;
 
@@ -528,6 +532,17 @@ export function reconcilePromptCacheLiveRecordMap(
       (item) => item.promptCacheKey === promptCacheKey,
     );
     if (!conversation) {
+      const latestObservedAt = options.liveRecordObservedAtByKey?.[promptCacheKey];
+      const responsePredatesLatestLiveRecord =
+        typeof latestObservedAt === "number" &&
+        Number.isFinite(latestObservedAt) &&
+        typeof options.requestStartedAtMs === "number" &&
+        Number.isFinite(options.requestStartedAtMs) &&
+        options.requestStartedAtMs <= latestObservedAt;
+      if (responsePredatesLatestLiveRecord) {
+        next[promptCacheKey] = records;
+        continue;
+      }
       const pendingRecords = records.filter(promptCacheInvocationIsPending);
       if (pendingRecords.length > 0) {
         next[promptCacheKey] = pendingRecords;
