@@ -2613,6 +2613,7 @@ pub(crate) struct ForwardProxyManager {
     pub(crate) settings: ForwardProxySettings,
     pub(crate) endpoints: Vec<ForwardProxyEndpoint>,
     pub(crate) runtime: HashMap<String, ForwardProxyRuntimeState>,
+    pub(crate) bound_key_aliases: HashMap<String, String>,
     pub(crate) bound_group_runtime: HashMap<String, BoundForwardProxyGroupState>,
     pub(crate) selection_counter: u64,
     pub(crate) requests_since_probe: u64,
@@ -2698,6 +2699,7 @@ impl ForwardProxyManager {
             settings,
             endpoints: Vec::new(),
             runtime,
+            bound_key_aliases: HashMap::new(),
             bound_group_runtime: HashMap::new(),
             selection_counter: 0,
             requests_since_probe: 0,
@@ -2761,6 +2763,18 @@ impl ForwardProxyManager {
             }
         }
         self.endpoints = merged;
+        let mut bound_key_aliases = HashMap::new();
+        for endpoint in &self.endpoints {
+            let Some(raw_url) = endpoint.raw_url.as_deref() else {
+                continue;
+            };
+            for alias in legacy_bound_proxy_key_aliases(raw_url) {
+                if alias != endpoint.key {
+                    bound_key_aliases.insert(alias, endpoint.key.clone());
+                }
+            }
+        }
+        self.bound_key_aliases = bound_key_aliases;
 
         let algo = self.algo;
         for endpoint in &self.endpoints {
@@ -2877,8 +2891,9 @@ impl ForwardProxyManager {
             if normalized.is_empty() {
                 continue;
             }
-            let canonical =
-                normalize_bound_proxy_key(normalized).unwrap_or_else(|| normalized.to_string());
+            let canonical = normalize_bound_proxy_key(normalized)
+                .map(|value| self.bound_key_aliases.get(&value).cloned().unwrap_or(value))
+                .unwrap_or_else(|| normalized.to_string());
             if !selectable.contains(canonical.as_str()) || !seen.insert(canonical.clone()) {
                 continue;
             }

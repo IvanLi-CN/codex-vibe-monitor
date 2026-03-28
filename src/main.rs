@@ -22790,6 +22790,28 @@ fn normalize_bound_proxy_key(raw: &str) -> Option<String> {
     normalize_single_proxy_key(normalized)
 }
 
+pub(crate) fn legacy_bound_proxy_key_aliases(raw: &str) -> Vec<String> {
+    let normalized = raw.trim();
+    if normalized.is_empty() {
+        return Vec::new();
+    }
+
+    let mut aliases = HashSet::new();
+    for scheme in ["vless", "trojan"] {
+        let Some(share_link) = normalize_share_link_scheme(normalized, scheme) else {
+            continue;
+        };
+        let Some(parsed) = Url::parse(&share_link).ok() else {
+            continue;
+        };
+        aliases.insert(stable_forward_proxy_key(&canonical_share_link_identity(
+            &parsed,
+        )));
+    }
+
+    aliases.into_iter().collect()
+}
+
 fn normalize_proxy_endpoints_from_urls(urls: &[String], source: &str) -> Vec<ForwardProxyEndpoint> {
     let mut seen = HashSet::new();
     let mut endpoints = Vec::new();
