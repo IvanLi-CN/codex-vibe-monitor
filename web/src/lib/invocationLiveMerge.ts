@@ -17,6 +17,24 @@ function hasComparableNumber(value: number | null | undefined) {
   return comparableNumber(value) !== null;
 }
 
+function invocationHasTerminalFailure(record: ApiInvocation) {
+  const status = normalizeStatus(record.status);
+  if (status === "running" || status === "pending") return false;
+  const failureClass = normalizeStatus(record.failureClass);
+  if (failureClass && failureClass !== "none") return true;
+  if (status.startsWith("http_4") || status.startsWith("http_5")) return true;
+  if (hasMeaningfulString(record.errorMessage)) return true;
+  if (hasMeaningfulString(record.failureKind)) return true;
+  if (hasMeaningfulString(record.poolAttemptTerminalReason)) return true;
+  if (hasMeaningfulString(record.upstreamErrorCode)) return true;
+  if (hasMeaningfulString(record.upstreamErrorMessage)) return true;
+  return false;
+}
+
+function canBackfillFailureMetadata(record: ApiInvocation) {
+  return recordLifecycleRank(record) === 1 || invocationHasTerminalFailure(record);
+}
+
 function recordLifecycleRank(record: ApiInvocation) {
   const status = normalizeStatus(record.status);
   if (status === "running" || status === "pending") return 1;
@@ -174,9 +192,6 @@ function mergeInvocationRecordDetails(
     "status",
     "routeMode",
     "model",
-    "errorMessage",
-    "failureKind",
-    "failureClass",
     "endpoint",
     "upstreamAccountName",
     "proxyDisplayName",
@@ -187,22 +202,34 @@ function mergeInvocationRecordDetails(
     "promptCacheKey",
     "requesterIp",
     "upstreamRequestId",
+  ];
+  const fillFailureStringFields: Array<keyof ApiInvocation> = [
+    "errorMessage",
+    "failureKind",
+    "failureClass",
     "poolAttemptTerminalReason",
     "upstreamErrorCode",
     "upstreamErrorMessage",
   ];
 
-  for (const field of fillStringFields) {
-    const preferredValue = merged[field];
-    const fallbackValue = fallback[field];
-    if (
-      !hasMeaningfulString(
-        typeof preferredValue === "string" ? preferredValue : undefined,
-      ) &&
-      hasMeaningfulString(typeof fallbackValue === "string" ? fallbackValue : undefined)
-    ) {
-      merged[field] = fallbackValue as never;
+  const fillStringFieldGroup = (fields: Array<keyof ApiInvocation>) => {
+    for (const field of fields) {
+      const preferredValue = merged[field];
+      const fallbackValue = fallback[field];
+      if (
+        !hasMeaningfulString(
+          typeof preferredValue === "string" ? preferredValue : undefined,
+        ) &&
+        hasMeaningfulString(typeof fallbackValue === "string" ? fallbackValue : undefined)
+      ) {
+        merged[field] = fallbackValue as never;
+      }
     }
+  };
+
+  fillStringFieldGroup(fillStringFields);
+  if (canBackfillFailureMetadata(preferred)) {
+    fillStringFieldGroup(fillFailureStringFields);
   }
 
   const fillNumberFields: Array<keyof ApiInvocation> = [
@@ -238,7 +265,11 @@ function mergeInvocationRecordDetails(
     }
   }
 
-  if (merged.isActionable == null && typeof fallback.isActionable === "boolean") {
+  if (
+    canBackfillFailureMetadata(preferred) &&
+    merged.isActionable == null &&
+    typeof fallback.isActionable === "boolean"
+  ) {
     merged.isActionable = fallback.isActionable;
   }
 
