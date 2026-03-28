@@ -636,11 +636,7 @@ pub(crate) async fn build_forward_proxy_binding_nodes_response(
 
     for node in &mut nodes {
         node.last24h = build_forward_proxy_hourly_buckets(
-            if node.key == FORWARD_PROXY_DIRECT_KEY {
-                None
-            } else {
-                hourly_map.get(&node.key)
-            },
+            hourly_map.get(&node.key),
             range_start_epoch,
             BUCKET_SECONDS,
             BUCKET_COUNT,
