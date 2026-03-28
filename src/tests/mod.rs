@@ -8800,7 +8800,9 @@ async fn forward_proxy_live_stats_returns_fixed_24_hour_buckets_with_zero_fill()
     seed_forward_proxy_attempt_at(
         &state.pool,
         &manual_key,
-        now - ChronoDuration::hours(30),
+        Utc.timestamp_opt(range_start_epoch - 3600, 0)
+            .single()
+            .expect("valid out-of-range bucket timestamp"),
         true,
     )
     .await;
