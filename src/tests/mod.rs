@@ -505,6 +505,57 @@ async fn load_forward_proxy_runtime_states_maps_legacy_proxy_keys_to_stable_keys
 }
 
 #[tokio::test]
+async fn load_forward_proxy_runtime_states_maps_legacy_vless_hash_keys_from_current_settings() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://probe-target.example/").expect("valid probe target"),
+    )
+    .await;
+    let proxy_url = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=tcp#东京专线".to_string();
+    save_forward_proxy_settings(
+        &state.pool,
+        ForwardProxySettings {
+            proxy_urls: vec![proxy_url.clone()],
+            subscription_urls: Vec::new(),
+            subscription_update_interval_secs: 3600,
+            insert_direct: false,
+        },
+    )
+    .await
+    .expect("persist current forward proxy settings");
+
+    let normalized_proxy =
+        normalize_share_link_scheme(&proxy_url, "vless").expect("normalize vless proxy url");
+    let legacy_proxy_key = {
+        let parsed = Url::parse(&normalized_proxy).expect("parse normalized vless url");
+        stable_forward_proxy_key(&canonical_share_link_identity(&parsed))
+    };
+    let stable_proxy_key = normalize_single_proxy_key(&proxy_url).expect("normalize proxy key");
+    assert_ne!(legacy_proxy_key, stable_proxy_key);
+    persist_forward_proxy_runtime_state(
+        &state.pool,
+        &ForwardProxyRuntimeState {
+            proxy_key: legacy_proxy_key,
+            display_name: "东京专线".to_string(),
+            source: FORWARD_PROXY_SOURCE_MANUAL.to_string(),
+            endpoint_url: None,
+            weight: 0.42,
+            success_ema: 0.8,
+            latency_ema_ms: Some(123.0),
+            consecutive_failures: 1,
+        },
+    )
+    .await
+    .expect("persist legacy hashed runtime state");
+
+    let runtime = load_forward_proxy_runtime_states(&state.pool)
+        .await
+        .expect("load runtime states");
+    assert_eq!(runtime.len(), 1);
+    assert_eq!(runtime[0].proxy_key, stable_proxy_key);
+    assert_eq!(runtime[0].weight, 0.42);
+}
+
+#[tokio::test]
 async fn forward_proxy_binding_nodes_reuse_legacy_hourly_stats_for_stable_keys() {
     let state = test_state_with_openai_base(
         Url::parse("http://probe-target.example/").expect("valid probe target"),
@@ -557,6 +608,118 @@ async fn forward_proxy_binding_nodes_reuse_legacy_hourly_stats_for_stable_keys()
         build_forward_proxy_binding_nodes_response(state.as_ref(), &[stable_proxy_key.clone()])
             .await
             .expect("build binding nodes response");
+    let node = nodes
+        .into_iter()
+        .find(|item| item.key == stable_proxy_key)
+        .expect("stable node should be returned");
+    let bucket = node
+        .last24h
+        .into_iter()
+        .find(|item| item.success_count == 4 || item.failure_count == 1)
+        .expect("matching bucket should exist");
+    assert_eq!(bucket.success_count, 4);
+    assert_eq!(bucket.failure_count, 1);
+}
+
+#[test]
+fn forward_proxy_manager_reuses_legacy_vless_hash_runtime_state() {
+    let proxy_url = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=tcp#东京专线";
+    let normalized_proxy =
+        normalize_share_link_scheme(proxy_url, "vless").expect("normalize vless proxy url");
+    let legacy_proxy_key = {
+        let parsed = Url::parse(&normalized_proxy).expect("parse normalized vless url");
+        stable_forward_proxy_key(&canonical_share_link_identity(&parsed))
+    };
+    let stable_proxy_key = normalize_single_proxy_key(proxy_url).expect("normalize proxy key");
+    assert_ne!(legacy_proxy_key, stable_proxy_key);
+
+    let manager = ForwardProxyManager::new(
+        ForwardProxySettings {
+            proxy_urls: vec![proxy_url.to_string()],
+            subscription_urls: Vec::new(),
+            subscription_update_interval_secs: 3600,
+            insert_direct: false,
+        },
+        vec![ForwardProxyRuntimeState {
+            proxy_key: legacy_proxy_key.clone(),
+            display_name: "东京专线".to_string(),
+            source: FORWARD_PROXY_SOURCE_MANUAL.to_string(),
+            endpoint_url: None,
+            weight: 0.37,
+            success_ema: 0.9,
+            latency_ema_ms: Some(123.0),
+            consecutive_failures: 2,
+        }],
+    );
+
+    let runtime = manager
+        .runtime
+        .get(&stable_proxy_key)
+        .expect("stable runtime should be preserved");
+    assert_eq!(runtime.weight, 0.37);
+    assert_eq!(
+        runtime.endpoint_url.as_deref(),
+        Some(normalized_proxy.as_str())
+    );
+    assert!(!manager.runtime.contains_key(&legacy_proxy_key));
+}
+
+#[tokio::test]
+async fn forward_proxy_binding_nodes_reuse_legacy_hashed_hourly_stats_from_current_settings() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://probe-target.example/").expect("valid probe target"),
+    )
+    .await;
+    let proxy_url = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=tcp#东京专线".to_string();
+    let settings = ForwardProxySettings {
+        proxy_urls: vec![proxy_url.clone()],
+        subscription_urls: Vec::new(),
+        subscription_update_interval_secs: 3600,
+        insert_direct: false,
+    };
+    save_forward_proxy_settings(&state.pool, settings.clone())
+        .await
+        .expect("persist current forward proxy settings");
+    {
+        let mut manager = state.forward_proxy.lock().await;
+        manager.apply_settings(settings);
+    }
+
+    let normalized_proxy =
+        normalize_share_link_scheme(&proxy_url, "vless").expect("normalize vless proxy url");
+    let legacy_proxy_key = {
+        let parsed = Url::parse(&normalized_proxy).expect("parse normalized vless url");
+        stable_forward_proxy_key(&canonical_share_link_identity(&parsed))
+    };
+    let stable_proxy_key = normalize_single_proxy_key(&proxy_url).expect("normalize proxy key");
+
+    let now_epoch = Utc::now().timestamp();
+    let bucket_start_epoch = align_bucket_epoch(now_epoch, 3600, 0);
+    sqlx::query(
+        r#"
+        INSERT INTO forward_proxy_attempt_hourly (
+            proxy_key,
+            bucket_start_epoch,
+            attempts,
+            success_count,
+            failure_count,
+            latency_sample_count,
+            latency_sum_ms,
+            latency_max_ms,
+            updated_at
+        )
+        VALUES (?1, ?2, 5, 4, 1, 4, 480.0, 180.0, datetime('now'))
+        "#,
+    )
+    .bind(&legacy_proxy_key)
+    .bind(bucket_start_epoch)
+    .execute(&state.pool)
+    .await
+    .expect("insert legacy hashed hourly stats");
+
+    let nodes = build_forward_proxy_binding_nodes_response(state.as_ref(), &[])
+        .await
+        .expect("build binding nodes response");
     let node = nodes
         .into_iter()
         .find(|item| item.key == stable_proxy_key)
@@ -5246,6 +5409,30 @@ async fn update_upstream_account_group_rejects_bindings_without_selectable_nodes
         err.1,
         "select at least one available proxy node or clear bindings before saving"
     );
+}
+
+#[tokio::test]
+async fn update_upstream_account_group_returns_not_found_before_binding_validation() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let payload: UpdateUpstreamAccountGroupRequest = serde_json::from_value(json!({
+        "boundProxyKeys": ["fpn_missing_legacy_vless"]
+    }))
+    .expect("deserialize update upstream account group request");
+    let err = update_upstream_account_group(
+        State(state),
+        HeaderMap::new(),
+        axum::extract::Path("missing-group".to_string()),
+        Json(payload),
+    )
+    .await
+    .expect_err("missing group should still return not found");
+
+    assert_eq!(err.0, StatusCode::NOT_FOUND);
+    assert_eq!(err.1, "group not found");
 }
 
 #[tokio::test]

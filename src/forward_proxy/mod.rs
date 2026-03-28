@@ -124,12 +124,18 @@ pub(crate) async fn load_forward_proxy_runtime_states(
     .fetch_all(pool)
     .await
     .context("failed to load forward_proxy_runtime rows")?;
+    let alias_map = load_forward_proxy_key_aliases(pool).await?;
 
     let mut runtime = HashMap::new();
     for row in rows {
         let mut state: ForwardProxyRuntimeState = row.into();
-        state.proxy_key =
+        let canonical_proxy_key =
             canonical_forward_proxy_storage_key(&state.proxy_key, state.endpoint_url.as_deref());
+        state.proxy_key = alias_map
+            .get(&state.proxy_key)
+            .or_else(|| alias_map.get(&canonical_proxy_key))
+            .cloned()
+            .unwrap_or(canonical_proxy_key);
         runtime.entry(state.proxy_key.clone()).or_insert(state);
     }
     Ok(runtime.into_values().collect())
@@ -256,6 +262,15 @@ pub(crate) async fn load_forward_proxy_metadata_history(
         .collect())
 }
 
+fn register_forward_proxy_storage_aliases(alias_map: &mut HashMap<String, String>, raw: &str) {
+    let Some((canonical, aliases)) = forward_proxy_storage_aliases(raw) else {
+        return;
+    };
+    for alias in aliases {
+        alias_map.entry(alias).or_insert_with(|| canonical.clone());
+    }
+}
+
 pub(crate) fn canonical_forward_proxy_storage_key(
     proxy_key: &str,
     endpoint_url: Option<&str>,
@@ -269,6 +284,7 @@ pub(crate) fn canonical_forward_proxy_storage_key(
 pub(crate) async fn load_forward_proxy_key_aliases(
     pool: &Pool<Sqlite>,
 ) -> Result<HashMap<String, String>> {
+    let settings = load_forward_proxy_settings(pool).await?;
     let rows = sqlx::query_as::<_, ForwardProxyKeyAliasRow>(
         r#"
         SELECT proxy_key, endpoint_url
@@ -279,14 +295,23 @@ pub(crate) async fn load_forward_proxy_key_aliases(
     .await
     .context("failed to load forward_proxy key aliases")?;
 
-    Ok(rows
-        .into_iter()
-        .filter_map(|row| {
-            let canonical =
-                canonical_forward_proxy_storage_key(&row.proxy_key, row.endpoint_url.as_deref());
-            (canonical != row.proxy_key).then_some((row.proxy_key, canonical))
-        })
-        .collect())
+    let mut alias_map = HashMap::new();
+    for raw in settings.proxy_urls {
+        register_forward_proxy_storage_aliases(&mut alias_map, &raw);
+    }
+    for row in rows {
+        let canonical =
+            canonical_forward_proxy_storage_key(&row.proxy_key, row.endpoint_url.as_deref());
+        if canonical != row.proxy_key {
+            alias_map
+                .entry(row.proxy_key.clone())
+                .or_insert(canonical.clone());
+        }
+        if let Some(raw) = row.endpoint_url.as_deref() {
+            register_forward_proxy_storage_aliases(&mut alias_map, raw);
+        }
+    }
+    Ok(alias_map)
 }
 
 pub(crate) async fn delete_forward_proxy_runtime_rows_not_in(
@@ -2777,6 +2802,11 @@ impl ForwardProxyManager {
         }
         self.bound_key_aliases = bound_key_aliases;
 
+        let endpoint_snapshots = self.endpoints.clone();
+        for endpoint in &endpoint_snapshots {
+            self.migrate_runtime_aliases_to_endpoint(endpoint);
+        }
+
         let algo = self.algo;
         for endpoint in &self.endpoints {
             match self.runtime.entry(endpoint.key.clone()) {
@@ -2794,6 +2824,41 @@ impl ForwardProxyManager {
             }
         }
         self.ensure_non_zero_weight();
+    }
+
+    fn migrate_runtime_aliases_to_endpoint(&mut self, endpoint: &ForwardProxyEndpoint) {
+        let Some(raw_url) = endpoint.raw_url.as_deref() else {
+            return;
+        };
+        let Some((canonical_key, aliases)) = forward_proxy_storage_aliases(raw_url) else {
+            return;
+        };
+        if canonical_key != endpoint.key {
+            return;
+        }
+
+        if self.runtime.contains_key(&endpoint.key) {
+            for alias in aliases {
+                self.runtime.remove(&alias);
+            }
+            return;
+        }
+
+        let mut migrated = None;
+        for alias in &aliases {
+            if let Some(runtime) = self.runtime.remove(alias) {
+                migrated = Some(runtime);
+                break;
+            }
+        }
+        for alias in aliases {
+            self.runtime.remove(&alias);
+        }
+        if let Some(mut runtime) = migrated {
+            runtime.proxy_key = endpoint.key.clone();
+            runtime.endpoint_url = Some(raw_url.to_string());
+            self.runtime.insert(endpoint.key.clone(), runtime);
+        }
     }
 
     pub(crate) fn ensure_non_zero_weight(&mut self) {

@@ -3151,19 +3151,6 @@ pub(crate) async fn update_upstream_account_group(
         .bound_proxy_keys
         .map(normalize_bound_proxy_keys)
         .unwrap_or_else(Vec::new);
-    if bound_proxy_keys_was_updated && !bound_proxy_keys.is_empty() {
-        let has_selectable_bound_proxy_keys = {
-            let manager = state.forward_proxy.lock().await;
-            manager.has_selectable_bound_proxy_keys(&bound_proxy_keys)
-        };
-        if !has_selectable_bound_proxy_keys {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                "select at least one available proxy node or clear bindings before saving"
-                    .to_string(),
-            ));
-        }
-    }
 
     let mut tx = state
         .pool
@@ -3180,6 +3167,19 @@ pub(crate) async fn update_upstream_account_group(
         .await
         .map_err(internal_error_tuple)?
         .unwrap_or_default();
+    if bound_proxy_keys_was_updated && !bound_proxy_keys.is_empty() {
+        let has_selectable_bound_proxy_keys = {
+            let manager = state.forward_proxy.lock().await;
+            manager.has_selectable_bound_proxy_keys(&bound_proxy_keys)
+        };
+        if !has_selectable_bound_proxy_keys {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "select at least one available proxy node or clear bindings before saving"
+                    .to_string(),
+            ));
+        }
+    }
     save_group_metadata_record_conn(
         tx.as_mut(),
         &group_name,

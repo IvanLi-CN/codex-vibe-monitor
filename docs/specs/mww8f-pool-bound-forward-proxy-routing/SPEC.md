@@ -4,7 +4,7 @@
 
 - Status: 已完成
 - Created: 2026-03-26
-- Last: 2026-03-28
+- Last: 2026-03-29
 
 ## 背景
 
@@ -100,6 +100,7 @@
 - 当 `boundProxyKeys` 非空但当前选中集合里没有任何 `selectable=true` 的节点时，`PUT /api/pool/upstream-account-groups/:groupName` 必须返回 `400`，拒绝把“零可选节点”状态再次写回 metadata。
 - 已保存但当前 inventory 已不存在的 `boundProxyKeys` 会继续保留在分组 metadata 中；前端需标记为失效，运行时只使用仍然 `selectable=true` 的 key。
 - 历史旧 key 不做自动迁移；若当前 inventory 中找不到它们，接口应优先从 metadata history 恢复 `displayName` 并返回不可用节点，只有在完全没有展示元数据时才允许回退到原始 key。
+- `forward_proxy_runtime`、attempt/hourly 统计与 metadata history 中的历史旧 key 也不做 DB migration；只要当前 settings 或 metadata 仍能提供同一真实节点的 raw identity，运行时和统计查询都必须把旧 raw URL key、旧式 `vless/trojan` 哈希以及默认参数显式/省略两种 legacy key 归并回当前稳定键。
 
 ### 分组绑定弹窗
 
@@ -131,6 +132,8 @@
 - Given 节点名称包含非 ASCII 字符，When 打开号池分组设置，Then 可选、不可选与历史失效三种状态都显示人类可读名称，且只在没有任何展示元数据时才回退到 key。
 - Given 打开号池分组设置且当前选中的绑定节点全部不可用，When 用户尝试保存，Then UI 禁用保存按钮并显示 warning，后端接口也返回 `400` 拒绝该提交。
 - Given 分组 metadata 中仍保存着旧版 VLESS/Trojan legacy key，When 当前 inventory 里还能匹配到同一真实节点，Then 弹窗会自动将其规范到当前稳定键、保持该节点可选可保存，且不会误显示为 Missing / Unavailable。
+- Given 历史 runtime 或 hourly 统计仍使用旧版 VLESS/Trojan legacy key，When 当前 settings 或 metadata 里还能定位到同一真实节点，Then 权重、惩罚态和 24 小时趋势都会继续归并到当前稳定键，不因 stable-key 语义修正而断档。
+- Given 用户在已被删除的分组设置弹窗里发起保存，When 请求同时带着无效 `boundProxyKeys`，Then API 仍优先返回 `404 group not found`，而不是把它误判成绑定校验失败。
 - Given 打开号池分组设置，When 用户查看绑定节点列表，Then 页面不显示任何 `ss://`、`vless://`、`vmess://`、`trojan://`、`http://`、`https://` 原始订阅地址，只显示截断标题和协议类型。
 - Given 打开号池分组设置且存在 `9+` 个节点，When 用户浏览节点列表，Then footer 仍然可见，节点区内部可滚动，页面本身不需要额外滚动。
 - Given 打开号池分组设置，When 用户多选绑定代理节点并保存，Then 刷新后 `boundProxyKeys` 稳定回显，且 Storybook 至少覆盖：
@@ -258,4 +261,5 @@
 - 2026-03-27: 视觉证据完成主人确认，spec 状态切换为已完成，并标记 PR 可复用截图。
 - 2026-03-27: 增补线上 follow-up：分组绑定弹窗改为协议标签展示 + 独立滚动布局，并在分组绑定路径恢复显式 `Direct` 选项；补齐桌面宽度约束与高密度卡片布局后，重新生成并批准复用 Storybook 证据。
 - 2026-03-28: 补充稳定节点身份键、非 ASCII 展示恢复与“历史旧 key 不自动迁移”的接口契约，并为分组设置弹窗追加对应测试与 Storybook 场景。
+- 2026-03-29: 补充 stable-key 语义修正后的 runtime/history alias 兼容要求，并明确删除分组时 `404` 必须优先于绑定校验错误。
 - 2026-03-28: 补充 `vless/trojan` 稳定键回归的 follow-up：保存时拒绝“当前绑定集合零可选节点”的坏状态，并新增 Storybook 证据覆盖 warning + 保存按钮禁用场景。

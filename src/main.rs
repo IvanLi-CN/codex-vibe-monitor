@@ -22857,6 +22857,28 @@ pub(crate) fn legacy_bound_proxy_key_aliases(
     aliases
 }
 
+pub(crate) fn forward_proxy_storage_aliases(raw: &str) -> Option<(String, Vec<String>)> {
+    let parsed = parse_forward_proxy_entry(raw)?;
+    let canonical = parsed.stable_key.clone();
+    let mut aliases = Vec::new();
+    if parsed.normalized != canonical {
+        aliases.push(parsed.normalized.clone());
+    }
+    if matches!(
+        parsed.protocol,
+        ForwardProxyProtocol::Vless | ForwardProxyProtocol::Trojan
+    ) {
+        aliases.extend(legacy_bound_proxy_key_aliases(
+            &parsed.normalized,
+            parsed.protocol,
+        ));
+    }
+    aliases.retain(|alias| alias != &canonical);
+    aliases.sort();
+    aliases.dedup();
+    Some((canonical, aliases))
+}
+
 fn normalize_proxy_endpoints_from_urls(urls: &[String], source: &str) -> Vec<ForwardProxyEndpoint> {
     let mut seen = HashSet::new();
     let mut endpoints = Vec::new();
