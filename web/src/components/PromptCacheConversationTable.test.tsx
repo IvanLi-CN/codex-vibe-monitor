@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { renderToStaticMarkup } from "react-dom/server";
-import { act, useState } from "react";
+import { act, type ComponentProps, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -136,12 +136,16 @@ describe("PromptCacheConversationTable", () => {
     });
   }
 
-  function renderInteractive(stats: PromptCacheConversationsResponse | null) {
+  function renderInteractive(
+    stats: PromptCacheConversationsResponse | null,
+    props: Partial<ComponentProps<typeof PromptCacheConversationTable>> = {},
+  ) {
     renderInteractiveElement(
       <PromptCacheConversationTable
         stats={stats}
         isLoading={false}
         error={null}
+        {...props}
       />,
     );
   }
@@ -564,60 +568,8 @@ describe("PromptCacheConversationTable", () => {
     expect(html).toContain("tabular-nums");
   });
 
-  it("opens and closes the upstream account drawer from prompt cache rows", async () => {
-    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue({
-      id: 101,
-      kind: "oauth_codex",
-      provider: "openai",
-      displayName: "Pool Alpha",
-      groupName: "group-a",
-      isMother: false,
-      status: "active",
-      enabled: true,
-      email: "pool-alpha@example.com",
-      chatgptAccountId: "org_pool_alpha",
-      chatgptUserId: "user_pool_alpha",
-      planType: "team",
-      maskedApiKey: null,
-      lastSyncedAt: "2026-03-02T16:20:00Z",
-      lastSuccessfulSyncAt: "2026-03-02T16:18:00Z",
-      lastActivityAt: "2026-03-02T16:00:00Z",
-      lastError: null,
-      lastErrorAt: null,
-      tokenExpiresAt: "2026-03-02T22:00:00Z",
-      lastRefreshedAt: "2026-03-02T16:19:00Z",
-      primaryWindow: {
-        usedPercent: 22,
-        usedText: "22 / 100",
-        limitText: "100 requests",
-        resetsAt: "2026-03-02T18:00:00Z",
-        windowDurationMins: 300,
-      },
-      secondaryWindow: {
-        usedPercent: 38,
-        usedText: "38 / 100",
-        limitText: "100 requests",
-        resetsAt: "2026-03-09T00:00:00Z",
-        windowDurationMins: 10080,
-      },
-      credits: null,
-      localLimits: null,
-      duplicateInfo: null,
-      tags: [],
-      effectiveRoutingRule: {
-        guardEnabled: false,
-        lookbackHours: null,
-        maxConversations: null,
-        allowCutOut: true,
-        allowCutIn: true,
-        sourceTagIds: [],
-        sourceTagNames: [],
-        guardRules: [],
-      },
-      note: null,
-      upstreamBaseUrl: null,
-      history: [],
-    });
+  it("forwards prompt cache account clicks to the shared upstream account controller", async () => {
+    const onOpenUpstreamAccount = vi.fn();
 
     renderInteractive({
       rangeStart: "2026-03-02T00:00:00Z",
@@ -655,7 +607,7 @@ describe("PromptCacheConversationTable", () => {
           last24hRequests: [],
         }),
       ],
-    });
+    }, { onOpenUpstreamAccount });
 
     const trigger = Array.from(document.querySelectorAll("button")).find((button) =>
       button.textContent?.includes("Pool Alpha"),
@@ -667,21 +619,8 @@ describe("PromptCacheConversationTable", () => {
       await Promise.resolve();
     });
 
-    expect(apiMocks.fetchUpstreamAccountDetail).toHaveBeenCalledWith(101);
-    expect(document.body.textContent).toContain("上游账号");
-    expect(document.body.textContent).toContain("Pool Alpha");
-    expect(document.body.textContent).toContain("去号池查看完整详情");
-
-    const drawerWrapper = document
-      .querySelector('section[role="dialog"]')
-      ?.parentElement;
-    expect(drawerWrapper).toBeTruthy();
-
-    await act(async () => {
-      drawerWrapper?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      await Promise.resolve();
-    });
-
+    expect(onOpenUpstreamAccount).toHaveBeenCalledWith(101, "Pool Alpha");
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
     expect(document.body.textContent).not.toContain("去号池查看完整详情");
   });
 

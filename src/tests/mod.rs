@@ -30549,6 +30549,63 @@ async fn invocation_hourly_rollup_ignores_null_status_for_success_failure_counts
     assert_f64_close(row.total_cost, 0.07);
 }
 
+#[test]
+fn invocation_archive_pruned_success_details_require_empty_legacy_http_200_error_message() {
+    let failed_legacy_http_200 = InvocationHourlySourceRecord {
+        id: 1,
+        occurred_at: "2026-03-28 00:00:00".to_string(),
+        source: SOURCE_PROXY.to_string(),
+        status: Some("http_200".to_string()),
+        detail_level: DETAIL_LEVEL_STRUCTURED_ONLY.to_string(),
+        total_tokens: None,
+        cost: None,
+        error_message: Some("upstream parse failed".to_string()),
+        failure_kind: None,
+        failure_class: None,
+        is_actionable: None,
+        payload: None,
+        t_total_ms: None,
+        t_req_read_ms: None,
+        t_req_parse_ms: None,
+        t_upstream_connect_ms: None,
+        t_upstream_ttfb_ms: None,
+        t_upstream_stream_ms: None,
+        t_resp_parse_ms: None,
+        t_persist_ms: None,
+    };
+    assert!(
+        !invocation_archive_has_pruned_success_details(&[failed_legacy_http_200]),
+        "legacy http_200 rows with a non-empty error message must not suppress archive rollups",
+    );
+
+    let success_like_legacy_http_200 = InvocationHourlySourceRecord {
+        id: 2,
+        occurred_at: "2026-03-28 00:00:00".to_string(),
+        source: SOURCE_PROXY.to_string(),
+        status: Some("http_200".to_string()),
+        detail_level: DETAIL_LEVEL_STRUCTURED_ONLY.to_string(),
+        total_tokens: None,
+        cost: None,
+        error_message: Some("   ".to_string()),
+        failure_kind: None,
+        failure_class: None,
+        is_actionable: None,
+        payload: None,
+        t_total_ms: None,
+        t_req_read_ms: None,
+        t_req_parse_ms: None,
+        t_upstream_connect_ms: None,
+        t_upstream_ttfb_ms: None,
+        t_upstream_stream_ms: None,
+        t_resp_parse_ms: None,
+        t_persist_ms: None,
+    };
+    assert!(
+        invocation_archive_has_pruned_success_details(&[success_like_legacy_http_200]),
+        "legacy http_200 rows with an empty error message should still count as pruned success-like rows",
+    );
+}
+
 #[tokio::test]
 async fn hourly_timeseries_omits_pre_cutoff_partial_hour_rollups() {
     let mut config = test_config();
@@ -31417,6 +31474,142 @@ async fn retention_prunes_old_success_invocation_details_and_sweeps_orphans() {
             .is_none()
     );
     archive_pool.close().await;
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_prunes_old_legacy_http_200_success_like_invocation_details() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("retention-prune-legacy-http200").await;
+    let response_raw = config.proxy_raw_dir.join("legacy-http200-response.bin");
+    fs::write(&response_raw, b"legacy-http200-response").expect("write legacy http_200 raw");
+    let occurred_at = shanghai_local_days_ago(31, 13, 0, 0);
+
+    insert_retention_invocation(
+        &pool,
+        "old-legacy-http200-success-like",
+        &occurred_at,
+        SOURCE_PROXY,
+        "http_200",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":true}",
+        None,
+        Some(&response_raw),
+        Some(456),
+        Some(1.78),
+    )
+    .await;
+
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run retention prune for legacy http_200 success-like row");
+    assert_eq!(summary.invocation_details_pruned, 1);
+    assert_eq!(summary.archive_batches_touched, 1);
+    assert_eq!(summary.raw_files_removed, 1);
+    assert!(!response_raw.exists());
+
+    let row = sqlx::query(
+        r#"
+        SELECT
+            detail_level,
+            detail_prune_reason,
+            request_raw_path,
+            response_raw_path,
+            status,
+            error_message
+        FROM codex_invocations
+        WHERE invoke_id = ?1
+        "#,
+    )
+    .bind("old-legacy-http200-success-like")
+    .fetch_one(&pool)
+    .await
+    .expect("load pruned legacy http_200 invocation");
+    assert_eq!(
+        row.get::<String, _>("detail_level"),
+        DETAIL_LEVEL_STRUCTURED_ONLY
+    );
+    assert_eq!(
+        row.get::<Option<String>, _>("detail_prune_reason")
+            .as_deref(),
+        Some(DETAIL_PRUNE_REASON_SUCCESS_OVER_30D)
+    );
+    assert!(row.get::<Option<String>, _>("request_raw_path").is_none());
+    assert!(row.get::<Option<String>, _>("response_raw_path").is_none());
+    assert_eq!(
+        row.get::<Option<String>, _>("status").as_deref(),
+        Some("http_200")
+    );
+    assert!(row.get::<Option<String>, _>("error_message").is_none());
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_does_not_prune_legacy_http_200_rows_with_error_message() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("retention-prune-legacy-http200-error").await;
+    config.proxy_raw_compression = RawCompressionCodec::None;
+    let response_raw = config
+        .proxy_raw_dir
+        .join("legacy-http200-error-response.bin");
+    fs::write(&response_raw, b"legacy-http200-error-response")
+        .expect("write legacy http_200 error raw");
+    let occurred_at = shanghai_local_days_ago(31, 14, 0, 0);
+
+    insert_retention_invocation(
+        &pool,
+        "old-legacy-http200-error",
+        &occurred_at,
+        SOURCE_PROXY,
+        "http_200",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":false}",
+        None,
+        Some(&response_raw),
+        Some(654),
+        Some(2.34),
+    )
+    .await;
+    sqlx::query("UPDATE codex_invocations SET error_message = ?1 WHERE invoke_id = ?2")
+        .bind("[upstream_response_failed] server_error")
+        .bind("old-legacy-http200-error")
+        .execute(&pool)
+        .await
+        .expect("attach error message to legacy http_200 row");
+
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run retention for legacy http_200 error row");
+    assert_eq!(summary.invocation_details_pruned, 0);
+    assert_eq!(summary.raw_files_removed, 0);
+    assert!(response_raw.exists());
+
+    let row = sqlx::query(
+        r#"
+        SELECT detail_level, response_raw_path, status, error_message
+        FROM codex_invocations
+        WHERE invoke_id = ?1
+        "#,
+    )
+    .bind("old-legacy-http200-error")
+    .fetch_one(&pool)
+    .await
+    .expect("load unpruned legacy http_200 error row");
+    assert_eq!(row.get::<String, _>("detail_level"), DETAIL_LEVEL_FULL);
+    assert_eq!(
+        row.get::<Option<String>, _>("response_raw_path").as_deref(),
+        Some(response_raw.to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        row.get::<Option<String>, _>("status").as_deref(),
+        Some("http_200")
+    );
+    assert_eq!(
+        row.get::<Option<String>, _>("error_message").as_deref(),
+        Some("[upstream_response_failed] server_error")
+    );
 
     cleanup_temp_test_dir(&temp_dir);
 }
