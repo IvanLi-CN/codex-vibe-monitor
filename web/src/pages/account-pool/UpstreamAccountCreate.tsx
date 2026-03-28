@@ -1558,9 +1558,23 @@ export default function UpstreamAccountCreatePage() {
   const oauthMailboxToneResetRef = useRef<number | null>(null);
   const batchMailboxToneResetRef = useRef<Record<string, number>>({});
   const batchRowsRef = useRef<BatchOauthRow[]>(initialBatchRows);
-  const batchSessionLoginIdByRowRef = useRef<Record<string, string | null>>(
+  const batchSessionFeedbackStateByRowRef = useRef<
+    Record<
+      string,
+      Pick<LoginSessionStatusResponse, "loginId" | "status" | "authUrl"> | null
+    >
+  >(
     Object.fromEntries(
-      initialBatchRows.map((row) => [row.id, row.session?.loginId ?? null] as const),
+      initialBatchRows.map((row) => [
+        row.id,
+        row.session
+          ? {
+              loginId: row.session.loginId,
+              status: row.session.status,
+              authUrl: row.session.authUrl ?? null,
+            }
+          : null,
+      ]),
     ),
   );
   const pendingOauthSessionSyncRef = useRef<
@@ -1657,8 +1671,17 @@ export default function UpstreamAccountCreatePage() {
   }, []);
   useEffect(() => {
     batchRowsRef.current = batchRows;
-    batchSessionLoginIdByRowRef.current = Object.fromEntries(
-      batchRows.map((row) => [row.id, row.session?.loginId ?? null] as const),
+    batchSessionFeedbackStateByRowRef.current = Object.fromEntries(
+      batchRows.map((row) => [
+        row.id,
+        row.session
+          ? {
+              loginId: row.session.loginId,
+              status: row.session.status,
+              authUrl: row.session.authUrl ?? null,
+            }
+          : null,
+      ]),
     );
   }, [batchRows]);
   useEffect(() => {
@@ -4429,20 +4452,37 @@ export default function UpstreamAccountCreatePage() {
     }));
   };
 
+  const canApplyBatchOauthCopyFeedback = (rowId: string, loginId: string) => {
+    const session = batchSessionFeedbackStateByRowRef.current[rowId];
+    if (
+      !session ||
+      session.loginId !== loginId ||
+      session.status !== "pending" ||
+      !session.authUrl
+    ) {
+      return false;
+    }
+    const currentRow = batchRowsRef.current.find((item) => item.id === rowId);
+    if (currentRow?.session?.loginId !== loginId) {
+      return true;
+    }
+    return isActivePendingOauthSession(currentRow.session);
+  };
+
   const resolveBatchOauthCopyFeedback = (
     rowId: string,
     loginId: string,
     result: Awaited<ReturnType<typeof copyText>>,
     successHint: string,
   ) => {
-    if (batchSessionLoginIdByRowRef.current[rowId] !== loginId) {
+    if (!canApplyBatchOauthCopyFeedback(rowId, loginId)) {
       return null;
     }
     const fallbackHint = t(
       "accountPool.upstreamAccounts.batchOauth.copyInlineFallback",
     );
     setBatchManualCopyRowId((current) => {
-      if (batchSessionLoginIdByRowRef.current[rowId] !== loginId) {
+      if (!canApplyBatchOauthCopyFeedback(rowId, loginId)) {
         return current;
       }
       return result.ok ? (current === rowId ? null : current) : rowId;
@@ -4497,7 +4537,11 @@ export default function UpstreamAccountCreatePage() {
       const generatedHint = t("accountPool.upstreamAccounts.oauth.generated", {
         expiresAt: formatDateTime(response.expiresAt),
       });
-      batchSessionLoginIdByRowRef.current[rowId] = response.loginId;
+      batchSessionFeedbackStateByRowRef.current[rowId] = {
+        loginId: response.loginId,
+        status: response.status,
+        authUrl: response.authUrl ?? null,
+      };
       updateBatchRow(rowId, (current) => ({
         ...current,
         busyAction: null,
@@ -4529,7 +4573,10 @@ export default function UpstreamAccountCreatePage() {
                 actionError: copyFeedback.actionError,
               }),
         }));
-      } else if (batchSessionLoginIdByRowRef.current[rowId] === response.loginId) {
+      } else if (
+        batchSessionFeedbackStateByRowRef.current[rowId]?.loginId ===
+        response.loginId
+      ) {
         setBatchManualCopyRowId((current) => (current === rowId ? null : current));
       }
     } catch (err) {

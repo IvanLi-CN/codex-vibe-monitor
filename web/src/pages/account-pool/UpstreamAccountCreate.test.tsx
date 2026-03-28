@@ -4721,6 +4721,77 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     }
   });
 
+  it("ignores late auto-copy feedback after the row completes", async () => {
+    let resolveClipboard:
+      | ((value?: void | PromiseLike<void>) => void)
+      | undefined;
+    const writeText = vi.fn().mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveClipboard = resolve;
+        }),
+    );
+    const originalClipboard = navigator.clipboard;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText,
+      },
+    });
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=slow",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    const completeOauthLogin = vi.fn().mockResolvedValue({
+      id: 41,
+      displayName: "Row One",
+    });
+    mockUpstreamAccounts({ beginOauthLogin, completeOauthLogin });
+    render("/account-pool/upstream-accounts/new?mode=batchOauth");
+
+    try {
+      setInputValue('input[name^="batchOauthDisplayName-"]', "Row One");
+      await flushAsync();
+      clickButton(/Generate OAuth URL/i);
+      await flushAsync();
+      await flushAsync();
+
+      setInputValue(
+        'input[name^="batchOauthCallbackUrl-"]',
+        "http://localhost:1455/oauth/callback?code=test",
+      );
+      await flushAsync();
+      clickButton(/Complete OAuth login/i);
+      await flushAsync();
+      await flushAsync();
+
+      expect(pageTextContent()).toContain(
+        "Row One is ready. Continue with the remaining rows when you are done here.",
+      );
+
+      resolveClipboard?.();
+      await flushAsync();
+      await flushAsync();
+
+      expect(pageTextContent()).toContain(
+        "Row One is ready. Continue with the remaining rows when you are done here.",
+      );
+      expect(pageTextContent()).not.toContain(
+        "OAuth URL generated and copied. Complete sign-in elsewhere, then paste the callback URL back into this row.",
+      );
+    } finally {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: originalClipboard,
+      });
+    }
+  });
+
   it("copies the regenerated batch oauth url from the bubble action", async () => {
     const writeText = vi.fn().mockResolvedValue(undefined);
     const originalClipboard = navigator.clipboard;
