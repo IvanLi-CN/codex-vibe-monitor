@@ -2,7 +2,7 @@
 import type { ComponentProps } from 'react'
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
-import { afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import type { ForwardProxyBindingNode } from '../lib/api'
 import { UpstreamAccountGroupNoteDialog } from './UpstreamAccountGroupNoteDialog'
 
@@ -295,6 +295,68 @@ describe('UpstreamAccountGroupNoteDialog', () => {
 
     expect(bodyText()).toContain('fpn_missing_only')
     expect(bodyText()).toContain('Missing')
+  })
+
+  it('blocks saving when every selected binding is unavailable', () => {
+    renderDialog({
+      boundProxyKeys: ['fpn_unavailable_only'],
+      availableProxyNodes: [
+        {
+          key: 'fpn_unavailable_only',
+          source: 'missing',
+          displayName: 'Drain Node',
+          protocolLabel: 'VLESS',
+          penalized: false,
+          selectable: false,
+          last24h: [],
+        },
+      ],
+    })
+
+    expect(bodyText()).toContain(
+      'Select at least one available proxy node or clear bindings before saving.',
+    )
+
+    const saveButton = Array.from(document.querySelectorAll('button')).find((candidate) =>
+      /save/i.test(candidate.textContent ?? ''),
+    ) as HTMLButtonElement | undefined
+
+    expect(saveButton).toBeDefined()
+    expect(saveButton?.disabled).toBe(true)
+  })
+
+  it('treats legacy alias bindings as selectable and canonicalizes them before saving', () => {
+    const onBoundProxyKeysChange = vi.fn()
+
+    renderDialog({
+      boundProxyKeys: ['fpn_legacy_vless_alias'],
+      onBoundProxyKeysChange,
+      availableProxyNodes: [
+        {
+          key: 'fpn_canonical_vless_key',
+          aliasKeys: ['fpn_legacy_vless_alias'],
+          source: 'subscription',
+          displayName: '东京专线 A',
+          protocolLabel: 'VLESS',
+          penalized: false,
+          selectable: true,
+          last24h: [],
+        },
+      ],
+    })
+
+    expect(bodyText()).toContain('东京专线 A')
+    expect(bodyText()).not.toContain(
+      'Select at least one available proxy node or clear bindings before saving.',
+    )
+
+    const saveButton = Array.from(document.querySelectorAll('button')).find((candidate) =>
+      /save/i.test(candidate.textContent ?? ''),
+    ) as HTMLButtonElement | undefined
+
+    expect(saveButton).toBeDefined()
+    expect(saveButton?.disabled).toBe(false)
+    expect(onBoundProxyKeysChange).toHaveBeenCalledWith(['fpn_canonical_vless_key'])
   })
 
   it('hides unrelated stale missing nodes from other groups', () => {

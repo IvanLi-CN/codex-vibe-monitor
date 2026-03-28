@@ -124,12 +124,18 @@ pub(crate) async fn load_forward_proxy_runtime_states(
     .fetch_all(pool)
     .await
     .context("failed to load forward_proxy_runtime rows")?;
+    let alias_map = load_forward_proxy_key_aliases(pool).await?;
 
     let mut runtime = HashMap::new();
     for row in rows {
         let mut state: ForwardProxyRuntimeState = row.into();
-        state.proxy_key =
+        let canonical_proxy_key =
             canonical_forward_proxy_storage_key(&state.proxy_key, state.endpoint_url.as_deref());
+        state.proxy_key = alias_map
+            .get(&state.proxy_key)
+            .or_else(|| alias_map.get(&canonical_proxy_key))
+            .cloned()
+            .unwrap_or(canonical_proxy_key);
         runtime.entry(state.proxy_key.clone()).or_insert(state);
     }
     Ok(runtime.into_values().collect())
@@ -256,19 +262,29 @@ pub(crate) async fn load_forward_proxy_metadata_history(
         .collect())
 }
 
+fn register_forward_proxy_storage_aliases(alias_map: &mut HashMap<String, String>, raw: &str) {
+    let Some((canonical, aliases)) = forward_proxy_storage_aliases(raw) else {
+        return;
+    };
+    for alias in aliases {
+        alias_map.entry(alias).or_insert_with(|| canonical.clone());
+    }
+}
+
 pub(crate) fn canonical_forward_proxy_storage_key(
     proxy_key: &str,
     endpoint_url: Option<&str>,
 ) -> String {
     endpoint_url
         .and_then(normalize_single_proxy_key)
-        .or_else(|| normalize_single_proxy_key(proxy_key))
+        .or_else(|| normalize_bound_proxy_key(proxy_key))
         .unwrap_or_else(|| proxy_key.to_string())
 }
 
 pub(crate) async fn load_forward_proxy_key_aliases(
     pool: &Pool<Sqlite>,
 ) -> Result<HashMap<String, String>> {
+    let settings = load_forward_proxy_settings(pool).await?;
     let rows = sqlx::query_as::<_, ForwardProxyKeyAliasRow>(
         r#"
         SELECT proxy_key, endpoint_url
@@ -279,14 +295,23 @@ pub(crate) async fn load_forward_proxy_key_aliases(
     .await
     .context("failed to load forward_proxy key aliases")?;
 
-    Ok(rows
-        .into_iter()
-        .filter_map(|row| {
-            let canonical =
-                canonical_forward_proxy_storage_key(&row.proxy_key, row.endpoint_url.as_deref());
-            (canonical != row.proxy_key).then_some((row.proxy_key, canonical))
-        })
-        .collect())
+    let mut alias_map = HashMap::new();
+    for raw in settings.proxy_urls {
+        register_forward_proxy_storage_aliases(&mut alias_map, &raw);
+    }
+    for row in rows {
+        let canonical =
+            canonical_forward_proxy_storage_key(&row.proxy_key, row.endpoint_url.as_deref());
+        if canonical != row.proxy_key {
+            alias_map
+                .entry(row.proxy_key.clone())
+                .or_insert(canonical.clone());
+        }
+        if let Some(raw) = row.endpoint_url.as_deref() {
+            register_forward_proxy_storage_aliases(&mut alias_map, raw);
+        }
+    }
+    Ok(alias_map)
 }
 
 pub(crate) async fn delete_forward_proxy_runtime_rows_not_in(
@@ -764,6 +789,7 @@ pub(crate) async fn build_forward_proxy_binding_nodes_response(
         let metadata = metadata_map.get(&proxy_key);
         nodes.push(ForwardProxyBindingNodeResponse {
             key: proxy_key.clone(),
+            alias_keys: Vec::new(),
             source: "missing".to_string(),
             display_name: metadata
                 .map(|item| item.display_name.clone())
@@ -2613,6 +2639,7 @@ pub(crate) struct ForwardProxyManager {
     pub(crate) settings: ForwardProxySettings,
     pub(crate) endpoints: Vec<ForwardProxyEndpoint>,
     pub(crate) runtime: HashMap<String, ForwardProxyRuntimeState>,
+    pub(crate) bound_key_aliases: HashMap<String, String>,
     pub(crate) bound_group_runtime: HashMap<String, BoundForwardProxyGroupState>,
     pub(crate) selection_counter: u64,
     pub(crate) requests_since_probe: u64,
@@ -2651,7 +2678,7 @@ impl ForwardProxyRouteScope {
             .into_iter()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
-            .map(|value| normalize_single_proxy_key(&value).unwrap_or(value))
+            .map(|value| normalize_bound_proxy_key(&value).unwrap_or(value))
             .collect::<Vec<_>>();
         match (
             normalized_group_name,
@@ -2698,6 +2725,7 @@ impl ForwardProxyManager {
             settings,
             endpoints: Vec::new(),
             runtime,
+            bound_key_aliases: HashMap::new(),
             bound_group_runtime: HashMap::new(),
             selection_counter: 0,
             requests_since_probe: 0,
@@ -2761,6 +2789,23 @@ impl ForwardProxyManager {
             }
         }
         self.endpoints = merged;
+        let mut bound_key_aliases = HashMap::new();
+        for endpoint in &self.endpoints {
+            let Some(raw_url) = endpoint.raw_url.as_deref() else {
+                continue;
+            };
+            for alias in legacy_bound_proxy_key_aliases(raw_url, endpoint.protocol) {
+                if alias != endpoint.key {
+                    bound_key_aliases.insert(alias, endpoint.key.clone());
+                }
+            }
+        }
+        self.bound_key_aliases = bound_key_aliases;
+
+        let endpoint_snapshots = self.endpoints.clone();
+        for endpoint in &endpoint_snapshots {
+            self.migrate_runtime_aliases_to_endpoint(endpoint);
+        }
 
         let algo = self.algo;
         for endpoint in &self.endpoints {
@@ -2779,6 +2824,41 @@ impl ForwardProxyManager {
             }
         }
         self.ensure_non_zero_weight();
+    }
+
+    fn migrate_runtime_aliases_to_endpoint(&mut self, endpoint: &ForwardProxyEndpoint) {
+        let Some(raw_url) = endpoint.raw_url.as_deref() else {
+            return;
+        };
+        let Some((canonical_key, aliases)) = forward_proxy_storage_aliases(raw_url) else {
+            return;
+        };
+        if canonical_key != endpoint.key {
+            return;
+        }
+
+        if self.runtime.contains_key(&endpoint.key) {
+            for alias in aliases {
+                self.runtime.remove(&alias);
+            }
+            return;
+        }
+
+        let mut migrated = None;
+        for alias in &aliases {
+            if let Some(runtime) = self.runtime.remove(alias) {
+                migrated = Some(runtime);
+                break;
+            }
+        }
+        for alias in aliases {
+            self.runtime.remove(&alias);
+        }
+        if let Some(mut runtime) = migrated {
+            runtime.proxy_key = endpoint.key.clone();
+            runtime.endpoint_url = Some(raw_url.to_string());
+            self.runtime.insert(endpoint.key.clone(), runtime);
+        }
     }
 
     pub(crate) fn ensure_non_zero_weight(&mut self) {
@@ -2874,14 +2954,25 @@ impl ForwardProxyManager {
         let mut available = Vec::new();
         for key in bound_proxy_keys {
             let normalized = key.trim();
-            if normalized.is_empty() || !selectable.contains(normalized) || !seen.insert(normalized)
-            {
+            if normalized.is_empty() {
                 continue;
             }
-            available.push(normalized.to_string());
+            let canonical = normalize_bound_proxy_key(normalized)
+                .map(|value| self.bound_key_aliases.get(&value).cloned().unwrap_or(value))
+                .unwrap_or_else(|| normalized.to_string());
+            if !selectable.contains(canonical.as_str()) || !seen.insert(canonical.clone()) {
+                continue;
+            }
+            available.push(canonical);
         }
         available.sort();
         available
+    }
+
+    pub(crate) fn has_selectable_bound_proxy_keys(&self, bound_proxy_keys: &[String]) -> bool {
+        !self
+            .selectable_bound_proxy_keys(bound_proxy_keys)
+            .is_empty()
     }
 
     fn choose_random_bound_proxy_key(
@@ -3068,6 +3159,13 @@ impl ForwardProxyManager {
     }
 
     pub(crate) fn binding_nodes(&self) -> Vec<ForwardProxyBindingNodeResponse> {
+        let mut alias_keys_by_key: HashMap<&str, Vec<String>> = HashMap::new();
+        for (alias, canonical) in &self.bound_key_aliases {
+            alias_keys_by_key
+                .entry(canonical.as_str())
+                .or_default()
+                .push(alias.clone());
+        }
         let mut nodes = self
             .endpoints
             .iter()
@@ -3076,8 +3174,13 @@ impl ForwardProxyManager {
                     .runtime
                     .get(&endpoint.key)
                     .is_some_and(ForwardProxyRuntimeState::is_penalized);
+                let mut alias_keys = alias_keys_by_key
+                    .remove(endpoint.key.as_str())
+                    .unwrap_or_default();
+                alias_keys.sort();
                 ForwardProxyBindingNodeResponse {
                     key: endpoint.key.clone(),
+                    alias_keys,
                     source: endpoint.source.clone(),
                     display_name: endpoint.display_name.clone(),
                     protocol_label: endpoint.protocol.label().to_string(),
@@ -3089,6 +3192,7 @@ impl ForwardProxyManager {
             .collect::<Vec<_>>();
         nodes.push(ForwardProxyBindingNodeResponse {
             key: FORWARD_PROXY_DIRECT_KEY.to_string(),
+            alias_keys: Vec::new(),
             source: FORWARD_PROXY_SOURCE_DIRECT.to_string(),
             display_name: FORWARD_PROXY_DIRECT_LABEL.to_string(),
             protocol_label: ForwardProxyProtocol::Direct.label().to_string(),
@@ -4205,6 +4309,7 @@ pub(crate) struct ForwardProxyNodeResponse {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ForwardProxyBindingNodeResponse {
     pub(crate) key: String,
+    pub(crate) alias_keys: Vec<String>,
     pub(crate) source: String,
     pub(crate) display_name: String,
     pub(crate) protocol_label: String,
@@ -4335,6 +4440,35 @@ mod tests {
         assert_eq!(direct.protocol_label, "DIRECT");
         assert!(direct.selectable);
         assert!(!direct.penalized);
+    }
+
+    #[test]
+    fn binding_nodes_include_legacy_vless_aliases() {
+        let proxy_url = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=tcp#东京节点";
+        let normalized_proxy_url =
+            normalize_share_link_scheme(proxy_url, "vless").expect("normalize vless url");
+        let legacy_alias = {
+            let parsed = Url::parse(&normalized_proxy_url).expect("parse normalized vless url");
+            stable_forward_proxy_key(&canonical_share_link_identity(&parsed))
+        };
+        let canonical_key = normalize_single_proxy_key(proxy_url).expect("canonical vless key");
+        assert_ne!(legacy_alias, canonical_key);
+
+        let manager = ForwardProxyManager::new(
+            ForwardProxySettings {
+                proxy_urls: vec![proxy_url.to_string()],
+                ..ForwardProxySettings::default()
+            },
+            Vec::new(),
+        );
+
+        let node = manager
+            .binding_nodes()
+            .into_iter()
+            .find(|candidate| candidate.key == canonical_key)
+            .expect("vless binding node should be present");
+
+        assert!(node.alias_keys.contains(&legacy_alias));
     }
 
     #[test]

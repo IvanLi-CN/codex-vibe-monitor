@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useEffect, useMemo } from 'react'
 import { AppIcon } from './AppIcon'
 import type { ForwardProxyBindingNode } from '../lib/api'
 import { cn } from '../lib/utils'
@@ -62,6 +62,24 @@ interface UpstreamAccountGroupNoteDialogProps {
 function normalizeBoundProxyKeys(values?: string[]): string[] {
   if (!Array.isArray(values)) return []
   return Array.from(new Set(values.map((value) => value.trim()).filter((value) => value.length > 0)))
+}
+
+function canonicalizeBoundProxyKeys(
+  values: string[],
+  availableProxyNodes?: ForwardProxyBindingNode[],
+): string[] {
+  const keyAliases = new Map<string, string>()
+  for (const node of Array.isArray(availableProxyNodes) ? availableProxyNodes : []) {
+    keyAliases.set(node.key, node.key)
+    for (const alias of normalizeBoundProxyKeys(node.aliasKeys)) {
+      keyAliases.set(alias, node.key)
+    }
+  }
+  return Array.from(new Set(values.map((value) => keyAliases.get(value) ?? value)))
+}
+
+function sameOrderedKeys(left: string[], right: string[]): boolean {
+  return left.length === right.length && left.every((value, index) => value === right[index])
 }
 
 function toggleBoundProxyKey(keys: string[], target: string): string[] {
@@ -238,11 +256,20 @@ export function UpstreamAccountGroupNoteDialog({
   proxyBindingsChartLocaleTag,
 }: UpstreamAccountGroupNoteDialogProps) {
   const normalizedBoundProxyKeys = normalizeBoundProxyKeys(boundProxyKeys)
+  const canonicalBoundProxyKeys = useMemo(
+    () => canonicalizeBoundProxyKeys(normalizedBoundProxyKeys, availableProxyNodes),
+    [availableProxyNodes, normalizedBoundProxyKeys],
+  )
+  useEffect(() => {
+    if (!open || !onBoundProxyKeysChange) return
+    if (sameOrderedKeys(canonicalBoundProxyKeys, normalizedBoundProxyKeys)) return
+    onBoundProxyKeysChange(canonicalBoundProxyKeys)
+  }, [canonicalBoundProxyKeys, normalizedBoundProxyKeys, onBoundProxyKeysChange, open])
   const proxyOptions = useMemo(() => {
     const available = Array.isArray(availableProxyNodes)
       ? availableProxyNodes
           .filter(
-            (node) => node.source !== 'missing' || normalizedBoundProxyKeys.includes(node.key),
+            (node) => node.source !== 'missing' || canonicalBoundProxyKeys.includes(node.key),
           )
           .map((node) => ({
             ...node,
@@ -251,7 +278,7 @@ export function UpstreamAccountGroupNoteDialog({
       : []
     const availableByKey = new Map(available.map((node) => [node.key, node]))
     const options: GroupProxyOption[] = [...available]
-    for (const key of normalizedBoundProxyKeys) {
+    for (const key of canonicalBoundProxyKeys) {
       if (!availableByKey.has(key)) {
         options.push(
           buildMissingProxyOption(key),
@@ -272,7 +299,7 @@ export function UpstreamAccountGroupNoteDialog({
           : undefined,
       }
     })
-  }, [availableProxyNodes, normalizedBoundProxyKeys, proxyBindingsMissingLabel])
+  }, [availableProxyNodes, canonicalBoundProxyKeys, proxyBindingsMissingLabel])
   const proxyChartScaleMax = useMemo(
     () =>
       Math.max(
@@ -286,7 +313,16 @@ export function UpstreamAccountGroupNoteDialog({
   const showProxyBindings =
     Boolean(onBoundProxyKeysChange) ||
     proxyOptions.length > 0 ||
-    normalizedBoundProxyKeys.length > 0
+    canonicalBoundProxyKeys.length > 0
+  const hasSelectableBoundProxySelection =
+    canonicalBoundProxyKeys.length === 0 ||
+    canonicalBoundProxyKeys.some((key) =>
+      proxyOptions.some((node) => node.key === key && node.selectable),
+    )
+  const blockingBindingSelection =
+    showProxyBindings &&
+    canonicalBoundProxyKeys.length > 0 &&
+    !hasSelectableBoundProxySelection
 
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => (!busy ? (nextOpen ? undefined : onClose()) : undefined)}>
@@ -341,9 +377,15 @@ export function UpstreamAccountGroupNoteDialog({
                   </p>
                 </div>
 
-                {normalizedBoundProxyKeys.length === 0 ? (
+                {canonicalBoundProxyKeys.length === 0 ? (
                   <div className="rounded-xl border border-dashed border-base-300/80 bg-base-100/65 px-3 py-2 text-xs text-base-content/65">
                     {proxyBindingsAutomaticLabel ?? 'No nodes bound. This group uses automatic routing.'}
+                  </div>
+                ) : null}
+
+                {blockingBindingSelection ? (
+                  <div className="rounded-xl border border-warning/35 bg-warning/10 px-3 py-2 text-xs text-warning">
+                    Select at least one available proxy node or clear bindings before saving.
                   </div>
                 ) : null}
 
@@ -358,7 +400,7 @@ export function UpstreamAccountGroupNoteDialog({
                   >
                     <div className="grid gap-2">
                       {proxyOptions.map((node) => {
-                        const selected = normalizedBoundProxyKeys.includes(node.key)
+                        const selected = canonicalBoundProxyKeys.includes(node.key)
                         const disabled = busy || (!selected && !node.selectable)
                         const badgeLabel = node.missing
                           ? proxyBindingsMissingLabel ?? 'Missing'
@@ -372,7 +414,9 @@ export function UpstreamAccountGroupNoteDialog({
                             disabled={disabled}
                             onClick={() => {
                               if (!onBoundProxyKeysChange) return
-                              onBoundProxyKeysChange(toggleBoundProxyKey(normalizedBoundProxyKeys, node.key))
+                              onBoundProxyKeysChange(
+                                toggleBoundProxyKey(canonicalBoundProxyKeys, node.key),
+                              )
                             }}
                             className={cn(
                               'grid gap-2 rounded-xl border px-3 py-2 text-left transition-colors sm:grid-cols-[minmax(0,1fr)_15.5rem] sm:items-center sm:gap-3',
@@ -450,7 +494,7 @@ export function UpstreamAccountGroupNoteDialog({
           <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
             {cancelLabel}
           </Button>
-          <Button type="button" onClick={onSave} disabled={busy}>
+          <Button type="button" onClick={onSave} disabled={busy || blockingBindingSelection}>
             {busy ? <AppIcon name="loading" className="mr-2 h-4 w-4 animate-spin" aria-hidden /> : null}
             {saveLabel}
           </Button>

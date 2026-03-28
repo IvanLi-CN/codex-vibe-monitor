@@ -22773,6 +22773,112 @@ fn normalize_single_proxy_key(raw: &str) -> Option<String> {
     parse_forward_proxy_entry(raw).map(|entry| entry.stable_key)
 }
 
+fn is_stable_forward_proxy_key(raw: &str) -> bool {
+    raw.strip_prefix("fpn_").is_some_and(|suffix| {
+        suffix.len() == 32 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
+    })
+}
+
+fn normalize_bound_proxy_key(raw: &str) -> Option<String> {
+    let normalized = raw.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+    if normalized == FORWARD_PROXY_DIRECT_KEY || is_stable_forward_proxy_key(normalized) {
+        return Some(normalized.to_string());
+    }
+    normalize_single_proxy_key(normalized)
+}
+
+pub(crate) fn legacy_bound_proxy_key_aliases(
+    raw: &str,
+    protocol: ForwardProxyProtocol,
+) -> Vec<String> {
+    let normalized = raw.trim();
+    if normalized.is_empty() {
+        return Vec::new();
+    }
+
+    let scheme = match protocol {
+        ForwardProxyProtocol::Vless => Some("vless"),
+        ForwardProxyProtocol::Trojan => Some("trojan"),
+        _ => None,
+    };
+    let Some(scheme) = scheme else {
+        return Vec::new();
+    };
+
+    let Some(parsed) = Url::parse(normalized).ok() else {
+        return Vec::new();
+    };
+    if !parsed.scheme().eq_ignore_ascii_case(scheme) {
+        return Vec::new();
+    }
+
+    let default_specs = match protocol {
+        ForwardProxyProtocol::Vless => &[
+            LegacyDefaultQueryParamSpec {
+                keys: &["encryption"],
+                explicit_keys: &["encryption"],
+                default_value: "none",
+            },
+            LegacyDefaultQueryParamSpec {
+                keys: &["security"],
+                explicit_keys: &["security"],
+                default_value: "none",
+            },
+            LegacyDefaultQueryParamSpec {
+                keys: &["type", "net"],
+                explicit_keys: &["type", "net"],
+                default_value: "tcp",
+            },
+        ][..],
+        ForwardProxyProtocol::Trojan => &[
+            LegacyDefaultQueryParamSpec {
+                keys: &["security"],
+                explicit_keys: &["security"],
+                default_value: "tls",
+            },
+            LegacyDefaultQueryParamSpec {
+                keys: &["type", "net"],
+                explicit_keys: &["type", "net"],
+                default_value: "tcp",
+            },
+        ][..],
+        _ => &[][..],
+    };
+
+    let mut aliases = legacy_share_link_identity_variants(&parsed, default_specs)
+        .into_iter()
+        .map(|identity| stable_forward_proxy_key(&identity))
+        .collect::<Vec<_>>();
+    aliases.sort();
+    aliases.dedup();
+    aliases
+}
+
+pub(crate) fn forward_proxy_storage_aliases(raw: &str) -> Option<(String, Vec<String>)> {
+    let parsed = parse_forward_proxy_entry(raw)?;
+    let canonical = parsed.stable_key.clone();
+    let mut aliases = Vec::new();
+    if parsed.normalized != canonical {
+        aliases.push(parsed.normalized.clone());
+    }
+    if matches!(
+        parsed.protocol,
+        ForwardProxyProtocol::Vless | ForwardProxyProtocol::Trojan
+    ) {
+        aliases.extend(legacy_bound_proxy_key_aliases(
+            &parsed.normalized,
+            parsed.protocol,
+        ));
+    }
+    aliases.retain(|alias| alias != &canonical);
+    aliases.sort();
+    aliases.dedup();
+    Some((canonical, aliases))
+}
+
 fn normalize_proxy_endpoints_from_urls(urls: &[String], source: &str) -> Vec<ForwardProxyEndpoint> {
     let mut seen = HashSet::new();
     let mut endpoints = Vec::new();
@@ -22890,7 +22996,7 @@ fn parse_vless_forward_proxy(candidate: &str) -> Option<ParsedForwardProxyEntry>
     let display_name =
         proxy_display_name_from_url(&parsed).unwrap_or_else(|| format!("{host}:{port}"));
     Some(ParsedForwardProxyEntry {
-        stable_key: stable_forward_proxy_key(&canonical_share_link_identity(&parsed)),
+        stable_key: stable_forward_proxy_key(&canonical_vless_share_link_identity(&parsed)),
         normalized,
         display_name,
         protocol: ForwardProxyProtocol::Vless,
@@ -22906,7 +23012,7 @@ fn parse_trojan_forward_proxy(candidate: &str) -> Option<ParsedForwardProxyEntry
     let display_name =
         proxy_display_name_from_url(&parsed).unwrap_or_else(|| format!("{host}:{port}"));
     Some(ParsedForwardProxyEntry {
-        stable_key: stable_forward_proxy_key(&canonical_share_link_identity(&parsed)),
+        stable_key: stable_forward_proxy_key(&canonical_trojan_share_link_identity(&parsed)),
         normalized,
         display_name,
         protocol: ForwardProxyProtocol::Trojan,
@@ -22958,23 +23064,329 @@ fn stable_forward_proxy_key(identity: &str) -> String {
     stable
 }
 
+fn push_canonical_host_port(identity: &mut String, host: &str, port: u16) {
+    if host.contains(':') {
+        identity.push('[');
+        identity.push_str(host);
+        identity.push(']');
+    } else {
+        identity.push_str(host);
+    }
+    identity.push(':');
+    identity.push_str(&port.to_string());
+}
+
+fn normalized_query_value(query: &HashMap<String, String>, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| query.get(*key))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn normalized_query_ascii_lowercase(
+    query: &HashMap<String, String>,
+    keys: &[&str],
+) -> Option<String> {
+    normalized_query_value(query, keys).map(|value| value.to_ascii_lowercase())
+}
+
+fn sorted_query_pairs(url: &Url) -> Vec<(String, String)> {
+    let mut query_pairs = url
+        .query_pairs()
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    query_pairs.sort();
+    query_pairs
+}
+
+fn canonical_query_string(query_pairs: Vec<(String, String)>) -> String {
+    query_pairs
+        .into_iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join("&")
+}
+
+#[derive(Clone, Copy)]
+struct LegacyDefaultQueryParamSpec {
+    keys: &'static [&'static str],
+    explicit_keys: &'static [&'static str],
+    default_value: &'static str,
+}
+
+fn legacy_share_link_identity_variants(
+    url: &Url,
+    default_specs: &[LegacyDefaultQueryParamSpec],
+) -> Vec<String> {
+    let original_query_pairs = sorted_query_pairs(url);
+    let mut static_pairs = Vec::new();
+    let mut handled_keys = HashSet::new();
+    let mut variant_choices: Vec<Vec<Option<(String, String)>>> = Vec::new();
+
+    for spec in default_specs {
+        let matching_pairs = original_query_pairs
+            .iter()
+            .filter(|(key, _)| spec.keys.contains(&key.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        for key in spec.keys {
+            handled_keys.insert(*key);
+        }
+
+        let all_default = matching_pairs.is_empty()
+            || matching_pairs
+                .iter()
+                .all(|(_, value)| value.trim().eq_ignore_ascii_case(spec.default_value));
+        if !all_default {
+            static_pairs.extend(matching_pairs);
+            continue;
+        }
+
+        let mut explicit_pairs = matching_pairs
+            .iter()
+            .map(|(key, _)| (key.clone(), spec.default_value.to_string()))
+            .collect::<Vec<_>>();
+        for key in spec.explicit_keys {
+            if explicit_pairs.iter().any(|(existing, _)| existing == key) {
+                continue;
+            }
+            explicit_pairs.push(((*key).to_string(), spec.default_value.to_string()));
+        }
+
+        let mut choices = vec![None];
+        choices.extend(explicit_pairs.into_iter().map(Some));
+        variant_choices.push(choices);
+    }
+
+    static_pairs.extend(
+        original_query_pairs
+            .into_iter()
+            .filter(|(key, _)| !handled_keys.contains(key.as_str())),
+    );
+    static_pairs.sort();
+
+    let mut variants = vec![static_pairs];
+    for choices in variant_choices {
+        let mut next = Vec::new();
+        let mut seen = HashSet::new();
+        for variant in &variants {
+            for choice in &choices {
+                let mut updated = variant.clone();
+                if let Some((key, value)) = choice {
+                    updated.push((key.clone(), value.clone()));
+                }
+                updated.sort();
+                let query = canonical_query_string(updated.clone());
+                if seen.insert(query) {
+                    next.push(updated);
+                }
+            }
+        }
+        variants = next;
+    }
+
+    variants
+        .into_iter()
+        .map(|query_pairs| share_link_identity_with_query_pairs(url, query_pairs))
+        .collect()
+}
+
+fn canonical_stream_query_pairs(
+    url: &Url,
+    default_security: Option<&str>,
+    consumed_keys: &mut HashSet<&'static str>,
+) -> Vec<(String, String)> {
+    let original_query_pairs = sorted_query_pairs(url);
+    let query = original_query_pairs
+        .iter()
+        .cloned()
+        .collect::<HashMap<String, String>>();
+    let network = normalized_query_ascii_lowercase(&query, &["type", "net"])
+        .unwrap_or_else(|| "tcp".to_string());
+    let security = normalized_query_ascii_lowercase(&query, &["security"])
+        .or_else(|| default_security.map(|value| value.to_ascii_lowercase()))
+        .unwrap_or_else(|| "none".to_string());
+    let host = normalized_query_value(&query, &["host"])
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_default();
+    let path = normalized_query_value(&query, &["path"]).unwrap_or_default();
+    let service_name = normalized_query_value(&query, &["serviceName", "service_name"])
+        .or_else(|| (!path.is_empty()).then_some(path.clone()))
+        .unwrap_or_default();
+
+    consumed_keys.extend(["type", "net", "security"]);
+    let mut query_pairs = vec![
+        ("net".to_string(), network.clone()),
+        ("security".to_string(), security.clone()),
+    ];
+
+    match network.as_str() {
+        "ws" => {
+            consumed_keys.extend(["host", "path"]);
+            query_pairs.push(("host".to_string(), host.clone()));
+            query_pairs.push(("path".to_string(), path.clone()));
+        }
+        "grpc" => {
+            consumed_keys.extend(["serviceName", "service_name", "multiMode"]);
+            query_pairs.push(("serviceName".to_string(), service_name.clone()));
+            query_pairs.push((
+                "multiMode".to_string(),
+                if query_flag_true(&query, "multiMode") {
+                    "true".to_string()
+                } else {
+                    "false".to_string()
+                },
+            ));
+        }
+        "httpupgrade" => {
+            consumed_keys.extend(["host", "path"]);
+            query_pairs.push(("host".to_string(), host.clone()));
+            query_pairs.push(("path".to_string(), path.clone()));
+        }
+        _ => {}
+    }
+
+    match security.as_str() {
+        "tls" => {
+            consumed_keys.extend([
+                "sni",
+                "allowInsecure",
+                "insecure",
+                "fp",
+                "fingerprint",
+                "alpn",
+            ]);
+            let server_name = normalized_query_value(&query, &["sni"])
+                .map(|value| value.to_ascii_lowercase())
+                .or_else(|| (!host.is_empty()).then_some(host.clone()))
+                .or_else(|| url.host_str().map(|value| value.to_ascii_lowercase()))
+                .unwrap_or_default();
+            let fingerprint = normalized_query_ascii_lowercase(&query, &["fp", "fingerprint"])
+                .unwrap_or_default();
+            let alpn = normalized_query_value(&query, &["alpn"])
+                .map(|value| {
+                    parse_alpn_csv(&value)
+                        .into_iter()
+                        .map(|item| item.to_ascii_lowercase())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                })
+                .unwrap_or_default();
+            query_pairs.push(("alpn".to_string(), alpn));
+            query_pairs.push((
+                "allowInsecure".to_string(),
+                if query_flag_true(&query, "allowInsecure") || query_flag_true(&query, "insecure") {
+                    "true".to_string()
+                } else {
+                    "false".to_string()
+                },
+            ));
+            query_pairs.push(("fp".to_string(), fingerprint));
+            query_pairs.push(("serverName".to_string(), server_name));
+        }
+        "reality" => {
+            consumed_keys.extend(["sni", "fp", "fingerprint", "pbk", "sid", "spx"]);
+            let server_name = normalized_query_value(&query, &["sni"])
+                .map(|value| value.to_ascii_lowercase())
+                .or_else(|| (!host.is_empty()).then_some(host.clone()))
+                .or_else(|| url.host_str().map(|value| value.to_ascii_lowercase()))
+                .unwrap_or_default();
+            let fingerprint = normalized_query_ascii_lowercase(&query, &["fp", "fingerprint"])
+                .unwrap_or_default();
+            let public_key = normalized_query_value(&query, &["pbk"]).unwrap_or_default();
+            let short_id = normalized_query_value(&query, &["sid"]).unwrap_or_default();
+            let spider_x = normalized_query_value(&query, &["spx"]).unwrap_or_default();
+            query_pairs.push(("fp".to_string(), fingerprint));
+            query_pairs.push(("pbk".to_string(), public_key));
+            query_pairs.push(("serverName".to_string(), server_name));
+            query_pairs.push(("sid".to_string(), short_id));
+            query_pairs.push(("spx".to_string(), spider_x));
+        }
+        _ => {}
+    }
+
+    query_pairs.extend(
+        original_query_pairs
+            .into_iter()
+            .filter(|(key, _)| !consumed_keys.contains(key.as_str())),
+    );
+    query_pairs.sort();
+    query_pairs
+}
+
+fn canonical_stream_identity_from_url(
+    url: &Url,
+    default_security: Option<&str>,
+    consumed_keys: &mut HashSet<&'static str>,
+) -> String {
+    canonical_query_string(canonical_stream_query_pairs(
+        url,
+        default_security,
+        consumed_keys,
+    ))
+}
+
+fn canonical_vless_share_link_identity(url: &Url) -> String {
+    let user_id = percent_decode_once_lossy(url.username());
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    let port = url.port_or_known_default().unwrap_or_default();
+    let query_pairs = sorted_query_pairs(url);
+    let query = query_pairs
+        .iter()
+        .cloned()
+        .collect::<HashMap<String, String>>();
+    let encryption = normalized_query_ascii_lowercase(&query, &["encryption"])
+        .unwrap_or_else(|| "none".to_string());
+    let flow = normalized_query_value(&query, &["flow"]).unwrap_or_default();
+
+    let mut consumed_keys = HashSet::from(["encryption", "flow"]);
+    let mut canonical_query_pairs = vec![
+        ("encryption".to_string(), encryption),
+        ("flow".to_string(), flow),
+    ];
+    canonical_query_pairs.extend(canonical_stream_query_pairs(url, None, &mut consumed_keys));
+    canonical_query_pairs.sort();
+
+    let mut identity = String::from("vless://");
+    identity.push_str(&user_id);
+    identity.push('@');
+    push_canonical_host_port(&mut identity, &host, port);
+    identity.push('?');
+    identity.push_str(&canonical_query_string(canonical_query_pairs));
+    identity
+}
+
+fn canonical_trojan_share_link_identity(url: &Url) -> String {
+    let password = percent_decode_once_lossy(url.username());
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    let port = url.port_or_known_default().unwrap_or_default();
+
+    let mut identity = String::from("trojan://");
+    identity.push_str(&password);
+    identity.push('@');
+    push_canonical_host_port(&mut identity, &host, port);
+    identity.push('?');
+    identity.push_str(&canonical_stream_identity_from_url(
+        url,
+        Some("tls"),
+        &mut HashSet::new(),
+    ));
+    identity
+}
+
 fn canonical_share_link_identity(url: &Url) -> String {
+    share_link_identity_with_query_pairs(url, sorted_query_pairs(url))
+}
+
+fn share_link_identity_with_query_pairs(url: &Url, query_pairs: Vec<(String, String)>) -> String {
     let scheme = url.scheme().to_ascii_lowercase();
     let username = percent_decode_once_lossy(url.username());
     let password = url.password().map(percent_decode_once_lossy);
     let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
     let port = url.port_or_known_default().unwrap_or_default();
     let path = url.path();
-    let mut query_pairs = url
-        .query_pairs()
-        .map(|(key, value)| (key.into_owned(), value.into_owned()))
-        .collect::<Vec<_>>();
-    query_pairs.sort();
-    let query = query_pairs
-        .into_iter()
-        .map(|(key, value)| format!("{key}={value}"))
-        .collect::<Vec<_>>()
-        .join("&");
+    let query = canonical_query_string(query_pairs);
 
     let mut identity = format!("{scheme}://");
     if !username.is_empty() {

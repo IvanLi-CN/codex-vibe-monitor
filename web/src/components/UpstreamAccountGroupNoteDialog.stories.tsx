@@ -158,6 +158,28 @@ const refreshedDisplayNameNodes: ForwardProxyBindingNode[] = [
   },
 ]
 
+const legacyAliasBindingNodes: ForwardProxyBindingNode[] = [
+  {
+    key: 'fpn_canonical_vless_key',
+    aliasKeys: ['fpn_legacy_vless_alias'],
+    source: 'subscription',
+    displayName: 'Tokyo Edge A',
+    protocolLabel: 'VLESS',
+    penalized: false,
+    selectable: true,
+    last24h: buildRequestBuckets(3, 14, 6),
+  },
+  {
+    key: 'fpn_8b9c0d1e2f3a4b20',
+    source: 'subscription',
+    displayName: 'SG Edge 02',
+    protocolLabel: 'SS',
+    penalized: false,
+    selectable: true,
+    last24h: buildRequestBuckets(6, 12, 5),
+  },
+]
+
 function DialogHarness({
   note: initialNote,
   boundProxyKeys: initialBoundProxyKeys = [],
@@ -285,11 +307,45 @@ export const MissingOrUnavailableBindings: Story = {
   },
 }
 
+export const UnavailableOnlyBindingsBlockSave: Story = {
+  args: {
+    groupName: 'drain-only',
+    note: 'This group currently only references unavailable bindings and must not save until one selectable node is chosen.',
+    boundProxyKeys: ['fpn_0d1e2f3a4b5c6d30'],
+    availableProxyNodes: defaultForwardProxyNodes.filter((node) => node.key === 'fpn_0d1e2f3a4b5c6d30'),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(
+      canvas.getByText(/select at least one available proxy node or clear bindings before saving\./i),
+    ).toBeInTheDocument()
+    await expect(canvas.getByRole('button', { name: /save group settings/i })).toBeDisabled()
+    await expect(canvas.getByText(/^Unavailable$/i)).toBeInTheDocument()
+  },
+}
+
 export const RefreshedDisplayNameStableBinding: Story = {
   args: {
     groupName: 'refresh-proof',
     note: 'The stable binding key remains selected after the subscription remark changes.',
     boundProxyKeys: ['fpn_13579bdf2468ace0'],
     availableProxyNodes: refreshedDisplayNameNodes,
+  },
+}
+
+export const LegacyAliasBindingsRemainSaveable: Story = {
+  args: {
+    groupName: 'legacy-alias',
+    note: 'Groups saved with legacy VLESS aliases still resolve to the current stable node and can be re-saved.',
+    boundProxyKeys: ['fpn_legacy_vless_alias'],
+    availableProxyNodes: legacyAliasBindingNodes,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByText(/^Tokyo Edge A$/i)).toBeInTheDocument()
+    await expect(
+      canvas.queryByText(/select at least one available proxy node or clear bindings before saving\./i),
+    ).not.toBeInTheDocument()
+    await expect(canvas.getByRole('button', { name: /save group settings/i })).toBeEnabled()
   },
 }
