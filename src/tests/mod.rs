@@ -1484,8 +1484,10 @@ fn legacy_bound_proxy_keys_still_route_to_matching_stable_endpoints() {
         vec![],
     );
 
-    let scope =
-        ForwardProxyRouteScope::from_group_binding(Some("东京组"), vec![legacy_proxy_url.to_string()]);
+    let scope = ForwardProxyRouteScope::from_group_binding(
+        Some("东京组"),
+        vec![legacy_proxy_url.to_string()],
+    );
     let selected = manager
         .select_proxy_for_scope(&scope)
         .expect("legacy bound key should still select proxy");
