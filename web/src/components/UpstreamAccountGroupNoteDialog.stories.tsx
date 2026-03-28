@@ -31,10 +31,6 @@ function buildRequestBuckets(seed: number, baseline: number, failuresEvery: numb
 }
 
 const directBindingKey = '__direct__'
-const subscriptionSsKey =
-  'ss://2022-blake3-aes-128-gcm:fixture-passphrase@fixture-ss-edge.example.invalid:443#Ivan-hinet-ss2022-01KF87EBR50MM9JKM9R9BCA9WZ'
-const subscriptionVlessKey =
-  'vless://11111111-2222-3333-4444-555555555555@fixture-vless-edge.example.invalid:443?encryption=none&security=tls&type=ws&host=cdn.example.invalid&path=%2Ffixture&fp=chrome&pbk=fixture-public-key&sid=fixture-subscription-node#Ivan-hinet-vless-vision-01KF874741GBN6MQYD6TNMYDVS'
 
 const defaultForwardProxyNodes: ForwardProxyBindingNode[] = [
   {
@@ -47,7 +43,7 @@ const defaultForwardProxyNodes: ForwardProxyBindingNode[] = [
     last24h: buildRequestBuckets(0, 16, 8),
   },
   {
-    key: 'jp-edge-01',
+    key: 'fpn_5a7b0c1d2e3f4a10',
     source: 'manual',
     displayName: 'JP Edge 01',
     protocolLabel: 'HTTP',
@@ -56,25 +52,16 @@ const defaultForwardProxyNodes: ForwardProxyBindingNode[] = [
     last24h: buildRequestBuckets(1, 18, 7),
   },
   {
-    key: subscriptionSsKey,
+    key: 'fpn_8b9c0d1e2f3a4b20',
     source: 'subscription',
-    displayName: 'Ivan-hinet-ss2022-01KF87EBR50MM9JKM9R9BCA9WZ',
+    displayName: 'SG Edge 02',
     protocolLabel: 'SS',
     penalized: false,
     selectable: true,
     last24h: buildRequestBuckets(6, 12, 5),
   },
   {
-    key: subscriptionVlessKey,
-    source: 'subscription',
-    displayName: 'Ivan-hinet-vless-vision-01KF874741GBN6MQYD6TNMYDVS',
-    protocolLabel: 'VLESS',
-    penalized: false,
-    selectable: true,
-    last24h: buildRequestBuckets(8, 11, 4),
-  },
-  {
-    key: 'us-edge-03',
+    key: 'fpn_0c1d2e3f4a5b6c40',
     source: 'subscription',
     displayName: 'US Edge 03',
     protocolLabel: 'VLESS',
@@ -83,7 +70,7 @@ const defaultForwardProxyNodes: ForwardProxyBindingNode[] = [
     last24h: buildRequestBuckets(9, 10, 4),
   },
   {
-    key: 'la-edge-04',
+    key: 'fpn_1d2e3f4a5b6c7d50',
     source: 'subscription',
     displayName: 'Ivan-la-vless-vision-01KHTAANPS3QM1DB4H8FEWMYEW',
     protocolLabel: 'VLESS',
@@ -92,7 +79,7 @@ const defaultForwardProxyNodes: ForwardProxyBindingNode[] = [
     last24h: buildRequestBuckets(10, 9, 4),
   },
   {
-    key: 'hk-edge-05',
+    key: 'fpn_2e3f4a5b6c7d8e60',
     source: 'subscription',
     displayName: 'Ivan-hkl-ss2022-01KFXRQH56RQ0SJTYQKS68TCYT',
     protocolLabel: 'SS',
@@ -101,7 +88,7 @@ const defaultForwardProxyNodes: ForwardProxyBindingNode[] = [
     last24h: buildRequestBuckets(12, 10, 6),
   },
   {
-    key: 'ii-edge-06',
+    key: 'fpn_3f4a5b6c7d8e9f70',
     source: 'subscription',
     displayName: 'Ivan-iijb-vless-vision-01KKNNTZ3DWEENGMWWF3F9NKT1H',
     protocolLabel: 'VLESS',
@@ -110,7 +97,7 @@ const defaultForwardProxyNodes: ForwardProxyBindingNode[] = [
     last24h: buildRequestBuckets(13, 8, 5),
   },
   {
-    key: 'ap-edge-07',
+    key: 'fpn_4a5b6c7d8e9f0a80',
     source: 'subscription',
     displayName: 'Ivan-ap-ss2022-01KHTAB3M332KVBZ0660GJ2PAR',
     protocolLabel: 'SS',
@@ -119,13 +106,55 @@ const defaultForwardProxyNodes: ForwardProxyBindingNode[] = [
     last24h: buildRequestBuckets(14, 9, 5),
   },
   {
-    key: 'drain-node',
+    key: 'fpn_0d1e2f3a4b5c6d30',
     source: 'manual',
     displayName: 'Drain Node',
     protocolLabel: 'HTTP',
     penalized: true,
     selectable: false,
     last24h: buildRequestBuckets(11, 6, 3),
+  },
+]
+
+const unicodeForwardProxyNodes: ForwardProxyBindingNode[] = [
+  {
+    key: 'fpn_13579bdf2468ace0',
+    source: 'subscription',
+    displayName: '东京专线 A',
+    protocolLabel: 'VLESS',
+    penalized: false,
+    selectable: true,
+    last24h: buildRequestBuckets(2, 16, 6),
+  },
+  {
+    key: 'fpn_deadbeefcafebabe',
+    source: 'missing',
+    displayName: '历史东京中继',
+    protocolLabel: 'VLESS',
+    penalized: false,
+    selectable: false,
+    last24h: [],
+  },
+]
+
+const refreshedDisplayNameNodes: ForwardProxyBindingNode[] = [
+  {
+    key: 'fpn_13579bdf2468ace0',
+    source: 'subscription',
+    displayName: 'Tokyo Edge A (Refreshed Label)',
+    protocolLabel: 'VLESS',
+    penalized: false,
+    selectable: true,
+    last24h: buildRequestBuckets(4, 15, 8),
+  },
+  {
+    key: 'fpn_8b9c0d1e2f3a4b20',
+    source: 'subscription',
+    displayName: 'SG Edge 02',
+    protocolLabel: 'SS',
+    penalized: false,
+    selectable: true,
+    last24h: buildRequestBuckets(6, 12, 5),
   },
 ]
 
@@ -217,7 +246,7 @@ export const AutomaticRouting: Story = {}
 
 export const HardBoundMultipleNodes: Story = {
   args: {
-    boundProxyKeys: [directBindingKey, subscriptionVlessKey],
+    boundProxyKeys: [directBindingKey, 'fpn_5a7b0c1d2e3f4a10', 'fpn_8b9c0d1e2f3a4b20'],
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
@@ -238,10 +267,29 @@ export const HardBoundMultipleNodes: Story = {
   },
 }
 
+export const NonAsciiBindings: Story = {
+  args: {
+    groupName: 'apac-premium',
+    note: 'Stable keys survive refreshes while operators still see localized display names.',
+    boundProxyKeys: ['fpn_13579bdf2468ace0', 'fpn_deadbeefcafebabe'],
+    availableProxyNodes: unicodeForwardProxyNodes,
+  },
+}
+
 export const MissingOrUnavailableBindings: Story = {
   args: {
     groupName: 'overflow',
-    note: 'Legacy overflow group with one stale node reference.',
-    boundProxyKeys: ['drain-node', 'missing-node-legacy'],
+    note: 'Legacy overflow group with one restored stale binding and one currently unavailable node.',
+    boundProxyKeys: ['fpn_0d1e2f3a4b5c6d30', 'fpn_deadbeefcafebabe'],
+    availableProxyNodes: [...defaultForwardProxyNodes, unicodeForwardProxyNodes[1]],
+  },
+}
+
+export const RefreshedDisplayNameStableBinding: Story = {
+  args: {
+    groupName: 'refresh-proof',
+    note: 'The stable binding key remains selected after the subscription remark changes.',
+    boundProxyKeys: ['fpn_13579bdf2468ace0'],
+    availableProxyNodes: refreshedDisplayNameNodes,
   },
 }

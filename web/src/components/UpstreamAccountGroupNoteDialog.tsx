@@ -71,12 +71,12 @@ function toggleBoundProxyKey(keys: string[], target: string): string[] {
   return [...keys, target]
 }
 
-function buildMissingProxyOption(key: string, missingLabel: string): GroupProxyOption {
+function buildMissingProxyOption(key: string): GroupProxyOption {
   const isDirect = key === '__direct__'
   return {
     key,
     source: isDirect ? 'direct' : 'missing',
-    displayName: isDirect ? 'Direct' : missingLabel,
+    displayName: isDirect ? 'Direct' : key,
     protocolLabel: isDirect ? 'DIRECT' : 'UNKNOWN',
     penalized: false,
     selectable: isDirect,
@@ -240,20 +240,21 @@ export function UpstreamAccountGroupNoteDialog({
   const normalizedBoundProxyKeys = normalizeBoundProxyKeys(boundProxyKeys)
   const proxyOptions = useMemo(() => {
     const available = Array.isArray(availableProxyNodes)
-      ? availableProxyNodes.map((node) => ({
-          ...node,
-          last24h: Array.isArray(node.last24h) ? node.last24h : [],
-        }))
+      ? availableProxyNodes
+          .filter(
+            (node) => node.source !== 'missing' || normalizedBoundProxyKeys.includes(node.key),
+          )
+          .map((node) => ({
+            ...node,
+            last24h: Array.isArray(node.last24h) ? node.last24h : [],
+          }))
       : []
     const availableByKey = new Map(available.map((node) => [node.key, node]))
     const options: GroupProxyOption[] = [...available]
     for (const key of normalizedBoundProxyKeys) {
       if (!availableByKey.has(key)) {
         options.push(
-          buildMissingProxyOption(
-            key,
-            proxyBindingsMissingLabel ?? 'Missing node',
-          ),
+          buildMissingProxyOption(key),
         )
       }
     }

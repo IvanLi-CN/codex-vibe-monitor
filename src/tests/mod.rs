@@ -246,6 +246,290 @@ fn normalize_single_proxy_url_supports_xray_share_links() {
 }
 
 #[test]
+fn stable_proxy_keys_ignore_share_link_display_name_only_changes() {
+    let vmess_payload_a = serde_json::to_string(&json!({
+        "add": "vmess.example.com",
+        "port": "443",
+        "id": "11111111-1111-1111-1111-111111111111",
+        "aid": "0",
+        "net": "ws",
+        "host": "cdn.vmess.example.com",
+        "path": "/ws",
+        "tls": "tls",
+        "ps": "东京节点"
+    }))
+    .expect("serialize vmess payload a");
+    let vmess_payload_b = serde_json::to_string(&json!({
+        "add": "vmess.example.com",
+        "port": "443",
+        "id": "11111111-1111-1111-1111-111111111111",
+        "aid": "0",
+        "net": "ws",
+        "host": "cdn.vmess.example.com",
+        "path": "/ws",
+        "tls": "tls",
+        "ps": "Tokyo Edge"
+    }))
+    .expect("serialize vmess payload b");
+    let vmess_link_a = format!(
+        "vmess://{}",
+        base64::engine::general_purpose::STANDARD.encode(vmess_payload_a)
+    );
+    let vmess_link_b = format!(
+        "vmess://{}",
+        base64::engine::general_purpose::STANDARD.encode(vmess_payload_b)
+    );
+    assert_eq!(
+        normalize_single_proxy_key(&vmess_link_a),
+        normalize_single_proxy_key(&vmess_link_b)
+    );
+
+    assert_eq!(
+        normalize_single_proxy_key(
+            "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=ws&path=%2Fws&host=cdn.vless.example.com#东京节点"
+        ),
+        normalize_single_proxy_key(
+            "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?type=ws&host=cdn.vless.example.com&path=%2Fws&security=tls#Tokyo%20Edge"
+        ),
+    );
+    assert_eq!(
+        normalize_single_proxy_key(
+            "trojan://password@trojan.example.com:443?type=ws&path=%2Fws&host=cdn.trojan.example.com#东京节点"
+        ),
+        normalize_single_proxy_key(
+            "trojan://password@trojan.example.com:443?host=cdn.trojan.example.com&path=%2Fws&type=ws#Tokyo%20Edge"
+        ),
+    );
+    assert_eq!(
+        normalize_single_proxy_key(
+            "ss://2022-blake3-aes-128-gcm:%2B%2F%3D@127.0.0.1:8388#东京节点"
+        ),
+        normalize_single_proxy_key(
+            "ss://2022-blake3-aes-128-gcm:%2B%2F%3D@127.0.0.1:8388#Tokyo%20Edge"
+        ),
+    );
+}
+
+#[test]
+fn stable_proxy_keys_change_when_proxy_identity_changes() {
+    let vmess_payload_a = serde_json::to_string(&json!({
+        "add": "vmess.example.com",
+        "port": "443",
+        "id": "11111111-1111-1111-1111-111111111111",
+        "aid": "0",
+        "net": "ws",
+        "type": "none",
+        "host": "cdn.vmess.example.com",
+        "path": "/ws",
+        "tls": "tls",
+        "ps": "节点A"
+    }))
+    .expect("serialize vmess payload a");
+    let vmess_payload_b = serde_json::to_string(&json!({
+        "add": "vmess.example.com",
+        "port": "443",
+        "id": "11111111-1111-1111-1111-111111111111",
+        "aid": "0",
+        "net": "ws",
+        "type": "http",
+        "host": "cdn.vmess.example.com",
+        "path": "/ws",
+        "tls": "tls",
+        "ps": "节点A"
+    }))
+    .expect("serialize vmess payload b");
+    assert_ne!(
+        normalize_single_proxy_key("http://127.0.0.1:7890"),
+        normalize_single_proxy_key("http://127.0.0.1:7891"),
+    );
+    assert_ne!(
+        normalize_single_proxy_key(&format!(
+            "vmess://{}",
+            base64::engine::general_purpose::STANDARD.encode(vmess_payload_a)
+        )),
+        normalize_single_proxy_key(&format!(
+            "vmess://{}",
+            base64::engine::general_purpose::STANDARD.encode(vmess_payload_b)
+        )),
+    );
+    assert_ne!(
+        normalize_single_proxy_key(
+            "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=ws&path=%2Fws&host=cdn-a.example.com#节点A"
+        ),
+        normalize_single_proxy_key(
+            "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=ws&path=%2Fws&host=cdn-b.example.com#节点A"
+        ),
+    );
+    assert_ne!(
+        normalize_single_proxy_key(
+            "ss://2022-blake3-aes-128-gcm:%2B%2F%3D@127.0.0.1:8388?plugin=v2ray-plugin%3Btls#节点A"
+        ),
+        normalize_single_proxy_key(
+            "ss://2022-blake3-aes-128-gcm:%2B%2F%3D@127.0.0.1:8388?plugin=obfs-local%3Bobfs%3Dhttp#节点A"
+        ),
+    );
+}
+
+#[test]
+fn proxy_display_name_from_url_decodes_non_ascii_fragment() {
+    let url = Url::parse(
+        "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls#%E4%B8%9C%E4%BA%AC%E8%8A%82%E7%82%B9",
+    )
+    .expect("valid vless share link");
+    assert_eq!(
+        proxy_display_name_from_url(&url).as_deref(),
+        Some("东京节点")
+    );
+}
+
+#[tokio::test]
+async fn forward_proxy_binding_nodes_restore_display_name_for_missing_bound_keys() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://probe-target.example/").expect("valid probe target"),
+    )
+    .await;
+    let proxy_key = "fpn_deadbeefcafebabe".to_string();
+    persist_forward_proxy_runtime_state(
+        &state.pool,
+        &ForwardProxyRuntimeState {
+            proxy_key: proxy_key.clone(),
+            display_name: "东京专线 A".to_string(),
+            source: FORWARD_PROXY_SOURCE_SUBSCRIPTION.to_string(),
+            endpoint_url: Some(
+                "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=ws&host=cdn.vless.example.com#%E4%B8%9C%E4%BA%AC%E4%B8%93%E7%BA%BF%20A"
+                    .to_string(),
+            ),
+            weight: 0.8,
+            success_ema: 0.65,
+            latency_ema_ms: None,
+            consecutive_failures: 0,
+        },
+    )
+    .await
+    .expect("persist forward proxy metadata history");
+
+    let nodes = build_forward_proxy_binding_nodes_response(state.as_ref(), &[proxy_key.clone()])
+        .await
+        .expect("build binding nodes response");
+
+    assert!(
+        nodes
+            .iter()
+            .any(|node| node.key == FORWARD_PROXY_DIRECT_KEY),
+        "direct binding candidate should still be present",
+    );
+    let missing_node = nodes
+        .iter()
+        .find(|node| node.key == proxy_key)
+        .expect("missing bound node should be present");
+    assert_eq!(missing_node.display_name, "东京专线 A");
+    assert_eq!(missing_node.source, "missing");
+    assert_eq!(missing_node.protocol_label, "UNKNOWN");
+    assert!(!missing_node.selectable);
+    assert!(!missing_node.penalized);
+    assert!(missing_node.last24h.is_empty());
+}
+
+#[tokio::test]
+async fn load_forward_proxy_runtime_states_maps_legacy_proxy_keys_to_stable_keys() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://probe-target.example/").expect("valid probe target"),
+    )
+    .await;
+    let proxy_url = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=ws&host=cdn.vless.example.com#东京专线".to_string();
+    let normalized_proxy = normalize_single_proxy_url(&proxy_url).expect("normalize proxy url");
+    let stable_proxy_key = normalize_single_proxy_key(&proxy_url).expect("normalize proxy key");
+    persist_forward_proxy_runtime_state(
+        &state.pool,
+        &ForwardProxyRuntimeState {
+            proxy_key: normalized_proxy.clone(),
+            display_name: "东京专线".to_string(),
+            source: FORWARD_PROXY_SOURCE_SUBSCRIPTION.to_string(),
+            endpoint_url: Some(normalized_proxy),
+            weight: 0.42,
+            success_ema: 0.8,
+            latency_ema_ms: Some(123.0),
+            consecutive_failures: 1,
+        },
+    )
+    .await
+    .expect("persist legacy runtime state");
+
+    let runtime = load_forward_proxy_runtime_states(&state.pool)
+        .await
+        .expect("load runtime states");
+    assert_eq!(runtime.len(), 1);
+    assert_eq!(runtime[0].proxy_key, stable_proxy_key);
+    assert_eq!(runtime[0].weight, 0.42);
+}
+
+#[tokio::test]
+async fn forward_proxy_binding_nodes_reuse_legacy_hourly_stats_for_stable_keys() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://probe-target.example/").expect("valid probe target"),
+    )
+    .await;
+    let proxy_url = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=ws&host=cdn.vless.example.com#东京专线".to_string();
+    let normalized_proxy = normalize_single_proxy_url(&proxy_url).expect("normalize proxy url");
+    let stable_proxy_key = normalize_single_proxy_key(&proxy_url).expect("normalize proxy key");
+    persist_forward_proxy_runtime_state(
+        &state.pool,
+        &ForwardProxyRuntimeState {
+            proxy_key: normalized_proxy.clone(),
+            display_name: "东京专线".to_string(),
+            source: FORWARD_PROXY_SOURCE_SUBSCRIPTION.to_string(),
+            endpoint_url: Some(normalized_proxy.clone()),
+            weight: 0.8,
+            success_ema: 0.65,
+            latency_ema_ms: None,
+            consecutive_failures: 0,
+        },
+    )
+    .await
+    .expect("persist legacy runtime state");
+
+    let now_epoch = Utc::now().timestamp();
+    let bucket_start_epoch = align_bucket_epoch(now_epoch, 3600, 0);
+    sqlx::query(
+        r#"
+        INSERT INTO forward_proxy_attempt_hourly (
+            proxy_key,
+            bucket_start_epoch,
+            attempts,
+            success_count,
+            failure_count,
+            latency_sample_count,
+            latency_sum_ms,
+            latency_max_ms,
+            updated_at
+        )
+        VALUES (?1, ?2, 5, 4, 1, 4, 480.0, 180.0, datetime('now'))
+        "#,
+    )
+    .bind(&normalized_proxy)
+    .bind(bucket_start_epoch)
+    .execute(&state.pool)
+    .await
+    .expect("insert legacy hourly stats");
+
+    let nodes =
+        build_forward_proxy_binding_nodes_response(state.as_ref(), &[stable_proxy_key.clone()])
+            .await
+            .expect("build binding nodes response");
+    let node = nodes
+        .into_iter()
+        .find(|item| item.key == stable_proxy_key)
+        .expect("stable node should be returned");
+    let bucket = node
+        .last24h
+        .into_iter()
+        .find(|item| item.success_count == 4 || item.failure_count == 1)
+        .expect("matching bucket should exist");
+    assert_eq!(bucket.success_count, 4);
+    assert_eq!(bucket.failure_count, 1);
+}
+
+#[test]
 fn parse_proxy_urls_from_subscription_body_supports_xray_links() {
     let vmess_payload = serde_json::to_string(&json!({
         "add": "vmess.example.com",
@@ -785,6 +1069,7 @@ async fn forward_proxy_settings_returns_service_unavailable_when_shutdown_interr
     let runtime_dir = temp_root.join("runtime");
     let xray_url = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=ws&path=%2Fws&host=cdn.vless.example.com#vless".to_string();
     let normalized_proxy = normalize_single_proxy_url(&xray_url).expect("normalize xray proxy url");
+    let proxy_key = normalize_single_proxy_key(&xray_url).expect("normalize xray proxy key");
 
     let mut config = test_config();
     config.xray_binary = "/path/to/non-existent-xray".to_string();
@@ -812,7 +1097,7 @@ async fn forward_proxy_settings_returns_service_unavailable_when_shutdown_interr
         err.1
     );
     assert!(
-        read_forward_proxy_runtime_weight(&state.pool, &normalized_proxy)
+        read_forward_proxy_runtime_weight(&state.pool, &proxy_key)
             .await
             .is_none(),
         "shutdown-interrupted route sync should not persist a partial runtime snapshot"
@@ -836,14 +1121,15 @@ async fn forward_proxy_settings_triggers_async_bootstrap_probe_for_added_manual_
     let (proxy_url, proxy_handle) = spawn_test_forward_proxy_status(StatusCode::NOT_FOUND).await;
     let normalized_proxy =
         normalize_single_proxy_url(&proxy_url).expect("normalize test proxy url");
+    let proxy_key = normalize_single_proxy_key(&proxy_url).expect("normalize test proxy key");
     let state = test_state_with_openai_base(
         Url::parse("http://probe-target.example/").expect("valid probe target"),
     )
     .await;
     let probe_count_before =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+        count_forward_proxy_probe_attempts(&state.pool, &proxy_key, None).await;
     let success_count_before =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, Some(true)).await;
+        count_forward_proxy_probe_attempts(&state.pool, &proxy_key, Some(true)).await;
 
     let Json(updated) = put_forward_proxy_settings(
         State(state.clone()),
@@ -859,10 +1145,9 @@ async fn forward_proxy_settings_triggers_async_bootstrap_probe_for_added_manual_
     .expect("put forward proxy settings should succeed");
     assert!(updated.proxy_urls.contains(&normalized_proxy));
 
-    wait_for_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, probe_count_before + 1)
-        .await;
+    wait_for_forward_proxy_probe_attempts(&state.pool, &proxy_key, probe_count_before + 1).await;
     let success_count =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, Some(true)).await;
+        count_forward_proxy_probe_attempts(&state.pool, &proxy_key, Some(true)).await;
     assert!(
         success_count > success_count_before,
         "expected at least one successful bootstrap probe attempt"
@@ -874,8 +1159,7 @@ async fn forward_proxy_settings_triggers_async_bootstrap_probe_for_added_manual_
 #[tokio::test]
 async fn forward_proxy_settings_does_not_probe_when_no_new_nodes() {
     let (proxy_url, proxy_handle) = spawn_test_forward_proxy_status(StatusCode::NOT_FOUND).await;
-    let normalized_proxy =
-        normalize_single_proxy_url(&proxy_url).expect("normalize test proxy url");
+    let proxy_key = normalize_single_proxy_key(&proxy_url).expect("normalize test proxy key");
     let state = test_state_with_openai_base(
         Url::parse("http://probe-target.example/").expect("valid probe target"),
     )
@@ -888,7 +1172,7 @@ async fn forward_proxy_settings_does_not_probe_when_no_new_nodes() {
         insert_direct: true,
     };
     let probe_count_before =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+        count_forward_proxy_probe_attempts(&state.pool, &proxy_key, None).await;
     let _ = put_forward_proxy_settings(
         State(state.clone()),
         HeaderMap::new(),
@@ -901,18 +1185,15 @@ async fn forward_proxy_settings_does_not_probe_when_no_new_nodes() {
     )
     .await
     .expect("initial put forward proxy settings should succeed");
-    wait_for_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, probe_count_before + 1)
-        .await;
-    let first_count =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+    wait_for_forward_proxy_probe_attempts(&state.pool, &proxy_key, probe_count_before + 1).await;
+    let first_count = count_forward_proxy_probe_attempts(&state.pool, &proxy_key, None).await;
 
     let _ = put_forward_proxy_settings(State(state.clone()), HeaderMap::new(), Json(request))
         .await
         .expect("repeated put forward proxy settings should succeed");
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    let second_count =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+    let second_count = count_forward_proxy_probe_attempts(&state.pool, &proxy_key, None).await;
     assert_eq!(
         second_count, first_count,
         "no newly added endpoint should not trigger extra bootstrap probe"
@@ -924,8 +1205,7 @@ async fn forward_proxy_settings_does_not_probe_when_no_new_nodes() {
 #[tokio::test]
 async fn forward_proxy_settings_does_not_reprobe_when_subscription_is_unchanged() {
     let (proxy_url, proxy_handle) = spawn_test_forward_proxy_status(StatusCode::NOT_FOUND).await;
-    let normalized_proxy =
-        normalize_single_proxy_url(&proxy_url).expect("normalize test proxy url");
+    let proxy_key = normalize_single_proxy_key(&proxy_url).expect("normalize test proxy key");
     let (subscription_url, subscription_handle) =
         spawn_test_subscription_source(format!("{proxy_url}\n")).await;
     let state = test_state_with_openai_base(
@@ -933,7 +1213,7 @@ async fn forward_proxy_settings_does_not_reprobe_when_subscription_is_unchanged(
     )
     .await;
     let probe_count_before =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+        count_forward_proxy_probe_attempts(&state.pool, &proxy_key, None).await;
 
     let _ = put_forward_proxy_settings(
         State(state.clone()),
@@ -947,10 +1227,8 @@ async fn forward_proxy_settings_does_not_reprobe_when_subscription_is_unchanged(
     )
     .await
     .expect("initial put forward proxy settings should succeed");
-    wait_for_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, probe_count_before + 1)
-        .await;
-    let first_count =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+    wait_for_forward_proxy_probe_attempts(&state.pool, &proxy_key, probe_count_before + 1).await;
+    let first_count = count_forward_proxy_probe_attempts(&state.pool, &proxy_key, None).await;
 
     let _ = put_forward_proxy_settings(
         State(state.clone()),
@@ -966,8 +1244,7 @@ async fn forward_proxy_settings_does_not_reprobe_when_subscription_is_unchanged(
     .expect("repeated put forward proxy settings should succeed");
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    let second_count =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+    let second_count = count_forward_proxy_probe_attempts(&state.pool, &proxy_key, None).await;
     assert_eq!(
         second_count, first_count,
         "unchanged subscription endpoints should not trigger extra bootstrap probes"
@@ -980,8 +1257,7 @@ async fn forward_proxy_settings_does_not_reprobe_when_subscription_is_unchanged(
 #[tokio::test]
 async fn refresh_forward_proxy_subscriptions_triggers_bootstrap_probe_for_added_nodes() {
     let (proxy_url, proxy_handle) = spawn_test_forward_proxy_status(StatusCode::NOT_FOUND).await;
-    let normalized_proxy =
-        normalize_single_proxy_url(&proxy_url).expect("normalize test proxy url");
+    let proxy_key = normalize_single_proxy_key(&proxy_url).expect("normalize test proxy key");
     let (subscription_url, subscription_handle) =
         spawn_test_subscription_source(format!("{proxy_url}\n")).await;
     let state = test_state_with_openai_base(
@@ -1002,17 +1278,16 @@ async fn refresh_forward_proxy_subscriptions_triggers_bootstrap_probe_for_added_
         .await
         .expect("sync forward proxy routes before subscription refresh");
     let probe_count_before =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+        count_forward_proxy_probe_attempts(&state.pool, &proxy_key, None).await;
     let success_count_before =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, Some(true)).await;
+        count_forward_proxy_probe_attempts(&state.pool, &proxy_key, Some(true)).await;
 
     refresh_forward_proxy_subscriptions(state.clone(), true, None)
         .await
         .expect("refresh subscriptions should succeed");
-    wait_for_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, probe_count_before + 1)
-        .await;
+    wait_for_forward_proxy_probe_attempts(&state.pool, &proxy_key, probe_count_before + 1).await;
     let success_count =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, Some(true)).await;
+        count_forward_proxy_probe_attempts(&state.pool, &proxy_key, Some(true)).await;
     assert!(
         success_count > success_count_before,
         "expected at least one successful bootstrap probe attempt from subscription refresh"
@@ -1025,8 +1300,7 @@ async fn refresh_forward_proxy_subscriptions_triggers_bootstrap_probe_for_added_
 #[tokio::test]
 async fn refresh_forward_proxy_subscriptions_skips_probe_for_known_subscription_keys() {
     let (proxy_url, proxy_handle) = spawn_test_forward_proxy_status(StatusCode::NOT_FOUND).await;
-    let normalized_proxy =
-        normalize_single_proxy_url(&proxy_url).expect("normalize test proxy url");
+    let proxy_key = normalize_single_proxy_key(&proxy_url).expect("normalize test proxy key");
     let (subscription_url, subscription_handle) =
         spawn_test_subscription_source(format!("{proxy_url}\n")).await;
     let state = test_state_with_openai_base(
@@ -1048,15 +1322,14 @@ async fn refresh_forward_proxy_subscriptions_skips_probe_for_known_subscription_
         .expect("sync forward proxy routes before subscription refresh");
 
     let probe_count_before =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
-    let known_keys = HashSet::from([normalized_proxy.clone()]);
+        count_forward_proxy_probe_attempts(&state.pool, &proxy_key, None).await;
+    let known_keys = HashSet::from([proxy_key.clone()]);
     refresh_forward_proxy_subscriptions(state.clone(), true, Some(known_keys))
         .await
         .expect("refresh subscriptions should succeed");
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    let probe_count_after =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+    let probe_count_after = count_forward_proxy_probe_attempts(&state.pool, &proxy_key, None).await;
     assert_eq!(
         probe_count_after, probe_count_before,
         "known subscription keys should suppress startup-style reprobe"
@@ -1070,16 +1343,15 @@ async fn refresh_forward_proxy_subscriptions_skips_probe_for_known_subscription_
 async fn forward_proxy_settings_bootstrap_probe_failure_penalizes_runtime_weight() {
     let (proxy_url, proxy_handle) =
         spawn_test_forward_proxy_status(StatusCode::INTERNAL_SERVER_ERROR).await;
-    let normalized_proxy =
-        normalize_single_proxy_url(&proxy_url).expect("normalize test proxy url");
+    let proxy_key = normalize_single_proxy_key(&proxy_url).expect("normalize test proxy key");
     let state = test_state_with_openai_base(
         Url::parse("http://probe-target.example/").expect("valid probe target"),
     )
     .await;
     let probe_count_before =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+        count_forward_proxy_probe_attempts(&state.pool, &proxy_key, None).await;
     let failure_count_before =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, Some(false)).await;
+        count_forward_proxy_probe_attempts(&state.pool, &proxy_key, Some(false)).await;
 
     let _ = put_forward_proxy_settings(
         State(state.clone()),
@@ -1094,16 +1366,15 @@ async fn forward_proxy_settings_bootstrap_probe_failure_penalizes_runtime_weight
     .await
     .expect("put forward proxy settings should succeed");
 
-    wait_for_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, probe_count_before + 1)
-        .await;
+    wait_for_forward_proxy_probe_attempts(&state.pool, &proxy_key, probe_count_before + 1).await;
     let failure_count =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, Some(false)).await;
+        count_forward_proxy_probe_attempts(&state.pool, &proxy_key, Some(false)).await;
     assert!(
         failure_count > failure_count_before,
         "expected at least one failed bootstrap probe attempt"
     );
 
-    let runtime_weight = read_forward_proxy_runtime_weight(&state.pool, &normalized_proxy)
+    let runtime_weight = read_forward_proxy_runtime_weight(&state.pool, &proxy_key)
         .await
         .expect("runtime weight should exist");
     assert!(
@@ -1208,8 +1479,35 @@ fn forward_proxy_manager_v2_keeps_two_positive_weights() {
 }
 
 #[test]
+fn legacy_bound_proxy_keys_still_route_to_matching_stable_endpoints() {
+    let legacy_proxy_url = "http://127.0.0.1:7890";
+    let stable_proxy_key =
+        normalize_single_proxy_key(legacy_proxy_url).expect("legacy proxy url should normalize");
+    let mut manager = ForwardProxyManager::new(
+        ForwardProxySettings {
+            proxy_urls: vec![legacy_proxy_url.to_string()],
+            subscription_urls: vec![],
+            subscription_update_interval_secs: 3600,
+            insert_direct: false,
+        },
+        vec![],
+    );
+
+    let scope = ForwardProxyRouteScope::from_group_binding(
+        Some("东京组"),
+        vec![legacy_proxy_url.to_string()],
+    );
+    let selected = manager
+        .select_proxy_for_scope(&scope)
+        .expect("legacy bound key should still select proxy");
+
+    assert_eq!(selected.key, stable_proxy_key);
+}
+
+#[test]
 fn forward_proxy_manager_v2_clamps_persisted_runtime_weight_on_startup() {
     let proxy_url = "http://127.0.0.1:7890".to_string();
+    let proxy_key = normalize_single_proxy_key(&proxy_url).expect("normalize proxy key");
     let manager = ForwardProxyManager::with_algo(
         ForwardProxySettings {
             proxy_urls: vec![proxy_url.clone()],
@@ -1218,7 +1516,7 @@ fn forward_proxy_manager_v2_clamps_persisted_runtime_weight_on_startup() {
             insert_direct: true,
         },
         vec![ForwardProxyRuntimeState {
-            proxy_key: proxy_url.clone(),
+            proxy_key: proxy_key.clone(),
             display_name: proxy_url.clone(),
             source: FORWARD_PROXY_SOURCE_MANUAL.to_string(),
             endpoint_url: Some(proxy_url.clone()),
@@ -1232,7 +1530,7 @@ fn forward_proxy_manager_v2_clamps_persisted_runtime_weight_on_startup() {
 
     let manual_runtime = manager
         .runtime
-        .get(&proxy_url)
+        .get(&proxy_key)
         .expect("manual runtime should exist");
     assert_eq!(manual_runtime.weight, FORWARD_PROXY_V2_WEIGHT_MAX);
 }
@@ -7600,12 +7898,13 @@ async fn forward_proxy_penalized_probe_skips_recording_when_shutdown_begins_mid_
     .await;
     let normalized_proxy =
         normalize_single_proxy_url(&proxy_url).expect("normalize forward proxy url");
+    let proxy_key = normalize_single_proxy_key(&proxy_url).expect("normalize forward proxy key");
     let state = test_state_with_openai_base(
         Url::parse("http://probe-target.example/").expect("valid upstream base url"),
     )
     .await;
     let endpoint = ForwardProxyEndpoint {
-        key: normalized_proxy.clone(),
+        key: proxy_key.clone(),
         source: FORWARD_PROXY_SOURCE_MANUAL.to_string(),
         display_name: normalized_proxy.clone(),
         protocol: ForwardProxyProtocol::Http,
@@ -7626,7 +7925,7 @@ async fn forward_proxy_penalized_probe_skips_recording_when_shutdown_begins_mid_
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     assert_eq!(
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await,
+        count_forward_proxy_probe_attempts(&state.pool, &proxy_key, None).await,
         0,
         "shutdown should stop an in-flight penalized probe without recording a probe attempt"
     );
@@ -8501,7 +8800,9 @@ async fn forward_proxy_live_stats_returns_fixed_24_hour_buckets_with_zero_fill()
     seed_forward_proxy_attempt_at(
         &state.pool,
         &manual_key,
-        now - ChronoDuration::hours(30),
+        Utc.timestamp_opt(range_start_epoch - 3600, 0)
+            .single()
+            .expect("valid out-of-range bucket timestamp"),
         true,
     )
     .await;
@@ -8664,7 +8965,8 @@ async fn forward_proxy_binding_nodes_preserve_direct_hourly_buckets() {
     )
     .await;
 
-    let nodes = build_forward_proxy_binding_nodes_response(state.as_ref())
+    let extra_proxy_keys = Vec::<String>::new();
+    let nodes = build_forward_proxy_binding_nodes_response(state.as_ref(), &extra_proxy_keys)
         .await
         .expect("build forward proxy binding nodes should succeed");
     let direct = nodes
@@ -36643,6 +36945,7 @@ async fn bootstrap_probe_round_skips_work_when_shutdown_is_in_progress() {
     let (proxy_url, proxy_handle) = spawn_test_forward_proxy_status(StatusCode::OK).await;
     let normalized_proxy =
         normalize_single_proxy_url(&proxy_url).expect("normalize forward proxy url");
+    let proxy_key = normalize_single_proxy_key(&proxy_url).expect("normalize forward proxy key");
     let state = test_state_with_openai_base(
         Url::parse("http://probe-target.example/").expect("valid upstream base url"),
     )
@@ -36652,7 +36955,7 @@ async fn bootstrap_probe_round_skips_work_when_shutdown_is_in_progress() {
     spawn_forward_proxy_bootstrap_probe_round(
         state.clone(),
         vec![ForwardProxyEndpoint {
-            key: normalized_proxy.clone(),
+            key: proxy_key.clone(),
             source: FORWARD_PROXY_SOURCE_MANUAL.to_string(),
             display_name: normalized_proxy.clone(),
             protocol: ForwardProxyProtocol::Http,
@@ -36663,8 +36966,7 @@ async fn bootstrap_probe_round_skips_work_when_shutdown_is_in_progress() {
     );
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let probe_count =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+    let probe_count = count_forward_proxy_probe_attempts(&state.pool, &proxy_key, None).await;
     assert_eq!(probe_count, 0);
 
     proxy_handle.abort();
@@ -36682,6 +36984,7 @@ async fn forward_proxy_bootstrap_probe_round_stops_mid_probe_when_shutdown_begin
     .await;
     let normalized_proxy =
         normalize_single_proxy_url(&proxy_url).expect("normalize forward proxy url");
+    let proxy_key = normalize_single_proxy_key(&proxy_url).expect("normalize forward proxy key");
     let state = test_state_with_openai_base(
         Url::parse("http://probe-target.example/").expect("valid upstream base url"),
     )
@@ -36690,7 +36993,7 @@ async fn forward_proxy_bootstrap_probe_round_stops_mid_probe_when_shutdown_begin
     spawn_forward_proxy_bootstrap_probe_round(
         state.clone(),
         vec![ForwardProxyEndpoint {
-            key: normalized_proxy.clone(),
+            key: proxy_key.clone(),
             source: FORWARD_PROXY_SOURCE_MANUAL.to_string(),
             display_name: normalized_proxy.clone(),
             protocol: ForwardProxyProtocol::Http,
@@ -36708,7 +37011,7 @@ async fn forward_proxy_bootstrap_probe_round_stops_mid_probe_when_shutdown_begin
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     assert_eq!(
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await,
+        count_forward_proxy_probe_attempts(&state.pool, &proxy_key, None).await,
         0,
         "shutdown should stop an in-flight bootstrap probe without recording a probe attempt"
     );

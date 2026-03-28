@@ -4,15 +4,13 @@
 
 - Status: 已完成
 - Created: 2026-03-26
-- Last: 2026-03-27
+- Last: 2026-03-28
 
 ## 背景
 
 - 当前 `/v1/*` 同时承载“号池路由”与“直连反向代理”两条执行链，导致缺少号池路由 key 的请求仍会回退到全局 `OPENAI_UPSTREAM_BASE_URL`。
 - forward proxy 当前仍保留 synthetic `direct` 节点，账号上下文请求并不保证一定经过真实代理节点。
 - 分组元数据目前只有共享备注，缺少“按分组硬绑定代理节点”的运行时约束，无法让同组账号稳定共用一个代理节点并在连续网络失败后切换。
-- 线上复核显示分组绑定弹窗仍暴露原始订阅地址，并且长标题与长列表会把节点卡片撑高、挤掉 footer，导致小窗口里无法完整看到选项与保存按钮。
-- 当前分组绑定列表没有显式 `Direct` 选项，也没有统一的协议类型标签，用户无法判断节点协议，也无法把直连作为硬绑定池的一部分。
 
 ## 目标 / 非目标
 
@@ -21,6 +19,8 @@
 - 保留 `/v1/*` 入口，但移除非号池直连执行路径；未命中号池路由 key 时统一返回 `401` JSON 错误。
 - 所有账号上下文上游请求都必须经过真实 forward proxy，默认使用全局自动路由。
 - 为已存在账号分组增加 `boundProxyKeys` 元数据，并在分组设置中支持多选绑定代理节点。
+- 冻结 `forwardProxyNodes[].key` / `groups[].boundProxyKeys` 的新语义：key 是稳定节点身份键，不受 share-link 备注名、fragment、`ps` 或非 ASCII 编码差异影响。
+- 当已绑定节点当前 inventory 不可选或缺失时，接口仍应尽量返回可读 `displayName` 供前端展示，而不是直接回退到原始 key。
 - 分组绑定多个节点时，组内共享“当前节点 + 连续网络失败计数”；连续 `3` 次网络失败后随机切到另一个已绑定节点，不使用权重。
 - 删除 legacy reverse-proxy 设置面与 `/api/settings` 中的 `proxy` 配置块，同时移除 `insertDirect` 前后端契约。
 - 分组绑定弹窗不得显示订阅地址或内部 key，只显示截断标题、协议类型与 24 小时请求趋势。
@@ -91,8 +91,11 @@
   - `source`
   - `penalized`
   - `selectable`
+- 新保存的 `boundProxyKeys` 必须写入稳定节点身份键；稳定键默认忽略纯展示字段，如 share-link fragment、`ps`、仅用于命名的 label，但保留协议、主机、端口、账号/UUID/密码与传输配置等真实连接身份字段。
+- `forwardProxyNodes[].displayName` 只负责展示，不参与绑定匹配；非 ASCII 名称必须按人类可读文本返回。
 - `PUT /api/pool/upstream-account-groups/:groupName` 支持更新 `note` 与 `boundProxyKeys`；若分组不存在实际账号，返回 `404`。
 - 已保存但当前 inventory 已不存在的 `boundProxyKeys` 会继续保留在分组 metadata 中；前端需标记为失效，运行时只使用仍然 `selectable=true` 的 key。
+- 历史旧 key 不做自动迁移；若当前 inventory 中找不到它们，接口应优先从 metadata history 恢复 `displayName` 并返回不可用节点，只有在完全没有展示元数据时才允许回退到原始 key。
 
 ### 分组绑定弹窗
 
@@ -119,14 +122,14 @@
 - Given 分组绑定了多个代理节点，When 当前节点连续发生 `3` 次 send/connect/handshake/stream-before-success 网络失败，Then 组内当前节点随机切换到另一个已绑定节点。
 - Given 分组绑定节点返回 `429/4xx/5xx`，When 请求完成，Then 组内当前节点不切换，连续网络失败计数被清零。
 - Given 分组保存了不存在或不可选的节点 key，When 运行时解析绑定集合，Then 仅使用仍然 `selectable=true` 的 key；若一个也没有，则本次账号尝试立即失败。
+- Given 用户已保存分组绑定，When 订阅刷新或节点备注名变化但真实连接身份不变，Then 刷新后 `boundProxyKeys` 仍稳定回显到同一节点。
+- Given 节点名称包含非 ASCII 字符，When 打开号池分组设置，Then 可选、不可选与历史失效三种状态都显示人类可读名称，且只在没有任何展示元数据时才回退到 key。
 - Given 打开号池分组设置，When 用户查看绑定节点列表，Then 页面不显示任何 `ss://`、`vless://`、`vmess://`、`trojan://`、`http://`、`https://` 原始订阅地址，只显示截断标题和协议类型。
 - Given 打开号池分组设置且存在 `9+` 个节点，When 用户浏览节点列表，Then footer 仍然可见，节点区内部可滚动，页面本身不需要额外滚动。
-- Given 打开号池分组设置，When 用户多选 `Direct` 与其他绑定节点并保存，Then 刷新后 `boundProxyKeys` 稳定回显 `__direct__` 与其他绑定 key，且 Storybook 至少覆盖：
-  - 长订阅 URI 不外露
-  - `9+` 节点时列表内滚动且 footer 可见
-  - `Direct` 与代理混选
+- Given 打开号池分组设置，When 用户多选绑定代理节点并保存，Then 刷新后 `boundProxyKeys` 稳定回显，且 Storybook 至少覆盖：
   - 无绑定自动路由
   - 硬绑定多节点
+  - 非 ASCII 名称绑定
   - 绑定节点缺失/不可用
 
 ## 质量门槛
@@ -145,12 +148,68 @@
   capture_scope: element
   sensitive_exclusion: N/A
   submission_gate: approved
+  story_id_or_title: Account Pool/Components/Upstream Account Group Settings Dialog/Automatic Routing
+  state: existing-group-auto-routing
+  evidence_note: 验证已存在分组在未绑定代理节点时保持自动路由文案，同时候选节点展示稳定身份键而不是原始 share-link 文本。
+  image:
+  ![Automatic routing group settings](./assets/group-settings-automatic-routing.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: approved
   story_id_or_title: Account Pool/Components/Upstream Account Group Settings Dialog/Hard Bound Multiple Nodes
-  state: direct-protocol-scroll-layout
-  evidence_note: 验证分组绑定弹窗在桌面宽度下展示 `Direct`、协议标签和右侧 24 小时趋势；长标题被截断，底部操作栏始终可见，节点列表保持独立滚动。
+  state: bound-multiple-nodes
+  evidence_note: 验证分组设置支持多选绑定代理节点，保存后的绑定项使用稳定键回显，同时展示 `Direct`、协议标签与 24 小时请求趋势对比。
   PR: include
   image:
   ![Bound multiple proxy nodes](./assets/group-settings-hard-bound-multiple-nodes.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Account Pool/Components/Upstream Account Group Settings Dialog/NonAsciiBindings
+  state: non-ascii-bound-and-restored
+  evidence_note: 验证中文节点名在可选与历史失效两种状态下都显示为人类可读名称，且失效节点保留不可用标记与空态文案。
+  image:
+  ![Non-ASCII bound proxy nodes](./assets/group-settings-non-ascii-bindings.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Account Pool/Components/Upstream Account Group Settings Dialog/Missing Or Unavailable Bindings
+  state: missing-bound-nodes
+  evidence_note: 验证已保存但当前 inventory 不可用或缺失的绑定节点会恢复展示名，并以 Unavailable 状态保留在列表中。
+  image:
+  ![Missing bound proxy nodes](./assets/group-settings-missing-or-unavailable-bindings.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Account Pool/Components/Upstream Account Group Settings Dialog/RefreshedDisplayNameStableBinding
+  state: refreshed-display-name-stable-binding
+  evidence_note: 验证订阅备注名刷新后，分组仍通过稳定键回显到同一节点，只更新展示名称。
+  image:
+  ![Stable binding after refreshed display name](./assets/group-settings-refreshed-stable-binding.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: viewport
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Account Pool/Pages/Upstream Account Create/Batch OAuth/Ready
+  state: existing-group-settings-from-create-page
+  evidence_note: 验证创建页里的真实分组设置入口已经和列表页使用同一套组件与数据契约，选中现有分组后会展示绑定代理节点与 24 小时趋势。
+  PR: include
+  image:
+  ![Batch OAuth ready group settings with bindings](./assets/batch-oauth-ready-group-settings-with-bindings.png)
 
 - source_type: storybook_canvas
   target_program: mock-only
@@ -159,25 +218,14 @@
   submission_gate: approved
   story_id_or_title: Account Pool/Components/Upstream Account Group Settings Dialog/Hard Bound Multiple Nodes
   state: request-trend-tooltip-details
-  evidence_note: 验证分组绑定节点右侧的 24 小时请求图会在悬浮时显示时间桶、Success、Failure 与 Total requests 详情，且 tooltip 与参考界面复用同一套 inline chart surface。
+  evidence_note: 验证分组绑定节点右侧的 24 小时请求图已复用参考界面的共享 inline chart tooltip，悬浮柱状图时会显示时间桶、Success、Failure 和 Total requests 详情。
   PR: include
   image:
   ![Bound proxy node request trend tooltip](./assets/group-settings-chart-tooltip.png)
-
-- source_type: storybook_canvas
-  target_program: mock-only
-  capture_scope: element
-  sensitive_exclusion: N/A
-  submission_gate: approved
-  story_id_or_title: Account Pool/Pages/Upstream Account Create/Batch OAuth/Ready
-  state: existing-group-settings-from-create-page
-  evidence_note: 验证创建页里的真实分组设置入口已经和列表页使用同一套组件与数据契约，选中现有分组后会展示 `Direct`、协议标签和绑定节点趋势，不再泄露原始订阅地址。
-  PR: include
-  image:
-  ![Batch OAuth ready group settings with bindings](./assets/batch-oauth-ready-group-settings-with-bindings.png)
 
 ## 变更记录
 
 - 2026-03-26: 创建 spec，冻结 `/v1/*` 新语义、分组绑定 forward proxy 的运行时规则、接口契约与视觉证据目标。
 - 2026-03-27: 视觉证据完成主人确认，spec 状态切换为已完成，并标记 PR 可复用截图。
 - 2026-03-27: 增补线上 follow-up：分组绑定弹窗改为协议标签展示 + 独立滚动布局，并在分组绑定路径恢复显式 `Direct` 选项；补齐桌面宽度约束与高密度卡片布局后，重新生成并批准复用 Storybook 证据。
+- 2026-03-28: 补充稳定节点身份键、非 ASCII 展示恢复与“历史旧 key 不自动迁移”的接口契约，并为分组设置弹窗追加对应测试与 Storybook 场景。
