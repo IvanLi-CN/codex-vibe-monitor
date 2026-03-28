@@ -297,6 +297,34 @@ describe('UpstreamAccountGroupNoteDialog', () => {
     expect(bodyText()).toContain('Missing')
   })
 
+  it('blocks saving when every selected binding is unavailable', () => {
+    renderDialog({
+      boundProxyKeys: ['fpn_unavailable_only'],
+      availableProxyNodes: [
+        {
+          key: 'fpn_unavailable_only',
+          source: 'missing',
+          displayName: 'Drain Node',
+          protocolLabel: 'VLESS',
+          penalized: false,
+          selectable: false,
+          last24h: [],
+        },
+      ],
+    })
+
+    expect(bodyText()).toContain(
+      'Select at least one available proxy node or clear bindings before saving.',
+    )
+
+    const saveButton = Array.from(document.querySelectorAll('button')).find((candidate) =>
+      /save/i.test(candidate.textContent ?? ''),
+    ) as HTMLButtonElement | undefined
+
+    expect(saveButton).toBeDefined()
+    expect(saveButton?.disabled).toBe(true)
+  })
+
   it('hides unrelated stale missing nodes from other groups', () => {
     renderDialog({
       boundProxyKeys: ['fpn_selected_node'],

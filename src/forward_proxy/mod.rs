@@ -262,7 +262,7 @@ pub(crate) fn canonical_forward_proxy_storage_key(
 ) -> String {
     endpoint_url
         .and_then(normalize_single_proxy_key)
-        .or_else(|| normalize_single_proxy_key(proxy_key))
+        .or_else(|| normalize_bound_proxy_key(proxy_key))
         .unwrap_or_else(|| proxy_key.to_string())
 }
 
@@ -2651,7 +2651,7 @@ impl ForwardProxyRouteScope {
             .into_iter()
             .map(|value| value.trim().to_string())
             .filter(|value| !value.is_empty())
-            .map(|value| normalize_single_proxy_key(&value).unwrap_or(value))
+            .map(|value| normalize_bound_proxy_key(&value).unwrap_or(value))
             .collect::<Vec<_>>();
         match (
             normalized_group_name,
@@ -2874,14 +2874,24 @@ impl ForwardProxyManager {
         let mut available = Vec::new();
         for key in bound_proxy_keys {
             let normalized = key.trim();
-            if normalized.is_empty() || !selectable.contains(normalized) || !seen.insert(normalized)
-            {
+            if normalized.is_empty() {
                 continue;
             }
-            available.push(normalized.to_string());
+            let canonical =
+                normalize_bound_proxy_key(normalized).unwrap_or_else(|| normalized.to_string());
+            if !selectable.contains(canonical.as_str()) || !seen.insert(canonical.clone()) {
+                continue;
+            }
+            available.push(canonical);
         }
         available.sort();
         available
+    }
+
+    pub(crate) fn has_selectable_bound_proxy_keys(&self, bound_proxy_keys: &[String]) -> bool {
+        !self
+            .selectable_bound_proxy_keys(bound_proxy_keys)
+            .is_empty()
     }
 
     fn choose_random_bound_proxy_key(

@@ -287,6 +287,15 @@ export function UpstreamAccountGroupNoteDialog({
     Boolean(onBoundProxyKeysChange) ||
     proxyOptions.length > 0 ||
     normalizedBoundProxyKeys.length > 0
+  const hasSelectableBoundProxySelection =
+    normalizedBoundProxyKeys.length === 0 ||
+    normalizedBoundProxyKeys.some((key) =>
+      proxyOptions.some((node) => node.key === key && node.selectable),
+    )
+  const blockingBindingSelection =
+    showProxyBindings &&
+    normalizedBoundProxyKeys.length > 0 &&
+    !hasSelectableBoundProxySelection
 
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => (!busy ? (nextOpen ? undefined : onClose()) : undefined)}>
@@ -344,6 +353,12 @@ export function UpstreamAccountGroupNoteDialog({
                 {normalizedBoundProxyKeys.length === 0 ? (
                   <div className="rounded-xl border border-dashed border-base-300/80 bg-base-100/65 px-3 py-2 text-xs text-base-content/65">
                     {proxyBindingsAutomaticLabel ?? 'No nodes bound. This group uses automatic routing.'}
+                  </div>
+                ) : null}
+
+                {blockingBindingSelection ? (
+                  <div className="rounded-xl border border-warning/35 bg-warning/10 px-3 py-2 text-xs text-warning">
+                    Select at least one available proxy node or clear bindings before saving.
                   </div>
                 ) : null}
 
@@ -450,7 +465,7 @@ export function UpstreamAccountGroupNoteDialog({
           <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
             {cancelLabel}
           </Button>
-          <Button type="button" onClick={onSave} disabled={busy}>
+          <Button type="button" onClick={onSave} disabled={busy || blockingBindingSelection}>
             {busy ? <AppIcon name="loading" className="mr-2 h-4 w-4 animate-spin" aria-hidden /> : null}
             {saveLabel}
           </Button>

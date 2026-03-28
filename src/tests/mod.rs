@@ -294,10 +294,24 @@ fn stable_proxy_keys_ignore_share_link_display_name_only_changes() {
     );
     assert_eq!(
         normalize_single_proxy_key(
+            "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443#东京节点"
+        ),
+        normalize_single_proxy_key(
+            "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?encryption=none&security=none&type=tcp#Tokyo%20Edge"
+        ),
+    );
+    assert_eq!(
+        normalize_single_proxy_key(
             "trojan://password@trojan.example.com:443?type=ws&path=%2Fws&host=cdn.trojan.example.com#东京节点"
         ),
         normalize_single_proxy_key(
             "trojan://password@trojan.example.com:443?host=cdn.trojan.example.com&path=%2Fws&type=ws#Tokyo%20Edge"
+        ),
+    );
+    assert_eq!(
+        normalize_single_proxy_key("trojan://password@trojan.example.com:443#东京节点"),
+        normalize_single_proxy_key(
+            "trojan://password@trojan.example.com:443?security=tls&type=tcp#Tokyo%20Edge"
         ),
     );
     assert_eq!(
@@ -307,6 +321,17 @@ fn stable_proxy_keys_ignore_share_link_display_name_only_changes() {
         normalize_single_proxy_key(
             "ss://2022-blake3-aes-128-gcm:%2B%2F%3D@127.0.0.1:8388#Tokyo%20Edge"
         ),
+    );
+
+    let stable_http_key =
+        normalize_single_proxy_key("http://127.0.0.1:7890").expect("stable http proxy key");
+    assert_eq!(
+        normalize_bound_proxy_key(&stable_http_key),
+        Some(stable_http_key.clone())
+    );
+    assert_eq!(
+        normalize_bound_proxy_key(FORWARD_PROXY_DIRECT_KEY),
+        Some(FORWARD_PROXY_DIRECT_KEY.to_string())
     );
 }
 
@@ -5069,6 +5094,42 @@ async fn create_api_key_account_rejects_invalid_upstream_base_url() {
         .expect_err("invalid upstream base url should fail");
     assert_eq!(err.0, StatusCode::BAD_REQUEST);
     assert_eq!(err.1, "upstreamBaseUrl must be a valid absolute URL");
+}
+
+#[tokio::test]
+async fn update_upstream_account_group_rejects_bindings_without_selectable_nodes() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "LATAM Key",
+        "sk-latam",
+        Some("latam"),
+        None,
+        None,
+    )
+    .await;
+
+    let payload: UpdateUpstreamAccountGroupRequest = serde_json::from_value(json!({
+        "boundProxyKeys": ["fpn_missing_legacy_vless"]
+    }))
+    .expect("deserialize update upstream account group request");
+    let err = update_upstream_account_group(
+        State(state),
+        HeaderMap::new(),
+        axum::extract::Path("latam".to_string()),
+        Json(payload),
+    )
+    .await
+    .expect_err("group binding without selectable nodes should fail");
+
+    assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        err.1,
+        "select at least one available proxy node or clear bindings before saving"
+    );
 }
 
 #[tokio::test]

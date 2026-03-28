@@ -22758,6 +22758,23 @@ fn normalize_single_proxy_key(raw: &str) -> Option<String> {
     parse_forward_proxy_entry(raw).map(|entry| entry.stable_key)
 }
 
+fn is_stable_forward_proxy_key(raw: &str) -> bool {
+    raw.strip_prefix("fpn_").is_some_and(|suffix| {
+        suffix.len() == 32 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
+    })
+}
+
+fn normalize_bound_proxy_key(raw: &str) -> Option<String> {
+    let normalized = raw.trim();
+    if normalized.is_empty() {
+        return None;
+    }
+    if normalized == FORWARD_PROXY_DIRECT_KEY || is_stable_forward_proxy_key(normalized) {
+        return Some(normalized.to_string());
+    }
+    normalize_single_proxy_key(normalized)
+}
+
 fn normalize_proxy_endpoints_from_urls(urls: &[String], source: &str) -> Vec<ForwardProxyEndpoint> {
     let mut seen = HashSet::new();
     let mut endpoints = Vec::new();
@@ -22875,7 +22892,7 @@ fn parse_vless_forward_proxy(candidate: &str) -> Option<ParsedForwardProxyEntry>
     let display_name =
         proxy_display_name_from_url(&parsed).unwrap_or_else(|| format!("{host}:{port}"));
     Some(ParsedForwardProxyEntry {
-        stable_key: stable_forward_proxy_key(&canonical_share_link_identity(&parsed)),
+        stable_key: stable_forward_proxy_key(&canonical_vless_share_link_identity(&parsed)),
         normalized,
         display_name,
         protocol: ForwardProxyProtocol::Vless,
@@ -22891,7 +22908,7 @@ fn parse_trojan_forward_proxy(candidate: &str) -> Option<ParsedForwardProxyEntry
     let display_name =
         proxy_display_name_from_url(&parsed).unwrap_or_else(|| format!("{host}:{port}"));
     Some(ParsedForwardProxyEntry {
-        stable_key: stable_forward_proxy_key(&canonical_share_link_identity(&parsed)),
+        stable_key: stable_forward_proxy_key(&canonical_trojan_share_link_identity(&parsed)),
         normalized,
         display_name,
         protocol: ForwardProxyProtocol::Trojan,
@@ -22941,6 +22958,172 @@ fn stable_forward_proxy_key(identity: &str) -> String {
         stable.push_str(&format!("{byte:02x}"));
     }
     stable
+}
+
+fn push_canonical_host_port(identity: &mut String, host: &str, port: u16) {
+    if host.contains(':') {
+        identity.push('[');
+        identity.push_str(host);
+        identity.push(']');
+    } else {
+        identity.push_str(host);
+    }
+    identity.push(':');
+    identity.push_str(&port.to_string());
+}
+
+fn normalized_query_value(query: &HashMap<String, String>, keys: &[&str]) -> Option<String> {
+    keys.iter()
+        .find_map(|key| query.get(*key))
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+fn normalized_query_ascii_lowercase(
+    query: &HashMap<String, String>,
+    keys: &[&str],
+) -> Option<String> {
+    normalized_query_value(query, keys).map(|value| value.to_ascii_lowercase())
+}
+
+fn canonical_stream_identity_from_url(url: &Url, default_security: Option<&str>) -> String {
+    let query = url.query_pairs().into_owned().collect::<HashMap<_, _>>();
+    let network = normalized_query_ascii_lowercase(&query, &["type", "net"])
+        .unwrap_or_else(|| "tcp".to_string());
+    let security = normalized_query_ascii_lowercase(&query, &["security"])
+        .or_else(|| default_security.map(|value| value.to_ascii_lowercase()))
+        .unwrap_or_else(|| "none".to_string());
+    let host = normalized_query_value(&query, &["host"])
+        .map(|value| value.to_ascii_lowercase())
+        .unwrap_or_default();
+    let path = normalized_query_value(&query, &["path"]).unwrap_or_default();
+    let service_name = normalized_query_value(&query, &["serviceName", "service_name"])
+        .or_else(|| (!path.is_empty()).then_some(path.clone()))
+        .unwrap_or_default();
+
+    let mut identity = format!("net={network}&security={security}");
+
+    match network.as_str() {
+        "ws" => {
+            identity.push_str("&host=");
+            identity.push_str(&host);
+            identity.push_str("&path=");
+            identity.push_str(&path);
+        }
+        "grpc" => {
+            identity.push_str("&serviceName=");
+            identity.push_str(&service_name);
+            identity.push_str("&multiMode=");
+            identity.push_str(if query_flag_true(&query, "multiMode") {
+                "true"
+            } else {
+                "false"
+            });
+        }
+        "httpupgrade" => {
+            identity.push_str("&host=");
+            identity.push_str(&host);
+            identity.push_str("&path=");
+            identity.push_str(&path);
+        }
+        _ => {}
+    }
+
+    match security.as_str() {
+        "tls" => {
+            let server_name = normalized_query_value(&query, &["sni"])
+                .map(|value| value.to_ascii_lowercase())
+                .or_else(|| (!host.is_empty()).then_some(host.clone()))
+                .or_else(|| url.host_str().map(|value| value.to_ascii_lowercase()))
+                .unwrap_or_default();
+            let fingerprint = normalized_query_ascii_lowercase(&query, &["fp", "fingerprint"])
+                .unwrap_or_default();
+            let alpn = normalized_query_value(&query, &["alpn"])
+                .map(|value| {
+                    parse_alpn_csv(&value)
+                        .into_iter()
+                        .map(|item| item.to_ascii_lowercase())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                })
+                .unwrap_or_default();
+            identity.push_str("&serverName=");
+            identity.push_str(&server_name);
+            identity.push_str("&allowInsecure=");
+            identity.push_str(
+                if query_flag_true(&query, "allowInsecure") || query_flag_true(&query, "insecure") {
+                    "true"
+                } else {
+                    "false"
+                },
+            );
+            identity.push_str("&fp=");
+            identity.push_str(&fingerprint);
+            identity.push_str("&alpn=");
+            identity.push_str(&alpn);
+        }
+        "reality" => {
+            let server_name = normalized_query_value(&query, &["sni"])
+                .map(|value| value.to_ascii_lowercase())
+                .or_else(|| (!host.is_empty()).then_some(host.clone()))
+                .or_else(|| url.host_str().map(|value| value.to_ascii_lowercase()))
+                .unwrap_or_default();
+            let fingerprint = normalized_query_ascii_lowercase(&query, &["fp", "fingerprint"])
+                .unwrap_or_default();
+            let public_key = normalized_query_value(&query, &["pbk"]).unwrap_or_default();
+            let short_id = normalized_query_value(&query, &["sid"]).unwrap_or_default();
+            let spider_x = normalized_query_value(&query, &["spx"]).unwrap_or_default();
+            identity.push_str("&serverName=");
+            identity.push_str(&server_name);
+            identity.push_str("&fp=");
+            identity.push_str(&fingerprint);
+            identity.push_str("&pbk=");
+            identity.push_str(&public_key);
+            identity.push_str("&sid=");
+            identity.push_str(&short_id);
+            identity.push_str("&spx=");
+            identity.push_str(&spider_x);
+        }
+        _ => {}
+    }
+
+    identity
+}
+
+fn canonical_vless_share_link_identity(url: &Url) -> String {
+    let user_id = percent_decode_once_lossy(url.username());
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    let port = url.port_or_known_default().unwrap_or_default();
+    let query = url.query_pairs().into_owned().collect::<HashMap<_, _>>();
+    let encryption = normalized_query_ascii_lowercase(&query, &["encryption"])
+        .unwrap_or_else(|| "none".to_string());
+    let flow = normalized_query_value(&query, &["flow"]).unwrap_or_default();
+
+    let mut identity = String::from("vless://");
+    identity.push_str(&user_id);
+    identity.push('@');
+    push_canonical_host_port(&mut identity, &host, port);
+    identity.push_str("?encryption=");
+    identity.push_str(&encryption);
+    identity.push_str("&flow=");
+    identity.push_str(&flow);
+    identity.push('&');
+    identity.push_str(&canonical_stream_identity_from_url(url, None));
+    identity
+}
+
+fn canonical_trojan_share_link_identity(url: &Url) -> String {
+    let password = percent_decode_once_lossy(url.username());
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    let port = url.port_or_known_default().unwrap_or_default();
+
+    let mut identity = String::from("trojan://");
+    identity.push_str(&password);
+    identity.push('@');
+    push_canonical_host_port(&mut identity, &host, port);
+    identity.push('?');
+    identity.push_str(&canonical_stream_identity_from_url(url, Some("tls")));
+    identity
 }
 
 fn canonical_share_link_identity(url: &Url) -> String {
