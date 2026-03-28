@@ -644,6 +644,7 @@ describe("settings normalization", () => {
                 key: "jp-edge-01",
                 source: "manual",
                 displayName: "JP Edge 01",
+                protocolLabel: "HTTP",
                 penalized: false,
                 selectable: true,
                 last24h: [
@@ -659,6 +660,7 @@ describe("settings normalization", () => {
                 key: "drain-node",
                 source: "manual",
                 displayName: "Drain Node",
+                protocolLabel: "http",
                 penalized: true,
                 selectable: false,
                 last24h: [],
@@ -681,7 +683,9 @@ describe("settings normalization", () => {
       "jp-edge-01",
     ]);
     expect(response.forwardProxyNodes ?? []).toHaveLength(2);
+    expect(response.forwardProxyNodes?.[0]?.protocolLabel).toBe("HTTP");
     expect(response.forwardProxyNodes?.[1]?.selectable).toBe(false);
+    expect(response.forwardProxyNodes?.[1]?.protocolLabel).toBe("HTTP");
     expect(response.forwardProxyNodes?.[0]?.last24h[0]?.successCount).toBe(5);
     expect(response.forwardProxyNodes?.[1]?.last24h).toEqual([]);
   });

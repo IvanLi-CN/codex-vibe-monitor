@@ -30,27 +30,99 @@ function buildRequestBuckets(seed: number, baseline: number, failuresEvery: numb
   })
 }
 
+const directBindingKey = '__direct__'
+const subscriptionSsKey =
+  'ss://2022-blake3-aes-128-gcm:fixture-passphrase@fixture-ss-edge.example.invalid:443#Ivan-hinet-ss2022-01KF87EBR50MM9JKM9R9BCA9WZ'
+const subscriptionVlessKey =
+  'vless://11111111-2222-3333-4444-555555555555@fixture-vless-edge.example.invalid:443?encryption=none&security=tls&type=ws&host=cdn.example.invalid&path=%2Ffixture&fp=chrome&pbk=fixture-public-key&sid=fixture-subscription-node#Ivan-hinet-vless-vision-01KF874741GBN6MQYD6TNMYDVS'
+
 const defaultForwardProxyNodes: ForwardProxyBindingNode[] = [
+  {
+    key: directBindingKey,
+    source: 'direct',
+    displayName: 'Direct',
+    protocolLabel: 'DIRECT',
+    penalized: false,
+    selectable: true,
+    last24h: buildRequestBuckets(0, 16, 8),
+  },
   {
     key: 'jp-edge-01',
     source: 'manual',
     displayName: 'JP Edge 01',
+    protocolLabel: 'HTTP',
     penalized: false,
     selectable: true,
     last24h: buildRequestBuckets(1, 18, 7),
   },
   {
-    key: 'sg-edge-02',
+    key: subscriptionSsKey,
     source: 'subscription',
-    displayName: 'SG Edge 02',
+    displayName: 'Ivan-hinet-ss2022-01KF87EBR50MM9JKM9R9BCA9WZ',
+    protocolLabel: 'SS',
     penalized: false,
     selectable: true,
     last24h: buildRequestBuckets(6, 12, 5),
   },
   {
+    key: subscriptionVlessKey,
+    source: 'subscription',
+    displayName: 'Ivan-hinet-vless-vision-01KF874741GBN6MQYD6TNMYDVS',
+    protocolLabel: 'VLESS',
+    penalized: false,
+    selectable: true,
+    last24h: buildRequestBuckets(8, 11, 4),
+  },
+  {
+    key: 'us-edge-03',
+    source: 'subscription',
+    displayName: 'US Edge 03',
+    protocolLabel: 'VLESS',
+    penalized: true,
+    selectable: true,
+    last24h: buildRequestBuckets(9, 10, 4),
+  },
+  {
+    key: 'la-edge-04',
+    source: 'subscription',
+    displayName: 'Ivan-la-vless-vision-01KHTAANPS3QM1DB4H8FEWMYEW',
+    protocolLabel: 'VLESS',
+    penalized: false,
+    selectable: true,
+    last24h: buildRequestBuckets(10, 9, 4),
+  },
+  {
+    key: 'hk-edge-05',
+    source: 'subscription',
+    displayName: 'Ivan-hkl-ss2022-01KFXRQH56RQ0SJTYQKS68TCYT',
+    protocolLabel: 'SS',
+    penalized: false,
+    selectable: true,
+    last24h: buildRequestBuckets(12, 10, 6),
+  },
+  {
+    key: 'ii-edge-06',
+    source: 'subscription',
+    displayName: 'Ivan-iijb-vless-vision-01KKNNTZ3DWEENGMWWF3F9NKT1H',
+    protocolLabel: 'VLESS',
+    penalized: false,
+    selectable: true,
+    last24h: buildRequestBuckets(13, 8, 5),
+  },
+  {
+    key: 'ap-edge-07',
+    source: 'subscription',
+    displayName: 'Ivan-ap-ss2022-01KHTAB3M332KVBZ0660GJ2PAR',
+    protocolLabel: 'SS',
+    penalized: false,
+    selectable: true,
+    last24h: buildRequestBuckets(14, 9, 5),
+  },
+  {
     key: 'drain-node',
     source: 'manual',
     displayName: 'Drain Node',
+    protocolLabel: 'HTTP',
     penalized: true,
     selectable: false,
     last24h: buildRequestBuckets(11, 6, 3),
@@ -145,7 +217,7 @@ export const AutomaticRouting: Story = {}
 
 export const HardBoundMultipleNodes: Story = {
   args: {
-    boundProxyKeys: ['jp-edge-01', 'sg-edge-02'],
+    boundProxyKeys: [directBindingKey, subscriptionVlessKey],
   },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
@@ -159,6 +231,10 @@ export const HardBoundMultipleNodes: Story = {
     await expect(within(document.body).getByText(/Success/i)).toBeInTheDocument()
     await expect(within(document.body).getByText(/Failure/i)).toBeInTheDocument()
     await expect(within(document.body).getByText(/Total requests/i)).toBeInTheDocument()
+    await expect(canvas.getByText(/^Direct$/i)).toBeInTheDocument()
+    await expect(canvas.getByText(/^DIRECT$/i)).toBeInTheDocument()
+    await expect(canvas.queryByText(/ss:\/\//i)).not.toBeInTheDocument()
+    await expect(canvas.getByTestId('proxy-binding-options-scroll-region').className).toContain('overflow-y-auto')
   },
 }
 

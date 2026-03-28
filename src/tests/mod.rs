@@ -8622,6 +8622,79 @@ async fn forward_proxy_live_stats_returns_fixed_24_hour_buckets_with_zero_fill()
 }
 
 #[tokio::test]
+async fn forward_proxy_binding_nodes_preserve_direct_hourly_buckets() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.example.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let _ = put_forward_proxy_settings(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(ForwardProxySettingsUpdateRequest {
+            proxy_urls: vec!["socks5://127.0.0.1:1080".to_string()],
+            subscription_urls: vec![],
+            subscription_update_interval_secs: 3600,
+            insert_direct: true,
+        }),
+    )
+    .await
+    .expect("put forward proxy settings should succeed");
+
+    let now = Utc::now();
+    seed_forward_proxy_attempt_at(
+        &state.pool,
+        FORWARD_PROXY_DIRECT_KEY,
+        now - ChronoDuration::hours(2) - ChronoDuration::minutes(5),
+        true,
+    )
+    .await;
+    seed_forward_proxy_attempt_at(
+        &state.pool,
+        FORWARD_PROXY_DIRECT_KEY,
+        now - ChronoDuration::hours(1) - ChronoDuration::minutes(11),
+        false,
+    )
+    .await;
+    seed_forward_proxy_attempt_at(
+        &state.pool,
+        FORWARD_PROXY_DIRECT_KEY,
+        now - ChronoDuration::hours(31),
+        true,
+    )
+    .await;
+
+    let nodes = build_forward_proxy_binding_nodes_response(state.as_ref())
+        .await
+        .expect("build forward proxy binding nodes should succeed");
+    let direct = nodes
+        .iter()
+        .find(|node| node.key == FORWARD_PROXY_DIRECT_KEY)
+        .expect("direct binding node should be present");
+
+    assert_eq!(direct.protocol_label, "DIRECT");
+    assert_eq!(direct.last24h.len(), 24);
+    assert_eq!(
+        direct
+            .last24h
+            .iter()
+            .map(|bucket| bucket.success_count)
+            .sum::<i64>(),
+        1,
+        "in-range direct successes should remain visible",
+    );
+    assert_eq!(
+        direct
+            .last24h
+            .iter()
+            .map(|bucket| bucket.failure_count)
+            .sum::<i64>(),
+        1,
+        "in-range direct failures should remain visible",
+    );
+}
+
+#[tokio::test]
 async fn forward_proxy_live_stats_returns_empty_nodes_when_no_endpoints_are_configured() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.example.com/").expect("valid upstream base url"),
