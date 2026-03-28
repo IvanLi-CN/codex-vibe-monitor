@@ -3349,6 +3349,7 @@ async fn compress_cold_proxy_raw_payload_lane(
     let cutoff = shanghai_local_cutoff_for_age_secs_string(config.proxy_raw_hot_secs);
     let prune_cutoff = shanghai_local_cutoff_string(config.invocation_success_full_days);
     let archive_cutoff = shanghai_local_cutoff_string(config.invocation_max_days);
+    let success_like_condition = invocation_status_is_success_like_sql("status", "error_message");
     let sql = format!(
         r#"
         SELECT id, occurred_at, {path_column} AS raw_path
@@ -3356,7 +3357,7 @@ async fn compress_cold_proxy_raw_payload_lane(
         WHERE occurred_at < ?1
           AND occurred_at >= ?2
           AND (
-            status != 'success'
+            NOT {success_like_condition}
             OR detail_level IS NULL
             OR detail_level != ?3
             OR occurred_at >= ?4
@@ -3373,6 +3374,7 @@ async fn compress_cold_proxy_raw_payload_lane(
         "#,
         path_column = field.path_column(),
         codec_column = field.codec_column(),
+        success_like_condition = success_like_condition,
     );
 
     let mut summary = RawCompressionPassSummary::default();
@@ -3715,23 +3717,26 @@ async fn prune_old_invocation_details(
     let prune_cutoff = shanghai_local_cutoff_string(config.invocation_success_full_days);
     let archive_cutoff = shanghai_local_cutoff_string(config.invocation_max_days);
     let spec = archive_table_spec("codex_invocations");
+    let success_like_condition = invocation_status_is_success_like_sql("status", "error_message");
     if dry_run {
-        let candidates = sqlx::query_as::<_, InvocationDetailPruneCandidate>(
+        let sql = format!(
             r#"
             SELECT id, occurred_at, request_raw_path, response_raw_path
             FROM codex_invocations
-            WHERE status = 'success'
+            WHERE {success_like_condition}
               AND detail_level = ?1
               AND occurred_at < ?2
               AND occurred_at >= ?3
             ORDER BY occurred_at ASC, id ASC
             "#,
-        )
-        .bind(DETAIL_LEVEL_FULL)
-        .bind(&prune_cutoff)
-        .bind(&archive_cutoff)
-        .fetch_all(pool)
-        .await?;
+            success_like_condition = success_like_condition,
+        );
+        let candidates = sqlx::query_as::<_, InvocationDetailPruneCandidate>(&sql)
+            .bind(DETAIL_LEVEL_FULL)
+            .bind(&prune_cutoff)
+            .bind(&archive_cutoff)
+            .fetch_all(pool)
+            .await?;
         let mut by_group: BTreeMap<String, usize> = BTreeMap::new();
         for candidate in &candidates {
             let group_key = invocation_archive_group_key(config, &candidate.occurred_at)?;
@@ -3767,24 +3772,26 @@ async fn prune_old_invocation_details(
     let mut raw_files_removed = 0usize;
 
     loop {
-        let candidates = sqlx::query_as::<_, InvocationDetailPruneCandidate>(
+        let sql = format!(
             r#"
             SELECT id, occurred_at, request_raw_path, response_raw_path
             FROM codex_invocations
-            WHERE status = 'success'
+            WHERE {success_like_condition}
               AND detail_level = ?1
               AND occurred_at < ?2
               AND occurred_at >= ?3
             ORDER BY occurred_at ASC, id ASC
             LIMIT ?4
             "#,
-        )
-        .bind(DETAIL_LEVEL_FULL)
-        .bind(&prune_cutoff)
-        .bind(&archive_cutoff)
-        .bind(config.retention_batch_rows as i64)
-        .fetch_all(pool)
-        .await?;
+            success_like_condition = success_like_condition,
+        );
+        let candidates = sqlx::query_as::<_, InvocationDetailPruneCandidate>(&sql)
+            .bind(DETAIL_LEVEL_FULL)
+            .bind(&prune_cutoff)
+            .bind(&archive_cutoff)
+            .bind(config.retention_batch_rows as i64)
+            .fetch_all(pool)
+            .await?;
 
         if candidates.is_empty() {
             break;
@@ -6936,7 +6943,8 @@ fn invocation_archive_target_needs_full_payload(target: &str) -> bool {
 
 fn invocation_archive_has_pruned_success_details(rows: &[InvocationHourlySourceRecord]) -> bool {
     rows.iter().any(|row| {
-        row.status.as_deref() == Some("success") && row.detail_level != DETAIL_LEVEL_FULL
+        row.detail_level != DETAIL_LEVEL_FULL
+            && invocation_status_is_success_like(row.status.as_deref(), None)
     })
 }
 
@@ -8031,6 +8039,23 @@ fn shanghai_local_cutoff_for_age_secs_string(age_secs: u64) -> String {
 
 fn shanghai_utc_cutoff_string(days: u64) -> String {
     format_naive(shanghai_retention_cutoff(days).naive_utc())
+}
+
+fn invocation_status_is_success_like(status: Option<&str>, error_message: Option<&str>) -> bool {
+    let normalized_status = status.map(str::trim).unwrap_or_default();
+    let error_message_empty = error_message.map(str::trim).is_none_or(str::is_empty);
+
+    normalized_status.eq_ignore_ascii_case("success")
+        || (normalized_status.eq_ignore_ascii_case("http_200") && error_message_empty)
+}
+
+fn invocation_status_is_success_like_sql(
+    status_column: &str,
+    error_message_column: &str,
+) -> String {
+    format!(
+        "(LOWER(TRIM(COALESCE({status_column}, ''))) = 'success' OR (LOWER(TRIM(COALESCE({status_column}, ''))) = 'http_200' AND TRIM(COALESCE({error_message_column}, '')) = ''))"
+    )
 }
 
 fn parse_shanghai_local_naive(value: &str) -> Result<NaiveDateTime> {
@@ -21160,18 +21185,6 @@ fn should_upgrade_to_upstream_response_failed(
     row: &FailureClassificationBackfillRow,
     existing_kind: Option<&str>,
 ) -> bool {
-    let status_norm = row
-        .status
-        .as_deref()
-        .unwrap_or_default()
-        .trim()
-        .to_ascii_lowercase();
-    let error_message_empty = row
-        .error_message
-        .as_deref()
-        .map(str::trim)
-        .is_none_or(str::is_empty);
-
     if matches!(
         existing_kind,
         Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED)
@@ -21184,10 +21197,9 @@ fn should_upgrade_to_upstream_response_failed(
         return false;
     }
 
-    status_norm == "success"
+    invocation_status_is_success_like(row.status.as_deref(), row.error_message.as_deref())
         || existing_kind.is_none()
         || existing_kind == Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
-        || (status_norm == "http_200" && error_message_empty)
 }
 
 fn parse_proxy_response_failure_from_persisted_record(
