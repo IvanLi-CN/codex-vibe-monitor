@@ -285,6 +285,23 @@ export const MissingOrUnavailableBindings: Story = {
   },
 }
 
+export const UnavailableOnlyBindingsBlockSave: Story = {
+  args: {
+    groupName: 'drain-only',
+    note: 'This group currently only references unavailable bindings and must not save until one selectable node is chosen.',
+    boundProxyKeys: ['fpn_0d1e2f3a4b5c6d30'],
+    availableProxyNodes: defaultForwardProxyNodes.filter((node) => node.key === 'fpn_0d1e2f3a4b5c6d30'),
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(
+      canvas.getByText(/select at least one available proxy node or clear bindings before saving\./i),
+    ).toBeInTheDocument()
+    await expect(canvas.getByRole('button', { name: /save group settings/i })).toBeDisabled()
+    await expect(canvas.getByText(/^Unavailable$/i)).toBeInTheDocument()
+  },
+}
+
 export const RefreshedDisplayNameStableBinding: Story = {
   args: {
     groupName: 'refresh-proof',

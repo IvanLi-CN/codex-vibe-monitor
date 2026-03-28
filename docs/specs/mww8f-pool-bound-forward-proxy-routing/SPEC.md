@@ -94,6 +94,7 @@
 - 新保存的 `boundProxyKeys` 必须写入稳定节点身份键；稳定键默认忽略纯展示字段，如 share-link fragment、`ps`、仅用于命名的 label，但保留协议、主机、端口、账号/UUID/密码与传输配置等真实连接身份字段。
 - `forwardProxyNodes[].displayName` 只负责展示，不参与绑定匹配；非 ASCII 名称必须按人类可读文本返回。
 - `PUT /api/pool/upstream-account-groups/:groupName` 支持更新 `note` 与 `boundProxyKeys`；若分组不存在实际账号，返回 `404`。
+- 当 `boundProxyKeys` 非空但当前选中集合里没有任何 `selectable=true` 的节点时，`PUT /api/pool/upstream-account-groups/:groupName` 必须返回 `400`，拒绝把“零可选节点”状态再次写回 metadata。
 - 已保存但当前 inventory 已不存在的 `boundProxyKeys` 会继续保留在分组 metadata 中；前端需标记为失效，运行时只使用仍然 `selectable=true` 的 key。
 - 历史旧 key 不做自动迁移；若当前 inventory 中找不到它们，接口应优先从 metadata history 恢复 `displayName` 并返回不可用节点，只有在完全没有展示元数据时才允许回退到原始 key。
 
@@ -103,6 +104,7 @@
 - 节点副信息只显示协议类型标签，不显示 `node.key`、订阅 URI 或其他原始地址。
 - 弹窗 body 与绑定节点列表必须拆成两层滚动：header/footer 固定，节点列表在 `9+` 个节点时独立滚动。
 - `Direct` 可与其他代理节点同时选中，并和其他已绑定节点一起参与组内连续网络失败后的随机切换。
+- 若当前选中的绑定节点全部处于 `Unavailable / Missing` 状态，弹窗必须显示明确 warning，并禁用保存按钮，直到用户清空绑定或重新选中至少一个可用节点。
 
 ### 账号上下文请求接入代理
 
@@ -124,6 +126,7 @@
 - Given 分组保存了不存在或不可选的节点 key，When 运行时解析绑定集合，Then 仅使用仍然 `selectable=true` 的 key；若一个也没有，则本次账号尝试立即失败。
 - Given 用户已保存分组绑定，When 订阅刷新或节点备注名变化但真实连接身份不变，Then 刷新后 `boundProxyKeys` 仍稳定回显到同一节点。
 - Given 节点名称包含非 ASCII 字符，When 打开号池分组设置，Then 可选、不可选与历史失效三种状态都显示人类可读名称，且只在没有任何展示元数据时才回退到 key。
+- Given 打开号池分组设置且当前选中的绑定节点全部不可用，When 用户尝试保存，Then UI 禁用保存按钮并显示 warning，后端接口也返回 `400` 拒绝该提交。
 - Given 打开号池分组设置，When 用户查看绑定节点列表，Then 页面不显示任何 `ss://`、`vless://`、`vmess://`、`trojan://`、`http://`、`https://` 原始订阅地址，只显示截断标题和协议类型。
 - Given 打开号池分组设置且存在 `9+` 个节点，When 用户浏览节点列表，Then footer 仍然可见，节点区内部可滚动，页面本身不需要额外滚动。
 - Given 打开号池分组设置，When 用户多选绑定代理节点并保存，Then 刷新后 `boundProxyKeys` 稳定回显，且 Storybook 至少覆盖：
@@ -193,6 +196,17 @@
   capture_scope: element
   sensitive_exclusion: N/A
   submission_gate: approved
+  story_id_or_title: Account Pool/Components/Upstream Account Group Settings Dialog/Unavailable Only Bindings Block Save
+  state: unavailable-only-bindings-block-save
+  evidence_note: 验证当前绑定集合只剩不可用节点时，弹窗会显示阻断 warning、保留不可用状态标签，并禁用保存按钮，避免把零可选节点状态再次保存到分组 metadata。
+  image:
+  ![Unavailable-only bindings block save](./assets/group-settings-unavailable-only-block-save.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: approved
   story_id_or_title: Account Pool/Components/Upstream Account Group Settings Dialog/RefreshedDisplayNameStableBinding
   state: refreshed-display-name-stable-binding
   evidence_note: 验证订阅备注名刷新后，分组仍通过稳定键回显到同一节点，只更新展示名称。
@@ -229,3 +243,4 @@
 - 2026-03-27: 视觉证据完成主人确认，spec 状态切换为已完成，并标记 PR 可复用截图。
 - 2026-03-27: 增补线上 follow-up：分组绑定弹窗改为协议标签展示 + 独立滚动布局，并在分组绑定路径恢复显式 `Direct` 选项；补齐桌面宽度约束与高密度卡片布局后，重新生成并批准复用 Storybook 证据。
 - 2026-03-28: 补充稳定节点身份键、非 ASCII 展示恢复与“历史旧 key 不自动迁移”的接口契约，并为分组设置弹窗追加对应测试与 Storybook 场景。
+- 2026-03-28: 补充 `vless/trojan` 稳定键回归的 follow-up：保存时拒绝“当前绑定集合零可选节点”的坏状态，并新增 Storybook 证据覆盖 warning + 保存按钮禁用场景。
