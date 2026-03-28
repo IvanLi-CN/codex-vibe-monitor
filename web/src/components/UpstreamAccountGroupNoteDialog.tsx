@@ -71,7 +71,7 @@ function toggleBoundProxyKey(keys: string[], target: string): string[] {
   return [...keys, target]
 }
 
-function buildMissingProxyOption(key: string, _missingLabel: string): GroupProxyOption {
+function buildMissingProxyOption(key: string): GroupProxyOption {
   const isDirect = key === '__direct__'
   return {
     key,
@@ -254,10 +254,7 @@ export function UpstreamAccountGroupNoteDialog({
     for (const key of normalizedBoundProxyKeys) {
       if (!availableByKey.has(key)) {
         options.push(
-          buildMissingProxyOption(
-            key,
-            proxyBindingsMissingLabel ?? 'Missing node',
-          ),
+          buildMissingProxyOption(key),
         )
       }
     }
