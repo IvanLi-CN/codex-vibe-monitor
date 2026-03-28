@@ -8664,10 +8664,6 @@ async fn forward_proxy_binding_nodes_preserve_direct_hourly_buckets() {
     )
     .await;
 
-    sync_hourly_rollups_from_live_tables(&state.pool)
-        .await
-        .expect("forward proxy attempt rollups should sync before binding response");
-
     let nodes = build_forward_proxy_binding_nodes_response(state.as_ref())
         .await
         .expect("build forward proxy binding nodes should succeed");
