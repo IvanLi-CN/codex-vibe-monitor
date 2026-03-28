@@ -2971,9 +2971,14 @@ async fn list_upstream_accounts_from_params(
     let groups = load_upstream_account_groups(&state.pool)
         .await
         .map_err(internal_error_tuple)?;
-    let forward_proxy_nodes = build_forward_proxy_binding_nodes_response(state.as_ref())
-        .await
-        .map_err(internal_error_tuple)?;
+    let bound_proxy_keys = groups
+        .iter()
+        .flat_map(|group| group.bound_proxy_keys.iter().cloned())
+        .collect::<Vec<_>>();
+    let forward_proxy_nodes =
+        build_forward_proxy_binding_nodes_response(state.as_ref(), &bound_proxy_keys)
+            .await
+            .map_err(internal_error_tuple)?;
     let has_ungrouped_accounts = has_ungrouped_upstream_accounts(&state.pool)
         .await
         .map_err(internal_error_tuple)?;

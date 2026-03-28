@@ -240,10 +240,14 @@ export function UpstreamAccountGroupNoteDialog({
   const normalizedBoundProxyKeys = normalizeBoundProxyKeys(boundProxyKeys)
   const proxyOptions = useMemo(() => {
     const available = Array.isArray(availableProxyNodes)
-      ? availableProxyNodes.map((node) => ({
-          ...node,
-          last24h: Array.isArray(node.last24h) ? node.last24h : [],
-        }))
+      ? availableProxyNodes
+          .filter(
+            (node) => node.source !== 'missing' || normalizedBoundProxyKeys.includes(node.key),
+          )
+          .map((node) => ({
+            ...node,
+            last24h: Array.isArray(node.last24h) ? node.last24h : [],
+          }))
       : []
     const availableByKey = new Map(available.map((node) => [node.key, node]))
     const options: GroupProxyOption[] = [...available]

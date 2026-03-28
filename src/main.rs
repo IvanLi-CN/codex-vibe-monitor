@@ -22754,12 +22754,16 @@ fn normalize_single_proxy_url(raw: &str) -> Option<String> {
     parse_forward_proxy_entry(raw).map(|entry| entry.normalized)
 }
 
+fn normalize_single_proxy_key(raw: &str) -> Option<String> {
+    parse_forward_proxy_entry(raw).map(|entry| entry.stable_key)
+}
+
 fn normalize_proxy_endpoints_from_urls(urls: &[String], source: &str) -> Vec<ForwardProxyEndpoint> {
     let mut seen = HashSet::new();
     let mut endpoints = Vec::new();
     for raw in urls {
         if let Some(parsed) = parse_forward_proxy_entry(raw) {
-            let key = parsed.normalized.clone();
+            let key = parsed.stable_key.clone();
             if !seen.insert(key.clone()) {
                 continue;
             }
@@ -22779,6 +22783,7 @@ fn normalize_proxy_endpoints_from_urls(urls: &[String], source: &str) -> Vec<For
 #[derive(Debug, Clone)]
 struct ParsedForwardProxyEntry {
     normalized: String,
+    stable_key: String,
     display_name: String,
     protocol: ForwardProxyProtocol,
     endpoint_url: Option<Url>,
@@ -22842,6 +22847,7 @@ fn parse_native_forward_proxy(candidate: &str) -> Option<ParsedForwardProxyEntry
     normalized.push_str(&port.to_string());
     let endpoint_url = Url::parse(&normalized).ok()?;
     Some(ParsedForwardProxyEntry {
+        stable_key: stable_forward_proxy_key(&normalized),
         normalized,
         display_name: format!("{host}:{port}"),
         protocol,
@@ -22853,6 +22859,7 @@ fn parse_vmess_forward_proxy(candidate: &str) -> Option<ParsedForwardProxyEntry>
     let normalized = normalize_share_link_scheme(candidate, "vmess")?;
     let parsed = parse_vmess_share_link(&normalized).ok()?;
     Some(ParsedForwardProxyEntry {
+        stable_key: stable_forward_proxy_key(&parsed.stable_identity()),
         normalized,
         display_name: parsed.display_name,
         protocol: ForwardProxyProtocol::Vmess,
@@ -22868,6 +22875,7 @@ fn parse_vless_forward_proxy(candidate: &str) -> Option<ParsedForwardProxyEntry>
     let display_name =
         proxy_display_name_from_url(&parsed).unwrap_or_else(|| format!("{host}:{port}"));
     Some(ParsedForwardProxyEntry {
+        stable_key: stable_forward_proxy_key(&canonical_share_link_identity(&parsed)),
         normalized,
         display_name,
         protocol: ForwardProxyProtocol::Vless,
@@ -22883,6 +22891,7 @@ fn parse_trojan_forward_proxy(candidate: &str) -> Option<ParsedForwardProxyEntry
     let display_name =
         proxy_display_name_from_url(&parsed).unwrap_or_else(|| format!("{host}:{port}"));
     Some(ParsedForwardProxyEntry {
+        stable_key: stable_forward_proxy_key(&canonical_share_link_identity(&parsed)),
         normalized,
         display_name,
         protocol: ForwardProxyProtocol::Trojan,
@@ -22894,6 +22903,10 @@ fn parse_shadowsocks_forward_proxy(candidate: &str) -> Option<ParsedForwardProxy
     let normalized = normalize_share_link_scheme(candidate, "ss")?;
     let parsed = parse_shadowsocks_share_link(&normalized).ok()?;
     Some(ParsedForwardProxyEntry {
+        stable_key: Url::parse(&normalized)
+            .ok()
+            .map(|url| stable_forward_proxy_key(&canonical_share_link_identity(&url)))
+            .unwrap_or_else(|| stable_forward_proxy_key(&parsed.stable_identity())),
         normalized,
         display_name: parsed.display_name,
         protocol: ForwardProxyProtocol::Shadowsocks,
@@ -22905,7 +22918,7 @@ fn proxy_display_name_from_url(url: &Url) -> Option<String> {
     if let Some(fragment) = url.fragment()
         && !fragment.trim().is_empty()
     {
-        return Some(fragment.to_string());
+        return Some(percent_decode_once_lossy(fragment));
     }
     let host = url.host_str()?;
     let port = url.port_or_known_default()?;
@@ -22919,6 +22932,61 @@ fn normalize_share_link_scheme(candidate: &str, scheme: &str) -> Option<String> 
         return None;
     }
     Some(normalized)
+}
+
+fn stable_forward_proxy_key(identity: &str) -> String {
+    let digest = Sha256::digest(identity.as_bytes());
+    let mut stable = String::from("fpn_");
+    for byte in digest.iter().take(16) {
+        stable.push_str(&format!("{byte:02x}"));
+    }
+    stable
+}
+
+fn canonical_share_link_identity(url: &Url) -> String {
+    let scheme = url.scheme().to_ascii_lowercase();
+    let username = percent_decode_once_lossy(url.username());
+    let password = url.password().map(percent_decode_once_lossy);
+    let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
+    let port = url.port_or_known_default().unwrap_or_default();
+    let path = url.path();
+    let mut query_pairs = url
+        .query_pairs()
+        .map(|(key, value)| (key.into_owned(), value.into_owned()))
+        .collect::<Vec<_>>();
+    query_pairs.sort();
+    let query = query_pairs
+        .into_iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join("&");
+
+    let mut identity = format!("{scheme}://");
+    if !username.is_empty() {
+        identity.push_str(&username);
+        if let Some(password) = password {
+            identity.push(':');
+            identity.push_str(&password);
+        }
+        identity.push('@');
+    }
+    if host.contains(':') {
+        identity.push('[');
+        identity.push_str(&host);
+        identity.push(']');
+    } else {
+        identity.push_str(&host);
+    }
+    identity.push(':');
+    identity.push_str(&port.to_string());
+    if !path.is_empty() && path != "/" {
+        identity.push_str(path);
+    }
+    if !query.is_empty() {
+        identity.push('?');
+        identity.push_str(&query);
+    }
+    identity
 }
 
 fn decode_base64_any(raw: &str) -> Option<Vec<u8>> {
@@ -22960,7 +23028,63 @@ struct VmessShareLink {
     sni: Option<String>,
     alpn: Option<Vec<String>>,
     fingerprint: Option<String>,
+    header_type: Option<String>,
+    service_name: Option<String>,
+    authority: Option<String>,
+    mode: Option<String>,
+    seed: Option<String>,
     display_name: String,
+}
+
+impl VmessShareLink {
+    fn stable_identity(&self) -> String {
+        let alpn = self
+            .alpn
+            .as_ref()
+            .map(|items| {
+                items
+                    .iter()
+                    .map(|item| item.to_ascii_lowercase())
+                    .collect::<Vec<_>>()
+                    .join(",")
+            })
+            .unwrap_or_default();
+        format!(
+            "vmess://{}@{}:{}?aid={}&security={}&net={}&host={}&path={}&tls={}&sni={}&alpn={}&fp={}&type={}&serviceName={}&authority={}&mode={}&seed={}",
+            self.id,
+            self.address.to_ascii_lowercase(),
+            self.port,
+            self.alter_id,
+            self.security.to_ascii_lowercase(),
+            self.network.to_ascii_lowercase(),
+            self.host
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase(),
+            self.path.as_deref().unwrap_or_default(),
+            self.tls_mode
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase(),
+            self.sni.as_deref().unwrap_or_default().to_ascii_lowercase(),
+            alpn,
+            self.fingerprint
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase(),
+            self.header_type
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase(),
+            self.service_name.as_deref().unwrap_or_default(),
+            self.authority.as_deref().unwrap_or_default(),
+            self.mode
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase(),
+            self.seed.as_deref().unwrap_or_default(),
+        )
+    }
 }
 
 fn parse_vmess_share_link(raw: &str) -> Result<VmessShareLink> {
@@ -23038,6 +23162,36 @@ fn parse_vmess_share_link(raw: &str) -> Result<VmessShareLink> {
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned);
+    let header_type = value
+        .get("type")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let service_name = value
+        .get("serviceName")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let authority = value
+        .get("authority")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let mode = value
+        .get("mode")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
+    let seed = value
+        .get("seed")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned);
     let display_name = value
         .get("ps")
         .and_then(Value::as_str)
@@ -23059,6 +23213,11 @@ fn parse_vmess_share_link(raw: &str) -> Result<VmessShareLink> {
         sni,
         alpn,
         fingerprint,
+        header_type,
+        service_name,
+        authority,
+        mode,
+        seed,
         display_name,
     })
 }
@@ -23086,6 +23245,18 @@ struct ShadowsocksShareLink {
     host: String,
     port: u16,
     display_name: String,
+}
+
+impl ShadowsocksShareLink {
+    fn stable_identity(&self) -> String {
+        format!(
+            "ss://{}:{}@{}:{}",
+            self.method.to_ascii_lowercase(),
+            self.password,
+            self.host.to_ascii_lowercase(),
+            self.port,
+        )
+    }
 }
 
 fn parse_shadowsocks_share_link(raw: &str) -> Result<ShadowsocksShareLink> {

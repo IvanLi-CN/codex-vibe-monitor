@@ -657,11 +657,11 @@ describe("settings normalization", () => {
                 ],
               },
               {
-                key: "drain-node",
-                source: "manual",
-                displayName: "Drain Node",
-                protocolLabel: "http",
-                penalized: true,
+                key: "fpn_deadbeefcafebabe",
+                source: "missing",
+                displayName: "历史东京中继",
+                protocolLabel: "unknown",
+                penalized: false,
                 selectable: false,
                 last24h: [],
               },
@@ -685,7 +685,8 @@ describe("settings normalization", () => {
     expect(response.forwardProxyNodes ?? []).toHaveLength(2);
     expect(response.forwardProxyNodes?.[0]?.protocolLabel).toBe("HTTP");
     expect(response.forwardProxyNodes?.[1]?.selectable).toBe(false);
-    expect(response.forwardProxyNodes?.[1]?.protocolLabel).toBe("HTTP");
+    expect(response.forwardProxyNodes?.[1]?.protocolLabel).toBe("UNKNOWN");
+    expect(response.forwardProxyNodes?.[1]?.displayName).toBe("历史东京中继");
     expect(response.forwardProxyNodes?.[0]?.last24h[0]?.successCount).toBe(5);
     expect(response.forwardProxyNodes?.[1]?.last24h).toEqual([]);
   });
