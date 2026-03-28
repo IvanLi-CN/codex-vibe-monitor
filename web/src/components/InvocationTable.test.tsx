@@ -1,6 +1,6 @@
 /** @vitest-environment jsdom */
 import { renderToStaticMarkup } from 'react-dom/server'
-import { act } from 'react'
+import { act, type ComponentProps } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -105,12 +105,15 @@ function renderTable(records: ApiInvocation[]) {
   )
 }
 
-async function renderInteractiveTable(records: ApiInvocation[]) {
+async function renderInteractiveTable(
+  records: ApiInvocation[],
+  props: Partial<ComponentProps<typeof InvocationTable>> = {},
+) {
   await act(async () => {
     root?.render(
       <MemoryRouter>
         <I18nProvider>
-          <InvocationTable records={records} isLoading={false} error={null} />
+          <InvocationTable records={records} isLoading={false} error={null} {...props} />
         </I18nProvider>
       </MemoryRouter>,
     )
@@ -177,15 +180,6 @@ function createDeferredPromise<T>() {
     reject = innerReject
   })
   return { promise, resolve, reject }
-}
-
-function findExactTextElements(text: string, root: ParentNode = document.body) {
-  return Array.from(root.querySelectorAll('*')).filter(
-    (candidate) =>
-      candidate instanceof HTMLElement &&
-      candidate.children.length === 0 &&
-      candidate.textContent?.trim() === text,
-  ) as HTMLElement[]
 }
 
 describe('formatProxyWeightDelta', () => {
@@ -1940,171 +1934,36 @@ describe('InvocationTable', () => {
     vi.useRealTimers()
   })
 
-  it('opens the current-page upstream account drawer when clicking a pool account name', async () => {
-    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue({
-      id: 42,
-      kind: 'oauth_codex',
-      provider: 'openai',
-      displayName: 'Pool Alpha',
-      groupName: 'group-a',
-      isMother: true,
-      status: 'active',
-      enabled: true,
-      email: 'pool-alpha@example.com',
-      chatgptAccountId: 'org_pool_alpha',
-      chatgptUserId: 'user_pool_alpha',
-      planType: 'team',
-      maskedApiKey: null,
-      lastSyncedAt: '2026-03-16T09:10:00Z',
-      lastSuccessfulSyncAt: '2026-03-16T09:08:00Z',
-      lastError: null,
-      lastErrorAt: null,
-      tokenExpiresAt: '2026-03-16T12:00:00Z',
-      lastRefreshedAt: '2026-03-16T09:09:00Z',
-      primaryWindow: {
-        usedPercent: 22,
-        usedText: '22 / 100',
-        limitText: '100 requests',
-        resetsAt: '2026-03-16T10:00:00Z',
-        windowDurationMins: 300,
-      },
-      secondaryWindow: {
-        usedPercent: 36,
-        usedText: '36 / 100',
-        limitText: '100 requests',
-        resetsAt: '2026-03-17T00:00:00Z',
-        windowDurationMins: 10080,
-      },
-      credits: null,
-      localLimits: null,
-      duplicateInfo: null,
-      tags: [],
-      effectiveRoutingRule: {
-        guardEnabled: false,
-        lookbackHours: null,
-        maxConversations: null,
-        allowCutOut: true,
-        allowCutIn: true,
-        sourceTagIds: [],
-        sourceTagNames: [],
-        guardRules: [],
-      },
-      note: null,
-      upstreamBaseUrl: null,
-      history: [],
-    })
+  it('forwards pool account clicks to the shared upstream account controller', async () => {
+    const onOpenUpstreamAccount = vi.fn()
 
-    await renderInteractiveTable([
-      {
-        id: 41,
-        invokeId: 'pool-drawer-open',
-        occurredAt: '2026-03-16T09:10:30Z',
-        createdAt: '2026-03-16T09:10:30Z',
-        source: 'proxy',
-        routeMode: 'pool',
-        upstreamAccountId: 42,
-        upstreamAccountName: 'Pool Alpha',
-        proxyDisplayName: 'relay-alpha',
-        responseContentEncoding: 'gzip',
-        endpoint: '/v1/responses',
-        model: 'gpt-5.4',
-        status: 'success',
-        totalTokens: 512,
-        tUpstreamTtfbMs: 104.4,
-        tTotalMs: 702.3,
-      },
-    ])
-
-    const trigger = Array.from(document.querySelectorAll('button')).find((button) => button.textContent?.includes('Pool Alpha'))
-    expect(trigger).toBeTruthy()
-
-    await act(async () => {
-      trigger?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      await Promise.resolve()
-    })
-
-    expect(apiMocks.fetchUpstreamAccountDetail).toHaveBeenCalledWith(42)
-    expect(document.body.textContent).toContain('上游账号')
-    expect(document.body.textContent).toContain('Pool Alpha')
-    expect(document.body.textContent).toContain('去号池查看完整详情')
-    expect(document.body.textContent).toContain('22 / 100')
-  })
-
-  it('renders missing secondary windows as dash placeholders inside the current-page account drawer', async () => {
-    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue({
-      id: 42,
-      kind: 'oauth_codex',
-      provider: 'openai',
-      displayName: 'Pool Alpha',
-      groupName: 'group-a',
-      isMother: true,
-      status: 'active',
-      enabled: true,
-      email: 'pool-alpha@example.com',
-      chatgptAccountId: 'org_pool_alpha',
-      chatgptUserId: 'user_pool_alpha',
-      planType: 'team',
-      maskedApiKey: null,
-      lastSyncedAt: '2026-03-16T09:10:00Z',
-      lastSuccessfulSyncAt: '2026-03-16T09:08:00Z',
-      lastError: null,
-      lastErrorAt: null,
-      tokenExpiresAt: '2026-03-16T12:00:00Z',
-      lastRefreshedAt: '2026-03-16T09:09:00Z',
-      primaryWindow: {
-        usedPercent: 22,
-        usedText: '22 / 100',
-        limitText: '100 requests',
-        resetsAt: '2026-03-16T10:00:00Z',
-        windowDurationMins: 300,
-      },
-      secondaryWindow: null,
-      credits: null,
-      localLimits: null,
-      duplicateInfo: null,
-      tags: [],
-      effectiveRoutingRule: {
-        guardEnabled: false,
-        lookbackHours: null,
-        maxConversations: null,
-        allowCutOut: true,
-        allowCutIn: true,
-        sourceTagIds: [],
-        sourceTagNames: [],
-        guardRules: [],
-      },
-      note: null,
-      upstreamBaseUrl: null,
-      history: [
+    await renderInteractiveTable(
+      [
         {
-          capturedAt: '2026-03-16T08:00:00Z',
-          primaryUsedPercent: 22,
-          secondaryUsedPercent: null,
-          creditsBalance: null,
+          id: 41,
+          invokeId: 'pool-drawer-open',
+          occurredAt: '2026-03-16T09:10:30Z',
+          createdAt: '2026-03-16T09:10:30Z',
+          source: 'proxy',
+          routeMode: 'pool',
+          upstreamAccountId: 42,
+          upstreamAccountName: 'Pool Alpha',
+          proxyDisplayName: 'relay-alpha',
+          responseContentEncoding: 'gzip',
+          endpoint: '/v1/responses',
+          model: 'gpt-5.4',
+          status: 'success',
+          totalTokens: 512,
+          tUpstreamTtfbMs: 104.4,
+          tTotalMs: 702.3,
         },
       ],
-    })
+      { onOpenUpstreamAccount },
+    )
 
-    await renderInteractiveTable([
-      {
-        id: 41,
-        invokeId: 'pool-drawer-missing-window',
-        occurredAt: '2026-03-16T09:10:30Z',
-        createdAt: '2026-03-16T09:10:30Z',
-        source: 'proxy',
-        routeMode: 'pool',
-        upstreamAccountId: 42,
-        upstreamAccountName: 'Pool Alpha',
-        proxyDisplayName: 'relay-alpha',
-        responseContentEncoding: 'gzip',
-        endpoint: '/v1/responses',
-        model: 'gpt-5.4',
-        status: 'success',
-        totalTokens: 256,
-      },
-    ])
-
-    const trigger = Array.from(document.querySelectorAll('button')).find((button) => button.textContent?.includes('Pool Alpha'))
+    const trigger = Array.from(document.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Pool Alpha'),
+    )
     expect(trigger).toBeTruthy()
 
     await act(async () => {
@@ -2112,57 +1971,14 @@ describe('InvocationTable', () => {
       await Promise.resolve()
     })
 
-    expect(document.body.textContent).toContain('22 / 100')
-    expect(document.body.textContent).not.toContain('还没有额度历史')
-    expect(findExactTextElements('-', document.body).length).toBeGreaterThanOrEqual(4)
+    expect(onOpenUpstreamAccount).toHaveBeenCalledWith(42, 'Pool Alpha')
   })
 
-  it('closes the current-page upstream account drawer when clicking the backdrop or gutter', async () => {
-    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue({
-      id: 42,
-      kind: 'oauth_codex',
-      provider: 'openai',
-      displayName: 'Pool Alpha',
-      groupName: 'group-a',
-      isMother: false,
-      status: 'active',
-      enabled: true,
-      email: 'pool-alpha@example.com',
-      chatgptAccountId: 'org_pool_alpha',
-      chatgptUserId: 'user_pool_alpha',
-      planType: 'team',
-      maskedApiKey: null,
-      lastSyncedAt: '2026-03-16T09:10:00Z',
-      lastSuccessfulSyncAt: '2026-03-16T09:08:00Z',
-      lastError: null,
-      lastErrorAt: null,
-      tokenExpiresAt: '2026-03-16T12:00:00Z',
-      lastRefreshedAt: '2026-03-16T09:09:00Z',
-      primaryWindow: null,
-      secondaryWindow: null,
-      credits: null,
-      localLimits: null,
-      duplicateInfo: null,
-      tags: [],
-      effectiveRoutingRule: {
-        guardEnabled: false,
-        lookbackHours: null,
-        maxConversations: null,
-        allowCutOut: true,
-        allowCutIn: true,
-        sourceTagIds: [],
-        sourceTagNames: [],
-        guardRules: [],
-      },
-      note: null,
-      upstreamBaseUrl: null,
-      history: [],
-    })
-
+  it('does not render a local account detail drawer after clicking a pool account name', async () => {
     await renderInteractiveTable([
       {
         id: 41,
-        invokeId: 'pool-drawer-close',
+        invokeId: 'pool-no-local-drawer',
         occurredAt: '2026-03-16T09:10:30Z',
         createdAt: '2026-03-16T09:10:30Z',
         source: 'proxy',
@@ -2177,138 +1993,18 @@ describe('InvocationTable', () => {
       },
     ])
 
-    const trigger = Array.from(document.querySelectorAll('button')).find((button) => button.textContent?.includes('Pool Alpha'))
+    const trigger = Array.from(document.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Pool Alpha'),
+    )
     expect(trigger).toBeTruthy()
 
     await act(async () => {
       trigger?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      await Promise.resolve()
-    })
-
-    const backdrop = document.body.querySelector('.drawer-shell')?.parentElement?.previousElementSibling
-    expect(backdrop).toBeInstanceOf(HTMLElement)
-
-    await act(async () => {
-      backdrop?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
       await Promise.resolve()
     })
 
     expect(document.body.querySelector('[role="dialog"]')).toBeNull()
-
-    await act(async () => {
-      trigger?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      await Promise.resolve()
-    })
-
-    const gutter = document.body.querySelector('.drawer-shell')?.parentElement
-    expect(gutter).toBeInstanceOf(HTMLElement)
-
-    await act(async () => {
-      gutter?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      await Promise.resolve()
-    })
-
-    expect(document.body.querySelector('[role="dialog"]')).toBeNull()
-  })
-
-  it('keeps tab interactions inside the current-page account drawer and resets to overview after reopen', async () => {
-    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue({
-      id: 42,
-      kind: 'oauth_codex',
-      provider: 'openai',
-      displayName: 'Pool Alpha',
-      groupName: 'group-a',
-      isMother: true,
-      status: 'active',
-      enabled: true,
-      email: 'pool-alpha@example.com',
-      chatgptAccountId: 'org_pool_alpha',
-      chatgptUserId: 'user_pool_alpha',
-      planType: 'team',
-      maskedApiKey: null,
-      lastSyncedAt: '2026-03-16T09:10:00Z',
-      lastSuccessfulSyncAt: '2026-03-16T09:08:00Z',
-      lastError: 'Needs reauth follow-up',
-      lastErrorAt: '2026-03-16T09:11:00Z',
-      tokenExpiresAt: '2026-03-16T12:00:00Z',
-      lastRefreshedAt: '2026-03-16T09:09:00Z',
-      primaryWindow: null,
-      secondaryWindow: null,
-      credits: null,
-      localLimits: null,
-      duplicateInfo: null,
-      tags: [],
-      effectiveRoutingRule: {
-        guardEnabled: false,
-        lookbackHours: null,
-        maxConversations: null,
-        allowCutOut: true,
-        allowCutIn: true,
-        sourceTagIds: [],
-        sourceTagNames: [],
-        guardRules: [],
-      },
-      note: null,
-      upstreamBaseUrl: null,
-      history: [],
-    })
-
-    await renderInteractiveTable([
-      {
-        id: 41,
-        invokeId: 'pool-drawer-tabs',
-        occurredAt: '2026-03-16T09:10:30Z',
-        createdAt: '2026-03-16T09:10:30Z',
-        source: 'proxy',
-        routeMode: 'pool',
-        upstreamAccountId: 42,
-        upstreamAccountName: 'Pool Alpha',
-        proxyDisplayName: 'relay-alpha',
-        responseContentEncoding: 'gzip',
-        endpoint: '/v1/responses',
-        model: 'gpt-5.4',
-        status: 'success',
-      },
-    ])
-
-    const trigger = Array.from(document.querySelectorAll('button')).find((button) => button.textContent?.includes('Pool Alpha'))
-    expect(trigger).toBeTruthy()
-
-    await act(async () => {
-      trigger?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      await Promise.resolve()
-    })
-
-    const healthTab = Array.from(document.querySelectorAll('[role="tab"]')).find((tab) =>
-      tab.textContent?.includes('健康'),
-    )
-    expect(healthTab).toBeInstanceOf(HTMLButtonElement)
-
-    await act(async () => {
-      healthTab?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      await Promise.resolve()
-    })
-
-    expect(document.body.querySelector('[role="dialog"]')).not.toBeNull()
-    expect(document.body.textContent).toContain('Needs reauth follow-up')
-
-    const backdrop = document.body.querySelector('.drawer-shell')?.parentElement?.previousElementSibling
-    await act(async () => {
-      backdrop?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      await Promise.resolve()
-    })
-
-    await act(async () => {
-      trigger?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      await Promise.resolve()
-    })
-
-    const overviewTab = Array.from(document.querySelectorAll('[role="tab"]')).find((tab) =>
-      tab.textContent?.includes('概览'),
-    )
-    expect(overviewTab?.getAttribute('aria-selected')).toBe('true')
-    expect(document.body.textContent).toContain('最近成功同步')
-    expect(document.body.textContent).not.toContain('Needs reauth follow-up')
+    expect(document.body.textContent).not.toContain('去号池查看完整详情')
   })
 
   it('keeps structured-only metadata out of summary rows', () => {

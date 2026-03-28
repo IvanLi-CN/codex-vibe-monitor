@@ -10,7 +10,6 @@ import {
 import { resolveInvocationDisplayStatus } from '../lib/invocationStatus'
 import { useTranslation } from '../i18n'
 import type { TranslationKey } from '../i18n'
-import { InvocationAccountDetailDrawer } from './InvocationAccountDetailDrawer'
 import { Alert } from './ui/alert'
 import { Badge } from './ui/badge'
 import { Spinner } from './ui/spinner'
@@ -30,6 +29,7 @@ interface InvocationTableProps {
   isLoading: boolean
   error?: string | null
   emptyLabel?: string
+  onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void
 }
 
 type StatusMeta = {
@@ -106,12 +106,16 @@ interface InvocationRowViewModel {
   timingPairs: Array<{ label: string; value: string }>
 }
 
-export function InvocationTable({ records, isLoading, error, emptyLabel }: InvocationTableProps) {
+export function InvocationTable({
+  records,
+  isLoading,
+  error,
+  emptyLabel,
+  onOpenUpstreamAccount,
+}: InvocationTableProps) {
   const { t, locale } = useTranslation()
   const localeTag = locale === 'zh' ? 'zh-CN' : 'en-US'
   const [expandedId, setExpandedId] = useState<string | null>(null)
-  const [drawerAccountId, setDrawerAccountId] = useState<number | null>(null)
-  const [drawerAccountLabel, setDrawerAccountLabel] = useState<string | null>(null)
   const [nowMs, setNowMs] = useState(() => Date.now())
   const [isXlUp, setIsXlUp] = useState(() => {
     if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
@@ -139,13 +143,7 @@ export function InvocationTable({ records, isLoading, error, emptyLabel }: Invoc
 
   const openAccountDrawer = (accountId: number | null, accountLabel: string) => {
     if (accountId == null) return
-    setDrawerAccountId(accountId)
-    setDrawerAccountLabel(accountLabel)
-  }
-
-  const closeAccountDrawer = () => {
-    setDrawerAccountId(null)
-    setDrawerAccountLabel(null)
+    onOpenUpstreamAccount?.(accountId, accountLabel)
   }
 
   const renderAccountValue = useCallback(
@@ -183,7 +181,7 @@ export function InvocationTable({ records, isLoading, error, emptyLabel }: Invoc
         </button>
       )
     },
-    [],
+    [onOpenUpstreamAccount],
   )
 
   useEffect(() => {
@@ -653,12 +651,6 @@ export function InvocationTable({ records, isLoading, error, emptyLabel }: Invoc
           </table>
         </div>
       </div>
-      <InvocationAccountDetailDrawer
-        open={drawerAccountId != null}
-        accountId={drawerAccountId}
-        accountLabel={drawerAccountLabel}
-        onClose={closeAccountDrawer}
-      />
     </div>
   )
 }

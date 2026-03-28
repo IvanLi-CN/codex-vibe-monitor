@@ -1,6 +1,5 @@
 import { Fragment, type ReactNode, useEffect, useMemo, useState } from 'react'
 import { AppIcon } from './AppIcon'
-import { InvocationAccountDetailDrawer } from './InvocationAccountDetailDrawer'
 import {
   FALLBACK_CELL,
   InvocationExpandedDetails,
@@ -24,6 +23,7 @@ interface InvocationRecordsTableProps {
   records: ApiInvocation[]
   isLoading: boolean
   error?: string | null
+  onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void
 }
 
 type StatusMeta = {
@@ -254,11 +254,15 @@ function renderDetailSummaryStrip(
   )
 }
 
-export function InvocationRecordsTable({ focus, records, isLoading, error }: InvocationRecordsTableProps) {
+export function InvocationRecordsTable({
+  focus,
+  records,
+  isLoading,
+  error,
+  onOpenUpstreamAccount,
+}: InvocationRecordsTableProps) {
   const { t, locale } = useTranslation()
   const [expandedId, setExpandedId] = useState<string | null>(null)
-  const [drawerAccountId, setDrawerAccountId] = useState<number | null>(null)
-  const [drawerAccountLabel, setDrawerAccountLabel] = useState<string | null>(null)
   const [nowMs, setNowMs] = useState(() => Date.now())
   const localeTag = locale === 'zh' ? 'zh-CN' : 'en-US'
   const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag])
@@ -313,8 +317,7 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
           className,
         )}
         onClick={() => {
-          setDrawerAccountId(accountId)
-          setDrawerAccountLabel(accountLabel)
+          onOpenUpstreamAccount?.(accountId, accountLabel)
         }}
         title={accountLabel}
       >
@@ -700,15 +703,6 @@ export function InvocationRecordsTable({ focus, records, isLoading, error }: Inv
         </table>
       </div>
 
-      <InvocationAccountDetailDrawer
-        open={drawerAccountId != null}
-        accountId={drawerAccountId}
-        accountLabel={drawerAccountLabel}
-        onClose={() => {
-          setDrawerAccountId(null)
-          setDrawerAccountLabel(null)
-        }}
-      />
     </div>
   )
 }

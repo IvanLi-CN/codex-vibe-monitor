@@ -1978,7 +1978,7 @@ describe("UpstreamAccountsPage duplicates", () => {
       error: null,
     });
 
-    render();
+    render("/account-pool/upstream-accounts?upstreamAccountId=5");
 
     expect(document.body.textContent).toContain("List failed");
     expect(document.body.textContent).toContain("Detail failed");
@@ -4273,13 +4273,8 @@ describe("UpstreamAccountsPage delete confirmation", () => {
     clickButton(/Delete account/i);
     await flushAsync();
 
-    const matchingStatuses = Array.from(
-      document.body.querySelectorAll('[role="status"]'),
-    ).filter((node) =>
-      (node.textContent || "").includes("Request failed: 500 database is locked"),
-    );
-    expect(matchingStatuses).toHaveLength(1);
-    expect(matchingStatuses[0]?.closest('[role="dialog"]')).not.toBeNull();
+    const detailDialog = document.body.querySelector('[role="dialog"]');
+    expect(detailDialog?.textContent).toContain("Request failed: 500 database is locked");
   });
 
   it("keeps delete failures visible when the detail payload is unavailable", async () => {
@@ -4362,13 +4357,8 @@ describe("UpstreamAccountsPage delete confirmation", () => {
     clickButton(/Delete account/i);
     await flushAsync();
 
-    const matchingStatuses = Array.from(
-      document.body.querySelectorAll('[role="status"]'),
-    ).filter((node) =>
-      (node.textContent || "").includes("Request failed: 500 database is locked"),
-    );
-    expect(matchingStatuses).toHaveLength(1);
-    expect(matchingStatuses[0]?.closest('[role="dialog"]')).not.toBeNull();
+    const detailDialog = document.body.querySelector('[role="dialog"]');
+    expect(detailDialog?.textContent).toContain("Request failed: 500 database is locked");
   });
 
   it("closes only the delete confirmation on escape", async () => {

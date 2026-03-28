@@ -1,7 +1,7 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, userEvent, waitFor, within } from 'storybook/test'
-import { useEffect, useRef, useState, type ReactNode } from 'react'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { useEffect, useRef, useState, type ComponentProps, type ReactNode } from 'react'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { I18nProvider } from '../i18n'
 import { InvocationTable } from './InvocationTable'
 import type {
@@ -13,8 +13,9 @@ import type {
 import { invocationStableKey } from '../lib/invocation'
 import { STORYBOOK_FIRST_RESPONSE_BYTE_SEMANTICS_RECORDS } from './invocationRecordsStoryFixtures'
 import AccountPoolLayout from '../pages/account-pool/AccountPoolLayout'
-import UpstreamAccountsPage from '../pages/account-pool/UpstreamAccounts'
+import UpstreamAccountsPage, { SharedUpstreamAccountDetailDrawer } from '../pages/account-pool/UpstreamAccounts'
 import { SystemNotificationProvider } from './ui/system-notifications'
+import { useUpstreamAccountDetailRoute } from '../hooks/useUpstreamAccountDetailRoute'
 
 const baseOccurredAt = '2026-02-25T10:15:30Z'
 const LONG_PROXY_NAME = 'ivan-hkl-vless-vision-01KFXRNYWYXKN4JHCF3CCV78GD'
@@ -1086,6 +1087,30 @@ function InvocationTableStoryShell({ children }: { children: ReactNode }) {
   )
 }
 
+function InvocationTableSharedDrawerPreview(props: ComponentProps<typeof InvocationTable>) {
+  const location = useLocation()
+  const { upstreamAccountId, openUpstreamAccount, closeUpstreamAccount } =
+    useUpstreamAccountDetailRoute()
+
+  return (
+    <>
+      <span className="sr-only" data-testid="invocation-route-state">
+        {location.pathname}
+        {location.search}
+      </span>
+      <InvocationTable
+        {...props}
+        onOpenUpstreamAccount={(accountId) => openUpstreamAccount(accountId)}
+      />
+      <SharedUpstreamAccountDetailDrawer
+        open={upstreamAccountId != null}
+        accountId={upstreamAccountId}
+        onClose={closeUpstreamAccount}
+      />
+    </>
+  )
+}
+
 function RunningInvocationLifecyclePreview() {
   const occurredAtRef = useRef<string>(new Date(Date.now() - 1200).toISOString())
   const [phase, setPhase] = useState<'initial' | 'enriched' | 'terminal'>('initial')
@@ -1812,11 +1837,12 @@ export const FirstResponseByteSemantics: Story = {
 
 export const AccountDrawer: Story = {
   args: defaultArgs,
+  render: (args) => <InvocationTableSharedDrawerPreview {...args} />,
   parameters: {
     docs: {
       description: {
         story:
-          'Clicks the first pool account badge and verifies that the current-page read-only account drawer opens with mocked account detail data.',
+          'Clicks the first pool account badge and verifies that the shared upstream-account drawer opens in-place with the same detail surface used by the account-pool page.',
       },
     },
   },
@@ -1830,11 +1856,11 @@ export const AccountDrawer: Story = {
     await expect(within(dialog).getByText(/22 \/ 100/i)).toBeInTheDocument()
     await userEvent.click(within(dialog).getByRole('tab', { name: /健康|health/i }))
     await expect(within(dialog).getByText(/Two upstream 429 responses were observed during the latest compact capability probe\./i)).toBeInTheDocument()
-    await expect(within(dialog).getByText(/去号池查看完整详情|Open in account pool/i)).toBeInTheDocument()
   },
 }
 
 export const MissingWindowPlaceholders: Story = {
+  render: (args) => <InvocationTableSharedDrawerPreview {...args} />,
   args: {
     records: missingWindowDrawerRecords,
     isLoading: false,
@@ -1844,7 +1870,7 @@ export const MissingWindowPlaceholders: Story = {
     docs: {
       description: {
         story:
-          'Opens the current-page read-only account drawer for an account whose weekly quota window is missing, so the overview usage cards can be reviewed in placeholder mode without conflating it with a real `0%` snapshot.',
+          'Opens the shared upstream-account drawer for an account whose weekly quota window is missing, so the overview usage cards can be reviewed in placeholder mode without conflating it with a real `0%` snapshot.',
       },
     },
   },
@@ -1865,13 +1891,14 @@ export const MissingWindowPlaceholders: Story = {
   },
 }
 
-export const AccountPoolDestination: Story = {
+export const SharedDrawerUrlState: Story = {
   args: defaultArgs,
+  render: (args) => <InvocationTableSharedDrawerPreview {...args} />,
   parameters: {
     docs: {
       description: {
         story:
-          'Opens the account drawer and follows the “去号池查看完整详情” action so you can preview the destination account-pool page with the matching account detail already selected.',
+          'Opens the shared upstream-account drawer from the monitoring table and verifies that the current page URL state now carries the selected `upstreamAccountId` without navigating away.',
       },
     },
   },
@@ -1879,10 +1906,12 @@ export const AccountPoolDestination: Story = {
     const canvas = within(canvasElement)
     const documentScope = within(canvasElement.ownerDocument.body)
     await userEvent.click(await canvas.findByRole('button', { name: 'Codex Team Alpha' }))
-    await userEvent.click(await documentScope.findByRole('link', { name: /去号池查看完整详情|Open in account pool/i }))
-    await expect(documentScope.getByRole('heading', { name: /Codex Team Alpha/i })).toBeInTheDocument()
-    await expect(documentScope.getByText(/账号 ID|ChatGPT account id/i)).toBeInTheDocument()
-    await expect(documentScope.getByText(/org_alpha/i)).toBeInTheDocument()
+    const dialog = await documentScope.findByRole('dialog', { name: /Codex Team Alpha/i })
+    await expect(within(dialog).getByText(/账号 ID|ChatGPT account id/i)).toBeInTheDocument()
+    await expect(within(dialog).getByText(/org_alpha/i)).toBeInTheDocument()
+    await expect(documentScope.getByTestId('invocation-route-state')).toHaveTextContent(
+      '/dashboard?upstreamAccountId=21',
+    )
   },
 }
 
