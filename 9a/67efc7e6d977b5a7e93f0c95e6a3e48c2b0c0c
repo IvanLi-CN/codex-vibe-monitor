@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.30.7",
+  "base_stable_version": "1.30.6",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-28T08:40:40Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.30.7",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "7d680f78bb302d8274b778025af5e2a31bf40c04",
+  "pr_number": 260,
+  "pr_title": "fix(account-pool): harden group proxy binding dialog",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.30.7",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.30.7,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+  "target_sha": "9a67efc7e6d977b5a7e93f0c95e6a3e48c2b0c0c",
+  "type_label": "type:patch"
+}
