@@ -7,6 +7,7 @@ import { PromptCacheConversationTable } from "../components/PromptCacheConversat
 import { StatsCards } from "../components/StatsCards";
 import { Button } from "../components/ui/button";
 import { useForwardProxyLiveStats } from "../hooks/useForwardProxyLiveStats";
+import { useUpstreamAccountDetailRoute } from "../hooks/useUpstreamAccountDetailRoute";
 import { useInvocationStream } from "../hooks/useInvocations";
 import { usePromptCacheConversations } from "../hooks/usePromptCacheConversations";
 import { useSummary } from "../hooks/useStats";
@@ -16,6 +17,7 @@ import type { PromptCacheConversationSelection } from "../lib/api";
 import { resolveInvocationDisplayStatus } from "../lib/invocationStatus";
 import { SegmentedControl, SegmentedControlItem } from "../components/ui/segmented-control";
 import { SelectField } from "../components/ui/select-field";
+import { SharedUpstreamAccountDetailDrawer } from "./account-pool/UpstreamAccounts";
 
 const LIMIT_OPTIONS = [20, 50, 100];
 const PROMPT_CACHE_SELECTION_STORAGE_KEY =
@@ -126,6 +128,8 @@ function persistPromptCacheSelectionValue(value: string) {
 
 export default function LivePage() {
   const { t } = useTranslation();
+  const { upstreamAccountId, openUpstreamAccount, closeUpstreamAccount } =
+    useUpstreamAccountDetailRoute();
   const [limit, setLimit] = useState(50);
   const [conversationSelectionValue, setConversationSelectionValue] = useState(
     () => readPromptCacheSelectionValue(),
@@ -360,6 +364,7 @@ export default function LivePage() {
             error={conversationsError}
             expandedPromptCacheKeys={expandedPromptCacheKeys}
             onToggleExpandedPromptCacheKey={toggleExpandedPromptCacheKey}
+            onOpenUpstreamAccount={(accountId) => openUpstreamAccount(accountId)}
           />
         </div>
       </section>
@@ -396,9 +401,15 @@ export default function LivePage() {
             records={records}
             isLoading={isLoading}
             error={error}
+            onOpenUpstreamAccount={(accountId) => openUpstreamAccount(accountId)}
           />
         </div>
       </section>
+      <SharedUpstreamAccountDetailDrawer
+        open={upstreamAccountId != null}
+        accountId={upstreamAccountId}
+        onClose={closeUpstreamAccount}
+      />
     </div>
   );
 }

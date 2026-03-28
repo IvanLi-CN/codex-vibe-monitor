@@ -6,6 +6,7 @@ import { SegmentedControl, SegmentedControlItem } from '../components/ui/segment
 import { SelectField } from '../components/ui/select-field'
 import { InvocationRecordsSummaryCards } from '../components/InvocationRecordsSummaryCards'
 import { InvocationRecordsTable } from '../components/InvocationRecordsTable'
+import { useUpstreamAccountDetailRoute } from '../hooks/useUpstreamAccountDetailRoute'
 import { useInvocationRecords } from '../hooks/useInvocationRecords'
 import { useTranslation } from '../i18n'
 import {
@@ -21,6 +22,7 @@ import {
 import { textInputAutocompleteOffProps } from '../lib/form-autocomplete'
 import { buildInvocationSuggestionsQuery, createDefaultCustomRange, RECORDS_PAGE_SIZE_OPTIONS } from '../lib/invocationRecords'
 import { cn } from '../lib/utils'
+import { SharedUpstreamAccountDetailDrawer } from './account-pool/UpstreamAccounts'
 
 const inputClassName =
   'h-9 w-full rounded-md border border-base-300/80 bg-base-100 px-3 text-sm text-base-content shadow-sm outline-none transition focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100 disabled:cursor-not-allowed disabled:opacity-60'
@@ -41,6 +43,7 @@ function getVisiblePages(currentPage: number, totalPages: number) {
 
 export default function RecordsPage() {
   const { t } = useTranslation()
+  const { upstreamAccountId, openUpstreamAccount, closeUpstreamAccount } = useUpstreamAccountDetailRoute()
   const {
     draft,
     focus,
@@ -610,6 +613,7 @@ export default function RecordsPage() {
             records={records?.records ?? []}
             isLoading={tableLoading}
             error={recordsError}
+            onOpenUpstreamAccount={(accountId) => openUpstreamAccount(accountId)}
           />
 
           <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-base-300/70 bg-base-100/45 px-4 py-3">
@@ -642,6 +646,11 @@ export default function RecordsPage() {
           </div>
         </div>
       </section>
+      <SharedUpstreamAccountDetailDrawer
+        open={upstreamAccountId != null}
+        accountId={upstreamAccountId}
+        onClose={closeUpstreamAccount}
+      />
     </div>
   )
 }

@@ -33,16 +33,18 @@ export default meta
 
 type Story = StoryObj<typeof meta>
 
+function detailRouteEntry(accountId: number, state?: Record<string, unknown>) {
+  return {
+    pathname: '/account-pool/upstream-accounts',
+    search: `?upstreamAccountId=${accountId}`,
+    state,
+  }
+}
+
 export const DetailDrawer: Story = {
   render: () => (
     <AccountPoolStoryRouter
-      initialEntry={{
-        pathname: '/account-pool/upstream-accounts',
-        state: {
-          selectedAccountId: 101,
-          openDetail: true,
-        },
-      }}
+      initialEntry={detailRouteEntry(101)}
     />
   ),
   play: async ({ canvasElement }) => {
@@ -65,13 +67,7 @@ export const DetailDrawer: Story = {
 export const MissingWindowPlaceholders: Story = {
   render: () => (
     <AccountPoolStoryRouter
-      initialEntry={{
-        pathname: '/account-pool/upstream-accounts',
-        state: {
-          selectedAccountId: 102,
-          openDetail: true,
-        },
-      }}
+      initialEntry={detailRouteEntry(102)}
     />
   ),
   play: async ({ canvasElement }) => {
@@ -86,14 +82,10 @@ export const MissingWindowPlaceholders: Story = {
 export const DeleteConfirmation: Story = {
   render: () => (
     <AccountPoolStoryRouter
-      initialEntry={{
-        pathname: '/account-pool/upstream-accounts',
-        state: {
-          selectedAccountId: 101,
-          openDetail: true,
-          openDeleteConfirm: true,
-        },
-      }}
+      initialEntry={detailRouteEntry(101, {
+        selectedAccountId: 101,
+        openDeleteConfirm: true,
+      })}
     />
   ),
   play: async ({ canvasElement }) => {
@@ -107,14 +99,10 @@ export const DeleteConfirmation: Story = {
 export const DeleteFailure: Story = {
   render: () => (
     <AccountPoolStoryRouter
-      initialEntry={{
-        pathname: '/account-pool/upstream-accounts',
-        state: {
-          selectedAccountId: 101,
-          openDetail: true,
-          openDeleteConfirm: true,
-        },
-      }}
+      initialEntry={detailRouteEntry(101, {
+        selectedAccountId: 101,
+        openDeleteConfirm: true,
+      })}
     />
   ),
   play: async ({ canvasElement }) => {
@@ -369,13 +357,7 @@ export const RoutingDialogValidation: Story = {
 export const CompactSupportDetailDrawer: Story = {
   render: () => (
     <AccountPoolStoryRouter
-      initialEntry={{
-        pathname: '/account-pool/upstream-accounts',
-        state: {
-          selectedAccountId: 101,
-          openDetail: true,
-        },
-      }}
+      initialEntry={detailRouteEntry(101)}
     />
   ),
   play: async ({ canvasElement }) => {
@@ -395,13 +377,7 @@ export const CompactSupportDetailDrawer: Story = {
 export const DetailDrawerGroupNotes: Story = {
   render: () => (
     <AccountPoolStoryRouter
-      initialEntry={{
-        pathname: '/account-pool/upstream-accounts',
-        state: {
-          selectedAccountId: 101,
-          openDetail: true,
-        },
-      }}
+      initialEntry={detailRouteEntry(101)}
     />
   ),
   play: async ({ canvasElement }) => {
@@ -423,13 +399,7 @@ export const DetailDrawerGroupNotes: Story = {
 export const DetailDrawerApiKeyInvalidUpstreamUrl: Story = {
   render: () => (
     <AccountPoolStoryRouter
-      initialEntry={{
-        pathname: '/account-pool/upstream-accounts',
-        state: {
-          selectedAccountId: 102,
-          openDetail: true,
-        },
-      }}
+      initialEntry={detailRouteEntry(102)}
     />
   ),
   play: async ({ canvasElement }) => {
@@ -468,13 +438,7 @@ export const DuplicateOauthDetail: Story = {
   name: 'Duplicate OAuth Detail',
   render: () => (
     <AccountPoolStoryRouter
-      initialEntry={{
-        pathname: '/account-pool/upstream-accounts',
-        state: {
-          selectedAccountId: 101,
-          openDetail: true,
-        },
-      }}
+      initialEntry={detailRouteEntry(101)}
     />
   ),
 }

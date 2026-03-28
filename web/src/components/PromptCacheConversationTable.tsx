@@ -19,7 +19,6 @@ import { mergeInvocationRecordCollections } from "../lib/invocationLiveMerge";
 import { invocationStableKey } from "../lib/invocation";
 import { buildInvocationFromPromptCachePreview } from "../lib/promptCacheLive";
 import { subscribeToSse, subscribeToSseOpen } from "../lib/sse";
-import { InvocationAccountDetailDrawer } from "./InvocationAccountDetailDrawer";
 import { AccountDetailDrawerShell } from "./AccountDetailDrawerShell";
 import { AppIcon } from "./AppIcon";
 import { InvocationTable } from "./InvocationTable";
@@ -37,6 +36,7 @@ interface PromptCacheConversationTableProps {
   error?: string | null;
   expandedPromptCacheKeys?: string[];
   onToggleExpandedPromptCacheKey?: (promptCacheKey: string) => void;
+  onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
 }
 
 const PROMPT_CACHE_NOW_TICK_MS = 30_000;
@@ -206,11 +206,13 @@ function PromptCacheConversationInvocationTable({
   isLoading,
   error,
   emptyLabel,
+  onOpenUpstreamAccount,
 }: {
   records: ApiInvocation[];
   isLoading: boolean;
   error?: string | null;
   emptyLabel: string;
+  onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
 }) {
   const hasLoadedRecords = records.length > 0;
 
@@ -227,6 +229,7 @@ function PromptCacheConversationInvocationTable({
           isLoading={false}
           error={null}
           emptyLabel={emptyLabel}
+          onOpenUpstreamAccount={onOpenUpstreamAccount}
         />
       </div>
     );
@@ -238,6 +241,7 @@ function PromptCacheConversationInvocationTable({
       isLoading={isLoading}
       error={error}
       emptyLabel={emptyLabel}
+      onOpenUpstreamAccount={onOpenUpstreamAccount}
     />
   );
 }
@@ -247,11 +251,13 @@ function PromptCacheConversationHistoryDrawer({
   promptCacheKey,
   onClose,
   t,
+  onOpenUpstreamAccount,
 }: {
   open: boolean;
   promptCacheKey: string | null;
   onClose: () => void;
   t: (key: string, values?: Record<string, string | number>) => string;
+  onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
 }) {
   const titleId = useId();
   const requestSeqRef = useRef(0);
@@ -507,6 +513,7 @@ function PromptCacheConversationHistoryDrawer({
           isLoading={isLoading}
           error={error}
           emptyLabel={t("live.conversations.drawer.empty")}
+          onOpenUpstreamAccount={onOpenUpstreamAccount}
         />
         {isLoading && visibleRecords.length > 0 ? (
           <div className="flex items-center justify-center gap-2 py-2 text-sm text-base-content/60">
@@ -525,11 +532,10 @@ export function PromptCacheConversationTable({
   error,
   expandedPromptCacheKeys,
   onToggleExpandedPromptCacheKey,
+  onOpenUpstreamAccount,
 }: PromptCacheConversationTableProps) {
   const { t, locale } = useTranslation();
   const [now, setNow] = useState(() => Date.now());
-  const [drawerAccountId, setDrawerAccountId] = useState<number | null>(null);
-  const [drawerAccountLabel, setDrawerAccountLabel] = useState<string | null>(null);
   const [historyDrawerPromptCacheKey, setHistoryDrawerPromptCacheKey] = useState<string | null>(null);
   const [internalExpandedPromptCacheKeys, setInternalExpandedPromptCacheKeys] =
     useState<string[]>([]);
@@ -714,15 +720,12 @@ export function PromptCacheConversationTable({
   const openAccountDrawer = (account: PromptCacheConversationUpstreamAccount) => {
     if (!canOpenPromptCacheUpstreamAccount(account)) return;
     setHistoryDrawerPromptCacheKey(null);
-    setDrawerAccountId(Math.trunc(Number(account.upstreamAccountId)));
-    setDrawerAccountLabel(resolveUpstreamAccountLabel(account, fallbackAccountLabel));
-  };
-  const closeAccountDrawer = () => {
-    setDrawerAccountId(null);
-    setDrawerAccountLabel(null);
+    onOpenUpstreamAccount?.(
+      Math.trunc(Number(account.upstreamAccountId)),
+      resolveUpstreamAccountLabel(account, fallbackAccountLabel),
+    );
   };
   const openHistoryDrawer = (promptCacheKey: string) => {
-    closeAccountDrawer();
     setHistoryDrawerPromptCacheKey(promptCacheKey);
   };
   const closeHistoryDrawer = () => {
@@ -840,6 +843,7 @@ export function PromptCacheConversationTable({
                         )}
                         isLoading={false}
                         emptyLabel={previewLabels.empty}
+                        onOpenUpstreamAccount={onOpenUpstreamAccount}
                       />
                     </div>
                   ) : null}
@@ -1048,6 +1052,7 @@ export function PromptCacheConversationTable({
                             )}
                             isLoading={false}
                             emptyLabel={previewLabels.empty}
+                            onOpenUpstreamAccount={onOpenUpstreamAccount}
                           />
                         </div>
                       </td>
@@ -1062,17 +1067,12 @@ export function PromptCacheConversationTable({
       {footerNote ? (
         <p className="px-1 text-[11px] text-base-content/55">{footerNote}</p>
       ) : null}
-      <InvocationAccountDetailDrawer
-        open={drawerAccountId != null}
-        accountId={drawerAccountId}
-        accountLabel={drawerAccountLabel}
-        onClose={closeAccountDrawer}
-      />
       <PromptCacheConversationHistoryDrawer
         open={historyDrawerPromptCacheKey != null}
         promptCacheKey={historyDrawerPromptCacheKey}
         onClose={closeHistoryDrawer}
         t={t}
+        onOpenUpstreamAccount={onOpenUpstreamAccount}
       />
     </div>
   );
