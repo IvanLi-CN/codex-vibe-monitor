@@ -800,6 +800,7 @@ export interface ForwardProxyNode {
 
 export interface ForwardProxyBindingNode {
   key: string;
+  aliasKeys?: string[];
   source: string;
   displayName: string;
   protocolLabel: string;

@@ -764,6 +764,7 @@ pub(crate) async fn build_forward_proxy_binding_nodes_response(
         let metadata = metadata_map.get(&proxy_key);
         nodes.push(ForwardProxyBindingNodeResponse {
             key: proxy_key.clone(),
+            alias_keys: Vec::new(),
             source: "missing".to_string(),
             display_name: metadata
                 .map(|item| item.display_name.clone())
@@ -3093,6 +3094,13 @@ impl ForwardProxyManager {
     }
 
     pub(crate) fn binding_nodes(&self) -> Vec<ForwardProxyBindingNodeResponse> {
+        let mut alias_keys_by_key: HashMap<&str, Vec<String>> = HashMap::new();
+        for (alias, canonical) in &self.bound_key_aliases {
+            alias_keys_by_key
+                .entry(canonical.as_str())
+                .or_default()
+                .push(alias.clone());
+        }
         let mut nodes = self
             .endpoints
             .iter()
@@ -3101,8 +3109,13 @@ impl ForwardProxyManager {
                     .runtime
                     .get(&endpoint.key)
                     .is_some_and(ForwardProxyRuntimeState::is_penalized);
+                let mut alias_keys = alias_keys_by_key
+                    .remove(endpoint.key.as_str())
+                    .unwrap_or_default();
+                alias_keys.sort();
                 ForwardProxyBindingNodeResponse {
                     key: endpoint.key.clone(),
+                    alias_keys,
                     source: endpoint.source.clone(),
                     display_name: endpoint.display_name.clone(),
                     protocol_label: endpoint.protocol.label().to_string(),
@@ -3114,6 +3127,7 @@ impl ForwardProxyManager {
             .collect::<Vec<_>>();
         nodes.push(ForwardProxyBindingNodeResponse {
             key: FORWARD_PROXY_DIRECT_KEY.to_string(),
+            alias_keys: Vec::new(),
             source: FORWARD_PROXY_SOURCE_DIRECT.to_string(),
             display_name: FORWARD_PROXY_DIRECT_LABEL.to_string(),
             protocol_label: ForwardProxyProtocol::Direct.label().to_string(),
@@ -4230,6 +4244,7 @@ pub(crate) struct ForwardProxyNodeResponse {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ForwardProxyBindingNodeResponse {
     pub(crate) key: String,
+    pub(crate) alias_keys: Vec<String>,
     pub(crate) source: String,
     pub(crate) display_name: String,
     pub(crate) protocol_label: String,
@@ -4360,6 +4375,35 @@ mod tests {
         assert_eq!(direct.protocol_label, "DIRECT");
         assert!(direct.selectable);
         assert!(!direct.penalized);
+    }
+
+    #[test]
+    fn binding_nodes_include_legacy_vless_aliases() {
+        let proxy_url = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=tcp#东京节点";
+        let normalized_proxy_url =
+            normalize_share_link_scheme(proxy_url, "vless").expect("normalize vless url");
+        let legacy_alias = {
+            let parsed = Url::parse(&normalized_proxy_url).expect("parse normalized vless url");
+            stable_forward_proxy_key(&canonical_share_link_identity(&parsed))
+        };
+        let canonical_key = normalize_single_proxy_key(proxy_url).expect("canonical vless key");
+        assert_ne!(legacy_alias, canonical_key);
+
+        let manager = ForwardProxyManager::new(
+            ForwardProxySettings {
+                proxy_urls: vec![proxy_url.to_string()],
+                ..ForwardProxySettings::default()
+            },
+            Vec::new(),
+        );
+
+        let node = manager
+            .binding_nodes()
+            .into_iter()
+            .find(|candidate| candidate.key == canonical_key)
+            .expect("vless binding node should be present");
+
+        assert_eq!(node.alias_keys, vec![legacy_alias]);
     }
 
     #[test]

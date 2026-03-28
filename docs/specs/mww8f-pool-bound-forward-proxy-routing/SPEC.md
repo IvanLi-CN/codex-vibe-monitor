@@ -86,12 +86,14 @@
   - `boundProxyKeys`
 - `GET /api/pool/upstream-accounts` 额外返回 `forwardProxyNodes[]`，每项至少包含：
   - `key`
+  - `aliasKeys`
   - `displayName`
   - `protocolLabel`
   - `source`
   - `penalized`
   - `selectable`
 - 新保存的 `boundProxyKeys` 必须写入稳定节点身份键；稳定键默认忽略纯展示字段，如 share-link fragment、`ps`、仅用于命名的 label，但保留协议、主机、端口、账号/UUID/密码与传输配置等真实连接身份字段。
+- 若当前 inventory 中仍能定位到同一真实节点，`forwardProxyNodes[].aliasKeys` 必须返回可映射到当前稳定键的历史 legacy key，供前端在编辑弹窗中自动规范化旧绑定并继续保存。
 - `forwardProxyNodes[].displayName` 只负责展示，不参与绑定匹配；非 ASCII 名称必须按人类可读文本返回。
 - `PUT /api/pool/upstream-account-groups/:groupName` 支持更新 `note` 与 `boundProxyKeys`；若分组不存在实际账号，返回 `404`。
 - 当 `boundProxyKeys` 非空但当前选中集合里没有任何 `selectable=true` 的节点时，`PUT /api/pool/upstream-account-groups/:groupName` 必须返回 `400`，拒绝把“零可选节点”状态再次写回 metadata。
@@ -127,6 +129,7 @@
 - Given 用户已保存分组绑定，When 订阅刷新或节点备注名变化但真实连接身份不变，Then 刷新后 `boundProxyKeys` 仍稳定回显到同一节点。
 - Given 节点名称包含非 ASCII 字符，When 打开号池分组设置，Then 可选、不可选与历史失效三种状态都显示人类可读名称，且只在没有任何展示元数据时才回退到 key。
 - Given 打开号池分组设置且当前选中的绑定节点全部不可用，When 用户尝试保存，Then UI 禁用保存按钮并显示 warning，后端接口也返回 `400` 拒绝该提交。
+- Given 分组 metadata 中仍保存着旧版 VLESS/Trojan legacy key，When 当前 inventory 里还能匹配到同一真实节点，Then 弹窗会自动将其规范到当前稳定键、保持该节点可选可保存，且不会误显示为 Missing / Unavailable。
 - Given 打开号池分组设置，When 用户查看绑定节点列表，Then 页面不显示任何 `ss://`、`vless://`、`vmess://`、`trojan://`、`http://`、`https://` 原始订阅地址，只显示截断标题和协议类型。
 - Given 打开号池分组设置且存在 `9+` 个节点，When 用户浏览节点列表，Then footer 仍然可见，节点区内部可滚动，页面本身不需要额外滚动。
 - Given 打开号池分组设置，When 用户多选绑定代理节点并保存，Then 刷新后 `boundProxyKeys` 稳定回显，且 Storybook 至少覆盖：
@@ -212,6 +215,17 @@
   evidence_note: 验证订阅备注名刷新后，分组仍通过稳定键回显到同一节点，只更新展示名称。
   image:
   ![Stable binding after refreshed display name](./assets/group-settings-refreshed-stable-binding.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: approved
+  story_id_or_title: Account Pool/Components/Upstream Account Group Settings Dialog/LegacyAliasBindingsRemainSaveable
+  state: legacy-alias-bindings-remain-saveable
+  evidence_note: 验证历史 VLESS legacy key 仍能映射到当前稳定键，弹窗不会误判为不可用，并允许直接重新保存为当前 canonical key。
+  image:
+  ![Legacy alias bindings remain saveable](./assets/group-settings-legacy-alias-bindings-saveable.png)
 
 - source_type: storybook_canvas
   target_program: mock-only

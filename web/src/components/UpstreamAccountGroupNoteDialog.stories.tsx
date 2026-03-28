@@ -158,6 +158,28 @@ const refreshedDisplayNameNodes: ForwardProxyBindingNode[] = [
   },
 ]
 
+const legacyAliasBindingNodes: ForwardProxyBindingNode[] = [
+  {
+    key: 'fpn_canonical_vless_key',
+    aliasKeys: ['fpn_legacy_vless_alias'],
+    source: 'subscription',
+    displayName: 'Tokyo Edge A',
+    protocolLabel: 'VLESS',
+    penalized: false,
+    selectable: true,
+    last24h: buildRequestBuckets(3, 14, 6),
+  },
+  {
+    key: 'fpn_8b9c0d1e2f3a4b20',
+    source: 'subscription',
+    displayName: 'SG Edge 02',
+    protocolLabel: 'SS',
+    penalized: false,
+    selectable: true,
+    last24h: buildRequestBuckets(6, 12, 5),
+  },
+]
+
 function DialogHarness({
   note: initialNote,
   boundProxyKeys: initialBoundProxyKeys = [],
@@ -308,5 +330,22 @@ export const RefreshedDisplayNameStableBinding: Story = {
     note: 'The stable binding key remains selected after the subscription remark changes.',
     boundProxyKeys: ['fpn_13579bdf2468ace0'],
     availableProxyNodes: refreshedDisplayNameNodes,
+  },
+}
+
+export const LegacyAliasBindingsRemainSaveable: Story = {
+  args: {
+    groupName: 'legacy-alias',
+    note: 'Groups saved with legacy VLESS aliases still resolve to the current stable node and can be re-saved.',
+    boundProxyKeys: ['fpn_legacy_vless_alias'],
+    availableProxyNodes: legacyAliasBindingNodes,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByText(/^Tokyo Edge A$/i)).toBeInTheDocument()
+    await expect(
+      canvas.queryByText(/select at least one available proxy node or clear bindings before saving\./i),
+    ).not.toBeInTheDocument()
+    await expect(canvas.getByRole('button', { name: /save group settings/i })).toBeEnabled()
   },
 }
