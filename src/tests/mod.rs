@@ -25024,6 +25024,13 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
         "gpt-5.4-mini",
     )
     .await;
+    sqlx::query(
+        "UPDATE codex_invocations SET payload = json_set(payload, '$.reasoningEffort', 7) WHERE invoke_id = ?1",
+    )
+    .bind("preview-04")
+    .execute(&state.pool)
+    .await
+    .expect("mark preview-04 reasoning effort as non-text");
     insert_row(
         &state.pool,
         "preview-05",
@@ -25066,6 +25073,57 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
         "gpt-5.4",
     )
     .await;
+    sqlx::query(
+        "UPDATE codex_invocations \
+         SET input_tokens = ?1, \
+             output_tokens = ?2, \
+             cache_input_tokens = ?3, \
+             reasoning_tokens = ?4, \
+             error_message = ?5, \
+             failure_kind = ?6, \
+             failure_class = ?7, \
+             is_actionable = ?8, \
+             t_req_read_ms = ?9, \
+             t_req_parse_ms = ?10, \
+             t_upstream_connect_ms = ?11, \
+             t_upstream_ttfb_ms = ?12, \
+             t_upstream_stream_ms = ?13, \
+             t_resp_parse_ms = ?14, \
+             t_persist_ms = ?15, \
+             t_total_ms = ?16, \
+             payload = json_set( \
+                 payload, \
+                 '$.reasoningEffort', ?17, \
+                 '$.responseContentEncoding', ?18, \
+                 '$.requestedServiceTier', ?19, \
+                 '$.serviceTier', ?20 \
+             ) \
+         WHERE invoke_id = ?21",
+    )
+    .bind(120_i64)
+    .bind(80_i64)
+    .bind(40_i64)
+    .bind(12_i64)
+    .bind("[upstream_response_failed] preview extra error")
+    .bind("upstream_response_failed")
+    .bind("service_failure")
+    .bind(1_i64)
+    .bind(10.0_f64)
+    .bind(11.0_f64)
+    .bind(12.0_f64)
+    .bind(13.0_f64)
+    .bind(14.0_f64)
+    .bind(15.0_f64)
+    .bind(16.0_f64)
+    .bind(91.0_f64)
+    .bind("high")
+    .bind("br")
+    .bind("flex")
+    .bind("scale")
+    .bind("preview-06")
+    .execute(&state.pool)
+    .await
+    .expect("augment preview-06 extras");
     insert_row(
         &state.pool,
         "preview-crs-hidden",
@@ -25128,6 +25186,7 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
     assert_eq!(latest.endpoint.as_deref(), Some("/v1/responses"));
     assert_eq!(latest.failure_class.as_deref(), Some("none"));
     assert_eq!(latest.route_mode.as_deref(), Some("pool"));
+    assert_eq!(latest.source.as_deref(), Some(SOURCE_CRS));
 
     let id_only = conversation
         .recent_invocations
@@ -25136,6 +25195,7 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
         .expect("id-only preview should be included");
     assert_eq!(id_only.upstream_account_id, Some(202));
     assert_eq!(id_only.upstream_account_name, None);
+    assert_eq!(id_only.reasoning_effort, None);
 
     let failed_preview = conversation
         .recent_invocations
@@ -25160,6 +25220,44 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
         Some("service_failure")
     );
     assert_eq!(legacy_failed_preview.route_mode.as_deref(), Some("pool"));
+
+    let enriched_preview = conversation
+        .recent_invocations
+        .iter()
+        .find(|item| item.invoke_id == "preview-06")
+        .expect("preview-06 should be included");
+    assert_eq!(enriched_preview.source.as_deref(), Some(SOURCE_PROXY));
+    assert_eq!(enriched_preview.input_tokens, Some(120));
+    assert_eq!(enriched_preview.output_tokens, Some(80));
+    assert_eq!(enriched_preview.cache_input_tokens, Some(40));
+    assert_eq!(enriched_preview.reasoning_tokens, Some(12));
+    assert_eq!(enriched_preview.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(
+        enriched_preview.error_message.as_deref(),
+        Some("[upstream_response_failed] preview extra error")
+    );
+    assert_eq!(
+        enriched_preview.failure_kind.as_deref(),
+        Some("upstream_response_failed")
+    );
+    assert_eq!(enriched_preview.is_actionable, Some(true));
+    assert_eq!(
+        enriched_preview.response_content_encoding.as_deref(),
+        Some("br")
+    );
+    assert_eq!(
+        enriched_preview.requested_service_tier.as_deref(),
+        Some("flex")
+    );
+    assert_eq!(enriched_preview.service_tier.as_deref(), Some("scale"));
+    assert_eq!(enriched_preview.t_req_read_ms, Some(10.0));
+    assert_eq!(enriched_preview.t_req_parse_ms, Some(11.0));
+    assert_eq!(enriched_preview.t_upstream_connect_ms, Some(12.0));
+    assert_eq!(enriched_preview.t_upstream_ttfb_ms, Some(13.0));
+    assert_eq!(enriched_preview.t_upstream_stream_ms, Some(14.0));
+    assert_eq!(enriched_preview.t_resp_parse_ms, Some(15.0));
+    assert_eq!(enriched_preview.t_persist_ms, Some(16.0));
+    assert_eq!(enriched_preview.t_total_ms, Some(91.0));
 
     let proxy_only_rows = query_prompt_cache_conversation_recent_invocations(
         &state.pool,
@@ -25188,6 +25286,17 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
             .iter()
             .all(|item| item.invoke_id != "preview-crs-hidden")
     );
+    let proxy_enriched_row = proxy_only_rows
+        .iter()
+        .find(|item| item.invoke_id == "preview-06")
+        .expect("preview-06 row should be present");
+    assert_eq!(proxy_enriched_row.source.as_deref(), Some(SOURCE_PROXY));
+    assert_eq!(proxy_enriched_row.input_tokens, Some(120));
+    assert_eq!(
+        proxy_enriched_row.requested_service_tier.as_deref(),
+        Some("flex")
+    );
+    assert_eq!(proxy_enriched_row.t_total_ms, Some(91.0));
 }
 
 #[tokio::test]
@@ -25906,6 +26015,240 @@ async fn prompt_cache_conversations_cache_reuses_recent_result_within_ttl() {
 }
 
 #[tokio::test]
+async fn prompt_cache_conversations_cache_invalidation_exposes_new_proxy_capture_immediately() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+    let occurred_a = format_naive(
+        (now - ChronoDuration::minutes(80))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let occurred_b = format_naive(
+        (now - ChronoDuration::minutes(30))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind("pck-cache-live-1")
+    .bind(&occurred_a)
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(10)
+    .bind(0.01)
+    .bind(r#"{"promptCacheKey":"pck-broadcast-1"}"#)
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert initial prompt cache row");
+
+    let Json(first) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+        }),
+    )
+    .await
+    .expect("first fetch should populate prompt cache stats");
+    let first_count = first
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-broadcast-1")
+        .map(|item| item.request_count)
+        .expect("pck-broadcast-1 should be present");
+    assert_eq!(first_count, 1);
+
+    persist_and_broadcast_proxy_capture(
+        state.as_ref(),
+        Instant::now(),
+        test_proxy_capture_record("pck-cache-live-2", &occurred_b),
+    )
+    .await
+    .expect("persist+broadcast should invalidate prompt cache conversation cache");
+
+    let Json(second) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+        }),
+    )
+    .await
+    .expect("second fetch should see the freshly persisted proxy capture");
+    let second_count = second
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-broadcast-1")
+        .map(|item| item.request_count)
+        .expect("pck-broadcast-1 should remain present");
+    assert_eq!(second_count, 2);
+}
+
+#[tokio::test]
+async fn prompt_cache_conversations_cache_ignores_proxy_captures_without_prompt_cache_key() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+    let occurred_a = format_naive(
+        (now - ChronoDuration::minutes(80))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let occurred_b = format_naive(
+        (now - ChronoDuration::minutes(30))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind("pck-cache-unrelated-1")
+    .bind(&occurred_a)
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(10)
+    .bind(0.01)
+    .bind(r#"{"promptCacheKey":"pck-unrelated"}"#)
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert prompt cache seed row");
+
+    let Json(first) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+        }),
+    )
+    .await
+    .expect("first fetch should populate prompt cache stats");
+    let first_count = first
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-unrelated")
+        .map(|item| item.request_count)
+        .expect("pck-unrelated should be present");
+    assert_eq!(first_count, 1);
+
+    let mut unrelated_record = test_proxy_capture_record("pck-cache-unrelated-2", &occurred_b);
+    unrelated_record.payload =
+        Some("{\"endpoint\":\"/v1/responses\",\"statusCode\":200}".to_string());
+    persist_and_broadcast_proxy_capture(state.as_ref(), Instant::now(), unrelated_record)
+        .await
+        .expect("persist+broadcast should keep prompt cache cache warm for unrelated traffic");
+
+    let Json(second) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+        }),
+    )
+    .await
+    .expect("second fetch should still use cached result");
+    let second_count = second
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-unrelated")
+        .map(|item| item.request_count)
+        .expect("pck-unrelated should remain present");
+    assert_eq!(second_count, 1);
+}
+
+#[tokio::test]
+async fn prompt_cache_conversations_cache_returns_under_sustained_invalidations() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+
+    for index in 0..256 {
+        let occurred = format_naive(
+            (now - ChronoDuration::minutes(120 - index as i64))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(format!("pck-cache-sustained-{index}"))
+        .bind(&occurred)
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(10 + index as i64)
+        .bind(0.01)
+        .bind(format!(
+            r#"{{"promptCacheKey":"pck-sustained-{index:03}"}}"#
+        ))
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert sustained-invalidations seed row");
+    }
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let invalidator_stop = stop.clone();
+    let cache = state.prompt_cache_conversation_cache.clone();
+    let invalidator = tokio::spawn(async move {
+        while !invalidator_stop.load(Ordering::Relaxed) {
+            invalidate_prompt_cache_conversations_cache(&cache).await;
+            tokio::task::yield_now().await;
+        }
+    });
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        fetch_prompt_cache_conversations(
+            State(state.clone()),
+            Query(PromptCacheConversationsQuery {
+                limit: Some(20),
+                activity_hours: None,
+            }),
+        ),
+    )
+    .await;
+
+    stop.store(true, Ordering::Relaxed);
+    invalidator
+        .await
+        .expect("invalidator task should exit cleanly");
+
+    let Json(response) = result
+        .expect("prompt cache fetch should not hang under sustained invalidations")
+        .expect("prompt cache fetch should succeed");
+    assert!(
+        !response.conversations.is_empty(),
+        "sustained invalidations should still return a usable snapshot",
+    );
+}
+
+#[tokio::test]
 async fn prompt_cache_conversations_concurrent_requests_same_limit_do_not_stall() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -25981,7 +26324,10 @@ async fn prompt_cache_conversation_flight_guard_cleans_in_flight_on_drop() {
         let mut state = cache.lock().await;
         state.in_flight.insert(
             PromptCacheConversationSelection::Count(20),
-            PromptCacheConversationInFlight { signal },
+            PromptCacheConversationInFlight {
+                signal,
+                generation: 0,
+            },
         );
     }
 
@@ -25989,6 +26335,7 @@ async fn prompt_cache_conversation_flight_guard_cleans_in_flight_on_drop() {
         let _guard = PromptCacheConversationFlightGuard::new(
             cache.clone(),
             PromptCacheConversationSelection::Count(20),
+            0,
         );
     }
 
