@@ -232,6 +232,7 @@ export function BatchOauthActionButton({
       longPressTriggeredRef.current = false;
       return;
     }
+    clearPassiveOpenTimer();
     if (manualCopyValue) {
       onManualCopyOpenChange?.(false);
     }

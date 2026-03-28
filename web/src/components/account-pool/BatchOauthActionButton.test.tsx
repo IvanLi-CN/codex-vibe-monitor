@@ -142,6 +142,33 @@ describe("BatchOauthActionButton", () => {
     expect(document.body.textContent).toContain("Copy OAuth URL");
   });
 
+  it("cancels a pending passive bubble when the primary action fires", () => {
+    const onPrimaryAction = vi.fn();
+    render(
+      <BatchOauthActionButton
+        mode="generate"
+        {...baseProps}
+        onPrimaryAction={onPrimaryAction}
+      />,
+    );
+
+    const button = getButton(/copy oauth url/i);
+    act(() => {
+      button.dispatchEvent(
+        new MouseEvent("mouseover", {
+          bubbles: true,
+          relatedTarget: null,
+        }),
+      );
+      vi.advanceTimersByTime(100);
+      button.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      vi.advanceTimersByTime(220);
+    });
+
+    expect(onPrimaryAction).toHaveBeenCalledTimes(1);
+    expect(document.body.textContent).not.toContain("Copy OAuth URL");
+  });
+
   it("opens on touch long press without triggering the primary click", () => {
     const onPrimaryAction = vi.fn();
     render(
