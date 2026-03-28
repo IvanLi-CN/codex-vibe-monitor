@@ -2768,7 +2768,7 @@ impl ForwardProxyManager {
             let Some(raw_url) = endpoint.raw_url.as_deref() else {
                 continue;
             };
-            for alias in legacy_bound_proxy_key_aliases(raw_url) {
+            for alias in legacy_bound_proxy_key_aliases(raw_url, endpoint.protocol) {
                 if alias != endpoint.key {
                     bound_key_aliases.insert(alias, endpoint.key.clone());
                 }

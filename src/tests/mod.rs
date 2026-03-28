@@ -1554,6 +1554,14 @@ fn legacy_vless_and_trojan_bound_proxy_keys_route_to_matching_stable_endpoints()
         let parsed = Url::parse(&normalized_vless_proxy_url).expect("parse normalized vless url");
         stable_forward_proxy_key(&canonical_share_link_identity(&parsed))
     };
+    assert_eq!(
+        legacy_bound_proxy_key_aliases(&normalized_vless_proxy_url, ForwardProxyProtocol::Vless),
+        vec![legacy_vless_proxy_key.clone()]
+    );
+    assert!(
+        legacy_bound_proxy_key_aliases(&normalized_vless_proxy_url, ForwardProxyProtocol::Trojan)
+            .is_empty()
+    );
     let stable_vless_proxy_key =
         normalize_single_proxy_key(legacy_vless_proxy_url).expect("stable vless proxy key");
     assert_ne!(legacy_vless_proxy_key, stable_vless_proxy_key);
@@ -1590,6 +1598,14 @@ fn legacy_vless_and_trojan_bound_proxy_keys_route_to_matching_stable_endpoints()
         let parsed = Url::parse(&normalized_trojan_proxy_url).expect("parse normalized trojan url");
         stable_forward_proxy_key(&canonical_share_link_identity(&parsed))
     };
+    assert_eq!(
+        legacy_bound_proxy_key_aliases(&normalized_trojan_proxy_url, ForwardProxyProtocol::Trojan),
+        vec![legacy_trojan_proxy_key.clone()]
+    );
+    assert!(
+        legacy_bound_proxy_key_aliases(&normalized_trojan_proxy_url, ForwardProxyProtocol::Vless)
+            .is_empty()
+    );
     let stable_trojan_proxy_key =
         normalize_single_proxy_key(legacy_trojan_proxy_url).expect("stable trojan proxy key");
     assert_ne!(legacy_trojan_proxy_key, stable_trojan_proxy_key);
