@@ -88,6 +88,7 @@
 ## 变更记录（Change log）
 
 - 2026-03-29：落地 immutable tag / publish-time `latest` 分离，补齐 pending stable、旧 stable rerun/backfill 与 rc 语义回归，并完成本地 `test-release-snapshot` 验证。
+- 2026-03-29：创建 PR #266，进入 fast-track 的 CI / review 收敛阶段。
 
 ## 参考（References）
 
