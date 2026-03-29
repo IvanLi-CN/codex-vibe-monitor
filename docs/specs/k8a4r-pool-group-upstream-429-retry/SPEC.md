@@ -94,10 +94,11 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Account Pool/Components/Upstream Account Group Settings Dialog/Upstream 429 Retry Enabled
   state: upstream-429-retry-enabled
   evidence_note: 验证分组设置弹窗已新增 `429` 重试开关与次数控件，且次数在启用时可编辑。
+  PR: include
   image:
   ![Upstream 429 retry enabled](./assets/upstream-429-retry-enabled.png)
 
@@ -105,10 +106,11 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Account Pool/Components/Upstream Account Group Settings Dialog/Upstream 429 Retry Disabled
   state: upstream-429-retry-disabled
   evidence_note: 验证分组关闭 `429` 重试时，次数控件被禁用且其他分组设置仍可编辑。
+  PR: include
   image:
   ![Upstream 429 retry disabled](./assets/upstream-429-retry-disabled.png)
 
@@ -116,3 +118,4 @@
 
 - 2026-03-30: 创建 spec，冻结分组级上游 `429` 重试的 schema、接口、运行时与 UI 验收口径。
 - 2026-03-30: 完成 schema / API / pool runtime / Storybook UI 实现，补充本地视觉证据，等待主人确认是否允许随代码一并提交并推进 PR。
+- 2026-03-30: 合入 `origin/main` 的上游账号筛选持久化基线后，重新完成前端门禁与 Storybook 证据抓取，并将截图授权状态切换为 `approved`。
