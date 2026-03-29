@@ -929,6 +929,26 @@ struct UpstreamAccountGroupMetadata {
     upstream_429_max_retries: u8,
 }
 
+#[derive(Debug, Clone, Default)]
+struct RequestedGroupMetadataChanges {
+    note: Option<String>,
+    note_was_requested: bool,
+    bound_proxy_keys: Vec<String>,
+    bound_proxy_keys_was_requested: bool,
+}
+
+impl RequestedGroupMetadataChanges {
+    fn was_requested(&self) -> bool {
+        self.note_was_requested || self.bound_proxy_keys_was_requested
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ResolvedRequiredGroupProxyBinding {
+    pub(crate) group_name: String,
+    pub(crate) bound_proxy_keys: Vec<String>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpstreamAccountSummary {
@@ -1234,6 +1254,8 @@ pub(crate) struct OauthMailboxStatusBatchResponse {
 pub(crate) struct CreateOauthLoginSessionRequest {
     display_name: Option<String>,
     group_name: Option<String>,
+    #[serde(default)]
+    group_bound_proxy_keys: Option<Vec<String>>,
     note: Option<String>,
     group_note: Option<String>,
     account_id: Option<i64>,
@@ -1261,6 +1283,8 @@ pub(crate) struct UpdateOauthLoginSessionRequest {
     display_name: OptionalField<String>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     group_name: OptionalField<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    group_bound_proxy_keys: OptionalField<Vec<String>>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     note: OptionalField<String>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
@@ -1297,6 +1321,8 @@ pub(crate) struct OauthMailboxStatusRequest {
 pub(crate) struct CreateApiKeyAccountRequest {
     display_name: String,
     group_name: Option<String>,
+    #[serde(default)]
+    group_bound_proxy_keys: Option<Vec<String>>,
     note: Option<String>,
     group_note: Option<String>,
     upstream_base_url: Option<String>,
@@ -1320,6 +1346,9 @@ pub(crate) struct ImportOauthCredentialFileRequest {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ValidateImportedOauthAccountsRequest {
+    group_name: Option<String>,
+    #[serde(default)]
+    group_bound_proxy_keys: Option<Vec<String>>,
     #[serde(default)]
     items: Vec<ImportOauthCredentialFileRequest>,
 }
@@ -1334,6 +1363,8 @@ pub(crate) struct ImportValidatedOauthAccountsRequest {
     #[serde(default)]
     validation_job_id: Option<String>,
     group_name: Option<String>,
+    #[serde(default)]
+    group_bound_proxy_keys: Option<Vec<String>>,
     group_note: Option<String>,
     #[serde(default)]
     tag_ids: Vec<i64>,
@@ -1430,6 +1461,8 @@ enum ImportedOauthValidationJobEvent {
 
 #[derive(Debug)]
 struct ImportedOauthValidationJob {
+    target_group_name: String,
+    target_bound_proxy_keys: Vec<String>,
     snapshot: Mutex<ImportedOauthValidationResponse>,
     validated_imports: Mutex<HashMap<String, ImportedOauthValidatedImportData>>,
     broadcaster: broadcast::Sender<ImportedOauthValidationJobEvent>,
@@ -1438,9 +1471,14 @@ struct ImportedOauthValidationJob {
 }
 
 impl ImportedOauthValidationJob {
-    fn new(snapshot: ImportedOauthValidationResponse) -> Self {
+    fn new(
+        snapshot: ImportedOauthValidationResponse,
+        binding: &ResolvedRequiredGroupProxyBinding,
+    ) -> Self {
         let (broadcaster, _rx) = broadcast::channel(256);
         Self {
+            target_group_name: binding.group_name.clone(),
+            target_bound_proxy_keys: binding.bound_proxy_keys.clone(),
             snapshot: Mutex::new(snapshot),
             validated_imports: Mutex::new(HashMap::new()),
             broadcaster,
@@ -1613,6 +1651,8 @@ pub(crate) struct ImportedOauthImportResponse {
 pub(crate) struct UpdateUpstreamAccountRequest {
     display_name: Option<String>,
     group_name: Option<String>,
+    #[serde(default)]
+    group_bound_proxy_keys: Option<Vec<String>>,
     note: Option<String>,
     group_note: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
@@ -2333,6 +2373,7 @@ struct OauthLoginSessionRow {
     account_id: Option<i64>,
     display_name: Option<String>,
     group_name: Option<String>,
+    group_bound_proxy_keys_json: Option<String>,
     is_mother: i64,
     note: Option<String>,
     tag_ids_json: Option<String>,
@@ -2591,6 +2632,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             account_id INTEGER,
             display_name TEXT,
             group_name TEXT,
+            group_bound_proxy_keys_json TEXT NOT NULL DEFAULT '[]',
             is_mother INTEGER NOT NULL DEFAULT 0,
             note TEXT,
             tag_ids_json TEXT,
@@ -2617,6 +2659,19 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_oauth_login_sessions", "group_name")
         .await
         .context("failed to ensure pool_oauth_login_sessions.group_name")?;
+    let existing_oauth_login_session_columns =
+        load_sqlite_table_columns(pool, "pool_oauth_login_sessions").await?;
+    if !existing_oauth_login_session_columns.contains("group_bound_proxy_keys_json") {
+        sqlx::query(
+            r#"
+            ALTER TABLE pool_oauth_login_sessions
+            ADD COLUMN group_bound_proxy_keys_json TEXT NOT NULL DEFAULT '[]'
+            "#,
+        )
+        .execute(pool)
+        .await
+        .context("failed to add pool_oauth_login_sessions.group_bound_proxy_keys_json")?;
+    }
     ensure_nullable_text_column(pool, "pool_oauth_login_sessions", "group_note")
         .await
         .context("failed to ensure pool_oauth_login_sessions.group_note")?;
@@ -3340,6 +3395,7 @@ pub(crate) async fn get_upstream_account(
 async fn build_imported_oauth_validation_response(
     state: &AppState,
     items: &[ImportOauthCredentialFileRequest],
+    binding: &ResolvedRequiredGroupProxyBinding,
 ) -> ImportedOauthValidationResponse {
     let mut seen_keys = HashSet::new();
     let mut rows = Vec::with_capacity(items.len());
@@ -3381,7 +3437,7 @@ async fn build_imported_oauth_validation_response(
             continue;
         }
         rows.push(
-            build_imported_oauth_validation_result(state, normalized)
+            build_imported_oauth_validation_result(state, normalized, binding)
                 .await
                 .0,
         );
@@ -3567,6 +3623,7 @@ fn bulk_upstream_account_sync_terminal_event_to_sse(
 async fn build_imported_oauth_validation_result(
     state: &AppState,
     normalized: NormalizedImportedOauthCredentials,
+    binding: &ResolvedRequiredGroupProxyBinding,
 ) -> (
     ImportedOauthValidationRow,
     Option<ImportedOauthValidatedImportData>,
@@ -3598,7 +3655,7 @@ async fn build_imported_oauth_validation_result(
         }
     };
 
-    match probe_imported_oauth_credentials(state, &normalized).await {
+    match probe_imported_oauth_credentials(state, &normalized, binding).await {
         Ok(outcome) => (
             ImportedOauthValidationRow {
                 source_id: normalized.source_id.clone(),
@@ -3890,6 +3947,7 @@ fn spawn_imported_oauth_validation_job(
     runtime: Arc<UpstreamAccountsRuntime>,
     job_id: String,
     items: Vec<ImportOauthCredentialFileRequest>,
+    binding: ResolvedRequiredGroupProxyBinding,
     job: Arc<ImportedOauthValidationJob>,
 ) {
     tokio::spawn(async move {
@@ -3959,10 +4017,16 @@ fn spawn_imported_oauth_validation_job(
 
             let validations = stream::iter(prepared.into_iter().map(|(row_index, normalized)| {
                 let state = state.clone();
+                let binding = binding.clone();
                 async move {
                     (
                         row_index,
-                        build_imported_oauth_validation_result(state.as_ref(), normalized).await,
+                        build_imported_oauth_validation_result(
+                            state.as_ref(),
+                            normalized,
+                            &binding,
+                        )
+                        .await,
                     )
                 }
             }))
@@ -4130,9 +4194,15 @@ pub(crate) async fn create_imported_oauth_validation_job(
         ));
     }
     state.upstream_accounts.require_crypto_key()?;
+    let binding = resolve_required_group_proxy_binding_for_write(
+        state.as_ref(),
+        payload.group_name.clone(),
+        payload.group_bound_proxy_keys.clone(),
+    )
+    .await?;
     let snapshot = build_imported_oauth_pending_response(&payload.items);
     let job_id = random_hex(16)?;
-    let job = Arc::new(ImportedOauthValidationJob::new(snapshot.clone()));
+    let job = Arc::new(ImportedOauthValidationJob::new(snapshot.clone(), &binding));
     state
         .upstream_accounts
         .insert_validation_job(job_id.clone(), job.clone())
@@ -4142,6 +4212,7 @@ pub(crate) async fn create_imported_oauth_validation_job(
         state.upstream_accounts.clone(),
         job_id.clone(),
         payload.items,
+        binding,
         job,
     );
     Ok(Json(ImportedOauthValidationJobResponse {
@@ -4470,8 +4541,14 @@ pub(crate) async fn validate_imported_oauth_accounts(
         ));
     }
     state.upstream_accounts.require_crypto_key()?;
+    let binding = resolve_required_group_proxy_binding_for_write(
+        state.as_ref(),
+        payload.group_name,
+        payload.group_bound_proxy_keys,
+    )
+    .await?;
     Ok(Json(
-        build_imported_oauth_validation_response(state.as_ref(), &payload.items).await,
+        build_imported_oauth_validation_response(state.as_ref(), &payload.items, &binding).await,
     ))
 }
 
@@ -4491,6 +4568,7 @@ pub(crate) async fn import_validated_oauth_accounts(
         selected_source_ids,
         validation_job_id,
         group_name,
+        group_bound_proxy_keys,
         group_note,
         tag_ids,
     } = payload;
@@ -4508,11 +4586,30 @@ pub(crate) async fn import_validated_oauth_accounts(
     let group_name = normalize_optional_text(group_name);
     let group_note = normalize_optional_text(group_note);
     validate_group_note_target(group_name.as_deref(), group_note.is_some())?;
+    let requested_group_metadata_changes = build_requested_group_metadata_changes(
+        group_note.clone(),
+        group_note.is_some(),
+        group_bound_proxy_keys.clone(),
+        group_bound_proxy_keys.is_some(),
+    );
+    let resolved_group_binding = resolve_required_group_proxy_binding_for_write(
+        state.as_ref(),
+        group_name.clone(),
+        group_bound_proxy_keys.clone(),
+    )
+    .await?;
+    let group_name = Some(resolved_group_binding.group_name.clone());
     let tag_ids = validate_tag_ids(&state.pool, &tag_ids).await?;
     let cached_validation_results = if let Some(job_id) = normalize_optional_text(validation_job_id)
     {
         if let Some(job) = state.upstream_accounts.get_validation_job(&job_id).await {
-            job.validated_imports.lock().await.clone()
+            if job.target_group_name == resolved_group_binding.group_name
+                && job.target_bound_proxy_keys == resolved_group_binding.bound_proxy_keys
+            {
+                job.validated_imports.lock().await.clone()
+            } else {
+                HashMap::new()
+            }
         } else {
             HashMap::new()
         }
@@ -4597,7 +4694,13 @@ pub(crate) async fn import_validated_oauth_accounts(
         let matched_account = existing_match.as_ref().map(import_match_summary_from_row);
         let probe = match cached_validation {
             Some(cached) => cached.probe,
-            None => match probe_imported_oauth_credentials(state.as_ref(), &normalized).await {
+            None => match probe_imported_oauth_credentials(
+                state.as_ref(),
+                &normalized,
+                &resolved_group_binding,
+            )
+            .await
+            {
                 Ok(value) => value,
                 Err(err) => {
                     failed += 1;
@@ -4621,50 +4724,51 @@ pub(crate) async fn import_validated_oauth_accounts(
             &StoredCredentials::Oauth(probe.credentials.clone()),
         )
         .map_err(internal_error_tuple)?;
-        let (persisted_account_id, import_warning) =
-            if let Some(existing_row) = existing_match.as_ref() {
-                let warning = state
-                    .upstream_accounts
-                    .account_ops
-                    .run_persist_imported_oauth(state.clone(), existing_row.id, probe.clone())
-                    .await?;
-                (existing_row.id, warning)
-            } else {
-                let persisted_account_id = {
-                    let mut tx = state
-                        .pool
-                        .begin_with("BEGIN IMMEDIATE")
-                        .await
-                        .map_err(internal_error_tuple)?;
-                    ensure_display_name_available(&mut *tx, &normalized.display_name, None).await?;
-                    let account_id = upsert_oauth_account(
-                        &mut tx,
-                        OauthAccountUpsert {
-                            account_id: None,
-                            display_name: &normalized.display_name,
-                            group_name: group_name.clone(),
-                            is_mother: false,
-                            note: None,
-                            tag_ids: tag_ids.clone(),
-                            group_note: group_note.clone(),
-                            claims: &probe.claims,
-                            encrypted_credentials,
-                            token_expires_at: &probe.token_expires_at,
-                        },
-                    )
+        let (persisted_account_id, import_warning) = if let Some(existing_row) =
+            existing_match.as_ref()
+        {
+            let warning = state
+                .upstream_accounts
+                .account_ops
+                .run_persist_imported_oauth(state.clone(), existing_row.id, probe.clone())
+                .await?;
+            (existing_row.id, warning)
+        } else {
+            let persisted_account_id = {
+                let mut tx = state
+                    .pool
+                    .begin_with("BEGIN IMMEDIATE")
                     .await
                     .map_err(internal_error_tuple)?;
-                    tx.commit().await.map_err(internal_error_tuple)?;
-                    account_id
-                };
-
-                let warning = state
-                    .upstream_accounts
-                    .account_ops
-                    .run_persist_imported_oauth(state.clone(), persisted_account_id, probe.clone())
-                    .await?;
-                (persisted_account_id, warning)
+                ensure_display_name_available(&mut *tx, &normalized.display_name, None).await?;
+                let account_id = upsert_oauth_account(
+                    &mut tx,
+                    OauthAccountUpsert {
+                        account_id: None,
+                        display_name: &normalized.display_name,
+                        group_name: group_name.clone(),
+                        is_mother: false,
+                        note: None,
+                        tag_ids: tag_ids.clone(),
+                        requested_group_metadata_changes: requested_group_metadata_changes.clone(),
+                        claims: &probe.claims,
+                        encrypted_credentials,
+                        token_expires_at: &probe.token_expires_at,
+                    },
+                )
+                .await
+                .map_err(internal_error_tuple)?;
+                tx.commit().await.map_err(internal_error_tuple)?;
+                account_id
             };
+
+            let warning = state
+                .upstream_accounts
+                .account_ops
+                .run_persist_imported_oauth(state.clone(), persisted_account_id, probe.clone())
+                .await?;
+            (persisted_account_id, warning)
+        };
 
         if existing_match.is_some() {
             updated_existing += 1;
@@ -5166,6 +5270,12 @@ pub(crate) async fn create_oauth_login_session(
     let display_name = normalize_optional_text(payload.display_name).or(preserved_display_name);
     let group_name = normalize_optional_text(payload.group_name).or(preserved_group_name);
     let note = normalize_optional_text(payload.note).or(preserved_note);
+    let resolved_group_binding = resolve_required_group_proxy_binding_for_write(
+        state.as_ref(),
+        group_name.clone(),
+        payload.group_bound_proxy_keys.clone(),
+    )
+    .await?;
 
     let redirect_uri = build_manual_callback_redirect_uri().map_err(internal_error_tuple)?;
     let login_id = random_hex(16)?;
@@ -5212,16 +5322,20 @@ pub(crate) async fn create_oauth_login_session(
     sqlx::query(
         r#"
         INSERT INTO pool_oauth_login_sessions (
-            login_id, account_id, display_name, group_name, is_mother, note, tag_ids_json, group_note,
+            login_id, account_id, display_name, group_name, group_bound_proxy_keys_json, is_mother, note, tag_ids_json, group_note,
             mailbox_session_id, generated_mailbox_address, state, pkce_verifier, redirect_uri, status, auth_url,
             error_message, expires_at, consumed_at, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, NULL, ?16, NULL, ?17, ?17)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, NULL, ?17, NULL, ?18, ?18)
         "#,
     )
     .bind(&login_id)
     .bind(payload.account_id)
     .bind(display_name)
-    .bind(group_name)
+    .bind(&resolved_group_binding.group_name)
+    .bind(
+        encode_group_bound_proxy_keys_json(&resolved_group_binding.bound_proxy_keys)
+            .map_err(internal_error_tuple)?,
+    )
     .bind(if is_mother { 1 } else { 0 })
     .bind(note)
     .bind(tag_ids_json)
@@ -5324,10 +5438,13 @@ pub(crate) async fn update_oauth_login_session(
             .await
             .map_err(internal_error_tuple)?
             .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
-        let current_group_note =
-            load_group_note_snapshot_conn(tx.as_mut(), session.group_name.as_deref(), None)
+        let current_group_metadata = match session.group_name.as_deref() {
+            Some(group_name) => load_group_metadata_conn(tx.as_mut(), group_name)
                 .await
-                .map_err(internal_error_tuple)?;
+                .map_err(internal_error_tuple)?
+                .unwrap_or_default(),
+            None => UpstreamAccountGroupMetadata::default(),
+        };
         let current_tag_ids = sqlx::query_scalar::<_, i64>(
             r#"
             SELECT tag_id
@@ -5343,7 +5460,9 @@ pub(crate) async fn update_oauth_login_session(
         session.display_name.as_deref() == Some(account.display_name.as_str())
             && session.group_name == account.group_name
             && session.note == account.note
-            && session.group_note == current_group_note
+            && session.group_note == current_group_metadata.note
+            && decode_group_bound_proxy_keys_json(session.group_bound_proxy_keys_json.as_deref())
+                == current_group_metadata.bound_proxy_keys
             && (session.is_mother != 0) == (account.is_mother != 0)
             && parse_tag_ids_json(session.tag_ids_json.as_deref()) == current_tag_ids
     } else {
@@ -5379,6 +5498,7 @@ pub(crate) async fn update_oauth_login_session(
     let UpdateOauthLoginSessionRequest {
         display_name: requested_display_name,
         group_name: requested_group_name,
+        group_bound_proxy_keys: requested_group_bound_proxy_keys,
         note: requested_note,
         group_note: requested_group_note,
         tag_ids: requested_tag_ids,
@@ -5387,6 +5507,8 @@ pub(crate) async fn update_oauth_login_session(
         mailbox_address: requested_mailbox_address,
     } = payload;
     let requested_group_name_was_updated = !matches!(requested_group_name, OptionalField::Missing);
+    let requested_group_bound_proxy_keys_was_updated =
+        !matches!(requested_group_bound_proxy_keys, OptionalField::Missing);
     let requested_group_note_was_updated = !matches!(requested_group_note, OptionalField::Missing);
 
     let display_name = match requested_display_name {
@@ -5404,6 +5526,8 @@ pub(crate) async fn update_oauth_login_session(
         OptionalField::Null => None,
         OptionalField::Value(value) => normalize_optional_text(Some(value)),
     };
+    let session_group_bound_proxy_keys =
+        decode_group_bound_proxy_keys_json(session.group_bound_proxy_keys_json.as_deref());
     let requested_group_note_missing = matches!(requested_group_note, OptionalField::Missing);
     let mut normalized_group_note = match requested_group_note {
         OptionalField::Missing => session.group_note.clone(),
@@ -5411,6 +5535,12 @@ pub(crate) async fn update_oauth_login_session(
         OptionalField::Value(value) => normalize_optional_text(Some(value)),
     };
     let group_name_changed = group_name.as_deref() != session.group_name.as_deref();
+    let requested_group_bound_proxy_keys = match requested_group_bound_proxy_keys {
+        OptionalField::Missing if group_name_changed => None,
+        OptionalField::Missing => Some(session_group_bound_proxy_keys.clone()),
+        OptionalField::Null => Some(Vec::new()),
+        OptionalField::Value(value) => Some(normalize_bound_proxy_keys(value)),
+    };
     if requested_group_name_was_updated
         && (group_name.is_none() || (requested_group_note_missing && group_name_changed))
     {
@@ -5444,7 +5574,19 @@ pub(crate) async fn update_oauth_login_session(
     )
     .await?;
     validate_group_note_target(group_name.as_deref(), normalized_group_note.is_some())?;
+    let resolved_group_binding = resolve_required_group_proxy_binding_for_write(
+        state.as_ref(),
+        group_name.clone(),
+        requested_group_bound_proxy_keys,
+    )
+    .await?;
     let tag_ids_json = encode_tag_ids_json(&tag_ids).map_err(internal_error_tuple)?;
+    let requested_group_metadata_changes = build_requested_group_metadata_changes(
+        normalized_group_note.clone(),
+        requested_group_note_was_updated,
+        Some(resolved_group_binding.bound_proxy_keys.clone()),
+        requested_group_bound_proxy_keys_was_updated,
+    );
 
     if display_name.as_deref() != session.display_name.as_deref() {
         if let Some(display_name) = display_name.as_deref() {
@@ -5476,10 +5618,9 @@ pub(crate) async fn update_oauth_login_session(
             &mut tx,
             account_id,
             display_name.clone(),
-            group_name.clone(),
+            Some(resolved_group_binding.group_name.clone()),
             note.clone(),
-            normalized_group_note.clone(),
-            requested_group_note_was_updated,
+            &requested_group_metadata_changes,
             is_mother,
             &tag_ids,
         )
@@ -5497,19 +5638,24 @@ pub(crate) async fn update_oauth_login_session(
             UPDATE pool_oauth_login_sessions
             SET display_name = ?2,
                 group_name = ?3,
-                is_mother = ?4,
-                note = ?5,
-                tag_ids_json = ?6,
-                group_note = ?7,
-                mailbox_session_id = ?8,
-                generated_mailbox_address = ?9,
-                updated_at = ?10
+                group_bound_proxy_keys_json = ?4,
+                is_mother = ?5,
+                note = ?6,
+                tag_ids_json = ?7,
+                group_note = ?8,
+                mailbox_session_id = ?9,
+                generated_mailbox_address = ?10,
+                updated_at = ?11
             WHERE login_id = ?1
             "#,
         )
         .bind(&login_id)
         .bind(display_name)
-        .bind(group_name)
+        .bind(Some(resolved_group_binding.group_name.clone()))
+        .bind(
+            encode_group_bound_proxy_keys_json(&resolved_group_binding.bound_proxy_keys)
+                .map_err(internal_error_tuple)?,
+        )
         .bind(if is_mother { 1 } else { 0 })
         .bind(note)
         .bind(&tag_ids_json)
@@ -5535,20 +5681,25 @@ pub(crate) async fn update_oauth_login_session(
         UPDATE pool_oauth_login_sessions
         SET display_name = ?2,
             group_name = ?3,
-            is_mother = ?4,
-            note = ?5,
-            tag_ids_json = ?6,
-            group_note = ?7,
-            mailbox_session_id = ?8,
-            generated_mailbox_address = ?9,
-            updated_at = ?10
+            group_bound_proxy_keys_json = ?4,
+            is_mother = ?5,
+            note = ?6,
+            tag_ids_json = ?7,
+            group_note = ?8,
+            mailbox_session_id = ?9,
+            generated_mailbox_address = ?10,
+            updated_at = ?11
         WHERE login_id = ?1
-          AND (?11 IS NULL OR updated_at = ?11)
+          AND (?12 IS NULL OR updated_at = ?12)
         "#,
     )
     .bind(&login_id)
     .bind(display_name)
-    .bind(group_name)
+    .bind(Some(resolved_group_binding.group_name.clone()))
+    .bind(
+        encode_group_bound_proxy_keys_json(&resolved_group_binding.bound_proxy_keys)
+            .map_err(internal_error_tuple)?,
+    )
     .bind(if is_mother { 1 } else { 0 })
     .bind(note)
     .bind(tag_ids_json)
@@ -5659,6 +5810,7 @@ pub(crate) async fn relogin_upstream_account(
     let payload = CreateOauthLoginSessionRequest {
         display_name: None,
         group_name: None,
+        group_bound_proxy_keys: None,
         note: None,
         group_note: None,
         account_id: Some(id),
@@ -5735,8 +5887,20 @@ async fn create_api_key_account_inner(
     let note = normalize_optional_text(payload.note);
     let has_group_note = payload.group_note.is_some();
     let group_note = normalize_optional_text(payload.group_note);
+    let requested_group_metadata_changes = build_requested_group_metadata_changes(
+        group_note.clone(),
+        has_group_note,
+        payload.group_bound_proxy_keys.clone(),
+        payload.group_bound_proxy_keys.is_some(),
+    );
     validate_group_note_target(group_name.as_deref(), has_group_note)?;
-    let target_group_name = group_name.clone();
+    let resolved_group_binding = resolve_required_group_proxy_binding_for_write(
+        state.as_ref(),
+        group_name.clone(),
+        payload.group_bound_proxy_keys,
+    )
+    .await?;
+    let target_group_name = Some(resolved_group_binding.group_name.clone());
     let is_mother = payload.is_mother.unwrap_or(false);
     let limit_unit = normalize_limit_unit(payload.local_limit_unit);
     let upstream_base_url = normalize_optional_upstream_base_url(payload.upstream_base_url)?;
@@ -5772,7 +5936,7 @@ async fn create_api_key_account_inner(
     .bind(UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX)
     .bind(UPSTREAM_ACCOUNT_PROVIDER_CODEX)
     .bind(display_name)
-    .bind(&group_name)
+    .bind(&target_group_name)
     .bind(if is_mother { 1 } else { 0 })
     .bind(note)
     .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
@@ -5790,11 +5954,10 @@ async fn create_api_key_account_inner(
             .await
             .map_err(internal_error_tuple)?;
 
-        save_group_note_after_account_write(
+        save_group_metadata_after_account_write(
             tx.as_mut(),
             target_group_name.as_deref(),
-            group_note,
-            has_group_note,
+            &requested_group_metadata_changes,
             false,
         )
         .await
@@ -5860,11 +6023,17 @@ async fn update_upstream_account_inner(
         .group_note
         .clone()
         .map(|value| normalize_optional_text(Some(value)));
+    let requested_group_metadata_changes = build_requested_group_metadata_changes(
+        requested_group_note.clone().flatten(),
+        payload.group_note.is_some(),
+        payload.group_bound_proxy_keys.clone(),
+        payload.group_bound_proxy_keys.is_some(),
+    );
 
     if let Some(display_name) = payload.display_name {
         row.display_name = normalize_required_display_name(&display_name)?;
     }
-    if let Some(group_name) = payload.group_name {
+    if let Some(group_name) = payload.group_name.clone() {
         row.group_name = normalize_optional_text(Some(group_name));
     }
     if let Some(note) = payload.note {
@@ -5912,6 +6081,22 @@ async fn update_upstream_account_inner(
         validate_local_limits(row.local_primary_limit, row.local_secondary_limit)?;
     }
     validate_group_note_target(row.group_name.as_deref(), requested_group_note.is_some())?;
+    let resolved_group_binding =
+        if payload.group_name.is_some() || payload.group_bound_proxy_keys.is_some() {
+            Some(
+                resolve_required_group_proxy_binding_for_write(
+                    state,
+                    row.group_name.clone(),
+                    payload.group_bound_proxy_keys.clone(),
+                )
+                .await?,
+            )
+        } else {
+            None
+        };
+    if let Some(resolved_group_binding) = resolved_group_binding.as_ref() {
+        row.group_name = Some(resolved_group_binding.group_name.clone());
+    }
     let now_iso = format_utc_iso(Utc::now());
     let mut tx = state
         .pool
@@ -5957,19 +6142,26 @@ async fn update_upstream_account_inner(
         .await
         .map_err(internal_error_tuple)?;
 
-    if let Some(group_note) = requested_group_note {
-        save_group_note_after_account_write(
+    if previous_group_name == row.group_name {
+        save_group_metadata_for_single_account_group(
             tx.as_mut(),
             row.group_name.as_deref(),
-            group_note,
-            true,
-            previous_group_name == row.group_name,
+            &requested_group_metadata_changes,
+        )
+        .await
+        .map_err(internal_error_tuple)?;
+    } else {
+        save_group_metadata_after_account_write(
+            tx.as_mut(),
+            row.group_name.as_deref(),
+            &requested_group_metadata_changes,
+            false,
         )
         .await
         .map_err(internal_error_tuple)?;
     }
     if previous_group_name != row.group_name {
-        cleanup_orphaned_group_note(tx.as_mut(), previous_group_name.as_deref())
+        cleanup_orphaned_group_metadata(tx.as_mut(), previous_group_name.as_deref())
             .await
             .map_err(internal_error_tuple)?;
     }
@@ -6001,8 +6193,7 @@ async fn apply_oauth_login_session_metadata_to_account_with_executor(
     display_name: Option<String>,
     group_name: Option<String>,
     note: Option<String>,
-    group_note: Option<String>,
-    group_note_was_requested: bool,
+    requested_group_metadata_changes: &RequestedGroupMetadataChanges,
     is_mother: bool,
     tag_ids: &[i64],
 ) -> Result<(), (StatusCode, String)> {
@@ -6036,32 +6227,26 @@ async fn apply_oauth_login_session_metadata_to_account_with_executor(
     .await
     .map_err(internal_error_tuple)?;
 
-    if group_note_was_requested {
-        if previous_group_name == group_name {
-            if let Some(group_name) = group_name.as_deref()
-                && group_account_count_conn(tx.as_mut(), group_name)
-                    .await
-                    .map_err(internal_error_tuple)?
-                    == 1
-            {
-                save_group_note_record_conn(tx.as_mut(), group_name, group_note)
-                    .await
-                    .map_err(internal_error_tuple)?;
-            }
-        } else {
-            save_group_note_after_account_write(
-                tx.as_mut(),
-                group_name.as_deref(),
-                group_note,
-                true,
-                false,
-            )
-            .await
-            .map_err(internal_error_tuple)?;
-        }
+    if previous_group_name == group_name {
+        save_group_metadata_for_single_account_group(
+            tx.as_mut(),
+            group_name.as_deref(),
+            requested_group_metadata_changes,
+        )
+        .await
+        .map_err(internal_error_tuple)?;
+    } else {
+        save_group_metadata_after_account_write(
+            tx.as_mut(),
+            group_name.as_deref(),
+            requested_group_metadata_changes,
+            false,
+        )
+        .await
+        .map_err(internal_error_tuple)?;
     }
     if previous_group_name != group_name {
-        cleanup_orphaned_group_note(tx.as_mut(), previous_group_name.as_deref())
+        cleanup_orphaned_group_metadata(tx.as_mut(), previous_group_name.as_deref())
             .await
             .map_err(internal_error_tuple)?;
     }
@@ -6131,7 +6316,7 @@ async fn delete_upstream_account_inner(
     if affected == 0 {
         return Err((StatusCode::NOT_FOUND, "account not found".to_string()));
     }
-    cleanup_orphaned_group_note(
+    cleanup_orphaned_group_metadata(
         tx.as_mut(),
         group_name.as_ref().and_then(|value| value.as_deref()),
     )
@@ -6270,9 +6455,11 @@ async fn complete_oauth_login_session_with_query(
         )
     })?;
 
-    let token_response = exchange_authorization_code(
-        &state.http_clients.shared,
-        &state.config,
+    let session_scope = login_session_required_forward_proxy_scope(&session)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    let token_response = exchange_authorization_code_for_required_scope(
+        state.as_ref(),
+        &session_scope,
         &code,
         &session.pkce_verifier,
         &session.redirect_uri,
@@ -6428,7 +6615,14 @@ async fn persist_oauth_callback_inner(
             is_mother: session.is_mother != 0,
             note: session.note.clone(),
             tag_ids: parse_tag_ids_json(session.tag_ids_json.as_deref()),
-            group_note: session.group_note.clone(),
+            requested_group_metadata_changes: build_requested_group_metadata_changes(
+                session.group_note.clone(),
+                true,
+                Some(decode_group_bound_proxy_keys_json(
+                    session.group_bound_proxy_keys_json.as_deref(),
+                )),
+                true,
+            ),
             claims: &input.claims,
             encrypted_credentials: input.encrypted_credentials,
             token_expires_at: &input.token_expires_at,
@@ -6922,7 +7116,12 @@ async fn find_existing_import_match(
 async fn probe_imported_oauth_credentials(
     state: &AppState,
     imported: &NormalizedImportedOauthCredentials,
+    binding: &ResolvedRequiredGroupProxyBinding,
 ) -> Result<ImportedOauthProbeOutcome, anyhow::Error> {
+    let scope = required_account_forward_proxy_scope(
+        Some(&binding.group_name),
+        binding.bound_proxy_keys.clone(),
+    )?;
     let mut credentials = imported.credentials.clone();
     let mut claims = imported.claims.clone();
     let mut token_expires_at = imported.token_expires_at.clone();
@@ -6938,12 +7137,9 @@ async fn probe_imported_oauth_credentials(
         .unwrap_or(true);
 
     if refresh_due {
-        let response = refresh_oauth_tokens(
-            &state.http_clients.shared,
-            &state.config,
-            &credentials.refresh_token,
-        )
-        .await?;
+        let response =
+            refresh_oauth_tokens_for_required_scope(state, &scope, &credentials.refresh_token)
+                .await?;
         credentials.access_token = response.access_token;
         if let Some(refresh_token) = response.refresh_token {
             credentials.refresh_token = refresh_token;
@@ -6963,7 +7159,7 @@ async fn probe_imported_oauth_credentials(
 
     let usage_result = fetch_usage_snapshot_via_forward_proxy(
         state,
-        &ForwardProxyRouteScope::Automatic,
+        &scope,
         &state.config,
         &credentials.access_token,
         claims
@@ -6976,12 +7172,9 @@ async fn probe_imported_oauth_credentials(
         Ok(snapshot) => (Some(snapshot), None),
         Err(err) if is_import_invalid_error_message(&err.to_string()) => return Err(err),
         Err(err) if err.to_string().contains("401") || err.to_string().contains("403") => {
-            let response = refresh_oauth_tokens(
-                &state.http_clients.shared,
-                &state.config,
-                &credentials.refresh_token,
-            )
-            .await?;
+            let response =
+                refresh_oauth_tokens_for_required_scope(state, &scope, &credentials.refresh_token)
+                    .await?;
             credentials.access_token = response.access_token;
             if let Some(refresh_token) = response.refresh_token {
                 credentials.refresh_token = refresh_token;
@@ -6999,7 +7192,7 @@ async fn probe_imported_oauth_credentials(
                 format_utc_iso(Utc::now() + ChronoDuration::seconds(response.expires_in.max(0)));
             match fetch_usage_snapshot_via_forward_proxy(
                 state,
-                &ForwardProxyRouteScope::Automatic,
+                &scope,
                 &state.config,
                 &credentials.access_token,
                 claims
@@ -7154,11 +7347,24 @@ async fn sync_oauth_account(
                     )
         })
         .unwrap_or(true);
+    let refresh_scope = match load_required_account_forward_proxy_scope_from_group_metadata(
+        &state.pool,
+        row.group_name.as_deref(),
+    )
+    .await
+    {
+        Ok(scope) => scope,
+        Err(err) => {
+            record_classified_account_sync_failure(&state.pool, row, sync_source, &err.to_string())
+                .await?;
+            return Ok(());
+        }
+    };
 
     if refresh_due {
-        match refresh_oauth_tokens(
-            &state.http_clients.shared,
-            &state.config,
+        match refresh_oauth_tokens_for_required_scope(
+            state,
+            &refresh_scope,
             &credentials.refresh_token,
         )
         .await
@@ -7242,12 +7448,24 @@ async fn sync_oauth_account(
         bail!("unexpected credential kind for OAuth account")
     };
 
-    let usage_scope = ForwardProxyRouteScope::from_group_binding(
+    let usage_scope = match load_required_account_forward_proxy_scope_from_group_metadata(
+        &state.pool,
         latest_row.group_name.as_deref(),
-        load_group_metadata(&state.pool, latest_row.group_name.as_deref())
-            .await?
-            .bound_proxy_keys,
-    );
+    )
+    .await
+    {
+        Ok(scope) => scope,
+        Err(err) => {
+            record_classified_account_sync_failure(
+                &state.pool,
+                &latest_row,
+                sync_source,
+                &err.to_string(),
+            )
+            .await?;
+            return Ok(());
+        }
+    };
     let usage_result = fetch_usage_snapshot_via_forward_proxy(
         state,
         &usage_scope,
@@ -7260,9 +7478,9 @@ async fn sync_oauth_account(
     let snapshot = match usage_result {
         Ok(snapshot) => snapshot,
         Err(err) if err.to_string().contains("401") || err.to_string().contains("403") => {
-            match refresh_oauth_tokens(
-                &state.http_clients.shared,
-                &state.config,
+            match refresh_oauth_tokens_for_required_scope(
+                state,
+                &usage_scope,
                 &credentials.refresh_token,
             )
             .await
@@ -7606,7 +7824,7 @@ async fn persist_imported_oauth_existing_inner(
             is_mother: existing_row.is_mother != 0,
             note: existing_row.note.clone(),
             tag_ids: existing_tag_ids,
-            group_note: None,
+            requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
             claims: &probe.claims,
             encrypted_credentials,
             token_expires_at: &probe.token_expires_at,
@@ -7638,7 +7856,7 @@ struct OauthAccountUpsert<'a> {
     is_mother: bool,
     note: Option<String>,
     tag_ids: Vec<i64>,
-    group_note: Option<String>,
+    requested_group_metadata_changes: RequestedGroupMetadataChanges,
     claims: &'a ChatgptJwtClaims,
     encrypted_credentials: String,
     token_expires_at: &'a str,
@@ -7698,13 +7916,12 @@ async fn upsert_oauth_account(
         is_mother,
         note,
         tag_ids,
-        group_note,
+        requested_group_metadata_changes,
         claims,
         encrypted_credentials,
         token_expires_at,
     } = payload;
     let target_group_name = group_name.clone();
-    let group_note_was_requested = group_note.is_some();
     let now_iso = format_utc_iso(Utc::now());
     let resolved_account_id = account_id;
 
@@ -7757,16 +7974,15 @@ async fn upsert_oauth_account(
         .bind(&now_iso)
         .execute(tx.as_mut())
         .await?;
-        save_group_note_after_account_write(
+        save_group_metadata_after_account_write(
             tx.as_mut(),
             target_group_name.as_deref(),
-            group_note,
-            group_note_was_requested,
+            &requested_group_metadata_changes,
             previous_group_name == target_group_name,
         )
         .await?;
         if previous_group_name != target_group_name {
-            cleanup_orphaned_group_note(tx.as_mut(), previous_group_name.as_deref()).await?;
+            cleanup_orphaned_group_metadata(tx.as_mut(), previous_group_name.as_deref()).await?;
         }
         apply_mother_assignment(tx, existing_id, group_name.as_deref(), is_mother).await?;
         sync_account_tag_links_with_executor(tx.as_mut(), existing_id, &tag_ids).await?;
@@ -7813,11 +8029,10 @@ async fn upsert_oauth_account(
         .bind(&now_iso)
         .fetch_one(tx.as_mut())
         .await?;
-        save_group_note_after_account_write(
+        save_group_metadata_after_account_write(
             tx.as_mut(),
             target_group_name.as_deref(),
-            group_note,
-            group_note_was_requested,
+            &requested_group_metadata_changes,
             false,
         )
         .await?;
@@ -8586,6 +8801,7 @@ async fn apply_bulk_upstream_account_action(
         BULK_UPSTREAM_ACCOUNT_ACTION_ENABLE => UpdateUpstreamAccountRequest {
             display_name: None,
             group_name: None,
+            group_bound_proxy_keys: None,
             note: None,
             group_note: None,
             upstream_base_url: OptionalField::Missing,
@@ -8600,6 +8816,7 @@ async fn apply_bulk_upstream_account_action(
         BULK_UPSTREAM_ACCOUNT_ACTION_DISABLE => UpdateUpstreamAccountRequest {
             display_name: None,
             group_name: None,
+            group_bound_proxy_keys: None,
             note: None,
             group_note: None,
             upstream_base_url: OptionalField::Missing,
@@ -8614,6 +8831,7 @@ async fn apply_bulk_upstream_account_action(
         BULK_UPSTREAM_ACCOUNT_ACTION_SET_GROUP => UpdateUpstreamAccountRequest {
             display_name: None,
             group_name,
+            group_bound_proxy_keys: None,
             note: None,
             group_note: None,
             upstream_base_url: OptionalField::Missing,
@@ -8649,6 +8867,7 @@ async fn apply_bulk_upstream_account_action(
             UpdateUpstreamAccountRequest {
                 display_name: None,
                 group_name: None,
+                group_bound_proxy_keys: None,
                 note: None,
                 group_note: None,
                 upstream_base_url: OptionalField::Missing,
@@ -9547,6 +9766,121 @@ fn encode_group_bound_proxy_keys_json(bound_proxy_keys: &[String]) -> Result<Str
     serde_json::to_string(bound_proxy_keys).context("failed to encode group bound proxy keys")
 }
 
+fn missing_request_group_error_message() -> String {
+    "groupName is required for upstream accounts".to_string()
+}
+
+fn missing_account_group_error_message() -> String {
+    "upstream account is not assigned to a group; assign it to a group with at least one bound forward proxy node".to_string()
+}
+
+fn missing_group_bound_proxy_error_message(group_name: &str) -> String {
+    format!(
+        "upstream account group \"{group_name}\" has no bound forward proxy nodes; bind at least one proxy node to the group"
+    )
+}
+
+fn missing_selectable_group_bound_proxy_error_message(group_name: &str) -> String {
+    format!("upstream account group \"{group_name}\" has no selectable bound forward proxy nodes")
+}
+
+fn build_requested_group_metadata_changes(
+    note: Option<String>,
+    note_was_requested: bool,
+    bound_proxy_keys: Option<Vec<String>>,
+    bound_proxy_keys_was_requested: bool,
+) -> RequestedGroupMetadataChanges {
+    RequestedGroupMetadataChanges {
+        note: normalize_optional_text(note),
+        note_was_requested,
+        bound_proxy_keys: if bound_proxy_keys_was_requested {
+            normalize_bound_proxy_keys(bound_proxy_keys.unwrap_or_default())
+        } else {
+            Vec::new()
+        },
+        bound_proxy_keys_was_requested,
+    }
+}
+
+pub(crate) fn required_account_forward_proxy_scope(
+    group_name: Option<&str>,
+    bound_proxy_keys: Vec<String>,
+) -> Result<ForwardProxyRouteScope> {
+    let normalized_group_name = group_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| anyhow!(missing_account_group_error_message()))?;
+    let normalized_bound_proxy_keys = normalize_bound_proxy_keys(bound_proxy_keys);
+    if normalized_bound_proxy_keys.is_empty() {
+        bail!(missing_group_bound_proxy_error_message(
+            &normalized_group_name
+        ));
+    }
+    Ok(ForwardProxyRouteScope::BoundGroup {
+        group_name: normalized_group_name,
+        bound_proxy_keys: normalized_bound_proxy_keys,
+    })
+}
+
+fn map_required_group_proxy_selection_error(
+    scope: &ForwardProxyRouteScope,
+    err: anyhow::Error,
+) -> anyhow::Error {
+    match scope {
+        ForwardProxyRouteScope::BoundGroup { group_name, .. }
+            if err
+                .to_string()
+                .contains("bound forward proxy group has no selectable nodes") =>
+        {
+            anyhow!(missing_selectable_group_bound_proxy_error_message(
+                group_name
+            ))
+        }
+        _ => err,
+    }
+}
+
+async fn ensure_required_group_proxy_scope_selectable(
+    state: &AppState,
+    scope: &ForwardProxyRouteScope,
+) -> Result<()> {
+    select_forward_proxy_for_scope(state, scope)
+        .await
+        .map(|_| ())
+        .map_err(|err| map_required_group_proxy_selection_error(scope, err))
+}
+
+async fn resolve_required_group_proxy_binding_for_write(
+    state: &AppState,
+    group_name: Option<String>,
+    requested_bound_proxy_keys: Option<Vec<String>>,
+) -> Result<ResolvedRequiredGroupProxyBinding, (StatusCode, String)> {
+    let group_name = normalize_optional_text(group_name).ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            missing_request_group_error_message(),
+        )
+    })?;
+    let bound_proxy_keys = if let Some(requested_bound_proxy_keys) = requested_bound_proxy_keys {
+        normalize_bound_proxy_keys(requested_bound_proxy_keys)
+    } else {
+        load_group_metadata(&state.pool, Some(&group_name))
+            .await
+            .map_err(internal_error_tuple)?
+            .bound_proxy_keys
+    };
+    let scope = required_account_forward_proxy_scope(Some(&group_name), bound_proxy_keys.clone())
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    ensure_required_group_proxy_scope_selectable(state, &scope)
+        .await
+        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    Ok(ResolvedRequiredGroupProxyBinding {
+        group_name,
+        bound_proxy_keys,
+    })
+}
+
 async fn load_group_metadata_conn(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     group_name: &str,
@@ -9604,6 +9938,16 @@ async fn load_group_metadata(
     Ok(load_group_metadata_conn(&mut *conn, group_name)
         .await?
         .unwrap_or_default())
+}
+
+pub(crate) async fn load_required_account_forward_proxy_scope_from_group_metadata(
+    pool: &Pool<Sqlite>,
+    group_name: Option<&str>,
+) -> Result<ForwardProxyRouteScope> {
+    let bound_proxy_keys = load_group_metadata(pool, group_name)
+        .await?
+        .bound_proxy_keys;
+    required_account_forward_proxy_scope(group_name, bound_proxy_keys)
 }
 
 async fn save_group_metadata_record_conn(
@@ -9694,29 +10038,45 @@ async fn save_group_note_record_conn(
     save_group_metadata_record_conn(conn, group_name, metadata).await
 }
 
-async fn save_group_note_after_account_write(
+async fn save_group_metadata_for_single_account_group(
     conn: &mut SqliteConnection,
     group_name: Option<&str>,
-    note: Option<String>,
-    note_was_requested: bool,
-    target_group_already_had_current_account: bool,
+    changes: &RequestedGroupMetadataChanges,
 ) -> Result<()> {
-    if !note_was_requested {
+    if !changes.was_requested() {
         return Ok(());
     }
     let Some(group_name) = group_name else {
         return Ok(());
     };
-    if target_group_already_had_current_account {
-        return Ok(());
-    }
     if group_account_count_conn(conn, group_name).await? != 1 {
         return Ok(());
     }
-    save_group_note_record_conn(conn, group_name, note).await
+    let mut metadata = load_group_metadata_conn(&mut *conn, group_name)
+        .await?
+        .unwrap_or_default();
+    if changes.note_was_requested {
+        metadata.note = changes.note.clone();
+    }
+    if changes.bound_proxy_keys_was_requested {
+        metadata.bound_proxy_keys = changes.bound_proxy_keys.clone();
+    }
+    save_group_metadata_record_conn(conn, group_name, metadata).await
 }
 
-async fn cleanup_orphaned_group_note(
+async fn save_group_metadata_after_account_write(
+    conn: &mut SqliteConnection,
+    group_name: Option<&str>,
+    changes: &RequestedGroupMetadataChanges,
+    target_group_already_had_current_account: bool,
+) -> Result<()> {
+    if target_group_already_had_current_account {
+        return Ok(());
+    }
+    save_group_metadata_for_single_account_group(conn, group_name, changes).await
+}
+
+async fn cleanup_orphaned_group_metadata(
     conn: &mut SqliteConnection,
     group_name: Option<&str>,
 ) -> Result<()> {
@@ -9745,7 +10105,7 @@ async fn load_login_session_by_login_id_with_executor(
     sqlx::query_as::<_, OauthLoginSessionRow>(
         r#"
         SELECT
-            login_id, account_id, display_name, group_name, is_mother, note, tag_ids_json, group_note,
+            login_id, account_id, display_name, group_name, group_bound_proxy_keys_json, is_mother, note, tag_ids_json, group_note,
             mailbox_session_id, generated_mailbox_address AS mailbox_address, state, pkce_verifier, redirect_uri, status, auth_url,
             error_message, expires_at, consumed_at, created_at, updated_at
         FROM pool_oauth_login_sessions
@@ -9773,7 +10133,7 @@ async fn load_login_session_by_state(
     sqlx::query_as::<_, OauthLoginSessionRow>(
         r#"
         SELECT
-            login_id, account_id, display_name, group_name, is_mother, note, tag_ids_json, group_note,
+            login_id, account_id, display_name, group_name, group_bound_proxy_keys_json, is_mother, note, tag_ids_json, group_note,
             mailbox_session_id, generated_mailbox_address AS mailbox_address, state, pkce_verifier, redirect_uri, status, auth_url,
             error_message, expires_at, consumed_at, created_at, updated_at
         FROM pool_oauth_login_sessions
@@ -10062,6 +10422,15 @@ fn login_session_to_response_with_sync_applied(
     let mut response = login_session_to_response(row);
     response.sync_applied = Some(sync_applied);
     response
+}
+
+fn login_session_required_forward_proxy_scope(
+    row: &OauthLoginSessionRow,
+) -> Result<ForwardProxyRouteScope> {
+    required_account_forward_proxy_scope(
+        row.group_name.as_deref(),
+        decode_group_bound_proxy_keys_json(row.group_bound_proxy_keys_json.as_deref()),
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -12627,6 +12996,30 @@ async fn exchange_authorization_code(
     parse_token_response(response).await
 }
 
+async fn client_for_required_proxy_scope(
+    state: &AppState,
+    scope: &ForwardProxyRouteScope,
+) -> Result<Client> {
+    let selected_proxy = select_forward_proxy_for_scope(state, scope)
+        .await
+        .map_err(|err| map_required_group_proxy_selection_error(scope, err))?;
+    state
+        .http_clients
+        .client_for_forward_proxy(selected_proxy.endpoint_url.as_ref())
+        .context("failed to initialize required forward proxy client")
+}
+
+async fn exchange_authorization_code_for_required_scope(
+    state: &AppState,
+    scope: &ForwardProxyRouteScope,
+    code: &str,
+    code_verifier: &str,
+    redirect_uri: &str,
+) -> Result<OAuthTokenResponse> {
+    let client = client_for_required_proxy_scope(state, scope).await?;
+    exchange_authorization_code(&client, &state.config, code, code_verifier, redirect_uri).await
+}
+
 async fn refresh_oauth_tokens(
     client: &Client,
     config: &AppConfig,
@@ -12650,6 +13043,15 @@ async fn refresh_oauth_tokens(
         .await
         .context("failed to refresh OAuth token")?;
     parse_token_response(response).await
+}
+
+async fn refresh_oauth_tokens_for_required_scope(
+    state: &AppState,
+    scope: &ForwardProxyRouteScope,
+    refresh_token: &str,
+) -> Result<OAuthTokenResponse> {
+    let client = client_for_required_proxy_scope(state, scope).await?;
+    refresh_oauth_tokens(&client, &state.config, refresh_token).await
 }
 
 async fn parse_token_response(response: reqwest::Response) -> Result<OAuthTokenResponse> {
@@ -14850,6 +15252,10 @@ async fn prepare_pool_account(
         return Ok(None);
     };
     let group_metadata = load_group_metadata(&state.pool, row.group_name.as_deref()).await?;
+    let required_proxy_scope = required_account_forward_proxy_scope(
+        row.group_name.as_deref(),
+        group_metadata.bound_proxy_keys.clone(),
+    )?;
     let upstream_base_url =
         resolve_pool_account_upstream_base_url(row, &state.config.openai_upstream_base_url)?;
     let credentials = decrypt_credentials(crypto_key, encrypted_credentials)?;
@@ -14880,9 +15286,9 @@ async fn prepare_pool_account(
                 })
                 .unwrap_or(true);
             if refresh_due {
-                match refresh_oauth_tokens(
-                    &state.http_clients.shared,
-                    &state.config,
+                match refresh_oauth_tokens_for_required_scope(
+                    state,
+                    &required_proxy_scope,
                     &value.refresh_token,
                 )
                 .await
@@ -15957,6 +16363,10 @@ mod tests {
 
     #[tokio::test]
     async fn imported_oauth_validation_job_caches_successful_probe_for_import_reuse() {
+        let binding = ResolvedRequiredGroupProxyBinding {
+            group_name: "import-group".to_string(),
+            bound_proxy_keys: test_required_group_bound_proxy_keys(),
+        };
         let job = Arc::new(ImportedOauthValidationJob::new(
             ImportedOauthValidationResponse {
                 input_files: 1,
@@ -15975,6 +16385,7 @@ mod tests {
                     attempts: 0,
                 }],
             },
+            &binding,
         ));
         let normalized = NormalizedImportedOauthCredentials {
             source_id: "source-1".to_string(),
@@ -16628,6 +17039,37 @@ mod tests {
         pool
     }
 
+    fn test_required_group_bound_proxy_keys() -> Vec<String> {
+        vec![FORWARD_PROXY_DIRECT_KEY.to_string()]
+    }
+
+    fn test_required_group_name() -> &'static str {
+        "test-direct-group"
+    }
+
+    async fn ensure_test_group_binding(pool: &SqlitePool, group_name: &str) {
+        let now_iso = format_utc_iso(Utc::now());
+        let bound_proxy_keys_json =
+            encode_group_bound_proxy_keys_json(&test_required_group_bound_proxy_keys())
+                .expect("encode test direct group bindings");
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_account_group_notes (
+                group_name, note, bound_proxy_keys_json, created_at, updated_at
+            ) VALUES (?1, '', ?2, ?3, ?3)
+            ON CONFLICT(group_name) DO UPDATE SET
+                bound_proxy_keys_json = excluded.bound_proxy_keys_json,
+                updated_at = excluded.updated_at
+            "#,
+        )
+        .bind(group_name)
+        .bind(bound_proxy_keys_json)
+        .bind(&now_iso)
+        .execute(pool)
+        .await
+        .expect("ensure test group binding");
+    }
+
     async fn test_app_state_with_usage_base(base_url: &str) -> Arc<AppState> {
         test_app_state_with_usage_base_and_parallelism(
             base_url,
@@ -17263,6 +17705,7 @@ mod tests {
     }
 
     async fn insert_oauth_account(pool: &SqlitePool, display_name: &str) -> i64 {
+        ensure_test_group_binding(pool, test_required_group_name()).await;
         let now_iso = format_utc_iso(Utc::now());
         let token_expires_at = format_utc_iso(Utc::now() + ChronoDuration::days(30));
         sqlx::query_scalar::<_, i64>(
@@ -17273,16 +17716,17 @@ mod tests {
                 last_refreshed_at, last_synced_at, last_successful_sync_at, last_error, last_error_at,
                 local_primary_limit, local_secondary_limit, local_limit_unit, created_at, updated_at
             ) VALUES (
-                ?1, ?2, ?3, NULL, NULL, ?4, 1, ?5, ?6,
-                ?7, ?8, NULL, ?9, ?10,
+                ?1, ?2, ?3, ?4, NULL, ?5, 1, ?6, ?7,
+                ?8, ?9, NULL, ?10, ?11,
                 NULL, NULL, NULL, NULL, NULL,
-                NULL, NULL, NULL, ?11, ?11
+                NULL, NULL, NULL, ?12, ?12
             ) RETURNING id
             "#,
         )
         .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
         .bind(UPSTREAM_ACCOUNT_PROVIDER_CODEX)
         .bind(display_name)
+        .bind(test_required_group_name())
         .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
         .bind("oauth@example.com")
         .bind("org_test")
@@ -17304,6 +17748,7 @@ mod tests {
         account_id: &str,
         user_id: &str,
     ) -> i64 {
+        ensure_test_group_binding(pool, test_required_group_name()).await;
         let now_iso = format_utc_iso(Utc::now());
         let token_expires_at = format_utc_iso(Utc::now() + ChronoDuration::days(30));
         let encrypted_credentials = encrypt_credentials(
@@ -17324,16 +17769,17 @@ mod tests {
                 last_refreshed_at, last_synced_at, last_successful_sync_at, last_error, last_error_at,
                 local_primary_limit, local_secondary_limit, local_limit_unit, created_at, updated_at
             ) VALUES (
-                ?1, ?2, ?3, NULL, NULL, ?4, 1, ?5, ?6,
-                ?7, ?8, NULL, ?9, ?10,
+                ?1, ?2, ?3, ?4, NULL, ?5, 1, ?6, ?7,
+                ?8, ?9, NULL, ?10, ?11,
                 NULL, NULL, NULL, NULL, NULL,
-                NULL, NULL, NULL, ?11, ?11
+                NULL, NULL, NULL, ?12, ?12
             ) RETURNING id
             "#,
         )
         .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
         .bind(UPSTREAM_ACCOUNT_PROVIDER_CODEX)
         .bind(display_name)
+        .bind(test_required_group_name())
         .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
         .bind(email)
         .bind(account_id)
@@ -17747,6 +18193,7 @@ mod tests {
                 UpdateUpstreamAccountRequest {
                     display_name: None,
                     group_name: None,
+                    group_bound_proxy_keys: None,
                     note: Some("updated while maintenance runs".to_string()),
                     group_note: None,
                     upstream_base_url: OptionalField::Missing,
@@ -17920,6 +18367,7 @@ mod tests {
                         UpdateUpstreamAccountRequest {
                             display_name: None,
                             group_name: None,
+                            group_bound_proxy_keys: None,
                             note: Some("queued note".to_string()),
                             group_note: None,
                             upstream_base_url: OptionalField::Missing,
@@ -18766,6 +19214,7 @@ mod tests {
                 UpdateUpstreamAccountRequest {
                     display_name: None,
                     group_name: None,
+                    group_bound_proxy_keys: None,
                     note: Some("released".to_string()),
                     group_note: None,
                     upstream_base_url: OptionalField::Missing,
@@ -20105,6 +20554,7 @@ mod tests {
                 UpdateUpstreamAccountRequest {
                     display_name: None,
                     group_name: None,
+                    group_bound_proxy_keys: None,
                     note: None,
                     group_note: None,
                     upstream_base_url: OptionalField::Missing,
@@ -21403,6 +21853,7 @@ mod tests {
             Json(CreateOauthLoginSessionRequest {
                 display_name: Some("Original Pending".to_string()),
                 group_name: Some("alpha".to_string()),
+                group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
                 note: Some("before".to_string()),
                 group_note: Some("alpha note".to_string()),
                 account_id: None,
@@ -21416,26 +21867,30 @@ mod tests {
         .expect("create oauth login session")
         .0;
 
-        let updated = update_oauth_login_session(
-            State(state.clone()),
-            HeaderMap::new(),
-            AxumPath(created.login_id.clone()),
-            Json(UpdateOauthLoginSessionRequest {
-                display_name: OptionalField::Value("Updated Pending".to_string()),
-                group_name: OptionalField::Value("beta".to_string()),
-                note: OptionalField::Value("after".to_string()),
-                group_note: OptionalField::Value("beta shared".to_string()),
-                tag_ids: OptionalField::Value(vec![tag_id]),
-                is_mother: OptionalField::Value(true),
-                mailbox_session_id: OptionalField::Value("mailbox-session-1".to_string()),
-                mailbox_address: OptionalField::Value(
-                    "pending-sync@mail-tw.707079.xyz".to_string(),
-                ),
-            }),
-        )
-        .await
-        .expect("update oauth login session")
-        .0;
+        let updated =
+            update_oauth_login_session(
+                State(state.clone()),
+                HeaderMap::new(),
+                AxumPath(created.login_id.clone()),
+                Json(UpdateOauthLoginSessionRequest {
+                    display_name: OptionalField::Value("Updated Pending".to_string()),
+                    group_name: OptionalField::Value("beta".to_string()),
+                    group_bound_proxy_keys: OptionalField::Value(
+                        test_required_group_bound_proxy_keys(),
+                    ),
+                    note: OptionalField::Value("after".to_string()),
+                    group_note: OptionalField::Value("beta shared".to_string()),
+                    tag_ids: OptionalField::Value(vec![tag_id]),
+                    is_mother: OptionalField::Value(true),
+                    mailbox_session_id: OptionalField::Value("mailbox-session-1".to_string()),
+                    mailbox_address: OptionalField::Value(
+                        "pending-sync@mail-tw.707079.xyz".to_string(),
+                    ),
+                }),
+            )
+            .await
+            .expect("update oauth login session")
+            .0;
 
         assert_eq!(updated.login_id, created.login_id);
         assert_eq!(updated.auth_url, created.auth_url);
@@ -21474,6 +21929,7 @@ mod tests {
             Json(CreateOauthLoginSessionRequest {
                 display_name: Some("Ordered Pending".to_string()),
                 group_name: Some("alpha".to_string()),
+                group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
                 note: Some("before".to_string()),
                 group_note: Some("alpha note".to_string()),
                 account_id: None,
@@ -21492,24 +21948,28 @@ mod tests {
             LOGIN_SESSION_BASE_UPDATED_AT_HEADER,
             header::HeaderValue::from_str(&created.updated_at).expect("valid updated_at header"),
         );
-        let newer = update_oauth_login_session(
-            State(state.clone()),
-            newer_headers,
-            AxumPath(created.login_id.clone()),
-            Json(UpdateOauthLoginSessionRequest {
-                display_name: OptionalField::Value("Newest Pending".to_string()),
-                group_name: OptionalField::Value("beta".to_string()),
-                note: OptionalField::Value("newest note".to_string()),
-                group_note: OptionalField::Value("beta note".to_string()),
-                tag_ids: OptionalField::Value(vec![]),
-                is_mother: OptionalField::Value(true),
-                mailbox_session_id: OptionalField::Missing,
-                mailbox_address: OptionalField::Missing,
-            }),
-        )
-        .await
-        .expect("apply newer oauth login session update")
-        .0;
+        let newer =
+            update_oauth_login_session(
+                State(state.clone()),
+                newer_headers,
+                AxumPath(created.login_id.clone()),
+                Json(UpdateOauthLoginSessionRequest {
+                    display_name: OptionalField::Value("Newest Pending".to_string()),
+                    group_name: OptionalField::Value("beta".to_string()),
+                    group_bound_proxy_keys: OptionalField::Value(
+                        test_required_group_bound_proxy_keys(),
+                    ),
+                    note: OptionalField::Value("newest note".to_string()),
+                    group_note: OptionalField::Value("beta note".to_string()),
+                    tag_ids: OptionalField::Value(vec![]),
+                    is_mother: OptionalField::Value(true),
+                    mailbox_session_id: OptionalField::Missing,
+                    mailbox_address: OptionalField::Missing,
+                }),
+            )
+            .await
+            .expect("apply newer oauth login session update")
+            .0;
         assert_ne!(newer.updated_at, created.updated_at);
         let newer_updated_at = newer.updated_at.clone();
 
@@ -21518,24 +21978,28 @@ mod tests {
             LOGIN_SESSION_BASE_UPDATED_AT_HEADER,
             header::HeaderValue::from_str(&created.updated_at).expect("valid updated_at header"),
         );
-        let stale = update_oauth_login_session(
-            State(state.clone()),
-            stale_headers,
-            AxumPath(created.login_id.clone()),
-            Json(UpdateOauthLoginSessionRequest {
-                display_name: OptionalField::Value("Stale Pending".to_string()),
-                group_name: OptionalField::Value("gamma".to_string()),
-                note: OptionalField::Value("stale note".to_string()),
-                group_note: OptionalField::Value("gamma note".to_string()),
-                tag_ids: OptionalField::Value(vec![]),
-                is_mother: OptionalField::Value(false),
-                mailbox_session_id: OptionalField::Missing,
-                mailbox_address: OptionalField::Missing,
-            }),
-        )
-        .await
-        .expect("stale oauth login session update should be ignored")
-        .0;
+        let stale =
+            update_oauth_login_session(
+                State(state.clone()),
+                stale_headers,
+                AxumPath(created.login_id.clone()),
+                Json(UpdateOauthLoginSessionRequest {
+                    display_name: OptionalField::Value("Stale Pending".to_string()),
+                    group_name: OptionalField::Value("gamma".to_string()),
+                    group_bound_proxy_keys: OptionalField::Value(
+                        test_required_group_bound_proxy_keys(),
+                    ),
+                    note: OptionalField::Value("stale note".to_string()),
+                    group_note: OptionalField::Value("gamma note".to_string()),
+                    tag_ids: OptionalField::Value(vec![]),
+                    is_mother: OptionalField::Value(false),
+                    mailbox_session_id: OptionalField::Missing,
+                    mailbox_address: OptionalField::Missing,
+                }),
+            )
+            .await
+            .expect("stale oauth login session update should be ignored")
+            .0;
 
         assert_eq!(stale.login_id, created.login_id);
         assert_eq!(stale.updated_at, newer_updated_at);
@@ -21574,6 +22038,7 @@ mod tests {
             Json(CreateOauthLoginSessionRequest {
                 display_name: Some("Keep Me".to_string()),
                 group_name: Some("partial-group".to_string()),
+                group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
                 note: Some("before partial patch".to_string()),
                 group_note: Some("partial draft note".to_string()),
                 account_id: None,
@@ -21594,6 +22059,7 @@ mod tests {
             Json(UpdateOauthLoginSessionRequest {
                 display_name: OptionalField::Missing,
                 group_name: OptionalField::Missing,
+                group_bound_proxy_keys: OptionalField::Missing,
                 note: OptionalField::Value("after partial patch".to_string()),
                 group_note: OptionalField::Missing,
                 tag_ids: OptionalField::Missing,
@@ -21643,6 +22109,7 @@ mod tests {
             Json(CreateOauthLoginSessionRequest {
                 display_name: Some("Move Draft Group".to_string()),
                 group_name: Some("before-group".to_string()),
+                group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
                 note: Some("before note".to_string()),
                 group_note: Some("before draft note".to_string()),
                 account_id: None,
@@ -21656,24 +22123,28 @@ mod tests {
         .expect("create oauth login session")
         .0;
 
-        let updated = update_oauth_login_session(
-            State(state.clone()),
-            HeaderMap::new(),
-            AxumPath(created.login_id.clone()),
-            Json(UpdateOauthLoginSessionRequest {
-                display_name: OptionalField::Missing,
-                group_name: OptionalField::Value("after-group".to_string()),
-                note: OptionalField::Missing,
-                group_note: OptionalField::Missing,
-                tag_ids: OptionalField::Missing,
-                is_mother: OptionalField::Missing,
-                mailbox_session_id: OptionalField::Missing,
-                mailbox_address: OptionalField::Missing,
-            }),
-        )
-        .await
-        .expect("update oauth login session")
-        .0;
+        let updated =
+            update_oauth_login_session(
+                State(state.clone()),
+                HeaderMap::new(),
+                AxumPath(created.login_id.clone()),
+                Json(UpdateOauthLoginSessionRequest {
+                    display_name: OptionalField::Missing,
+                    group_name: OptionalField::Value("after-group".to_string()),
+                    group_bound_proxy_keys: OptionalField::Value(
+                        test_required_group_bound_proxy_keys(),
+                    ),
+                    note: OptionalField::Missing,
+                    group_note: OptionalField::Missing,
+                    tag_ids: OptionalField::Missing,
+                    is_mother: OptionalField::Missing,
+                    mailbox_session_id: OptionalField::Missing,
+                    mailbox_address: OptionalField::Missing,
+                }),
+            )
+            .await
+            .expect("update oauth login session")
+            .0;
 
         assert_eq!(updated.login_id, created.login_id);
         assert_eq!(updated.auth_url, created.auth_url);
@@ -21690,7 +22161,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_oauth_login_session_clears_group_note_when_group_is_removed() {
+    async fn update_oauth_login_session_rejects_group_removal() {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
         let created = create_oauth_login_session(
             State(state.clone()),
@@ -21698,6 +22169,7 @@ mod tests {
             Json(CreateOauthLoginSessionRequest {
                 display_name: Some("Clear Group Note".to_string()),
                 group_name: Some("draft-group".to_string()),
+                group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
                 note: Some("before clearing group".to_string()),
                 group_note: Some("draft group note".to_string()),
                 account_id: None,
@@ -21718,6 +22190,7 @@ mod tests {
             Json(UpdateOauthLoginSessionRequest {
                 display_name: OptionalField::Missing,
                 group_name: OptionalField::Value(String::new()),
+                group_bound_proxy_keys: OptionalField::Value(vec![]),
                 note: OptionalField::Missing,
                 group_note: OptionalField::Missing,
                 tag_ids: OptionalField::Missing,
@@ -21727,17 +22200,16 @@ mod tests {
             }),
         )
         .await
-        .expect("update oauth login session")
-        .0;
+        .expect_err("group removal should be rejected");
+        assert_eq!(updated.0, StatusCode::BAD_REQUEST);
+        assert_eq!(updated.1, "groupName is required for upstream accounts");
 
-        assert_eq!(updated.login_id, created.login_id);
-
-        let stored = load_login_session_by_login_id(&state.pool, &updated.login_id)
+        let stored = load_login_session_by_login_id(&state.pool, &created.login_id)
             .await
             .expect("load stored login session")
             .expect("stored login session should exist");
-        assert_eq!(stored.group_name, None);
-        assert_eq!(stored.group_note, None);
+        assert_eq!(stored.group_name.as_deref(), Some("draft-group"));
+        assert_eq!(stored.group_note.as_deref(), Some("draft group note"));
         assert_eq!(stored.note.as_deref(), Some("before clearing group"));
     }
 
@@ -21763,6 +22235,7 @@ mod tests {
             Json(CreateOauthLoginSessionRequest {
                 display_name: Some("Before Patch".to_string()),
                 group_name: Some("old-group".to_string()),
+                group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
                 note: Some("before note".to_string()),
                 group_note: Some("old group note".to_string()),
                 account_id: None,
@@ -21776,25 +22249,29 @@ mod tests {
         .expect("create oauth login session")
         .0;
 
-        let _ = update_oauth_login_session(
-            State(state.clone()),
-            HeaderMap::new(),
-            AxumPath(created.login_id.clone()),
-            Json(UpdateOauthLoginSessionRequest {
-                display_name: OptionalField::Value("After Patch".to_string()),
-                group_name: OptionalField::Value("new-group".to_string()),
-                note: OptionalField::Value("after note".to_string()),
-                group_note: OptionalField::Value("draft group note".to_string()),
-                tag_ids: OptionalField::Value(vec![tag_id]),
-                is_mother: OptionalField::Value(true),
-                mailbox_session_id: OptionalField::Value("mailbox-session-2".to_string()),
-                mailbox_address: OptionalField::Value(
-                    "callback-sync@mail-tw.707079.xyz".to_string(),
-                ),
-            }),
-        )
-        .await
-        .expect("update oauth login session");
+        let _ =
+            update_oauth_login_session(
+                State(state.clone()),
+                HeaderMap::new(),
+                AxumPath(created.login_id.clone()),
+                Json(UpdateOauthLoginSessionRequest {
+                    display_name: OptionalField::Value("After Patch".to_string()),
+                    group_name: OptionalField::Value("new-group".to_string()),
+                    group_bound_proxy_keys: OptionalField::Value(
+                        test_required_group_bound_proxy_keys(),
+                    ),
+                    note: OptionalField::Value("after note".to_string()),
+                    group_note: OptionalField::Value("draft group note".to_string()),
+                    tag_ids: OptionalField::Value(vec![tag_id]),
+                    is_mother: OptionalField::Value(true),
+                    mailbox_session_id: OptionalField::Value("mailbox-session-2".to_string()),
+                    mailbox_address: OptionalField::Value(
+                        "callback-sync@mail-tw.707079.xyz".to_string(),
+                    ),
+                }),
+            )
+            .await
+            .expect("update oauth login session");
 
         let updated_session = load_login_session_by_login_id(&state.pool, &created.login_id)
             .await
@@ -21899,6 +22376,7 @@ mod tests {
             Json(CreateOauthLoginSessionRequest {
                 display_name: Some("Race Before".to_string()),
                 group_name: Some("race-group".to_string()),
+                group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
                 note: Some("before note".to_string()),
                 group_note: Some("before group note".to_string()),
                 account_id: None,
@@ -21957,24 +22435,28 @@ mod tests {
             LOGIN_SESSION_BASE_UPDATED_AT_HEADER,
             header::HeaderValue::from_str(&created.updated_at).expect("valid updated_at header"),
         );
-        let repaired = update_oauth_login_session(
-            State(state.clone()),
-            repair_headers,
-            AxumPath(created.login_id.clone()),
-            Json(UpdateOauthLoginSessionRequest {
-                display_name: OptionalField::Value("Race After".to_string()),
-                group_name: OptionalField::Value("race-group".to_string()),
-                note: OptionalField::Value("after note".to_string()),
-                group_note: OptionalField::Value("after group note".to_string()),
-                tag_ids: OptionalField::Value(vec![tag_id]),
-                is_mother: OptionalField::Value(true),
-                mailbox_session_id: OptionalField::Missing,
-                mailbox_address: OptionalField::Missing,
-            }),
-        )
-        .await
-        .expect("repair completed callback race")
-        .0;
+        let repaired =
+            update_oauth_login_session(
+                State(state.clone()),
+                repair_headers,
+                AxumPath(created.login_id.clone()),
+                Json(UpdateOauthLoginSessionRequest {
+                    display_name: OptionalField::Value("Race After".to_string()),
+                    group_name: OptionalField::Value("race-group".to_string()),
+                    group_bound_proxy_keys: OptionalField::Value(
+                        test_required_group_bound_proxy_keys(),
+                    ),
+                    note: OptionalField::Value("after note".to_string()),
+                    group_note: OptionalField::Value("after group note".to_string()),
+                    tag_ids: OptionalField::Value(vec![tag_id]),
+                    is_mother: OptionalField::Value(true),
+                    mailbox_session_id: OptionalField::Missing,
+                    mailbox_address: OptionalField::Missing,
+                }),
+            )
+            .await
+            .expect("repair completed callback race")
+            .0;
 
         assert_eq!(repaired.login_id, created.login_id);
         assert_eq!(repaired.status, LOGIN_SESSION_STATUS_COMPLETED);
@@ -22037,6 +22519,7 @@ mod tests {
             Json(UpdateOauthLoginSessionRequest {
                 display_name: OptionalField::Value("Race Final".to_string()),
                 group_name: OptionalField::Missing,
+                group_bound_proxy_keys: OptionalField::Missing,
                 note: OptionalField::Missing,
                 group_note: OptionalField::Missing,
                 tag_ids: OptionalField::Missing,
@@ -22108,6 +22591,7 @@ mod tests {
             Json(CreateOauthLoginSessionRequest {
                 display_name: Some("Race Before".to_string()),
                 group_name: Some("race-group".to_string()),
+                group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
                 note: Some("before note".to_string()),
                 group_note: Some("before group note".to_string()),
                 account_id: None,
@@ -22173,24 +22657,28 @@ mod tests {
             LOGIN_SESSION_BASE_UPDATED_AT_HEADER,
             header::HeaderValue::from_str(&created.updated_at).expect("valid updated_at header"),
         );
-        let first_repair = update_oauth_login_session(
-            State(state.clone()),
-            first_headers,
-            AxumPath(created.login_id.clone()),
-            Json(UpdateOauthLoginSessionRequest {
-                display_name: OptionalField::Value("Race Latest".to_string()),
-                group_name: OptionalField::Value("race-group".to_string()),
-                note: OptionalField::Value("latest note".to_string()),
-                group_note: OptionalField::Value("latest group note".to_string()),
-                tag_ids: OptionalField::Value(vec![]),
-                is_mother: OptionalField::Value(true),
-                mailbox_session_id: OptionalField::Missing,
-                mailbox_address: OptionalField::Missing,
-            }),
-        )
-        .await
-        .expect("apply latest repair")
-        .0;
+        let first_repair =
+            update_oauth_login_session(
+                State(state.clone()),
+                first_headers,
+                AxumPath(created.login_id.clone()),
+                Json(UpdateOauthLoginSessionRequest {
+                    display_name: OptionalField::Value("Race Latest".to_string()),
+                    group_name: OptionalField::Value("race-group".to_string()),
+                    group_bound_proxy_keys: OptionalField::Value(
+                        test_required_group_bound_proxy_keys(),
+                    ),
+                    note: OptionalField::Value("latest note".to_string()),
+                    group_note: OptionalField::Value("latest group note".to_string()),
+                    tag_ids: OptionalField::Value(vec![]),
+                    is_mother: OptionalField::Value(true),
+                    mailbox_session_id: OptionalField::Missing,
+                    mailbox_address: OptionalField::Missing,
+                }),
+            )
+            .await
+            .expect("apply latest repair")
+            .0;
 
         assert_ne!(first_repair.updated_at, created.updated_at);
         assert_eq!(first_repair.account_id, Some(account_id));
@@ -22200,23 +22688,27 @@ mod tests {
             LOGIN_SESSION_BASE_UPDATED_AT_HEADER,
             header::HeaderValue::from_str(&created.updated_at).expect("valid updated_at header"),
         );
-        let stale_err = update_oauth_login_session(
-            State(state.clone()),
-            stale_headers,
-            AxumPath(created.login_id.clone()),
-            Json(UpdateOauthLoginSessionRequest {
-                display_name: OptionalField::Value("Race Stale".to_string()),
-                group_name: OptionalField::Value("stale-group".to_string()),
-                note: OptionalField::Value("stale note".to_string()),
-                group_note: OptionalField::Value("stale group note".to_string()),
-                tag_ids: OptionalField::Value(vec![]),
-                is_mother: OptionalField::Value(false),
-                mailbox_session_id: OptionalField::Missing,
-                mailbox_address: OptionalField::Missing,
-            }),
-        )
-        .await
-        .expect_err("reject stale repair");
+        let stale_err =
+            update_oauth_login_session(
+                State(state.clone()),
+                stale_headers,
+                AxumPath(created.login_id.clone()),
+                Json(UpdateOauthLoginSessionRequest {
+                    display_name: OptionalField::Value("Race Stale".to_string()),
+                    group_name: OptionalField::Value("stale-group".to_string()),
+                    group_bound_proxy_keys: OptionalField::Value(
+                        test_required_group_bound_proxy_keys(),
+                    ),
+                    note: OptionalField::Value("stale note".to_string()),
+                    group_note: OptionalField::Value("stale group note".to_string()),
+                    tag_ids: OptionalField::Value(vec![]),
+                    is_mother: OptionalField::Value(false),
+                    mailbox_session_id: OptionalField::Missing,
+                    mailbox_address: OptionalField::Missing,
+                }),
+            )
+            .await
+            .expect_err("reject stale repair");
         assert_eq!(stale_err.0, StatusCode::BAD_REQUEST);
         assert_eq!(
             stale_err.1,
@@ -22242,6 +22734,7 @@ mod tests {
             Json(CreateOauthLoginSessionRequest {
                 display_name: Some("Race Before".to_string()),
                 group_name: Some("race-group".to_string()),
+                group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
                 note: Some("before note".to_string()),
                 group_note: Some("before group note".to_string()),
                 account_id: None,
@@ -22316,23 +22809,27 @@ mod tests {
             LOGIN_SESSION_BASE_UPDATED_AT_HEADER,
             header::HeaderValue::from_str(&created.updated_at).expect("valid updated_at header"),
         );
-        let repair_err = update_oauth_login_session(
-            State(state.clone()),
-            repair_headers,
-            AxumPath(created.login_id.clone()),
-            Json(UpdateOauthLoginSessionRequest {
-                display_name: OptionalField::Value("Race Latest".to_string()),
-                group_name: OptionalField::Value("race-group".to_string()),
-                note: OptionalField::Value("latest note".to_string()),
-                group_note: OptionalField::Value("latest group note".to_string()),
-                tag_ids: OptionalField::Value(vec![]),
-                is_mother: OptionalField::Value(true),
-                mailbox_session_id: OptionalField::Missing,
-                mailbox_address: OptionalField::Missing,
-            }),
-        )
-        .await
-        .expect_err("reject repair after group note changes");
+        let repair_err =
+            update_oauth_login_session(
+                State(state.clone()),
+                repair_headers,
+                AxumPath(created.login_id.clone()),
+                Json(UpdateOauthLoginSessionRequest {
+                    display_name: OptionalField::Value("Race Latest".to_string()),
+                    group_name: OptionalField::Value("race-group".to_string()),
+                    group_bound_proxy_keys: OptionalField::Value(
+                        test_required_group_bound_proxy_keys(),
+                    ),
+                    note: OptionalField::Value("latest note".to_string()),
+                    group_note: OptionalField::Value("latest group note".to_string()),
+                    tag_ids: OptionalField::Value(vec![]),
+                    is_mother: OptionalField::Value(true),
+                    mailbox_session_id: OptionalField::Missing,
+                    mailbox_address: OptionalField::Missing,
+                }),
+            )
+            .await
+            .expect_err("reject repair after group note changes");
         assert_eq!(repair_err.0, StatusCode::BAD_REQUEST);
         assert_eq!(
             repair_err.1,
@@ -22370,6 +22867,7 @@ mod tests {
             Json(CreateOauthLoginSessionRequest {
                 display_name: Some("Race Before".to_string()),
                 group_name: Some("race-group".to_string()),
+                group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
                 note: Some("before note".to_string()),
                 group_note: Some("before group note".to_string()),
                 account_id: None,
@@ -22454,23 +22952,27 @@ mod tests {
             LOGIN_SESSION_BASE_UPDATED_AT_HEADER,
             header::HeaderValue::from_str(&created.updated_at).expect("valid updated_at header"),
         );
-        let repair_err = update_oauth_login_session(
-            State(state.clone()),
-            repair_headers,
-            AxumPath(created.login_id.clone()),
-            Json(UpdateOauthLoginSessionRequest {
-                display_name: OptionalField::Value("Race Stale".to_string()),
-                group_name: OptionalField::Value("stale-group".to_string()),
-                note: OptionalField::Value("stale note".to_string()),
-                group_note: OptionalField::Value("stale group note".to_string()),
-                tag_ids: OptionalField::Value(vec![]),
-                is_mother: OptionalField::Value(false),
-                mailbox_session_id: OptionalField::Missing,
-                mailbox_address: OptionalField::Missing,
-            }),
-        )
-        .await
-        .expect_err("reject completed repair after account changes");
+        let repair_err =
+            update_oauth_login_session(
+                State(state.clone()),
+                repair_headers,
+                AxumPath(created.login_id.clone()),
+                Json(UpdateOauthLoginSessionRequest {
+                    display_name: OptionalField::Value("Race Stale".to_string()),
+                    group_name: OptionalField::Value("stale-group".to_string()),
+                    group_bound_proxy_keys: OptionalField::Value(
+                        test_required_group_bound_proxy_keys(),
+                    ),
+                    note: OptionalField::Value("stale note".to_string()),
+                    group_note: OptionalField::Value("stale group note".to_string()),
+                    tag_ids: OptionalField::Value(vec![]),
+                    is_mother: OptionalField::Value(false),
+                    mailbox_session_id: OptionalField::Missing,
+                    mailbox_address: OptionalField::Missing,
+                }),
+            )
+            .await
+            .expect_err("reject completed repair after account changes");
         assert_eq!(repair_err.0, StatusCode::BAD_REQUEST);
         assert_eq!(
             repair_err.1,
@@ -22493,6 +22995,7 @@ mod tests {
         let update_payload = || UpdateOauthLoginSessionRequest {
             display_name: OptionalField::Value("Edited Session".to_string()),
             group_name: OptionalField::Value("edited-group".to_string()),
+            group_bound_proxy_keys: OptionalField::Value(test_required_group_bound_proxy_keys()),
             note: OptionalField::Value("edited note".to_string()),
             group_note: OptionalField::Value("edited group note".to_string()),
             tag_ids: OptionalField::Value(vec![]),
@@ -22507,6 +23010,7 @@ mod tests {
             Json(CreateOauthLoginSessionRequest {
                 display_name: Some("Completed Session".to_string()),
                 group_name: Some("completed-group".to_string()),
+                group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
                 note: None,
                 group_note: None,
                 account_id: None,
@@ -22545,6 +23049,7 @@ mod tests {
             Json(CreateOauthLoginSessionRequest {
                 display_name: Some("Failed Session".to_string()),
                 group_name: Some("failed-group".to_string()),
+                group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
                 note: None,
                 group_note: None,
                 account_id: None,
@@ -22580,6 +23085,7 @@ mod tests {
             Json(CreateOauthLoginSessionRequest {
                 display_name: Some("Expired Session".to_string()),
                 group_name: Some("expired-group".to_string()),
+                group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
                 note: None,
                 group_note: None,
                 account_id: None,
@@ -22629,6 +23135,7 @@ mod tests {
             Json(CreateOauthLoginSessionRequest {
                 display_name: None,
                 group_name: None,
+                group_bound_proxy_keys: None,
                 note: None,
                 group_note: None,
                 account_id: Some(account_id),
@@ -22649,6 +23156,7 @@ mod tests {
             Json(UpdateOauthLoginSessionRequest {
                 display_name: OptionalField::Value("Edited Relogin".to_string()),
                 group_name: OptionalField::Missing,
+                group_bound_proxy_keys: OptionalField::Missing,
                 note: OptionalField::Missing,
                 group_note: OptionalField::Missing,
                 tag_ids: OptionalField::Value(vec![]),
@@ -22676,6 +23184,7 @@ mod tests {
             Json(CreateOauthLoginSessionRequest {
                 display_name: None,
                 group_name: None,
+                group_bound_proxy_keys: None,
                 note: None,
                 group_note: None,
                 account_id: Some(account_id),
@@ -22746,23 +23255,27 @@ mod tests {
             LOGIN_SESSION_BASE_UPDATED_AT_HEADER,
             header::HeaderValue::from_str(&relogin.updated_at).expect("valid updated_at header"),
         );
-        let err = update_oauth_login_session(
-            State(state.clone()),
-            repair_headers,
-            AxumPath(relogin.login_id.clone()),
-            Json(UpdateOauthLoginSessionRequest {
-                display_name: OptionalField::Value("Edited Relogin".to_string()),
-                group_name: OptionalField::Value("edited-group".to_string()),
-                note: OptionalField::Value("edited note".to_string()),
-                group_note: OptionalField::Value("edited group note".to_string()),
-                tag_ids: OptionalField::Value(vec![]),
-                is_mother: OptionalField::Value(true),
-                mailbox_session_id: OptionalField::Missing,
-                mailbox_address: OptionalField::Missing,
-            }),
-        )
-        .await
-        .expect_err("completed relogin repair should be rejected");
+        let err =
+            update_oauth_login_session(
+                State(state.clone()),
+                repair_headers,
+                AxumPath(relogin.login_id.clone()),
+                Json(UpdateOauthLoginSessionRequest {
+                    display_name: OptionalField::Value("Edited Relogin".to_string()),
+                    group_name: OptionalField::Value("edited-group".to_string()),
+                    group_bound_proxy_keys: OptionalField::Value(
+                        test_required_group_bound_proxy_keys(),
+                    ),
+                    note: OptionalField::Value("edited note".to_string()),
+                    group_note: OptionalField::Value("edited group note".to_string()),
+                    tag_ids: OptionalField::Value(vec![]),
+                    is_mother: OptionalField::Value(true),
+                    mailbox_session_id: OptionalField::Missing,
+                    mailbox_address: OptionalField::Missing,
+                }),
+            )
+            .await
+            .expect_err("completed relogin repair should be rejected");
         assert_eq!(err.0, StatusCode::BAD_REQUEST);
         assert_eq!(
             err.1,
@@ -22795,7 +23308,7 @@ mod tests {
                 is_mother: false,
                 note: None,
                 tag_ids: vec![],
-                group_note: None,
+                requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
                 claims: &test_claims(
                     "cooldown-existing@example.com",
                     Some("cooldown_org"),
@@ -22831,7 +23344,7 @@ mod tests {
                 is_mother: false,
                 note: Some("updated note".to_string()),
                 tag_ids: vec![],
-                group_note: None,
+                requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
                 claims: &test_claims(
                     "cooldown-existing@example.com",
                     Some("cooldown_org"),
@@ -22885,7 +23398,7 @@ mod tests {
                 is_mother: false,
                 note: None,
                 tag_ids: vec![],
-                group_note: None,
+                requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
                 claims: &test_claims("first@example.com", Some("org_shared"), Some("user_1")),
                 encrypted_credentials: "encrypted-1".to_string(),
                 token_expires_at: "2026-03-14T00:00:00Z",
@@ -22908,7 +23421,7 @@ mod tests {
                 is_mother: false,
                 note: None,
                 tag_ids: vec![],
-                group_note: None,
+                requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
                 claims: &test_claims("second@example.com", Some("org_shared"), Some("user_2")),
                 encrypted_credentials: "encrypted-2".to_string(),
                 token_expires_at: "2026-03-14T00:00:00Z",
@@ -22977,7 +23490,7 @@ mod tests {
                     is_mother: false,
                     note: None,
                     tag_ids: vec![],
-                    group_note: None,
+                    requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
                     claims: &test_claims(email, Some(account_id), Some("user_shared")),
                     encrypted_credentials: format!("encrypted-{display_name}"),
                     token_expires_at: "2026-03-14T00:00:00Z",
@@ -23042,7 +23555,7 @@ mod tests {
                     is_mother: false,
                     note: None,
                     tag_ids: vec![],
-                    group_note: None,
+                    requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
                     claims: &test_claims_with_plan_type(email, Some("org_shared"), None, plan_type),
                     encrypted_credentials: format!("encrypted-{display_name}"),
                     token_expires_at: "2026-03-14T00:00:00Z",
@@ -23108,7 +23621,7 @@ mod tests {
                     is_mother: false,
                     note: None,
                     tag_ids: vec![],
-                    group_note: None,
+                    requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
                     claims: &test_claims_with_plan_type(
                         email,
                         Some("legacy_shared_org"),
@@ -23194,7 +23707,7 @@ mod tests {
                     is_mother: false,
                     note: None,
                     tag_ids: vec![],
-                    group_note: None,
+                    requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
                     claims: &test_claims_with_plan_type(
                         email,
                         Some("stale_shared_org"),
@@ -23241,7 +23754,7 @@ mod tests {
                 is_mother: false,
                 note: None,
                 tag_ids: vec![],
-                group_note: None,
+                requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
                 claims: &test_claims_with_plan_type(
                     "snapshot@example.com",
                     Some("snapshot_org"),
@@ -23302,7 +23815,7 @@ mod tests {
                 is_mother: false,
                 note: None,
                 tag_ids: vec![],
-                group_note: None,
+                requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
                 claims: &test_claims_with_plan_type(
                     "refresh@example.com",
                     Some("refresh_org"),
@@ -23398,7 +23911,7 @@ mod tests {
                 is_mother: false,
                 note: None,
                 tag_ids: vec![],
-                group_note: None,
+                requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
                 claims: &test_claims_with_plan_type(
                     "fallback@example.com",
                     Some("fallback_org"),
@@ -23464,7 +23977,7 @@ mod tests {
                 is_mother: false,
                 note: None,
                 tag_ids: vec![],
-                group_note: None,
+                requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
                 claims: &test_claims_with_plan_type(
                     "refreshed-fallback@example.com",
                     Some("refreshed_fallback_org"),
@@ -23535,7 +24048,7 @@ mod tests {
                     is_mother: false,
                     note: None,
                     tag_ids: vec![],
-                    group_note: None,
+                    requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
                     claims: &test_claims_with_plan_type(
                         email,
                         Some("refreshed_shared_org"),
@@ -23621,7 +24134,7 @@ mod tests {
                     is_mother: false,
                     note: None,
                     tag_ids: vec![],
-                    group_note: None,
+                    requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
                     claims: &test_claims_with_plan_type(
                         email,
                         Some("claims_fresh_shared_org"),
@@ -23698,7 +24211,7 @@ mod tests {
                     is_mother: false,
                     note: None,
                     tag_ids: vec![],
-                    group_note: None,
+                    requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
                     claims: &test_claims_with_plan_type(
                         email,
                         Some("same_second_org"),
@@ -23775,7 +24288,7 @@ mod tests {
                     is_mother: false,
                     note: None,
                     tag_ids: vec![],
-                    group_note: None,
+                    requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
                     claims: &test_claims_with_plan_type(
                         email,
                         Some("sample_fresh_shared_org"),
@@ -23857,7 +24370,7 @@ mod tests {
                 is_mother: false,
                 note: Some("note".to_string()),
                 tag_ids: vec![],
-                group_note: None,
+                requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
                 claims: &test_claims("first@example.com", Some("org_shared"), Some("user_1")),
                 encrypted_credentials: "encrypted-1".to_string(),
                 token_expires_at: "2026-03-14T00:00:00Z",
@@ -23880,7 +24393,7 @@ mod tests {
                 is_mother: false,
                 note: Some("fresh".to_string()),
                 tag_ids: vec![],
-                group_note: None,
+                requested_group_metadata_changes: RequestedGroupMetadataChanges::default(),
                 claims: &test_claims("second@example.com", Some("org_shared"), Some("user_9")),
                 encrypted_credentials: "encrypted-2".to_string(),
                 token_expires_at: "2026-03-15T00:00:00Z",

@@ -2094,6 +2094,7 @@ export interface OauthMailboxStatus {
 export interface CreateOauthLoginSessionPayload {
   displayName?: string;
   groupName?: string;
+  groupBoundProxyKeys?: string[];
   note?: string;
   groupNote?: string;
   accountId?: number;
@@ -2106,6 +2107,7 @@ export interface CreateOauthLoginSessionPayload {
 export interface UpdateOauthLoginSessionPayload {
   displayName?: string;
   groupName?: string;
+  groupBoundProxyKeys?: string[];
   note?: string;
   groupNote?: string;
   tagIds?: number[];
@@ -2153,6 +2155,7 @@ export interface OauthMailboxStatusRequestPayload {
 export interface CreateApiKeyAccountPayload {
   displayName: string;
   groupName?: string;
+  groupBoundProxyKeys?: string[];
   note?: string;
   groupNote?: string;
   upstreamBaseUrl?: string;
@@ -2167,6 +2170,7 @@ export interface CreateApiKeyAccountPayload {
 export interface UpdateUpstreamAccountPayload {
   displayName?: string;
   groupName?: string;
+  groupBoundProxyKeys?: string[];
   note?: string;
   groupNote?: string;
   upstreamBaseUrl?: string | null;
@@ -2186,6 +2190,8 @@ export interface ImportOauthCredentialFilePayload {
 }
 
 export interface ValidateImportedOauthAccountsPayload {
+  groupName?: string;
+  groupBoundProxyKeys?: string[];
   items: ImportOauthCredentialFilePayload[];
 }
 
@@ -2259,6 +2265,7 @@ export interface ImportValidatedOauthAccountsPayload {
   selectedSourceIds: string[];
   validationJobId?: string;
   groupName?: string;
+  groupBoundProxyKeys?: string[];
   groupNote?: string;
   tagIds?: number[];
 }

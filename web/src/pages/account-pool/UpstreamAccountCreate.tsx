@@ -871,6 +871,7 @@ function invalidatePendingSingleOauthSession(
 function buildOauthLoginSessionUpdatePayload({
   displayName,
   groupName,
+  groupBoundProxyKeys,
   note,
   groupNote,
   includeGroupNote,
@@ -880,6 +881,7 @@ function buildOauthLoginSessionUpdatePayload({
 }: {
   displayName: string;
   groupName: string;
+  groupBoundProxyKeys: string[];
   note: string;
   groupNote: string;
   includeGroupNote: boolean;
@@ -891,6 +893,7 @@ function buildOauthLoginSessionUpdatePayload({
   return {
     displayName: displayName.trim(),
     groupName: normalizedGroupName,
+    groupBoundProxyKeys,
     note: note.trim(),
     ...(normalizedGroupName && includeGroupNote
       ? { groupNote: groupNote.trim() }
@@ -1835,6 +1838,9 @@ export default function UpstreamAccountCreatePage() {
       buildOauthLoginSessionUpdatePayload({
         displayName: oauthDisplayName,
         groupName: oauthGroupName,
+        groupBoundProxyKeys: resolvePendingGroupBoundProxyKeysForName(
+          oauthGroupName,
+        ),
         note: oauthNote,
         groupNote: resolvePendingGroupNoteForName(oauthGroupName),
         includeGroupNote: Boolean(
@@ -1855,6 +1861,7 @@ export default function UpstreamAccountCreatePage() {
     oauthTagIds,
     isRelinking,
     groups,
+    resolvePendingGroupBoundProxyKeysForName,
     resolvePendingGroupNoteForName,
     session?.loginId,
     session?.status,
@@ -1870,6 +1877,9 @@ export default function UpstreamAccountCreatePage() {
         buildOauthLoginSessionUpdatePayload({
           displayName: row.displayName,
           groupName: row.groupName,
+          groupBoundProxyKeys: resolvePendingGroupBoundProxyKeysForName(
+            row.groupName,
+          ),
           note: row.note,
           groupNote: resolvePendingGroupNoteForName(row.groupName),
           includeGroupNote: Boolean(
@@ -1883,7 +1893,13 @@ export default function UpstreamAccountCreatePage() {
       );
     }
     return snapshots;
-  }, [batchRows, batchTagIds, groups, resolvePendingGroupNoteForName]);
+  }, [
+    batchRows,
+    batchTagIds,
+    groups,
+    resolvePendingGroupBoundProxyKeysForName,
+    resolvePendingGroupNoteForName,
+  ]);
   singleOauthSessionSnapshotRef.current = singleOauthSessionSnapshot;
   batchOauthSessionSnapshotsRef.current = batchOauthSessionSnapshots;
   const getActivePendingOauthSessionSnapshots = useCallback(() => {
@@ -2787,6 +2803,84 @@ export default function UpstreamAccountCreatePage() {
     );
   }
 
+  const hasLoadedForwardProxyCatalog = Array.isArray(forwardProxyNodes);
+  const selectableForwardProxyKeys = useMemo(
+    () =>
+      new Set(
+        (forwardProxyNodes ?? [])
+          .filter((node) => node.selectable)
+          .flatMap((node) => [node.key, ...(node.aliasKeys ?? [])])
+          .map((value) => value.trim())
+          .filter((value) => value.length > 0),
+      ),
+    [forwardProxyNodes],
+  );
+
+  const resolveRequiredGroupProxyState = useCallback(
+    (groupName: string) => {
+      const normalizedGroupName = normalizeGroupName(groupName);
+      const isChinese = locale.toLocaleLowerCase().startsWith("zh");
+      if (!normalizedGroupName) {
+        return {
+          normalizedGroupName: "",
+          boundProxyKeys: [] as string[],
+          error: isChinese
+            ? "必须先选择一个分组。"
+            : "Select a group before continuing.",
+        };
+      }
+      const boundProxyKeys =
+        resolvePendingGroupBoundProxyKeysForName(normalizedGroupName);
+      if (boundProxyKeys.length === 0) {
+        return {
+          normalizedGroupName,
+          boundProxyKeys,
+          error: isChinese
+            ? `分组“${normalizedGroupName}”还没有绑定代理节点。`
+            : `Group "${normalizedGroupName}" does not have any bound proxy nodes.`,
+        };
+      }
+      if (
+        hasLoadedForwardProxyCatalog &&
+        !boundProxyKeys.some((proxyKey) =>
+          selectableForwardProxyKeys.has(proxyKey),
+        )
+      ) {
+        return {
+          normalizedGroupName,
+          boundProxyKeys,
+          error: isChinese
+            ? `分组“${normalizedGroupName}”绑定的代理节点当前都不可用。`
+            : `Group "${normalizedGroupName}" does not have any selectable bound proxy nodes.`,
+        };
+      }
+      return {
+        normalizedGroupName,
+        boundProxyKeys,
+        error: null,
+      };
+    },
+    [
+      hasLoadedForwardProxyCatalog,
+      locale,
+      resolvePendingGroupBoundProxyKeysForName,
+      selectableForwardProxyKeys,
+    ],
+  );
+
+  const oauthGroupProxyState = useMemo(
+    () => resolveRequiredGroupProxyState(oauthGroupName),
+    [oauthGroupName, resolveRequiredGroupProxyState],
+  );
+  const importGroupProxyState = useMemo(
+    () => resolveRequiredGroupProxyState(importGroupName),
+    [importGroupName, resolveRequiredGroupProxyState],
+  );
+  const apiKeyGroupProxyState = useMemo(
+    () => resolveRequiredGroupProxyState(apiKeyGroupName),
+    [apiKeyGroupName, resolveRequiredGroupProxyState],
+  );
+
   const clearDraftGroupSettings = useCallback((groupName: string) => {
     const normalized = normalizeGroupName(groupName);
     if (!normalized) return;
@@ -3149,7 +3243,14 @@ export default function UpstreamAccountCreatePage() {
         payload.displayName = nextMetadata.displayName || undefined;
       }
       if (committedFields.includes("groupName")) {
-        payload.groupName = nextMetadata.groupName;
+        const groupProxyState = resolveRequiredGroupProxyState(
+          nextMetadata.groupName,
+        );
+        if (groupProxyState.error) {
+          throw new Error(groupProxyState.error);
+        }
+        payload.groupName = groupProxyState.normalizedGroupName;
+        payload.groupBoundProxyKeys = groupProxyState.boundProxyKeys;
         payload.groupNote =
           resolvePendingGroupNoteForName(nextMetadata.groupName) || undefined;
       }
@@ -3757,6 +3858,10 @@ export default function UpstreamAccountCreatePage() {
       options?: { merge?: boolean },
     ) => {
       if (items.length === 0) return;
+      if (importGroupProxyState.error) {
+        setActionError(importGroupProxyState.error);
+        return;
+      }
       const merge = options?.merge === true;
       const retriedSourceIds = new Set(items.map((item) => item.sourceId));
       const allItems = merge ? importFiles : items;
@@ -3767,7 +3872,11 @@ export default function UpstreamAccountCreatePage() {
         } else {
           closeImportValidationEventSource();
         }
-        const response = await startImportedOauthValidationJob({ items });
+        const response = await startImportedOauthValidationJob({
+          items,
+          groupName: importGroupProxyState.normalizedGroupName || undefined,
+          groupBoundProxyKeys: importGroupProxyState.boundProxyKeys,
+        });
         setImportValidationState((current) => {
           if (merge && current) {
             return {
@@ -3830,6 +3939,9 @@ export default function UpstreamAccountCreatePage() {
       cancelActiveImportedOauthValidation,
       closeImportValidationEventSource,
       importFiles,
+      importGroupProxyState.boundProxyKeys,
+      importGroupProxyState.error,
+      importGroupProxyState.normalizedGroupName,
       startImportedOauthValidationJob,
     ],
   );
@@ -3944,6 +4056,18 @@ export default function UpstreamAccountCreatePage() {
   }, [closeImportValidationEventSource, stopImportedOauthValidationJob]);
 
   const handleImportValidatedOauth = useCallback(async () => {
+    if (importGroupProxyState.error) {
+      setActionError(importGroupProxyState.error);
+      setImportValidationState((current) =>
+        current
+          ? {
+              ...current,
+              importError: importGroupProxyState.error,
+            }
+          : current,
+      );
+      return;
+    }
     const currentRows = importValidationState?.rows ?? [];
     const validSourceIds = currentRows
       .filter((row) => row.status === "ok" || row.status === "ok_exhausted")
@@ -3982,7 +4106,8 @@ export default function UpstreamAccountCreatePage() {
           items: batch,
           selectedSourceIds: batch.map((item) => item.sourceId),
           validationJobId,
-          groupName: normalizedImportGroupName || undefined,
+          groupName: importGroupProxyState.normalizedGroupName || undefined,
+          groupBoundProxyKeys: importGroupProxyState.boundProxyKeys,
           groupNote: importGroupNote,
           tagIds: importTagIds,
         });
@@ -4081,6 +4206,9 @@ export default function UpstreamAccountCreatePage() {
     groups,
     importFiles,
     importGroupName,
+    importGroupProxyState.boundProxyKeys,
+    importGroupProxyState.error,
+    importGroupProxyState.normalizedGroupName,
     importOauthAccounts,
     importTagIds,
     importValidationState?.rows,
@@ -4233,6 +4361,10 @@ export default function UpstreamAccountCreatePage() {
       setActionError(null);
       return;
     }
+    if (oauthGroupProxyState.error) {
+      setActionError(oauthGroupProxyState.error);
+      return;
+    }
     setActionError(null);
     setSessionHint(null);
     setOauthDuplicateWarning(null);
@@ -4242,6 +4374,7 @@ export default function UpstreamAccountCreatePage() {
       const oauthLoginSessionPayload = buildOauthLoginSessionUpdatePayload({
         displayName: oauthDisplayName,
         groupName: oauthGroupName,
+        groupBoundProxyKeys: oauthGroupProxyState.boundProxyKeys,
         note: oauthNote,
         groupNote: resolvePendingGroupNoteForName(oauthGroupName),
         includeGroupNote: Boolean(
@@ -4253,7 +4386,8 @@ export default function UpstreamAccountCreatePage() {
       });
       const response = await beginOauthLogin({
         displayName: oauthDisplayName.trim() || undefined,
-        groupName: oauthGroupName.trim() || undefined,
+        groupName: oauthGroupProxyState.normalizedGroupName || undefined,
+        groupBoundProxyKeys: oauthGroupProxyState.boundProxyKeys,
         note: oauthNote.trim() || undefined,
         groupNote: resolvePendingGroupNoteForName(oauthGroupName) || undefined,
         accountId: relinkAccountId ?? undefined,
@@ -4660,6 +4794,16 @@ export default function UpstreamAccountCreatePage() {
     if (!row) return;
     if (row.needsRefresh) return;
 
+    const groupProxyState = resolveRequiredGroupProxyState(row.groupName);
+    if (groupProxyState.error) {
+      updateBatchRow(rowId, (current) => ({
+        ...current,
+        busyAction: null,
+        actionError: groupProxyState.error,
+      }));
+      return;
+    }
+
     updateBatchRow(rowId, (current) => ({
       ...current,
       busyAction: "generate",
@@ -4667,14 +4811,15 @@ export default function UpstreamAccountCreatePage() {
     }));
 
     try {
-      const normalizedGroupName = normalizeGroupName(row.groupName);
       const oauthLoginSessionPayload = buildOauthLoginSessionUpdatePayload({
         displayName: row.displayName,
-        groupName: row.groupName,
+        groupName: groupProxyState.normalizedGroupName,
+        groupBoundProxyKeys: groupProxyState.boundProxyKeys,
         note: row.note,
         groupNote: resolvePendingGroupNoteForName(row.groupName),
         includeGroupNote: Boolean(
-          normalizedGroupName && !isExistingGroup(groups, normalizedGroupName),
+          groupProxyState.normalizedGroupName &&
+            !isExistingGroup(groups, groupProxyState.normalizedGroupName),
         ),
         tagIds: batchTagIds,
         isMother: row.isMother,
@@ -4682,7 +4827,8 @@ export default function UpstreamAccountCreatePage() {
       });
       const response = await beginOauthLogin({
         displayName: row.displayName.trim() || undefined,
-        groupName: row.groupName.trim() || undefined,
+        groupName: groupProxyState.normalizedGroupName || undefined,
+        groupBoundProxyKeys: groupProxyState.boundProxyKeys,
         note: row.note.trim() || undefined,
         tagIds: batchTagIds,
         groupNote: resolvePendingGroupNoteForName(row.groupName) || undefined,
@@ -4987,12 +5133,17 @@ export default function UpstreamAccountCreatePage() {
 
   const handleCreateApiKey = async () => {
     if (apiKeyUpstreamBaseUrlError) return;
+    if (apiKeyGroupProxyState.error) {
+      setActionError(apiKeyGroupProxyState.error);
+      return;
+    }
     setActionError(null);
     setBusyAction("apiKey");
     try {
       const response = await createApiKeyAccount({
         displayName: apiKeyDisplayName.trim(),
-        groupName: apiKeyGroupName.trim() || undefined,
+        groupName: apiKeyGroupProxyState.normalizedGroupName || undefined,
+        groupBoundProxyKeys: apiKeyGroupProxyState.boundProxyKeys,
         note: apiKeyNote.trim() || undefined,
         groupNote: resolvePendingGroupNoteForName(apiKeyGroupName) || undefined,
         apiKey: apiKeyValue.trim(),
@@ -5657,6 +5808,11 @@ export default function UpstreamAccountCreatePage() {
                         />
                       </Button>
                     </div>
+                    {oauthGroupProxyState.error ? (
+                      <p className="mt-2 text-xs text-error">
+                        {oauthGroupProxyState.error}
+                      </p>
+                    ) : null}
                   </label>
                   <MotherAccountToggle
                     checked={oauthIsMother}
@@ -5882,12 +6038,13 @@ export default function UpstreamAccountCreatePage() {
                           type="button"
                           variant="secondary"
                           onClick={() => void handleGenerateOauthUrl()}
-                          disabled={
-                            busyAction === "oauth-generate" ||
-                            !writesEnabled ||
-                            oauthDisplayNameConflict != null ||
-                            session?.status === "completed"
-                          }
+                        disabled={
+                          busyAction === "oauth-generate" ||
+                          !writesEnabled ||
+                          oauthDisplayNameConflict != null ||
+                          Boolean(oauthGroupProxyState.error) ||
+                          session?.status === "completed"
+                        }
                         >
                           {busyAction === "oauth-generate" ? (
                             <AppIcon
@@ -6126,6 +6283,9 @@ export default function UpstreamAccountCreatePage() {
                         </thead>
                         <tbody>
                           {batchRows.map((row, index) => {
+                            const rowGroupProxyError =
+                              resolveRequiredGroupProxyState(row.groupName)
+                                .error;
                             const status = batchRowStatus(row);
                             const statusDetail = batchRowStatusDetail(row);
                             const duplicateNameError =
@@ -6463,6 +6623,11 @@ export default function UpstreamAccountCreatePage() {
                                           />
                                         </Button>
                                       </div>
+                                      {rowGroupProxyError ? (
+                                        <p className="text-xs text-error">
+                                          {rowGroupProxyError}
+                                        </p>
+                                      ) : null}
                                     </label>
                                     {row.noteExpanded ? (
                                       <label className="field min-w-0 gap-2 whitespace-nowrap">
@@ -6592,9 +6757,13 @@ export default function UpstreamAccountCreatePage() {
                                           disabled={
                                             rowHasActiveOauthUrl
                                               ? !authUrl || oauthLocked
-                                              : oauthLocked
+                                              : oauthLocked ||
+                                                Boolean(rowGroupProxyError)
                                           }
-                                          regenerateDisabled={oauthLocked}
+                                          regenerateDisabled={
+                                            oauthLocked ||
+                                            Boolean(rowGroupProxyError)
+                                          }
                                           onPrimaryAction={() => {
                                             if (rowHasActiveOauthUrl) {
                                               void handleBatchCopyOauthUrl(
@@ -7039,6 +7208,11 @@ export default function UpstreamAccountCreatePage() {
                         />
                       </Button>
                     </div>
+                    {importGroupProxyState.error ? (
+                      <p className="mt-2 text-xs text-error">
+                        {importGroupProxyState.error}
+                      </p>
+                    ) : null}
                     <p className="mt-2 text-xs text-base-content/65">
                       {t(
                         "accountPool.upstreamAccounts.import.defaultMetadataHint",
@@ -7067,7 +7241,11 @@ export default function UpstreamAccountCreatePage() {
                     <Button
                       type="button"
                       onClick={() => void handleValidateImportedOauth()}
-                      disabled={!writesEnabled || importFiles.length === 0}
+                      disabled={
+                        !writesEnabled ||
+                        importFiles.length === 0 ||
+                        Boolean(importGroupProxyState.error)
+                      }
                     >
                       <AppIcon
                         name="check-decagram-outline"
@@ -7156,6 +7334,11 @@ export default function UpstreamAccountCreatePage() {
                         />
                       </Button>
                     </div>
+                    {apiKeyGroupProxyState.error ? (
+                      <p className="mt-2 text-xs text-error">
+                        {apiKeyGroupProxyState.error}
+                      </p>
+                    ) : null}
                   </label>
                   <div className="md:col-span-2">
                     <MotherAccountToggle
@@ -7284,7 +7467,8 @@ export default function UpstreamAccountCreatePage() {
                         busyAction === "apiKey" ||
                         !writesEnabled ||
                         apiKeyDisplayNameConflict != null ||
-                        Boolean(apiKeyUpstreamBaseUrlError)
+                        Boolean(apiKeyUpstreamBaseUrlError) ||
+                        Boolean(apiKeyGroupProxyState.error)
                       }
                     >
                       {busyAction === "apiKey" ? (
@@ -7312,6 +7496,7 @@ export default function UpstreamAccountCreatePage() {
       <ImportedOauthValidationDialog
         open={importValidationDialogOpen}
         state={importValidationState}
+        importDisabledReason={importGroupProxyState.error}
         onClose={handleCloseImportedOauthValidationDialog}
         onRetryFailed={() => void handleRetryImportedOauthFailed()}
         onRetryOne={(sourceId) => void handleRetryImportedOauthOne(sourceId)}

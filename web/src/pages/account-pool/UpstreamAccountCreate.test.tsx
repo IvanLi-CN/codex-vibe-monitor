@@ -179,6 +179,42 @@ type RenderEntry =
       state?: unknown;
     };
 
+const TEST_REQUIRED_GROUP_NAME = "prod";
+const TEST_REQUIRED_BOUND_PROXY_KEYS = ["__direct__"];
+const TEST_FORWARD_PROXY_NODES = [
+  {
+    key: "__direct__",
+    displayName: "Direct",
+    protocolLabel: "DIRECT",
+    source: "direct",
+    penalized: false,
+    selectable: true,
+    last24h: [],
+  },
+];
+const TEST_GROUP_SUMMARIES = [
+  TEST_REQUIRED_GROUP_NAME,
+  "alpha",
+  "beta",
+  "custom",
+  "analytics",
+  "latam",
+  "ops",
+  "restored-group",
+  "staging",
+].map((groupName) => ({
+  groupName,
+  note: `${groupName} note`,
+  boundProxyKeys: [...TEST_REQUIRED_BOUND_PROXY_KEYS],
+}));
+
+function expectedGroupSelection(groupName = TEST_REQUIRED_GROUP_NAME) {
+  return {
+    groupName,
+    groupBoundProxyKeys: [...TEST_REQUIRED_BOUND_PROXY_KEYS],
+  };
+}
+
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
 let dateNowSpy: ReturnType<typeof vi.spyOn> | null = null;
@@ -253,6 +289,79 @@ afterEach(() => {
 function render(
   initialEntry: RenderEntry = "/account-pool/upstream-accounts/new",
 ) {
+  const normalizedEntry =
+    typeof initialEntry === "string"
+      ? (() => {
+          const parsed = new URL(initialEntry, "http://storybook.local");
+          return {
+            pathname: parsed.pathname,
+            search: parsed.search,
+            state: undefined,
+          };
+        })()
+      : initialEntry;
+  const baseState =
+    normalizedEntry.state &&
+    typeof normalizedEntry.state === "object" &&
+    !Array.isArray(normalizedEntry.state)
+      ? (normalizedEntry.state as Record<string, unknown>)
+      : {};
+  const baseDraft =
+    baseState.draft &&
+    typeof baseState.draft === "object" &&
+    !Array.isArray(baseState.draft)
+      ? (baseState.draft as Record<string, unknown>)
+      : {};
+  const oauthDraft =
+    baseDraft.oauth &&
+    typeof baseDraft.oauth === "object" &&
+    !Array.isArray(baseDraft.oauth)
+      ? (baseDraft.oauth as Record<string, unknown>)
+      : {};
+  const batchOauthDraft =
+    baseDraft.batchOauth &&
+    typeof baseDraft.batchOauth === "object" &&
+    !Array.isArray(baseDraft.batchOauth)
+      ? (baseDraft.batchOauth as Record<string, unknown>)
+      : {};
+  const importDraft =
+    baseDraft.import &&
+    typeof baseDraft.import === "object" &&
+    !Array.isArray(baseDraft.import)
+      ? (baseDraft.import as Record<string, unknown>)
+      : {};
+  const apiKeyDraft =
+    baseDraft.apiKey &&
+    typeof baseDraft.apiKey === "object" &&
+    !Array.isArray(baseDraft.apiKey)
+      ? (baseDraft.apiKey as Record<string, unknown>)
+      : {};
+  const entryWithDefaults = {
+    pathname: normalizedEntry.pathname,
+    search: normalizedEntry.search,
+    state: {
+      ...baseState,
+      draft: {
+        ...baseDraft,
+        oauth: {
+          groupName: TEST_REQUIRED_GROUP_NAME,
+          ...oauthDraft,
+        },
+        batchOauth: {
+          defaultGroupName: TEST_REQUIRED_GROUP_NAME,
+          ...batchOauthDraft,
+        },
+        import: {
+          defaultGroupName: TEST_REQUIRED_GROUP_NAME,
+          ...importDraft,
+        },
+        apiKey: {
+          groupName: TEST_REQUIRED_GROUP_NAME,
+          ...apiKeyDraft,
+        },
+      },
+    },
+  } satisfies RenderEntry;
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
@@ -260,7 +369,7 @@ function render(
     root?.render(
       <I18nProvider>
         <SystemNotificationProvider>
-          <MemoryRouter initialEntries={[initialEntry]}>
+          <MemoryRouter initialEntries={[entryWithDefaults]}>
             <Routes>
               <Route
                 path="/account-pool/upstream-accounts/new"
@@ -569,6 +678,14 @@ function mockUpstreamAccounts(
     duplicateInfo: null,
     history: [],
   });
+  const groups = Array.isArray(overrides.groups)
+    ? overrides.groups.map((group) => ({
+        ...group,
+        boundProxyKeys: Array.isArray(group.boundProxyKeys)
+          ? group.boundProxyKeys
+          : [...TEST_REQUIRED_BOUND_PROXY_KEYS],
+      }))
+    : TEST_GROUP_SUMMARIES;
   hookMocks.useUpstreamAccounts.mockReturnValue({
     items: [
       {
@@ -581,7 +698,8 @@ function mockUpstreamAccounts(
         enabled: true,
       },
     ],
-    groups: [],
+    groups,
+    forwardProxyNodes: TEST_FORWARD_PROXY_NODES,
     writesEnabled: true,
     isLoading: false,
     listError: null,
@@ -842,7 +960,7 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
 
     expect(beginOauthLogin).toHaveBeenCalledWith({
       displayName: "Row One",
-      groupName: undefined,
+      ...expectedGroupSelection(),
       groupNote: undefined,
       note: undefined,
       tagIds: [],
@@ -858,7 +976,7 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     expect(host?.textContent).not.toContain("Generate a fresh OAuth URL");
     expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
       displayName: "Row One",
-      groupName: "",
+      ...expectedGroupSelection(),
       note: "Needs a new login",
       tagIds: [],
       isMother: false,
@@ -2414,7 +2532,7 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
 
     expect(beginOauthLogin).toHaveBeenCalledWith({
       displayName: "Batch Row",
-      groupName: "prod",
+      ...expectedGroupSelection(),
       note: undefined,
       tagIds: [],
       groupNote: undefined,
@@ -2514,7 +2632,7 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
 
     expect(beginOauthLogin).toHaveBeenCalledWith({
       displayName: "Batch Row",
-      groupName: "prod",
+      ...expectedGroupSelection(),
       note: undefined,
       tagIds: [],
       groupNote: undefined,
@@ -2794,7 +2912,7 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
     expect(updateOauthLogin).toHaveBeenCalledWith("login-existing-row-1", {
       displayName: "Batch Row",
-      groupName: "",
+      ...expectedGroupSelection(),
       note: "",
       tagIds: [],
       isMother: false,
@@ -2827,11 +2945,13 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     expect(beginOauthLogin).toHaveBeenCalledWith({
       displayName: undefined,
-      groupName: "prod",
+      ...expectedGroupSelection(),
       tagIds: [],
       groupNote: undefined,
       note: undefined,
       isMother: false,
+      mailboxSessionId: undefined,
+      mailboxAddress: undefined,
     });
   });
 
@@ -2862,6 +2982,23 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       throw new Error("missing group note textarea");
     }
     setFieldValue(draftGroupNoteField, "Draft shared group note");
+    const draftGroupDialog = Array.from(
+      document.body.querySelectorAll('[role="dialog"]'),
+    ).at(-1);
+    if (!(draftGroupDialog instanceof HTMLElement)) {
+      throw new Error("missing group settings dialog");
+    }
+    const directProxyButton = Array.from(
+      draftGroupDialog.querySelectorAll("button"),
+    ).find((candidate) => /Direct/i.test(candidate.textContent || ""));
+    if (!(directProxyButton instanceof HTMLButtonElement)) {
+      throw new Error("missing direct proxy binding option");
+    }
+    act(() => {
+      directProxyButton.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
     clickBodyButton(/Save changes/i);
     await flushAsync();
 
@@ -2870,11 +3007,13 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     expect(beginOauthLogin).toHaveBeenCalledWith({
       displayName: undefined,
-      groupName: "new-team",
+      ...expectedGroupSelection("new-team"),
       tagIds: [],
       groupNote: "Draft shared group note",
       note: undefined,
       isMother: false,
+      mailboxSessionId: undefined,
+      mailboxAddress: undefined,
     });
   });
 
@@ -2938,7 +3077,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
     expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
       displayName: "Fresh OAuth Renamed",
-      groupName: "",
+      ...expectedGroupSelection(),
       note: "",
       tagIds: [],
       isMother: false,
@@ -3003,7 +3142,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(updateOauthLogin).toHaveBeenCalledTimes(1);
     expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
       displayName: "Fresh OAuth Edited",
-      groupName: "",
+      ...expectedGroupSelection(),
       note: "",
       tagIds: [],
       isMother: false,
@@ -3040,7 +3179,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(updateOauthLogin).toHaveBeenCalledTimes(1);
     expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
       displayName: "Fresh OAuth Immediate",
-      groupName: "",
+      ...expectedGroupSelection(),
       note: "",
       tagIds: [],
       isMother: false,
@@ -3084,7 +3223,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
       displayName: "Fresh OAuth Copied",
-      groupName: "",
+      ...expectedGroupSelection(),
       note: "",
       tagIds: [],
       isMother: false,
@@ -3156,7 +3295,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
       displayName: "Fresh OAuth Completed",
-      groupName: "",
+      ...expectedGroupSelection(),
       note: "",
       tagIds: [],
       isMother: false,
@@ -3202,7 +3341,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
       displayName: "Fresh OAuth Retry",
-      groupName: "",
+      ...expectedGroupSelection(),
       note: "",
       tagIds: [],
       isMother: false,
@@ -3265,75 +3404,6 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     });
   });
 
-  it("does not send groupNote while syncing pending oauth metadata for an existing group", async () => {
-    vi.useFakeTimers();
-    const writeText = vi.fn().mockResolvedValue(undefined);
-    const originalClipboard = navigator.clipboard;
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: {
-        writeText,
-      },
-    });
-    const updateOauthLogin = vi.fn().mockResolvedValue({
-      loginId: "login-1",
-      status: "pending",
-      authUrl: "https://auth.openai.com/authorize?login=1",
-      redirectUri: "http://localhost:1455/oauth/callback",
-      expiresAt: "2026-03-13T10:00:00.000Z",
-      updatedAt: "2026-03-13T10:01:00.000Z",
-      accountId: null,
-      error: null,
-    });
-    const getLoginSession = vi.fn().mockResolvedValue({
-      loginId: "login-1",
-      status: "pending",
-      authUrl: "https://auth.openai.com/authorize?login=1",
-      redirectUri: "http://localhost:1455/oauth/callback",
-      expiresAt: "2026-03-13T10:00:00.000Z",
-      updatedAt: "2026-03-13T10:01:00.000Z",
-      accountId: null,
-      error: null,
-    });
-    mockUpstreamAccounts({
-      groups: [{ groupName: "prod", note: "Saved note" }],
-      updateOauthLogin,
-      getLoginSession,
-    });
-    render();
-
-    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth");
-    await flushAsync();
-    setComboboxValue('input[name="oauthGroupName"]', "prod");
-    await flushAsync();
-    clickButton(/Generate OAuth URL/i);
-    await flushAsync();
-
-    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth Retry");
-    await flushAsync();
-    clickButton(/Copy OAuth URL/i);
-    await flushAsync();
-
-    expect(updateOauthLogin).toHaveBeenCalled();
-    expect(updateOauthLogin.mock.calls[0]?.[1]).toEqual({
-      displayName: "Fresh OAuth Retry",
-      groupName: "prod",
-      note: "",
-      tagIds: [],
-      isMother: false,
-      mailboxSessionId: "",
-      mailboxAddress: "",
-    });
-    expect(writeText).toHaveBeenCalledWith(
-      "https://auth.openai.com/authorize?login=1",
-    );
-
-    Object.defineProperty(navigator, "clipboard", {
-      configurable: true,
-      value: originalClipboard,
-    });
-  });
-
   it("dispatches an unload keepalive even while oauth metadata sync is already in flight", async () => {
     vi.useFakeTimers();
     let resolveFirstSync:
@@ -3382,7 +3452,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       "login-1",
       {
         displayName: "Fresh OAuth Latest",
-        groupName: "",
+        ...expectedGroupSelection(),
         note: "",
         tagIds: [],
         isMother: false,
@@ -3446,7 +3516,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       "login-1",
       {
         displayName: "Fresh OAuth Pagehide",
-        groupName: "",
+        ...expectedGroupSelection(),
         note: "",
         tagIds: [],
         isMother: false,
@@ -3506,7 +3576,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       "login-1",
       {
         displayName: "Fresh OAuth Unmount",
-        groupName: "",
+        ...expectedGroupSelection(),
         note: "",
         tagIds: [],
         isMother: false,
@@ -3662,7 +3732,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     expect(updateOauthLogin).toHaveBeenNthCalledWith(1, "login-1", {
       displayName: "Fresh OAuth A",
-      groupName: "",
+      ...expectedGroupSelection(),
       note: "",
       tagIds: [],
       isMother: false,
@@ -3672,7 +3742,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(updateOauthLogin.mock.calls[0]?.[1]).not.toHaveProperty("groupNote");
     expect(updateOauthLogin).toHaveBeenNthCalledWith(2, "login-1", {
       displayName: "Fresh OAuth B",
-      groupName: "",
+      ...expectedGroupSelection(),
       note: "",
       tagIds: [],
       isMother: false,
@@ -3758,7 +3828,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(updateOauthLogin).toHaveBeenCalledTimes(2);
     expect(updateOauthLogin).toHaveBeenLastCalledWith("login-1", {
       displayName: "Fresh OAuth AB",
-      groupName: "",
+      ...expectedGroupSelection(),
       note: "",
       tagIds: [],
       isMother: false,
@@ -3841,7 +3911,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
       displayName: "Fresh OAuth",
-      groupName: "",
+      ...expectedGroupSelection(),
       note: "",
       tagIds: [],
       isMother: false,
@@ -3896,7 +3966,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
       displayName: "Fresh OAuth",
-      groupName: "",
+      ...expectedGroupSelection(),
       note: "",
       tagIds: [],
       isMother: false,
@@ -3952,9 +4022,8 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     expect(updateOauthLogin).toHaveBeenCalledWith("login-restored-1", {
       displayName: "Restored OAuth Draft",
-      groupName: "restored-group",
+      ...expectedGroupSelection("restored-group"),
       note: "restored note",
-      groupNote: "",
       tagIds: [],
       isMother: false,
       mailboxSessionId: "",
@@ -4116,7 +4185,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(updateOauthLogin).toHaveBeenCalledTimes(3);
     expect(updateOauthLogin).toHaveBeenLastCalledWith("login-1", {
       displayName: "Fresh OAuth Retry",
-      groupName: "",
+      ...expectedGroupSelection(),
       note: "",
       tagIds: [],
       isMother: false,
@@ -4222,7 +4291,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(updateOauthLogin).toHaveBeenCalledTimes(2);
     expect(updateOauthLogin).toHaveBeenNthCalledWith(2, "login-1", {
       displayName: "Fresh OAuth Valid",
-      groupName: "",
+      ...expectedGroupSelection(),
       note: "",
       tagIds: [],
       isMother: false,
@@ -4289,7 +4358,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
       displayName: "Fresh OAuth Renamed",
-      groupName: "",
+      ...expectedGroupSelection(),
       note: "",
       tagIds: [],
       isMother: false,
@@ -4330,6 +4399,28 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     setComboboxValue('input[name="batchOauthDefaultGroupName"]', "new-team");
     await flushAsync();
 
+    clickButton(/Edit group settings|Edit group note/i);
+    await flushAsync();
+    const pendingGroupDialog = Array.from(
+      document.body.querySelectorAll('[role="dialog"]'),
+    ).at(-1);
+    if (!(pendingGroupDialog instanceof HTMLElement)) {
+      throw new Error("missing group settings dialog");
+    }
+    const pendingDirectProxyButton = Array.from(
+      pendingGroupDialog.querySelectorAll("button"),
+    ).find((candidate) => /Direct/i.test(candidate.textContent || ""));
+    if (!(pendingDirectProxyButton instanceof HTMLButtonElement)) {
+      throw new Error("missing direct proxy binding option");
+    }
+    act(() => {
+      pendingDirectProxyButton.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    clickBodyButton(/Save changes/i);
+    await flushAsync();
+
     clickButton(/Generate OAuth URL/i);
     await flushAsync();
     expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
@@ -4352,7 +4443,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
     expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
       displayName: "",
-      groupName: "new-team",
+      ...expectedGroupSelection("new-team"),
       note: "",
       groupNote: "Updated draft shared note",
       tagIds: [],
@@ -4914,7 +5005,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
       displayName: "Row One Completed",
-      groupName: "",
+      ...expectedGroupSelection(),
       note: "",
       tagIds: [],
       isMother: false,
@@ -4971,7 +5062,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
       displayName: "Row One Retry",
-      groupName: "",
+      ...expectedGroupSelection(),
       note: "",
       tagIds: [],
       isMother: false,
@@ -5448,7 +5539,7 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     );
     expect(updateOauthLogin).toHaveBeenCalledWith("login-1", {
       displayName: "mailbox-1@example.com",
-      groupName: "",
+      ...expectedGroupSelection(),
       note: "",
       tagIds: [],
       isMother: false,
@@ -5514,7 +5605,7 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     expect(host?.textContent).not.toContain("Attached mailbox");
     expect(updateOauthLogin).toHaveBeenCalledWith("login-mailbox-bound", {
       displayName: "Mailbox Bound",
-      groupName: "",
+      ...expectedGroupSelection(),
       note: "",
       tagIds: [],
       isMother: false,
@@ -5603,7 +5694,7 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     );
     expect(beginOauthLogin).toHaveBeenCalledWith({
       displayName: "manual-existing@mail-tw.707079.xyz",
-      groupName: undefined,
+      ...expectedGroupSelection(),
       note: undefined,
       groupNote: undefined,
       accountId: undefined,
@@ -5655,7 +5746,7 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
     );
     expect(beginOauthLogin).toHaveBeenCalledWith({
       displayName: "finance.lab.d5r@mail-tw.707079.xyz",
-      groupName: undefined,
+      ...expectedGroupSelection(),
       note: undefined,
       groupNote: undefined,
       accountId: undefined,
@@ -5723,7 +5814,7 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
 
     expect(beginOauthLogin).toHaveBeenCalledWith({
       displayName: "Mailbox Drift",
-      groupName: undefined,
+      ...expectedGroupSelection(),
       note: undefined,
       groupNote: undefined,
       accountId: undefined,
@@ -5745,7 +5836,7 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
 
     expect(beginOauthLogin).toHaveBeenLastCalledWith({
       displayName: "Mailbox Drift",
-      groupName: undefined,
+      ...expectedGroupSelection(),
       note: undefined,
       groupNote: undefined,
       accountId: undefined,
@@ -5834,7 +5925,7 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
 
     expect(beginOauthLogin).toHaveBeenCalledWith({
       displayName: "Mailbox Case",
-      groupName: undefined,
+      ...expectedGroupSelection(),
       note: undefined,
       groupNote: undefined,
       accountId: undefined,
@@ -6213,7 +6304,7 @@ describe("UpstreamAccountCreatePage api key", () => {
       kind: "api_key_codex",
       provider: "codex",
       displayName: "Gateway Key",
-      groupName: "latam",
+      groupName: "latam-draft",
       isMother: false,
       status: "active",
       enabled: true,
@@ -6259,7 +6350,7 @@ describe("UpstreamAccountCreatePage api key", () => {
 
     setInputValue('input[name="apiKeyDisplayName"]', "Gateway Key");
     setInputValue('input[name="apiKeyValue"]', "sk-gateway");
-    setComboboxValue('input[name="apiKeyGroupName"]', "latam");
+    setComboboxValue('input[name="apiKeyGroupName"]', "latam-draft");
     await flushAsync();
 
     clickButton(/Edit group settings|Edit group note/i);
@@ -6311,11 +6402,12 @@ describe("UpstreamAccountCreatePage api key", () => {
       expect.objectContaining({
         displayName: "Gateway Key",
         apiKey: "sk-gateway",
-        groupName: "latam",
+        groupName: "latam-draft",
+        groupBoundProxyKeys: ["jp-edge-01"],
         groupNote: "LATAM draft note",
       }),
     );
-    expect(saveGroupNote).toHaveBeenCalledWith("latam", {
+    expect(saveGroupNote).toHaveBeenCalledWith("latam-draft", {
       note: "LATAM draft note",
       boundProxyKeys: ["jp-edge-01"],
       upstream429RetryEnabled: false,
@@ -6601,6 +6693,7 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     await flushAsync();
 
     expect(startImportedOauthValidationJob).toHaveBeenCalledWith({
+      ...expectedGroupSelection(),
       items: [
         expect.objectContaining({
           fileName: fixture.fileName,
@@ -6688,7 +6781,10 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     expect(importPayload).toBeDefined();
     expect(importPayload.items).toHaveLength(1);
     expect(importPayload.selectedSourceIds).toEqual([importedSourceId]);
-    expect(importPayload.groupName).toBeUndefined();
+    expect(importPayload.groupName).toBe(TEST_REQUIRED_GROUP_NAME);
+    expect(importPayload.groupBoundProxyKeys).toEqual(
+      TEST_REQUIRED_BOUND_PROXY_KEYS,
+    );
     expect(importPayload.groupNote).toBeUndefined();
     expect(importPayload.tagIds).toEqual([]);
 

@@ -30,6 +30,74 @@ export const Ready: Story = {
   },
 }
 
+export const BlockedByUnselectableGroupProxy: Story = {
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts/new',
+        state: {
+          draft: {
+            oauth: {
+              displayName: 'Blocked OAuth Proxy',
+              groupName: 'staging',
+            },
+          },
+        },
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(
+      canvas.getByText(/group "staging" does not have any selectable bound proxy nodes\./i),
+    ).toBeInTheDocument()
+    await expect(canvas.getByRole('button', { name: /generate oauth url/i })).toBeDisabled()
+  },
+}
+
+export const DraftGroupBindingsUnlockGenerate: Story = {
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts/new',
+        state: {
+          draft: {
+            oauth: {
+              displayName: 'Launch Team Draft',
+              groupName: 'launch-team',
+            },
+          },
+        },
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const generateButton = canvas.getByRole('button', { name: /generate oauth url/i })
+
+    await expect(
+      canvas.getByText(/group "launch-team" does not have any bound proxy nodes\./i),
+    ).toBeInTheDocument()
+    await expect(generateButton).toBeDisabled()
+
+    await userEvent.click(
+      canvas.getByRole('button', { name: /edit group settings|edit group note/i }),
+    )
+    const dialog = documentScope.getByRole('dialog', { name: /group settings|group note/i })
+    await userEvent.click(within(dialog).getByRole('button', { name: /^direct/i }))
+    await userEvent.click(within(dialog).getByRole('button', { name: /^save$/i }))
+
+    await expect(
+      canvas.queryByText(/group "launch-team" does not have any bound proxy nodes\./i),
+    ).not.toBeInTheDocument()
+    await expect(generateButton).toBeEnabled()
+
+    await userEvent.click(generateButton)
+    await expect(canvas.getByRole('button', { name: /copy oauth url/i })).toBeInTheDocument()
+  },
+}
+
 export const PendingMetadataSync: Story = {
   render: () => (
     <AccountPoolStoryRouter

@@ -132,6 +132,39 @@ export const Ready: Story = {
   },
 }
 
+export const RowBlockedByUnselectableGroupProxy: Story = {
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts/new',
+        search: '?mode=batchOauth',
+        state: {
+          draft: {
+            batchOauth: {
+              rows: [
+                {
+                  id: 'row-1',
+                  displayName: 'Blocked Batch Row',
+                  groupName: 'staging',
+                },
+              ],
+            },
+          },
+        },
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(
+      canvas.getByText(/group "staging" does not have any selectable bound proxy nodes\./i),
+    ).toBeInTheDocument()
+    await expect(
+      canvas.getByRole('button', { name: /generate oauth url/i }),
+    ).toBeDisabled()
+  },
+}
+
 export const GenerateAutoCopyFallback: Story = {
   render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new?mode=batchOauth" />,
   play: async ({ canvasElement }) => {
