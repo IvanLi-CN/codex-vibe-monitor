@@ -2321,13 +2321,28 @@ export default function UpstreamAccountsPage() {
     [groupFilter, groupFilterLabels],
   )
   const validTagIds = useMemo(() => new Set(tagItems.map((tag) => tag.id)), [tagItems])
+  const visibleSelectedTagIds = useMemo(
+    () => selectedTagIds.filter((tagId) => validTagIds.has(tagId)),
+    [selectedTagIds, validTagIds],
+  )
   const canSanitizeSelectedTagIds = !isTagCatalogLoading && tagCatalogError == null
-  const sanitizedSelectedTagIds = useMemo(() => {
+  const canApplySelectedTagIds =
+    isTagCatalogLoading || tagCatalogError == null || visibleSelectedTagIds.length === selectedTagIds.length
+  const appliedSelectedTagIds = useMemo(() => {
+    if (isTagCatalogLoading) {
+      return selectedTagIds
+    }
+    if (!canApplySelectedTagIds) {
+      return []
+    }
+    return visibleSelectedTagIds
+  }, [canApplySelectedTagIds, isTagCatalogLoading, selectedTagIds, visibleSelectedTagIds])
+  const persistedSelectedTagIds = useMemo(() => {
     if (!canSanitizeSelectedTagIds) {
       return selectedTagIds
     }
-    return selectedTagIds.filter((tagId) => validTagIds.has(tagId))
-  }, [canSanitizeSelectedTagIds, selectedTagIds, validTagIds])
+    return visibleSelectedTagIds
+  }, [canSanitizeSelectedTagIds, selectedTagIds, visibleSelectedTagIds])
   const accountListQuery = useMemo(() => {
     return {
       groupSearch: groupFilter.mode === 'search' ? groupFilter.query : undefined,
@@ -2337,9 +2352,9 @@ export default function UpstreamAccountsPage() {
       healthStatus: healthStatusFilter.length > 0 ? healthStatusFilter : undefined,
       page,
       pageSize,
-      tagIds: sanitizedSelectedTagIds.length > 0 ? sanitizedSelectedTagIds : undefined,
+      tagIds: appliedSelectedTagIds.length > 0 ? appliedSelectedTagIds : undefined,
     }
-  }, [enableStatusFilter, groupFilter, healthStatusFilter, page, pageSize, sanitizedSelectedTagIds, workStatusFilter])
+  }, [appliedSelectedTagIds, enableStatusFilter, groupFilter, healthStatusFilter, page, pageSize, workStatusFilter])
   const workStatusFilterOptions = useMemo(
     () => [
       { value: 'working', label: t('accountPool.upstreamAccounts.workStatus.working') },
@@ -2570,10 +2585,10 @@ export default function UpstreamAccountsPage() {
       workStatus: workStatusFilter,
       enableStatus: enableStatusFilter,
       healthStatus: healthStatusFilter,
-      tagIds: sanitizedSelectedTagIds,
+      tagIds: persistedSelectedTagIds,
       groupFilter,
     })
-  }, [enableStatusFilter, groupFilter, healthStatusFilter, sanitizedSelectedTagIds, workStatusFilter])
+  }, [enableStatusFilter, groupFilter, healthStatusFilter, persistedSelectedTagIds, workStatusFilter])
 
   useEffect(() => {
     return () => {
@@ -3367,7 +3382,7 @@ export default function UpstreamAccountsPage() {
                   <AccountTagFilterCombobox
                     size="filter"
                     tags={tagItems}
-                    value={sanitizedSelectedTagIds}
+                    value={appliedSelectedTagIds}
                     placeholder={t('accountPool.upstreamAccounts.tagFilterPlaceholder')}
                     searchPlaceholder={t('accountPool.upstreamAccounts.tagFilterSearchPlaceholder')}
                     emptyLabel={t('accountPool.upstreamAccounts.tagFilterEmpty')}

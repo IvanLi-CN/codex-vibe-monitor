@@ -1685,7 +1685,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     });
   });
 
-  it("keeps persisted tag ids when the tag catalog request fails", () => {
+  it("drops invisible persisted tag ids from the query when the tag catalog request fails", () => {
     hookMocks.usePoolTags.mockReturnValue({
       items: [],
       writesEnabled: true,
@@ -1719,8 +1719,9 @@ describe("UpstreamAccountsPage duplicates", () => {
       healthStatus: undefined,
       page: 1,
       pageSize: 20,
-      tagIds: [1],
+      tagIds: undefined,
     });
+    expect(document.body.textContent).toContain("All tags");
     expect(readStoredUpstreamFilters()).toEqual({
       workStatus: [],
       enableStatus: [],
