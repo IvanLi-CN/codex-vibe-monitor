@@ -9446,14 +9446,18 @@ async fn forward_proxy_live_stats_returns_fixed_24_hour_buckets_with_zero_fill()
     seed_forward_proxy_attempt_at(
         &state.pool,
         &manual_key,
-        now - ChronoDuration::hours(2) - ChronoDuration::minutes(12),
+        Utc.timestamp_opt(range_end_epoch - (2 * 3600 + 12 * 60), 0)
+            .single()
+            .expect("valid in-range success timestamp"),
         true,
     )
     .await;
     seed_forward_proxy_attempt_at(
         &state.pool,
         &manual_key,
-        now - ChronoDuration::hours(1) - ChronoDuration::minutes(8),
+        Utc.timestamp_opt(range_end_epoch - (3600 + 8 * 60), 0)
+            .single()
+            .expect("valid in-range failure timestamp"),
         false,
     )
     .await;
@@ -9603,24 +9607,32 @@ async fn forward_proxy_binding_nodes_preserve_direct_hourly_buckets() {
     .expect("put forward proxy settings should succeed");
 
     let now = Utc::now();
+    let range_end_epoch = align_bucket_epoch(now.timestamp(), 3600, 0) + 3600;
+    let range_start_epoch = range_end_epoch - 24 * 3600;
     seed_forward_proxy_attempt_at(
         &state.pool,
         FORWARD_PROXY_DIRECT_KEY,
-        now - ChronoDuration::hours(2) - ChronoDuration::minutes(5),
+        Utc.timestamp_opt(range_end_epoch - (2 * 3600 + 5 * 60), 0)
+            .single()
+            .expect("valid in-range direct success timestamp"),
         true,
     )
     .await;
     seed_forward_proxy_attempt_at(
         &state.pool,
         FORWARD_PROXY_DIRECT_KEY,
-        now - ChronoDuration::hours(1) - ChronoDuration::minutes(11),
+        Utc.timestamp_opt(range_end_epoch - (3600 + 11 * 60), 0)
+            .single()
+            .expect("valid in-range direct failure timestamp"),
         false,
     )
     .await;
     seed_forward_proxy_attempt_at(
         &state.pool,
         FORWARD_PROXY_DIRECT_KEY,
-        now - ChronoDuration::hours(31),
+        Utc.timestamp_opt(range_start_epoch - 3600, 0)
+            .single()
+            .expect("valid out-of-range direct timestamp"),
         true,
     )
     .await;
