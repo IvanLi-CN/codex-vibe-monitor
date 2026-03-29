@@ -4,6 +4,7 @@ import type { ForwardProxyBindingNode } from '../lib/api'
 import { cn } from '../lib/utils'
 import { Button } from './ui/button'
 import { ForwardProxyRequestTrendChart } from './ForwardProxyRequestTrendChart'
+import { SelectField } from './ui/select-field'
 import {
   Dialog,
   DialogCloseIcon,
@@ -13,6 +14,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from './ui/dialog'
+import { Switch } from './ui/switch'
 
 type GroupProxyOption = ForwardProxyBindingNode & {
   identityHint?: string
@@ -28,9 +30,13 @@ interface UpstreamAccountGroupNoteDialogProps {
   error?: string | null
   existing: boolean
   boundProxyKeys?: string[]
+  upstream429RetryEnabled?: boolean
+  upstream429MaxRetries?: number
   availableProxyNodes?: ForwardProxyBindingNode[]
   onNoteChange: (value: string) => void
   onBoundProxyKeysChange?: (value: string[]) => void
+  onUpstream429RetryEnabledChange?: (value: boolean) => void
+  onUpstream429MaxRetriesChange?: (value: number) => void
   onClose: () => void
   onSave: () => void
   title: string
@@ -43,6 +49,14 @@ interface UpstreamAccountGroupNoteDialogProps {
   closeLabel: string
   existingBadgeLabel: string
   draftBadgeLabel: string
+  upstream429RetryLabel?: string
+  upstream429RetryHint?: string
+  upstream429RetryToggleLabel?: string
+  upstream429RetryCountLabel?: string
+  upstream429RetryCountOptions?: Array<{
+    value: number
+    label: string
+  }>
   proxyBindingsLabel?: string
   proxyBindingsHint?: string
   proxyBindingsAutomaticLabel?: string
@@ -129,6 +143,11 @@ function sumProxyTraffic(node: ForwardProxyBindingNode) {
     },
     { success: 0, failure: 0 },
   )
+}
+
+function normalizeUpstream429MaxRetries(value?: number | null): number {
+  if (!Number.isFinite(value ?? NaN)) return 0
+  return Math.min(5, Math.max(0, Math.trunc(value ?? 0)))
 }
 
 function ProxyOptionTrafficChart({
@@ -225,9 +244,13 @@ export function UpstreamAccountGroupNoteDialog({
   error,
   existing,
   boundProxyKeys,
+  upstream429RetryEnabled = false,
+  upstream429MaxRetries = 0,
   availableProxyNodes,
   onNoteChange,
   onBoundProxyKeysChange,
+  onUpstream429RetryEnabledChange,
+  onUpstream429MaxRetriesChange,
   onClose,
   onSave,
   title,
@@ -240,6 +263,11 @@ export function UpstreamAccountGroupNoteDialog({
   closeLabel,
   existingBadgeLabel,
   draftBadgeLabel,
+  upstream429RetryLabel,
+  upstream429RetryHint,
+  upstream429RetryToggleLabel,
+  upstream429RetryCountLabel,
+  upstream429RetryCountOptions,
   proxyBindingsLabel,
   proxyBindingsHint,
   proxyBindingsAutomaticLabel,
@@ -256,6 +284,30 @@ export function UpstreamAccountGroupNoteDialog({
   proxyBindingsChartLocaleTag,
 }: UpstreamAccountGroupNoteDialogProps) {
   const normalizedBoundProxyKeys = normalizeBoundProxyKeys(boundProxyKeys)
+  const normalizedUpstream429RetryEnabled = upstream429RetryEnabled === true
+  const normalizedUpstream429MaxRetries = normalizeUpstream429MaxRetries(upstream429MaxRetries)
+  const retryCountOptions = useMemo(() => {
+    const fallback = [1, 2, 3, 4, 5].map((value) => ({
+      value,
+      label: value === 1 ? '1 retry' : `${value} retries`,
+    }))
+    if (!Array.isArray(upstream429RetryCountOptions) || upstream429RetryCountOptions.length === 0) {
+      return fallback
+    }
+    const options = upstream429RetryCountOptions
+      .map((option) => ({
+        value: normalizeUpstream429MaxRetries(option.value),
+        label: option.label,
+      }))
+      .filter((option) => option.value > 0 && option.label.trim().length > 0)
+    return options.length > 0 ? options : fallback
+  }, [upstream429RetryCountOptions])
+  const selectedRetryCount = useMemo(() => {
+    if (retryCountOptions.some((option) => option.value === normalizedUpstream429MaxRetries)) {
+      return normalizedUpstream429MaxRetries
+    }
+    return retryCountOptions[0]?.value ?? 1
+  }, [normalizedUpstream429MaxRetries, retryCountOptions])
   const canonicalBoundProxyKeys = useMemo(
     () => canonicalizeBoundProxyKeys(normalizedBoundProxyKeys, availableProxyNodes),
     [availableProxyNodes, normalizedBoundProxyKeys],
@@ -323,6 +375,11 @@ export function UpstreamAccountGroupNoteDialog({
     showProxyBindings &&
     canonicalBoundProxyKeys.length > 0 &&
     !hasSelectableBoundProxySelection
+  const showUpstream429RetrySection =
+    Boolean(onUpstream429RetryEnabledChange) ||
+    Boolean(onUpstream429MaxRetriesChange) ||
+    Boolean(upstream429RetryLabel) ||
+    Boolean(upstream429RetryHint)
 
   return (
     <Dialog open={open} onOpenChange={(nextOpen) => (!busy ? (nextOpen ? undefined : onClose()) : undefined)}>
@@ -365,6 +422,44 @@ export function UpstreamAccountGroupNoteDialog({
                 onChange={(event) => onNoteChange(event.target.value)}
               />
             </label>
+
+            {showUpstream429RetrySection ? (
+              <section className="flex flex-col gap-3 rounded-2xl border border-base-300/80 bg-base-200/25 px-4 py-4">
+                <div className="space-y-1">
+                  <h3 className="text-sm font-semibold text-base-content">
+                    {upstream429RetryLabel ?? 'Upstream 429 retry'}
+                  </h3>
+                  <p className="text-xs leading-5 text-base-content/68">
+                    {upstream429RetryHint ?? 'Allow this group to keep the same account and retry after upstream 429 responses.'}
+                  </p>
+                </div>
+
+                <div className="flex items-center justify-between gap-3 rounded-xl border border-base-300/80 bg-base-100/75 px-3 py-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-base-content">
+                      {upstream429RetryToggleLabel ?? 'Retry the same account after upstream 429'}
+                    </p>
+                  </div>
+                  <Switch
+                    checked={normalizedUpstream429RetryEnabled}
+                    onCheckedChange={(checked) => onUpstream429RetryEnabledChange?.(checked)}
+                    disabled={busy || !onUpstream429RetryEnabledChange}
+                    aria-label={upstream429RetryToggleLabel ?? 'Retry the same account after upstream 429'}
+                  />
+                </div>
+
+                <SelectField
+                  label={upstream429RetryCountLabel ?? 'Retry count'}
+                  value={String(selectedRetryCount)}
+                  disabled={busy || !normalizedUpstream429RetryEnabled || !onUpstream429MaxRetriesChange}
+                  options={retryCountOptions.map((option) => ({
+                    value: String(option.value),
+                    label: option.label,
+                  }))}
+                  onValueChange={(value) => onUpstream429MaxRetriesChange?.(normalizeUpstream429MaxRetries(Number(value)))}
+                />
+              </section>
+            ) : null}
 
             {showProxyBindings ? (
               <section className="flex min-h-0 flex-col gap-3 rounded-2xl border border-base-300/80 bg-base-200/25 px-4 py-4">

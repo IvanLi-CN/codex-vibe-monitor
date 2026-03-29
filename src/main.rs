@@ -43,6 +43,7 @@ use flate2::read::{DeflateDecoder, GzDecoder, ZlibDecoder};
 use flate2::{Compression, write::GzEncoder};
 use futures_util::{FutureExt, StreamExt, TryStreamExt, future::Shared, stream};
 use once_cell::sync::Lazy;
+use rand::Rng;
 use regex::Regex;
 use reqwest::{Client, ClientBuilder, Proxy, Url, header};
 use serde::{Deserialize, Serialize};
@@ -335,6 +336,8 @@ const DEFAULT_PROXY_MODELS_HIJACK_ENABLED: bool = false;
 const DEFAULT_PROXY_MODELS_MERGE_UPSTREAM_ENABLED: bool = false;
 const DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES: u8 = 3;
 const MAX_PROXY_UPSTREAM_429_MAX_RETRIES: u8 = 5;
+const MIN_POOL_GROUP_UPSTREAM_429_RETRY_DELAY_SECS: u64 = 1;
+const MAX_POOL_GROUP_UPSTREAM_429_RETRY_DELAY_SECS: u64 = 10;
 const MAX_PROXY_UPSTREAM_429_RETRY_AFTER_DELAY_SECS: u64 = 30;
 const DEFAULT_PROXY_FAST_MODE_REWRITE_MODE: ProxyFastModeRewriteMode =
     ProxyFastModeRewriteMode::Disabled;
@@ -906,6 +909,7 @@ async fn main() -> Result<()> {
         )),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        pool_group_429_retry_delay_override: None,
         upstream_accounts,
     });
 
@@ -12060,6 +12064,15 @@ fn fallback_proxy_429_retry_delay(retry_index: u32) -> Duration {
     Duration::from_millis(500_u64.saturating_mul(multiplier)).min(Duration::from_secs(5))
 }
 
+fn pool_group_upstream_429_retry_delay(state: &AppState) -> Duration {
+    if let Some(delay) = state.pool_group_429_retry_delay_override {
+        return delay;
+    }
+    Duration::from_secs(rand::thread_rng().gen_range(
+        MIN_POOL_GROUP_UPSTREAM_429_RETRY_DELAY_SECS..=MAX_POOL_GROUP_UPSTREAM_429_RETRY_DELAY_SECS,
+    ))
+}
+
 const POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS: u8 = 3;
 const OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES: usize = 8 * 1024 * 1024;
 
@@ -12820,8 +12833,11 @@ async fn send_pool_request_with_failover(
             distinct_account_count,
             initial_same_account_attempts,
         );
+        let group_upstream_429_max_retries = account.effective_group_upstream_429_max_retries();
+        let same_account_attempt_loop_budget =
+            same_account_attempt_budget.max(group_upstream_429_max_retries.saturating_add(1));
 
-        for same_account_attempt in 0..same_account_attempt_budget {
+        for same_account_attempt in 0..same_account_attempt_loop_budget {
             let attempt_total_timeout_started_at = ensure_pool_total_timeout_started_at(
                 responses_total_timeout,
                 &mut responses_total_timeout_started_at,
@@ -13427,6 +13443,8 @@ async fn send_pool_request_with_failover(
                 )
             {
                 let has_retry_budget = same_account_attempt + 1 < same_account_attempt_budget;
+                let has_group_upstream_429_retry_budget = status == StatusCode::TOO_MANY_REQUESTS
+                    && same_account_attempt < group_upstream_429_max_retries;
                 let upstream_request_id_header = response
                     .headers()
                     .get("x-request-id")
@@ -13541,6 +13559,20 @@ async fn send_pool_request_with_failover(
                         error = %err,
                         "failed to broadcast pool http failure snapshot"
                     );
+                }
+                if has_group_upstream_429_retry_budget {
+                    let retry_delay = pool_group_upstream_429_retry_delay(state.as_ref());
+                    info!(
+                        account_id = account.account_id,
+                        status = status.as_u16(),
+                        retry_index = same_account_attempt + 1,
+                        max_same_account_attempts = same_account_attempt_loop_budget,
+                        group_upstream_429_max_retries,
+                        retry_after_ms = retry_delay.as_millis(),
+                        "pool upstream responded with group retryable 429; retrying same account"
+                    );
+                    sleep(retry_delay).await;
+                    continue;
                 }
                 if let Some(retry_delay) = retry_delay {
                     info!(
@@ -22376,6 +22408,7 @@ struct AppState {
     prompt_cache_conversation_cache: Arc<Mutex<PromptCacheConversationsCacheState>>,
     maintenance_stats_cache: Arc<Mutex<StatsMaintenanceCacheState>>,
     pool_routing_reservations: Arc<std::sync::Mutex<HashMap<String, PoolRoutingReservation>>>,
+    pool_group_429_retry_delay_override: Option<Duration>,
     upstream_accounts: Arc<UpstreamAccountsRuntime>,
 }
 

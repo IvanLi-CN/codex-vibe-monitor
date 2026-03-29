@@ -3934,6 +3934,7 @@ async fn test_state_from_config(config: AppConfig, startup_ready: bool) -> Arc<A
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        pool_group_429_retry_delay_override: None,
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     })
 }
@@ -3968,7 +3969,43 @@ fn clone_state_with_upstream_accounts(
         prompt_cache_conversation_cache: state.prompt_cache_conversation_cache.clone(),
         maintenance_stats_cache: state.maintenance_stats_cache.clone(),
         pool_routing_reservations: state.pool_routing_reservations.clone(),
+        pool_group_429_retry_delay_override: state.pool_group_429_retry_delay_override,
         upstream_accounts,
+    })
+}
+
+fn clone_state_with_pool_group_429_retry_delay_override(
+    state: &Arc<AppState>,
+    delay: Option<Duration>,
+) -> Arc<AppState> {
+    Arc::new(AppState {
+        config: state.config.clone(),
+        pool: state.pool.clone(),
+        hourly_rollup_sync_lock: state.hourly_rollup_sync_lock.clone(),
+        http_clients: state.http_clients.clone(),
+        broadcaster: state.broadcaster.clone(),
+        broadcast_state_cache: state.broadcast_state_cache.clone(),
+        proxy_summary_quota_broadcast_seq: state.proxy_summary_quota_broadcast_seq.clone(),
+        proxy_summary_quota_broadcast_running: state.proxy_summary_quota_broadcast_running.clone(),
+        proxy_summary_quota_broadcast_handle: state.proxy_summary_quota_broadcast_handle.clone(),
+        startup_ready: state.startup_ready.clone(),
+        shutdown: state.shutdown.clone(),
+        semaphore: state.semaphore.clone(),
+        proxy_model_settings: state.proxy_model_settings.clone(),
+        proxy_model_settings_update_lock: state.proxy_model_settings_update_lock.clone(),
+        forward_proxy: state.forward_proxy.clone(),
+        xray_supervisor: state.xray_supervisor.clone(),
+        forward_proxy_settings_update_lock: state.forward_proxy_settings_update_lock.clone(),
+        forward_proxy_subscription_refresh_lock: state
+            .forward_proxy_subscription_refresh_lock
+            .clone(),
+        pricing_settings_update_lock: state.pricing_settings_update_lock.clone(),
+        pricing_catalog: state.pricing_catalog.clone(),
+        prompt_cache_conversation_cache: state.prompt_cache_conversation_cache.clone(),
+        maintenance_stats_cache: state.maintenance_stats_cache.clone(),
+        pool_routing_reservations: state.pool_routing_reservations.clone(),
+        pool_group_429_retry_delay_override: delay,
+        upstream_accounts: state.upstream_accounts.clone(),
     })
 }
 
@@ -4020,6 +4057,7 @@ async fn test_state_from_existing_pool(
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        pool_group_429_retry_delay_override: None,
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     })
 }
@@ -4174,6 +4212,8 @@ async fn reserve_test_pool_routing_account(
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
         group_name: None,
         bound_proxy_keys: Vec::new(),
+        group_upstream_429_retry_enabled: false,
+        group_upstream_429_max_retries: 0,
     };
     reserve_pool_routing_account(state.as_ref(), reservation_key, &account);
 }
@@ -5433,6 +5473,149 @@ async fn update_upstream_account_group_returns_not_found_before_binding_validati
 
     assert_eq!(err.0, StatusCode::NOT_FOUND);
     assert_eq!(err.1, "group not found");
+}
+
+#[tokio::test]
+async fn ensure_schema_adds_group_upstream_429_retry_columns_with_disabled_defaults() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("in-memory sqlite");
+
+    sqlx::query(
+        r#"
+        CREATE TABLE pool_upstream_account_group_notes (
+            group_name TEXT PRIMARY KEY,
+            note TEXT NOT NULL,
+            bound_proxy_keys_json TEXT NOT NULL DEFAULT '[]',
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy group metadata table");
+
+    ensure_schema(&pool)
+        .await
+        .expect("schema migration should succeed");
+
+    let columns = load_sqlite_table_columns(&pool, "pool_upstream_account_group_notes")
+        .await
+        .expect("load migrated columns");
+    assert!(columns.contains("upstream_429_retry_enabled"));
+    assert!(columns.contains("upstream_429_max_retries"));
+
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_account_group_notes (
+            group_name,
+            note,
+            bound_proxy_keys_json,
+            created_at,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?4)
+        "#,
+    )
+    .bind("latam")
+    .bind("Legacy group")
+    .bind("[]")
+    .bind(&now_iso)
+    .execute(&pool)
+    .await
+    .expect("insert migrated group metadata");
+
+    let retry_settings = sqlx::query_as::<_, (i64, i64)>(
+        r#"
+        SELECT upstream_429_retry_enabled, upstream_429_max_retries
+        FROM pool_upstream_account_group_notes
+        WHERE group_name = ?1
+        "#,
+    )
+    .bind("latam")
+    .fetch_one(&pool)
+    .await
+    .expect("load retry settings");
+    assert_eq!(retry_settings.0, 0);
+    assert_eq!(retry_settings.1, 0);
+}
+
+#[tokio::test]
+async fn update_upstream_account_group_preserves_upstream_429_retry_settings_when_omitted() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "LATAM Key",
+        "sk-latam",
+        Some("latam"),
+        None,
+        None,
+    )
+    .await;
+
+    let initial_payload: UpdateUpstreamAccountGroupRequest = serde_json::from_value(json!({
+        "note": "LATAM premium",
+        "upstream429RetryEnabled": true,
+        "upstream429MaxRetries": 4
+    }))
+    .expect("deserialize initial group payload");
+    let Json(initial_saved) = update_upstream_account_group(
+        State(state.clone()),
+        HeaderMap::new(),
+        axum::extract::Path("latam".to_string()),
+        Json(initial_payload),
+    )
+    .await
+    .expect("save group retry settings");
+    let initial_saved_json = serde_json::to_value(initial_saved).expect("serialize saved group");
+    assert_eq!(
+        initial_saved_json["upstream429RetryEnabled"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(
+        initial_saved_json["upstream429MaxRetries"].as_u64(),
+        Some(4)
+    );
+
+    let legacy_payload: UpdateUpstreamAccountGroupRequest = serde_json::from_value(json!({
+        "note": "LATAM refreshed"
+    }))
+    .expect("deserialize legacy payload");
+    let Json(updated) = update_upstream_account_group(
+        State(state.clone()),
+        HeaderMap::new(),
+        axum::extract::Path("latam".to_string()),
+        Json(legacy_payload),
+    )
+    .await
+    .expect("legacy update should preserve retry settings");
+    let updated_json = serde_json::to_value(updated).expect("serialize updated group");
+    assert_eq!(updated_json["note"].as_str(), Some("LATAM refreshed"));
+    assert_eq!(
+        updated_json["upstream429RetryEnabled"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(updated_json["upstream429MaxRetries"].as_u64(), Some(4));
+
+    let persisted = sqlx::query_as::<_, (String, i64, i64)>(
+        r#"
+        SELECT note, upstream_429_retry_enabled, upstream_429_max_retries
+        FROM pool_upstream_account_group_notes
+        WHERE group_name = ?1
+        "#,
+    )
+    .bind("latam")
+    .fetch_one(&state.pool)
+    .await
+    .expect("load persisted group retry settings");
+    assert_eq!(persisted.0, "LATAM refreshed");
+    assert_eq!(persisted.1, 1);
+    assert_eq!(persisted.2, 4);
 }
 
 #[tokio::test]
@@ -10870,6 +11053,7 @@ async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
+        pool_group_429_retry_delay_override: None,
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
 
@@ -12741,6 +12925,7 @@ async fn proxy_openai_v1_allows_slow_upload_with_short_timeout() {
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
+        pool_group_429_retry_delay_override: None,
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
 
@@ -14896,6 +15081,164 @@ async fn pool_route_switches_accounts_immediately_after_upstream_429() {
         .expect("sticky route should move to the successful account");
     assert_eq!(route_account_id, secondary_id);
     assert_ne!(route_account_id, primary_id);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_route_group_without_upstream_429_retry_switches_accounts_immediately() {
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_rate_limit_responses_upstream(&[("Bearer upstream-primary", 99)]).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Primary",
+        "upstream-primary",
+        Some("latam"),
+        None,
+        None,
+    )
+    .await;
+    insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-429-group-off"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read proxy response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode proxy response");
+    assert_eq!(payload["authorization"], "Bearer upstream-secondary");
+    assert_eq!(payload["attempt"], 1);
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(1));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_route_group_upstream_429_retry_retries_same_account_before_succeeding() {
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_rate_limit_responses_upstream(&[("Bearer upstream-primary", 2)]).await;
+    let base_state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    let state =
+        clone_state_with_pool_group_429_retry_delay_override(&base_state, Some(Duration::ZERO));
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Primary",
+        "upstream-primary",
+        Some("latam"),
+        None,
+        None,
+    )
+    .await;
+    insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+
+    let retry_payload: UpdateUpstreamAccountGroupRequest = serde_json::from_value(json!({
+        "upstream429RetryEnabled": true,
+        "upstream429MaxRetries": 2
+    }))
+    .expect("deserialize retry payload");
+    let _ = update_upstream_account_group(
+        State(state.clone()),
+        HeaderMap::new(),
+        axum::extract::Path("latam".to_string()),
+        Json(retry_payload),
+    )
+    .await
+    .expect("enable group 429 retry");
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-429-group-retry"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read proxy response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode proxy response");
+    assert_eq!(payload["authorization"], "Bearer upstream-primary");
+    assert_eq!(payload["attempt"], 3);
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
+    drop(attempts);
+
+    wait_for_pool_upstream_request_attempts(&state.pool, 3).await;
+    let attempt_rows = sqlx::query_as::<_, (i64, i64, i64, Option<String>)>(
+        r#"
+        SELECT attempt_index, distinct_account_index, same_account_retry_index, failure_kind
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load retry attempt rows");
+    assert_eq!(attempt_rows.len(), 3);
+    assert_eq!(
+        attempt_rows[0],
+        (
+            1,
+            1,
+            1,
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429.to_string())
+        )
+    );
+    assert_eq!(
+        attempt_rows[1],
+        (
+            2,
+            1,
+            2,
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429.to_string())
+        )
+    );
+    assert_eq!(attempt_rows[2].0, 3);
+    assert_eq!(attempt_rows[2].1, 1);
+    assert_eq!(attempt_rows[2].2, 3);
+    assert_eq!(attempt_rows[2].3, None);
+
+    let route_account_id =
+        wait_for_test_sticky_route_account_id(&state.pool, "sticky-429-group-retry")
+            .await
+            .expect("sticky route should stay on primary account");
+    assert_eq!(route_account_id, primary_id);
 
     upstream_handle.abort();
 }
@@ -18382,6 +18725,8 @@ async fn pool_route_oauth_passthrough_replays_large_file_backed_body() {
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
         group_name: None,
         bound_proxy_keys: Vec::new(),
+        group_upstream_429_retry_enabled: false,
+        group_upstream_429_max_retries: 0,
     };
 
     let upstream = send_pool_request_with_failover(
@@ -19639,6 +19984,8 @@ async fn pool_route_oauth_responses_rejects_large_file_backed_rewrite_body() {
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
         group_name: None,
         bound_proxy_keys: Vec::new(),
+        group_upstream_429_retry_enabled: false,
+        group_upstream_429_max_retries: 0,
     };
 
     let err = send_pool_request_with_failover(
@@ -19906,6 +20253,8 @@ fn capture_target_pool_route_prefers_account_upstream_base_for_redirect_rewrite(
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
         group_name: None,
         bound_proxy_keys: Vec::new(),
+        group_upstream_429_retry_enabled: false,
+        group_upstream_429_max_retries: 0,
     };
 
     assert_eq!(
@@ -20182,6 +20531,7 @@ async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
+        pool_group_429_retry_delay_override: None,
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
 
@@ -20995,6 +21345,7 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout() {
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
+        pool_group_429_retry_delay_override: None,
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
 
@@ -21071,6 +21422,7 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout_with_
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
+        pool_group_429_retry_delay_override: None,
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
 
@@ -28658,6 +29010,7 @@ async fn quota_latest_returns_degraded_when_empty() {
         )),
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
+        pool_group_429_retry_delay_override: None,
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });

@@ -106,6 +106,7 @@ const DEFAULT_ROUTING_TIMEOUTS: PoolRoutingTimeoutSettings = {
 const POSITIVE_INTEGER_PATTERN = /^[1-9]\d*$/
 
 const STICKY_CONVERSATION_LIMIT_OPTIONS = [20, 50, 100] as const
+const GROUP_UPSTREAM_429_RETRY_OPTIONS = [1, 2, 3, 4, 5] as const
 
 type UpstreamAccountsLocationState = {
   selectedAccountId?: number
@@ -126,6 +127,8 @@ type GroupSettingsEditorState = {
   note: string
   existing: boolean
   boundProxyKeys: string[]
+  upstream429RetryEnabled: boolean
+  upstream429MaxRetries: number
 }
 
 type OauthRecoveryHint = {
@@ -207,6 +210,15 @@ function normalizeNumberInput(value: string): number | undefined {
 
 function normalizeDisplayNameKey(value: string) {
   return value.trim().toLocaleLowerCase()
+}
+
+function normalizeGroupUpstream429MaxRetries(value?: number | null) {
+  if (!Number.isFinite(value ?? NaN)) return 0
+  return Math.min(5, Math.max(0, Math.trunc(value ?? 0)))
+}
+
+function normalizeEnabledGroupUpstream429MaxRetries(value?: number | null) {
+  return Math.max(1, normalizeGroupUpstream429MaxRetries(value) || 1)
 }
 
 function findDisplayNameConflict(
@@ -809,12 +821,16 @@ export function SharedUpstreamAccountDetailDrawer({
   const [stickyConversationLimit, setStickyConversationLimit] = useState<number>(50)
   const [groupDraftNotes, setGroupDraftNotes] = useState<Record<string, string>>({})
   const [groupDraftBoundProxyKeys, setGroupDraftBoundProxyKeys] = useState<Record<string, string[]>>({})
+  const [groupDraftUpstream429RetryEnabled, setGroupDraftUpstream429RetryEnabled] = useState<Record<string, boolean>>({})
+  const [groupDraftUpstream429MaxRetries, setGroupDraftUpstream429MaxRetries] = useState<Record<string, number>>({})
   const [groupNoteEditor, setGroupNoteEditor] = useState<GroupSettingsEditorState>({
     open: false,
     groupName: '',
     note: '',
     existing: false,
     boundProxyKeys: [],
+    upstream429RetryEnabled: false,
+    upstream429MaxRetries: 0,
   })
   const [groupNoteBusy, setGroupNoteBusy] = useState(false)
   const [groupNoteError, setGroupNoteError] = useState<string | null>(null)
@@ -876,6 +892,16 @@ export function SharedUpstreamAccountDetailDrawer({
       if (nextEntries.length === Object.keys(current).length) return current
       return Object.fromEntries(nextEntries)
     })
+    setGroupDraftUpstream429RetryEnabled((current) => {
+      const nextEntries = Object.entries(current).filter(([groupName]) => !isExistingGroup(groups, groupName))
+      if (nextEntries.length === Object.keys(current).length) return current
+      return Object.fromEntries(nextEntries)
+    })
+    setGroupDraftUpstream429MaxRetries((current) => {
+      const nextEntries = Object.entries(current).filter(([groupName]) => !isExistingGroup(groups, groupName))
+      if (nextEntries.length === Object.keys(current).length) return current
+      return Object.fromEntries(nextEntries)
+    })
   }, [groups])
 
   useEffect(() => {
@@ -890,12 +916,14 @@ export function SharedUpstreamAccountDetailDrawer({
     const draftNames = Object.fromEntries([
       ...Object.keys(groupDraftNotes).map((groupName) => [groupName, '']),
       ...Object.keys(groupDraftBoundProxyKeys).map((groupName) => [groupName, '']),
+      ...Object.keys(groupDraftUpstream429RetryEnabled).map((groupName) => [groupName, '']),
+      ...Object.keys(groupDraftUpstream429MaxRetries).map((groupName) => [groupName, '']),
     ])
     return {
       names: buildGroupNameSuggestions(items.map((item) => item.groupName), groups, draftNames),
       hasUngrouped: hasUngroupedAccounts,
     }
-  }, [groupDraftBoundProxyKeys, groupDraftNotes, groups, hasUngroupedAccounts, items])
+  }, [groupDraftBoundProxyKeys, groupDraftNotes, groupDraftUpstream429MaxRetries, groupDraftUpstream429RetryEnabled, groups, hasUngroupedAccounts, items])
 
   const resolveGroupSummaryForName = useCallback((groupName: string) => {
     const normalized = normalizeGroupName(groupName)
@@ -920,32 +948,41 @@ export function SharedUpstreamAccountDetailDrawer({
     []
   ), [groupDraftBoundProxyKeys, resolveGroupSummaryForName])
 
+  const resolveGroupUpstream429RetryEnabledForName = useCallback((groupName: string) => {
+    const normalizedGroupName = normalizeGroupName(groupName)
+    if (!normalizedGroupName) return false
+    const existingGroup = resolveGroupSummaryForName(normalizedGroupName)
+    if (existingGroup) {
+      return existingGroup.upstream429RetryEnabled === true
+    }
+    return groupDraftUpstream429RetryEnabled[normalizedGroupName] === true
+  }, [groupDraftUpstream429RetryEnabled, resolveGroupSummaryForName])
+
+  const resolveGroupUpstream429MaxRetriesForName = useCallback((groupName: string) => {
+    const normalizedGroupName = normalizeGroupName(groupName)
+    if (!normalizedGroupName) return 0
+    const existingGroup = resolveGroupSummaryForName(normalizedGroupName)
+    const retryEnabled = existingGroup
+      ? existingGroup.upstream429RetryEnabled === true
+      : groupDraftUpstream429RetryEnabled[normalizedGroupName] === true
+    const rawValue = existingGroup
+      ? existingGroup.upstream429MaxRetries
+      : groupDraftUpstream429MaxRetries[normalizedGroupName]
+    return retryEnabled
+      ? normalizeEnabledGroupUpstream429MaxRetries(rawValue)
+      : normalizeGroupUpstream429MaxRetries(rawValue)
+  }, [groupDraftUpstream429MaxRetries, groupDraftUpstream429RetryEnabled, resolveGroupSummaryForName])
+
   const hasGroupSettings = useCallback((groupName: string) => (
     resolveGroupNoteForName(groupName).trim().length > 0 ||
-    resolveGroupBoundProxyKeysForName(groupName).length > 0
-  ), [resolveGroupBoundProxyKeysForName, resolveGroupNoteForName])
+    resolveGroupBoundProxyKeysForName(groupName).length > 0 ||
+    resolveGroupUpstream429RetryEnabledForName(groupName) ||
+    resolveGroupUpstream429MaxRetriesForName(groupName) > 0
+  ), [resolveGroupBoundProxyKeysForName, resolveGroupNoteForName, resolveGroupUpstream429MaxRetriesForName, resolveGroupUpstream429RetryEnabledForName])
 
-  const persistDraftGroupSettings = useCallback(async (groupName: string) => {
+  const clearDraftGroupSettings = useCallback((groupName: string) => {
     const normalizedGroupName = normalizeGroupName(groupName)
     if (!normalizedGroupName) return
-    const hasDraftNote = normalizedGroupName in groupDraftNotes
-    const hasDraftBindings = normalizedGroupName in groupDraftBoundProxyKeys
-    if (!hasDraftNote && !hasDraftBindings) return
-
-    const normalizedNote = hasDraftNote ? groupDraftNotes[normalizedGroupName]?.trim() ?? '' : ''
-    const normalizedBoundProxyKeys = Array.from(
-      new Set(
-        (groupDraftBoundProxyKeys[normalizedGroupName] ?? [])
-          .map((value) => value.trim())
-          .filter((value) => value.length > 0),
-      ),
-    )
-
-    await saveGroupNote(normalizedGroupName, {
-      note: normalizedNote || undefined,
-      boundProxyKeys: normalizedBoundProxyKeys,
-    })
-
     setGroupDraftNotes((current) => {
       if (!(normalizedGroupName in current)) return current
       const next = { ...current }
@@ -958,7 +995,52 @@ export function SharedUpstreamAccountDetailDrawer({
       delete next[normalizedGroupName]
       return next
     })
-  }, [groupDraftBoundProxyKeys, groupDraftNotes, saveGroupNote])
+    setGroupDraftUpstream429RetryEnabled((current) => {
+      if (!(normalizedGroupName in current)) return current
+      const next = { ...current }
+      delete next[normalizedGroupName]
+      return next
+    })
+    setGroupDraftUpstream429MaxRetries((current) => {
+      if (!(normalizedGroupName in current)) return current
+      const next = { ...current }
+      delete next[normalizedGroupName]
+      return next
+    })
+  }, [])
+
+  const persistDraftGroupSettings = useCallback(async (groupName: string) => {
+    const normalizedGroupName = normalizeGroupName(groupName)
+    if (!normalizedGroupName) return
+    const hasDraftNote = normalizedGroupName in groupDraftNotes
+    const hasDraftBindings = normalizedGroupName in groupDraftBoundProxyKeys
+    const hasDraftUpstream429RetryEnabled = normalizedGroupName in groupDraftUpstream429RetryEnabled
+    const hasDraftUpstream429MaxRetries = normalizedGroupName in groupDraftUpstream429MaxRetries
+    if (!hasDraftNote && !hasDraftBindings && !hasDraftUpstream429RetryEnabled && !hasDraftUpstream429MaxRetries) return
+
+    const normalizedNote = hasDraftNote ? groupDraftNotes[normalizedGroupName]?.trim() ?? '' : ''
+    const normalizedBoundProxyKeys = Array.from(
+      new Set(
+        (groupDraftBoundProxyKeys[normalizedGroupName] ?? [])
+          .map((value) => value.trim())
+          .filter((value) => value.length > 0),
+      ),
+    )
+    const normalizedUpstream429RetryEnabled = hasDraftUpstream429RetryEnabled
+      ? groupDraftUpstream429RetryEnabled[normalizedGroupName] === true
+      : false
+    const normalizedUpstream429MaxRetries = normalizedUpstream429RetryEnabled
+      ? normalizeEnabledGroupUpstream429MaxRetries(groupDraftUpstream429MaxRetries[normalizedGroupName])
+      : normalizeGroupUpstream429MaxRetries(groupDraftUpstream429MaxRetries[normalizedGroupName])
+
+    await saveGroupNote(normalizedGroupName, {
+      note: normalizedNote || undefined,
+      boundProxyKeys: normalizedBoundProxyKeys,
+      upstream429RetryEnabled: normalizedUpstream429RetryEnabled,
+      upstream429MaxRetries: normalizedUpstream429MaxRetries,
+    })
+    clearDraftGroupSettings(normalizedGroupName)
+  }, [clearDraftGroupSettings, groupDraftBoundProxyKeys, groupDraftNotes, groupDraftUpstream429MaxRetries, groupDraftUpstream429RetryEnabled, saveGroupNote])
 
   const openGroupNoteEditor = useCallback((groupName: string) => {
     if (!writesEnabled) return
@@ -972,8 +1054,10 @@ export function SharedUpstreamAccountDetailDrawer({
       note: resolveGroupNoteForName(normalized),
       existing: existingGroup != null,
       boundProxyKeys: resolveGroupBoundProxyKeysForName(normalized),
+      upstream429RetryEnabled: resolveGroupUpstream429RetryEnabledForName(normalized),
+      upstream429MaxRetries: resolveGroupUpstream429MaxRetriesForName(normalized),
     })
-  }, [resolveGroupBoundProxyKeysForName, resolveGroupNoteForName, resolveGroupSummaryForName, writesEnabled])
+  }, [resolveGroupBoundProxyKeysForName, resolveGroupNoteForName, resolveGroupSummaryForName, resolveGroupUpstream429MaxRetriesForName, resolveGroupUpstream429RetryEnabledForName, writesEnabled])
 
   const closeGroupNoteEditor = useCallback(() => {
     if (groupNoteBusy) return
@@ -989,6 +1073,10 @@ export function SharedUpstreamAccountDetailDrawer({
     const normalizedBoundProxyKeys = Array.from(
       new Set(groupNoteEditor.boundProxyKeys.map((value) => value.trim()).filter((value) => value.length > 0)),
     )
+    const normalizedUpstream429RetryEnabled = groupNoteEditor.upstream429RetryEnabled === true
+    const normalizedUpstream429MaxRetries = normalizedUpstream429RetryEnabled
+      ? normalizeEnabledGroupUpstream429MaxRetries(groupNoteEditor.upstream429MaxRetries)
+      : normalizeGroupUpstream429MaxRetries(groupNoteEditor.upstream429MaxRetries)
     setGroupNoteError(null)
 
     if (!groupNoteEditor.existing) {
@@ -1004,6 +1092,24 @@ export function SharedUpstreamAccountDetailDrawer({
         else delete next[normalizedGroupName]
         return next
       })
+      setGroupDraftUpstream429RetryEnabled((current) => {
+        const next = { ...current }
+        if (normalizedUpstream429RetryEnabled || normalizedUpstream429MaxRetries > 0) {
+          next[normalizedGroupName] = normalizedUpstream429RetryEnabled
+        } else {
+          delete next[normalizedGroupName]
+        }
+        return next
+      })
+      setGroupDraftUpstream429MaxRetries((current) => {
+        const next = { ...current }
+        if (normalizedUpstream429RetryEnabled || normalizedUpstream429MaxRetries > 0) {
+          next[normalizedGroupName] = normalizedUpstream429MaxRetries
+        } else {
+          delete next[normalizedGroupName]
+        }
+        return next
+      })
       setGroupNoteEditor((current) => ({ ...current, open: false }))
       return
     }
@@ -1013,26 +1119,17 @@ export function SharedUpstreamAccountDetailDrawer({
       await saveGroupNote(normalizedGroupName, {
         note: normalizedNote || undefined,
         boundProxyKeys: normalizedBoundProxyKeys,
+        upstream429RetryEnabled: normalizedUpstream429RetryEnabled,
+        upstream429MaxRetries: normalizedUpstream429MaxRetries,
       })
-      setGroupDraftNotes((current) => {
-        if (!(normalizedGroupName in current)) return current
-        const next = { ...current }
-        delete next[normalizedGroupName]
-        return next
-      })
-      setGroupDraftBoundProxyKeys((current) => {
-        if (!(normalizedGroupName in current)) return current
-        const next = { ...current }
-        delete next[normalizedGroupName]
-        return next
-      })
+      clearDraftGroupSettings(normalizedGroupName)
       setGroupNoteEditor((current) => ({ ...current, open: false }))
     } catch (err) {
       setGroupNoteError(err instanceof Error ? err.message : String(err))
     } finally {
       setGroupNoteBusy(false)
     }
-  }, [groupNoteEditor.boundProxyKeys, groupNoteEditor.existing, groupNoteEditor.groupName, groupNoteEditor.note, saveGroupNote, writesEnabled])
+  }, [clearDraftGroupSettings, groupNoteEditor.boundProxyKeys, groupNoteEditor.existing, groupNoteEditor.groupName, groupNoteEditor.note, groupNoteEditor.upstream429MaxRetries, groupNoteEditor.upstream429RetryEnabled, saveGroupNote, writesEnabled])
 
   const handleCreateTag = useCallback(async (payload: Parameters<typeof createTag>[0]) => {
     const detail = await createTag(payload)
@@ -2095,6 +2192,27 @@ export function SharedUpstreamAccountDetailDrawer({
           setGroupNoteError(null)
           setGroupNoteEditor((current) => ({ ...current, boundProxyKeys: value }))
         }}
+        upstream429RetryEnabled={groupNoteEditor.upstream429RetryEnabled}
+        upstream429MaxRetries={groupNoteEditor.upstream429MaxRetries}
+        onUpstream429RetryEnabledChange={(value) => {
+          setGroupNoteError(null)
+          setGroupNoteEditor((current) => ({
+            ...current,
+            upstream429RetryEnabled: value,
+            upstream429MaxRetries: value
+              ? normalizeEnabledGroupUpstream429MaxRetries(current.upstream429MaxRetries)
+              : normalizeGroupUpstream429MaxRetries(current.upstream429MaxRetries),
+          }))
+        }}
+        onUpstream429MaxRetriesChange={(value) => {
+          setGroupNoteError(null)
+          setGroupNoteEditor((current) => ({
+            ...current,
+            upstream429MaxRetries: current.upstream429RetryEnabled
+              ? normalizeEnabledGroupUpstream429MaxRetries(value)
+              : normalizeGroupUpstream429MaxRetries(value),
+          }))
+        }}
         onClose={closeGroupNoteEditor}
         onSave={() => void handleSaveGroupNote()}
         title={t('accountPool.upstreamAccounts.groupNotes.dialogTitle')}
@@ -2107,6 +2225,16 @@ export function SharedUpstreamAccountDetailDrawer({
         closeLabel={t('accountPool.upstreamAccounts.actions.closeDetails')}
         existingBadgeLabel={t('accountPool.upstreamAccounts.groupNotes.badges.existing')}
         draftBadgeLabel={t('accountPool.upstreamAccounts.groupNotes.badges.draft')}
+        upstream429RetryLabel={t('accountPool.upstreamAccounts.groupNotes.upstream429.label')}
+        upstream429RetryHint={t('accountPool.upstreamAccounts.groupNotes.upstream429.hint')}
+        upstream429RetryToggleLabel={t('accountPool.upstreamAccounts.groupNotes.upstream429.toggle')}
+        upstream429RetryCountLabel={t('accountPool.upstreamAccounts.groupNotes.upstream429.countLabel')}
+        upstream429RetryCountOptions={GROUP_UPSTREAM_429_RETRY_OPTIONS.map((value) => ({
+          value,
+          label: value === 1
+            ? t('accountPool.upstreamAccounts.groupNotes.upstream429.countOnce')
+            : t('accountPool.upstreamAccounts.groupNotes.upstream429.countMany', { count: value }),
+        }))}
         proxyBindingsLabel={t('accountPool.upstreamAccounts.groupNotes.proxyBindings.label')}
         proxyBindingsHint={t('accountPool.upstreamAccounts.groupNotes.proxyBindings.hint')}
         proxyBindingsAutomaticLabel={t('accountPool.upstreamAccounts.groupNotes.proxyBindings.automatic')}

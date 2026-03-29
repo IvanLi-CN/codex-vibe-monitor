@@ -6271,6 +6271,7 @@ describe("UpstreamAccountCreatePage api key", () => {
       throw new Error("missing group settings dialog");
     }
     expect(groupSettingsDialog.textContent || "").toContain("Bound proxy nodes");
+    expect(groupSettingsDialog.textContent || "").toContain("Upstream 429 retry");
     expect(groupSettingsDialog.textContent || "").toContain("Direct");
     expect(groupSettingsDialog.textContent || "").toContain("DIRECT");
     expect(groupSettingsDialog.textContent || "").toContain("SS");
@@ -6317,6 +6318,8 @@ describe("UpstreamAccountCreatePage api key", () => {
     expect(saveGroupNote).toHaveBeenCalledWith("latam", {
       note: "LATAM draft note",
       boundProxyKeys: ["jp-edge-01"],
+      upstream429RetryEnabled: false,
+      upstream429MaxRetries: 0,
     });
     expect(navigateMock).toHaveBeenCalledWith("/account-pool/upstream-accounts", {
       state: expect.objectContaining({

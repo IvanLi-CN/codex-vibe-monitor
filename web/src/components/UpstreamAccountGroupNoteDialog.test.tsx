@@ -89,9 +89,13 @@ function renderDialog(props: Partial<DialogProps> = {}) {
     busy: false,
     error: null,
     boundProxyKeys: [],
+    upstream429RetryEnabled: false,
+    upstream429MaxRetries: 0,
     availableProxyNodes: defaultNodes,
     onNoteChange: () => undefined,
     onBoundProxyKeysChange: () => undefined,
+    onUpstream429RetryEnabledChange: () => undefined,
+    onUpstream429MaxRetriesChange: () => undefined,
     onClose: () => undefined,
     onSave: () => undefined,
     title: 'Edit group settings',
@@ -104,6 +108,15 @@ function renderDialog(props: Partial<DialogProps> = {}) {
     closeLabel: 'Close',
     existingBadgeLabel: 'Persisted group',
     draftBadgeLabel: 'Draft group',
+    upstream429RetryLabel: 'Upstream 429 retry',
+    upstream429RetryHint: 'Retry the same account after upstream 429 with a random delay.',
+    upstream429RetryToggleLabel: 'Retry the same account after upstream 429',
+    upstream429RetryCountLabel: 'Retry count',
+    upstream429RetryCountOptions: [
+      { value: 1, label: '1 retry' },
+      { value: 2, label: '2 retries' },
+      { value: 3, label: '3 retries' },
+    ],
     proxyBindingsLabel: 'Bound proxy nodes',
     proxyBindingsHint: 'Leave empty to keep automatic routing.',
     proxyBindingsAutomaticLabel: 'No nodes bound. This group uses automatic routing.',
@@ -386,5 +399,47 @@ describe('UpstreamAccountGroupNoteDialog', () => {
 
     expect(bodyText()).toContain('JP Edge 01')
     expect(bodyText()).not.toContain('别组遗留节点')
+  })
+
+  it('disables retry count selection when upstream 429 retry is off', () => {
+    renderDialog({
+      upstream429RetryEnabled: false,
+      upstream429MaxRetries: 0,
+    })
+
+    const retryToggle = document.querySelector(
+      '[role="switch"][aria-label="Retry the same account after upstream 429"]',
+    ) as HTMLElement | null
+    expect(retryToggle).not.toBeNull()
+    expect(retryToggle?.getAttribute('aria-checked')).toBe('false')
+
+    const retryCount = document.querySelector(
+      '[role="combobox"][aria-label="Retry count"]',
+    ) as HTMLElement | null
+    expect(retryCount).not.toBeNull()
+    expect(
+      retryCount?.getAttribute('aria-disabled') === 'true' ||
+        retryCount?.hasAttribute('data-disabled') === true ||
+        retryCount?.hasAttribute('disabled') === true,
+    ).toBe(true)
+  })
+
+  it('keeps retry count selection enabled when upstream 429 retry is on', () => {
+    renderDialog({
+      upstream429RetryEnabled: true,
+      upstream429MaxRetries: 3,
+    })
+
+    const retryToggle = document.querySelector(
+      '[role="switch"][aria-label="Retry the same account after upstream 429"]',
+    ) as HTMLElement | null
+    expect(retryToggle?.getAttribute('aria-checked')).toBe('true')
+
+    const retryCount = document.querySelector(
+      '[role="combobox"][aria-label="Retry count"]',
+    ) as HTMLElement | null
+    expect(retryCount).not.toBeNull()
+    expect(retryCount?.getAttribute('aria-disabled')).not.toBe('true')
+    expect(bodyText()).toContain('3 retries')
   })
 })
