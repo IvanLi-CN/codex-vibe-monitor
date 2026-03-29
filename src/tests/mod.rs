@@ -6118,6 +6118,58 @@ async fn seed_forward_proxy_attempt_at(
     .expect("seed forward proxy attempt");
 }
 
+async fn seed_forward_proxy_hourly_bucket_at(
+    pool: &SqlitePool,
+    proxy_key: &str,
+    bucket_start_epoch: i64,
+    success_count: i64,
+    failure_count: i64,
+) {
+    let attempts = success_count + failure_count;
+    let latency_sample_count = success_count.max(0);
+    let latency_sum_ms = if latency_sample_count > 0 {
+        latency_sample_count as f64 * 120.0
+    } else {
+        0.0
+    };
+    let latency_max_ms = if latency_sample_count > 0 { 120.0 } else { 0.0 };
+    sqlx::query(
+        r#"
+        INSERT INTO forward_proxy_attempt_hourly (
+            proxy_key,
+            bucket_start_epoch,
+            attempts,
+            success_count,
+            failure_count,
+            latency_sample_count,
+            latency_sum_ms,
+            latency_max_ms,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))
+        ON CONFLICT(proxy_key, bucket_start_epoch) DO UPDATE SET
+            attempts = excluded.attempts,
+            success_count = excluded.success_count,
+            failure_count = excluded.failure_count,
+            latency_sample_count = excluded.latency_sample_count,
+            latency_sum_ms = excluded.latency_sum_ms,
+            latency_max_ms = excluded.latency_max_ms,
+            updated_at = datetime('now')
+        "#,
+    )
+    .bind(proxy_key)
+    .bind(bucket_start_epoch)
+    .bind(attempts)
+    .bind(success_count)
+    .bind(failure_count)
+    .bind(latency_sample_count)
+    .bind(latency_sum_ms)
+    .bind(latency_max_ms)
+    .execute(pool)
+    .await
+    .expect("seed forward proxy hourly bucket");
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn seed_forward_proxy_weight_bucket_at(
     pool: &SqlitePool,
@@ -9443,33 +9495,24 @@ async fn forward_proxy_live_stats_returns_fixed_24_hour_buckets_with_zero_fill()
         1.20,
     )
     .await;
-    seed_forward_proxy_attempt_at(
+    seed_forward_proxy_hourly_bucket_at(
         &state.pool,
         &manual_key,
-        Utc.timestamp_opt(range_end_epoch - (2 * 3600 + 12 * 60), 0)
-            .single()
-            .expect("valid in-range success timestamp"),
-        true,
+        range_start_epoch + 5 * 3600,
+        1,
+        0,
     )
     .await;
-    seed_forward_proxy_attempt_at(
+    seed_forward_proxy_hourly_bucket_at(
         &state.pool,
         &manual_key,
-        Utc.timestamp_opt(range_end_epoch - (3600 + 8 * 60), 0)
-            .single()
-            .expect("valid in-range failure timestamp"),
-        false,
+        range_start_epoch + 10 * 3600,
+        0,
+        1,
     )
     .await;
-    seed_forward_proxy_attempt_at(
-        &state.pool,
-        &manual_key,
-        Utc.timestamp_opt(range_start_epoch - 3600, 0)
-            .single()
-            .expect("valid out-of-range bucket timestamp"),
-        true,
-    )
-    .await;
+    seed_forward_proxy_hourly_bucket_at(&state.pool, &manual_key, range_start_epoch - 3600, 1, 0)
+        .await;
 
     let Json(response) = fetch_forward_proxy_live_stats(State(state.clone()))
         .await
@@ -9609,31 +9652,28 @@ async fn forward_proxy_binding_nodes_preserve_direct_hourly_buckets() {
     let now = Utc::now();
     let range_end_epoch = align_bucket_epoch(now.timestamp(), 3600, 0) + 3600;
     let range_start_epoch = range_end_epoch - 24 * 3600;
-    seed_forward_proxy_attempt_at(
+    seed_forward_proxy_hourly_bucket_at(
         &state.pool,
         FORWARD_PROXY_DIRECT_KEY,
-        Utc.timestamp_opt(range_end_epoch - (2 * 3600 + 5 * 60), 0)
-            .single()
-            .expect("valid in-range direct success timestamp"),
-        true,
+        range_start_epoch + 5 * 3600,
+        1,
+        0,
     )
     .await;
-    seed_forward_proxy_attempt_at(
+    seed_forward_proxy_hourly_bucket_at(
         &state.pool,
         FORWARD_PROXY_DIRECT_KEY,
-        Utc.timestamp_opt(range_end_epoch - (3600 + 11 * 60), 0)
-            .single()
-            .expect("valid in-range direct failure timestamp"),
-        false,
+        range_start_epoch + 10 * 3600,
+        0,
+        1,
     )
     .await;
-    seed_forward_proxy_attempt_at(
+    seed_forward_proxy_hourly_bucket_at(
         &state.pool,
         FORWARD_PROXY_DIRECT_KEY,
-        Utc.timestamp_opt(range_start_epoch - 3600, 0)
-            .single()
-            .expect("valid out-of-range direct timestamp"),
-        true,
+        range_start_epoch - 3600,
+        1,
+        0,
     )
     .await;
 
