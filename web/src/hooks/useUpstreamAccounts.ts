@@ -69,9 +69,10 @@ const DEFAULT_OPTIONS: Required<UseUpstreamAccountsOptions> = {
 }
 
 export function useUpstreamAccounts(
-  query: FetchUpstreamAccountsQuery = DEFAULT_FETCH_UPSTREAM_ACCOUNTS_QUERY,
+  query: FetchUpstreamAccountsQuery | null = DEFAULT_FETCH_UPSTREAM_ACCOUNTS_QUERY,
   options?: UseUpstreamAccountsOptions,
 ) {
+  const effectiveQuery = query ?? DEFAULT_FETCH_UPSTREAM_ACCOUNTS_QUERY
   const resolvedOptions = {
     ...DEFAULT_OPTIONS,
     ...options,
@@ -83,8 +84,8 @@ export function useUpstreamAccounts(
   const [writesEnabled, setWritesEnabled] = useState(true)
   const [routing, setRouting] = useState<PoolRoutingSettings | null>(null)
   const [total, setTotal] = useState(0)
-  const [page, setPage] = useState(query.page ?? 1)
-  const [pageSize, setPageSize] = useState(query.pageSize ?? 20)
+  const [page, setPage] = useState(effectiveQuery.page ?? 1)
+  const [pageSize, setPageSize] = useState(effectiveQuery.pageSize ?? 20)
   const [metrics, setMetrics] = useState<UpstreamAccountListMetrics>({
     total: 0,
     oauth: 0,
@@ -147,7 +148,7 @@ export function useUpstreamAccounts(
       const requestSeq = listRequestSeqRef.current
       setIsLoading(true)
       try {
-        const response = await fetchUpstreamAccounts(query)
+        const response = await fetchUpstreamAccounts(effectiveQuery)
         if (requestSeq !== listRequestSeqRef.current) {
           return LOAD_LIST_FAILED
         }
@@ -198,7 +199,7 @@ export function useUpstreamAccounts(
         }
       }
     },
-    [query, resolvedOptions.allowSelectionOutsideList, resolvedOptions.fallbackToFirstItem, setSelectedAccount],
+    [effectiveQuery, resolvedOptions.allowSelectionOutsideList, resolvedOptions.fallbackToFirstItem, setSelectedAccount],
   )
 
   const loadDetail = useCallback(async (accountId: number | null) => {
@@ -255,8 +256,13 @@ export function useUpstreamAccounts(
   }, [clearDetailError])
 
   useEffect(() => {
+    if (query == null) {
+      setIsLoading(true)
+      setListError(null)
+      return
+    }
     void loadList()
-  }, [loadList])
+  }, [loadList, query])
 
   useEffect(() => {
     void loadDetail(selectedId)
@@ -279,6 +285,9 @@ export function useUpstreamAccounts(
   )
 
   const refresh = useCallback(async () => {
+    if (query == null) {
+      return
+    }
     const currentSelectedId = selectedIdRef.current
     const nextSelectedId = await loadList(currentSelectedId, {
       respectCurrentSelection: true,
@@ -290,7 +299,7 @@ export function useUpstreamAccounts(
     if (nextSelectedId != null && nextSelectedId === selectedIdRef.current) {
       await loadDetail(nextSelectedId)
     }
-  }, [loadDetail, loadList])
+  }, [loadDetail, loadList, query])
 
   useEffect(() => {
     const handleChanged = () => {

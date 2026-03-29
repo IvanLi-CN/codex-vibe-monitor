@@ -148,7 +148,7 @@ function createListResponse(): UpstreamAccountListResponse {
   };
 }
 
-function Probe({ query }: { query?: FetchUpstreamAccountsQuery }) {
+function Probe({ query }: { query?: FetchUpstreamAccountsQuery | null }) {
   const {
     selectedId,
     selectedSummary,
@@ -201,6 +201,13 @@ function Probe({ query }: { query?: FetchUpstreamAccountsQuery }) {
 }
 
 describe("useUpstreamAccounts", () => {
+  it("defers the roster request until the query is available", async () => {
+    render(<Probe query={null} />);
+    await flushAsync();
+
+    expect(apiMocks.fetchUpstreamAccounts).not.toHaveBeenCalled();
+  });
+
   it("passes server-side roster filters through to the list endpoint", async () => {
     render(
       <Probe

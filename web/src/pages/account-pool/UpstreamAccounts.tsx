@@ -46,6 +46,7 @@ import type {
   BulkUpstreamAccountSyncSnapshot,
   PoolRoutingMaintenanceSettings,
   CompactSupportState,
+  FetchUpstreamAccountsQuery,
   PoolRoutingTimeoutSettings,
   UpstreamAccountDetail,
   UpstreamAccountDuplicateInfo,
@@ -2328,6 +2329,7 @@ export default function UpstreamAccountsPage() {
   const canSanitizeSelectedTagIds = !isTagCatalogLoading && tagCatalogError == null
   const canApplySelectedTagIds =
     !isTagCatalogLoading && (tagCatalogError == null || visibleSelectedTagIds.length === selectedTagIds.length)
+  const shouldDeferRosterQuery = selectedTagIds.length > 0 && isTagCatalogLoading
   const appliedSelectedTagIds = useMemo(() => {
     if (!canApplySelectedTagIds) {
       return []
@@ -2340,7 +2342,10 @@ export default function UpstreamAccountsPage() {
     }
     return visibleSelectedTagIds
   }, [canSanitizeSelectedTagIds, selectedTagIds, visibleSelectedTagIds])
-  const accountListQuery = useMemo(() => {
+  const accountListQuery = useMemo<FetchUpstreamAccountsQuery | null>(() => {
+    if (shouldDeferRosterQuery) {
+      return null
+    }
     return {
       groupSearch: groupFilter.mode === 'search' ? groupFilter.query : undefined,
       groupUngrouped: groupFilter.mode === 'ungrouped' ? true : undefined,
@@ -2351,7 +2356,7 @@ export default function UpstreamAccountsPage() {
       pageSize,
       tagIds: appliedSelectedTagIds.length > 0 ? appliedSelectedTagIds : undefined,
     }
-  }, [appliedSelectedTagIds, enableStatusFilter, groupFilter, healthStatusFilter, page, pageSize, workStatusFilter])
+  }, [appliedSelectedTagIds, enableStatusFilter, groupFilter, healthStatusFilter, page, pageSize, shouldDeferRosterQuery, workStatusFilter])
   const workStatusFilterOptions = useMemo(
     () => [
       { value: 'working', label: t('accountPool.upstreamAccounts.workStatus.working') },

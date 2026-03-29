@@ -284,7 +284,7 @@ function readStoredUpstreamFilters() {
   return JSON.parse(raw);
 }
 
-function expectRosterHookQuery(expected: Record<string, unknown>) {
+function expectRosterHookQuery(expected: Record<string, unknown> | null) {
   expect(hookMocks.useUpstreamAccounts.mock.calls).toContainEqual([expected]);
 }
 
@@ -1595,7 +1595,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     });
   });
 
-  it("waits for the tag catalog before applying persisted tag ids to the roster query", () => {
+  it("defers the roster query until the tag catalog can sanitize persisted tag ids", () => {
     type PoolTagsHookResult = {
       items: TagSummary[];
       writesEnabled: boolean;
@@ -1639,16 +1639,7 @@ describe("UpstreamAccountsPage duplicates", () => {
 
     render("/account-pool/upstream-accounts");
 
-    expectRosterHookQuery({
-      groupSearch: undefined,
-      groupUngrouped: undefined,
-      workStatus: undefined,
-      enableStatus: undefined,
-      healthStatus: undefined,
-      page: 1,
-      pageSize: 20,
-      tagIds: undefined,
-    });
+    expectRosterHookQuery(null);
     expect(readStoredUpstreamFilters()).toEqual({
       workStatus: [],
       enableStatus: [],
