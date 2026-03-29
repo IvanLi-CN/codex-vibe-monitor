@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, userEvent, waitFor, within } from 'storybook/test'
 import { I18nProvider } from '../i18n'
@@ -7,6 +8,9 @@ import {
   StorybookUpstreamAccountsMock,
 } from './UpstreamAccountsPage.story-helpers'
 import { SystemNotificationProvider } from './ui/system-notifications'
+
+const UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY =
+  'codex-vibe-monitor.account-pool.upstream-accounts.filters'
 
 const meta = {
   title: 'Account Pool/Pages/Upstream Accounts/List',
@@ -31,6 +35,43 @@ const meta = {
 export default meta
 
 type Story = StoryObj<typeof meta>
+
+function PersistedFiltersStoryRouter() {
+  const restoreRef = useRef<null | (() => void)>(null)
+
+  if (restoreRef.current == null && typeof window !== 'undefined') {
+    const previousValue = window.localStorage.getItem(UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY)
+    window.localStorage.setItem(
+      UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY,
+      JSON.stringify({
+        workStatus: ['rate_limited'],
+        enableStatus: ['enabled'],
+        healthStatus: ['normal'],
+        tagIds: [],
+        groupFilter: {
+          mode: 'search',
+          query: 'prod',
+        },
+      }),
+    )
+    restoreRef.current = () => {
+      if (previousValue == null) {
+        window.localStorage.removeItem(UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY)
+        return
+      }
+      window.localStorage.setItem(UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY, previousValue)
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      restoreRef.current?.()
+      restoreRef.current = null
+    }
+  }, [])
+
+  return <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />
+}
 
 async function chooseSelectOption(
   canvasElement: HTMLElement,
@@ -376,6 +417,40 @@ export const TagFilterAllMatch: Story = {
     await expect(
       canvas.queryByText(/Team key - staging/i),
     ).not.toBeInTheDocument()
+  },
+}
+
+export const PersistedRosterFilters: Story = {
+  render: () => <PersistedFiltersStoryRouter />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+
+    await expect(
+      await canvas.findByText(/Codex Pro - London/i),
+    ).toBeInTheDocument()
+    await expect(
+      canvas.queryByText(/Team key - staging/i),
+    ).not.toBeInTheDocument()
+    await expect(
+      await canvas.findByRole('button', {
+        name: /work status/i,
+      }),
+    ).toHaveTextContent(/rate limited/i)
+    await expect(
+      await canvas.findByRole('button', {
+        name: /enable status/i,
+      }),
+    ).toHaveTextContent(/enabled/i)
+    await expect(
+      await canvas.findByRole('button', {
+        name: /account health/i,
+      }),
+    ).toHaveTextContent(/normal/i)
+    await expect(
+      await canvas.findByRole('button', {
+        name: /group/i,
+      }),
+    ).toHaveTextContent(/prod/i)
   },
 }
 
