@@ -9524,12 +9524,16 @@ fn normalize_group_upstream_429_max_retries(value: u8) -> u8 {
     value.min(MAX_PROXY_UPSTREAM_429_MAX_RETRIES)
 }
 
+fn normalize_enabled_group_upstream_429_max_retries(value: u8) -> u8 {
+    normalize_group_upstream_429_max_retries(value).max(1)
+}
+
 fn normalize_group_upstream_429_retry_metadata(
     upstream_429_retry_enabled: bool,
     upstream_429_max_retries: u8,
 ) -> u8 {
     if upstream_429_retry_enabled {
-        normalize_group_upstream_429_max_retries(upstream_429_max_retries)
+        normalize_enabled_group_upstream_429_max_retries(upstream_429_max_retries)
     } else {
         0
     }
@@ -14215,11 +14219,10 @@ impl PoolResolvedAccount {
     }
 
     pub(crate) fn effective_group_upstream_429_max_retries(&self) -> u8 {
-        if self.group_upstream_429_retry_enabled {
-            normalize_group_upstream_429_max_retries(self.group_upstream_429_max_retries)
-        } else {
-            0
-        }
+        normalize_group_upstream_429_retry_metadata(
+            self.group_upstream_429_retry_enabled,
+            self.group_upstream_429_max_retries,
+        )
     }
 }
 

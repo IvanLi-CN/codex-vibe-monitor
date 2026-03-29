@@ -5619,6 +5619,56 @@ async fn update_upstream_account_group_preserves_upstream_429_retry_settings_whe
 }
 
 #[tokio::test]
+async fn update_upstream_account_group_enabling_retry_defaults_missing_retry_count_to_one() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "LATAM Key",
+        "sk-latam",
+        Some("latam"),
+        None,
+        None,
+    )
+    .await;
+
+    let enable_payload: UpdateUpstreamAccountGroupRequest = serde_json::from_value(json!({
+        "upstream429RetryEnabled": true
+    }))
+    .expect("deserialize enable payload");
+    let Json(updated) = update_upstream_account_group(
+        State(state.clone()),
+        HeaderMap::new(),
+        axum::extract::Path("latam".to_string()),
+        Json(enable_payload),
+    )
+    .await
+    .expect("enable group retry settings");
+    let updated_json = serde_json::to_value(updated).expect("serialize updated group");
+    assert_eq!(
+        updated_json["upstream429RetryEnabled"].as_bool(),
+        Some(true)
+    );
+    assert_eq!(updated_json["upstream429MaxRetries"].as_u64(), Some(1));
+
+    let persisted = sqlx::query_as::<_, (i64, i64)>(
+        r#"
+        SELECT upstream_429_retry_enabled, upstream_429_max_retries
+        FROM pool_upstream_account_group_notes
+        WHERE group_name = ?1
+        "#,
+    )
+    .bind("latam")
+    .fetch_one(&state.pool)
+    .await
+    .expect("load persisted group retry settings");
+    assert_eq!(persisted.0, 1);
+    assert_eq!(persisted.1, 1);
+}
+
+#[tokio::test]
 async fn update_upstream_account_group_disabling_retry_clears_retry_count_and_deletes_empty_row() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
