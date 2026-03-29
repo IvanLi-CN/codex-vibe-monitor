@@ -106,6 +106,31 @@ const DEFAULT_ROUTING_TIMEOUTS: PoolRoutingTimeoutSettings = {
 const POSITIVE_INTEGER_PATTERN = /^[1-9]\d*$/
 
 const STICKY_CONVERSATION_LIMIT_OPTIONS = [20, 50, 100] as const
+const UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY = 'codex-vibe-monitor.account-pool.upstream-accounts.filters'
+const WORK_STATUS_FILTER_VALUES = ['working', 'idle', 'rate_limited', 'unavailable'] as const
+const ENABLE_STATUS_FILTER_VALUES = ['enabled', 'disabled'] as const
+const HEALTH_STATUS_FILTER_VALUES = [
+  'normal',
+  'needs_reauth',
+  'upstream_unavailable',
+  'upstream_rejected',
+  'error_other',
+] as const
+
+type GroupFilterMode = 'all' | 'ungrouped' | 'search'
+
+type GroupFilterState = {
+  mode: GroupFilterMode
+  query: string
+}
+
+type PersistedUpstreamAccountsFilters = {
+  workStatus: string[]
+  enableStatus: string[]
+  healthStatus: string[]
+  tagIds: number[]
+  groupFilter: GroupFilterState
+}
 
 type UpstreamAccountsLocationState = {
   selectedAccountId?: number
@@ -157,6 +182,140 @@ type SharedUpstreamAccountDetailDrawerProps = {
   initialDeleteConfirmOpen?: boolean
   onInitialDeleteConfirmHandled?: () => void
   onClose: (options?: SharedUpstreamAccountDetailDrawerCloseOptions) => void
+}
+
+const DEFAULT_GROUP_FILTER_STATE: GroupFilterState = {
+  mode: 'all',
+  query: '',
+}
+
+const DEFAULT_PERSISTED_UPSTREAM_ACCOUNT_FILTERS: PersistedUpstreamAccountsFilters = {
+  workStatus: [],
+  enableStatus: [],
+  healthStatus: [],
+  tagIds: [],
+  groupFilter: DEFAULT_GROUP_FILTER_STATE,
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function sanitizeFilterValues(value: unknown, allowedValues: readonly string[]) {
+  if (!Array.isArray(value)) return []
+  const allowed = new Set(allowedValues)
+  const next: string[] = []
+  for (const item of value) {
+    if (typeof item !== 'string' || !allowed.has(item) || next.includes(item)) {
+      continue
+    }
+    next.push(item)
+  }
+  return next
+}
+
+function sanitizeTagIds(value: unknown) {
+  if (!Array.isArray(value)) return []
+  const next: number[] = []
+  for (const item of value) {
+    if (!Number.isInteger(item) || item <= 0 || next.includes(item)) {
+      continue
+    }
+    next.push(item)
+  }
+  return next
+}
+
+function sanitizeGroupFilterState(value: unknown): GroupFilterState {
+  if (!isPlainObject(value)) return DEFAULT_GROUP_FILTER_STATE
+  const mode = value.mode
+  if (mode === 'ungrouped') {
+    return {
+      mode,
+      query: '',
+    }
+  }
+  if (mode === 'search') {
+    const query = typeof value.query === 'string' ? value.query.trim() : ''
+    if (query) {
+      return {
+        mode,
+        query,
+      }
+    }
+  }
+  return DEFAULT_GROUP_FILTER_STATE
+}
+
+function readPersistedUpstreamAccountFilters(): PersistedUpstreamAccountsFilters {
+  if (typeof window === 'undefined') {
+    return DEFAULT_PERSISTED_UPSTREAM_ACCOUNT_FILTERS
+  }
+  try {
+    const raw = window.localStorage.getItem(UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY)
+    if (!raw) {
+      return DEFAULT_PERSISTED_UPSTREAM_ACCOUNT_FILTERS
+    }
+    const parsed = JSON.parse(raw)
+    if (!isPlainObject(parsed)) {
+      return DEFAULT_PERSISTED_UPSTREAM_ACCOUNT_FILTERS
+    }
+    return {
+      workStatus: sanitizeFilterValues(parsed.workStatus, WORK_STATUS_FILTER_VALUES),
+      enableStatus: sanitizeFilterValues(parsed.enableStatus, ENABLE_STATUS_FILTER_VALUES),
+      healthStatus: sanitizeFilterValues(parsed.healthStatus, HEALTH_STATUS_FILTER_VALUES),
+      tagIds: sanitizeTagIds(parsed.tagIds),
+      groupFilter: sanitizeGroupFilterState(parsed.groupFilter),
+    }
+  } catch {
+    return DEFAULT_PERSISTED_UPSTREAM_ACCOUNT_FILTERS
+  }
+}
+
+function persistUpstreamAccountFilters(value: PersistedUpstreamAccountsFilters) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY, JSON.stringify(value))
+  } catch {
+    // Ignore storage write failures and keep the current UI state.
+  }
+}
+
+function formatGroupFilterValue(
+  groupFilter: GroupFilterState,
+  labels: { ungrouped: string },
+) {
+  if (groupFilter.mode === 'ungrouped') {
+    return labels.ungrouped
+  }
+  if (groupFilter.mode === 'search') {
+    return groupFilter.query
+  }
+  return ''
+}
+
+function parseGroupFilterValue(
+  value: string,
+  labels: { all: string; ungrouped: string },
+): GroupFilterState {
+  const normalized = value.trim()
+  if (!normalized) {
+    return DEFAULT_GROUP_FILTER_STATE
+  }
+  const normalizedLower = normalized.toLocaleLowerCase()
+  if (normalizedLower === labels.all.trim().toLocaleLowerCase()) {
+    return DEFAULT_GROUP_FILTER_STATE
+  }
+  if (normalizedLower === labels.ungrouped.trim().toLocaleLowerCase()) {
+    return {
+      mode: 'ungrouped',
+      query: '',
+    }
+  }
+  return {
+    mode: 'search',
+    query: normalized,
+  }
 }
 
 function createBusyActionKey(type: AccountBusyActionType, accountId: number) {
@@ -2135,35 +2294,45 @@ export default function UpstreamAccountsPage() {
     openUpstreamAccount,
     closeUpstreamAccount,
   } = useUpstreamAccountDetailRoute()
-  const [groupFilterQuery, setGroupFilterQuery] = useState('')
-  const [selectedTagIds, setSelectedTagIds] = useState<number[]>([])
-  const [workStatusFilter, setWorkStatusFilter] = useState<string[]>([])
-  const [enableStatusFilter, setEnableStatusFilter] = useState<string[]>([])
-  const [healthStatusFilter, setHealthStatusFilter] = useState<string[]>([])
+  const [initialFilters] = useState(() => readPersistedUpstreamAccountFilters())
+  const [groupFilter, setGroupFilter] = useState<GroupFilterState>(() => initialFilters.groupFilter)
+  const [selectedTagIds, setSelectedTagIds] = useState<number[]>(() => initialFilters.tagIds)
+  const [workStatusFilter, setWorkStatusFilter] = useState<string[]>(() => initialFilters.workStatus)
+  const [enableStatusFilter, setEnableStatusFilter] = useState<string[]>(() => initialFilters.enableStatus)
+  const [healthStatusFilter, setHealthStatusFilter] = useState<string[]>(() => initialFilters.healthStatus)
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [selectedAccountIds, setSelectedAccountIds] = useState<number[]>([])
   const [selectedAccountSummaries, setSelectedAccountSummaries] = useState<Record<number, UpstreamAccountSummary>>({})
+  const { items: tagItems } = usePoolTags()
+  const groupFilterLabels = useMemo(
+    () => ({
+      all: t('accountPool.upstreamAccounts.groupFilter.all'),
+      ungrouped: t('accountPool.upstreamAccounts.groupFilter.ungrouped'),
+    }),
+    [t],
+  )
+  const groupFilterQuery = useMemo(
+    () => formatGroupFilterValue(groupFilter, groupFilterLabels),
+    [groupFilter, groupFilterLabels],
+  )
+  const validTagIds = useMemo(() => new Set(tagItems.map((tag) => tag.id)), [tagItems])
+  const sanitizedSelectedTagIds = useMemo(
+    () => selectedTagIds.filter((tagId) => validTagIds.has(tagId)),
+    [selectedTagIds, validTagIds],
+  )
   const accountListQuery = useMemo(() => {
-    const normalizedQuery = groupFilterQuery.trim()
-    const allLabel = t('accountPool.upstreamAccounts.groupFilter.all').toLocaleLowerCase()
-    const ungroupedLabel = t('accountPool.upstreamAccounts.groupFilter.ungrouped').toLocaleLowerCase()
-    const normalizedLowerQuery = normalizedQuery.toLocaleLowerCase()
-
     return {
-      groupSearch:
-        !normalizedQuery || normalizedLowerQuery === allLabel || normalizedLowerQuery === ungroupedLabel
-          ? undefined
-          : normalizedQuery,
-      groupUngrouped: normalizedQuery ? normalizedLowerQuery === ungroupedLabel : undefined,
+      groupSearch: groupFilter.mode === 'search' ? groupFilter.query : undefined,
+      groupUngrouped: groupFilter.mode === 'ungrouped' ? true : undefined,
       workStatus: workStatusFilter.length > 0 ? workStatusFilter : undefined,
       enableStatus: enableStatusFilter.length > 0 ? enableStatusFilter : undefined,
       healthStatus: healthStatusFilter.length > 0 ? healthStatusFilter : undefined,
       page,
       pageSize,
-      tagIds: selectedTagIds.length > 0 ? selectedTagIds : undefined,
+      tagIds: sanitizedSelectedTagIds.length > 0 ? sanitizedSelectedTagIds : undefined,
     }
-  }, [enableStatusFilter, groupFilterQuery, healthStatusFilter, page, pageSize, selectedTagIds, t, workStatusFilter])
+  }, [enableStatusFilter, groupFilter, healthStatusFilter, page, pageSize, sanitizedSelectedTagIds, workStatusFilter])
   const workStatusFilterOptions = useMemo(
     () => [
       { value: 'working', label: t('accountPool.upstreamAccounts.workStatus.working') },
@@ -2217,7 +2386,6 @@ export default function UpstreamAccountsPage() {
     total,
     metrics: listMetrics,
   } = useUpstreamAccounts(accountListQuery)
-  const { items: tagItems } = usePoolTags()
   const [routingDraft, setRoutingDraft] = useState(() => buildRoutingDraft(null))
   const [actionError, setActionError] = useState<ActionErrorState>(() => ({
     routing: null,
@@ -2270,10 +2438,10 @@ export default function UpstreamAccountsPage() {
   }, [])
 
   const handleGroupFilterChange = useCallback((value: string) => {
-    setGroupFilterQuery(value)
+    setGroupFilter(parseGroupFilterValue(value, groupFilterLabels))
     setPage(1)
     clearBulkSelection()
-  }, [clearBulkSelection])
+  }, [clearBulkSelection, groupFilterLabels])
 
   const handleTagFilterChange = useCallback((value: number[]) => {
     setSelectedTagIds(value)
@@ -2381,12 +2549,21 @@ export default function UpstreamAccountsPage() {
   }, [items, selectedAccountIds])
 
   useEffect(() => {
-    const validTagIds = new Set(tagItems.map((tag) => tag.id))
     setSelectedTagIds((current) => {
       const next = current.filter((tagId) => validTagIds.has(tagId))
       return next.length === current.length ? current : next
     })
-  }, [tagItems])
+  }, [validTagIds])
+
+  useEffect(() => {
+    persistUpstreamAccountFilters({
+      workStatus: workStatusFilter,
+      enableStatus: enableStatusFilter,
+      healthStatus: healthStatusFilter,
+      tagIds: sanitizedSelectedTagIds,
+      groupFilter,
+    })
+  }, [enableStatusFilter, groupFilter, healthStatusFilter, sanitizedSelectedTagIds, workStatusFilter])
 
   useEffect(() => {
     return () => {
@@ -3180,7 +3357,7 @@ export default function UpstreamAccountsPage() {
                   <AccountTagFilterCombobox
                     size="filter"
                     tags={tagItems}
-                    value={selectedTagIds}
+                    value={sanitizedSelectedTagIds}
                     placeholder={t('accountPool.upstreamAccounts.tagFilterPlaceholder')}
                     searchPlaceholder={t('accountPool.upstreamAccounts.tagFilterSearchPlaceholder')}
                     emptyLabel={t('accountPool.upstreamAccounts.tagFilterEmpty')}

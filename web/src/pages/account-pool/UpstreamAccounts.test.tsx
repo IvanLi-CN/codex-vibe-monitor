@@ -16,6 +16,9 @@ import { I18nProvider } from "../../i18n";
 import UpstreamAccountsPage from "./UpstreamAccounts";
 import type { EffectiveRoutingRule, TagSummary } from "../../lib/api";
 
+const UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY =
+  "codex-vibe-monitor.account-pool.upstream-accounts.filters";
+const LOCALE_STORAGE_KEY = "codex-vibe-monitor.locale";
 const navigateMock = vi.hoisted(() => vi.fn());
 const hookMocks = vi.hoisted(() => ({
   useUpstreamAccounts: vi.fn(),
@@ -25,6 +28,7 @@ const hookMocks = vi.hoisted(() => ({
 const apiMocks = vi.hoisted(() => ({
   createBulkUpstreamAccountSyncJobEventSource: vi.fn(),
 }));
+const storage = new Map<string, string>();
 
 vi.mock("react-router-dom", async () => {
   const actual =
@@ -168,19 +172,31 @@ beforeAll(() => {
   Object.defineProperty(window, "localStorage", {
     configurable: true,
     value: {
-      getItem: vi.fn((key: string) =>
-        key === "codex-vibe-monitor.locale" ? "en" : null,
-      ),
-      setItem: vi.fn(),
-      removeItem: vi.fn(),
+      getItem: vi.fn((key: string) => storage.get(key) ?? null),
+      setItem: vi.fn((key: string, value: string) => {
+        storage.set(key, value);
+      }),
+      removeItem: vi.fn((key: string) => {
+        storage.delete(key);
+      }),
     },
   });
 });
 
 beforeEach(() => {
-  vi.mocked(window.localStorage.getItem).mockImplementation((key: string) =>
-    key === "codex-vibe-monitor.locale" ? "en" : null,
+  storage.clear();
+  storage.set(LOCALE_STORAGE_KEY, "en");
+  vi.mocked(window.localStorage.getItem).mockImplementation(
+    (key: string) => storage.get(key) ?? null,
   );
+  vi.mocked(window.localStorage.setItem).mockImplementation(
+    (key: string, value: string) => {
+      storage.set(key, value);
+    },
+  );
+  vi.mocked(window.localStorage.removeItem).mockImplementation((key: string) => {
+    storage.delete(key);
+  });
   apiMocks.createBulkUpstreamAccountSyncJobEventSource.mockReset();
   apiMocks.createBulkUpstreamAccountSyncJobEventSource.mockImplementation(() => {
     throw new Error("unexpected bulk sync event source");
@@ -239,6 +255,37 @@ function rerender(initialEntry: InitialEntry = "/account-pool/upstream-accounts"
       </I18nProvider>,
     );
   });
+}
+
+function remount(
+  initialEntry: InitialEntry = "/account-pool/upstream-accounts",
+) {
+  act(() => {
+    root?.unmount();
+  });
+  host?.remove();
+  host = null;
+  root = null;
+  render(initialEntry);
+}
+
+function writeStoredUpstreamFilters(payload: unknown) {
+  storage.set(
+    UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY,
+    typeof payload === "string" ? payload : JSON.stringify(payload),
+  );
+}
+
+function readStoredUpstreamFilters() {
+  const raw = storage.get(UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY);
+  if (!raw) {
+    return null;
+  }
+  return JSON.parse(raw);
+}
+
+function expectRosterHookQuery(expected: Record<string, unknown>) {
+  expect(hookMocks.useUpstreamAccounts.mock.calls).toContainEqual([expected]);
 }
 
 function findButton(pattern: RegExp) {
@@ -1430,6 +1477,157 @@ describe("UpstreamAccountsPage duplicates", () => {
       page: 1,
       pageSize: 20,
       tagIds: undefined,
+    });
+  });
+
+  it("restores persisted roster filters on initial render", () => {
+    mockAccountsPage();
+    writeStoredUpstreamFilters({
+      workStatus: ["unavailable", "working"],
+      enableStatus: ["enabled"],
+      healthStatus: ["needs_reauth", "normal"],
+      tagIds: [1, 2],
+      groupFilter: {
+        mode: "search",
+        query: "prod",
+      },
+    });
+
+    render("/account-pool/upstream-accounts");
+
+    expectRosterHookQuery({
+      groupSearch: "prod",
+      groupUngrouped: undefined,
+      workStatus: ["unavailable", "working"],
+      enableStatus: ["enabled"],
+      healthStatus: ["needs_reauth", "normal"],
+      page: 1,
+      pageSize: 20,
+      tagIds: [1, 2],
+    });
+  });
+
+  it("persists roster filters after user updates them", () => {
+    mockAccountsPage();
+    render("/account-pool/upstream-accounts");
+
+    clickCombobox(/work status/i);
+    clickCommandItem(/^unavailable$/i);
+    clickCombobox(/group/i);
+    clickCommandItem(/^ungrouped$/i);
+    clickCombobox(/filter accounts by tags/i);
+    clickCommandItem(/^vip$/i);
+
+    expect(window.localStorage.setItem).toHaveBeenCalledWith(
+      UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY,
+      expect.any(String),
+    );
+    expect(readStoredUpstreamFilters()).toEqual({
+      workStatus: ["unavailable"],
+      enableStatus: [],
+      healthStatus: [],
+      tagIds: [1],
+      groupFilter: {
+        mode: "ungrouped",
+        query: "",
+      },
+    });
+  });
+
+  it("falls back to safe defaults when persisted filters are malformed", () => {
+    mockAccountsPage();
+    writeStoredUpstreamFilters("{bad-json");
+
+    render("/account-pool/upstream-accounts");
+
+    expectRosterHookQuery({
+      groupSearch: undefined,
+      groupUngrouped: undefined,
+      workStatus: undefined,
+      enableStatus: undefined,
+      healthStatus: undefined,
+      page: 1,
+      pageSize: 20,
+      tagIds: undefined,
+    });
+  });
+
+  it("restores the ungrouped group filter across locale changes", () => {
+    mockAccountsPage();
+    writeStoredUpstreamFilters({
+      workStatus: [],
+      enableStatus: [],
+      healthStatus: [],
+      tagIds: [],
+      groupFilter: {
+        mode: "ungrouped",
+      },
+    });
+    storage.set(LOCALE_STORAGE_KEY, "zh");
+
+    render("/account-pool/upstream-accounts");
+
+    expect(document.body.textContent).toContain("未分组");
+    expectRosterHookQuery({
+      groupSearch: undefined,
+      groupUngrouped: true,
+      workStatus: undefined,
+      enableStatus: undefined,
+      healthStatus: undefined,
+      page: 1,
+      pageSize: 20,
+      tagIds: undefined,
+    });
+
+    storage.set(LOCALE_STORAGE_KEY, "en");
+    remount("/account-pool/upstream-accounts");
+
+    expect(document.body.textContent).toContain("Ungrouped");
+    expectRosterHookQuery({
+      groupSearch: undefined,
+      groupUngrouped: true,
+      workStatus: undefined,
+      enableStatus: undefined,
+      healthStatus: undefined,
+      page: 1,
+      pageSize: 20,
+      tagIds: undefined,
+    });
+  });
+
+  it("clips invalid persisted tag ids before querying and rewrites cleaned storage", () => {
+    mockAccountsPage();
+    writeStoredUpstreamFilters({
+      workStatus: [],
+      enableStatus: [],
+      healthStatus: [],
+      tagIds: [1, 999],
+      groupFilter: {
+        mode: "all",
+      },
+    });
+
+    render("/account-pool/upstream-accounts");
+
+    expectRosterHookQuery({
+      groupSearch: undefined,
+      groupUngrouped: undefined,
+      workStatus: undefined,
+      enableStatus: undefined,
+      healthStatus: undefined,
+      page: 1,
+      pageSize: 20,
+      tagIds: [1],
+    });
+    expect(readStoredUpstreamFilters()).toEqual({
+      workStatus: [],
+      enableStatus: [],
+      healthStatus: [],
+      tagIds: [1],
+      groupFilter: {
+        mode: "all",
+        query: "",
+      },
     });
   });
 

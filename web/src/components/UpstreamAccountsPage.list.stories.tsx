@@ -8,6 +8,9 @@ import {
 } from './UpstreamAccountsPage.story-helpers'
 import { SystemNotificationProvider } from './ui/system-notifications'
 
+const UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY =
+  'codex-vibe-monitor.account-pool.upstream-accounts.filters'
+
 const meta = {
   title: 'Account Pool/Pages/Upstream Accounts/List',
   component: UpstreamAccountsPage,
@@ -31,6 +34,26 @@ const meta = {
 export default meta
 
 type Story = StoryObj<typeof meta>
+
+function PersistedFiltersStoryRouter() {
+  if (typeof window !== 'undefined') {
+    window.localStorage.setItem(
+      UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY,
+      JSON.stringify({
+        workStatus: ['rate_limited'],
+        enableStatus: ['enabled'],
+        healthStatus: ['normal'],
+        tagIds: [],
+        groupFilter: {
+          mode: 'search',
+          query: 'prod',
+        },
+      }),
+    )
+  }
+
+  return <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />
+}
 
 async function chooseSelectOption(
   canvasElement: HTMLElement,
@@ -376,6 +399,40 @@ export const TagFilterAllMatch: Story = {
     await expect(
       canvas.queryByText(/Team key - staging/i),
     ).not.toBeInTheDocument()
+  },
+}
+
+export const PersistedRosterFilters: Story = {
+  render: () => <PersistedFiltersStoryRouter />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+
+    await expect(
+      await canvas.findByText(/Codex Pro - London/i),
+    ).toBeInTheDocument()
+    await expect(
+      canvas.queryByText(/Team key - staging/i),
+    ).not.toBeInTheDocument()
+    await expect(
+      await canvas.findByRole('button', {
+        name: /work status/i,
+      }),
+    ).toHaveTextContent(/rate limited/i)
+    await expect(
+      await canvas.findByRole('button', {
+        name: /enable status/i,
+      }),
+    ).toHaveTextContent(/enabled/i)
+    await expect(
+      await canvas.findByRole('button', {
+        name: /account health/i,
+      }),
+    ).toHaveTextContent(/normal/i)
+    await expect(
+      await canvas.findByRole('button', {
+        name: /group/i,
+      }),
+    ).toHaveTextContent(/prod/i)
   },
 }
 
