@@ -1595,6 +1595,96 @@ describe("UpstreamAccountsPage duplicates", () => {
     });
   });
 
+  it("keeps persisted tag ids while the tag catalog is still loading", () => {
+    type PoolTagsHookResult = {
+      items: TagSummary[];
+      writesEnabled: boolean;
+      isLoading: boolean;
+      error: string | null;
+      query: Record<string, never>;
+      refresh: ReturnType<typeof vi.fn>;
+      updateQuery: ReturnType<typeof vi.fn>;
+      createTag: ReturnType<typeof vi.fn>;
+      updateTag: ReturnType<typeof vi.fn>;
+      deleteTag: ReturnType<typeof vi.fn>;
+    };
+    const loadedPoolTagsState: PoolTagsHookResult = {
+      items: defaultPoolTags,
+      writesEnabled: true,
+      isLoading: false,
+      error: null,
+      query: {},
+      refresh: vi.fn(),
+      updateQuery: vi.fn(),
+      createTag: vi.fn(),
+      updateTag: vi.fn(),
+      deleteTag: vi.fn(),
+    };
+    let poolTagsState: PoolTagsHookResult = {
+      ...loadedPoolTagsState,
+      items: [],
+      isLoading: true,
+    };
+    hookMocks.usePoolTags.mockImplementation(() => poolTagsState);
+    mockAccountsPage();
+    writeStoredUpstreamFilters({
+      workStatus: [],
+      enableStatus: [],
+      healthStatus: [],
+      tagIds: [1],
+      groupFilter: {
+        mode: "all",
+      },
+    });
+
+    render("/account-pool/upstream-accounts");
+
+    expectRosterHookQuery({
+      groupSearch: undefined,
+      groupUngrouped: undefined,
+      workStatus: undefined,
+      enableStatus: undefined,
+      healthStatus: undefined,
+      page: 1,
+      pageSize: 20,
+      tagIds: [1],
+    });
+    expect(readStoredUpstreamFilters()).toEqual({
+      workStatus: [],
+      enableStatus: [],
+      healthStatus: [],
+      tagIds: [1],
+      groupFilter: {
+        mode: "all",
+        query: "",
+      },
+    });
+
+    poolTagsState = loadedPoolTagsState;
+    rerender("/account-pool/upstream-accounts");
+
+    expectRosterHookQuery({
+      groupSearch: undefined,
+      groupUngrouped: undefined,
+      workStatus: undefined,
+      enableStatus: undefined,
+      healthStatus: undefined,
+      page: 1,
+      pageSize: 20,
+      tagIds: [1],
+    });
+    expect(readStoredUpstreamFilters()).toEqual({
+      workStatus: [],
+      enableStatus: [],
+      healthStatus: [],
+      tagIds: [1],
+      groupFilter: {
+        mode: "all",
+        query: "",
+      },
+    });
+  });
+
   it("clips invalid persisted tag ids before querying and rewrites cleaned storage", () => {
     mockAccountsPage();
     writeStoredUpstreamFilters({
