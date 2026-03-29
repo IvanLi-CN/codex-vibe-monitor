@@ -8,7 +8,10 @@ import type {
   UpstreamAccountListResponse,
   UpstreamAccountSummary,
 } from "../lib/api";
-import { useUpstreamAccounts } from "./useUpstreamAccounts";
+import {
+  UPSTREAM_ACCOUNTS_SSE_REFRESH_THROTTLE_MS,
+  useUpstreamAccounts,
+} from "./useUpstreamAccounts";
 
 const apiMocks = vi.hoisted(() => ({
   fetchUpstreamAccounts: vi.fn<
@@ -20,6 +23,11 @@ const apiMocks = vi.hoisted(() => ({
   syncUpstreamAccount: vi.fn<(accountId: number) => Promise<UpstreamAccountDetail>>(),
   reloginUpstreamAccount: vi.fn<(accountId: number) => Promise<{ loginId: string }>>(),
   deleteUpstreamAccount: vi.fn<(accountId: number) => Promise<void>>(),
+}));
+
+const sseMocks = vi.hoisted(() => ({
+  recordListeners: [] as Array<(payload: { type: string; records?: unknown[] }) => void>,
+  openListeners: [] as Array<() => void>,
 }));
 
 vi.mock("../lib/api", async () => {
@@ -34,6 +42,29 @@ vi.mock("../lib/api", async () => {
   };
 });
 
+vi.mock("../lib/sse", () => ({
+  subscribeToSse: (
+    listener: (payload: { type: string; records?: unknown[] }) => void,
+  ) => {
+    sseMocks.recordListeners.push(listener);
+    return () => {
+      const index = sseMocks.recordListeners.indexOf(listener);
+      if (index >= 0) {
+        sseMocks.recordListeners.splice(index, 1);
+      }
+    };
+  },
+  subscribeToSseOpen: (listener: () => void) => {
+    sseMocks.openListeners.push(listener);
+    return () => {
+      const index = sseMocks.openListeners.indexOf(listener);
+      if (index >= 0) {
+        sseMocks.openListeners.splice(index, 1);
+      }
+    };
+  },
+}));
+
 let host: HTMLDivElement | null = null;
 let root: Root | null = null;
 
@@ -47,6 +78,8 @@ beforeAll(() => {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  sseMocks.recordListeners.length = 0;
+  sseMocks.openListeners.length = 0;
   apiMocks.fetchUpstreamAccounts.mockResolvedValue(createListResponse());
 });
 
@@ -101,6 +134,18 @@ function deferred<T>() {
     reject = rej;
   });
   return { promise, resolve, reject };
+}
+
+function emitRecordsEvent() {
+  for (const listener of [...sseMocks.recordListeners]) {
+    listener({ type: "records", records: [] });
+  }
+}
+
+function emitOpenEvent() {
+  for (const listener of [...sseMocks.openListeners]) {
+    listener();
+  }
 }
 
 function createSummary(
@@ -752,5 +797,48 @@ describe("useUpstreamAccounts", () => {
     expect(text("selected-id")).toBe("1");
     expect(text("selected-name")).toBe("Alpha Synced");
     expect(text("detail-name")).toBe("Alpha Synced");
+  });
+
+  it("silently refreshes the visible roster page after records SSE events", async () => {
+    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(createDetail(1, "Alpha"));
+
+    render(<Probe />);
+    await flushAsync();
+
+    expect(apiMocks.fetchUpstreamAccounts).toHaveBeenCalledTimes(1);
+    expect(apiMocks.fetchUpstreamAccountDetail).toHaveBeenCalledTimes(1);
+    expect(text("detail-loading")).toBe("false");
+
+    vi.useFakeTimers();
+    try {
+      act(() => {
+        emitRecordsEvent();
+        vi.advanceTimersByTime(UPSTREAM_ACCOUNTS_SSE_REFRESH_THROTTLE_MS);
+      });
+      await flushAsync();
+
+      expect(apiMocks.fetchUpstreamAccounts).toHaveBeenCalledTimes(2);
+      expect(apiMocks.fetchUpstreamAccountDetail).toHaveBeenCalledTimes(2);
+      expect(text("detail-loading")).toBe("false");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("runs a silent resync when the SSE connection opens again", async () => {
+    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(createDetail(1, "Alpha"));
+
+    render(<Probe />);
+    await flushAsync();
+
+    expect(apiMocks.fetchUpstreamAccounts).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      emitOpenEvent();
+    });
+    await flushAsync();
+
+    expect(apiMocks.fetchUpstreamAccounts).toHaveBeenCalledTimes(2);
+    expect(apiMocks.fetchUpstreamAccountDetail).toHaveBeenCalledTimes(2);
   });
 });

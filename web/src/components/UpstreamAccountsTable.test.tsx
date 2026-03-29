@@ -29,6 +29,24 @@ const tags: AccountTagSummary[] = [
   { id: 5, name: 'rotating', routingRule: defaultEffectiveRoutingRule },
 ]
 
+function actualUsage(
+  requestCount: number,
+  totalTokens = requestCount * 1200,
+  totalCost = Number((requestCount * 0.006).toFixed(4)),
+) {
+  const cacheInputTokens = Math.round(totalTokens * 0.12)
+  const inputTokens = Math.round(totalTokens * 0.56)
+  const outputTokens = totalTokens - inputTokens - cacheInputTokens
+  return {
+    requestCount,
+    totalTokens,
+    totalCost,
+    inputTokens,
+    outputTokens,
+    cacheInputTokens,
+  }
+}
+
 const labels = {
   selectPage: 'Select current page',
   selectRow: (name: string) => `Select ${name}`,
@@ -44,6 +62,12 @@ const labels = {
   secondary: '7d',
   secondaryShort: '7d',
   nextReset: 'Reset',
+  requestsMetric: 'Req',
+  tokensMetric: 'Token',
+  costMetric: 'Cost',
+  inputTokensMetric: 'Input',
+  outputTokensMetric: 'Output',
+  cacheInputTokensMetric: 'Cached input',
   unknown: 'Unknown',
   unavailable: 'Unavailable',
   oauth: 'OAuth',
@@ -208,6 +232,7 @@ describe('UpstreamAccountsTable', () => {
           limitText: '120 requests',
           resetsAt: '2026-03-16T06:55:00.000Z',
           windowDurationMins: 300,
+          actualUsage: actualUsage(42),
         },
         secondaryWindow: {
           usedPercent: 12,
@@ -215,6 +240,7 @@ describe('UpstreamAccountsTable', () => {
           limitText: '500 requests',
           resetsAt: '2026-03-18T00:00:00.000Z',
           windowDurationMins: 10080,
+          actualUsage: actualUsage(12),
         },
         credits: null,
         localLimits: null,
@@ -250,9 +276,10 @@ describe('UpstreamAccountsTable', () => {
     )
     expect(html).toContain('5H')
     expect(html).toContain('7D')
-    expect(html).toContain(
-      'grid-cols-[max-content,minmax(0,1fr),minmax(0,1fr)]',
-    )
+    expect(html).toContain('Req')
+    expect(html).toContain('Token')
+    expect(html).toContain('Cost')
+    expect(html).toContain('grid-cols-[max-content,minmax(0,1fr)]')
     expect(html).not.toContain('production-apac-primary-operators')
     expect(html).toContain('overflow-x-auto')
     expect(html).toContain('md:overflow-x-visible')
@@ -283,6 +310,7 @@ describe('UpstreamAccountsTable', () => {
           limitText: '12h quota',
           resetsAt: '2026-03-31T00:08:00.000Z',
           windowDurationMins: 720,
+          actualUsage: actualUsage(17),
         },
         secondaryWindow: {
           usedPercent: 0,
@@ -290,6 +318,7 @@ describe('UpstreamAccountsTable', () => {
           limitText: '7d quota',
           resetsAt: '2026-04-07T00:00:00.000Z',
           windowDurationMins: 10080,
+          actualUsage: actualUsage(0, 0, 0),
         },
         credits: null,
         localLimits: null,
@@ -364,6 +393,7 @@ describe('UpstreamAccountsTable', () => {
           limitText: '120 requests',
           resetsAt: '2026-03-16T06:55:00.000Z',
           windowDurationMins: 300,
+          actualUsage: actualUsage(18),
         },
         secondaryWindow: null,
         credits: null,
@@ -379,8 +409,9 @@ describe('UpstreamAccountsTable', () => {
     ])
 
     expect(html).toContain('Missing weekly limit key')
-    expect(html).toContain('18 requests')
-    expect((html.match(/>-</g) ?? []).length).toBe(3)
+    expect(html).toContain('Req')
+    expect(html).toContain('>18<')
+    expect((html.match(/>-</g) ?? []).length).toBe(5)
     expect(html).toContain('text-base-content/55')
     expect(html).toContain('min-w-[2ch]')
     expect(html).not.toContain('>7D<')
@@ -413,6 +444,7 @@ describe('UpstreamAccountsTable', () => {
           limitText: '120 requests',
           resetsAt: '2026-03-16T06:55:00.000Z',
           windowDurationMins: 300,
+          actualUsage: actualUsage(18),
         },
         secondaryWindow: null,
         credits: null,
@@ -429,7 +461,7 @@ describe('UpstreamAccountsTable', () => {
 
     expect(html).toContain('Missing weekly snapshot')
     expect(html).toContain('>7D<')
-    expect((html.match(/>-</g) ?? []).length).toBe(3)
+    expect((html.match(/>-</g) ?? []).length).toBe(5)
   })
 
   it('renders counted working badges and keeps the rate-limited exception visible', () => {
@@ -606,6 +638,7 @@ describe('UpstreamAccountsTable', () => {
           limitText: '5h rolling window',
           resetsAt: '2026-03-31T00:06:33.000Z',
           windowDurationMins: 300,
+          actualUsage: actualUsage(31),
         },
         secondaryWindow: {
           usedPercent: 64,
@@ -613,6 +646,7 @@ describe('UpstreamAccountsTable', () => {
           limitText: '7d rolling window',
           resetsAt: '2026-04-01T00:06:33.000Z',
           windowDurationMins: 10080,
+          actualUsage: actualUsage(119),
         },
         credits: null,
         localLimits: null,
@@ -664,6 +698,7 @@ describe('UpstreamAccountsTable', () => {
           limitText: '5h rolling window',
           resetsAt: '2026-03-26T11:59:42.000Z',
           windowDurationMins: 300,
+          actualUsage: actualUsage(15),
         },
         secondaryWindow: {
           usedPercent: 19,
@@ -671,6 +706,7 @@ describe('UpstreamAccountsTable', () => {
           limitText: '7d rolling window',
           resetsAt: '2026-04-02T00:00:00.000Z',
           windowDurationMins: 10080,
+          actualUsage: actualUsage(56),
         },
         credits: null,
         localLimits: null,
@@ -747,6 +783,7 @@ describe('UpstreamAccountsTable', () => {
           limitText: '120 requests',
           resetsAt: '2026-03-16T06:55:00.000Z',
           windowDurationMins: 300,
+          actualUsage: actualUsage(42),
         },
         secondaryWindow: {
           usedPercent: 12,
@@ -754,6 +791,7 @@ describe('UpstreamAccountsTable', () => {
           limitText: '500 requests',
           resetsAt: '2026-03-18T00:00:00.000Z',
           windowDurationMins: 10080,
+          actualUsage: actualUsage(12),
         },
         credits: null,
         localLimits: null,
@@ -817,6 +855,7 @@ describe('UpstreamAccountsTable', () => {
           limitText: '120 requests',
           resetsAt: '2026-03-16T06:55:00.000Z',
           windowDurationMins: 300,
+          actualUsage: actualUsage(42),
         },
         secondaryWindow: {
           usedPercent: 12,
@@ -824,6 +863,7 @@ describe('UpstreamAccountsTable', () => {
           limitText: '500 requests',
           resetsAt: '2026-03-18T00:00:00.000Z',
           windowDurationMins: 10080,
+          actualUsage: actualUsage(12),
         },
         credits: null,
         localLimits: null,
@@ -877,6 +917,7 @@ describe('UpstreamAccountsTable', () => {
           limitText: '120 requests',
           resetsAt: '2026-03-16T06:55:00.000Z',
           windowDurationMins: 300,
+          actualUsage: actualUsage(0, 0, 0),
         },
         secondaryWindow: {
           usedPercent: 0,
@@ -884,6 +925,7 @@ describe('UpstreamAccountsTable', () => {
           limitText: '500 requests',
           resetsAt: '2026-03-18T00:00:00.000Z',
           windowDurationMins: 10080,
+          actualUsage: actualUsage(0, 0, 0),
         },
         credits: null,
         localLimits: null,
@@ -894,5 +936,58 @@ describe('UpstreamAccountsTable', () => {
     ])
 
     expect(html).not.toContain('Compact available')
+  })
+
+  it('shows the token breakdown tooltip on focus', async () => {
+    renderInteractiveTable([
+      {
+        id: 27,
+        kind: 'oauth_codex',
+        provider: 'codex',
+        displayName: 'Tooltip account',
+        groupName: null,
+        isMother: false,
+        status: 'active',
+        displayStatus: 'active',
+        enabled: true,
+        enableStatus: 'enabled',
+        workStatus: 'working',
+        healthStatus: 'normal',
+        syncState: 'idle',
+        primaryWindow: {
+          usedPercent: 42,
+          usedText: '42 requests',
+          limitText: '120 requests',
+          resetsAt: '2026-03-16T06:55:00.000Z',
+          windowDurationMins: 300,
+          actualUsage: actualUsage(42),
+        },
+        secondaryWindow: null,
+        credits: null,
+        localLimits: null,
+        duplicateInfo: null,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
+    ])
+
+    const trigger = Array.from(document.body.querySelectorAll<HTMLElement>('[aria-label]')).find((node) =>
+      node.getAttribute('aria-label')?.startsWith('Token:'),
+    )
+    if (!(trigger instanceof HTMLElement)) {
+      throw new Error('missing token metric trigger')
+    }
+
+    act(() => {
+      trigger.focus()
+    })
+
+    await expect.poll(() => document.body.textContent ?? '').toContain('Input')
+    expect(document.body.textContent).toContain('Input')
+    expect(document.body.textContent).toContain('Output')
+    expect(document.body.textContent).toContain('Cached input')
+    expect(document.body.textContent).toContain('28,224')
+    expect(document.body.textContent).toContain('16,128')
+    expect(document.body.textContent).toContain('6,048')
   })
 })

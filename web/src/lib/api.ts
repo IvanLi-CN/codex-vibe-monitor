@@ -1718,12 +1718,22 @@ function normalizeSettingsPayload(raw: unknown): SettingsPayload {
   };
 }
 
+export interface RateWindowActualUsage {
+  requestCount: number;
+  totalTokens: number;
+  totalCost: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheInputTokens: number;
+}
+
 export interface RateWindowSnapshot {
   usedPercent: number;
   usedText: string;
   limitText: string;
   resetsAt?: string | null;
   windowDurationMins: number;
+  actualUsage?: RateWindowActualUsage | null;
 }
 
 export interface CreditsSnapshot {
@@ -2294,6 +2304,36 @@ export interface UpdateUpstreamAccountGroupPayload {
   boundProxyKeys?: string[];
 }
 
+function normalizeRateWindowActualUsage(
+  raw: unknown,
+): RateWindowActualUsage | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const requestCount = normalizeFiniteNumber(payload.requestCount);
+  const totalTokens = normalizeFiniteNumber(payload.totalTokens);
+  const totalCost = normalizeFiniteNumber(payload.totalCost);
+  const inputTokens = normalizeFiniteNumber(payload.inputTokens);
+  const outputTokens = normalizeFiniteNumber(payload.outputTokens);
+  const cacheInputTokens = normalizeFiniteNumber(payload.cacheInputTokens);
+  if (
+    requestCount == null ||
+    totalTokens == null ||
+    totalCost == null ||
+    inputTokens == null ||
+    outputTokens == null ||
+    cacheInputTokens == null
+  ) {
+    return null;
+  }
+  return {
+    requestCount,
+    totalTokens,
+    totalCost,
+    inputTokens,
+    outputTokens,
+    cacheInputTokens,
+  };
+}
+
 function normalizeRateWindowSnapshot(raw: unknown): RateWindowSnapshot | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const usedPercent = normalizeFiniteNumber(payload.usedPercent);
@@ -2314,6 +2354,7 @@ function normalizeRateWindowSnapshot(raw: unknown): RateWindowSnapshot | null {
     limitText,
     resetsAt: typeof payload.resetsAt === "string" ? payload.resetsAt : null,
     windowDurationMins,
+    actualUsage: normalizeRateWindowActualUsage(payload.actualUsage),
   };
 }
 
