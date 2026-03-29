@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, userEvent, waitFor, within } from 'storybook/test'
 import { I18nProvider } from '../i18n'
@@ -37,10 +37,9 @@ export default meta
 type Story = StoryObj<typeof meta>
 
 function PersistedFiltersStoryRouter() {
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return
-    }
+  const restoreRef = useRef<null | (() => void)>(null)
+
+  if (restoreRef.current == null && typeof window !== 'undefined') {
     const previousValue = window.localStorage.getItem(UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY)
     window.localStorage.setItem(
       UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY,
@@ -55,12 +54,19 @@ function PersistedFiltersStoryRouter() {
         },
       }),
     )
-    return () => {
+    restoreRef.current = () => {
       if (previousValue == null) {
         window.localStorage.removeItem(UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY)
         return
       }
       window.localStorage.setItem(UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY, previousValue)
+    }
+  }
+
+  useEffect(() => {
+    return () => {
+      restoreRef.current?.()
+      restoreRef.current = null
     }
   }, [])
 

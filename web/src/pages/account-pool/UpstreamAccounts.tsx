@@ -2327,16 +2327,13 @@ export default function UpstreamAccountsPage() {
   )
   const canSanitizeSelectedTagIds = !isTagCatalogLoading && tagCatalogError == null
   const canApplySelectedTagIds =
-    isTagCatalogLoading || tagCatalogError == null || visibleSelectedTagIds.length === selectedTagIds.length
+    !isTagCatalogLoading && (tagCatalogError == null || visibleSelectedTagIds.length === selectedTagIds.length)
   const appliedSelectedTagIds = useMemo(() => {
-    if (isTagCatalogLoading) {
-      return selectedTagIds
-    }
     if (!canApplySelectedTagIds) {
       return []
     }
     return visibleSelectedTagIds
-  }, [canApplySelectedTagIds, isTagCatalogLoading, selectedTagIds, visibleSelectedTagIds])
+  }, [canApplySelectedTagIds, visibleSelectedTagIds])
   const persistedSelectedTagIds = useMemo(() => {
     if (!canSanitizeSelectedTagIds) {
       return selectedTagIds

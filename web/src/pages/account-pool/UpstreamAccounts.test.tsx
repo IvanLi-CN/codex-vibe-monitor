@@ -1595,7 +1595,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     });
   });
 
-  it("keeps persisted tag ids while the tag catalog is still loading", () => {
+  it("waits for the tag catalog before applying persisted tag ids to the roster query", () => {
     type PoolTagsHookResult = {
       items: TagSummary[];
       writesEnabled: boolean;
@@ -1631,7 +1631,7 @@ describe("UpstreamAccountsPage duplicates", () => {
       workStatus: [],
       enableStatus: [],
       healthStatus: [],
-      tagIds: [1],
+      tagIds: [1, 999],
       groupFilter: {
         mode: "all",
       },
@@ -1647,13 +1647,13 @@ describe("UpstreamAccountsPage duplicates", () => {
       healthStatus: undefined,
       page: 1,
       pageSize: 20,
-      tagIds: [1],
+      tagIds: undefined,
     });
     expect(readStoredUpstreamFilters()).toEqual({
       workStatus: [],
       enableStatus: [],
       healthStatus: [],
-      tagIds: [1],
+      tagIds: [1, 999],
       groupFilter: {
         mode: "all",
         query: "",
