@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, userEvent, waitFor, within } from 'storybook/test'
 import { I18nProvider } from '../i18n'
@@ -36,7 +37,11 @@ export default meta
 type Story = StoryObj<typeof meta>
 
 function PersistedFiltersStoryRouter() {
-  if (typeof window !== 'undefined') {
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return
+    }
+    const previousValue = window.localStorage.getItem(UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY)
     window.localStorage.setItem(
       UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY,
       JSON.stringify({
@@ -50,7 +55,14 @@ function PersistedFiltersStoryRouter() {
         },
       }),
     )
-  }
+    return () => {
+      if (previousValue == null) {
+        window.localStorage.removeItem(UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY)
+        return
+      }
+      window.localStorage.setItem(UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY, previousValue)
+    }
+  }, [])
 
   return <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />
 }

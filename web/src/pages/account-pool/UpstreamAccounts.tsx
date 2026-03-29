@@ -2304,7 +2304,11 @@ export default function UpstreamAccountsPage() {
   const [pageSize, setPageSize] = useState(20)
   const [selectedAccountIds, setSelectedAccountIds] = useState<number[]>([])
   const [selectedAccountSummaries, setSelectedAccountSummaries] = useState<Record<number, UpstreamAccountSummary>>({})
-  const { items: tagItems, isLoading: isTagCatalogLoading } = usePoolTags()
+  const {
+    items: tagItems,
+    isLoading: isTagCatalogLoading,
+    error: tagCatalogError,
+  } = usePoolTags()
   const groupFilterLabels = useMemo(
     () => ({
       all: t('accountPool.upstreamAccounts.groupFilter.all'),
@@ -2317,12 +2321,13 @@ export default function UpstreamAccountsPage() {
     [groupFilter, groupFilterLabels],
   )
   const validTagIds = useMemo(() => new Set(tagItems.map((tag) => tag.id)), [tagItems])
+  const canSanitizeSelectedTagIds = !isTagCatalogLoading && tagCatalogError == null
   const sanitizedSelectedTagIds = useMemo(() => {
-    if (isTagCatalogLoading) {
+    if (!canSanitizeSelectedTagIds) {
       return selectedTagIds
     }
     return selectedTagIds.filter((tagId) => validTagIds.has(tagId))
-  }, [isTagCatalogLoading, selectedTagIds, validTagIds])
+  }, [canSanitizeSelectedTagIds, selectedTagIds, validTagIds])
   const accountListQuery = useMemo(() => {
     return {
       groupSearch: groupFilter.mode === 'search' ? groupFilter.query : undefined,
@@ -2551,14 +2556,14 @@ export default function UpstreamAccountsPage() {
   }, [items, selectedAccountIds])
 
   useEffect(() => {
-    if (isTagCatalogLoading) {
+    if (!canSanitizeSelectedTagIds) {
       return
     }
     setSelectedTagIds((current) => {
       const next = current.filter((tagId) => validTagIds.has(tagId))
       return next.length === current.length ? current : next
     })
-  }, [isTagCatalogLoading, validTagIds])
+  }, [canSanitizeSelectedTagIds, validTagIds])
 
   useEffect(() => {
     persistUpstreamAccountFilters({

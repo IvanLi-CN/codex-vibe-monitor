@@ -1685,6 +1685,54 @@ describe("UpstreamAccountsPage duplicates", () => {
     });
   });
 
+  it("keeps persisted tag ids when the tag catalog request fails", () => {
+    hookMocks.usePoolTags.mockReturnValue({
+      items: [],
+      writesEnabled: true,
+      isLoading: false,
+      error: "tags unavailable",
+      query: {},
+      refresh: vi.fn(),
+      updateQuery: vi.fn(),
+      createTag: vi.fn(),
+      updateTag: vi.fn(),
+      deleteTag: vi.fn(),
+    });
+    mockAccountsPage();
+    writeStoredUpstreamFilters({
+      workStatus: [],
+      enableStatus: [],
+      healthStatus: [],
+      tagIds: [1],
+      groupFilter: {
+        mode: "all",
+      },
+    });
+
+    render("/account-pool/upstream-accounts");
+
+    expectRosterHookQuery({
+      groupSearch: undefined,
+      groupUngrouped: undefined,
+      workStatus: undefined,
+      enableStatus: undefined,
+      healthStatus: undefined,
+      page: 1,
+      pageSize: 20,
+      tagIds: [1],
+    });
+    expect(readStoredUpstreamFilters()).toEqual({
+      workStatus: [],
+      enableStatus: [],
+      healthStatus: [],
+      tagIds: [1],
+      groupFilter: {
+        mode: "all",
+        query: "",
+      },
+    });
+  });
+
   it("clips invalid persisted tag ids before querying and rewrites cleaned storage", () => {
     mockAccountsPage();
     writeStoredUpstreamFilters({
