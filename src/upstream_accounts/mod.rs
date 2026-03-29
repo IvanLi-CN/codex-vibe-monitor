@@ -1130,6 +1130,18 @@ pub(crate) struct RateWindowSnapshot {
     limit_text: String,
     resets_at: Option<String>,
     window_duration_mins: i64,
+    actual_usage: Option<RateWindowActualUsage>,
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RateWindowActualUsage {
+    request_count: i64,
+    total_tokens: i64,
+    total_cost: f64,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_input_tokens: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2211,6 +2223,61 @@ struct AccountLastActivityRow {
 }
 
 #[derive(Debug, Clone, FromRow)]
+struct AccountWindowUsageRow {
+    occurred_at: String,
+    upstream_account_id: i64,
+    input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+    cache_input_tokens: Option<i64>,
+    total_tokens: Option<i64>,
+    cost: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct AccountWindowUsageAccumulator {
+    request_count: i64,
+    total_tokens: i64,
+    total_cost: f64,
+    input_tokens: i64,
+    output_tokens: i64,
+    cache_input_tokens: i64,
+}
+
+impl AccountWindowUsageAccumulator {
+    fn add_row(&mut self, row: &AccountWindowUsageRow) {
+        self.request_count += 1;
+        self.total_tokens += row.total_tokens.unwrap_or_default();
+        self.total_cost += row.cost.unwrap_or_default();
+        self.input_tokens += row.input_tokens.unwrap_or_default();
+        self.output_tokens += row.output_tokens.unwrap_or_default();
+        self.cache_input_tokens += row.cache_input_tokens.unwrap_or_default();
+    }
+
+    fn into_snapshot(self) -> RateWindowActualUsage {
+        RateWindowActualUsage {
+            request_count: self.request_count,
+            total_tokens: self.total_tokens,
+            total_cost: self.total_cost,
+            input_tokens: self.input_tokens,
+            output_tokens: self.output_tokens,
+            cache_input_tokens: self.cache_input_tokens,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct AccountWindowUsagePlan {
+    primary_start_at: Option<String>,
+    secondary_start_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct AccountWindowUsageSummary {
+    primary: AccountWindowUsageAccumulator,
+    secondary: AccountWindowUsageAccumulator,
+}
+
+#[derive(Debug, Clone, FromRow)]
 struct UpstreamAccountActionEventRow {
     id: i64,
     occurred_at: String,
@@ -2959,7 +3026,7 @@ async fn list_upstream_accounts_from_params(
     let total = all_items.len();
     let metrics = build_upstream_account_list_metrics(&all_items);
     let offset = page.saturating_sub(1).saturating_mul(page_size);
-    let items = if offset >= total {
+    let mut items = if offset >= total {
         Vec::new()
     } else {
         all_items
@@ -2968,6 +3035,9 @@ async fn list_upstream_accounts_from_params(
             .take(page_size)
             .collect::<Vec<_>>()
     };
+    enrich_window_actual_usage_for_summaries(state.as_ref(), &mut items)
+        .await
+        .map_err(internal_error_tuple)?;
     let groups = load_upstream_account_groups(&state.pool)
         .await
         .map_err(internal_error_tuple)?;
@@ -3210,7 +3280,7 @@ pub(crate) async fn get_upstream_account(
     State(state): State<Arc<AppState>>,
     AxumPath(id): AxumPath<i64>,
 ) -> Result<Json<UpstreamAccountDetail>, (StatusCode, String)> {
-    let detail = load_upstream_account_detail(&state.pool, id)
+    let detail = load_upstream_account_detail_with_actual_usage(state.as_ref(), id)
         .await
         .map_err(internal_error_tuple)?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
@@ -5511,7 +5581,7 @@ pub(crate) async fn complete_oauth_login_session(
     let query = parse_manual_oauth_callback(&payload.callback_url, &session.redirect_uri)
         .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     let account_id = complete_oauth_login_session_with_query(state.clone(), session, query).await?;
-    let detail = load_upstream_account_detail(&state.pool, account_id)
+    let detail = load_upstream_account_detail_with_actual_usage(state.as_ref(), account_id)
         .await
         .map_err(internal_error_tuple)?
         .ok_or_else(|| {
@@ -5868,7 +5938,7 @@ async fn update_upstream_account_inner(
         .await
         .map_err(internal_error_tuple)?;
 
-    let detail = load_upstream_account_detail(&state.pool, id)
+    let detail = load_upstream_account_detail_with_actual_usage(state, id)
         .await
         .map_err(internal_error_tuple)?
         .ok_or_else(|| (StatusCode::NOT_FOUND, "account not found".to_string()))?;
@@ -6938,7 +7008,7 @@ async fn sync_upstream_account_by_id(
         if cause == SyncCause::Manual {
             bail!("disabled accounts cannot be synced");
         }
-        let detail = load_upstream_account_detail(&state.pool, id)
+        let detail = load_upstream_account_detail_with_actual_usage(state, id)
             .await?
             .ok_or_else(|| anyhow!("account not found"))?;
         return Ok(Some(detail));
@@ -6952,7 +7022,7 @@ async fn sync_upstream_account_by_id(
         _ => bail!("unsupported account kind: {}", row.kind),
     }
 
-    let detail = load_upstream_account_detail(&state.pool, id)
+    let detail = load_upstream_account_detail_with_actual_usage(state, id)
         .await?
         .ok_or_else(|| anyhow!("account not found after sync"))?;
     Ok(Some(detail))
@@ -8628,6 +8698,19 @@ async fn load_upstream_account_detail(
     }))
 }
 
+async fn load_upstream_account_detail_with_actual_usage(
+    state: &AppState,
+    id: i64,
+) -> Result<Option<UpstreamAccountDetail>> {
+    let mut detail = match load_upstream_account_detail(&state.pool, id).await? {
+        Some(detail) => detail,
+        None => return Ok(None),
+    };
+    enrich_window_actual_usage_for_summaries(state, std::slice::from_mut(&mut detail.summary))
+        .await?;
+    Ok(Some(detail))
+}
+
 async fn load_upstream_account_row(
     pool: &Pool<Sqlite>,
     id: i64,
@@ -8867,6 +8950,310 @@ fn build_summary_from_row(
         duplicate_info,
         tags,
         effective_routing_rule,
+    }
+}
+
+async fn enrich_window_actual_usage_for_summaries(
+    state: &AppState,
+    items: &mut [UpstreamAccountSummary],
+) -> Result<()> {
+    if items.is_empty() || !sqlite_table_exists(&state.pool, "codex_invocations").await? {
+        return Ok(());
+    }
+
+    let now = Utc::now();
+    let Some((plans, max_window_duration_mins)) = collect_account_window_usage_plans(items, now)
+    else {
+        return Ok(());
+    };
+    let account_ids = plans.keys().copied().collect::<Vec<_>>();
+    if account_ids.is_empty() {
+        return Ok(());
+    }
+
+    let query_end_at = format_naive(now.with_timezone(&Shanghai).naive_local());
+    let query_start = now - ChronoDuration::minutes(max_window_duration_mins);
+    let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
+    let mut rows = Vec::new();
+
+    let live_start = query_start.max(retention_cutoff);
+    let live_start_at = format_naive(live_start.with_timezone(&Shanghai).naive_local());
+    rows.extend(
+        load_window_actual_usage_rows_from_pool(
+            &state.pool,
+            &account_ids,
+            &live_start_at,
+            &query_end_at,
+            None,
+        )
+        .await?,
+    );
+
+    if query_start < retention_cutoff {
+        let archive_end_at = format_naive(
+            (retention_cutoff - ChronoDuration::seconds(1))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        let query_start_at = format_naive(query_start.with_timezone(&Shanghai).naive_local());
+        rows.extend(
+            load_window_actual_usage_rows_from_archives(
+                &state.pool,
+                &account_ids,
+                &query_start_at,
+                &archive_end_at,
+                &state.config.archive_dir,
+            )
+            .await?,
+        );
+    }
+
+    let usage = fold_account_window_usage_rows(rows, &plans);
+    apply_window_actual_usage_to_summaries(items, &usage);
+    Ok(())
+}
+
+fn collect_account_window_usage_plans(
+    items: &[UpstreamAccountSummary],
+    now: DateTime<Utc>,
+) -> Option<(HashMap<i64, AccountWindowUsagePlan>, i64)> {
+    let mut plans = HashMap::new();
+    let mut max_window_duration_mins = 0_i64;
+
+    for item in items {
+        let primary_start_at = item
+            .primary_window
+            .as_ref()
+            .and_then(|window| build_window_start_at(now, window.window_duration_mins));
+        let secondary_start_at = item
+            .secondary_window
+            .as_ref()
+            .and_then(|window| build_window_start_at(now, window.window_duration_mins));
+        if primary_start_at.is_none() && secondary_start_at.is_none() {
+            continue;
+        }
+        if let Some(window) = item.primary_window.as_ref() {
+            max_window_duration_mins =
+                max_window_duration_mins.max(window.window_duration_mins.max(0));
+        }
+        if let Some(window) = item.secondary_window.as_ref() {
+            max_window_duration_mins =
+                max_window_duration_mins.max(window.window_duration_mins.max(0));
+        }
+        plans.insert(
+            item.id,
+            AccountWindowUsagePlan {
+                primary_start_at,
+                secondary_start_at,
+            },
+        );
+    }
+
+    if plans.is_empty() || max_window_duration_mins <= 0 {
+        return None;
+    }
+    Some((plans, max_window_duration_mins))
+}
+
+fn build_window_start_at(now: DateTime<Utc>, window_duration_mins: i64) -> Option<String> {
+    if window_duration_mins <= 0 {
+        return None;
+    }
+    Some(format_naive(
+        (now - ChronoDuration::minutes(window_duration_mins))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    ))
+}
+
+async fn load_window_actual_usage_rows_from_pool(
+    pool: &Pool<Sqlite>,
+    account_ids: &[i64],
+    start_at: &str,
+    end_at: &str,
+    end_before: Option<&str>,
+) -> Result<Vec<AccountWindowUsageRow>> {
+    if account_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let upstream_account_id_sql = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            occurred_at,
+        "#,
+    );
+    query
+        .push(upstream_account_id_sql)
+        .push(
+            r#"
+            AS upstream_account_id,
+            input_tokens,
+            output_tokens,
+            cache_input_tokens,
+            total_tokens,
+            cost
+        FROM codex_invocations
+        WHERE occurred_at >=
+        "#,
+        )
+        .push_bind(start_at)
+        .push(" AND occurred_at <= ")
+        .push_bind(end_at)
+        .push(" AND ")
+        .push(upstream_account_id_sql)
+        .push(" IS NOT NULL");
+
+    if let Some(end_before) = end_before {
+        query.push(" AND occurred_at < ").push_bind(end_before);
+    }
+
+    query
+        .push(" AND ")
+        .push(upstream_account_id_sql)
+        .push(" IN (");
+    {
+        let mut separated = query.separated(", ");
+        for account_id in account_ids {
+            separated.push_bind(account_id);
+        }
+    }
+    query.push(") ORDER BY occurred_at ASC");
+
+    query
+        .build_query_as::<AccountWindowUsageRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}
+
+async fn load_window_actual_usage_rows_from_archives(
+    pool: &Pool<Sqlite>,
+    account_ids: &[i64],
+    start_at: &str,
+    end_at: &str,
+    archive_dir: &Path,
+) -> Result<Vec<AccountWindowUsageRow>> {
+    if account_ids.is_empty() || !sqlite_table_exists(pool, "archive_batches").await? {
+        return Ok(Vec::new());
+    }
+
+    let archive_files = sqlx::query_as::<_, ArchiveBatchFileRow>(
+        r#"
+        SELECT id, file_path, coverage_start_at, coverage_end_at
+        FROM archive_batches
+        WHERE dataset = 'codex_invocations'
+          AND status = ?1
+          AND (coverage_end_at IS NULL OR coverage_end_at >= ?2)
+          AND (coverage_start_at IS NULL OR coverage_start_at <= ?3)
+        ORDER BY month_key DESC, day_key DESC, part_key DESC, created_at DESC, id DESC
+        "#,
+    )
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(start_at)
+    .bind(end_at)
+    .fetch_all(pool)
+    .await?;
+
+    let mut rows = Vec::new();
+    for archive_file in archive_files {
+        let archive_path = resolve_archive_batch_path(archive_dir, &archive_file.file_path);
+        if !archive_path.exists() {
+            warn!(
+                file_path = %archive_path.display(),
+                "skipping missing invocation archive batch while calculating account window usage"
+            );
+            continue;
+        }
+
+        let temp_path = PathBuf::from(format!(
+            "{}.{}.sqlite",
+            archive_path.display(),
+            retention_temp_suffix()
+        ));
+        if temp_path.exists() {
+            let _ = fs::remove_file(&temp_path);
+        }
+        let temp_cleanup = TempSqliteCleanup(temp_path.clone());
+        inflate_gzip_sqlite_file(&archive_path, &temp_path)?;
+        let archive_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect(&sqlite_url_for_path(&temp_path))
+            .await
+            .with_context(|| format!("failed to open archive batch {}", archive_path.display()))?;
+        rows.extend(
+            load_window_actual_usage_rows_from_pool(
+                &archive_pool,
+                account_ids,
+                start_at,
+                end_at,
+                None,
+            )
+            .await?,
+        );
+        archive_pool.close().await;
+        drop(temp_cleanup);
+    }
+
+    Ok(rows)
+}
+
+fn resolve_archive_batch_path(archive_dir: &Path, file_path: &str) -> PathBuf {
+    let path = PathBuf::from(file_path);
+    if path.is_absolute() {
+        path
+    } else {
+        archive_dir.join(path)
+    }
+}
+
+fn fold_account_window_usage_rows(
+    rows: Vec<AccountWindowUsageRow>,
+    plans: &HashMap<i64, AccountWindowUsagePlan>,
+) -> HashMap<i64, AccountWindowUsageSummary> {
+    let mut usage = plans
+        .keys()
+        .copied()
+        .map(|account_id| (account_id, AccountWindowUsageSummary::default()))
+        .collect::<HashMap<_, _>>();
+
+    for row in rows {
+        let Some(plan) = plans.get(&row.upstream_account_id) else {
+            continue;
+        };
+        let entry = usage.entry(row.upstream_account_id).or_default();
+        if plan
+            .primary_start_at
+            .as_deref()
+            .is_some_and(|start_at| row.occurred_at.as_str() >= start_at)
+        {
+            entry.primary.add_row(&row);
+        }
+        if plan
+            .secondary_start_at
+            .as_deref()
+            .is_some_and(|start_at| row.occurred_at.as_str() >= start_at)
+        {
+            entry.secondary.add_row(&row);
+        }
+    }
+
+    usage
+}
+
+fn apply_window_actual_usage_to_summaries(
+    items: &mut [UpstreamAccountSummary],
+    usage: &HashMap<i64, AccountWindowUsageSummary>,
+) {
+    for item in items {
+        let account_usage = usage.get(&item.id).copied().unwrap_or_default();
+        if let Some(window) = item.primary_window.as_mut() {
+            window.actual_usage = Some(account_usage.primary.into_snapshot());
+        }
+        if let Some(window) = item.secondary_window.as_mut() {
+            window.actual_usage = Some(account_usage.secondary.into_snapshot());
+        }
     }
 }
 
@@ -11294,6 +11681,7 @@ fn build_api_key_window(
         limit_text,
         resets_at: None,
         window_duration_mins,
+        actual_usage: None,
     })
 }
 
@@ -11310,6 +11698,7 @@ fn build_window_snapshot(
         limit_text: format_window_label(window_duration_mins),
         resets_at: resets_at.map(ToOwned::to_owned),
         window_duration_mins,
+        actual_usage: None,
     })
 }
 
@@ -15000,7 +15389,7 @@ mod tests {
     use sqlx::SqlitePool;
     use std::{
         collections::HashMap,
-        path::PathBuf,
+        path::{Path, PathBuf},
         sync::{Arc, atomic::AtomicUsize},
         time::Duration,
     };
@@ -16121,6 +16510,13 @@ mod tests {
         let mut config = usage_snapshot_test_config(usage_base_url, user_agent);
         config.upstream_accounts_oauth_issuer =
             Url::parse(oauth_issuer).expect("valid oauth issuer");
+        test_app_state_with_config_and_parallelism(config, maintenance_parallelism).await
+    }
+
+    async fn test_app_state_with_config_and_parallelism(
+        config: AppConfig,
+        maintenance_parallelism: usize,
+    ) -> Arc<AppState> {
         let http_clients = HttpClients::build(&config).expect("build http clients");
         let (broadcaster, _) = broadcast::channel(8);
         Arc::new(AppState {
@@ -16168,6 +16564,235 @@ mod tests {
                 ),
             ),
         })
+    }
+
+    async fn ensure_window_actual_usage_test_tables(pool: &SqlitePool) {
+        sqlx::query(&codex_invocations_create_sql("codex_invocations"))
+            .execute(pool)
+            .await
+            .expect("create codex_invocations table");
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS archive_batches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                dataset TEXT NOT NULL,
+                month_key TEXT NOT NULL,
+                day_key TEXT,
+                part_key TEXT,
+                file_path TEXT NOT NULL,
+                status TEXT NOT NULL,
+                coverage_start_at TEXT,
+                coverage_end_at TEXT,
+                created_at TEXT NOT NULL
+            )
+            "#,
+        )
+        .execute(pool)
+        .await
+        .expect("create archive_batches table");
+    }
+
+    fn shanghai_local_iso(timestamp: DateTime<Utc>) -> String {
+        format_naive(timestamp.with_timezone(&Shanghai).naive_local())
+    }
+
+    async fn insert_window_actual_usage_invocation(
+        pool: &SqlitePool,
+        account_id: i64,
+        occurred_at: &str,
+        input_tokens: Option<i64>,
+        output_tokens: Option<i64>,
+        cache_input_tokens: Option<i64>,
+        total_tokens: Option<i64>,
+        cost: Option<f64>,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                input_tokens,
+                output_tokens,
+                cache_input_tokens,
+                total_tokens,
+                cost,
+                status,
+                payload,
+                raw_response,
+                created_at
+            ) VALUES (
+                ?1,
+                ?2,
+                'test',
+                ?3,
+                ?4,
+                ?5,
+                ?6,
+                ?7,
+                'completed',
+                ?8,
+                '{}',
+                ?2
+            )
+            "#,
+        )
+        .bind(format!("invoke-{}", random_base36(10).expect("invoke id")))
+        .bind(occurred_at)
+        .bind(input_tokens)
+        .bind(output_tokens)
+        .bind(cache_input_tokens)
+        .bind(total_tokens)
+        .bind(cost)
+        .bind(json!({ "upstreamAccountId": account_id }).to_string())
+        .execute(pool)
+        .await
+        .expect("insert codex_invocations row");
+    }
+
+    async fn seed_window_actual_usage_archive_batch(
+        pool: &SqlitePool,
+        archive_dir: &Path,
+        batch_name: &str,
+        rows: &[(
+            i64,
+            String,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<i64>,
+            Option<f64>,
+        )],
+    ) -> PathBuf {
+        std::fs::create_dir_all(archive_dir).expect("create archive dir");
+        let archive_db_path = archive_dir.join(format!("{batch_name}.sqlite"));
+        let archive_gzip_path = archive_dir.join(format!("{batch_name}.sqlite.gz"));
+        let _ = std::fs::remove_file(&archive_db_path);
+        let _ = std::fs::remove_file(&archive_gzip_path);
+        std::fs::File::create(&archive_db_path).expect("create archive sqlite");
+
+        let archive_pool = SqlitePool::connect(&sqlite_url_for_path(&archive_db_path))
+            .await
+            .expect("open archive sqlite");
+        let create_sql = CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL.replace("archive_db.", "");
+        sqlx::query(&create_sql)
+            .execute(&archive_pool)
+            .await
+            .expect("create archive codex_invocations");
+
+        for (index, row) in rows.iter().enumerate() {
+            sqlx::query(
+                r#"
+                INSERT INTO codex_invocations (
+                    id,
+                    invoke_id,
+                    occurred_at,
+                    source,
+                    input_tokens,
+                    output_tokens,
+                    cache_input_tokens,
+                    total_tokens,
+                    cost,
+                    status,
+                    payload,
+                    raw_response,
+                    created_at
+                ) VALUES (
+                    ?1,
+                    ?2,
+                    ?3,
+                    'test',
+                    ?4,
+                    ?5,
+                    ?6,
+                    ?7,
+                    ?8,
+                    'completed',
+                    ?9,
+                    '{}',
+                    ?3
+                )
+                "#,
+            )
+            .bind(index as i64 + 1)
+            .bind(format!(
+                "archived-invoke-{}",
+                random_base36(10).expect("archive invoke id")
+            ))
+            .bind(&row.1)
+            .bind(row.2)
+            .bind(row.3)
+            .bind(row.4)
+            .bind(row.5)
+            .bind(row.6)
+            .bind(json!({ "upstreamAccountId": row.0 }).to_string())
+            .execute(&archive_pool)
+            .await
+            .expect("insert archive codex_invocations row");
+        }
+
+        archive_pool.close().await;
+        deflate_sqlite_file_to_gzip(&archive_db_path, &archive_gzip_path)
+            .expect("compress archive sqlite");
+
+        let coverage_start_at = rows
+            .iter()
+            .map(|row| row.1.as_str())
+            .min()
+            .expect("archive coverage start");
+        let coverage_end_at = rows
+            .iter()
+            .map(|row| row.1.as_str())
+            .max()
+            .expect("archive coverage end");
+        let month_key = &coverage_start_at[..7];
+        let day_key = &coverage_start_at[..10];
+
+        sqlx::query(
+            r#"
+            INSERT INTO archive_batches (
+                dataset,
+                month_key,
+                day_key,
+                part_key,
+                file_path,
+                status,
+                coverage_start_at,
+                coverage_end_at,
+                created_at
+            ) VALUES (
+                'codex_invocations',
+                ?1,
+                ?2,
+                'part-000',
+                ?3,
+                ?4,
+                ?5,
+                ?6,
+                ?7
+            )
+            "#,
+        )
+        .bind(month_key)
+        .bind(day_key)
+        .bind(format!("{batch_name}.sqlite.gz"))
+        .bind(ARCHIVE_STATUS_COMPLETED)
+        .bind(coverage_start_at)
+        .bind(coverage_end_at)
+        .bind(coverage_end_at)
+        .execute(pool)
+        .await
+        .expect("insert archive batch manifest");
+
+        archive_gzip_path
+    }
+
+    fn assert_cost_close(actual: f64, expected: f64) {
+        let diff = (actual - expected).abs();
+        assert!(
+            diff < 1e-9,
+            "expected {expected}, got {actual}, diff={diff}"
+        );
     }
 
     #[derive(Clone)]
@@ -23915,5 +24540,265 @@ mod tests {
         );
         assert!(token.chars().any(|ch| ch.is_ascii_lowercase()));
         assert!(token.chars().any(|ch| ch.is_ascii_digit()));
+    }
+
+    #[tokio::test]
+    async fn enrich_window_actual_usage_for_summaries_counts_live_window_rows() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        ensure_window_actual_usage_test_tables(&state.pool).await;
+
+        let account_id = insert_oauth_account(&state.pool, "Live Usage OAuth").await;
+        insert_limit_sample_with_usage(
+            &state.pool,
+            account_id,
+            &format_utc_iso(Utc::now()),
+            Some(27.0),
+            Some(61.0),
+        )
+        .await;
+
+        let primary_row_at = shanghai_local_iso(Utc::now() - ChronoDuration::minutes(45));
+        let secondary_row_at = shanghai_local_iso(Utc::now() - ChronoDuration::days(2));
+        let failed_row_at = shanghai_local_iso(Utc::now() - ChronoDuration::minutes(10));
+
+        insert_window_actual_usage_invocation(
+            &state.pool,
+            account_id,
+            &primary_row_at,
+            Some(2400),
+            Some(1200),
+            Some(600),
+            Some(4200),
+            Some(0.042),
+        )
+        .await;
+        insert_window_actual_usage_invocation(
+            &state.pool,
+            account_id,
+            &secondary_row_at,
+            Some(1000),
+            Some(500),
+            Some(250),
+            Some(1750),
+            Some(0.0175),
+        )
+        .await;
+        insert_window_actual_usage_invocation(
+            &state.pool,
+            account_id,
+            &failed_row_at,
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await;
+        insert_window_actual_usage_invocation(
+            &state.pool,
+            account_id + 999,
+            &primary_row_at,
+            Some(999),
+            Some(999),
+            Some(999),
+            Some(2997),
+            Some(0.2997),
+        )
+        .await;
+
+        let mut summaries = load_upstream_account_summaries(&state.pool)
+            .await
+            .expect("load upstream account summaries");
+        enrich_window_actual_usage_for_summaries(state.as_ref(), &mut summaries)
+            .await
+            .expect("enrich actual usage");
+
+        let summary = summaries
+            .into_iter()
+            .find(|item| item.id == account_id)
+            .expect("summary exists");
+        let primary_usage = summary
+            .primary_window
+            .and_then(|window| window.actual_usage)
+            .expect("primary actual usage");
+        let secondary_usage = summary
+            .secondary_window
+            .and_then(|window| window.actual_usage)
+            .expect("secondary actual usage");
+
+        assert_eq!(primary_usage.request_count, 2);
+        assert_eq!(primary_usage.total_tokens, 4200);
+        assert_eq!(primary_usage.input_tokens, 2400);
+        assert_eq!(primary_usage.output_tokens, 1200);
+        assert_eq!(primary_usage.cache_input_tokens, 600);
+        assert_cost_close(primary_usage.total_cost, 0.042);
+
+        assert_eq!(secondary_usage.request_count, 3);
+        assert_eq!(secondary_usage.total_tokens, 5950);
+        assert_eq!(secondary_usage.input_tokens, 3400);
+        assert_eq!(secondary_usage.output_tokens, 1700);
+        assert_eq!(secondary_usage.cache_input_tokens, 850);
+        assert_cost_close(secondary_usage.total_cost, 0.0595);
+    }
+
+    #[tokio::test]
+    async fn enrich_window_actual_usage_for_summaries_reads_archived_rows_past_retention_cutoff() {
+        let mut config =
+            usage_snapshot_test_config("http://127.0.0.1:9", "codex-vibe-monitor/test");
+        config.invocation_max_days = 1;
+        config.archive_dir = PathBuf::from(format!(
+            "target/archive-tests/window-actual-usage-{}",
+            random_base36(8).expect("archive suffix")
+        ));
+        let state = test_app_state_with_config_and_parallelism(
+            config,
+            DEFAULT_UPSTREAM_ACCOUNTS_MAINTENANCE_PARALLELISM,
+        )
+        .await;
+        ensure_window_actual_usage_test_tables(&state.pool).await;
+
+        let account_id = 401_i64;
+        let mut summary = test_summary_with_statuses(
+            UPSTREAM_ACCOUNT_WORK_STATUS_IDLE,
+            UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED,
+            UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL,
+            UPSTREAM_ACCOUNT_SYNC_STATE_IDLE,
+        );
+        summary.id = account_id;
+        summary.primary_window = Some(RateWindowSnapshot {
+            used_percent: 12.0,
+            used_text: "12% used".to_string(),
+            limit_text: "3d rolling window".to_string(),
+            resets_at: None,
+            window_duration_mins: 60 * 24 * 3,
+            actual_usage: None,
+        });
+
+        let live_row_at = shanghai_local_iso(Utc::now() - ChronoDuration::hours(6));
+        let archived_row_at = shanghai_local_iso(Utc::now() - ChronoDuration::days(2));
+        insert_window_actual_usage_invocation(
+            &state.pool,
+            account_id,
+            &live_row_at,
+            Some(1800),
+            Some(900),
+            Some(300),
+            Some(3000),
+            Some(0.03),
+        )
+        .await;
+        seed_window_actual_usage_archive_batch(
+            &state.pool,
+            &state.config.archive_dir,
+            "window-actual-usage-archive",
+            &[(
+                account_id,
+                archived_row_at,
+                Some(1200),
+                Some(600),
+                Some(200),
+                Some(2000),
+                Some(0.02),
+            )],
+        )
+        .await;
+
+        let mut items = vec![summary];
+        enrich_window_actual_usage_for_summaries(state.as_ref(), &mut items)
+            .await
+            .expect("enrich actual usage with archive rows");
+
+        let usage = items[0]
+            .primary_window
+            .as_ref()
+            .and_then(|window| window.actual_usage)
+            .expect("primary actual usage");
+        assert_eq!(usage.request_count, 2);
+        assert_eq!(usage.total_tokens, 5000);
+        assert_eq!(usage.input_tokens, 3000);
+        assert_eq!(usage.output_tokens, 1500);
+        assert_eq!(usage.cache_input_tokens, 500);
+        assert_cost_close(usage.total_cost, 0.05);
+    }
+
+    #[tokio::test]
+    async fn load_upstream_account_detail_with_actual_usage_serializes_actual_usage_camel_case() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        ensure_window_actual_usage_test_tables(&state.pool).await;
+
+        let account_id = insert_oauth_account(&state.pool, "Detail Usage OAuth").await;
+        insert_limit_sample_with_usage(
+            &state.pool,
+            account_id,
+            &format_utc_iso(Utc::now()),
+            Some(33.0),
+            Some(55.0),
+        )
+        .await;
+
+        let primary_row_at = shanghai_local_iso(Utc::now() - ChronoDuration::minutes(25));
+        let secondary_row_at = shanghai_local_iso(Utc::now() - ChronoDuration::days(1));
+        insert_window_actual_usage_invocation(
+            &state.pool,
+            account_id,
+            &primary_row_at,
+            Some(2100),
+            Some(900),
+            Some(300),
+            Some(3300),
+            Some(0.033),
+        )
+        .await;
+        insert_window_actual_usage_invocation(
+            &state.pool,
+            account_id,
+            &secondary_row_at,
+            Some(700),
+            Some(200),
+            Some(100),
+            Some(1000),
+            Some(0.01),
+        )
+        .await;
+
+        let detail = load_upstream_account_detail_with_actual_usage(state.as_ref(), account_id)
+            .await
+            .expect("load detail with actual usage")
+            .expect("detail exists");
+        let primary_usage = detail
+            .summary
+            .primary_window
+            .as_ref()
+            .and_then(|window| window.actual_usage)
+            .expect("primary actual usage");
+        let secondary_usage = detail
+            .summary
+            .secondary_window
+            .as_ref()
+            .and_then(|window| window.actual_usage)
+            .expect("secondary actual usage");
+
+        assert_eq!(primary_usage.request_count, 1);
+        assert_eq!(primary_usage.total_tokens, 3300);
+        assert_cost_close(primary_usage.total_cost, 0.033);
+
+        assert_eq!(secondary_usage.request_count, 2);
+        assert_eq!(secondary_usage.total_tokens, 4300);
+        assert_cost_close(secondary_usage.total_cost, 0.043);
+
+        let payload = serde_json::to_value(&detail).expect("serialize detail payload");
+        assert_eq!(payload["primaryWindow"]["actualUsage"]["requestCount"], 1);
+        assert_eq!(payload["primaryWindow"]["actualUsage"]["totalTokens"], 3300);
+        assert_eq!(payload["primaryWindow"]["actualUsage"]["inputTokens"], 2100);
+        assert_eq!(payload["primaryWindow"]["actualUsage"]["outputTokens"], 900);
+        assert_eq!(
+            payload["primaryWindow"]["actualUsage"]["cacheInputTokens"],
+            300
+        );
+        assert_eq!(payload["secondaryWindow"]["actualUsage"]["requestCount"], 2);
+        assert_eq!(
+            payload["secondaryWindow"]["actualUsage"]["totalTokens"],
+            4300
+        );
     }
 }

@@ -37,6 +37,24 @@ const rosterTags: AccountTagSummary[] = [
   },
 ]
 
+function usage(
+  requestCount: number,
+  totalTokens: number,
+  totalCost: number,
+  inputTokens: number,
+  outputTokens: number,
+  cacheInputTokens: number,
+) {
+  return {
+    requestCount,
+    totalTokens,
+    totalCost,
+    inputTokens,
+    outputTokens,
+    cacheInputTokens,
+  }
+}
+
 const items: UpstreamAccountSummary[] = [
   {
     id: 11,
@@ -71,6 +89,7 @@ const items: UpstreamAccountSummary[] = [
       limitText: '5h rolling window',
       resetsAt: '2026-03-11T14:00:00.000Z',
       windowDurationMins: 300,
+      actualUsage: usage(19, 48210, 0.4284, 28140, 16410, 3660),
     },
     secondaryWindow: {
       usedPercent: 18,
@@ -78,6 +97,7 @@ const items: UpstreamAccountSummary[] = [
       limitText: '7d rolling window',
       resetsAt: '2026-03-14T00:00:00.000Z',
       windowDurationMins: 10080,
+      actualUsage: usage(73, 182340, 1.6234, 103220, 67480, 11640),
     },
     credits: {
       hasCredits: true,
@@ -117,6 +137,7 @@ const items: UpstreamAccountSummary[] = [
       limitText: '120 requests',
       resetsAt: '2026-03-11T13:00:00.000Z',
       windowDurationMins: 300,
+      actualUsage: usage(0, 0, 0, 0, 0, 0),
     },
     secondaryWindow: {
       usedPercent: 0,
@@ -124,6 +145,7 @@ const items: UpstreamAccountSummary[] = [
       limitText: '500 requests',
       resetsAt: '2026-03-18T00:00:00.000Z',
       windowDurationMins: 10080,
+      actualUsage: usage(0, 0, 0, 0, 0, 0),
     },
     credits: {
       hasCredits: false,
@@ -162,6 +184,12 @@ const labels = {
   secondaryShort: '7d',
   nextReset: 'Reset',
   unknown: 'Unknown',
+  requestsMetric: 'Req',
+  tokensMetric: 'Token',
+  costMetric: 'Cost',
+  inputTokensMetric: 'Input',
+  outputTokensMetric: 'Output',
+  cacheInputTokensMetric: 'Cached input',
   unavailable: 'Unavailable',
   oauth: 'OAuth',
   apiKey: 'API key',
@@ -233,6 +261,12 @@ const chineseLabels = {
   windows: '窗口',
   never: '从未',
   unknown: '未知',
+  requestsMetric: '请求',
+  tokensMetric: 'Token',
+  costMetric: '金额',
+  inputTokensMetric: '输入',
+  outputTokensMetric: '输出',
+  cacheInputTokensMetric: '缓存输入',
   unavailable: '不可用',
   oauth: 'OAuth',
   apiKey: 'API Key',
@@ -406,6 +440,7 @@ export const MissingSecondaryWindow: Story = {
           limitText: '120 requests',
           resetsAt: '2026-03-11T13:00:00.000Z',
           windowDurationMins: 300,
+          actualUsage: usage(6, 12450, 0.0812, 7320, 4330, 800),
         },
         secondaryWindow: null,
         localLimits: {

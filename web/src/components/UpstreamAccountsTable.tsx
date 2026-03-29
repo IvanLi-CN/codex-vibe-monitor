@@ -4,6 +4,7 @@ import { MotherAccountBadge } from './MotherAccountToggle'
 import { Badge } from './ui/badge'
 import { Tooltip } from './ui/tooltip'
 import type { AccountTagSummary, UpstreamAccountSummary } from '../lib/api'
+import { formatTokensShort } from '../lib/numberFormatters'
 import { upstreamPlanBadgeRecipe } from '../lib/upstreamAccountBadges'
 import { cn } from '../lib/utils'
 
@@ -36,6 +37,12 @@ interface UpstreamAccountsTableProps {
     secondaryShort: string
     nextReset: string
     nextResetCompact?: string
+    requestsMetric: string
+    tokensMetric: string
+    costMetric: string
+    inputTokensMetric: string
+    outputTokensMetric: string
+    cacheInputTokensMetric: string
     unknown: string
     unavailable: string
     oauth: string
@@ -112,6 +119,25 @@ function formatDateTime(value?: string | null, fallback = '—') {
     minute: '2-digit',
     hour12: false,
   }).format(date)
+}
+
+function numberLocale() {
+  return typeof navigator !== 'undefined' && navigator.language ? navigator.language : 'en-US'
+}
+
+function formatInteger(value: number) {
+  return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value)
+}
+
+function formatCost(value: number) {
+  const abs = Math.abs(value)
+  const maximumFractionDigits = abs >= 10 ? 2 : abs >= 1 ? 3 : 4
+  return new Intl.NumberFormat(undefined, {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: abs >= 10 ? 2 : 0,
+    maximumFractionDigits,
+  }).format(value)
 }
 
 function kindLabel(item: UpstreamAccountSummary, labels: UpstreamAccountsTableProps['labels']) {
@@ -292,20 +318,29 @@ function renderTagOverflowBadge(
 }
 
 function CompactWindowLine({
+  window,
   label,
   percent,
-  text,
   resetText,
+  metricLabels,
   missing,
   hideLabelWhenMissing,
   accentClassName,
   title,
   labelClassName,
 }: {
+  window?: UpstreamAccountSummary['primaryWindow']
   label: string
   percent: number
-  text: string
   resetText?: string
+  metricLabels: {
+    requests: string
+    tokens: string
+    cost: string
+    inputTokens: string
+    outputTokens: string
+    cacheInputTokens: string
+  }
   missing?: boolean
   hideLabelWhenMissing?: boolean
   accentClassName?: string
@@ -314,61 +349,114 @@ function CompactWindowLine({
 }) {
   const hideLabel = missing && hideLabelWhenMissing
   const displayLabel = hideLabel ? '' : label
-  const displayText = missing ? WINDOW_PLACEHOLDER : text
-  const displayResetText = missing ? WINDOW_PLACEHOLDER : (resetText ?? '—')
+  const displayResetText = missing ? WINDOW_PLACEHOLDER : (resetText ?? WINDOW_PLACEHOLDER)
+  const usage = window?.actualUsage ?? null
+  const displayRequests = missing || !usage ? WINDOW_PLACEHOLDER : formatInteger(usage.requestCount)
+  const displayTokens = missing || !usage ? WINDOW_PLACEHOLDER : formatTokensShort(usage.totalTokens, numberLocale())
+  const displayCost = missing || !usage ? WINDOW_PLACEHOLDER : formatCost(usage.totalCost)
+  const tokenTooltip = missing || !usage ? null : (
+    <div className="min-w-[12rem] space-y-1.5">
+      <div className="flex items-center justify-between gap-4">
+        <span className="text-[11px] font-medium text-base-content/72">{metricLabels.inputTokens}</span>
+        <span className="text-[11px] font-semibold font-mono tabular-nums text-base-content">{formatInteger(usage.inputTokens)}</span>
+      </div>
+      <div className="flex items-center justify-between gap-4">
+        <span className="text-[11px] font-medium text-base-content/72">{metricLabels.outputTokens}</span>
+        <span className="text-[11px] font-semibold font-mono tabular-nums text-base-content">{formatInteger(usage.outputTokens)}</span>
+      </div>
+      <div className="flex items-center justify-between gap-4">
+        <span className="text-[11px] font-medium text-base-content/72">{metricLabels.cacheInputTokens}</span>
+        <span className="text-[11px] font-semibold font-mono tabular-nums text-base-content">{formatInteger(usage.cacheInputTokens)}</span>
+      </div>
+    </div>
+  )
   const summary = missing
     ? WINDOW_PLACEHOLDER
-    : resetText
-      ? `${text} · ${resetText}`
-      : text
+    : `${displayRequests} · ${displayTokens} · ${displayCost}${resetText ? ` · ${resetText}` : ''}`
+  const renderMetric = ({
+    label,
+    value,
+    tooltip,
+  }: {
+    label: string
+    value: string
+    tooltip?: ReactNode | null
+  }) => {
+    const metric = (
+      <div className="inline-flex min-w-0 items-baseline gap-1.5">
+        <span className="shrink-0 text-[10px] font-semibold uppercase tracking-[0.06em] leading-4 text-base-content/45">
+          {label}
+        </span>
+        <span
+          className={
+            missing
+              ? 'truncate whitespace-nowrap text-[11px] leading-4 text-base-content/55 font-mono tabular-nums'
+              : 'truncate whitespace-nowrap text-[11px] leading-4 text-base-content/78 font-mono tabular-nums'
+          }
+        >
+          {value}
+        </span>
+      </div>
+    )
+    if (!tooltip || missing) return metric
+    return (
+      <Tooltip
+        content={tooltip}
+        triggerProps={{
+          tabIndex: 0,
+          'aria-label': `${label}: ${value}`,
+        }}
+      >
+        {metric}
+      </Tooltip>
+    )
+  }
 
   return (
     <div
-      className="grid grid-cols-[max-content,minmax(0,1fr),minmax(0,1fr)] items-center gap-x-2 gap-y-0.5 xl:grid-cols-[max-content,minmax(0,1fr),minmax(0,1fr),minmax(5rem,1fr)]"
+      className="grid grid-cols-[max-content,minmax(0,1fr)] items-start gap-x-2 gap-y-1"
       title={missing ? undefined : (title ?? summary)}
     >
       <span
         className={cn(
-          'min-w-[2ch] truncate whitespace-nowrap text-[10px] font-semibold uppercase tracking-[0.06em] leading-4 text-base-content/48 font-mono tabular-nums',
+          'row-span-2 min-w-[2ch] truncate whitespace-nowrap pt-0.5 text-[10px] font-semibold uppercase tracking-[0.06em] leading-4 text-base-content/48 font-mono tabular-nums',
           labelClassName,
         )}
       >
         {displayLabel}
       </span>
-      <span
-        className={
-          missing
-            ? 'truncate whitespace-nowrap text-[11px] leading-4 text-base-content/55 font-mono tabular-nums'
-            : 'truncate whitespace-nowrap text-[11px] leading-4 text-base-content/68 font-mono tabular-nums'
-        }
-      >
-        {displayText}
-      </span>
-      <span
-        className={
-          missing
-            ? 'truncate whitespace-nowrap text-[11px] leading-4 text-base-content/55 font-mono tabular-nums'
-            : 'truncate whitespace-nowrap text-[11px] leading-4 text-base-content/68 font-mono tabular-nums'
-        }
-      >
-        {displayResetText}
-      </span>
-      <div className="col-start-2 col-span-2 flex min-w-0 items-center gap-2 xl:col-start-4 xl:col-span-1">
-        <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-base-300/60">
-          <div
-            className={cn('h-full rounded-full bg-primary', accentClassName)}
-            style={{ width: `${missing ? 0 : percent}%` }}
-          />
-        </div>
+      <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+        {renderMetric({ label: metricLabels.requests, value: displayRequests })}
+        {renderMetric({ label: metricLabels.tokens, value: displayTokens, tooltip: tokenTooltip })}
+        {renderMetric({ label: metricLabels.cost, value: displayCost })}
+      </div>
+      <div className="flex min-w-0 items-center gap-2">
         <span
           className={
             missing
-              ? 'w-[2.75rem] shrink-0 text-right text-[11px] font-semibold leading-4 text-base-content/55 font-mono tabular-nums'
-              : 'w-[2.75rem] shrink-0 text-right text-[11px] font-semibold leading-4 text-base-content/78 font-mono tabular-nums'
+              ? 'truncate whitespace-nowrap text-[11px] leading-4 text-base-content/55 font-mono tabular-nums'
+              : 'truncate whitespace-nowrap text-[11px] leading-4 text-base-content/68 font-mono tabular-nums'
           }
         >
-          {missing ? WINDOW_PLACEHOLDER : `${Math.round(percent)}%`}
+          {displayResetText}
         </span>
+        <div className="flex min-w-0 flex-1 items-center gap-2">
+          <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-base-300/60">
+            <div
+              className={cn('h-full rounded-full bg-primary', accentClassName)}
+              style={{ width: `${missing ? 0 : percent}%` }}
+            />
+          </div>
+          <span
+            className={
+              missing
+                ? 'w-[2.75rem] shrink-0 text-right text-[11px] font-semibold leading-4 text-base-content/55 font-mono tabular-nums'
+                : 'w-[2.75rem] shrink-0 text-right text-[11px] font-semibold leading-4 text-base-content/78 font-mono tabular-nums'
+            }
+          >
+            {missing ? WINDOW_PLACEHOLDER : `${Math.round(percent)}%`}
+          </span>
+        </div>
       </div>
     </div>
   )
@@ -700,19 +788,35 @@ export function UpstreamAccountsTable({
                 <td className="pl-1 pr-3 py-3 align-middle">
                   <div className="space-y-1.5">
                     <CompactWindowLine
+                      window={item.primaryWindow}
                       label={primaryLabel}
                       percent={primary}
-                      text={item.primaryWindow?.usedText ?? WINDOW_PLACEHOLDER}
                       resetText={primaryResetText}
+                      metricLabels={{
+                        requests: labels.requestsMetric,
+                        tokens: labels.tokensMetric,
+                        cost: labels.costMetric,
+                        inputTokens: labels.inputTokensMetric,
+                        outputTokens: labels.outputTokensMetric,
+                        cacheInputTokens: labels.cacheInputTokensMetric,
+                      }}
                       missing={primaryWindowMissing}
                       title={primaryWindowTitle}
                       labelClassName={primaryWindowUnexpected ? 'text-warning/78' : undefined}
                     />
                     <CompactWindowLine
+                      window={item.secondaryWindow}
                       label={secondaryLabel}
                       percent={secondary}
-                      text={item.secondaryWindow?.usedText ?? WINDOW_PLACEHOLDER}
                       resetText={secondaryResetText}
+                      metricLabels={{
+                        requests: labels.requestsMetric,
+                        tokens: labels.tokensMetric,
+                        cost: labels.costMetric,
+                        inputTokens: labels.inputTokensMetric,
+                        outputTokens: labels.outputTokensMetric,
+                        cacheInputTokens: labels.cacheInputTokensMetric,
+                      }}
                       missing={secondaryWindowMissing}
                       hideLabelWhenMissing={item.localLimits?.secondaryLimit === null}
                       accentClassName="bg-secondary"

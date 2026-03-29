@@ -946,6 +946,129 @@ describe("account pool frontend API helpers", () => {
     expect(response.activeConversationCount).toBe(2);
   });
 
+  it("normalizes window actual usage from upstream account roster payloads", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(
+          JSON.stringify({
+            writesEnabled: true,
+            groups: [],
+            hasUngroupedAccounts: false,
+            items: [
+              {
+                id: 1,
+                kind: "oauth_codex",
+                provider: "codex",
+                displayName: "Usage OAuth",
+                isMother: false,
+                status: "active",
+                enabled: true,
+                primaryWindow: {
+                  usedPercent: 42,
+                  usedText: "42% used",
+                  limitText: "5h rolling window",
+                  resetsAt: "2026-03-29T14:27:00.000Z",
+                  windowDurationMins: 300,
+                  actualUsage: {
+                    requestCount: 17,
+                    totalTokens: 48210,
+                    totalCost: 0.4284,
+                    inputTokens: 28140,
+                    outputTokens: 16410,
+                    cacheInputTokens: 3660,
+                  },
+                },
+                secondaryWindow: {
+                  usedPercent: 18,
+                  usedText: "18% used",
+                  limitText: "7d rolling window",
+                  resetsAt: "2026-04-05T14:27:00.000Z",
+                  windowDurationMins: 10080,
+                  actualUsage: {
+                    requestCount: 73,
+                    totalTokens: 182340,
+                    totalCost: 1.6234,
+                    inputTokens: 103220,
+                    outputTokens: 67480,
+                    cacheInputTokens: 11640,
+                  },
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch,
+    );
+
+    const response = await fetchUpstreamAccounts();
+
+    expect(response.items[0]?.primaryWindow?.actualUsage).toEqual({
+      requestCount: 17,
+      totalTokens: 48210,
+      totalCost: 0.4284,
+      inputTokens: 28140,
+      outputTokens: 16410,
+      cacheInputTokens: 3660,
+    });
+    expect(response.items[0]?.secondaryWindow?.actualUsage).toEqual({
+      requestCount: 73,
+      totalTokens: 182340,
+      totalCost: 1.6234,
+      inputTokens: 103220,
+      outputTokens: 67480,
+      cacheInputTokens: 11640,
+    });
+  });
+
+  it("normalizes window actual usage from upstream account detail payloads", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(
+          JSON.stringify({
+            id: 9,
+            kind: "oauth_codex",
+            provider: "codex",
+            displayName: "Detail OAuth",
+            isMother: false,
+            status: "active",
+            enabled: true,
+            primaryWindow: {
+              usedPercent: 9,
+              usedText: "9% used",
+              limitText: "5h rolling window",
+              resetsAt: "2026-03-29T14:27:00.000Z",
+              windowDurationMins: 300,
+              actualUsage: {
+                requestCount: 4,
+                totalTokens: 12144,
+                totalCost: 0.1042,
+                inputTokens: 7056,
+                outputTokens: 4032,
+                cacheInputTokens: 1056,
+              },
+            },
+            history: [],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch,
+    );
+
+    const response = await fetchUpstreamAccountDetail(9);
+
+    expect(response.primaryWindow?.actualUsage).toEqual({
+      requestCount: 4,
+      totalTokens: 12144,
+      totalCost: 0.1042,
+      inputTokens: 7056,
+      outputTokens: 4032,
+      cacheInputTokens: 1056,
+    });
+  });
+
   it("serializes upstream account roster filters into the query string", async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL) => {
       expect(String(_input)).toContain(
