@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 已实现，待截图提交授权 / PR 收敛
+- Status: 已实现，PR 收敛中
 - Created: 2026-03-30
 - Last: 2026-03-30
 
@@ -117,5 +117,5 @@
 ## 变更记录
 
 - 2026-03-30: 创建 spec，冻结分组级上游 `429` 重试的 schema、接口、运行时与 UI 验收口径。
-- 2026-03-30: 完成 schema / API / pool runtime / Storybook UI 实现，补充本地视觉证据，等待主人确认是否允许随代码一并提交并推进 PR。
+- 2026-03-30: 完成 schema / API / pool runtime / Storybook UI 实现，并补充本地视觉证据。
 - 2026-03-30: 合入 `origin/main` 的上游账号筛选持久化基线后，重新完成前端门禁与 Storybook 证据抓取，并将截图授权状态切换为 `approved`。
