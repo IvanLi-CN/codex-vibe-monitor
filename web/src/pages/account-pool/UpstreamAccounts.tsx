@@ -28,6 +28,7 @@ import { Switch } from '../../components/ui/switch'
 import { AccountTagField } from '../../components/AccountTagField'
 import { AccountTagFilterCombobox } from '../../components/AccountTagFilterCombobox'
 import { EffectiveRoutingRuleCard } from '../../components/EffectiveRoutingRuleCard'
+import { MultiSelectFilterCombobox } from '../../components/MultiSelectFilterCombobox'
 import { UpstreamAccountGroupCombobox } from '../../components/UpstreamAccountGroupCombobox'
 import { UpstreamAccountGroupNoteDialog } from '../../components/UpstreamAccountGroupNoteDialog'
 import { UpstreamAccountUsageCard } from '../../components/UpstreamAccountUsageCard'
@@ -35,11 +36,13 @@ import { StickyKeyConversationTable } from '../../components/StickyKeyConversati
 import { UpstreamAccountsTable } from '../../components/UpstreamAccountsTable'
 import { usePoolTags } from '../../hooks/usePoolTags'
 import { useMotherSwitchNotifications } from '../../hooks/useMotherSwitchNotifications'
+import { useUpstreamAccountDetailRoute } from '../../hooks/useUpstreamAccountDetailRoute'
 import { useUpstreamAccounts } from '../../hooks/useUpstreamAccounts'
 import { useUpstreamStickyConversations } from '../../hooks/useUpstreamStickyConversations'
 import type {
   BulkUpstreamAccountActionPayload,
   BulkUpstreamAccountSyncCounts,
+  BulkUpstreamAccountSyncRow,
   BulkUpstreamAccountSyncSnapshot,
   PoolRoutingMaintenanceSettings,
   CompactSupportState,
@@ -65,6 +68,7 @@ import { validateUpstreamBaseUrl } from '../../lib/upstreamBaseUrl'
 import { generatePoolRoutingKey } from '../../lib/poolRouting'
 import { applyMotherUpdateToItems } from '../../lib/upstreamMother'
 import { upstreamPlanBadgeRecipe } from '../../lib/upstreamAccountBadges'
+import { isUpstreamAccountNotFoundError } from '../../lib/upstreamAccountErrors'
 import { cn } from '../../lib/utils'
 import { useTranslation, type TranslationValues } from '../../i18n'
 
@@ -107,6 +111,7 @@ type UpstreamAccountsLocationState = {
   selectedAccountId?: number
   openDetail?: boolean
   openDeleteConfirm?: boolean
+  postCreateWarning?: string | null
   duplicateWarning?: {
     accountId: number
     displayName: string
@@ -115,11 +120,12 @@ type UpstreamAccountsLocationState = {
   } | null
 }
 
-type GroupNoteEditorState = {
+type GroupSettingsEditorState = {
   open: boolean
   groupName: string
   note: string
   existing: boolean
+  boundProxyKeys: string[]
 }
 
 type OauthRecoveryHint = {
@@ -140,6 +146,18 @@ type BusyActionState = {
 }
 
 type AccountDetailTab = 'overview' | 'edit' | 'routing' | 'healthEvents'
+
+type SharedUpstreamAccountDetailDrawerCloseOptions = {
+  replace?: boolean
+}
+
+type SharedUpstreamAccountDetailDrawerProps = {
+  open: boolean
+  accountId: number | null
+  initialDeleteConfirmOpen?: boolean
+  onInitialDeleteConfirmHandled?: () => void
+  onClose: (options?: SharedUpstreamAccountDetailDrawerCloseOptions) => void
+}
 
 function createBusyActionKey(type: AccountBusyActionType, accountId: number) {
   return `${type}:${accountId}`
@@ -277,7 +295,8 @@ function accountWorkStatus(item?: AccountStatusSnapshot | null) {
   if (!item) return 'idle'
   if (accountEnableStatus(item) !== 'enabled') return 'idle'
   if (accountSyncState(item) === 'syncing') return 'idle'
-  if (accountHealthStatus(item) !== 'normal') return 'idle'
+  if (item?.workStatus === 'rate_limited') return 'rate_limited'
+  if (accountHealthStatus(item) !== 'normal') return 'unavailable'
   return item?.workStatus ?? 'idle'
 }
 
@@ -344,6 +363,54 @@ function bulkSyncRowStatusVariant(status: string): 'success' | 'warning' | 'erro
   if (status === 'pending') return 'warning'
   if (status === 'failed') return 'error'
   return 'secondary'
+}
+
+function computeBulkSyncCounts(rows: BulkUpstreamAccountSyncRow[]): BulkUpstreamAccountSyncCounts {
+  return rows.reduce<BulkUpstreamAccountSyncCounts>((counts, row) => {
+    counts.total += 1
+    if (row.status === 'succeeded') {
+      counts.succeeded += 1
+      counts.completed += 1
+    } else if (row.status === 'failed') {
+      counts.failed += 1
+      counts.completed += 1
+    } else if (row.status === 'skipped') {
+      counts.skipped += 1
+      counts.completed += 1
+    }
+    return counts
+  }, {
+    total: 0,
+    completed: 0,
+    succeeded: 0,
+    failed: 0,
+    skipped: 0,
+  })
+}
+
+function resolveBulkSyncCounts(
+  snapshot: BulkUpstreamAccountSyncSnapshot,
+  counts?: BulkUpstreamAccountSyncCounts | null,
+) {
+  return counts ?? computeBulkSyncCounts(snapshot.rows)
+}
+
+function withBulkSyncSnapshotStatus(
+  snapshot: BulkUpstreamAccountSyncSnapshot,
+  status: BulkUpstreamAccountSyncSnapshot['status'],
+) {
+  if (snapshot.status === status) return snapshot
+  return {
+    ...snapshot,
+    status,
+  }
+}
+
+function shouldAutoHideBulkSyncProgress(
+  snapshot: BulkUpstreamAccountSyncSnapshot,
+  counts: BulkUpstreamAccountSyncCounts,
+) {
+  return snapshot.status === 'completed' && counts.failed === 0 && counts.skipped === 0
 }
 
 function kindVariant(kind: string): 'secondary' | 'success' {
@@ -696,15 +763,1383 @@ function RoutingSettingsDialog({
   )
 }
 
+export function SharedUpstreamAccountDetailDrawer({
+  open,
+  accountId,
+  initialDeleteConfirmOpen = false,
+  onInitialDeleteConfirmHandled,
+  onClose,
+}: SharedUpstreamAccountDetailDrawerProps) {
+  const { t, locale } = useTranslation()
+  const navigate = useNavigate()
+  const {
+    items,
+    groups = [],
+    forwardProxyNodes = [],
+    hasUngroupedAccounts = false,
+    writesEnabled,
+    selectedId,
+    selectedSummary,
+    detail,
+    isDetailLoading,
+    detailError = null,
+    selectAccount,
+    saveAccount,
+    runSync,
+    removeAccount,
+    saveGroupNote,
+    missingDetailAccountId,
+  } = useUpstreamAccounts(undefined, {
+    allowSelectionOutsideList: true,
+    fallbackToFirstItem: false,
+  })
+  const { items: tagItems, createTag, updateTag, deleteTag } = usePoolTags()
+  const notifyMotherSwitches = useMotherSwitchNotifications()
+  const [draft, setDraft] = useState<AccountDraft>(buildDraft(null))
+  const [actionError, setActionError] = useState<ActionErrorState>(() => ({
+    routing: null,
+    accountMessages: {},
+  }))
+  const [busyAction, setBusyAction] = useState<BusyActionState>(() => ({
+    routing: false,
+    accountActions: new Set(),
+  }))
+  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
+  const [pageCreatedTagIds, setPageCreatedTagIds] = useState<number[]>([])
+  const [stickyConversationLimit, setStickyConversationLimit] = useState<number>(50)
+  const [groupDraftNotes, setGroupDraftNotes] = useState<Record<string, string>>({})
+  const [groupDraftBoundProxyKeys, setGroupDraftBoundProxyKeys] = useState<Record<string, string[]>>({})
+  const [groupNoteEditor, setGroupNoteEditor] = useState<GroupSettingsEditorState>({
+    open: false,
+    groupName: '',
+    note: '',
+    existing: false,
+    boundProxyKeys: [],
+  })
+  const [groupNoteBusy, setGroupNoteBusy] = useState(false)
+  const [groupNoteError, setGroupNoteError] = useState<string | null>(null)
+  const [detailDrawerPortalContainer, setDetailDrawerPortalContainer] = useState<HTMLElement | null>(null)
+  const [detailTab, setDetailTab] = useState<AccountDetailTab>('overview')
+  const deleteConfirmCancelRef = useRef<HTMLButtonElement | null>(null)
+  const detailDrawerTitleId = 'upstream-account-detail-title'
+  const detailDrawerTabsBaseId = useId()
+  const deleteConfirmTitleId = useId()
+  const selectedIdRef = useRef<number | null>(selectedId)
+
+  useEffect(() => {
+    selectedIdRef.current = selectedId
+  }, [selectedId])
+
+  useEffect(() => {
+    if (open && accountId != null) {
+      selectAccount(accountId)
+      return
+    }
+    selectAccount(null)
+  }, [accountId, open, selectAccount])
+
+  useEffect(() => {
+    if (!open || accountId == null) return
+    if (missingDetailAccountId !== accountId) return
+    onClose({ replace: true })
+  }, [accountId, missingDetailAccountId, onClose, open])
+
+  useEffect(() => {
+    setDraft(buildDraft(detail))
+  }, [detail])
+
+  useEffect(() => {
+    if (!open) {
+      setDetailTab('overview')
+      setIsDeleteConfirmOpen(false)
+    }
+  }, [open])
+
+  useEffect(() => {
+    if (!open || !initialDeleteConfirmOpen) return
+    setIsDeleteConfirmOpen(true)
+    onInitialDeleteConfirmHandled?.()
+  }, [initialDeleteConfirmOpen, onInitialDeleteConfirmHandled, open])
+
+  useEffect(() => {
+    setDetailTab('overview')
+  }, [accountId])
+
+  useEffect(() => {
+    setGroupDraftNotes((current) => {
+      const nextEntries = Object.entries(current).filter(([groupName]) => !isExistingGroup(groups, groupName))
+      if (nextEntries.length === Object.keys(current).length) return current
+      return Object.fromEntries(nextEntries)
+    })
+    setGroupDraftBoundProxyKeys((current) => {
+      const nextEntries = Object.entries(current).filter(([groupName]) => !isExistingGroup(groups, groupName))
+      if (nextEntries.length === Object.keys(current).length) return current
+      return Object.fromEntries(nextEntries)
+    })
+  }, [groups])
+
+  useEffect(() => {
+    const validTagIds = new Set(tagItems.map((tag) => tag.id))
+    setDraft((current) => {
+      const nextTagIds = current.tagIds.filter((tagId) => validTagIds.has(tagId))
+      return nextTagIds.length === current.tagIds.length ? current : { ...current, tagIds: nextTagIds }
+    })
+  }, [tagItems])
+
+  const availableGroups = useMemo(() => {
+    const draftNames = Object.fromEntries([
+      ...Object.keys(groupDraftNotes).map((groupName) => [groupName, '']),
+      ...Object.keys(groupDraftBoundProxyKeys).map((groupName) => [groupName, '']),
+    ])
+    return {
+      names: buildGroupNameSuggestions(items.map((item) => item.groupName), groups, draftNames),
+      hasUngrouped: hasUngroupedAccounts,
+    }
+  }, [groupDraftBoundProxyKeys, groupDraftNotes, groups, hasUngroupedAccounts, items])
+
+  const resolveGroupSummaryForName = useCallback((groupName: string) => {
+    const normalized = normalizeGroupName(groupName)
+    if (!normalized) return null
+    return groups.find((group) => normalizeGroupName(group.groupName) === normalized) ?? null
+  }, [groups])
+
+  const resolveGroupNoteForName = useCallback(
+    (groupName: string) => resolveGroupNote(groups, groupDraftNotes, groupName),
+    [groupDraftNotes, groups],
+  )
+
+  const resolvePendingGroupNoteForName = useCallback((groupName: string) => {
+    const normalized = normalizeGroupName(groupName)
+    if (!normalized || isExistingGroup(groups, normalized)) return ''
+    return groupDraftNotes[normalized]?.trim() ?? ''
+  }, [groupDraftNotes, groups])
+
+  const resolveGroupBoundProxyKeysForName = useCallback((groupName: string) => (
+    resolveGroupSummaryForName(groupName)?.boundProxyKeys ??
+    groupDraftBoundProxyKeys[normalizeGroupName(groupName)] ??
+    []
+  ), [groupDraftBoundProxyKeys, resolveGroupSummaryForName])
+
+  const hasGroupSettings = useCallback((groupName: string) => (
+    resolveGroupNoteForName(groupName).trim().length > 0 ||
+    resolveGroupBoundProxyKeysForName(groupName).length > 0
+  ), [resolveGroupBoundProxyKeysForName, resolveGroupNoteForName])
+
+  const persistDraftGroupSettings = useCallback(async (groupName: string) => {
+    const normalizedGroupName = normalizeGroupName(groupName)
+    if (!normalizedGroupName) return
+    const hasDraftNote = normalizedGroupName in groupDraftNotes
+    const hasDraftBindings = normalizedGroupName in groupDraftBoundProxyKeys
+    if (!hasDraftNote && !hasDraftBindings) return
+
+    const normalizedNote = hasDraftNote ? groupDraftNotes[normalizedGroupName]?.trim() ?? '' : ''
+    const normalizedBoundProxyKeys = Array.from(
+      new Set(
+        (groupDraftBoundProxyKeys[normalizedGroupName] ?? [])
+          .map((value) => value.trim())
+          .filter((value) => value.length > 0),
+      ),
+    )
+
+    await saveGroupNote(normalizedGroupName, {
+      note: normalizedNote || undefined,
+      boundProxyKeys: normalizedBoundProxyKeys,
+    })
+
+    setGroupDraftNotes((current) => {
+      if (!(normalizedGroupName in current)) return current
+      const next = { ...current }
+      delete next[normalizedGroupName]
+      return next
+    })
+    setGroupDraftBoundProxyKeys((current) => {
+      if (!(normalizedGroupName in current)) return current
+      const next = { ...current }
+      delete next[normalizedGroupName]
+      return next
+    })
+  }, [groupDraftBoundProxyKeys, groupDraftNotes, saveGroupNote])
+
+  const openGroupNoteEditor = useCallback((groupName: string) => {
+    if (!writesEnabled) return
+    const normalized = normalizeGroupName(groupName)
+    if (!normalized) return
+    const existingGroup = resolveGroupSummaryForName(normalized)
+    setGroupNoteError(null)
+    setGroupNoteEditor({
+      open: true,
+      groupName: normalized,
+      note: resolveGroupNoteForName(normalized),
+      existing: existingGroup != null,
+      boundProxyKeys: resolveGroupBoundProxyKeysForName(normalized),
+    })
+  }, [resolveGroupBoundProxyKeysForName, resolveGroupNoteForName, resolveGroupSummaryForName, writesEnabled])
+
+  const closeGroupNoteEditor = useCallback(() => {
+    if (groupNoteBusy) return
+    setGroupNoteEditor((current) => ({ ...current, open: false }))
+    setGroupNoteError(null)
+  }, [groupNoteBusy])
+
+  const handleSaveGroupNote = useCallback(async () => {
+    if (!writesEnabled) return
+    const normalizedGroupName = normalizeGroupName(groupNoteEditor.groupName)
+    if (!normalizedGroupName) return
+    const normalizedNote = groupNoteEditor.note.trim()
+    const normalizedBoundProxyKeys = Array.from(
+      new Set(groupNoteEditor.boundProxyKeys.map((value) => value.trim()).filter((value) => value.length > 0)),
+    )
+    setGroupNoteError(null)
+
+    if (!groupNoteEditor.existing) {
+      setGroupDraftNotes((current) => {
+        const next = { ...current }
+        if (normalizedNote) next[normalizedGroupName] = normalizedNote
+        else delete next[normalizedGroupName]
+        return next
+      })
+      setGroupDraftBoundProxyKeys((current) => {
+        const next = { ...current }
+        if (normalizedBoundProxyKeys.length > 0) next[normalizedGroupName] = normalizedBoundProxyKeys
+        else delete next[normalizedGroupName]
+        return next
+      })
+      setGroupNoteEditor((current) => ({ ...current, open: false }))
+      return
+    }
+
+    setGroupNoteBusy(true)
+    try {
+      await saveGroupNote(normalizedGroupName, {
+        note: normalizedNote || undefined,
+        boundProxyKeys: normalizedBoundProxyKeys,
+      })
+      setGroupDraftNotes((current) => {
+        if (!(normalizedGroupName in current)) return current
+        const next = { ...current }
+        delete next[normalizedGroupName]
+        return next
+      })
+      setGroupDraftBoundProxyKeys((current) => {
+        if (!(normalizedGroupName in current)) return current
+        const next = { ...current }
+        delete next[normalizedGroupName]
+        return next
+      })
+      setGroupNoteEditor((current) => ({ ...current, open: false }))
+    } catch (err) {
+      setGroupNoteError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setGroupNoteBusy(false)
+    }
+  }, [groupNoteEditor.boundProxyKeys, groupNoteEditor.existing, groupNoteEditor.groupName, groupNoteEditor.note, saveGroupNote, writesEnabled])
+
+  const handleCreateTag = useCallback(async (payload: Parameters<typeof createTag>[0]) => {
+    const detail = await createTag(payload)
+    setPageCreatedTagIds((current) => (current.includes(detail.id) ? current : [...current, detail.id]))
+    return detail
+  }, [createTag])
+
+  const handleDeleteTag = useCallback(async (tagId: number) => {
+    await deleteTag(tagId)
+    setPageCreatedTagIds((current) => current.filter((value) => value !== tagId))
+    setDraft((current) => ({ ...current, tagIds: current.tagIds.filter((value) => value !== tagId) }))
+  }, [deleteTag])
+
+  const {
+    stats: stickyConversationStats,
+    isLoading: stickyConversationLoading,
+    error: stickyConversationError,
+  } = useUpstreamStickyConversations(selectedId, stickyConversationLimit, Boolean(open && selectedId))
+
+  const selectedDetail = detail?.id === selectedId ? detail : null
+  const selected = selectedDetail ?? selectedSummary
+  const selectedPlanBadge = upstreamPlanBadgeRecipe(selected?.planType)
+  const selectedRecoveryHint = resolveOauthRecoveryHint(
+    selectedDetail?.kind ?? selected?.kind ?? '',
+    accountHealthStatus(selectedDetail ?? selected),
+    selectedDetail?.lastError ?? selected?.lastError,
+  )
+  const selectedRecentActions = selectedDetail?.recentActions ?? []
+  const detailTabIds = {
+    overview: {
+      tab: `${detailDrawerTabsBaseId}-overview-tab`,
+      panel: `${detailDrawerTabsBaseId}-overview-panel`,
+    },
+    edit: {
+      tab: `${detailDrawerTabsBaseId}-edit-tab`,
+      panel: `${detailDrawerTabsBaseId}-edit-panel`,
+    },
+    routing: {
+      tab: `${detailDrawerTabsBaseId}-routing-tab`,
+      panel: `${detailDrawerTabsBaseId}-routing-panel`,
+    },
+    healthEvents: {
+      tab: `${detailDrawerTabsBaseId}-health-events-tab`,
+      panel: `${detailDrawerTabsBaseId}-health-events-panel`,
+    },
+  } as const
+  const visibleAccountActionError =
+    typeof selectedId === 'number' ? actionError.accountMessages[selectedId] ?? null : null
+  const detailDisplayNameConflict = useMemo(
+    () => findDisplayNameConflict(items, draft.displayName, selectedDetail?.id ?? null),
+    [draft.displayName, items, selectedDetail?.id],
+  )
+  const draftUpstreamBaseUrlError = useMemo(() => {
+    const code = validateUpstreamBaseUrl(draft.upstreamBaseUrl)
+    if (code === 'invalid_absolute_url') {
+      return t('accountPool.upstreamAccounts.validation.upstreamBaseUrlInvalid')
+    }
+    if (code === 'query_or_fragment_not_allowed') {
+      return t('accountPool.upstreamAccounts.validation.upstreamBaseUrlNoQueryOrFragment')
+    }
+    return null
+  }, [draft.upstreamBaseUrl, t])
+  const tagFieldLabels = {
+    label: t('accountPool.tags.field.label'),
+    add: t('accountPool.tags.field.add'),
+    empty: t('accountPool.tags.field.empty'),
+    searchPlaceholder: t('accountPool.tags.field.searchPlaceholder'),
+    searchEmpty: t('accountPool.tags.field.searchEmpty'),
+    createInline: (value: string) => t('accountPool.tags.field.createInline', { value: value || t('accountPool.tags.field.newTag') }),
+    selectedFromCurrentPage: t('accountPool.tags.field.currentPage'),
+    remove: t('accountPool.tags.field.remove'),
+    deleteAndRemove: t('accountPool.tags.field.deleteAndRemove'),
+    edit: t('accountPool.tags.field.edit'),
+    createTitle: t('accountPool.tags.dialog.createTitle'),
+    editTitle: t('accountPool.tags.dialog.editTitle'),
+    dialogDescription: t('accountPool.tags.dialog.description'),
+    name: t('accountPool.tags.dialog.name'),
+    namePlaceholder: t('accountPool.tags.dialog.namePlaceholder'),
+    guardEnabled: t('accountPool.tags.dialog.guardEnabled'),
+    lookbackHours: t('accountPool.tags.dialog.lookbackHours'),
+    maxConversations: t('accountPool.tags.dialog.maxConversations'),
+    allowCutOut: t('accountPool.tags.dialog.allowCutOut'),
+    allowCutIn: t('accountPool.tags.dialog.allowCutIn'),
+    cancel: t('accountPool.tags.dialog.cancel'),
+    save: t('accountPool.tags.dialog.save'),
+    createAction: t('accountPool.tags.dialog.createAction'),
+    validation: t('accountPool.tags.dialog.validation'),
+  }
+
+  const accountKindLabel = (kind: string) =>
+    kind === 'oauth_codex'
+      ? t('accountPool.upstreamAccounts.kind.oauth')
+      : t('accountPool.upstreamAccounts.kind.apiKey')
+  const accountEnableStatusLabel = (status: string) =>
+    t(`accountPool.upstreamAccounts.enableStatus.${status}`)
+  const accountWorkStatusLabel = (status: string) =>
+    t(`accountPool.upstreamAccounts.workStatus.${status}`)
+  const accountHealthStatusLabel = (status: string) =>
+    t(`accountPool.upstreamAccounts.healthStatus.${status}`)
+  const accountSyncStateLabel = (status: string) =>
+    t(`accountPool.upstreamAccounts.syncState.${status}`)
+  const accountActionLabel = (action?: string | null) => {
+    if (!action) return null
+    const key = `accountPool.upstreamAccounts.latestAction.actions.${action}`
+    const translated = t(key)
+    return translated === key ? action : translated
+  }
+  const accountActionSourceLabel = (source?: string | null) => {
+    if (!source) return null
+    const key = `accountPool.upstreamAccounts.latestAction.sources.${source}`
+    const translated = t(key)
+    return translated === key ? source : translated
+  }
+  const accountActionReasonLabel = (reason?: string | null) => {
+    if (!reason) return null
+    const key = `accountPool.upstreamAccounts.latestAction.reasons.${reason}`
+    const translated = t(key)
+    return translated === key ? reason : translated
+  }
+  const formatDuplicateReasons = (duplicateInfo?: UpstreamAccountDuplicateInfo | null) => {
+    const reasons = duplicateInfo?.reasons ?? []
+    return reasons
+      .map((reason) => {
+        if (reason === 'sharedChatgptAccountId') {
+          return t('accountPool.upstreamAccounts.duplicate.reasons.sharedChatgptAccountId')
+        }
+        if (reason === 'sharedChatgptUserId') {
+          return t('accountPool.upstreamAccounts.duplicate.reasons.sharedChatgptUserId')
+        }
+        return reason
+      })
+      .join(' / ')
+  }
+
+  const notifyMotherChange = useCallback((updated: UpstreamAccountSummary) => {
+    const nextItems = applyMotherUpdateToItems(items, updated)
+    notifyMotherSwitches(items, nextItems)
+  }, [items, notifyMotherSwitches])
+
+  const handleOauthLogin = useCallback(async (nextAccountId: number) => {
+    navigate(`/account-pool/upstream-accounts/new?accountId=${nextAccountId}`)
+  }, [navigate])
+
+  const handleNotFoundClose = useCallback((sourceId: number, error: unknown) => {
+    if (selectedIdRef.current !== sourceId) return false
+    if (!isUpstreamAccountNotFoundError(error)) return false
+    onClose({ replace: true })
+    return true
+  }, [onClose])
+
+  const handleSave = useCallback(async (source: UpstreamAccountDetail) => {
+    if (source.kind === 'api_key_codex' && draftUpstreamBaseUrlError) return
+    if (hasBusyAccountAction(busyAction, source.id)) return
+    setActionError((current) => {
+      const nextMessages = { ...current.accountMessages }
+      delete nextMessages[source.id]
+      return { ...current, accountMessages: nextMessages }
+    })
+    setBusyAction((current) => {
+      const nextActions = new Set(current.accountActions)
+      nextActions.add(createBusyActionKey('save', source.id))
+      return { ...current, accountActions: nextActions }
+    })
+    try {
+      const normalizedGroupName = normalizeGroupName(draft.groupName)
+      const pendingGroupNote = resolvePendingGroupNoteForName(normalizedGroupName)
+      const response = await saveAccount(source.id, {
+        displayName: draft.displayName.trim() || undefined,
+        groupName: draft.groupName.trim(),
+        isMother: draft.isMother,
+        note: draft.note.trim() || undefined,
+        groupNote: pendingGroupNote || undefined,
+        tagIds: draft.tagIds,
+        upstreamBaseUrl:
+          source.kind === 'api_key_codex' ? draft.upstreamBaseUrl.trim() || null : undefined,
+        apiKey: source.kind === 'api_key_codex' && draft.apiKey.trim() ? draft.apiKey.trim() : undefined,
+        localPrimaryLimit: source.kind === 'api_key_codex' ? normalizeNumberInput(draft.localPrimaryLimit) : undefined,
+        localSecondaryLimit: source.kind === 'api_key_codex' ? normalizeNumberInput(draft.localSecondaryLimit) : undefined,
+        localLimitUnit: source.kind === 'api_key_codex' ? draft.localLimitUnit.trim() || undefined : undefined,
+      })
+      let partialWarning: string | null = null
+      try {
+        await persistDraftGroupSettings(normalizedGroupName)
+      } catch (error) {
+        partialWarning = t('accountPool.upstreamAccounts.partialSuccess.savedButGroupSettingsFailed', {
+          error: error instanceof Error ? error.message : String(error),
+        })
+      }
+      notifyMotherChange(response)
+      if (selectedIdRef.current === source.id) {
+        setDraft((current) => ({ ...current, apiKey: '' }))
+      }
+      if (partialWarning) {
+        setActionError((current) => ({
+          ...current,
+          accountMessages: {
+            ...current.accountMessages,
+            [source.id]: partialWarning,
+          },
+        }))
+      }
+    } catch (err) {
+      if (handleNotFoundClose(source.id, err)) return
+      setActionError((current) => ({
+        ...current,
+        accountMessages: {
+          ...current.accountMessages,
+          [source.id]: err instanceof Error ? err.message : String(err),
+        },
+      }))
+    } finally {
+      setBusyAction((current) => {
+        const nextActions = new Set(current.accountActions)
+        nextActions.delete(createBusyActionKey('save', source.id))
+        return { ...current, accountActions: nextActions }
+      })
+    }
+  }, [busyAction, draft, draftUpstreamBaseUrlError, handleNotFoundClose, notifyMotherChange, persistDraftGroupSettings, resolvePendingGroupNoteForName, saveAccount, t])
+
+  const handleSync = useCallback(async (source: UpstreamAccountSummary) => {
+    if (hasBusyAccountAction(busyAction, source.id)) return
+    setActionError((current) => {
+      const nextMessages = { ...current.accountMessages }
+      delete nextMessages[source.id]
+      return { ...current, accountMessages: nextMessages }
+    })
+    setBusyAction((current) => {
+      const nextActions = new Set(current.accountActions)
+      nextActions.add(createBusyActionKey('sync', source.id))
+      return { ...current, accountActions: nextActions }
+    })
+    try {
+      await runSync(source.id)
+    } catch (err) {
+      if (handleNotFoundClose(source.id, err)) return
+      setActionError((current) => ({
+        ...current,
+        accountMessages: {
+          ...current.accountMessages,
+          [source.id]: err instanceof Error ? err.message : String(err),
+        },
+      }))
+    } finally {
+      setBusyAction((current) => {
+        const nextActions = new Set(current.accountActions)
+        nextActions.delete(createBusyActionKey('sync', source.id))
+        return { ...current, accountActions: nextActions }
+      })
+    }
+  }, [busyAction, handleNotFoundClose, runSync])
+
+  const handleToggleEnabled = useCallback(async (source: UpstreamAccountSummary, enabled: boolean) => {
+    if (hasBusyAccountAction(busyAction, source.id)) return
+    setActionError((current) => {
+      const nextMessages = { ...current.accountMessages }
+      delete nextMessages[source.id]
+      return { ...current, accountMessages: nextMessages }
+    })
+    setBusyAction((current) => {
+      const nextActions = new Set(current.accountActions)
+      nextActions.add(createBusyActionKey('toggle', source.id))
+      return { ...current, accountActions: nextActions }
+    })
+    try {
+      await saveAccount(source.id, { enabled })
+    } catch (err) {
+      if (handleNotFoundClose(source.id, err)) return
+      setActionError((current) => ({
+        ...current,
+        accountMessages: {
+          ...current.accountMessages,
+          [source.id]: err instanceof Error ? err.message : String(err),
+        },
+      }))
+    } finally {
+      setBusyAction((current) => {
+        const nextActions = new Set(current.accountActions)
+        nextActions.delete(createBusyActionKey('toggle', source.id))
+        return { ...current, accountActions: nextActions }
+      })
+    }
+  }, [busyAction, handleNotFoundClose, saveAccount])
+
+  const handleDelete = useCallback(async (source: UpstreamAccountSummary) => {
+    if (hasBusyAccountAction(busyAction, source.id)) return
+    setIsDeleteConfirmOpen(false)
+    setActionError((current) => {
+      const nextMessages = { ...current.accountMessages }
+      delete nextMessages[source.id]
+      return { ...current, accountMessages: nextMessages }
+    })
+    setBusyAction((current) => {
+      const nextActions = new Set(current.accountActions)
+      nextActions.add(createBusyActionKey('delete', source.id))
+      return { ...current, accountActions: nextActions }
+    })
+    try {
+      await removeAccount(source.id)
+      if (selectedIdRef.current === source.id) {
+        onClose({ replace: true })
+      }
+    } catch (err) {
+      if (handleNotFoundClose(source.id, err)) return
+      setActionError((current) => ({
+        ...current,
+        accountMessages: {
+          ...current.accountMessages,
+          [source.id]: err instanceof Error ? err.message : String(err),
+        },
+      }))
+    } finally {
+      setBusyAction((current) => {
+        const nextActions = new Set(current.accountActions)
+        nextActions.delete(createBusyActionKey('delete', source.id))
+        return { ...current, accountActions: nextActions }
+      })
+    }
+  }, [busyAction, handleNotFoundClose, onClose, removeAccount])
+
+  const detailIdentity = selected ?? (accountId != null ? { id: accountId, displayName: `#${accountId}` } : null)
+
+  return (
+    <>
+      {open && accountId != null ? (
+        <AccountDetailDrawerShell
+          open={open}
+          labelledBy={detailDrawerTitleId}
+          closeLabel={t('accountPool.upstreamAccounts.actions.closeDetails')}
+          closeDisabled={isBusyAction(busyAction, 'delete', accountId)}
+          autoFocusCloseButton={!isDeleteConfirmOpen}
+          onPortalContainerChange={setDetailDrawerPortalContainer}
+          onClose={() => onClose()}
+          shellClassName="max-w-[60rem]"
+          header={
+            <div className="space-y-4">
+              <div className="space-y-3">
+                {selected ? (
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant={enableStatusVariant(accountEnableStatus(selected))}>
+                      {accountEnableStatusLabel(accountEnableStatus(selected))}
+                    </Badge>
+                    <Badge variant={workStatusVariant(accountWorkStatus(selected))}>
+                      {accountWorkStatusLabel(accountWorkStatus(selected))}
+                    </Badge>
+                    <Badge variant={syncStateVariant(accountSyncState(selected))}>
+                      {accountSyncStateLabel(accountSyncState(selected))}
+                    </Badge>
+                    <Badge variant={healthStatusVariant(accountHealthStatus(selected))}>
+                      {accountHealthStatusLabel(accountHealthStatus(selected))}
+                    </Badge>
+                    <Badge variant={kindVariant(selected.kind)}>{accountKindLabel(selected.kind)}</Badge>
+                    {selected.planType && selectedPlanBadge ? (
+                      <Badge
+                        variant={selectedPlanBadge.variant}
+                        className={selectedPlanBadge.className}
+                        data-plan={selectedPlanBadge.dataPlan}
+                      >
+                        {selected.planType}
+                      </Badge>
+                    ) : null}
+                    {selected.duplicateInfo ? (
+                      <Badge variant="warning">
+                        {t('accountPool.upstreamAccounts.duplicate.badge')}
+                      </Badge>
+                    ) : null}
+                    {selected.kind === 'api_key_codex' ? (
+                      <Badge variant="secondary">
+                        {t('accountPool.upstreamAccounts.apiKey.localPlaceholder')}
+                      </Badge>
+                    ) : null}
+                  </div>
+                ) : null}
+                <div className="section-heading">
+                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary/75">
+                    {t('accountPool.upstreamAccounts.detailTitle')}
+                  </p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <h2 id={detailDrawerTitleId} className="section-title">
+                      {detailIdentity?.displayName ?? `#${accountId}`}
+                    </h2>
+                    {selected?.isMother ? (
+                      <MotherAccountBadge label={t('accountPool.upstreamAccounts.mother.badge')} />
+                    ) : null}
+                  </div>
+                  <p className="section-description">
+                    {selected?.email ?? selected?.maskedApiKey ?? t('accountPool.upstreamAccounts.identityUnavailable')}
+                  </p>
+                </div>
+              </div>
+              {selected ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <div className="flex items-center gap-2 rounded-full border border-base-300/80 bg-base-100/70 px-3 py-2 text-sm">
+                    <span className="text-base-content/60">{t('accountPool.upstreamAccounts.actions.enable')}</span>
+                    <Switch
+                      checked={selected.enabled}
+                      onCheckedChange={(checked) => void handleToggleEnabled(selected, checked)}
+                      disabled={hasBusyAccountAction(busyAction, selected.id) || !writesEnabled}
+                      aria-label={t('accountPool.upstreamAccounts.actions.enable')}
+                    />
+                  </div>
+                  <Button
+                    type="button"
+                    variant="secondary"
+                    onClick={() => void handleSync(selected)}
+                    disabled={hasBusyAccountAction(busyAction, selected.id)}
+                    data-testid="account-sync-button"
+                  >
+                    {isBusyAction(busyAction, 'sync', selected.id) ? (
+                      <Spinner size="sm" className="mr-2" />
+                    ) : (
+                      <AppIcon
+                        name="timer-refresh-outline"
+                        className="mr-2 h-4 w-4"
+                        aria-hidden
+                        data-icon-name="timer-refresh-outline"
+                      />
+                    )}
+                    {t('accountPool.upstreamAccounts.actions.syncNow')}
+                  </Button>
+                  {selected.kind === 'oauth_codex' ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => void handleOauthLogin(selected.id)}
+                      disabled={hasBusyAccountAction(busyAction, selected.id) || !writesEnabled}
+                    >
+                      {isBusyAction(busyAction, 'relogin', selected.id) ? (
+                        <Spinner size="sm" className="mr-2" />
+                      ) : (
+                        <AppIcon name="login-variant" className="mr-2 h-4 w-4" aria-hidden />
+                      )}
+                      {t('accountPool.upstreamAccounts.actions.relogin')}
+                    </Button>
+                  ) : null}
+                  <Popover
+                    open={isDeleteConfirmOpen}
+                    onOpenChange={(nextOpen) => {
+                      if (isBusyAction(busyAction, 'delete', selected.id) && !nextOpen) return
+                      setIsDeleteConfirmOpen(nextOpen)
+                    }}
+                  >
+                    <PopoverTrigger asChild>
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        disabled={hasBusyAccountAction(busyAction, selected.id) || !writesEnabled}
+                        aria-haspopup="dialog"
+                        aria-expanded={isDeleteConfirmOpen}
+                        aria-controls={isDeleteConfirmOpen ? deleteConfirmTitleId : undefined}
+                      >
+                        {isBusyAction(busyAction, 'delete', selected.id) ? (
+                          <Spinner size="sm" className="mr-2" />
+                        ) : (
+                          <AppIcon name="trash-can-outline" className="mr-2 h-4 w-4" aria-hidden />
+                        )}
+                        {t('accountPool.upstreamAccounts.actions.delete')}
+                      </Button>
+                    </PopoverTrigger>
+                    {detailDrawerPortalContainer ? (
+                      <PopoverContent
+                        container={detailDrawerPortalContainer}
+                        role="alertdialog"
+                        aria-modal="false"
+                        aria-labelledby={deleteConfirmTitleId}
+                        align="end"
+                        side="top"
+                        sideOffset={12}
+                        className="z-[80] w-[min(22rem,calc(100vw-1.5rem))] rounded-2xl border border-base-300 bg-base-100 p-4 shadow-[0_20px_48px_rgba(15,23,42,0.24)] ring-1 ring-base-100/90"
+                        onOpenAutoFocus={(event) => {
+                          event.preventDefault()
+                          deleteConfirmCancelRef.current?.focus()
+                        }}
+                        onEscapeKeyDown={(event) => {
+                          event.stopPropagation()
+                        }}
+                      >
+                        <div className="space-y-3">
+                          <div className="flex items-start gap-2.5">
+                            <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-error text-error-content shadow-sm">
+                              <AppIcon name="trash-can-outline" className="h-3.5 w-3.5" aria-hidden />
+                            </div>
+                            <p id={deleteConfirmTitleId} className="min-w-0 break-words pr-2 text-[15px] font-semibold leading-6 text-base-content">
+                              {t('accountPool.upstreamAccounts.deleteConfirmTitle', { name: selected.displayName })}
+                            </p>
+                          </div>
+                          <div className="flex justify-end gap-2">
+                            <Button
+                              ref={deleteConfirmCancelRef}
+                              type="button"
+                              variant="secondary"
+                              size="sm"
+                              className="rounded-full px-3.5 font-semibold"
+                              onClick={() => setIsDeleteConfirmOpen(false)}
+                            >
+                              {t('accountPool.upstreamAccounts.actions.cancel')}
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="destructive"
+                              size="sm"
+                              className="rounded-full px-3.5 font-semibold shadow-sm"
+                              disabled={hasBusyAccountAction(busyAction, selected.id) || !writesEnabled}
+                              onClick={() => void handleDelete(selected)}
+                            >
+                              {t('accountPool.upstreamAccounts.actions.confirmDelete')}
+                            </Button>
+                          </div>
+                        </div>
+                        <PopoverArrow className="fill-base-100 stroke-base-300 stroke-[1px]" width={18} height={10} />
+                      </PopoverContent>
+                    ) : null}
+                  </Popover>
+                </div>
+              ) : null}
+            </div>
+          }
+        >
+          {detailError && selectedDetail ? (
+            <Alert variant="error">
+              <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+              <div>{detailError}</div>
+            </Alert>
+          ) : null}
+          {visibleAccountActionError && !selectedDetail ? (
+            <Alert variant="error">
+              <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+              <div>{visibleAccountActionError}</div>
+            </Alert>
+          ) : null}
+          {isDetailLoading && !selectedDetail ? (
+            <AccountDetailSkeleton />
+          ) : detailError && !selectedDetail ? (
+            <Alert variant="error">
+              <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+              <div>{detailError}</div>
+            </Alert>
+          ) : selectedDetail ? (
+            <div className="grid gap-5">
+              {visibleAccountActionError ? (
+                <Alert variant="error">
+                  <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                  <div>{visibleAccountActionError}</div>
+                </Alert>
+              ) : null}
+              <SegmentedControl
+                className="self-start"
+                role="tablist"
+                aria-label={t('accountPool.upstreamAccounts.detailTitle')}
+              >
+                <SegmentedControlItem
+                  id={detailTabIds.overview.tab}
+                  active={detailTab === 'overview'}
+                  role="tab"
+                  aria-selected={detailTab === 'overview'}
+                  aria-controls={detailTabIds.overview.panel}
+                  aria-pressed={detailTab === 'overview'}
+                  onClick={() => setDetailTab('overview')}
+                >
+                  {t('accountPool.upstreamAccounts.detailTabs.overview')}
+                </SegmentedControlItem>
+                <SegmentedControlItem
+                  id={detailTabIds.edit.tab}
+                  active={detailTab === 'edit'}
+                  role="tab"
+                  aria-selected={detailTab === 'edit'}
+                  aria-controls={detailTabIds.edit.panel}
+                  aria-pressed={detailTab === 'edit'}
+                  onClick={() => setDetailTab('edit')}
+                >
+                  {t('accountPool.upstreamAccounts.detailTabs.edit')}
+                </SegmentedControlItem>
+                <SegmentedControlItem
+                  id={detailTabIds.routing.tab}
+                  active={detailTab === 'routing'}
+                  role="tab"
+                  aria-selected={detailTab === 'routing'}
+                  aria-controls={detailTabIds.routing.panel}
+                  aria-pressed={detailTab === 'routing'}
+                  onClick={() => setDetailTab('routing')}
+                >
+                  {t('accountPool.upstreamAccounts.detailTabs.routing')}
+                </SegmentedControlItem>
+                <SegmentedControlItem
+                  id={detailTabIds.healthEvents.tab}
+                  active={detailTab === 'healthEvents'}
+                  role="tab"
+                  aria-selected={detailTab === 'healthEvents'}
+                  aria-controls={detailTabIds.healthEvents.panel}
+                  aria-pressed={detailTab === 'healthEvents'}
+                  onClick={() => setDetailTab('healthEvents')}
+                >
+                  {t('accountPool.upstreamAccounts.detailTabs.healthEvents')}
+                </SegmentedControlItem>
+              </SegmentedControl>
+
+              {detailTab === 'overview' ? (
+                <div
+                  id={detailTabIds.overview.panel}
+                  role="tabpanel"
+                  aria-labelledby={detailTabIds.overview.tab}
+                  className="grid gap-5"
+                >
+                  {selectedDetail.duplicateInfo ? (
+                    <Alert variant="warning">
+                      <AppIcon name="alert-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                      <div>
+                        <p className="font-medium">
+                          {t('accountPool.upstreamAccounts.duplicate.badge')}
+                        </p>
+                        <p className="mt-1 text-sm text-warning/90">
+                          {t('accountPool.upstreamAccounts.duplicate.warningBody', {
+                            reasons: formatDuplicateReasons(selectedDetail.duplicateInfo),
+                            peers: selectedDetail.duplicateInfo.peerAccountIds.join(', '),
+                          })}
+                        </p>
+                      </div>
+                    </Alert>
+                  ) : null}
+                  <div className="metric-grid">
+                    <DetailField label={t('accountPool.upstreamAccounts.fields.groupName')} value={selectedDetail.groupName ?? ''} />
+                    <DetailField
+                      label={t('accountPool.upstreamAccounts.mother.fieldLabel')}
+                      value={selectedDetail.isMother ? t('accountPool.upstreamAccounts.mother.badge') : t('accountPool.upstreamAccounts.mother.notMother')}
+                    />
+                    <DetailField label={t('accountPool.upstreamAccounts.fields.email')} value={selectedDetail.email ?? ''} />
+                    <DetailField label={t('accountPool.upstreamAccounts.fields.accountId')} value={selectedDetail.chatgptAccountId ?? selectedDetail.maskedApiKey ?? ''} />
+                    <DetailField label={t('accountPool.upstreamAccounts.fields.userId')} value={selectedDetail.chatgptUserId ?? ''} />
+                    <DetailField label={t('accountPool.upstreamAccounts.fields.lastSuccessSync')} value={formatDateTime(selectedDetail.lastSuccessfulSyncAt)} />
+                  </div>
+                  <div className="grid gap-4 xl:grid-cols-2">
+                    <UpstreamAccountUsageCard
+                      title={t('accountPool.upstreamAccounts.primaryWindowLabel')}
+                      description={t('accountPool.upstreamAccounts.usage.primaryDescription')}
+                      window={selectedDetail.primaryWindow}
+                      history={selectedDetail.history}
+                      historyKey="primaryUsedPercent"
+                      emptyLabel={t('accountPool.upstreamAccounts.noHistory')}
+                      noteLabel={selectedDetail.kind === 'api_key_codex' ? t('accountPool.upstreamAccounts.apiKey.localPlaceholder') : undefined}
+                    />
+                    <UpstreamAccountUsageCard
+                      title={t('accountPool.upstreamAccounts.secondaryWindowLabel')}
+                      description={t('accountPool.upstreamAccounts.usage.secondaryDescription')}
+                      window={selectedDetail.secondaryWindow}
+                      history={selectedDetail.history}
+                      historyKey="secondaryUsedPercent"
+                      emptyLabel={t('accountPool.upstreamAccounts.noHistory')}
+                      noteLabel={selectedDetail.kind === 'api_key_codex' ? t('accountPool.upstreamAccounts.apiKey.localPlaceholder') : undefined}
+                      accentClassName="text-secondary"
+                    />
+                  </div>
+                </div>
+              ) : null}
+
+              {detailTab === 'edit' ? (
+                <div
+                  id={detailTabIds.edit.panel}
+                  role="tabpanel"
+                  aria-labelledby={detailTabIds.edit.tab}
+                >
+                  <Card className="border-base-300/80 bg-base-100/72">
+                    <CardHeader>
+                      <CardTitle>{t('accountPool.upstreamAccounts.editTitle')}</CardTitle>
+                      <CardDescription>{t('accountPool.upstreamAccounts.editDescription')}</CardDescription>
+                    </CardHeader>
+                    <CardContent className="grid gap-4 md:grid-cols-2">
+                      <label className="field md:col-span-2">
+                        <span className="field-label">{t('accountPool.upstreamAccounts.fields.displayName')}</span>
+                        <div className="relative">
+                          <Input
+                            name="detailDisplayName"
+                            value={draft.displayName}
+                            aria-invalid={detailDisplayNameConflict != null}
+                            onChange={(event) =>
+                              setDraft((current) => ({
+                                ...current,
+                                displayName: event.target.value,
+                              }))
+                            }
+                          />
+                          {detailDisplayNameConflict ? (
+                            <FloatingFieldError
+                              message={t('accountPool.upstreamAccounts.validation.displayNameDuplicate')}
+                            />
+                          ) : null}
+                        </div>
+                      </label>
+                      <label className="field md:col-span-2">
+                        <span className="field-label">{t('accountPool.upstreamAccounts.fields.groupName')}</span>
+                        <div className="flex items-center gap-2">
+                          <UpstreamAccountGroupCombobox
+                            name="detailGroupName"
+                            value={draft.groupName}
+                            suggestions={availableGroups.names}
+                            placeholder={t('accountPool.upstreamAccounts.fields.groupNamePlaceholder')}
+                            searchPlaceholder={t('accountPool.upstreamAccounts.fields.groupNameSearchPlaceholder')}
+                            emptyLabel={t('accountPool.upstreamAccounts.fields.groupNameEmpty')}
+                            createLabel={(value) => t('accountPool.upstreamAccounts.fields.groupNameUseValue', { value })}
+                            onValueChange={(value) => setDraft((current) => ({ ...current, groupName: value }))}
+                            className="min-w-0 flex-1"
+                          />
+                          <Button
+                            type="button"
+                            size="icon"
+                            variant={hasGroupSettings(draft.groupName) ? 'secondary' : 'outline'}
+                            className="shrink-0 rounded-full"
+                            aria-label={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
+                            title={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
+                            onClick={() => openGroupNoteEditor(draft.groupName)}
+                            disabled={!writesEnabled || !normalizeGroupName(draft.groupName)}
+                          >
+                            <AppIcon name="file-document-edit-outline" className="h-4 w-4" aria-hidden />
+                          </Button>
+                        </div>
+                      </label>
+                      <div className="md:col-span-2">
+                        <MotherAccountToggle
+                          checked={draft.isMother}
+                          disabled={!writesEnabled}
+                          label={t('accountPool.upstreamAccounts.mother.toggleLabel')}
+                          description={t('accountPool.upstreamAccounts.mother.toggleDescription')}
+                          onToggle={() => setDraft((current) => ({ ...current, isMother: !current.isMother }))}
+                        />
+                      </div>
+                      <label className="field md:col-span-2">
+                        <span className="field-label">{t('accountPool.upstreamAccounts.fields.note')}</span>
+                        <textarea
+                          className="min-h-24 rounded-xl border border-base-300 bg-base-100 px-3 py-2 text-sm text-base-content shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100"
+                          name="detailNote"
+                          value={draft.note}
+                          onChange={(event) => setDraft((current) => ({ ...current, note: event.target.value }))}
+                        />
+                      </label>
+                      <div className="md:col-span-2">
+                        <AccountTagField
+                          tags={tagItems}
+                          selectedTagIds={draft.tagIds}
+                          writesEnabled={writesEnabled}
+                          pageCreatedTagIds={pageCreatedTagIds}
+                          labels={tagFieldLabels}
+                          onChange={(tagIds) => setDraft((current) => ({ ...current, tagIds }))}
+                          onCreateTag={handleCreateTag}
+                          onUpdateTag={updateTag}
+                          onDeleteTag={handleDeleteTag}
+                        />
+                      </div>
+                      {selectedDetail.kind === 'api_key_codex' ? (
+                        <>
+                          <label className="field">
+                            <span className="field-label">{t('accountPool.upstreamAccounts.fields.primaryLimit')}</span>
+                            <Input
+                              name="detailPrimaryLimit"
+                              value={draft.localPrimaryLimit}
+                              onChange={(event) => setDraft((current) => ({ ...current, localPrimaryLimit: event.target.value }))}
+                            />
+                          </label>
+                          <label className="field">
+                            <span className="field-label">{t('accountPool.upstreamAccounts.fields.secondaryLimit')}</span>
+                            <Input
+                              name="detailSecondaryLimit"
+                              value={draft.localSecondaryLimit}
+                              onChange={(event) => setDraft((current) => ({ ...current, localSecondaryLimit: event.target.value }))}
+                            />
+                          </label>
+                          <label className="field">
+                            <span className="field-label">{t('accountPool.upstreamAccounts.fields.limitUnit')}</span>
+                            <Input
+                              name="detailLimitUnit"
+                              value={draft.localLimitUnit}
+                              onChange={(event) => setDraft((current) => ({ ...current, localLimitUnit: event.target.value }))}
+                            />
+                          </label>
+                          <label className="field">
+                            <FormFieldFeedback
+                              label={t('accountPool.upstreamAccounts.fields.upstreamBaseUrl')}
+                              message={draftUpstreamBaseUrlError}
+                              messageClassName="md:max-w-[min(20rem,calc(100%-8rem))]"
+                            />
+                            <div className="relative">
+                              <Input
+                                name="detailUpstreamBaseUrl"
+                                value={draft.upstreamBaseUrl}
+                                onChange={(event) => setDraft((current) => ({ ...current, upstreamBaseUrl: event.target.value }))}
+                                placeholder={t('accountPool.upstreamAccounts.fields.upstreamBaseUrlPlaceholder')}
+                                aria-invalid={draftUpstreamBaseUrlError ? 'true' : 'false'}
+                                className={cn(draftUpstreamBaseUrlError ? 'border-error/70 focus-visible:ring-error' : '')}
+                              />
+                            </div>
+                          </label>
+                          <label className="field">
+                            <span className="field-label">{t('accountPool.upstreamAccounts.fields.rotateApiKey')}</span>
+                            <Input
+                              name="detailRotateApiKey"
+                              value={draft.apiKey}
+                              onChange={(event) => setDraft((current) => ({ ...current, apiKey: event.target.value }))}
+                              placeholder={t('accountPool.upstreamAccounts.fields.rotateApiKeyPlaceholder')}
+                            />
+                          </label>
+                        </>
+                      ) : null}
+                      <div className="md:col-span-2 flex justify-end">
+                        <Button
+                          type="button"
+                          onClick={() => void handleSave(selectedDetail)}
+                          disabled={
+                            hasBusyAccountAction(busyAction, selectedDetail.id) ||
+                            !writesEnabled ||
+                            detailDisplayNameConflict != null ||
+                            (selectedDetail.kind === 'api_key_codex' && Boolean(draftUpstreamBaseUrlError))
+                          }
+                        >
+                          {isBusyAction(busyAction, 'save', selectedDetail.id) ? (
+                            <Spinner size="sm" className="mr-2" />
+                          ) : (
+                            <AppIcon name="content-save-outline" className="mr-2 h-4 w-4" aria-hidden />
+                          )}
+                          {t('accountPool.upstreamAccounts.actions.save')}
+                        </Button>
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+              ) : null}
+
+              {detailTab === 'routing' ? (
+                <div
+                  id={detailTabIds.routing.panel}
+                  role="tabpanel"
+                  aria-labelledby={detailTabIds.routing.tab}
+                  className="grid gap-5"
+                >
+                  <EffectiveRoutingRuleCard
+                    rule={selectedDetail.effectiveRoutingRule}
+                    labels={{
+                      title: t('accountPool.upstreamAccounts.effectiveRule.title'),
+                      description: t('accountPool.upstreamAccounts.effectiveRule.description'),
+                      noTags: t('accountPool.upstreamAccounts.effectiveRule.noTags'),
+                      guardEnabled: t('accountPool.upstreamAccounts.effectiveRule.guardEnabled'),
+                      guardDisabled: t('accountPool.upstreamAccounts.effectiveRule.guardDisabled'),
+                      allowCutOut: t('accountPool.upstreamAccounts.effectiveRule.allowCutOut'),
+                      denyCutOut: t('accountPool.upstreamAccounts.effectiveRule.denyCutOut'),
+                      allowCutIn: t('accountPool.upstreamAccounts.effectiveRule.allowCutIn'),
+                      denyCutIn: t('accountPool.upstreamAccounts.effectiveRule.denyCutIn'),
+                      sourceTags: t('accountPool.upstreamAccounts.effectiveRule.sourceTags'),
+                      guardRule: (hours, count) => t('accountPool.upstreamAccounts.effectiveRule.guardRule', { hours, count }),
+                      allGuardsApply: t('accountPool.upstreamAccounts.effectiveRule.allGuardsApply'),
+                    }}
+                  />
+
+                  <Card className="border-base-300/80 bg-base-100/72">
+                    <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                      <div>
+                        <CardTitle>{t('accountPool.upstreamAccounts.stickyConversations.title')}</CardTitle>
+                        <CardDescription>{t('accountPool.upstreamAccounts.stickyConversations.description')}</CardDescription>
+                      </div>
+                      <SelectField
+                        label={t('accountPool.upstreamAccounts.stickyConversations.limitLabel')}
+                        className="w-36"
+                        name="stickyConversationLimit"
+                        size="sm"
+                        value={String(stickyConversationLimit)}
+                        options={STICKY_CONVERSATION_LIMIT_OPTIONS.map((value) => ({
+                          value: String(value),
+                          label: t('accountPool.upstreamAccounts.stickyConversations.limitOption', { count: value }),
+                        }))}
+                        onValueChange={(value) => setStickyConversationLimit(Number(value))}
+                      />
+                    </CardHeader>
+                    <CardContent>
+                      <StickyKeyConversationTable
+                        stats={stickyConversationStats}
+                        isLoading={stickyConversationLoading}
+                        error={stickyConversationError}
+                      />
+                    </CardContent>
+                  </Card>
+                </div>
+              ) : null}
+
+              {detailTab === 'healthEvents' ? (
+                <div
+                  id={detailTabIds.healthEvents.panel}
+                  role="tabpanel"
+                  aria-labelledby={detailTabIds.healthEvents.tab}
+                  className="grid gap-5"
+                >
+                  <Card className="border-base-300/80 bg-base-100/72">
+                    <CardHeader>
+                      <CardTitle>{t('accountPool.upstreamAccounts.healthTitle')}</CardTitle>
+                      <CardDescription>{t('accountPool.upstreamAccounts.healthDescription')}</CardDescription>
+                    </CardHeader>
+                    <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                      <DetailField label={t('accountPool.upstreamAccounts.fields.lastSyncedAt')} value={formatDateTime(selectedDetail.lastSyncedAt)} />
+                      <DetailField label={t('accountPool.upstreamAccounts.fields.lastRefreshedAt')} value={formatDateTime(selectedDetail.lastRefreshedAt)} />
+                      <DetailField label={t('accountPool.upstreamAccounts.fields.tokenExpiresAt')} value={formatDateTime(selectedDetail.tokenExpiresAt)} />
+                      <DetailField
+                        label={t('accountPool.upstreamAccounts.fields.compactSupport')}
+                        value={
+                          selectedDetail.compactSupport?.status === 'supported'
+                            ? t('accountPool.upstreamAccounts.compactSupport.status.supported')
+                            : selectedDetail.compactSupport?.status === 'unsupported'
+                              ? t('accountPool.upstreamAccounts.compactSupport.status.unsupported')
+                              : t('accountPool.upstreamAccounts.compactSupport.status.unknown')
+                        }
+                      />
+                      <DetailField
+                        label={t('accountPool.upstreamAccounts.fields.credits')}
+                        value={selectedDetail.credits?.balance ? `${selectedDetail.credits.balance}` : selectedDetail.credits?.unlimited ? t('accountPool.upstreamAccounts.unlimited') : t('accountPool.upstreamAccounts.unavailable')}
+                      />
+                      <DetailField
+                        label={t('accountPool.upstreamAccounts.fields.compactObservedAt')}
+                        value={formatDateTime(selectedDetail.compactSupport?.observedAt)}
+                      />
+                      <DetailField
+                        label={t('accountPool.upstreamAccounts.fields.compactReason')}
+                        value={selectedDetail.compactSupport?.reason ?? t('accountPool.upstreamAccounts.unavailable')}
+                      />
+                      <div className="md:col-span-2 xl:col-span-4 rounded-[1.2rem] border border-base-300/80 bg-base-100/75 p-4">
+                        {selectedRecoveryHint ? (
+                          <Alert variant="warning" className="mb-4">
+                            <AppIcon name="alert-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                            <div>
+                              <p className="font-semibold text-warning">
+                                {t(selectedRecoveryHint.titleKey)}
+                              </p>
+                              <p className="mt-1 text-sm text-warning/90">
+                                {t(selectedRecoveryHint.bodyKey)}
+                              </p>
+                            </div>
+                          </Alert>
+                        ) : null}
+                        <p className="metric-label">{t('accountPool.upstreamAccounts.latestAction.title')}</p>
+                        {selectedDetail.lastAction ? (
+                          <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                            <DetailField
+                              label={t('accountPool.upstreamAccounts.latestAction.fields.action')}
+                              value={accountActionLabel(selectedDetail.lastAction) ?? t('accountPool.upstreamAccounts.latestAction.empty')}
+                            />
+                            <DetailField
+                              label={t('accountPool.upstreamAccounts.latestAction.fields.source')}
+                              value={
+                                accountActionSourceLabel(selectedDetail.lastActionSource)
+                                ?? t('accountPool.upstreamAccounts.latestAction.unknown')
+                              }
+                            />
+                            <DetailField
+                              label={t('accountPool.upstreamAccounts.latestAction.fields.reason')}
+                              value={
+                                accountActionReasonLabel(selectedDetail.lastActionReasonCode)
+                                ?? t('accountPool.upstreamAccounts.latestAction.unknown')
+                              }
+                            />
+                            <DetailField
+                              label={t('accountPool.upstreamAccounts.latestAction.fields.httpStatus')}
+                              value={
+                                Number.isFinite(selectedDetail.lastActionHttpStatus ?? NaN)
+                                  ? `HTTP ${selectedDetail.lastActionHttpStatus}`
+                                  : t('accountPool.upstreamAccounts.unavailable')
+                              }
+                            />
+                            <DetailField
+                              label={t('accountPool.upstreamAccounts.latestAction.fields.occurredAt')}
+                              value={formatDateTime(selectedDetail.lastActionAt)}
+                            />
+                            <DetailField
+                              label={t('accountPool.upstreamAccounts.latestAction.fields.invokeId')}
+                              value={selectedDetail.lastActionInvokeId ?? t('accountPool.upstreamAccounts.unavailable')}
+                            />
+                            <div className="metric-cell md:col-span-2 xl:col-span-3">
+                              <p className="metric-label">{t('accountPool.upstreamAccounts.latestAction.fields.message')}</p>
+                              <p className="mt-2 break-words text-sm leading-6 text-base-content/80">
+                                {selectedDetail.lastActionReasonMessage ?? selectedDetail.lastError ?? t('accountPool.upstreamAccounts.noError')}
+                              </p>
+                            </div>
+                          </div>
+                        ) : (
+                          <p className="mt-2 text-sm leading-6 text-base-content/75">
+                            {t('accountPool.upstreamAccounts.latestAction.empty')}
+                          </p>
+                        )}
+                      </div>
+                    </CardContent>
+                  </Card>
+
+                  <Card className="border-base-300/80 bg-base-100/72">
+                    <CardHeader>
+                      <CardTitle>{t('accountPool.upstreamAccounts.recentActions.title')}</CardTitle>
+                      <CardDescription>{t('accountPool.upstreamAccounts.recentActions.description')}</CardDescription>
+                    </CardHeader>
+                    <CardContent>
+                      {selectedRecentActions.length === 0 ? (
+                        <p className="text-sm leading-6 text-base-content/68">
+                          {t('accountPool.upstreamAccounts.recentActions.empty')}
+                        </p>
+                      ) : (
+                        <div className="space-y-2">
+                          {selectedRecentActions.map((actionEvent) => (
+                            <div
+                              key={actionEvent.id}
+                              className="rounded-[1rem] border border-base-300/70 bg-base-100/70 p-3"
+                            >
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Badge variant="secondary">
+                                  {accountActionLabel(actionEvent.action) ?? t('accountPool.upstreamAccounts.latestAction.unknown')}
+                                </Badge>
+                                <Badge variant="secondary">
+                                  {accountActionSourceLabel(actionEvent.source) ?? t('accountPool.upstreamAccounts.latestAction.unknown')}
+                                </Badge>
+                                {actionEvent.reasonCode ? (
+                                  <Badge variant="secondary">
+                                    {accountActionReasonLabel(actionEvent.reasonCode)}
+                                  </Badge>
+                                ) : null}
+                                {Number.isFinite(actionEvent.httpStatus ?? NaN) ? (
+                                  <Badge variant="secondary">{`HTTP ${actionEvent.httpStatus}`}</Badge>
+                                ) : null}
+                                <span className="text-xs text-base-content/55">
+                                  {formatDateTime(actionEvent.occurredAt)}
+                                </span>
+                              </div>
+                              {actionEvent.reasonMessage ? (
+                                <p className="mt-2 text-sm leading-6 text-base-content/75">
+                                  {actionEvent.reasonMessage}
+                                </p>
+                              ) : null}
+                              {actionEvent.invokeId ? (
+                                <p className="mt-2 text-xs text-base-content/55">
+                                  {t('accountPool.upstreamAccounts.latestAction.fields.invokeId')}: {actionEvent.invokeId}
+                                </p>
+                              ) : null}
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <AccountDetailSkeleton />
+          )}
+        </AccountDetailDrawerShell>
+      ) : null}
+
+      <UpstreamAccountGroupNoteDialog
+        open={groupNoteEditor.open}
+        container={detailDrawerPortalContainer}
+        groupName={groupNoteEditor.groupName}
+        note={groupNoteEditor.note}
+        boundProxyKeys={groupNoteEditor.boundProxyKeys}
+        availableProxyNodes={forwardProxyNodes}
+        busy={groupNoteBusy}
+        error={groupNoteError}
+        existing={groupNoteEditor.existing}
+        onNoteChange={(value) => {
+          setGroupNoteError(null)
+          setGroupNoteEditor((current) => ({ ...current, note: value }))
+        }}
+        onBoundProxyKeysChange={(value) => {
+          setGroupNoteError(null)
+          setGroupNoteEditor((current) => ({ ...current, boundProxyKeys: value }))
+        }}
+        onClose={closeGroupNoteEditor}
+        onSave={() => void handleSaveGroupNote()}
+        title={t('accountPool.upstreamAccounts.groupNotes.dialogTitle')}
+        existingDescription={t('accountPool.upstreamAccounts.groupNotes.existingDescription')}
+        draftDescription={t('accountPool.upstreamAccounts.groupNotes.draftDescription')}
+        noteLabel={t('accountPool.upstreamAccounts.fields.note')}
+        notePlaceholder={t('accountPool.upstreamAccounts.groupNotes.notePlaceholder')}
+        cancelLabel={t('accountPool.upstreamAccounts.actions.cancel')}
+        saveLabel={t('accountPool.upstreamAccounts.actions.save')}
+        closeLabel={t('accountPool.upstreamAccounts.actions.closeDetails')}
+        existingBadgeLabel={t('accountPool.upstreamAccounts.groupNotes.badges.existing')}
+        draftBadgeLabel={t('accountPool.upstreamAccounts.groupNotes.badges.draft')}
+        proxyBindingsLabel={t('accountPool.upstreamAccounts.groupNotes.proxyBindings.label')}
+        proxyBindingsHint={t('accountPool.upstreamAccounts.groupNotes.proxyBindings.hint')}
+        proxyBindingsAutomaticLabel={t('accountPool.upstreamAccounts.groupNotes.proxyBindings.automatic')}
+        proxyBindingsEmptyLabel={t('accountPool.upstreamAccounts.groupNotes.proxyBindings.empty')}
+        proxyBindingsMissingLabel={t('accountPool.upstreamAccounts.groupNotes.proxyBindings.missing')}
+        proxyBindingsUnavailableLabel={t('accountPool.upstreamAccounts.groupNotes.proxyBindings.unavailable')}
+        proxyBindingsChartLabel={t('accountPool.upstreamAccounts.groupNotes.proxyBindings.chartLabel')}
+        proxyBindingsChartSuccessLabel={t('accountPool.upstreamAccounts.groupNotes.proxyBindings.chartSuccess')}
+        proxyBindingsChartFailureLabel={t('accountPool.upstreamAccounts.groupNotes.proxyBindings.chartFailure')}
+        proxyBindingsChartEmptyLabel={t('accountPool.upstreamAccounts.groupNotes.proxyBindings.chartEmpty')}
+        proxyBindingsChartTotalLabel={t('live.proxy.table.requestTooltip.total')}
+        proxyBindingsChartAriaLabel={t('live.proxy.table.requestTrendAria')}
+        proxyBindingsChartInteractionHint={t('live.chart.tooltip.instructions')}
+        proxyBindingsChartLocaleTag={locale === 'zh' ? 'zh-CN' : 'en-US'}
+      />
+    </>
+  )
+}
+
 export default function UpstreamAccountsPage() {
   const { t } = useTranslation()
   const location = useLocation()
   const navigate = useNavigate()
+  const {
+    upstreamAccountId,
+    openUpstreamAccount,
+    closeUpstreamAccount,
+  } = useUpstreamAccountDetailRoute()
   const [groupFilterQuery, setGroupFilterQuery] = useState('')
   const [selectedTagIds, setSelectedTagIds] = useState<number[]>([])
-  const [workStatusFilter, setWorkStatusFilter] = useState('all')
-  const [enableStatusFilter, setEnableStatusFilter] = useState('all')
-  const [healthStatusFilter, setHealthStatusFilter] = useState('all')
+  const [workStatusFilter, setWorkStatusFilter] = useState<string[]>([])
+  const [enableStatusFilter, setEnableStatusFilter] = useState<string[]>([])
+  const [healthStatusFilter, setHealthStatusFilter] = useState<string[]>([])
   const [page, setPage] = useState(1)
   const [pageSize, setPageSize] = useState(20)
   const [selectedAccountIds, setSelectedAccountIds] = useState<number[]>([])
@@ -721,9 +2156,9 @@ export default function UpstreamAccountsPage() {
           ? undefined
           : normalizedQuery,
       groupUngrouped: normalizedQuery ? normalizedLowerQuery === ungroupedLabel : undefined,
-      workStatus: workStatusFilter === 'all' ? undefined : workStatusFilter,
-      enableStatus: enableStatusFilter === 'all' ? undefined : enableStatusFilter,
-      healthStatus: healthStatusFilter === 'all' ? undefined : healthStatusFilter,
+      workStatus: workStatusFilter.length > 0 ? workStatusFilter : undefined,
+      enableStatus: enableStatusFilter.length > 0 ? enableStatusFilter : undefined,
+      healthStatus: healthStatusFilter.length > 0 ? healthStatusFilter : undefined,
       page,
       pageSize,
       tagIds: selectedTagIds.length > 0 ? selectedTagIds : undefined,
@@ -731,16 +2166,15 @@ export default function UpstreamAccountsPage() {
   }, [enableStatusFilter, groupFilterQuery, healthStatusFilter, page, pageSize, selectedTagIds, t, workStatusFilter])
   const workStatusFilterOptions = useMemo(
     () => [
-      { value: 'all', label: t('accountPool.upstreamAccounts.workStatusFilter.all') },
       { value: 'working', label: t('accountPool.upstreamAccounts.workStatus.working') },
       { value: 'idle', label: t('accountPool.upstreamAccounts.workStatus.idle') },
       { value: 'rate_limited', label: t('accountPool.upstreamAccounts.workStatus.rate_limited') },
+      { value: 'unavailable', label: t('accountPool.upstreamAccounts.workStatus.unavailable') },
     ],
     [t],
   )
   const enableStatusFilterOptions = useMemo(
     () => [
-      { value: 'all', label: t('accountPool.upstreamAccounts.enableStatusFilter.all') },
       { value: 'enabled', label: t('accountPool.upstreamAccounts.enableStatus.enabled') },
       { value: 'disabled', label: t('accountPool.upstreamAccounts.enableStatus.disabled') },
     ],
@@ -748,7 +2182,6 @@ export default function UpstreamAccountsPage() {
   )
   const healthStatusFilterOptions = useMemo(
     () => [
-      { value: 'all', label: t('accountPool.upstreamAccounts.healthStatusFilter.all') },
       { value: 'normal', label: t('accountPool.upstreamAccounts.healthStatus.normal') },
       { value: 'needs_reauth', label: t('accountPool.upstreamAccounts.healthStatus.needs_reauth') },
       {
@@ -772,21 +2205,11 @@ export default function UpstreamAccountsPage() {
     groups = [],
     hasUngroupedAccounts = false,
     writesEnabled,
-    selectedId,
-    selectedSummary,
-    detail,
     isLoading,
-    isDetailLoading,
     listError = null,
-    detailError = null,
-    selectAccount,
     refresh,
-    saveAccount,
-    runSync,
-    removeAccount,
     routing,
     saveRouting,
-    saveGroupNote,
     runBulkAction,
     startBulkSyncJob,
     getBulkSyncJob,
@@ -794,10 +2217,7 @@ export default function UpstreamAccountsPage() {
     total,
     metrics: listMetrics,
   } = useUpstreamAccounts(accountListQuery)
-  const { items: tagItems, createTag, updateTag, deleteTag } = usePoolTags()
-  const notifyMotherSwitches = useMotherSwitchNotifications()
-
-  const [draft, setDraft] = useState<AccountDraft>(buildDraft(null))
+  const { items: tagItems } = usePoolTags()
   const [routingDraft, setRoutingDraft] = useState(() => buildRoutingDraft(null))
   const [actionError, setActionError] = useState<ActionErrorState>(() => ({
     routing: null,
@@ -807,23 +2227,12 @@ export default function UpstreamAccountsPage() {
     routing: false,
     accountActions: new Set(),
   }))
-  const [isDetailDrawerOpen, setIsDetailDrawerOpen] = useState(false)
   const [isRoutingDialogOpen, setIsRoutingDialogOpen] = useState(false)
   const [isRoutingDialogInspectOnly, setIsRoutingDialogInspectOnly] = useState(false)
-  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
-  const [pageCreatedTagIds, setPageCreatedTagIds] = useState<number[]>([])
-  const [stickyConversationLimit, setStickyConversationLimit] = useState<number>(50)
-  const [groupDraftNotes, setGroupDraftNotes] = useState<Record<string, string>>({})
+  const [postCreateWarning, setPostCreateWarning] = useState<string | null>(null)
   const [duplicateWarning, setDuplicateWarning] =
     useState<UpstreamAccountsLocationState['duplicateWarning']>(null)
-  const [groupNoteEditor, setGroupNoteEditor] = useState<GroupNoteEditorState>({
-    open: false,
-    groupName: '',
-    note: '',
-    existing: false,
-  })
-  const [groupNoteBusy, setGroupNoteBusy] = useState(false)
-  const [groupNoteError, setGroupNoteError] = useState<string | null>(null)
+  const [pendingInitialDeleteConfirm, setPendingInitialDeleteConfirm] = useState(false)
   const [bulkActionBusy, setBulkActionBusy] = useState<string | null>(null)
   const [bulkActionMessage, setBulkActionMessage] = useState<string | null>(null)
   const [bulkActionError, setBulkActionError] = useState<string | null>(null)
@@ -838,14 +2247,6 @@ export default function UpstreamAccountsPage() {
   const [bulkSyncError, setBulkSyncError] = useState<string | null>(null)
   const [isBulkSyncStarting, setIsBulkSyncStarting] = useState(false)
   const bulkSyncEventSourceRef = useRef<EventSource | null>(null)
-  const deleteConfirmCancelRef = useRef<HTMLButtonElement | null>(null)
-  const [detailDrawerPortalContainer, setDetailDrawerPortalContainer] = useState<HTMLElement | null>(null)
-  const [detailTab, setDetailTab] = useState<AccountDetailTab>('overview')
-  const skipNextDeleteConfirmResetRef = useRef(false)
-  const deleteConfirmTitleId = useId()
-  const detailDrawerTitleId = 'upstream-account-detail-title'
-  const detailDrawerTabsBaseId = useId()
-  const selectedIdRef = useRef<number | null>(selectedId)
   const selectedAccountIdSet = useMemo(() => new Set(selectedAccountIds), [selectedAccountIds])
   const routingWritesEnabled = routing
     ? (routing.writesEnabled ?? writesEnabled)
@@ -860,10 +2261,6 @@ export default function UpstreamAccountsPage() {
   }
   const effectiveTotal = total ?? effectiveMetrics.total
   const pageCount = Math.max(1, Math.ceil(effectiveTotal / Math.max(pageSize, 1)))
-
-  useEffect(() => {
-    selectedIdRef.current = selectedId
-  }, [selectedId])
 
   const clearBulkSelection = useCallback(() => {
     setSelectedAccountIds([])
@@ -884,19 +2281,19 @@ export default function UpstreamAccountsPage() {
     clearBulkSelection()
   }, [clearBulkSelection])
 
-  const handleWorkStatusFilterChange = useCallback((value: string) => {
+  const handleWorkStatusFilterChange = useCallback((value: string[]) => {
     setWorkStatusFilter(value)
     setPage(1)
     clearBulkSelection()
   }, [clearBulkSelection])
 
-  const handleEnableStatusFilterChange = useCallback((value: string) => {
+  const handleEnableStatusFilterChange = useCallback((value: string[]) => {
     setEnableStatusFilter(value)
     setPage(1)
     clearBulkSelection()
   }, [clearBulkSelection])
 
-  const handleHealthStatusFilterChange = useCallback((value: string) => {
+  const handleHealthStatusFilterChange = useCallback((value: string[]) => {
     setHealthStatusFilter(value)
     setPage(1)
     clearBulkSelection()
@@ -919,44 +2316,11 @@ export default function UpstreamAccountsPage() {
     bulkSyncEventSourceRef.current = null
   }, [])
 
-  const draftUpstreamBaseUrlError = useMemo(() => {
-    const code = validateUpstreamBaseUrl(draft.upstreamBaseUrl)
-    if (code === 'invalid_absolute_url') {
-      return t('accountPool.upstreamAccounts.validation.upstreamBaseUrlInvalid')
-    }
-    if (code === 'query_or_fragment_not_allowed') {
-      return t('accountPool.upstreamAccounts.validation.upstreamBaseUrlNoQueryOrFragment')
-    }
-    return null
-  }, [draft.upstreamBaseUrl, t])
-
-  useEffect(() => {
-    setDraft(buildDraft(detail))
-  }, [detail])
-
-  useEffect(() => {
-    if (!selectedSummary && !detail) {
-      setIsDetailDrawerOpen(false)
-    }
-  }, [detail, selectedSummary])
-
-  useEffect(() => {
-    if (!isDetailDrawerOpen) {
-      setDetailTab('overview')
-    }
-  }, [isDetailDrawerOpen])
-
-  useEffect(() => {
-    setDetailTab('overview')
-  }, [selectedId])
-
-  useEffect(() => {
-    if (skipNextDeleteConfirmResetRef.current) {
-      skipNextDeleteConfirmResetRef.current = false
-      return
-    }
-    setIsDeleteConfirmOpen(false)
-  }, [selectedId, isDetailDrawerOpen])
+  const clearBulkSyncProgress = useCallback(() => {
+    setBulkSyncSnapshot(null)
+    setBulkSyncCounts(null)
+    setBulkSyncError(null)
+  }, [])
 
   useEffect(() => {
     if (isRoutingDialogOpen && !routing) {
@@ -995,12 +2359,6 @@ export default function UpstreamAccountsPage() {
   ])
 
   useEffect(() => {
-    if (!writesEnabled) {
-      setIsDeleteConfirmOpen(false)
-    }
-  }, [writesEnabled])
-
-  useEffect(() => {
     setSelectedAccountSummaries((current) => {
       const currentPageMap = new Map(items.map((item) => [item.id, item]))
       const next: Record<number, UpstreamAccountSummary> = {}
@@ -1021,16 +2379,6 @@ export default function UpstreamAccountsPage() {
       return next
     })
   }, [items, selectedAccountIds])
-
-  useEffect(() => {
-    setGroupDraftNotes((current) => {
-      const nextEntries = Object.entries(current).filter(([groupName]) => !isExistingGroup(groups, groupName))
-      if (nextEntries.length === Object.keys(current).length) {
-        return current
-      }
-      return Object.fromEntries(nextEntries)
-    })
-  }, [groups])
 
   useEffect(() => {
     const validTagIds = new Set(tagItems.map((tag) => tag.id))
@@ -1054,33 +2402,32 @@ export default function UpstreamAccountsPage() {
 
   useEffect(() => {
     const state = location.state as UpstreamAccountsLocationState | null
-    if (!state?.selectedAccountId) return
+    if (!state) return
 
-    skipNextDeleteConfirmResetRef.current = Boolean(state.openDeleteConfirm)
-    selectAccount(state.selectedAccountId)
-    setIsDetailDrawerOpen(Boolean(state.openDetail))
-    setIsDeleteConfirmOpen(Boolean(state.openDeleteConfirm))
+    const nextSearchParams = new URLSearchParams(location.search)
+    if (typeof state.selectedAccountId === 'number' && state.openDetail) {
+      nextSearchParams.set('upstreamAccountId', String(state.selectedAccountId))
+      openUpstreamAccount(state.selectedAccountId, { replace: true })
+    }
+    setPostCreateWarning(state.postCreateWarning ?? null)
     setDuplicateWarning(state.duplicateWarning ?? null)
-    navigate(location.pathname, { replace: true, state: null })
-  }, [location.pathname, location.state, navigate, selectAccount])
+    if (state.openDeleteConfirm) {
+      setPendingInitialDeleteConfirm(true)
+    }
+    navigate(
+      {
+        pathname: location.pathname,
+        search: nextSearchParams.toString() ? `?${nextSearchParams.toString()}` : '',
+      },
+      { replace: true, state: null },
+    )
+  }, [location.pathname, location.search, location.state, navigate, openUpstreamAccount])
 
   useEffect(() => {
     if (!duplicateWarning) return
-    if (duplicateWarning.accountId === selectedId) return
+    if (upstreamAccountId == null || duplicateWarning.accountId === upstreamAccountId) return
     setDuplicateWarning(null)
-  }, [duplicateWarning, selectedId])
-
-  const handleCreateTag = async (payload: Parameters<typeof createTag>[0]) => {
-    const detail = await createTag(payload)
-    setPageCreatedTagIds((current) => (current.includes(detail.id) ? current : [...current, detail.id]))
-    return detail
-  }
-
-  const handleDeleteTag = async (tagId: number) => {
-    await deleteTag(tagId)
-    setPageCreatedTagIds((current) => current.filter((value) => value !== tagId))
-    setDraft((current) => ({ ...current, tagIds: current.tagIds.filter((value) => value !== tagId) }))
-  }
+  }, [duplicateWarning, upstreamAccountId])
 
   const metrics = useMemo(() => {
     return [
@@ -1098,76 +2445,10 @@ export default function UpstreamAccountsPage() {
 
   const availableGroups = useMemo(() => {
     return {
-      names: buildGroupNameSuggestions(items.map((item) => item.groupName), groups, groupDraftNotes),
+      names: buildGroupNameSuggestions(items.map((item) => item.groupName), groups, {}),
       hasUngrouped: hasUngroupedAccounts,
     }
-  }, [groupDraftNotes, groups, hasUngroupedAccounts, items])
-
-  const resolveGroupNoteForName = (groupName: string) => resolveGroupNote(groups, groupDraftNotes, groupName)
-  const resolvePendingGroupNoteForName = (groupName: string) => {
-    const normalized = normalizeGroupName(groupName)
-    if (!normalized || isExistingGroup(groups, normalized)) return ''
-    return groupDraftNotes[normalized]?.trim() ?? ''
-  }
-  const hasGroupNote = (groupName: string) => resolveGroupNoteForName(groupName).trim().length > 0
-
-  const openGroupNoteEditor = (groupName: string) => {
-    if (!writesEnabled) return
-    const normalized = normalizeGroupName(groupName)
-    if (!normalized) return
-    setGroupNoteError(null)
-    setGroupNoteEditor({
-      open: true,
-      groupName: normalized,
-      note: resolveGroupNoteForName(normalized),
-      existing: isExistingGroup(groups, normalized),
-    })
-  }
-
-  const closeGroupNoteEditor = () => {
-    if (groupNoteBusy) return
-    setGroupNoteEditor((current) => ({ ...current, open: false }))
-    setGroupNoteError(null)
-  }
-
-  const handleSaveGroupNote = async () => {
-    if (!writesEnabled) return
-    const normalizedGroupName = normalizeGroupName(groupNoteEditor.groupName)
-    if (!normalizedGroupName) return
-    const normalizedNote = groupNoteEditor.note.trim()
-    setGroupNoteError(null)
-    if (!groupNoteEditor.existing) {
-      setGroupDraftNotes((current) => {
-        const next = { ...current }
-        if (normalizedNote) {
-          next[normalizedGroupName] = normalizedNote
-        } else {
-          delete next[normalizedGroupName]
-        }
-        return next
-      })
-      setGroupNoteEditor((current) => ({ ...current, open: false }))
-      return
-    }
-
-    setGroupNoteBusy(true)
-    try {
-      await saveGroupNote(normalizedGroupName, {
-        note: normalizedNote || undefined,
-      })
-      setGroupDraftNotes((current) => {
-        if (!(normalizedGroupName in current)) return current
-        const next = { ...current }
-        delete next[normalizedGroupName]
-        return next
-      })
-      setGroupNoteEditor((current) => ({ ...current, open: false }))
-    } catch (err) {
-      setGroupNoteError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setGroupNoteBusy(false)
-    }
-  }
+  }, [groups, hasUngroupedAccounts, items])
 
   const groupFilterSuggestions = useMemo(() => {
     const suggestions = [t('accountPool.upstreamAccounts.groupFilter.all'), ...availableGroups.names]
@@ -1177,35 +2458,6 @@ export default function UpstreamAccountsPage() {
     return suggestions
   }, [availableGroups, t])
 
-  const {
-    stats: stickyConversationStats,
-    isLoading: stickyConversationLoading,
-    error: stickyConversationError,
-  } = useUpstreamStickyConversations(selectedId, stickyConversationLimit, Boolean(selectedId && isDetailDrawerOpen))
-
-  const selectedDetail = detail?.id === selectedId ? detail : null
-  const selected = selectedDetail ?? selectedSummary
-  const selectedPlanBadge = upstreamPlanBadgeRecipe(selected?.planType)
-  const detailTabIds = {
-    overview: {
-      tab: `${detailDrawerTabsBaseId}-overview-tab`,
-      panel: `${detailDrawerTabsBaseId}-overview-panel`,
-    },
-    edit: {
-      tab: `${detailDrawerTabsBaseId}-edit-tab`,
-      panel: `${detailDrawerTabsBaseId}-edit-panel`,
-    },
-    routing: {
-      tab: `${detailDrawerTabsBaseId}-routing-tab`,
-      panel: `${detailDrawerTabsBaseId}-routing-panel`,
-    },
-    healthEvents: {
-      tab: `${detailDrawerTabsBaseId}-health-events-tab`,
-      panel: `${detailDrawerTabsBaseId}-health-events-panel`,
-    },
-  } as const
-  const visibleAccountActionError =
-    typeof selectedId === 'number' ? actionError.accountMessages[selectedId] ?? null : null
   const visibleRoutingError = actionError.routing
   const resolvedRoutingMaintenance = useMemo(
     () => resolveRoutingMaintenance(routing?.maintenance),
@@ -1276,11 +2528,6 @@ export default function UpstreamAccountsPage() {
     routingDialogCanEdit &&
     !routingDraftValidationError &&
     (routingHasMaintenanceChange || routingHasTimeoutChange || routingHasApiKeyChange)
-  const selectedRecoveryHint = resolveOauthRecoveryHint(
-    selectedDetail?.kind ?? selected?.kind ?? '',
-    accountHealthStatus(selectedDetail ?? selected),
-    selectedDetail?.lastError ?? selected?.lastError,
-  )
   const formatDuplicateReasons = (
     duplicateInfo?: UpstreamAccountDuplicateInfo | null,
   ) => {
@@ -1329,15 +2576,6 @@ export default function UpstreamAccountsPage() {
     const translated = t(key)
     return translated === key ? reason : translated
   }
-  const selectedRecentActions = selectedDetail?.recentActions ?? []
-  const accountKindLabel = (kind: string) =>
-    kind === 'oauth_codex'
-      ? t('accountPool.upstreamAccounts.kind.oauth')
-      : t('accountPool.upstreamAccounts.kind.apiKey')
-  const detailDisplayNameConflict = useMemo(
-    () => findDisplayNameConflict(items, draft.displayName, selectedDetail?.id ?? null),
-    [draft.displayName, items, selectedDetail?.id],
-  )
   const bulkRemovableTagIds = useMemo(() => {
     const removableIds = new Set<number>()
     for (const summary of Object.values(selectedAccountSummaries)) {
@@ -1355,158 +2593,8 @@ export default function UpstreamAccountsPage() {
     () => tagItems.filter((tag) => !bulkRemovableTagIdSet.has(tag.id)).map((tag) => tag.id),
     [bulkRemovableTagIdSet, tagItems],
   )
-  const tagFieldLabels = {
-    label: t('accountPool.tags.field.label'),
-    add: t('accountPool.tags.field.add'),
-    empty: t('accountPool.tags.field.empty'),
-    searchPlaceholder: t('accountPool.tags.field.searchPlaceholder'),
-    searchEmpty: t('accountPool.tags.field.searchEmpty'),
-    createInline: (value: string) => t('accountPool.tags.field.createInline', { value: value || t('accountPool.tags.field.newTag') }),
-    selectedFromCurrentPage: t('accountPool.tags.field.currentPage'),
-    remove: t('accountPool.tags.field.remove'),
-    deleteAndRemove: t('accountPool.tags.field.deleteAndRemove'),
-    edit: t('accountPool.tags.field.edit'),
-    createTitle: t('accountPool.tags.dialog.createTitle'),
-    editTitle: t('accountPool.tags.dialog.editTitle'),
-    dialogDescription: t('accountPool.tags.dialog.description'),
-    name: t('accountPool.tags.dialog.name'),
-    namePlaceholder: t('accountPool.tags.dialog.namePlaceholder'),
-    guardEnabled: t('accountPool.tags.dialog.guardEnabled'),
-    lookbackHours: t('accountPool.tags.dialog.lookbackHours'),
-    maxConversations: t('accountPool.tags.dialog.maxConversations'),
-    allowCutOut: t('accountPool.tags.dialog.allowCutOut'),
-    allowCutIn: t('accountPool.tags.dialog.allowCutIn'),
-    cancel: t('accountPool.tags.dialog.cancel'),
-    save: t('accountPool.tags.dialog.save'),
-    createAction: t('accountPool.tags.dialog.createAction'),
-    validation: t('accountPool.tags.dialog.validation'),
-  }
   const handleSelectAccount = (accountId: number) => {
-    setIsDetailDrawerOpen(true)
-    selectAccount(accountId)
-  }
-  const handleCloseDetailDrawer = () => {
-    setIsDetailDrawerOpen(false)
-  }
-
-  const handleOauthLogin = async (accountId: number) => {
-    navigate(`/account-pool/upstream-accounts/new?accountId=${accountId}`)
-  }
-
-  const notifyMotherChange = (updated: UpstreamAccountSummary) => {
-    const nextItems = applyMotherUpdateToItems(items, updated)
-    notifyMotherSwitches(items, nextItems)
-  }
-
-  const handleSave = async (source: UpstreamAccountDetail) => {
-    if (source.kind === 'api_key_codex' && draftUpstreamBaseUrlError) return
-    if (hasBusyAccountAction(busyAction, source.id)) return
-    setActionError((current) => {
-      const nextMessages = { ...current.accountMessages }
-      delete nextMessages[source.id]
-      return { ...current, accountMessages: nextMessages }
-    })
-    setBusyAction((current) => {
-      const nextActions = new Set(current.accountActions)
-      nextActions.add(createBusyActionKey('save', source.id))
-      return { ...current, accountActions: nextActions }
-    })
-    try {
-      const response = await saveAccount(source.id, {
-        displayName: draft.displayName.trim() || undefined,
-        groupName: draft.groupName.trim(),
-        isMother: draft.isMother,
-        note: draft.note.trim() || undefined,
-        tagIds: draft.tagIds,
-        groupNote: resolvePendingGroupNoteForName(draft.groupName) || undefined,
-        upstreamBaseUrl:
-          source.kind === 'api_key_codex' ? draft.upstreamBaseUrl.trim() || null : undefined,
-        apiKey: source.kind === 'api_key_codex' && draft.apiKey.trim() ? draft.apiKey.trim() : undefined,
-        localPrimaryLimit: source.kind === 'api_key_codex' ? normalizeNumberInput(draft.localPrimaryLimit) : undefined,
-        localSecondaryLimit: source.kind === 'api_key_codex' ? normalizeNumberInput(draft.localSecondaryLimit) : undefined,
-        localLimitUnit: source.kind === 'api_key_codex' ? draft.localLimitUnit.trim() || undefined : undefined,
-      })
-      notifyMotherChange(response)
-      if (selectedIdRef.current === source.id) {
-        setDraft((current) => ({ ...current, apiKey: '' }))
-      }
-    } catch (err) {
-      setActionError((current) => ({
-        ...current,
-        accountMessages: {
-          ...current.accountMessages,
-          [source.id]: err instanceof Error ? err.message : String(err),
-        },
-      }))
-    } finally {
-      setBusyAction((current) => {
-        const nextActions = new Set(current.accountActions)
-        nextActions.delete(createBusyActionKey('save', source.id))
-        return { ...current, accountActions: nextActions }
-      })
-    }
-  }
-
-  const handleSync = async (source: UpstreamAccountSummary) => {
-    if (hasBusyAccountAction(busyAction, source.id)) return
-    setActionError((current) => {
-      const nextMessages = { ...current.accountMessages }
-      delete nextMessages[source.id]
-      return { ...current, accountMessages: nextMessages }
-    })
-    setBusyAction((current) => {
-      const nextActions = new Set(current.accountActions)
-      nextActions.add(createBusyActionKey('sync', source.id))
-      return { ...current, accountActions: nextActions }
-    })
-    try {
-      await runSync(source.id)
-    } catch (err) {
-      setActionError((current) => ({
-        ...current,
-        accountMessages: {
-          ...current.accountMessages,
-          [source.id]: err instanceof Error ? err.message : String(err),
-        },
-      }))
-    } finally {
-      setBusyAction((current) => {
-        const nextActions = new Set(current.accountActions)
-        nextActions.delete(createBusyActionKey('sync', source.id))
-        return { ...current, accountActions: nextActions }
-      })
-    }
-  }
-
-  const handleToggleEnabled = async (source: UpstreamAccountSummary, enabled: boolean) => {
-    if (hasBusyAccountAction(busyAction, source.id)) return
-    setActionError((current) => {
-      const nextMessages = { ...current.accountMessages }
-      delete nextMessages[source.id]
-      return { ...current, accountMessages: nextMessages }
-    })
-    setBusyAction((current) => {
-      const nextActions = new Set(current.accountActions)
-      nextActions.add(createBusyActionKey('toggle', source.id))
-      return { ...current, accountActions: nextActions }
-    })
-    try {
-      await saveAccount(source.id, { enabled })
-    } catch (err) {
-      setActionError((current) => ({
-        ...current,
-        accountMessages: {
-          ...current.accountMessages,
-          [source.id]: err instanceof Error ? err.message : String(err),
-        },
-      }))
-    } finally {
-      setBusyAction((current) => {
-        const nextActions = new Set(current.accountActions)
-        nextActions.delete(createBusyActionKey('toggle', source.id))
-        return { ...current, accountActions: nextActions }
-      })
-    }
+    openUpstreamAccount(accountId)
   }
 
 
@@ -1578,41 +2666,6 @@ export default function UpstreamAccountsPage() {
       }))
     } finally {
       setBusyAction((current) => ({ ...current, routing: false }))
-    }
-  }
-
-  const handleDelete = async (source: UpstreamAccountSummary) => {
-    if (hasBusyAccountAction(busyAction, source.id)) return
-    setIsDeleteConfirmOpen(false)
-    setActionError((current) => {
-      const nextMessages = { ...current.accountMessages }
-      delete nextMessages[source.id]
-      return { ...current, accountMessages: nextMessages }
-    })
-    setBusyAction((current) => {
-      const nextActions = new Set(current.accountActions)
-      nextActions.add(createBusyActionKey('delete', source.id))
-      return { ...current, accountActions: nextActions }
-    })
-    try {
-      await removeAccount(source.id)
-      if (selectedIdRef.current === source.id) {
-        setIsDetailDrawerOpen(false)
-      }
-    } catch (err) {
-      setActionError((current) => ({
-        ...current,
-        accountMessages: {
-          ...current.accountMessages,
-          [source.id]: err instanceof Error ? err.message : String(err),
-        },
-      }))
-    } finally {
-      setBusyAction((current) => {
-        const nextActions = new Set(current.accountActions)
-        nextActions.delete(createBusyActionKey('delete', source.id))
-        return { ...current, accountActions: nextActions }
-      })
     }
   }
 
@@ -1689,6 +2742,31 @@ export default function UpstreamAccountsPage() {
     setBulkActionError(null)
   }, [])
 
+  const applyBulkSyncTerminalState = useCallback((
+    nextSnapshot: BulkUpstreamAccountSyncSnapshot,
+    nextCounts: BulkUpstreamAccountSyncCounts | null,
+    options?: {
+      error?: string | null
+      status?: BulkUpstreamAccountSyncSnapshot['status']
+    },
+  ) => {
+    const resolvedSnapshot = options?.status
+      ? withBulkSyncSnapshotStatus(nextSnapshot, options.status)
+      : nextSnapshot
+    const resolvedCounts = resolveBulkSyncCounts(resolvedSnapshot, nextCounts)
+    const shouldHide = shouldAutoHideBulkSyncProgress(resolvedSnapshot, resolvedCounts)
+
+    closeBulkSyncEventSource()
+    if (shouldHide) {
+      clearBulkSyncProgress()
+    } else {
+      setBulkSyncSnapshot(resolvedSnapshot)
+      setBulkSyncCounts(resolvedCounts)
+      setBulkSyncError(options?.error ?? null)
+    }
+    void refresh()
+  }, [clearBulkSyncProgress, closeBulkSyncEventSource, refresh])
+
   const handleStartBulkSync = useCallback(async () => {
     if (selectedAccountIds.length === 0 || isBulkSyncBusy) return
     setIsBulkSyncStarting(true)
@@ -1731,44 +2809,41 @@ export default function UpstreamAccountsPage() {
         nextSnapshot: BulkUpstreamAccountSyncSnapshot,
         nextCounts: BulkUpstreamAccountSyncCounts,
         error?: string,
+        status?: BulkUpstreamAccountSyncSnapshot['status'],
       ) => {
-        setBulkSyncSnapshot(nextSnapshot)
-        setBulkSyncCounts(nextCounts)
-        setBulkSyncError(error ?? null)
-        closeBulkSyncEventSource()
-        void refresh()
+        applyBulkSyncTerminalState(nextSnapshot, nextCounts, { error, status })
       }
 
       eventSource.addEventListener('completed', (event) => {
         const payload = normalizeBulkUpstreamAccountSyncSnapshotEventPayload(
           JSON.parse((event as MessageEvent<string>).data),
         )
-        handleTerminalEvent(payload.snapshot, payload.counts)
+        handleTerminalEvent(payload.snapshot, payload.counts, undefined, 'completed')
       })
 
       eventSource.addEventListener('cancelled', (event) => {
         const payload = normalizeBulkUpstreamAccountSyncSnapshotEventPayload(
           JSON.parse((event as MessageEvent<string>).data),
         )
-        handleTerminalEvent(payload.snapshot, payload.counts)
+        handleTerminalEvent(payload.snapshot, payload.counts, undefined, 'cancelled')
       })
 
       eventSource.addEventListener('failed', (event) => {
         const payload = normalizeBulkUpstreamAccountSyncFailedEventPayload(
           JSON.parse((event as MessageEvent<string>).data),
         )
-        handleTerminalEvent(payload.snapshot, payload.counts, payload.error)
+        handleTerminalEvent(payload.snapshot, payload.counts, payload.error, 'failed')
       })
 
       eventSource.onerror = () => {
         void getBulkSyncJob(created.jobId)
           .then((latest) => {
+            if (latest.snapshot.status !== 'running') {
+              applyBulkSyncTerminalState(latest.snapshot, latest.counts)
+              return
+            }
             setBulkSyncSnapshot(latest.snapshot)
             setBulkSyncCounts(latest.counts)
-            if (latest.snapshot.status !== 'running') {
-              closeBulkSyncEventSource()
-              void refresh()
-            }
           })
           .catch((err) => {
             setBulkSyncError(err instanceof Error ? err.message : String(err))
@@ -1781,6 +2856,7 @@ export default function UpstreamAccountsPage() {
       setIsBulkSyncStarting(false)
     }
   }, [
+    applyBulkSyncTerminalState,
     closeBulkSyncEventSource,
     getBulkSyncJob,
     isBulkSyncBusy,
@@ -1797,6 +2873,79 @@ export default function UpstreamAccountsPage() {
       setBulkSyncError(err instanceof Error ? err.message : String(err))
     }
   }, [bulkSyncSnapshot?.jobId, bulkSyncSnapshot?.status, stopBulkSyncJob])
+
+  const bulkSyncProgressBubble = bulkSyncSnapshot ? (
+    <div className="pointer-events-none fixed inset-x-3 bottom-3 z-[65] sm:inset-x-auto sm:right-4 sm:w-[min(30rem,calc(100vw-2rem))]">
+      <Card
+        className={cn(
+          'pointer-events-auto overflow-hidden rounded-[1.75rem] border border-base-300/85 bg-base-100/92 shadow-[0_24px_64px_rgba(15,23,42,0.28)] backdrop-blur-xl',
+          bulkSyncSnapshot.status === 'running'
+            ? 'ring-1 ring-primary/20'
+            : 'ring-1 ring-base-300/60',
+        )}
+      >
+        <CardHeader className="flex flex-col gap-3 border-b border-base-300/70 bg-base-100/78 pb-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="space-y-1">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <span className="inline-flex h-8 w-8 items-center justify-center rounded-full bg-primary/12 text-primary">
+                {bulkSyncSnapshot.status === 'running' ? (
+                  <Spinner size="sm" />
+                ) : (
+                  <AppIcon name="refresh" className="h-4 w-4" aria-hidden />
+                )}
+              </span>
+              {t('accountPool.upstreamAccounts.bulk.syncProgressTitle')}
+            </CardTitle>
+            <CardDescription className="text-xs leading-5 text-base-content/72">
+              {t('accountPool.upstreamAccounts.bulk.syncProgressSummary', {
+                completed: bulkSyncCounts?.completed ?? 0,
+                total: bulkSyncCounts?.total ?? bulkSyncSnapshot.rows.length,
+                succeeded: bulkSyncCounts?.succeeded ?? 0,
+                failed: bulkSyncCounts?.failed ?? 0,
+                skipped: bulkSyncCounts?.skipped ?? 0,
+              })}
+            </CardDescription>
+          </div>
+          {bulkSyncSnapshot.status === 'running' ? (
+            <Button type="button" variant="outline" size="sm" onClick={() => void handleCancelBulkSync()}>
+              {t('accountPool.upstreamAccounts.bulk.cancelSync')}
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="h-8 w-8 rounded-full text-base-content/62 hover:text-base-content"
+              aria-label={t('accountPool.upstreamAccounts.bulk.dismissSync')}
+              title={t('accountPool.upstreamAccounts.bulk.dismissSync')}
+              onClick={clearBulkSyncProgress}
+            >
+              <AppIcon name="close" className="h-4 w-4" aria-hidden />
+            </Button>
+          )}
+        </CardHeader>
+        <CardContent className="space-y-3 p-4 pt-3">
+          {bulkSyncError ? (
+            <Alert variant="error">
+              <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+              <div>{bulkSyncError}</div>
+            </Alert>
+          ) : null}
+          <div className="max-h-[min(52vh,20rem)] space-y-2 overflow-y-auto rounded-2xl border border-base-300/80 bg-base-100/72 p-3">
+            {bulkSyncSnapshot.rows.map((row) => (
+              <div key={row.accountId} className="flex flex-col gap-1 rounded-xl border border-base-300/60 px-3 py-2 text-sm">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="font-medium text-base-content">{row.displayName}</span>
+                  <Badge variant={bulkSyncRowStatusVariant(row.status)}>{t(`accountPool.upstreamAccounts.bulk.rowStatus.${row.status}`)}</Badge>
+                </div>
+                {row.detail ? <p className="text-xs text-base-content/68">{row.detail}</p> : null}
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  ) : null
 
   return (
     <div className="grid gap-6">
@@ -1881,6 +3030,24 @@ export default function UpstreamAccountsPage() {
               </Alert>
             ) : null}
 
+            {postCreateWarning ? (
+              <Alert variant="warning">
+                <AppIcon name="alert-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                <div className="flex min-w-0 flex-1 flex-col gap-2">
+                  <p className="font-medium">{t('accountPool.upstreamAccounts.partialSuccess.title')}</p>
+                  <p className="text-sm text-warning/90">{postCreateWarning}</p>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setPostCreateWarning(null)}
+                >
+                  {t('accountPool.upstreamAccounts.actions.dismissDuplicateWarning')}
+                </Button>
+              </Alert>
+            ) : null}
+
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               {metrics.map((metric) => (
                 <Card key={metric.label} className="border-base-300/80 bg-base-100/72">
@@ -1948,36 +3115,51 @@ export default function UpstreamAccountsPage() {
               </div>
 
               <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-12">
-                <SelectField
-                  label={t('accountPool.upstreamAccounts.workStatusFilterLabel')}
-                  className={cn('min-w-0', formFieldSpanVariants({ size: 'compact' }))}
-                  value={workStatusFilter}
-                  options={workStatusFilterOptions}
-                  size="filter"
-                  triggerClassName="border-base-300/90 bg-base-100"
-                  aria-label={t('accountPool.upstreamAccounts.workStatusFilterLabel')}
-                  onValueChange={handleWorkStatusFilterChange}
-                />
-                <SelectField
-                  label={t('accountPool.upstreamAccounts.enableStatusFilterLabel')}
-                  className={cn('min-w-0', formFieldSpanVariants({ size: 'compact' }))}
-                  value={enableStatusFilter}
-                  options={enableStatusFilterOptions}
-                  size="filter"
-                  triggerClassName="border-base-300/90 bg-base-100"
-                  aria-label={t('accountPool.upstreamAccounts.enableStatusFilterLabel')}
-                  onValueChange={handleEnableStatusFilterChange}
-                />
-                <SelectField
-                  label={t('accountPool.upstreamAccounts.healthStatusFilterLabel')}
-                  className={cn('min-w-0', formFieldSpanVariants({ size: 'compact' }))}
-                  value={healthStatusFilter}
-                  options={healthStatusFilterOptions}
-                  size="filter"
-                  triggerClassName="border-base-300/90 bg-base-100"
-                  aria-label={t('accountPool.upstreamAccounts.healthStatusFilterLabel')}
-                  onValueChange={handleHealthStatusFilterChange}
-                />
+                <label className={cn('field min-w-0', formFieldSpanVariants({ size: 'compact' }))}>
+                  <span className="field-label">{t('accountPool.upstreamAccounts.workStatusFilterLabel')}</span>
+                  <MultiSelectFilterCombobox
+                    size="filter"
+                    options={workStatusFilterOptions}
+                    value={workStatusFilter}
+                    placeholder={t('accountPool.upstreamAccounts.workStatusFilter.all')}
+                    searchPlaceholder={t('accountPool.upstreamAccounts.workStatusFilter.searchPlaceholder')}
+                    emptyLabel={t('accountPool.upstreamAccounts.workStatusFilter.empty')}
+                    clearLabel={t('accountPool.upstreamAccounts.workStatusFilter.clear')}
+                    ariaLabel={t('accountPool.upstreamAccounts.workStatusFilterLabel')}
+                    triggerClassName="border-base-300/90 bg-base-100"
+                    onValueChange={handleWorkStatusFilterChange}
+                  />
+                </label>
+                <label className={cn('field min-w-0', formFieldSpanVariants({ size: 'compact' }))}>
+                  <span className="field-label">{t('accountPool.upstreamAccounts.enableStatusFilterLabel')}</span>
+                  <MultiSelectFilterCombobox
+                    size="filter"
+                    options={enableStatusFilterOptions}
+                    value={enableStatusFilter}
+                    placeholder={t('accountPool.upstreamAccounts.enableStatusFilter.all')}
+                    searchPlaceholder={t('accountPool.upstreamAccounts.enableStatusFilter.searchPlaceholder')}
+                    emptyLabel={t('accountPool.upstreamAccounts.enableStatusFilter.empty')}
+                    clearLabel={t('accountPool.upstreamAccounts.enableStatusFilter.clear')}
+                    ariaLabel={t('accountPool.upstreamAccounts.enableStatusFilterLabel')}
+                    triggerClassName="border-base-300/90 bg-base-100"
+                    onValueChange={handleEnableStatusFilterChange}
+                  />
+                </label>
+                <label className={cn('field min-w-0', formFieldSpanVariants({ size: 'compact' }))}>
+                  <span className="field-label">{t('accountPool.upstreamAccounts.healthStatusFilterLabel')}</span>
+                  <MultiSelectFilterCombobox
+                    size="filter"
+                    options={healthStatusFilterOptions}
+                    value={healthStatusFilter}
+                    placeholder={t('accountPool.upstreamAccounts.healthStatusFilter.all')}
+                    searchPlaceholder={t('accountPool.upstreamAccounts.healthStatusFilter.searchPlaceholder')}
+                    emptyLabel={t('accountPool.upstreamAccounts.healthStatusFilter.empty')}
+                    clearLabel={t('accountPool.upstreamAccounts.healthStatusFilter.clear')}
+                    ariaLabel={t('accountPool.upstreamAccounts.healthStatusFilterLabel')}
+                    triggerClassName="border-base-300/90 bg-base-100"
+                    onValueChange={handleHealthStatusFilterChange}
+                  />
+                </label>
                 <label className={cn('field min-w-0', formFieldSpanVariants({ size: 'wide' }))}>
                   <span className="field-label">{t('accountPool.upstreamAccounts.groupFilterLabel')}</span>
                   <UpstreamAccountGroupCombobox
@@ -2113,60 +3295,9 @@ export default function UpstreamAccountsPage() {
               </Alert>
             ) : null}
 
-            {bulkSyncSnapshot ? (
-              <Card className="border-base-300/80 bg-base-100/72">
-                <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-                  <div>
-                    <CardTitle>{t('accountPool.upstreamAccounts.bulk.syncProgressTitle')}</CardTitle>
-                    <CardDescription>
-                      {t('accountPool.upstreamAccounts.bulk.syncProgressSummary', {
-                        completed: bulkSyncCounts?.completed ?? 0,
-                        total: bulkSyncCounts?.total ?? bulkSyncSnapshot.rows.length,
-                        succeeded: bulkSyncCounts?.succeeded ?? 0,
-                        failed: bulkSyncCounts?.failed ?? 0,
-                        skipped: bulkSyncCounts?.skipped ?? 0,
-                      })}
-                    </CardDescription>
-                  </div>
-                  {bulkSyncSnapshot.status === 'running' ? (
-                    <Button type="button" variant="outline" size="sm" onClick={() => void handleCancelBulkSync()}>
-                      {t('accountPool.upstreamAccounts.bulk.cancelSync')}
-                    </Button>
-                  ) : (
-                    <Button type="button" variant="ghost" size="sm" onClick={() => {
-                      setBulkSyncSnapshot(null)
-                      setBulkSyncCounts(null)
-                      setBulkSyncError(null)
-                    }}>
-                      {t('accountPool.upstreamAccounts.bulk.dismissSync')}
-                    </Button>
-                  )}
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  {bulkSyncError ? (
-                    <Alert variant="error">
-                      <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-                      <div>{bulkSyncError}</div>
-                    </Alert>
-                  ) : null}
-                  <div className="max-h-60 space-y-2 overflow-y-auto rounded-2xl border border-base-300/80 bg-base-100/70 p-3">
-                    {bulkSyncSnapshot.rows.map((row) => (
-                      <div key={row.accountId} className="flex flex-col gap-1 rounded-xl border border-base-300/60 px-3 py-2 text-sm">
-                        <div className="flex items-center justify-between gap-3">
-                          <span className="font-medium text-base-content">{row.displayName}</span>
-                          <Badge variant={bulkSyncRowStatusVariant(row.status)}>{t(`accountPool.upstreamAccounts.bulk.rowStatus.${row.status}`)}</Badge>
-                        </div>
-                        {row.detail ? <p className="text-xs text-base-content/68">{row.detail}</p> : null}
-                      </div>
-                    ))}
-                  </div>
-                </CardContent>
-              </Card>
-            ) : null}
-
             <UpstreamAccountsTable
               items={items}
-              selectedId={selectedId}
+              selectedId={upstreamAccountId}
               selectedAccountIds={selectedAccountIdSet}
               onSelect={handleSelectAccount}
               onToggleSelected={handleToggleSelectedAccount}
@@ -2456,734 +3587,6 @@ export default function UpstreamAccountsPage() {
         onSave={() => void handleSaveRouting()}
       />
 
-      {selected ? (
-        <AccountDetailDrawerShell
-          open={isDetailDrawerOpen}
-          labelledBy={detailDrawerTitleId}
-          closeLabel={t('accountPool.upstreamAccounts.actions.closeDetails')}
-          closeDisabled={isBusyAction(busyAction, 'delete', selected.id)}
-          autoFocusCloseButton={!isDeleteConfirmOpen}
-          onPortalContainerChange={setDetailDrawerPortalContainer}
-          onClose={handleCloseDetailDrawer}
-          shellClassName="max-w-[60rem]"
-          header={
-            <div className="space-y-4">
-              <div className="space-y-3">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant={enableStatusVariant(accountEnableStatus(selected))}>
-                    {accountEnableStatusLabel(accountEnableStatus(selected))}
-                  </Badge>
-                  <Badge variant={workStatusVariant(accountWorkStatus(selected))}>
-                    {accountWorkStatusLabel(accountWorkStatus(selected))}
-                  </Badge>
-                  <Badge variant={syncStateVariant(accountSyncState(selected))}>
-                    {accountSyncStateLabel(accountSyncState(selected))}
-                  </Badge>
-                  <Badge variant={healthStatusVariant(accountHealthStatus(selected))}>
-                    {accountHealthStatusLabel(accountHealthStatus(selected))}
-                  </Badge>
-                  <Badge variant={kindVariant(selected.kind)}>{accountKindLabel(selected.kind)}</Badge>
-                  {selected.planType && selectedPlanBadge ? (
-                    <Badge
-                      variant={selectedPlanBadge.variant}
-                      className={selectedPlanBadge.className}
-                      data-plan={selectedPlanBadge.dataPlan}
-                    >
-                      {selected.planType}
-                    </Badge>
-                  ) : null}
-                  {selected.duplicateInfo ? (
-                    <Badge variant="warning">
-                      {t('accountPool.upstreamAccounts.duplicate.badge')}
-                    </Badge>
-                  ) : null}
-                  {selected.kind === 'api_key_codex' ? (
-                    <Badge variant="secondary">
-                      {t('accountPool.upstreamAccounts.apiKey.localPlaceholder')}
-                    </Badge>
-                  ) : null}
-                </div>
-                <div className="section-heading">
-                  <p className="text-xs font-semibold uppercase tracking-[0.2em] text-primary/75">
-                    {t('accountPool.upstreamAccounts.detailTitle')}
-                  </p>
-                  <div className="flex flex-wrap items-center gap-2">
-                    <h2 id={detailDrawerTitleId} className="section-title">
-                      {selected.displayName}
-                    </h2>
-                    {selected.isMother ? (
-                      <MotherAccountBadge label={t('accountPool.upstreamAccounts.mother.badge')} />
-                    ) : null}
-                  </div>
-                  <p className="section-description">
-                    {selected.email ?? selected.maskedApiKey ?? t('accountPool.upstreamAccounts.identityUnavailable')}
-                  </p>
-                </div>
-              </div>
-              <div className="flex flex-wrap items-center gap-2">
-                <div className="flex items-center gap-2 rounded-full border border-base-300/80 bg-base-100/70 px-3 py-2 text-sm">
-                  <span className="text-base-content/60">{t('accountPool.upstreamAccounts.actions.enable')}</span>
-                  <Switch
-                    checked={selected.enabled}
-                    onCheckedChange={(checked) => void handleToggleEnabled(selected, checked)}
-                    disabled={hasBusyAccountAction(busyAction, selected.id) || !writesEnabled}
-                    aria-label={t('accountPool.upstreamAccounts.actions.enable')}
-                  />
-                </div>
-                <Button
-                  type="button"
-                  variant="secondary"
-                  onClick={() => void handleSync(selected)}
-                  disabled={hasBusyAccountAction(busyAction, selected.id)}
-                  data-testid="account-sync-button"
-                >
-                  {isBusyAction(busyAction, 'sync', selected.id) ? (
-                    <Spinner size="sm" className="mr-2" />
-                  ) : (
-                    <AppIcon
-                      name="timer-refresh-outline"
-                      className="mr-2 h-4 w-4"
-                      aria-hidden
-                      data-icon-name="timer-refresh-outline"
-                    />
-                  )}
-                  {t('accountPool.upstreamAccounts.actions.syncNow')}
-                </Button>
-                {selected.kind === 'oauth_codex' ? (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    onClick={() => void handleOauthLogin(selected.id)}
-                    disabled={hasBusyAccountAction(busyAction, selected.id) || !writesEnabled}
-                  >
-                    {isBusyAction(busyAction, 'relogin', selected.id) ? (
-                      <Spinner size="sm" className="mr-2" />
-                    ) : (
-                      <AppIcon name="login-variant" className="mr-2 h-4 w-4" aria-hidden />
-                    )}
-                    {t('accountPool.upstreamAccounts.actions.relogin')}
-                  </Button>
-                ) : null}
-                <Popover
-                  open={isDeleteConfirmOpen}
-                  onOpenChange={(nextOpen) => {
-                    if (isBusyAction(busyAction, 'delete', selected.id) && !nextOpen) return
-                    setIsDeleteConfirmOpen(nextOpen)
-                  }}
-                >
-                  <PopoverTrigger asChild>
-                    <Button
-                      type="button"
-                      variant="destructive"
-                      disabled={hasBusyAccountAction(busyAction, selected.id) || !writesEnabled}
-                      aria-haspopup="dialog"
-                      aria-expanded={isDeleteConfirmOpen}
-                      aria-controls={isDeleteConfirmOpen ? deleteConfirmTitleId : undefined}
-                    >
-                      {isBusyAction(busyAction, 'delete', selected.id) ? (
-                        <Spinner size="sm" className="mr-2" />
-                      ) : (
-                        <AppIcon name="trash-can-outline" className="mr-2 h-4 w-4" aria-hidden />
-                      )}
-                      {t('accountPool.upstreamAccounts.actions.delete')}
-                    </Button>
-                  </PopoverTrigger>
-                  {detailDrawerPortalContainer ? (
-                    <PopoverContent
-                      container={detailDrawerPortalContainer}
-                      role="alertdialog"
-                      aria-modal="false"
-                      aria-labelledby={deleteConfirmTitleId}
-                      align="end"
-                      side="top"
-                      sideOffset={12}
-                      className="z-[80] w-[min(22rem,calc(100vw-1.5rem))] rounded-2xl border border-base-300 bg-base-100 p-4 shadow-[0_20px_48px_rgba(15,23,42,0.24)] ring-1 ring-base-100/90"
-                      onOpenAutoFocus={(event) => {
-                        event.preventDefault()
-                        deleteConfirmCancelRef.current?.focus()
-                      }}
-                      onEscapeKeyDown={(event) => {
-                        event.stopPropagation()
-                      }}
-                    >
-                      <div className="space-y-3">
-                        <div className="flex items-start gap-2.5">
-                          <div className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-error text-error-content shadow-sm">
-                            <AppIcon name="trash-can-outline" className="h-3.5 w-3.5" aria-hidden />
-                          </div>
-                          <p id={deleteConfirmTitleId} className="min-w-0 break-words pr-2 text-[15px] font-semibold leading-6 text-base-content">
-                            {t('accountPool.upstreamAccounts.deleteConfirmTitle', { name: selected.displayName })}
-                          </p>
-                        </div>
-                        <div className="flex justify-end gap-2">
-                          <Button
-                            ref={deleteConfirmCancelRef}
-                            type="button"
-                            variant="secondary"
-                            size="sm"
-                            className="rounded-full px-3.5 font-semibold"
-                            onClick={() => setIsDeleteConfirmOpen(false)}
-                          >
-                            {t('accountPool.upstreamAccounts.actions.cancel')}
-                          </Button>
-                          <Button
-                            type="button"
-                            variant="destructive"
-                            size="sm"
-                            className="rounded-full px-3.5 font-semibold shadow-sm"
-                            disabled={hasBusyAccountAction(busyAction, selected.id) || !writesEnabled}
-                            onClick={() => void handleDelete(selected)}
-                          >
-                            {t('accountPool.upstreamAccounts.actions.confirmDelete')}
-                          </Button>
-                        </div>
-                      </div>
-                      <PopoverArrow className="fill-base-100 stroke-base-300 stroke-[1px]" width={18} height={10} />
-                    </PopoverContent>
-                  ) : null}
-                </Popover>
-              </div>
-            </div>
-          }
-        >
-          {isDetailLoading && !selectedDetail ? (
-            <AccountDetailSkeleton />
-          ) : (
-            <div className="grid gap-5">
-              {visibleAccountActionError ? (
-                <Alert variant="error">
-                  <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-                  <div>{visibleAccountActionError}</div>
-                </Alert>
-              ) : null}
-              {selectedDetail ? (
-                <>
-                  <SegmentedControl
-                    className="self-start"
-                    role="tablist"
-                    aria-label={t('accountPool.upstreamAccounts.detailTitle')}
-                  >
-                    <SegmentedControlItem
-                      id={detailTabIds.overview.tab}
-                      active={detailTab === 'overview'}
-                      role="tab"
-                      aria-selected={detailTab === 'overview'}
-                      aria-controls={detailTabIds.overview.panel}
-                      aria-pressed={detailTab === 'overview'}
-                      onClick={() => setDetailTab('overview')}
-                    >
-                      {t('accountPool.upstreamAccounts.detailTabs.overview')}
-                    </SegmentedControlItem>
-                    <SegmentedControlItem
-                      id={detailTabIds.edit.tab}
-                      active={detailTab === 'edit'}
-                      role="tab"
-                      aria-selected={detailTab === 'edit'}
-                      aria-controls={detailTabIds.edit.panel}
-                      aria-pressed={detailTab === 'edit'}
-                      onClick={() => setDetailTab('edit')}
-                    >
-                      {t('accountPool.upstreamAccounts.detailTabs.edit')}
-                    </SegmentedControlItem>
-                    <SegmentedControlItem
-                      id={detailTabIds.routing.tab}
-                      active={detailTab === 'routing'}
-                      role="tab"
-                      aria-selected={detailTab === 'routing'}
-                      aria-controls={detailTabIds.routing.panel}
-                      aria-pressed={detailTab === 'routing'}
-                      onClick={() => setDetailTab('routing')}
-                    >
-                      {t('accountPool.upstreamAccounts.detailTabs.routing')}
-                    </SegmentedControlItem>
-                    <SegmentedControlItem
-                      id={detailTabIds.healthEvents.tab}
-                      active={detailTab === 'healthEvents'}
-                      role="tab"
-                      aria-selected={detailTab === 'healthEvents'}
-                      aria-controls={detailTabIds.healthEvents.panel}
-                      aria-pressed={detailTab === 'healthEvents'}
-                      onClick={() => setDetailTab('healthEvents')}
-                    >
-                      {t('accountPool.upstreamAccounts.detailTabs.healthEvents')}
-                    </SegmentedControlItem>
-                  </SegmentedControl>
-
-                  {detailTab === 'overview' ? (
-                    <div
-                      id={detailTabIds.overview.panel}
-                      role="tabpanel"
-                      aria-labelledby={detailTabIds.overview.tab}
-                      className="grid gap-5"
-                    >
-                      {selectedDetail.duplicateInfo ? (
-                        <Alert variant="warning">
-                          <AppIcon name="alert-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-                          <div>
-                            <p className="font-medium">
-                              {t('accountPool.upstreamAccounts.duplicate.badge')}
-                            </p>
-                            <p className="mt-1 text-sm text-warning/90">
-                              {t('accountPool.upstreamAccounts.duplicate.warningBody', {
-                                reasons: formatDuplicateReasons(selectedDetail.duplicateInfo),
-                                peers: selectedDetail.duplicateInfo.peerAccountIds.join(', '),
-                              })}
-                            </p>
-                          </div>
-                        </Alert>
-                      ) : null}
-                      <div className="metric-grid">
-                        <DetailField label={t('accountPool.upstreamAccounts.fields.groupName')} value={selectedDetail.groupName ?? ''} />
-                        <DetailField
-                          label={t('accountPool.upstreamAccounts.mother.fieldLabel')}
-                          value={selectedDetail.isMother ? t('accountPool.upstreamAccounts.mother.badge') : t('accountPool.upstreamAccounts.mother.notMother')}
-                        />
-                        <DetailField label={t('accountPool.upstreamAccounts.fields.email')} value={selectedDetail.email ?? ''} />
-                        <DetailField label={t('accountPool.upstreamAccounts.fields.accountId')} value={selectedDetail.chatgptAccountId ?? selectedDetail.maskedApiKey ?? ''} />
-                        <DetailField label={t('accountPool.upstreamAccounts.fields.userId')} value={selectedDetail.chatgptUserId ?? ''} />
-                        <DetailField label={t('accountPool.upstreamAccounts.fields.lastSuccessSync')} value={formatDateTime(selectedDetail.lastSuccessfulSyncAt)} />
-                      </div>
-                      <div className="grid gap-4 xl:grid-cols-2">
-                        <UpstreamAccountUsageCard
-                          title={t('accountPool.upstreamAccounts.primaryWindowLabel')}
-                          description={t('accountPool.upstreamAccounts.usage.primaryDescription')}
-                          window={selectedDetail.primaryWindow}
-                          history={selectedDetail.history}
-                          historyKey="primaryUsedPercent"
-                          emptyLabel={t('accountPool.upstreamAccounts.noHistory')}
-                          noteLabel={selectedDetail.kind === 'api_key_codex' ? t('accountPool.upstreamAccounts.apiKey.localPlaceholder') : undefined}
-                        />
-                        <UpstreamAccountUsageCard
-                          title={t('accountPool.upstreamAccounts.secondaryWindowLabel')}
-                          description={t('accountPool.upstreamAccounts.usage.secondaryDescription')}
-                          window={selectedDetail.secondaryWindow}
-                          history={selectedDetail.history}
-                          historyKey="secondaryUsedPercent"
-                          emptyLabel={t('accountPool.upstreamAccounts.noHistory')}
-                          noteLabel={selectedDetail.kind === 'api_key_codex' ? t('accountPool.upstreamAccounts.apiKey.localPlaceholder') : undefined}
-                          accentClassName="text-secondary"
-                        />
-                      </div>
-                    </div>
-                  ) : null}
-
-                  {detailTab === 'edit' ? (
-                    <div
-                      id={detailTabIds.edit.panel}
-                      role="tabpanel"
-                      aria-labelledby={detailTabIds.edit.tab}
-                    >
-                      <Card className="border-base-300/80 bg-base-100/72">
-                        <CardHeader>
-                          <CardTitle>{t('accountPool.upstreamAccounts.editTitle')}</CardTitle>
-                          <CardDescription>{t('accountPool.upstreamAccounts.editDescription')}</CardDescription>
-                        </CardHeader>
-                        <CardContent className="grid gap-4 md:grid-cols-2">
-                          <label className="field md:col-span-2">
-                            <span className="field-label">{t('accountPool.upstreamAccounts.fields.displayName')}</span>
-                            <div className="relative">
-                              <Input
-                                name="detailDisplayName"
-                                value={draft.displayName}
-                                aria-invalid={detailDisplayNameConflict != null}
-                                onChange={(event) =>
-                                  setDraft((current) => ({
-                                    ...current,
-                                    displayName: event.target.value,
-                                  }))
-                                }
-                              />
-                              {detailDisplayNameConflict ? (
-                                <FloatingFieldError
-                                  message={t('accountPool.upstreamAccounts.validation.displayNameDuplicate')}
-                                />
-                              ) : null}
-                            </div>
-                          </label>
-                          <label className="field md:col-span-2">
-                            <span className="field-label">{t('accountPool.upstreamAccounts.fields.groupName')}</span>
-                            <div className="flex items-center gap-2">
-                              <UpstreamAccountGroupCombobox
-                                name="detailGroupName"
-                                value={draft.groupName}
-                                suggestions={availableGroups.names}
-                                placeholder={t('accountPool.upstreamAccounts.fields.groupNamePlaceholder')}
-                                searchPlaceholder={t('accountPool.upstreamAccounts.fields.groupNameSearchPlaceholder')}
-                                emptyLabel={t('accountPool.upstreamAccounts.fields.groupNameEmpty')}
-                                createLabel={(value) => t('accountPool.upstreamAccounts.fields.groupNameUseValue', { value })}
-                                onValueChange={(value) => setDraft((current) => ({ ...current, groupName: value }))}
-                                className="min-w-0 flex-1"
-                              />
-                              <Button
-                                type="button"
-                                size="icon"
-                                variant={hasGroupNote(draft.groupName) ? 'secondary' : 'outline'}
-                                className="shrink-0 rounded-full"
-                                aria-label={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
-                                title={t('accountPool.upstreamAccounts.groupNotes.actions.edit')}
-                                onClick={() => openGroupNoteEditor(draft.groupName)}
-                                disabled={!writesEnabled || !normalizeGroupName(draft.groupName)}
-                              >
-                                <AppIcon name="file-document-edit-outline" className="h-4 w-4" aria-hidden />
-                              </Button>
-                            </div>
-                          </label>
-                          <div className="md:col-span-2">
-                            <MotherAccountToggle
-                              checked={draft.isMother}
-                              disabled={!writesEnabled}
-                              label={t('accountPool.upstreamAccounts.mother.toggleLabel')}
-                              description={t('accountPool.upstreamAccounts.mother.toggleDescription')}
-                              onToggle={() => setDraft((current) => ({ ...current, isMother: !current.isMother }))}
-                            />
-                          </div>
-                          <label className="field md:col-span-2">
-                            <span className="field-label">{t('accountPool.upstreamAccounts.fields.note')}</span>
-                            <textarea
-                              className="min-h-24 rounded-xl border border-base-300 bg-base-100 px-3 py-2 text-sm text-base-content shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100"
-                              name="detailNote"
-                              value={draft.note}
-                              onChange={(event) => setDraft((current) => ({ ...current, note: event.target.value }))}
-                            />
-                          </label>
-                          <div className="md:col-span-2">
-                            <AccountTagField
-                              tags={tagItems}
-                              selectedTagIds={draft.tagIds}
-                              writesEnabled={writesEnabled}
-                              pageCreatedTagIds={pageCreatedTagIds}
-                              labels={tagFieldLabels}
-                              onChange={(tagIds) => setDraft((current) => ({ ...current, tagIds }))}
-                              onCreateTag={handleCreateTag}
-                              onUpdateTag={updateTag}
-                              onDeleteTag={handleDeleteTag}
-                            />
-                          </div>
-                          {selectedDetail.kind === 'api_key_codex' ? (
-                            <>
-                              <label className="field">
-                                <span className="field-label">{t('accountPool.upstreamAccounts.fields.primaryLimit')}</span>
-                                <Input
-                                  name="detailPrimaryLimit"
-                                  value={draft.localPrimaryLimit}
-                                  onChange={(event) => setDraft((current) => ({ ...current, localPrimaryLimit: event.target.value }))}
-                                />
-                              </label>
-                              <label className="field">
-                                <span className="field-label">{t('accountPool.upstreamAccounts.fields.secondaryLimit')}</span>
-                                <Input
-                                  name="detailSecondaryLimit"
-                                  value={draft.localSecondaryLimit}
-                                  onChange={(event) => setDraft((current) => ({ ...current, localSecondaryLimit: event.target.value }))}
-                                />
-                              </label>
-                              <label className="field">
-                                <span className="field-label">{t('accountPool.upstreamAccounts.fields.limitUnit')}</span>
-                                <Input
-                                  name="detailLimitUnit"
-                                  value={draft.localLimitUnit}
-                                  onChange={(event) => setDraft((current) => ({ ...current, localLimitUnit: event.target.value }))}
-                                />
-                              </label>
-                              <label className="field">
-                                <FormFieldFeedback
-                                  label={t('accountPool.upstreamAccounts.fields.upstreamBaseUrl')}
-                                  message={draftUpstreamBaseUrlError}
-                                  messageClassName="md:max-w-[min(20rem,calc(100%-8rem))]"
-                                />
-                                <div className="relative">
-                                  <Input
-                                    name="detailUpstreamBaseUrl"
-                                    value={draft.upstreamBaseUrl}
-                                    onChange={(event) => setDraft((current) => ({ ...current, upstreamBaseUrl: event.target.value }))}
-                                    placeholder={t('accountPool.upstreamAccounts.fields.upstreamBaseUrlPlaceholder')}
-                                    aria-invalid={draftUpstreamBaseUrlError ? 'true' : 'false'}
-                                    className={cn(draftUpstreamBaseUrlError ? 'border-error/70 focus-visible:ring-error' : '')}
-                                  />
-                                </div>
-                              </label>
-                              <label className="field">
-                                <span className="field-label">{t('accountPool.upstreamAccounts.fields.rotateApiKey')}</span>
-                                <Input
-                                  name="detailRotateApiKey"
-                                  value={draft.apiKey}
-                                  onChange={(event) => setDraft((current) => ({ ...current, apiKey: event.target.value }))}
-                                  placeholder={t('accountPool.upstreamAccounts.fields.rotateApiKeyPlaceholder')}
-                                />
-                              </label>
-                            </>
-                          ) : null}
-                          <div className="md:col-span-2 flex justify-end">
-                            <Button
-                              type="button"
-                              onClick={() => void handleSave(selectedDetail)}
-                              disabled={
-                                hasBusyAccountAction(busyAction, selectedDetail.id) ||
-                                !writesEnabled ||
-                                detailDisplayNameConflict != null ||
-                                (selectedDetail.kind === 'api_key_codex' && Boolean(draftUpstreamBaseUrlError))
-                              }
-                            >
-                              {isBusyAction(busyAction, 'save', selectedDetail.id) ? (
-                                <Spinner size="sm" className="mr-2" />
-                              ) : (
-                                <AppIcon name="content-save-outline" className="mr-2 h-4 w-4" aria-hidden />
-                              )}
-                              {t('accountPool.upstreamAccounts.actions.save')}
-                            </Button>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    </div>
-                  ) : null}
-
-                  {detailTab === 'routing' ? (
-                    <div
-                      id={detailTabIds.routing.panel}
-                      role="tabpanel"
-                      aria-labelledby={detailTabIds.routing.tab}
-                      className="grid gap-5"
-                    >
-                      <EffectiveRoutingRuleCard
-                        rule={selectedDetail.effectiveRoutingRule}
-                        labels={{
-                          title: t('accountPool.upstreamAccounts.effectiveRule.title'),
-                          description: t('accountPool.upstreamAccounts.effectiveRule.description'),
-                          noTags: t('accountPool.upstreamAccounts.effectiveRule.noTags'),
-                          guardEnabled: t('accountPool.upstreamAccounts.effectiveRule.guardEnabled'),
-                          guardDisabled: t('accountPool.upstreamAccounts.effectiveRule.guardDisabled'),
-                          allowCutOut: t('accountPool.upstreamAccounts.effectiveRule.allowCutOut'),
-                          denyCutOut: t('accountPool.upstreamAccounts.effectiveRule.denyCutOut'),
-                          allowCutIn: t('accountPool.upstreamAccounts.effectiveRule.allowCutIn'),
-                          denyCutIn: t('accountPool.upstreamAccounts.effectiveRule.denyCutIn'),
-                          sourceTags: t('accountPool.upstreamAccounts.effectiveRule.sourceTags'),
-                          guardRule: (hours, count) => t('accountPool.upstreamAccounts.effectiveRule.guardRule', { hours, count }),
-                          allGuardsApply: t('accountPool.upstreamAccounts.effectiveRule.allGuardsApply'),
-                        }}
-                      />
-
-                      <Card className="border-base-300/80 bg-base-100/72">
-                        <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-                          <div>
-                            <CardTitle>{t('accountPool.upstreamAccounts.stickyConversations.title')}</CardTitle>
-                            <CardDescription>{t('accountPool.upstreamAccounts.stickyConversations.description')}</CardDescription>
-                          </div>
-                          <SelectField
-                            label={t('accountPool.upstreamAccounts.stickyConversations.limitLabel')}
-                            className="w-36"
-                            name="stickyConversationLimit"
-                            size="sm"
-                            value={String(stickyConversationLimit)}
-                            options={STICKY_CONVERSATION_LIMIT_OPTIONS.map((value) => ({
-                              value: String(value),
-                              label: t('accountPool.upstreamAccounts.stickyConversations.limitOption', { count: value }),
-                            }))}
-                            onValueChange={(value) => setStickyConversationLimit(Number(value))}
-                          />
-                        </CardHeader>
-                        <CardContent>
-                          <StickyKeyConversationTable
-                            stats={stickyConversationStats}
-                            isLoading={stickyConversationLoading}
-                            error={stickyConversationError}
-                          />
-                        </CardContent>
-                      </Card>
-                    </div>
-                  ) : null}
-
-                  {detailTab === 'healthEvents' ? (
-                    <div
-                      id={detailTabIds.healthEvents.panel}
-                      role="tabpanel"
-                      aria-labelledby={detailTabIds.healthEvents.tab}
-                      className="grid gap-5"
-                    >
-                      <Card className="border-base-300/80 bg-base-100/72">
-                        <CardHeader>
-                          <CardTitle>{t('accountPool.upstreamAccounts.healthTitle')}</CardTitle>
-                          <CardDescription>{t('accountPool.upstreamAccounts.healthDescription')}</CardDescription>
-                        </CardHeader>
-                        <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                          <DetailField label={t('accountPool.upstreamAccounts.fields.lastSyncedAt')} value={formatDateTime(selectedDetail.lastSyncedAt)} />
-                          <DetailField label={t('accountPool.upstreamAccounts.fields.lastRefreshedAt')} value={formatDateTime(selectedDetail.lastRefreshedAt)} />
-                          <DetailField label={t('accountPool.upstreamAccounts.fields.tokenExpiresAt')} value={formatDateTime(selectedDetail.tokenExpiresAt)} />
-                          <DetailField
-                            label={t('accountPool.upstreamAccounts.fields.compactSupport')}
-                            value={
-                              selectedDetail.compactSupport?.status === 'supported'
-                                ? t('accountPool.upstreamAccounts.compactSupport.status.supported')
-                                : selectedDetail.compactSupport?.status === 'unsupported'
-                                  ? t('accountPool.upstreamAccounts.compactSupport.status.unsupported')
-                                  : t('accountPool.upstreamAccounts.compactSupport.status.unknown')
-                            }
-                          />
-                          <DetailField
-                            label={t('accountPool.upstreamAccounts.fields.credits')}
-                            value={selectedDetail.credits?.balance ? `${selectedDetail.credits.balance}` : selectedDetail.credits?.unlimited ? t('accountPool.upstreamAccounts.unlimited') : t('accountPool.upstreamAccounts.unavailable')}
-                          />
-                          <DetailField
-                            label={t('accountPool.upstreamAccounts.fields.compactObservedAt')}
-                            value={formatDateTime(selectedDetail.compactSupport?.observedAt)}
-                          />
-                          <DetailField
-                            label={t('accountPool.upstreamAccounts.fields.compactReason')}
-                            value={selectedDetail.compactSupport?.reason ?? t('accountPool.upstreamAccounts.unavailable')}
-                          />
-                          <div className="md:col-span-2 xl:col-span-4 rounded-[1.2rem] border border-base-300/80 bg-base-100/75 p-4">
-                            {selectedRecoveryHint ? (
-                              <Alert variant="warning" className="mb-4">
-                                <AppIcon name="alert-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-                                <div>
-                                  <p className="font-semibold text-warning">
-                                    {t(selectedRecoveryHint.titleKey)}
-                                  </p>
-                                  <p className="mt-1 text-sm text-warning/90">
-                                    {t(selectedRecoveryHint.bodyKey)}
-                                  </p>
-                                </div>
-                              </Alert>
-                            ) : null}
-                            <p className="metric-label">{t('accountPool.upstreamAccounts.latestAction.title')}</p>
-                            {selectedDetail.lastAction ? (
-                              <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                                <DetailField
-                                  label={t('accountPool.upstreamAccounts.latestAction.fields.action')}
-                                  value={accountActionLabel(selectedDetail.lastAction) ?? t('accountPool.upstreamAccounts.latestAction.empty')}
-                                />
-                                <DetailField
-                                  label={t('accountPool.upstreamAccounts.latestAction.fields.source')}
-                                  value={
-                                    accountActionSourceLabel(selectedDetail.lastActionSource)
-                                    ?? t('accountPool.upstreamAccounts.latestAction.unknown')
-                                  }
-                                />
-                                <DetailField
-                                  label={t('accountPool.upstreamAccounts.latestAction.fields.reason')}
-                                  value={
-                                    accountActionReasonLabel(selectedDetail.lastActionReasonCode)
-                                    ?? t('accountPool.upstreamAccounts.latestAction.unknown')
-                                  }
-                                />
-                                <DetailField
-                                  label={t('accountPool.upstreamAccounts.latestAction.fields.httpStatus')}
-                                  value={
-                                    Number.isFinite(selectedDetail.lastActionHttpStatus ?? NaN)
-                                      ? `HTTP ${selectedDetail.lastActionHttpStatus}`
-                                      : t('accountPool.upstreamAccounts.unavailable')
-                                  }
-                                />
-                                <DetailField
-                                  label={t('accountPool.upstreamAccounts.latestAction.fields.occurredAt')}
-                                  value={formatDateTime(selectedDetail.lastActionAt)}
-                                />
-                                <DetailField
-                                  label={t('accountPool.upstreamAccounts.latestAction.fields.invokeId')}
-                                  value={selectedDetail.lastActionInvokeId ?? t('accountPool.upstreamAccounts.unavailable')}
-                                />
-                                <div className="metric-cell md:col-span-2 xl:col-span-3">
-                                  <p className="metric-label">{t('accountPool.upstreamAccounts.latestAction.fields.message')}</p>
-                                  <p className="mt-2 break-words text-sm leading-6 text-base-content/80">
-                                    {selectedDetail.lastActionReasonMessage ?? selectedDetail.lastError ?? t('accountPool.upstreamAccounts.noError')}
-                                  </p>
-                                </div>
-                              </div>
-                            ) : (
-                              <p className="mt-2 text-sm leading-6 text-base-content/75">
-                                {t('accountPool.upstreamAccounts.latestAction.empty')}
-                              </p>
-                            )}
-                          </div>
-                        </CardContent>
-                      </Card>
-
-                      <Card className="border-base-300/80 bg-base-100/72">
-                        <CardHeader>
-                          <CardTitle>{t('accountPool.upstreamAccounts.recentActions.title')}</CardTitle>
-                          <CardDescription>{t('accountPool.upstreamAccounts.recentActions.description')}</CardDescription>
-                        </CardHeader>
-                        <CardContent>
-                          {selectedRecentActions.length === 0 ? (
-                            <p className="text-sm leading-6 text-base-content/68">
-                              {t('accountPool.upstreamAccounts.recentActions.empty')}
-                            </p>
-                          ) : (
-                            <div className="space-y-2">
-                              {selectedRecentActions.map((actionEvent) => (
-                                <div
-                                  key={actionEvent.id}
-                                  className="rounded-[1rem] border border-base-300/70 bg-base-100/70 p-3"
-                                >
-                                  <div className="flex flex-wrap items-center gap-2">
-                                    <Badge variant="secondary">
-                                      {accountActionLabel(actionEvent.action) ?? t('accountPool.upstreamAccounts.latestAction.unknown')}
-                                    </Badge>
-                                    <Badge variant="secondary">
-                                      {accountActionSourceLabel(actionEvent.source) ?? t('accountPool.upstreamAccounts.latestAction.unknown')}
-                                    </Badge>
-                                    {actionEvent.reasonCode ? (
-                                      <Badge variant="secondary">
-                                        {accountActionReasonLabel(actionEvent.reasonCode)}
-                                      </Badge>
-                                    ) : null}
-                                    {Number.isFinite(actionEvent.httpStatus ?? NaN) ? (
-                                      <Badge variant="secondary">{`HTTP ${actionEvent.httpStatus}`}</Badge>
-                                    ) : null}
-                                    <span className="text-xs text-base-content/55">
-                                      {formatDateTime(actionEvent.occurredAt)}
-                                    </span>
-                                  </div>
-                                  {actionEvent.reasonMessage ? (
-                                    <p className="mt-2 text-sm leading-6 text-base-content/75">
-                                      {actionEvent.reasonMessage}
-                                    </p>
-                                  ) : null}
-                                  {actionEvent.invokeId ? (
-                                    <p className="mt-2 text-xs text-base-content/55">
-                                      {t('accountPool.upstreamAccounts.latestAction.fields.invokeId')}: {actionEvent.invokeId}
-                                    </p>
-                                  ) : null}
-                                </div>
-                              ))}
-                            </div>
-                          )}
-                        </CardContent>
-                      </Card>
-                    </div>
-                  ) : null}
-                </>
-              ) : null}
-            </div>
-          )}
-        </AccountDetailDrawerShell>
-      ) : null}
-
-      <UpstreamAccountGroupNoteDialog
-        open={groupNoteEditor.open}
-        container={detailDrawerPortalContainer}
-        groupName={groupNoteEditor.groupName}
-        note={groupNoteEditor.note}
-        busy={groupNoteBusy}
-        error={groupNoteError}
-        existing={groupNoteEditor.existing}
-        onNoteChange={(value) => {
-          setGroupNoteError(null)
-          setGroupNoteEditor((current) => ({ ...current, note: value }))
-        }}
-        onClose={closeGroupNoteEditor}
-        onSave={() => void handleSaveGroupNote()}
-        title={t('accountPool.upstreamAccounts.groupNotes.dialogTitle')}
-        existingDescription={t('accountPool.upstreamAccounts.groupNotes.existingDescription')}
-        draftDescription={t('accountPool.upstreamAccounts.groupNotes.draftDescription')}
-        noteLabel={t('accountPool.upstreamAccounts.fields.note')}
-        notePlaceholder={t('accountPool.upstreamAccounts.groupNotes.notePlaceholder')}
-        cancelLabel={t('accountPool.upstreamAccounts.actions.cancel')}
-        saveLabel={t('accountPool.upstreamAccounts.actions.save')}
-        closeLabel={t('accountPool.upstreamAccounts.actions.closeDetails')}
-        existingBadgeLabel={t('accountPool.upstreamAccounts.groupNotes.badges.existing')}
-        draftBadgeLabel={t('accountPool.upstreamAccounts.groupNotes.badges.draft')}
-      />
-
       {listError ? (
         <Alert variant="warning">
           <AppIcon name="information-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
@@ -3191,12 +3594,15 @@ export default function UpstreamAccountsPage() {
         </Alert>
       ) : null}
 
-      {detailError ? (
-        <Alert variant="warning">
-          <AppIcon name="information-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-          <div>{detailError}</div>
-        </Alert>
-      ) : null}
+      <SharedUpstreamAccountDetailDrawer
+        open={upstreamAccountId != null}
+        accountId={upstreamAccountId}
+        initialDeleteConfirmOpen={pendingInitialDeleteConfirm}
+        onInitialDeleteConfirmHandled={() => setPendingInitialDeleteConfirm(false)}
+        onClose={closeUpstreamAccount}
+      />
+
+      {bulkSyncProgressBubble}
     </div>
   )
 }

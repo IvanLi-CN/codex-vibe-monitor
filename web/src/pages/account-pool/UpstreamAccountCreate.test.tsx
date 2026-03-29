@@ -2851,7 +2851,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     setComboboxValue('input[name="batchOauthDefaultGroupName"]', "new-team");
     await flushAsync();
 
-    clickButton(/Edit group note/i);
+    clickButton(/Edit group settings|Edit group note/i);
     await flushAsync();
     const draftGroupNoteField =
       document.body.querySelector("textarea") ??
@@ -4334,7 +4334,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     await flushAsync();
     expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
 
-    clickButton(/Edit group note/i);
+    clickButton(/Edit group settings|Edit group note/i);
     await flushAsync();
     const updatedGroupNoteField =
       document.body.querySelector("textarea") ??
@@ -4360,6 +4360,510 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       mailboxSessionId: "",
       mailboxAddress: "",
     });
+  });
+
+  it("copies the fresh batch oauth url immediately after generating it", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const originalClipboard = navigator.clipboard;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText,
+      },
+    });
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    mockUpstreamAccounts({ beginOauthLogin });
+    render("/account-pool/upstream-accounts/new?mode=batchOauth");
+
+    try {
+      setInputValue('input[name^="batchOauthDisplayName-"]', "Row One");
+      await flushAsync();
+      clickButton(/Generate OAuth URL/i);
+      await flushAsync();
+      await flushAsync();
+
+      expect(writeText).toHaveBeenCalledWith(
+        "https://auth.openai.com/authorize?login=1",
+      );
+      expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
+      expect(pageTextContent()).toContain(
+        "OAuth URL generated and copied. Complete sign-in elsewhere, then paste the callback URL back into this row.",
+      );
+    } finally {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: originalClipboard,
+      });
+    }
+  });
+
+  it("shows the batch manual copy bubble when generate auto copy fails", async () => {
+    const writeText = vi.fn().mockRejectedValue(new Error("clipboard blocked"));
+    const originalClipboard = navigator.clipboard;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText,
+      },
+    });
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=manual",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    mockUpstreamAccounts({ beginOauthLogin });
+    render("/account-pool/upstream-accounts/new?mode=batchOauth");
+
+    try {
+      setInputValue('input[name^="batchOauthDisplayName-"]', "Row One");
+      await flushAsync();
+      clickButton(/Generate OAuth URL/i);
+      await flushAsync();
+      await flushAsync();
+
+      expect(writeText).toHaveBeenCalledWith(
+        "https://auth.openai.com/authorize?login=manual",
+      );
+      expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
+      expect(pageTextContent()).toContain(
+        "Copy failed. Select the Auth URL field and copy it manually.",
+      );
+      expect(pageTextContent()).toContain("Manual copy required");
+      expect(pageTextContent()).toContain(
+        "https://auth.openai.com/authorize?login=manual",
+      );
+    } finally {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: originalClipboard,
+      });
+    }
+  });
+
+  it("keeps another row's manual-copy fallback open after a different row generates successfully", async () => {
+    const writeText = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("clipboard blocked"))
+      .mockResolvedValueOnce(undefined);
+    const originalClipboard = navigator.clipboard;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText,
+      },
+    });
+    const beginOauthLogin = vi
+      .fn()
+      .mockResolvedValueOnce({
+        loginId: "login-1",
+        status: "pending",
+        authUrl: "https://auth.openai.com/authorize?login=manual",
+        redirectUri: "http://localhost:1455/oauth/callback",
+        expiresAt: "2026-03-13T10:00:00.000Z",
+        accountId: null,
+        error: null,
+      })
+      .mockResolvedValueOnce({
+        loginId: "login-2",
+        status: "pending",
+        authUrl: "https://auth.openai.com/authorize?login=2",
+        redirectUri: "http://localhost:1455/oauth/callback",
+        expiresAt: "2026-03-13T10:05:00.000Z",
+        accountId: null,
+        error: null,
+      });
+    mockUpstreamAccounts({ beginOauthLogin });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            rows: [
+              { id: "row-1", displayName: "Row One" },
+              { id: "row-2", displayName: "Row Two" },
+            ],
+          },
+        },
+      },
+    });
+
+    try {
+      const firstRowButtons = Array.from(
+        getBatchRows()[0]?.querySelectorAll("button") ?? [],
+      );
+      const firstGenerateButton = firstRowButtons.find((candidate) =>
+        /generate oauth url/i.test(
+          [
+            candidate.textContent,
+            candidate.getAttribute("aria-label"),
+            candidate.getAttribute("title"),
+          ]
+            .filter(Boolean)
+            .join(" "),
+        ),
+      );
+      if (!(firstGenerateButton instanceof HTMLButtonElement)) {
+        throw new Error("missing first row generate button");
+      }
+      act(() => {
+        firstGenerateButton.dispatchEvent(
+          new MouseEvent("click", { bubbles: true }),
+        );
+      });
+      await flushAsync();
+      await flushAsync();
+
+      expect(pageTextContent()).toContain("Manual copy required");
+      expect(pageTextContent()).toContain(
+        "https://auth.openai.com/authorize?login=manual",
+      );
+
+      const secondRowButtons = Array.from(
+        getBatchRows()[1]?.querySelectorAll("button") ?? [],
+      );
+      const secondGenerateButton = secondRowButtons.find((candidate) =>
+        /generate oauth url/i.test(
+          [
+            candidate.textContent,
+            candidate.getAttribute("aria-label"),
+            candidate.getAttribute("title"),
+          ]
+            .filter(Boolean)
+            .join(" "),
+        ),
+      );
+      if (!(secondGenerateButton instanceof HTMLButtonElement)) {
+        throw new Error("missing second row generate button");
+      }
+      act(() => {
+        secondGenerateButton.dispatchEvent(
+          new MouseEvent("click", { bubbles: true }),
+        );
+      });
+      await flushAsync();
+      await flushAsync();
+
+      expect(writeText).toHaveBeenNthCalledWith(
+        2,
+        "https://auth.openai.com/authorize?login=2",
+      );
+      expect(pageTextContent()).toContain("Manual copy required");
+      expect(pageTextContent()).toContain(
+        "https://auth.openai.com/authorize?login=manual",
+      );
+    } finally {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: originalClipboard,
+      });
+    }
+  });
+
+  it("persists the fresh batch oauth session before clipboard access settles", async () => {
+    let resolveClipboard:
+      | ((value?: void | PromiseLike<void>) => void)
+      | undefined;
+    const writeText = vi.fn().mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveClipboard = resolve;
+        }),
+    );
+    const originalClipboard = navigator.clipboard;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText,
+      },
+    });
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=slow",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    mockUpstreamAccounts({ beginOauthLogin });
+    render("/account-pool/upstream-accounts/new?mode=batchOauth");
+
+    try {
+      setInputValue('input[name^="batchOauthDisplayName-"]', "Row One");
+      await flushAsync();
+      clickButton(/Generate OAuth URL/i);
+      await flushAsync();
+      await flushAsync();
+
+      expect(writeText).toHaveBeenCalledWith(
+        "https://auth.openai.com/authorize?login=slow",
+      );
+      expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
+      expect(pageTextContent()).toContain("OAuth URL is ready. It expires at");
+
+      resolveClipboard?.();
+      await flushAsync();
+      await flushAsync();
+
+      expect(pageTextContent()).toContain(
+        "OAuth URL generated and copied. Complete sign-in elsewhere, then paste the callback URL back into this row.",
+      );
+    } finally {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: originalClipboard,
+      });
+    }
+  });
+
+  it("ignores stale auto-copy results after regenerating the same batch oauth row", async () => {
+    let resolveFirstClipboard:
+      | ((value?: void | PromiseLike<void>) => void)
+      | undefined;
+    const writeText = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<void>((resolve) => {
+            resolveFirstClipboard = resolve;
+          }),
+      )
+      .mockRejectedValueOnce(new Error("clipboard blocked"));
+    const originalClipboard = navigator.clipboard;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText,
+      },
+    });
+    const beginOauthLogin = vi
+      .fn()
+      .mockResolvedValueOnce({
+        loginId: "login-1",
+        status: "pending",
+        authUrl: "https://auth.openai.com/authorize?login=stale",
+        redirectUri: "http://localhost:1455/oauth/callback",
+        expiresAt: "2026-03-13T10:00:00.000Z",
+        accountId: null,
+        error: null,
+      })
+      .mockResolvedValueOnce({
+        loginId: "login-2",
+        status: "pending",
+        authUrl: "https://auth.openai.com/authorize?login=fresh",
+        redirectUri: "http://localhost:1455/oauth/callback",
+        expiresAt: "2026-03-13T10:05:00.000Z",
+        accountId: null,
+        error: null,
+      });
+    mockUpstreamAccounts({ beginOauthLogin });
+    render("/account-pool/upstream-accounts/new?mode=batchOauth");
+
+    try {
+      setInputValue('input[name^="batchOauthDisplayName-"]', "Row One");
+      await flushAsync();
+      clickButton(/Generate OAuth URL/i);
+      await flushAsync();
+      await flushAsync();
+
+      const copyButton = findButton(/Copy OAuth URL/i);
+      if (!(copyButton instanceof HTMLButtonElement)) {
+        throw new Error("missing copy oauth button");
+      }
+
+      act(() => {
+        copyButton.dispatchEvent(
+          new MouseEvent("contextmenu", {
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      });
+      await flushAsync();
+      clickBodyButton(/Regenerate OAuth URL/i);
+      await flushAsync();
+      await flushAsync();
+
+      expect(pageTextContent()).toContain("Manual copy required");
+      expect(pageTextContent()).toContain(
+        "https://auth.openai.com/authorize?login=fresh",
+      );
+
+      resolveFirstClipboard?.();
+      await flushAsync();
+      await flushAsync();
+
+      expect(pageTextContent()).toContain("Manual copy required");
+      expect(pageTextContent()).toContain(
+        "https://auth.openai.com/authorize?login=fresh",
+      );
+      expect(pageTextContent()).not.toContain(
+        "OAuth URL generated and copied. Complete sign-in elsewhere, then paste the callback URL back into this row.",
+      );
+    } finally {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: originalClipboard,
+      });
+    }
+  });
+
+  it("ignores late auto-copy feedback after the row completes", async () => {
+    let resolveClipboard:
+      | ((value?: void | PromiseLike<void>) => void)
+      | undefined;
+    const writeText = vi.fn().mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveClipboard = resolve;
+        }),
+    );
+    const originalClipboard = navigator.clipboard;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText,
+      },
+    });
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=slow",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    const completeOauthLogin = vi.fn().mockResolvedValue({
+      id: 41,
+      displayName: "Row One",
+    });
+    mockUpstreamAccounts({ beginOauthLogin, completeOauthLogin });
+    render("/account-pool/upstream-accounts/new?mode=batchOauth");
+
+    try {
+      setInputValue('input[name^="batchOauthDisplayName-"]', "Row One");
+      await flushAsync();
+      clickButton(/Generate OAuth URL/i);
+      await flushAsync();
+      await flushAsync();
+
+      setInputValue(
+        'input[name^="batchOauthCallbackUrl-"]',
+        "http://localhost:1455/oauth/callback?code=test",
+      );
+      await flushAsync();
+      clickButton(/Complete OAuth login/i);
+      await flushAsync();
+      await flushAsync();
+
+      expect(pageTextContent()).toContain(
+        "Row One is ready. Continue with the remaining rows when you are done here.",
+      );
+
+      resolveClipboard?.();
+      await flushAsync();
+      await flushAsync();
+
+      expect(pageTextContent()).toContain(
+        "Row One is ready. Continue with the remaining rows when you are done here.",
+      );
+      expect(pageTextContent()).not.toContain(
+        "OAuth URL generated and copied. Complete sign-in elsewhere, then paste the callback URL back into this row.",
+      );
+    } finally {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: originalClipboard,
+      });
+    }
+  });
+
+  it("copies the regenerated batch oauth url from the bubble action", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    const originalClipboard = navigator.clipboard;
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText,
+      },
+    });
+    const beginOauthLogin = vi
+      .fn()
+      .mockResolvedValueOnce({
+        loginId: "login-1",
+        status: "pending",
+        authUrl: "https://auth.openai.com/authorize?login=1",
+        redirectUri: "http://localhost:1455/oauth/callback",
+        expiresAt: "2026-03-13T10:00:00.000Z",
+        accountId: null,
+        error: null,
+      })
+      .mockResolvedValueOnce({
+        loginId: "login-2",
+        status: "pending",
+        authUrl: "https://auth.openai.com/authorize?login=2",
+        redirectUri: "http://localhost:1455/oauth/callback",
+        expiresAt: "2026-03-13T10:05:00.000Z",
+        accountId: null,
+        error: null,
+    });
+    mockUpstreamAccounts({ beginOauthLogin });
+    render("/account-pool/upstream-accounts/new?mode=batchOauth");
+
+    try {
+      setInputValue('input[name^="batchOauthDisplayName-"]', "Row One");
+      await flushAsync();
+      clickButton(/Generate OAuth URL/i);
+      await flushAsync();
+      await flushAsync();
+
+      const copyButton = findButton(/Copy OAuth URL/i);
+      if (!(copyButton instanceof HTMLButtonElement)) {
+        throw new Error("missing copy oauth button");
+      }
+
+      act(() => {
+        copyButton.dispatchEvent(
+          new MouseEvent("contextmenu", {
+            bubbles: true,
+            cancelable: true,
+          }),
+        );
+      });
+      await flushAsync();
+      clickBodyButton(/Regenerate OAuth URL/i);
+      await flushAsync();
+      await flushAsync();
+
+      expect(writeText).toHaveBeenNthCalledWith(
+        1,
+        "https://auth.openai.com/authorize?login=1",
+      );
+      expect(writeText).toHaveBeenNthCalledWith(
+        2,
+        "https://auth.openai.com/authorize?login=2",
+      );
+      expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
+    } finally {
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: originalClipboard,
+      });
+    }
   });
 
   it("does not copy a stale batch oauth url after the session completes during sync flush", async () => {
@@ -4400,6 +4904,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     await flushAsync();
     clickButton(/Generate OAuth URL/i);
     await flushAsync();
+    writeText.mockClear();
 
     setInputValue('input[name^="batchOauthDisplayName-"]', "Row One Completed");
     await flushAsync();
@@ -4457,6 +4962,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     await flushAsync();
     clickButton(/Generate OAuth URL/i);
     await flushAsync();
+    writeText.mockClear();
 
     setInputValue('input[name^="batchOauthDisplayName-"]', "Row One Retry");
     await flushAsync();
@@ -4521,6 +5027,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     await flushAsync();
     clickButton(/Generate OAuth URL/i);
     await flushAsync();
+    writeText.mockClear();
 
     setInputValue('input[name^="batchOauthDisplayName-"]', "Row One Retry");
     await flushAsync();
@@ -5698,6 +6205,128 @@ describe("UpstreamAccountCreatePage api key", () => {
     expect(document.body.textContent).toContain("Use an absolute http(s) URL");
     expect(findButton(/Create API Key account/i)?.disabled).toBe(true);
     expect(createApiKeyAccount).not.toHaveBeenCalled();
+  });
+
+  it("navigates with a warning when account creation succeeds but draft group settings fail to persist", async () => {
+    const createApiKeyAccount = vi.fn().mockResolvedValue({
+      id: 42,
+      kind: "api_key_codex",
+      provider: "codex",
+      displayName: "Gateway Key",
+      groupName: "latam",
+      isMother: false,
+      status: "active",
+      enabled: true,
+      history: [],
+    });
+    const saveGroupNote = vi
+      .fn()
+      .mockRejectedValue(new Error("Request failed: 500 group metadata locked"));
+    mockUpstreamAccounts({
+      createApiKeyAccount,
+      saveGroupNote,
+      forwardProxyNodes: [
+        {
+          key: "__direct__",
+          displayName: "Direct",
+          protocolLabel: "DIRECT",
+          source: "direct",
+          penalized: false,
+          selectable: true,
+          last24h: [],
+        },
+        {
+          key: "jp-edge-01",
+          displayName: "JP Edge 01",
+          protocolLabel: "HTTP",
+          source: "inventory",
+          penalized: false,
+          selectable: true,
+          last24h: [],
+        },
+        {
+          key: "ss://2022-blake3-aes-128-gcm:fixture-passphrase@fixture-ss-edge.example.invalid:443#Ivan-hinet-ss2022-01KF87EBR50MM9JKM9R9BCA9WZ",
+          displayName: "Ivan-hinet-ss2022-01KF87EBR50MM9JKM9R9BCA9WZ",
+          protocolLabel: "SS",
+          source: "subscription",
+          penalized: false,
+          selectable: true,
+          last24h: [],
+        },
+      ],
+    });
+    render("/account-pool/upstream-accounts/new?mode=apiKey");
+
+    setInputValue('input[name="apiKeyDisplayName"]', "Gateway Key");
+    setInputValue('input[name="apiKeyValue"]', "sk-gateway");
+    setComboboxValue('input[name="apiKeyGroupName"]', "latam");
+    await flushAsync();
+
+    clickButton(/Edit group settings|Edit group note/i);
+    await flushAsync();
+
+    const dialogStack = Array.from(document.body.querySelectorAll('[role="dialog"]'));
+    const groupSettingsDialog = dialogStack[dialogStack.length - 1];
+    if (!(groupSettingsDialog instanceof HTMLElement)) {
+      throw new Error("missing group settings dialog");
+    }
+    expect(groupSettingsDialog.textContent || "").toContain("Bound proxy nodes");
+    expect(groupSettingsDialog.textContent || "").toContain("Direct");
+    expect(groupSettingsDialog.textContent || "").toContain("DIRECT");
+    expect(groupSettingsDialog.textContent || "").toContain("SS");
+    expect(groupSettingsDialog.textContent || "").not.toContain("ss://");
+
+    const groupNoteField = groupSettingsDialog.querySelector("textarea");
+    if (!(groupNoteField instanceof HTMLTextAreaElement)) {
+      throw new Error("missing group note textarea");
+    }
+    setFieldValue(groupNoteField, "LATAM draft note");
+
+    const proxyOption = Array.from(groupSettingsDialog.querySelectorAll("button")).find(
+      (candidate) => /JP Edge 01/i.test(candidate.textContent || ""),
+    );
+    if (!(proxyOption instanceof HTMLButtonElement)) {
+      throw new Error("missing proxy binding option");
+    }
+    act(() => {
+      proxyOption.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const saveDialogButton = Array.from(groupSettingsDialog.querySelectorAll("button")).find(
+      (candidate) => /Save changes/i.test(candidate.textContent || ""),
+    );
+    if (!(saveDialogButton instanceof HTMLButtonElement)) {
+      throw new Error("missing group settings save button");
+    }
+    act(() => {
+      saveDialogButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+
+    clickButton(/Create API Key account/i);
+    await flushAsync();
+
+    expect(createApiKeyAccount).toHaveBeenCalledWith(
+      expect.objectContaining({
+        displayName: "Gateway Key",
+        apiKey: "sk-gateway",
+        groupName: "latam",
+        groupNote: "LATAM draft note",
+      }),
+    );
+    expect(saveGroupNote).toHaveBeenCalledWith("latam", {
+      note: "LATAM draft note",
+      boundProxyKeys: ["jp-edge-01"],
+    });
+    expect(navigateMock).toHaveBeenCalledWith("/account-pool/upstream-accounts", {
+      state: expect.objectContaining({
+        selectedAccountId: 42,
+        openDetail: true,
+        postCreateWarning: expect.stringContaining(
+          "The account was created, but saving the draft group settings failed",
+        ),
+      }),
+    });
   });
 });
 

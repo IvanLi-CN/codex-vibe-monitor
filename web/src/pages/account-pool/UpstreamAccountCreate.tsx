@@ -116,6 +116,7 @@ type GroupNoteEditorState = {
   groupName: string;
   note: string;
   existing: boolean;
+  boundProxyKeys: string[];
 };
 type MailboxCopyTone = "idle" | "copied" | "manual";
 const MAILBOX_REFRESH_INTERVAL_MS = 5_000;
@@ -230,6 +231,15 @@ function normalizeNumberInput(value: string): number | undefined {
   if (!trimmed) return undefined;
   const parsed = Number(trimmed);
   return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function normalizeBoundProxyKeys(values?: string[]): string[] {
+  if (!Array.isArray(values)) return [];
+  return Array.from(
+    new Set(
+      values.map((value) => value.trim()).filter((value) => value.length > 0),
+    ),
+  );
 }
 
 function formatDateTime(value?: string | null) {
@@ -1333,7 +1343,7 @@ function DuplicateAccountDetailDialog({
 }
 
 export default function UpstreamAccountCreatePage() {
-  const { t } = useTranslation();
+  const { t, locale } = useTranslation();
   const navigate = useNavigate();
   const location = useLocation();
   const locationState = (location.state as CreatePageLocationState) ?? null;
@@ -1341,6 +1351,7 @@ export default function UpstreamAccountCreatePage() {
   const {
     items,
     groups = [],
+    forwardProxyNodes,
     writesEnabled,
     isLoading,
     listError,
@@ -1532,17 +1543,40 @@ export default function UpstreamAccountCreatePage() {
   const [groupDraftNotes, setGroupDraftNotes] = useState<
     Record<string, string>
   >({});
+  const [groupDraftBoundProxyKeys, setGroupDraftBoundProxyKeys] = useState<
+    Record<string, string[]>
+  >({});
   const [groupNoteEditor, setGroupNoteEditor] = useState<GroupNoteEditorState>({
     open: false,
     groupName: "",
     note: "",
     existing: false,
+    boundProxyKeys: [],
   });
   const [groupNoteBusy, setGroupNoteBusy] = useState(false);
   const [groupNoteError, setGroupNoteError] = useState<string | null>(null);
   const oauthMailboxToneResetRef = useRef<number | null>(null);
   const batchMailboxToneResetRef = useRef<Record<string, number>>({});
   const batchRowsRef = useRef<BatchOauthRow[]>(initialBatchRows);
+  const batchSessionFeedbackStateByRowRef = useRef<
+    Record<
+      string,
+      Pick<LoginSessionStatusResponse, "loginId" | "status" | "authUrl"> | null
+    >
+  >(
+    Object.fromEntries(
+      initialBatchRows.map((row) => [
+        row.id,
+        row.session
+          ? {
+              loginId: row.session.loginId,
+              status: row.session.status,
+              authUrl: row.session.authUrl ?? null,
+            }
+          : null,
+      ]),
+    ),
+  );
   const pendingOauthSessionSyncRef = useRef<
     Record<string, PendingOauthSessionSyncRecord>
   >({});
@@ -1637,6 +1671,18 @@ export default function UpstreamAccountCreatePage() {
   }, []);
   useEffect(() => {
     batchRowsRef.current = batchRows;
+    batchSessionFeedbackStateByRowRef.current = Object.fromEntries(
+      batchRows.map((row) => [
+        row.id,
+        row.session
+          ? {
+              loginId: row.session.loginId,
+              status: row.session.status,
+              authUrl: row.session.authUrl ?? null,
+            }
+          : null,
+      ]),
+    );
   }, [batchRows]);
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -1652,9 +1698,17 @@ export default function UpstreamAccountCreatePage() {
       buildGroupNameSuggestions(
         items.map((item) => item.groupName),
         groups,
-        groupDraftNotes,
+        {
+          ...Object.fromEntries(
+            Object.keys(groupDraftBoundProxyKeys).map((groupName) => [
+              groupName,
+              "",
+            ]),
+          ),
+          ...groupDraftNotes,
+        },
       ),
-    [groupDraftNotes, groups, items],
+    [groupDraftBoundProxyKeys, groupDraftNotes, groups, items],
   );
   const oauthConflictExcludeId =
     relinkAccountId ??
@@ -2600,29 +2654,117 @@ export default function UpstreamAccountCreatePage() {
       return Object.fromEntries(nextEntries);
     });
   }, [groups]);
+  useEffect(() => {
+    setGroupDraftBoundProxyKeys((current) => {
+      const nextEntries = Object.entries(current).filter(
+        ([groupName]) => !isExistingGroup(groups, groupName),
+      );
+      if (nextEntries.length === Object.keys(current).length) {
+        return current;
+      }
+      return Object.fromEntries(nextEntries);
+    });
+  }, [groups]);
 
+  function resolveGroupSummaryForName(groupName: string) {
+    const normalized = normalizeGroupName(groupName);
+    if (!normalized) return null;
+    return (
+      groups.find(
+        (group) => normalizeGroupName(group.groupName) === normalized,
+      ) ?? null
+    );
+  }
   function resolveGroupNoteForName(groupName: string) {
     return resolveGroupNote(groups, groupDraftNotes, groupName);
+  }
+  function resolveGroupBoundProxyKeysForName(groupName: string) {
+    return resolveGroupSummaryForName(groupName)?.boundProxyKeys ?? [];
   }
   function resolvePendingGroupNoteForName(groupName: string) {
     const normalized = normalizeGroupName(groupName);
     if (!normalized || isExistingGroup(groups, normalized)) return "";
     return groupDraftNotes[normalized]?.trim() ?? "";
   }
-  function hasGroupNote(groupName: string) {
-    return resolveGroupNoteForName(groupName).trim().length > 0;
+  function resolvePendingGroupBoundProxyKeysForName(groupName: string) {
+    const normalized = normalizeGroupName(groupName);
+    if (!normalized) return [];
+    if (isExistingGroup(groups, normalized)) {
+      return resolveGroupBoundProxyKeysForName(normalized);
+    }
+    return normalizeBoundProxyKeys(groupDraftBoundProxyKeys[normalized]);
   }
+  function hasGroupSettings(groupName: string) {
+    return (
+      resolveGroupNoteForName(groupName).trim().length > 0 ||
+      resolvePendingGroupBoundProxyKeysForName(groupName).length > 0
+    );
+  }
+
+  const clearDraftGroupSettings = useCallback((groupName: string) => {
+    const normalized = normalizeGroupName(groupName);
+    if (!normalized) return;
+    setGroupDraftNotes((current) => {
+      if (!(normalized in current)) return current;
+      const next = { ...current };
+      delete next[normalized];
+      return next;
+    });
+    setGroupDraftBoundProxyKeys((current) => {
+      if (!(normalized in current)) return current;
+      const next = { ...current };
+      delete next[normalized];
+      return next;
+    });
+  }, []);
+
+  const persistDraftGroupSettings = useCallback(
+    async (groupName: string) => {
+      const normalizedGroupName = normalizeGroupName(groupName);
+      if (!normalizedGroupName) return;
+      const hasDraftNote = normalizedGroupName in groupDraftNotes;
+      const hasDraftBoundProxyKeys =
+        normalizedGroupName in groupDraftBoundProxyKeys;
+      if (!hasDraftNote && !hasDraftBoundProxyKeys) {
+        return;
+      }
+      const normalizedNote = hasDraftNote
+        ? groupDraftNotes[normalizedGroupName]?.trim() ?? ""
+        : "";
+      const normalizedBoundProxyKeys = hasDraftBoundProxyKeys
+        ? normalizeBoundProxyKeys(groupDraftBoundProxyKeys[normalizedGroupName])
+        : [];
+      if (!normalizedNote && normalizedBoundProxyKeys.length === 0) {
+        return;
+      }
+      await saveGroupNote(normalizedGroupName, {
+        note: normalizedNote || undefined,
+        boundProxyKeys: normalizedBoundProxyKeys,
+      });
+      clearDraftGroupSettings(normalizedGroupName);
+    },
+    [
+      clearDraftGroupSettings,
+      groupDraftBoundProxyKeys,
+      groupDraftNotes,
+      saveGroupNote,
+    ],
+  );
 
   const openGroupNoteEditor = (groupName: string) => {
     if (!writesEnabled) return;
     const normalized = normalizeGroupName(groupName);
     if (!normalized) return;
+    const existingGroup = resolveGroupSummaryForName(normalized);
     setGroupNoteError(null);
     setGroupNoteEditor({
       open: true,
       groupName: normalized,
-      note: resolveGroupNoteForName(normalized),
-      existing: isExistingGroup(groups, normalized),
+      note: existingGroup?.note ?? resolveGroupNoteForName(normalized),
+      existing: existingGroup != null,
+      boundProxyKeys:
+        existingGroup?.boundProxyKeys ??
+        resolvePendingGroupBoundProxyKeysForName(normalized),
     });
   };
 
@@ -2637,6 +2779,9 @@ export default function UpstreamAccountCreatePage() {
     const normalizedGroupName = normalizeGroupName(groupNoteEditor.groupName);
     if (!normalizedGroupName) return;
     const normalizedNote = groupNoteEditor.note.trim();
+    const normalizedBoundProxyKeys = normalizeBoundProxyKeys(
+      groupNoteEditor.boundProxyKeys,
+    );
     const shouldInvalidateSingleOauthSessionForDraftGroup =
       normalizeGroupName(oauthGroupName) === normalizedGroupName &&
       resolvePendingGroupNoteForName(oauthGroupName).trim() !== normalizedNote;
@@ -2646,6 +2791,15 @@ export default function UpstreamAccountCreatePage() {
         const next = { ...current };
         if (normalizedNote) {
           next[normalizedGroupName] = normalizedNote;
+        } else {
+          delete next[normalizedGroupName];
+        }
+        return next;
+      });
+      setGroupDraftBoundProxyKeys((current) => {
+        const next = { ...current };
+        if (normalizedBoundProxyKeys.length > 0) {
+          next[normalizedGroupName] = normalizedBoundProxyKeys;
         } else {
           delete next[normalizedGroupName];
         }
@@ -2662,13 +2816,9 @@ export default function UpstreamAccountCreatePage() {
     try {
       await saveGroupNote(normalizedGroupName, {
         note: normalizedNote || undefined,
+        boundProxyKeys: normalizedBoundProxyKeys,
       });
-      setGroupDraftNotes((current) => {
-        if (!(normalizedGroupName in current)) return current;
-        const next = { ...current };
-        delete next[normalizedGroupName];
-        return next;
-      });
+      clearDraftGroupSettings(normalizedGroupName);
       setGroupNoteEditor((current) => ({ ...current, open: false }));
     } catch (err) {
       setGroupNoteError(err instanceof Error ? err.message : String(err));
@@ -3742,6 +3892,13 @@ export default function UpstreamAccountCreatePage() {
       }
     }
     if (importedAny) {
+      try {
+        await persistDraftGroupSettings(importGroupName);
+      } catch (err) {
+        batchErrors.push(err instanceof Error ? err.message : String(err));
+      }
+    }
+    if (importedAny) {
       setImportInputKey((current) => current + 1);
     }
     setImportValidationState(() => {
@@ -3765,6 +3922,7 @@ export default function UpstreamAccountCreatePage() {
     importOauthAccounts,
     importTagIds,
     importValidationState?.rows,
+    persistDraftGroupSettings,
     t,
   ]);
 
@@ -4012,6 +4170,7 @@ export default function UpstreamAccountCreatePage() {
         mailboxSessionId: activeOauthMailboxSession?.sessionId,
         mailboxAddress: activeOauthMailboxSession?.emailAddress,
       });
+      await persistDraftGroupSettings(oauthGroupName);
       notifyMotherChange(detail);
       setSession({
         ...session,
@@ -4052,6 +4211,7 @@ export default function UpstreamAccountCreatePage() {
           const detail = await fetchUpstreamAccountDetail(
             latestSession.accountId,
           );
+          await persistDraftGroupSettings(oauthGroupName);
           notifyMotherChange(detail);
           if (detail.duplicateInfo) {
             setOauthDuplicateWarning({
@@ -4292,6 +4452,47 @@ export default function UpstreamAccountCreatePage() {
     }));
   };
 
+  const canApplyBatchOauthCopyFeedback = (rowId: string, loginId: string) => {
+    const session = batchSessionFeedbackStateByRowRef.current[rowId];
+    if (
+      !session ||
+      session.loginId !== loginId ||
+      session.status !== "pending" ||
+      !session.authUrl
+    ) {
+      return false;
+    }
+    const currentRow = batchRowsRef.current.find((item) => item.id === rowId);
+    if (currentRow?.session?.loginId !== loginId) {
+      return true;
+    }
+    return isActivePendingOauthSession(currentRow.session);
+  };
+
+  const resolveBatchOauthCopyFeedback = (
+    rowId: string,
+    loginId: string,
+    result: Awaited<ReturnType<typeof copyText>>,
+    successHint: string,
+  ) => {
+    if (!canApplyBatchOauthCopyFeedback(rowId, loginId)) {
+      return null;
+    }
+    const fallbackHint = t(
+      "accountPool.upstreamAccounts.batchOauth.copyInlineFallback",
+    );
+    setBatchManualCopyRowId((current) => {
+      if (!canApplyBatchOauthCopyFeedback(rowId, loginId)) {
+        return current;
+      }
+      return result.ok ? (current === rowId ? null : current) : rowId;
+    });
+    return {
+      sessionHint: result.ok ? successHint : fallbackHint,
+      actionError: result.ok ? null : fallbackHint,
+    };
+  };
+
   const handleBatchGenerateOauthUrl = async (rowId: string) => {
     const row = batchRows.find((item) => item.id === rowId);
     if (!row) return;
@@ -4327,26 +4528,57 @@ export default function UpstreamAccountCreatePage() {
         mailboxSessionId: row.mailboxSession?.sessionId,
         mailboxAddress: row.mailboxSession?.emailAddress,
       });
-        createdPendingOauthSessionSignaturesRef.current[response.loginId] =
-          buildPendingOauthSessionSnapshot(
-            response.loginId,
-            oauthLoginSessionPayload,
-            response.updatedAt ?? null,
-          ).signature;
-      setBatchManualCopyRowId((current) =>
-        current === rowId ? null : current,
-      );
+      createdPendingOauthSessionSignaturesRef.current[response.loginId] =
+        buildPendingOauthSessionSnapshot(
+          response.loginId,
+          oauthLoginSessionPayload,
+          response.updatedAt ?? null,
+        ).signature;
+      const generatedHint = t("accountPool.upstreamAccounts.oauth.generated", {
+        expiresAt: formatDateTime(response.expiresAt),
+      });
+      batchSessionFeedbackStateByRowRef.current[rowId] = {
+        loginId: response.loginId,
+        status: response.status,
+        authUrl: response.authUrl ?? null,
+      };
       updateBatchRow(rowId, (current) => ({
         ...current,
         busyAction: null,
         callbackUrl: "",
         session: response,
-        sessionHint: t("accountPool.upstreamAccounts.oauth.generated", {
-          expiresAt: formatDateTime(response.expiresAt),
-        }),
+        sessionHint: generatedHint,
         needsRefresh: false,
         actionError: null,
       }));
+      if (response.authUrl) {
+        const copyResult = await copyText(response.authUrl, {
+          preferExecCommand: true,
+        });
+        const copyFeedback = resolveBatchOauthCopyFeedback(
+          rowId,
+          response.loginId,
+          copyResult,
+          t("accountPool.upstreamAccounts.batchOauth.generatedAndCopied"),
+        );
+        if (!copyFeedback) {
+          return;
+        }
+        updateBatchRow(rowId, (current) => ({
+          ...(current.session?.loginId !== response.loginId
+            ? current
+            : {
+                ...current,
+                sessionHint: copyFeedback.sessionHint,
+                actionError: copyFeedback.actionError,
+              }),
+        }));
+      } else if (
+        batchSessionFeedbackStateByRowRef.current[rowId]?.loginId ===
+        response.loginId
+      ) {
+        setBatchManualCopyRowId((current) => (current === rowId ? null : current));
+      }
     } catch (err) {
       updateBatchRow(rowId, (current) => ({
         ...current,
@@ -4389,16 +4621,20 @@ export default function UpstreamAccountCreatePage() {
       preferExecCommand: true,
     });
 
-    setBatchManualCopyRowId(result.ok ? null : rowId);
+    const copyFeedback = resolveBatchOauthCopyFeedback(
+      rowId,
+      row.session.loginId,
+      result,
+      t("accountPool.upstreamAccounts.oauth.copied"),
+    );
+    if (!copyFeedback) {
+      return;
+    }
 
     updateBatchRow(rowId, (current) => ({
       ...current,
-      sessionHint: result.ok
-        ? t("accountPool.upstreamAccounts.oauth.copied")
-        : t("accountPool.upstreamAccounts.batchOauth.copyInlineFallback"),
-      actionError: result.ok
-        ? null
-        : t("accountPool.upstreamAccounts.batchOauth.copyInlineFallback"),
+      sessionHint: copyFeedback.sessionHint,
+      actionError: copyFeedback.actionError,
     }));
   };
 
@@ -4422,6 +4658,7 @@ export default function UpstreamAccountCreatePage() {
         mailboxSessionId: row.mailboxSession?.sessionId,
         mailboxAddress: row.mailboxSession?.emailAddress,
       });
+      await persistDraftGroupSettings(row.groupName);
       notifyMotherChange(detail);
       updateBatchRow(rowId, (current) => {
         const baseSession = (current.session ??
@@ -4480,6 +4717,7 @@ export default function UpstreamAccountCreatePage() {
           const detail = await fetchUpstreamAccountDetail(
             latestSession.accountId,
           );
+          await persistDraftGroupSettings(row.groupName);
           notifyMotherChange(detail);
           updateBatchRow(rowId, (current) => {
             const baseSession = (current.session ??
@@ -4603,11 +4841,23 @@ export default function UpstreamAccountCreatePage() {
         localLimitUnit: apiKeyLimitUnit.trim() || "requests",
         tagIds: apiKeyTagIds,
       });
+      let postCreateWarning: string | null = null;
+      try {
+        await persistDraftGroupSettings(apiKeyGroupName);
+      } catch (error) {
+        postCreateWarning = t(
+          "accountPool.upstreamAccounts.partialSuccess.createdButGroupSettingsFailed",
+          {
+            error: error instanceof Error ? error.message : String(error),
+          },
+        );
+      }
       notifyMotherChange(response);
       navigate("/account-pool/upstream-accounts", {
         state: {
           selectedAccountId: response.id,
           openDetail: true,
+          postCreateWarning,
         },
       });
     } catch (err) {
@@ -4876,7 +5126,7 @@ export default function UpstreamAccountCreatePage() {
                         type="button"
                         size="icon"
                         variant={
-                          hasGroupNote(batchDefaultGroupName)
+                          hasGroupSettings(batchDefaultGroupName)
                             ? "secondary"
                             : "outline"
                         }
@@ -5221,7 +5471,9 @@ export default function UpstreamAccountCreatePage() {
                         type="button"
                         size="icon"
                         variant={
-                          hasGroupNote(oauthGroupName) ? "secondary" : "outline"
+                          hasGroupSettings(oauthGroupName)
+                            ? "secondary"
+                            : "outline"
                         }
                         className="shrink-0 rounded-full"
                         aria-label={t(
@@ -6022,7 +6274,7 @@ export default function UpstreamAccountCreatePage() {
                                           type="button"
                                           size="icon"
                                           variant={
-                                            hasGroupNote(row.groupName)
+                                            hasGroupSettings(row.groupName)
                                               ? "secondary"
                                               : "outline"
                                           }
@@ -6602,7 +6854,7 @@ export default function UpstreamAccountCreatePage() {
                         type="button"
                         size="icon"
                         variant={
-                          hasGroupNote(importGroupName)
+                          hasGroupSettings(importGroupName)
                             ? "secondary"
                             : "outline"
                         }
@@ -6719,7 +6971,7 @@ export default function UpstreamAccountCreatePage() {
                         type="button"
                         size="icon"
                         variant={
-                          hasGroupNote(apiKeyGroupName)
+                          hasGroupSettings(apiKeyGroupName)
                             ? "secondary"
                             : "outline"
                         }
@@ -6907,12 +7159,21 @@ export default function UpstreamAccountCreatePage() {
         open={groupNoteEditor.open}
         groupName={groupNoteEditor.groupName}
         note={groupNoteEditor.note}
+        boundProxyKeys={groupNoteEditor.boundProxyKeys}
+        availableProxyNodes={forwardProxyNodes}
         busy={groupNoteBusy}
         error={groupNoteError}
         existing={groupNoteEditor.existing}
         onNoteChange={(value) => {
           setGroupNoteError(null);
           setGroupNoteEditor((current) => ({ ...current, note: value }));
+        }}
+        onBoundProxyKeysChange={(value) => {
+          setGroupNoteError(null);
+          setGroupNoteEditor((current) => ({
+            ...current,
+            boundProxyKeys: value,
+          }));
         }}
         onClose={closeGroupNoteEditor}
         onSave={() => void handleSaveGroupNote()}
@@ -6936,6 +7197,40 @@ export default function UpstreamAccountCreatePage() {
         draftBadgeLabel={t(
           "accountPool.upstreamAccounts.groupNotes.badges.draft",
         )}
+        proxyBindingsLabel={t(
+          "accountPool.upstreamAccounts.groupNotes.proxyBindings.label",
+        )}
+        proxyBindingsHint={t(
+          "accountPool.upstreamAccounts.groupNotes.proxyBindings.hint",
+        )}
+        proxyBindingsAutomaticLabel={t(
+          "accountPool.upstreamAccounts.groupNotes.proxyBindings.automatic",
+        )}
+        proxyBindingsEmptyLabel={t(
+          "accountPool.upstreamAccounts.groupNotes.proxyBindings.empty",
+        )}
+        proxyBindingsMissingLabel={t(
+          "accountPool.upstreamAccounts.groupNotes.proxyBindings.missing",
+        )}
+        proxyBindingsUnavailableLabel={t(
+          "accountPool.upstreamAccounts.groupNotes.proxyBindings.unavailable",
+        )}
+        proxyBindingsChartLabel={t(
+          "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartLabel",
+        )}
+        proxyBindingsChartSuccessLabel={t(
+          "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartSuccess",
+        )}
+        proxyBindingsChartFailureLabel={t(
+          "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartFailure",
+        )}
+        proxyBindingsChartEmptyLabel={t(
+          "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartEmpty",
+        )}
+        proxyBindingsChartTotalLabel={t("live.proxy.table.requestTooltip.total")}
+        proxyBindingsChartAriaLabel={t("live.proxy.table.requestTrendAria")}
+        proxyBindingsChartInteractionHint={t("live.chart.tooltip.instructions")}
+        proxyBindingsChartLocaleTag={locale === "zh" ? "zh-CN" : "en-US"}
       />
       <DuplicateAccountDetailDialog
         open={duplicateDetailOpen}

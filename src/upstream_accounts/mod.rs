@@ -5,8 +5,8 @@ use aes_gcm::{
     aead::{Aead, KeyInit},
 };
 use axum::{
-    extract::{Path as AxumPath, Query},
-    http::header,
+    extract::{OriginalUri, Path as AxumPath, Query},
+    http::{Uri, header},
     response::Html,
 };
 use base64::engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_PAD};
@@ -63,6 +63,7 @@ const UPSTREAM_ACCOUNT_ENABLE_STATUS_DISABLED: &str = "disabled";
 const UPSTREAM_ACCOUNT_WORK_STATUS_WORKING: &str = "working";
 const UPSTREAM_ACCOUNT_WORK_STATUS_IDLE: &str = "idle";
 const UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED: &str = "rate_limited";
+const UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE: &str = "unavailable";
 const UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL: &str = "normal";
 const UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_UNAVAILABLE: &str = "upstream_unavailable";
 const UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED: &str = "upstream_rejected";
@@ -71,6 +72,7 @@ const UPSTREAM_ACCOUNT_SYNC_STATE_IDLE: &str = "idle";
 const UPSTREAM_ACCOUNT_SYNC_STATE_SYNCING: &str = "syncing";
 const UPSTREAM_ACCOUNT_ACTION_ROUTE_RECOVERED: &str = "route_recovered";
 const UPSTREAM_ACCOUNT_ACTION_ROUTE_COOLDOWN_STARTED: &str = "route_cooldown_started";
+const UPSTREAM_ACCOUNT_ACTION_ROUTE_RETRYABLE_FAILURE: &str = "route_retryable_failure";
 const UPSTREAM_ACCOUNT_ACTION_ROUTE_HARD_UNAVAILABLE: &str = "route_hard_unavailable";
 const UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED: &str = "sync_succeeded";
 const UPSTREAM_ACCOUNT_ACTION_SYNC_HARD_UNAVAILABLE: &str = "sync_hard_unavailable";
@@ -95,6 +97,8 @@ const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_RATE_LIMIT: &str =
 const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED: &str =
     "upstream_http_429_quota_exhausted";
 const UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE: &str = "transport_failure";
+const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED: &str =
+    "upstream_server_overloaded";
 const UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED: &str = "reauth_required";
 const BULK_UPSTREAM_ACCOUNT_ACTION_ENABLE: &str = "enable";
 const BULK_UPSTREAM_ACCOUNT_ACTION_DISABLE: &str = "disable";
@@ -793,6 +797,7 @@ pub(crate) struct UpstreamAccountListResponse {
     page_size: usize,
     metrics: UpstreamAccountListMetrics,
     groups: Vec<UpstreamAccountGroupSummary>,
+    forward_proxy_nodes: Vec<ForwardProxyBindingNodeResponse>,
     has_ungrouped_accounts: bool,
     routing: PoolRoutingSettingsResponse,
 }
@@ -803,13 +808,28 @@ pub(crate) struct ListUpstreamAccountsQuery {
     pub(crate) group_search: Option<String>,
     pub(crate) group_ungrouped: Option<bool>,
     pub(crate) status: Option<String>,
-    pub(crate) work_status: Option<String>,
-    pub(crate) enable_status: Option<String>,
-    pub(crate) health_status: Option<String>,
+    #[serde(default)]
+    pub(crate) work_status: Vec<String>,
+    #[serde(default)]
+    pub(crate) enable_status: Vec<String>,
+    #[serde(default)]
+    pub(crate) health_status: Vec<String>,
     pub(crate) page: Option<usize>,
     pub(crate) page_size: Option<usize>,
     #[serde(default)]
     pub(crate) tag_ids: Vec<i64>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ListUpstreamAccountsBaseQuery {
+    group_search: Option<String>,
+    group_ungrouped: Option<bool>,
+    status: Option<String>,
+    page: Option<usize>,
+    page_size: Option<usize>,
+    #[serde(default)]
+    tag_ids: Vec<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -896,6 +916,13 @@ pub(crate) struct TagListResponse {
 pub(crate) struct UpstreamAccountGroupSummary {
     group_name: String,
     note: Option<String>,
+    bound_proxy_keys: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct UpstreamAccountGroupMetadata {
+    note: Option<String>,
+    bound_proxy_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1625,6 +1652,8 @@ pub(crate) struct AccountStickyKeysQuery {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct UpdateUpstreamAccountGroupRequest {
     note: Option<String>,
+    #[serde(default)]
+    bound_proxy_keys: Option<Vec<String>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2622,6 +2651,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
         CREATE TABLE IF NOT EXISTS pool_upstream_account_group_notes (
             group_name TEXT PRIMARY KEY,
             note TEXT NOT NULL,
+            bound_proxy_keys_json TEXT NOT NULL DEFAULT '[]',
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
@@ -2630,6 +2660,19 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to ensure pool_upstream_account_group_notes table existence")?;
+    let existing_group_note_columns =
+        load_sqlite_table_columns(pool, "pool_upstream_account_group_notes").await?;
+    if !existing_group_note_columns.contains("bound_proxy_keys_json") {
+        sqlx::query(
+            r#"
+            ALTER TABLE pool_upstream_account_group_notes
+            ADD COLUMN bound_proxy_keys_json TEXT NOT NULL DEFAULT '[]'
+            "#,
+        )
+        .execute(pool)
+        .await
+        .context("failed to add pool_upstream_account_group_notes.bound_proxy_keys_json")?;
+    }
 
     sqlx::query(
         r#"
@@ -2884,9 +2927,26 @@ async fn sqlite_table_exists(pool: &Pool<Sqlite>, table_name: &str) -> Result<bo
         > 0)
 }
 
+#[cfg(test)]
 pub(crate) async fn list_upstream_accounts(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ListUpstreamAccountsQuery>,
+) -> Result<Json<UpstreamAccountListResponse>, (StatusCode, String)> {
+    list_upstream_accounts_from_params(state, params).await
+}
+
+pub(crate) async fn list_upstream_accounts_from_uri(
+    State(state): State<Arc<AppState>>,
+    OriginalUri(original_uri): OriginalUri,
+) -> Result<Json<UpstreamAccountListResponse>, (StatusCode, String)> {
+    let params = parse_list_upstream_accounts_query(&original_uri)
+        .map_err(|err| (StatusCode::BAD_REQUEST, err))?;
+    list_upstream_accounts_from_params(state, params).await
+}
+
+async fn list_upstream_accounts_from_params(
+    state: Arc<AppState>,
+    params: ListUpstreamAccountsQuery,
 ) -> Result<Json<UpstreamAccountListResponse>, (StatusCode, String)> {
     expire_pending_login_sessions(&state.pool)
         .await
@@ -2911,6 +2971,14 @@ pub(crate) async fn list_upstream_accounts(
     let groups = load_upstream_account_groups(&state.pool)
         .await
         .map_err(internal_error_tuple)?;
+    let bound_proxy_keys = groups
+        .iter()
+        .flat_map(|group| group.bound_proxy_keys.iter().cloned())
+        .collect::<Vec<_>>();
+    let forward_proxy_nodes =
+        build_forward_proxy_binding_nodes_response(state.as_ref(), &bound_proxy_keys)
+            .await
+            .map_err(internal_error_tuple)?;
     let has_ungrouped_accounts = has_ungrouped_upstream_accounts(&state.pool)
         .await
         .map_err(internal_error_tuple)?;
@@ -2925,9 +2993,36 @@ pub(crate) async fn list_upstream_accounts(
         page_size,
         metrics,
         groups,
+        forward_proxy_nodes,
         has_ungrouped_accounts,
         routing: build_pool_routing_settings_response(state.as_ref(), &routing),
     }))
+}
+
+fn parse_list_upstream_accounts_query(uri: &Uri) -> Result<ListUpstreamAccountsQuery, String> {
+    let base = Query::<ListUpstreamAccountsBaseQuery>::try_from_uri(uri)
+        .map_err(|err| err.body_text())?
+        .0;
+    let mut params = ListUpstreamAccountsQuery {
+        group_search: base.group_search,
+        group_ungrouped: base.group_ungrouped,
+        status: base.status,
+        page: base.page,
+        page_size: base.page_size,
+        tag_ids: base.tag_ids,
+        ..ListUpstreamAccountsQuery::default()
+    };
+
+    for (key, value) in url::form_urlencoded::parse(uri.query().unwrap_or_default().as_bytes()) {
+        match key.as_ref() {
+            "workStatus" => params.work_status.push(value.into_owned()),
+            "enableStatus" => params.enable_status.push(value.into_owned()),
+            "healthStatus" => params.health_status.push(value.into_owned()),
+            _ => {}
+        }
+    }
+
+    Ok(params)
 }
 
 pub(crate) async fn list_tags(
@@ -3051,20 +3146,64 @@ pub(crate) async fn update_upstream_account_group(
         )
     })?;
     let note = normalize_optional_text(payload.note);
+    let bound_proxy_keys_was_updated = payload.bound_proxy_keys.is_some();
+    let bound_proxy_keys = payload
+        .bound_proxy_keys
+        .map(normalize_bound_proxy_keys)
+        .unwrap_or_else(Vec::new);
 
-    let mut tx = state.pool.begin().await.map_err(internal_error_tuple)?;
+    let mut tx = state
+        .pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(internal_error_tuple)?;
     if !group_has_accounts_conn(tx.as_mut(), &group_name)
         .await
         .map_err(internal_error_tuple)?
     {
         return Err((StatusCode::NOT_FOUND, "group not found".to_string()));
     }
-    save_group_note_record_conn(tx.as_mut(), &group_name, note.clone())
+    let existing_metadata = load_group_metadata_conn(tx.as_mut(), &group_name)
         .await
-        .map_err(internal_error_tuple)?;
+        .map_err(internal_error_tuple)?
+        .unwrap_or_default();
+    if bound_proxy_keys_was_updated && !bound_proxy_keys.is_empty() {
+        let has_selectable_bound_proxy_keys = {
+            let manager = state.forward_proxy.lock().await;
+            manager.has_selectable_bound_proxy_keys(&bound_proxy_keys)
+        };
+        if !has_selectable_bound_proxy_keys {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                "select at least one available proxy node or clear bindings before saving"
+                    .to_string(),
+            ));
+        }
+    }
+    save_group_metadata_record_conn(
+        tx.as_mut(),
+        &group_name,
+        UpstreamAccountGroupMetadata {
+            note,
+            bound_proxy_keys: if bound_proxy_keys_was_updated {
+                bound_proxy_keys
+            } else {
+                existing_metadata.bound_proxy_keys
+            },
+        },
+    )
+    .await
+    .map_err(internal_error_tuple)?;
     tx.commit().await.map_err(internal_error_tuple)?;
 
-    Ok(Json(UpstreamAccountGroupSummary { group_name, note }))
+    let saved = load_group_metadata(&state.pool, Some(&group_name))
+        .await
+        .map_err(internal_error_tuple)?;
+    Ok(Json(UpstreamAccountGroupSummary {
+        group_name,
+        note: saved.note,
+        bound_proxy_keys: saved.bound_proxy_keys,
+    }))
 }
 
 pub(crate) async fn get_upstream_account(
@@ -3227,6 +3366,14 @@ fn compute_bulk_upstream_account_sync_counts(
         }
     }
     counts
+}
+
+fn with_bulk_upstream_account_sync_snapshot_status(
+    mut snapshot: BulkUpstreamAccountSyncSnapshot,
+    status: &str,
+) -> BulkUpstreamAccountSyncSnapshot {
+    snapshot.status = status.to_string();
+    snapshot
 }
 
 fn build_bulk_upstream_account_sync_snapshot_event(
@@ -3540,7 +3687,10 @@ async fn set_bulk_upstream_account_sync_job_terminal(
 }
 
 async fn finish_bulk_upstream_account_sync_job_completed(job: &Arc<BulkUpstreamAccountSyncJob>) {
-    let snapshot = { job.snapshot.lock().await.clone() };
+    let snapshot = with_bulk_upstream_account_sync_snapshot_status(
+        job.snapshot.lock().await.clone(),
+        BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_COMPLETED,
+    );
     set_bulk_upstream_account_sync_job_terminal(
         job,
         BulkUpstreamAccountSyncTerminalEvent::Completed(
@@ -3554,7 +3704,10 @@ async fn finish_bulk_upstream_account_sync_job_failed(
     job: &Arc<BulkUpstreamAccountSyncJob>,
     error: String,
 ) {
-    let snapshot = { job.snapshot.lock().await.clone() };
+    let snapshot = with_bulk_upstream_account_sync_snapshot_status(
+        job.snapshot.lock().await.clone(),
+        BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_FAILED,
+    );
     set_bulk_upstream_account_sync_job_terminal(
         job,
         BulkUpstreamAccountSyncTerminalEvent::Failed(BulkUpstreamAccountSyncFailedEvent {
@@ -3567,7 +3720,10 @@ async fn finish_bulk_upstream_account_sync_job_failed(
 }
 
 async fn finish_bulk_upstream_account_sync_job_cancelled(job: &Arc<BulkUpstreamAccountSyncJob>) {
-    let snapshot = { job.snapshot.lock().await.clone() };
+    let snapshot = with_bulk_upstream_account_sync_snapshot_status(
+        job.snapshot.lock().await.clone(),
+        BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_CANCELLED,
+    );
     set_bulk_upstream_account_sync_job_terminal(
         job,
         BulkUpstreamAccountSyncTerminalEvent::Cancelled(
@@ -6685,8 +6841,9 @@ async fn probe_imported_oauth_credentials(
             format_utc_iso(Utc::now() + ChronoDuration::seconds(response.expires_in.max(0)));
     }
 
-    let usage_result = fetch_usage_snapshot(
-        &state.http_clients.shared,
+    let usage_result = fetch_usage_snapshot_via_forward_proxy(
+        state,
+        &ForwardProxyRouteScope::Automatic,
         &state.config,
         &credentials.access_token,
         claims
@@ -6720,8 +6877,9 @@ async fn probe_imported_oauth_credentials(
             credentials.token_type = response.token_type;
             token_expires_at =
                 format_utc_iso(Utc::now() + ChronoDuration::seconds(response.expires_in.max(0)));
-            match fetch_usage_snapshot(
-                &state.http_clients.shared,
+            match fetch_usage_snapshot_via_forward_proxy(
+                state,
+                &ForwardProxyRouteScope::Automatic,
                 &state.config,
                 &credentials.access_token,
                 claims
@@ -6964,8 +7122,15 @@ async fn sync_oauth_account(
         bail!("unexpected credential kind for OAuth account")
     };
 
-    let usage_result = fetch_usage_snapshot(
-        &state.http_clients.shared,
+    let usage_scope = ForwardProxyRouteScope::from_group_binding(
+        latest_row.group_name.as_deref(),
+        load_group_metadata(&state.pool, latest_row.group_name.as_deref())
+            .await?
+            .bound_proxy_keys,
+    );
+    let usage_result = fetch_usage_snapshot_via_forward_proxy(
+        state,
+        &usage_scope,
         &state.config,
         &credentials.access_token,
         latest_row.chatgpt_account_id.as_deref(),
@@ -7006,8 +7171,9 @@ async fn sync_oauth_account(
                     latest_row = load_upstream_account_row(&state.pool, row.id)
                         .await?
                         .ok_or_else(|| anyhow!("account disappeared during retry refresh"))?;
-                    match fetch_usage_snapshot(
-                        &state.http_clients.shared,
+                    match fetch_usage_snapshot_via_forward_proxy(
+                        state,
+                        &usage_scope,
                         &state.config,
                         &refreshed.access_token,
                         latest_row.chatgpt_account_id.as_deref(),
@@ -8083,9 +8249,9 @@ async fn count_recent_account_conversations(
 async fn load_upstream_account_groups(
     pool: &Pool<Sqlite>,
 ) -> Result<Vec<UpstreamAccountGroupSummary>> {
-    let rows = sqlx::query_as::<_, (String, Option<String>)>(
+    let rows = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
         r#"
-        SELECT groups.group_name, notes.note
+        SELECT groups.group_name, notes.note, notes.bound_proxy_keys_json
         FROM (
             SELECT DISTINCT TRIM(group_name) AS group_name
             FROM pool_upstream_accounts
@@ -8101,7 +8267,15 @@ async fn load_upstream_account_groups(
 
     Ok(rows
         .into_iter()
-        .map(|(group_name, note)| UpstreamAccountGroupSummary { group_name, note })
+        .map(
+            |(group_name, note, bound_proxy_keys_json)| UpstreamAccountGroupSummary {
+                group_name,
+                note: normalize_optional_text(note),
+                bound_proxy_keys: decode_group_bound_proxy_keys_json(
+                    bound_proxy_keys_json.as_deref(),
+                ),
+            },
+        )
         .collect())
 }
 async fn load_upstream_account_summaries(
@@ -8116,15 +8290,21 @@ async fn load_upstream_account_summaries_filtered(
 ) -> Result<Vec<UpstreamAccountSummary>> {
     let legacy_status_filter =
         normalize_legacy_upstream_account_status_filter(params.status.as_deref());
-    let work_status_filter =
-        normalize_upstream_account_work_status_filter(params.work_status.as_deref())
-            .or(legacy_status_filter.work_status);
-    let enable_status_filter =
-        normalize_upstream_account_enable_status_filter(params.enable_status.as_deref())
-            .or(legacy_status_filter.enable_status);
-    let health_status_filter =
-        normalize_upstream_account_health_status_filter(params.health_status.as_deref())
-            .or(legacy_status_filter.health_status);
+    let work_status_filters = collect_normalized_upstream_account_filters(
+        &params.work_status,
+        legacy_status_filter.work_status,
+        normalize_upstream_account_work_status_filter,
+    );
+    let enable_status_filters = collect_normalized_upstream_account_filters(
+        &params.enable_status,
+        legacy_status_filter.enable_status,
+        normalize_upstream_account_enable_status_filter,
+    );
+    let health_status_filters = collect_normalized_upstream_account_filters(
+        &params.health_status,
+        legacy_status_filter.health_status,
+        normalize_upstream_account_health_status_filter,
+    );
     let sync_state_filter = legacy_status_filter.sync_state;
     let duplicate_info_map = load_duplicate_info_map(pool).await?;
     let mut normalized_tag_ids = params
@@ -8213,9 +8393,9 @@ async fn load_upstream_account_summaries_filtered(
         .filter(|item| {
             matches_upstream_account_filters(
                 item,
-                work_status_filter,
-                enable_status_filter,
-                health_status_filter,
+                &work_status_filters,
+                &enable_status_filters,
+                &health_status_filters,
                 sync_state_filter,
             )
         })
@@ -8851,6 +9031,112 @@ async fn group_has_accounts_conn(conn: &mut SqliteConnection, group_name: &str) 
     Ok(group_account_count_conn(conn, group_name).await? > 0)
 }
 
+fn normalize_bound_proxy_keys(bound_proxy_keys: Vec<String>) -> Vec<String> {
+    let mut seen = HashSet::new();
+    bound_proxy_keys
+        .into_iter()
+        .filter_map(|value| normalize_optional_text(Some(value)))
+        .filter(|value| seen.insert(value.clone()))
+        .collect()
+}
+
+fn decode_group_bound_proxy_keys_json(raw: Option<&str>) -> Vec<String> {
+    raw.and_then(|value| serde_json::from_str::<Vec<String>>(value).ok())
+        .map(normalize_bound_proxy_keys)
+        .unwrap_or_default()
+}
+
+fn encode_group_bound_proxy_keys_json(bound_proxy_keys: &[String]) -> Result<String> {
+    serde_json::to_string(bound_proxy_keys).context("failed to encode group bound proxy keys")
+}
+
+async fn load_group_metadata_conn(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    group_name: &str,
+) -> Result<Option<UpstreamAccountGroupMetadata>> {
+    sqlx::query_as::<_, (String, Option<String>)>(
+        r#"
+        SELECT note, bound_proxy_keys_json
+        FROM pool_upstream_account_group_notes
+        WHERE group_name = ?1
+        "#,
+    )
+    .bind(group_name)
+    .fetch_optional(executor)
+    .await
+    .map(|row| {
+        row.map(
+            |(note, bound_proxy_keys_json)| UpstreamAccountGroupMetadata {
+                note: normalize_optional_text(Some(note)),
+                bound_proxy_keys: decode_group_bound_proxy_keys_json(
+                    bound_proxy_keys_json.as_deref(),
+                ),
+            },
+        )
+    })
+    .map_err(Into::into)
+}
+
+async fn load_group_metadata(
+    pool: &Pool<Sqlite>,
+    group_name: Option<&str>,
+) -> Result<UpstreamAccountGroupMetadata> {
+    let Some(group_name) = group_name else {
+        return Ok(UpstreamAccountGroupMetadata::default());
+    };
+    let mut conn = pool.acquire().await?;
+    Ok(load_group_metadata_conn(&mut *conn, group_name)
+        .await?
+        .unwrap_or_default())
+}
+
+async fn save_group_metadata_record_conn(
+    conn: &mut SqliteConnection,
+    group_name: &str,
+    metadata: UpstreamAccountGroupMetadata,
+) -> Result<()> {
+    let normalized_note = normalize_optional_text(metadata.note);
+    let normalized_bound_proxy_keys = normalize_bound_proxy_keys(metadata.bound_proxy_keys);
+    if normalized_note.is_none() && normalized_bound_proxy_keys.is_empty() {
+        sqlx::query(
+            r#"
+            DELETE FROM pool_upstream_account_group_notes
+            WHERE group_name = ?1
+            "#,
+        )
+        .bind(group_name)
+        .execute(conn)
+        .await?;
+        return Ok(());
+    }
+
+    let now_iso = format_utc_iso(Utc::now());
+    let bound_proxy_keys_json = encode_group_bound_proxy_keys_json(&normalized_bound_proxy_keys)?;
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_account_group_notes (
+            group_name,
+            note,
+            bound_proxy_keys_json,
+            created_at,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?4)
+        ON CONFLICT(group_name) DO UPDATE SET
+            note = excluded.note,
+            bound_proxy_keys_json = excluded.bound_proxy_keys_json,
+            updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(group_name)
+    .bind(normalized_note.unwrap_or_default())
+    .bind(bound_proxy_keys_json)
+    .bind(now_iso)
+    .execute(conn)
+    .await?;
+    Ok(())
+}
+
 #[allow(dead_code)]
 async fn save_group_note_record(
     pool: &Pool<Sqlite>,
@@ -8866,34 +9152,11 @@ async fn save_group_note_record_conn(
     group_name: &str,
     note: Option<String>,
 ) -> Result<()> {
-    if let Some(note) = note {
-        let now_iso = format_utc_iso(Utc::now());
-        sqlx::query(
-            r#"
-            INSERT INTO pool_upstream_account_group_notes (group_name, note, created_at, updated_at)
-            VALUES (?1, ?2, ?3, ?3)
-            ON CONFLICT(group_name) DO UPDATE SET
-                note = excluded.note,
-                updated_at = excluded.updated_at
-            "#,
-        )
-        .bind(group_name)
-        .bind(note)
-        .bind(now_iso)
-        .execute(conn)
-        .await?;
-    } else {
-        sqlx::query(
-            r#"
-            DELETE FROM pool_upstream_account_group_notes
-            WHERE group_name = ?1
-            "#,
-        )
-        .bind(group_name)
-        .execute(conn)
-        .await?;
-    }
-    Ok(())
+    let mut metadata = load_group_metadata_conn(&mut *conn, group_name)
+        .await?
+        .unwrap_or_default();
+    metadata.note = note;
+    save_group_metadata_record_conn(conn, group_name, metadata).await
 }
 
 async fn save_group_note_after_account_write(
@@ -9168,7 +9431,7 @@ async fn load_group_note_snapshot_conn(
     .fetch_optional(executor)
     .await?
     .flatten();
-    Ok(group_note.or_else(|| fallback_note.map(str::to_string)))
+    Ok(normalize_optional_text(group_note).or_else(|| fallback_note.map(str::to_string)))
 }
 
 fn next_login_session_updated_at(previous_updated_at: Option<&str>) -> String {
@@ -10493,6 +10756,7 @@ fn normalize_upstream_account_work_status_filter(value: Option<&str>) -> Option<
         UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED => {
             Some(UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED)
         }
+        UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE => Some(UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE),
         _ => None,
     }
 }
@@ -10528,6 +10792,31 @@ fn normalize_upstream_account_health_status_filter(value: Option<&str>) -> Optio
         }
         _ => None,
     }
+}
+
+fn collect_normalized_upstream_account_filters(
+    values: &[String],
+    legacy_value: Option<&'static str>,
+    normalize: fn(Option<&str>) -> Option<&'static str>,
+) -> Vec<&'static str> {
+    let mut normalized = Vec::new();
+
+    for value in values {
+        let Some(next_value) = normalize(Some(value.as_str())) else {
+            continue;
+        };
+        if !normalized.contains(&next_value) {
+            normalized.push(next_value);
+        }
+    }
+
+    if normalized.is_empty() {
+        if let Some(legacy_value) = legacy_value {
+            normalized.push(legacy_value);
+        }
+    }
+
+    normalized
 }
 
 fn normalize_legacy_upstream_account_status_filter(
@@ -10779,6 +11068,7 @@ fn derive_upstream_account_health_status(
         last_error_at,
         last_route_failure_at,
         last_route_failure_kind,
+        last_action_reason_code,
     ) {
         return UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL;
     }
@@ -10829,6 +11119,7 @@ fn is_transient_route_failure_error(
     last_error_at: Option<&str>,
     last_route_failure_at: Option<&str>,
     last_route_failure_kind: Option<&str>,
+    last_action_reason_code: Option<&str>,
 ) -> bool {
     if last_error_at.is_none() || last_error_at != last_route_failure_at {
         return false;
@@ -10836,6 +11127,12 @@ fn is_transient_route_failure_error(
     let failure_kind = last_route_failure_kind
         .map(str::trim)
         .filter(|value| !value.is_empty());
+    if matches!(
+        last_action_reason_code,
+        Some(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED)
+    ) {
+        return matches!(failure_kind, Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED));
+    }
     route_failure_kind_is_rate_limited(failure_kind)
         || matches!(
             failure_kind,
@@ -10894,7 +11191,7 @@ fn derive_upstream_account_work_status(
         return UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED;
     }
     if health_status != UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL {
-        return UPSTREAM_ACCOUNT_WORK_STATUS_IDLE;
+        return UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE;
     }
     let active_cutoff = now - ChronoDuration::minutes(POOL_ROUTE_ACTIVE_STICKY_WINDOW_MINUTES);
     if last_selected_at
@@ -10942,14 +11239,16 @@ fn classify_upstream_account_display_status(
 
 fn matches_upstream_account_filters(
     item: &UpstreamAccountSummary,
-    work_status_filter: Option<&str>,
-    enable_status_filter: Option<&str>,
-    health_status_filter: Option<&str>,
+    work_status_filters: &[&str],
+    enable_status_filters: &[&str],
+    health_status_filters: &[&str],
     sync_state_filter: Option<&str>,
 ) -> bool {
-    work_status_filter.is_none_or(|value| item.work_status == value)
-        && enable_status_filter.is_none_or(|value| item.enable_status == value)
-        && health_status_filter.is_none_or(|value| item.health_status == value)
+    (work_status_filters.is_empty() || work_status_filters.contains(&item.work_status.as_str()))
+        && (enable_status_filters.is_empty()
+            || enable_status_filters.contains(&item.enable_status.as_str()))
+        && (health_status_filters.is_empty()
+            || health_status_filters.contains(&item.health_status.as_str()))
         && sync_state_filter.is_none_or(|value| item.sync_state == value)
 }
 
@@ -11890,6 +12189,124 @@ async fn fetch_usage_snapshot(
             "initial usage snapshot attempt with configured user agent failed: {primary_error:#}"
         )
     })
+}
+
+fn usage_snapshot_error_is_network_failure(err: &anyhow::Error) -> bool {
+    let normalized = err.to_string().to_ascii_lowercase();
+    normalized.contains("failed to request usage snapshot")
+        || normalized.contains("failed to read usage snapshot response")
+        || normalized.contains("timed out")
+        || normalized.contains("connection")
+        || normalized.contains("transport")
+}
+
+async fn fetch_usage_snapshot_via_forward_proxy(
+    state: &AppState,
+    scope: &ForwardProxyRouteScope,
+    config: &AppConfig,
+    access_token: &str,
+    chatgpt_account_id: Option<&str>,
+) -> Result<NormalizedUsageSnapshot> {
+    let primary_result = request_usage_snapshot_with_user_agent_via_forward_proxy(
+        state,
+        scope,
+        config,
+        access_token,
+        chatgpt_account_id,
+        &config.user_agent,
+    )
+    .await;
+
+    if primary_result.is_ok() || config.user_agent == UPSTREAM_USAGE_BROWSER_USER_AGENT {
+        return primary_result;
+    }
+
+    let primary_error = match primary_result {
+        Ok(snapshot) => return Ok(snapshot),
+        Err(err) => err,
+    };
+
+    warn!(
+        error = ?primary_error,
+        configured_user_agent = %config.user_agent,
+        fallback_user_agent = %UPSTREAM_USAGE_BROWSER_USER_AGENT,
+        "usage snapshot request failed; retrying with browser user agent"
+    );
+
+    request_usage_snapshot_with_user_agent_via_forward_proxy(
+        state,
+        scope,
+        config,
+        access_token,
+        chatgpt_account_id,
+        UPSTREAM_USAGE_BROWSER_USER_AGENT,
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "initial usage snapshot attempt with configured user agent failed: {primary_error:#}"
+        )
+    })
+}
+
+async fn request_usage_snapshot_with_user_agent_via_forward_proxy(
+    state: &AppState,
+    scope: &ForwardProxyRouteScope,
+    config: &AppConfig,
+    access_token: &str,
+    chatgpt_account_id: Option<&str>,
+    user_agent: &str,
+) -> Result<NormalizedUsageSnapshot> {
+    let selected_proxy = select_forward_proxy_for_scope(state, scope).await?;
+    let client = match state
+        .http_clients
+        .client_for_forward_proxy(selected_proxy.endpoint_url.as_ref())
+    {
+        Ok(client) => client,
+        Err(err) => {
+            record_forward_proxy_scope_result(
+                state,
+                scope,
+                &selected_proxy.key,
+                ForwardProxyRouteResultKind::NetworkFailure,
+            )
+            .await;
+            return Err(err).context("failed to initialize usage snapshot forward proxy client");
+        }
+    };
+
+    let result = request_usage_snapshot_with_user_agent(
+        &client,
+        config,
+        access_token,
+        chatgpt_account_id,
+        user_agent,
+    )
+    .await;
+
+    match &result {
+        Ok(_) => {
+            record_forward_proxy_scope_result(
+                state,
+                scope,
+                &selected_proxy.key,
+                ForwardProxyRouteResultKind::CompletedRequest,
+            )
+            .await;
+        }
+        Err(err) if usage_snapshot_error_is_network_failure(err) => {
+            record_forward_proxy_scope_result(
+                state,
+                scope,
+                &selected_proxy.key,
+                ForwardProxyRouteResultKind::NetworkFailure,
+            )
+            .await;
+        }
+        Err(_) => {}
+    }
+
+    result
 }
 
 async fn request_usage_snapshot_with_user_agent(
@@ -13251,6 +13668,8 @@ pub(crate) struct PoolResolvedAccount {
     pub(crate) display_name: String,
     pub(crate) kind: String,
     pub(crate) auth: PoolResolvedAuth,
+    pub(crate) group_name: Option<String>,
+    pub(crate) bound_proxy_keys: Vec<String>,
     pub(crate) upstream_base_url: Url,
     pub(crate) routing_source: PoolRoutingSelectionSource,
 }
@@ -13528,6 +13947,17 @@ pub(crate) async fn record_pool_route_http_failure(
     error_message: &str,
     invoke_id: Option<&str>,
 ) -> Result<()> {
+    if route_http_failure_is_retryable_server_overloaded(status, error_message) {
+        return record_pool_route_retryable_overload_failure(
+            pool,
+            account_id,
+            sticky_key,
+            error_message,
+            invoke_id,
+        )
+        .await;
+    }
+
     let classification = classify_pool_account_http_failure(account_kind, status, error_message);
     match classification.disposition {
         UpstreamAccountFailureDisposition::HardUnavailable => {
@@ -13599,6 +14029,53 @@ pub(crate) async fn record_pool_route_http_failure(
             .await
         }
     }
+}
+
+pub(crate) async fn record_pool_route_retryable_overload_failure(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    sticky_key: Option<&str>,
+    error_message: &str,
+    invoke_id: Option<&str>,
+) -> Result<()> {
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET status = ?2,
+            last_error = ?3,
+            last_error_at = ?4,
+            last_route_failure_at = ?4,
+            last_route_failure_kind = ?5,
+            cooldown_until = NULL,
+            updated_at = ?4
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+    .bind(error_message)
+    .bind(&now_iso)
+    .bind(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
+    .execute(pool)
+    .await?;
+    record_upstream_account_action(
+        pool,
+        account_id,
+        UpstreamAccountActionPayload {
+            action: UPSTREAM_ACCOUNT_ACTION_ROUTE_RETRYABLE_FAILURE,
+            source: UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL,
+            reason_code: Some(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED),
+            reason_message: Some(error_message),
+            http_status: Some(StatusCode::OK),
+            failure_kind: Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED),
+            invoke_id,
+            sticky_key,
+            occurred_at: &now_iso,
+        },
+    )
+    .await?;
+    Ok(())
 }
 
 pub(crate) async fn record_pool_route_transport_failure(
@@ -13826,6 +14303,7 @@ async fn prepare_pool_account(
     let Some(encrypted_credentials) = row.encrypted_credentials.as_deref() else {
         return Ok(None);
     };
+    let group_metadata = load_group_metadata(&state.pool, row.group_name.as_deref()).await?;
     let upstream_base_url =
         resolve_pool_account_upstream_base_url(row, &state.config.openai_upstream_base_url)?;
     let credentials = decrypt_credentials(crypto_key, encrypted_credentials)?;
@@ -13837,6 +14315,8 @@ async fn prepare_pool_account(
             auth: PoolResolvedAuth::ApiKey {
                 authorization: format!("Bearer {}", value.api_key),
             },
+            group_name: row.group_name.clone(),
+            bound_proxy_keys: group_metadata.bound_proxy_keys.clone(),
             upstream_base_url,
             routing_source: PoolRoutingSelectionSource::FreshAssignment,
         })),
@@ -13996,6 +14476,8 @@ async fn prepare_pool_account(
                     access_token: value.access_token,
                     chatgpt_account_id: row.chatgpt_account_id.clone(),
                 },
+                group_name: row.group_name.clone(),
+                bound_proxy_keys: group_metadata.bound_proxy_keys,
                 upstream_base_url,
                 routing_source: PoolRoutingSelectionSource::FreshAssignment,
             }))
@@ -14528,6 +15010,68 @@ mod tests {
         time::timeout,
     };
 
+    fn test_summary_with_statuses(
+        work_status: &str,
+        enable_status: &str,
+        health_status: &str,
+        sync_state: &str,
+    ) -> UpstreamAccountSummary {
+        UpstreamAccountSummary {
+            id: 1,
+            kind: UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX.to_string(),
+            provider: UPSTREAM_ACCOUNT_PROVIDER_CODEX.to_string(),
+            display_name: "Test account".to_string(),
+            group_name: Some("alpha".to_string()),
+            is_mother: false,
+            status: UPSTREAM_ACCOUNT_STATUS_ACTIVE.to_string(),
+            display_status: UPSTREAM_ACCOUNT_STATUS_ACTIVE.to_string(),
+            enabled: enable_status == UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED,
+            work_status: work_status.to_string(),
+            enable_status: enable_status.to_string(),
+            health_status: health_status.to_string(),
+            sync_state: sync_state.to_string(),
+            email: Some("tester@example.com".to_string()),
+            chatgpt_account_id: Some("acct_test".to_string()),
+            plan_type: Some("pro".to_string()),
+            masked_api_key: None,
+            last_synced_at: None,
+            last_successful_sync_at: None,
+            last_activity_at: None,
+            active_conversation_count: 0,
+            last_error: None,
+            last_error_at: None,
+            last_action: None,
+            last_action_source: None,
+            last_action_reason_code: None,
+            last_action_reason_message: None,
+            last_action_http_status: None,
+            last_action_invoke_id: None,
+            last_action_at: None,
+            token_expires_at: None,
+            primary_window: None,
+            secondary_window: None,
+            credits: None,
+            local_limits: None,
+            compact_support: CompactSupportState {
+                status: "unknown".to_string(),
+                observed_at: None,
+                reason: None,
+            },
+            duplicate_info: None,
+            tags: vec![],
+            effective_routing_rule: EffectiveRoutingRule {
+                guard_enabled: false,
+                lookback_hours: None,
+                max_conversations: None,
+                allow_cut_out: true,
+                allow_cut_in: true,
+                source_tag_ids: vec![],
+                source_tag_names: vec![],
+                guard_rules: vec![],
+            },
+        }
+    }
+
     #[test]
     fn derive_secret_key_is_stable() {
         let lhs = derive_secret_key("alpha");
@@ -14576,6 +15120,108 @@ mod tests {
             string_value.upstream_base_url,
             OptionalField::Value("https://proxy.example.com/gateway".to_string())
         );
+    }
+
+    #[test]
+    fn list_query_deserializes_repeated_status_filters() {
+        let query = parse_list_upstream_accounts_query(
+            &"/api/pool/upstream-accounts?workStatus=working&workStatus=rate_limited&workStatus=unavailable&enableStatus=enabled&healthStatus=normal&healthStatus=needs_reauth"
+                .parse()
+                .expect("parse uri"),
+        )
+        .expect("deserialize repeated filters");
+
+        assert_eq!(
+            query.work_status,
+            vec![
+                UPSTREAM_ACCOUNT_WORK_STATUS_WORKING.to_string(),
+                UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED.to_string(),
+                UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE.to_string(),
+            ]
+        );
+        assert_eq!(
+            query.enable_status,
+            vec![UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED.to_string()]
+        );
+        assert_eq!(
+            query.health_status,
+            vec![
+                UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL.to_string(),
+                UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH.to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn list_query_keeps_single_status_filter_compatible() {
+        let query = parse_list_upstream_accounts_query(
+            &"/api/pool/upstream-accounts?workStatus=idle&enableStatus=disabled&healthStatus=normal"
+                .parse()
+                .expect("parse uri"),
+        )
+        .expect("deserialize single filters");
+
+        assert_eq!(
+            query.work_status,
+            vec![UPSTREAM_ACCOUNT_WORK_STATUS_IDLE.to_string()]
+        );
+        assert_eq!(
+            query.enable_status,
+            vec![UPSTREAM_ACCOUNT_ENABLE_STATUS_DISABLED.to_string()]
+        );
+        assert_eq!(
+            query.health_status,
+            vec![UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL.to_string()]
+        );
+    }
+
+    #[test]
+    fn explicit_split_filters_override_legacy_status_mapping() {
+        let enable_filters = collect_normalized_upstream_account_filters(
+            &[UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED.to_string()],
+            Some(UPSTREAM_ACCOUNT_ENABLE_STATUS_DISABLED),
+            normalize_upstream_account_enable_status_filter,
+        );
+        assert_eq!(enable_filters, vec![UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED]);
+
+        let health_filters = collect_normalized_upstream_account_filters(
+            &[UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL.to_string()],
+            Some(UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH),
+            normalize_upstream_account_health_status_filter,
+        );
+        assert_eq!(health_filters, vec![UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL]);
+    }
+
+    #[test]
+    fn matches_upstream_account_filters_uses_or_within_each_dimension() {
+        let item = test_summary_with_statuses(
+            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED,
+            UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED,
+            UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL,
+            UPSTREAM_ACCOUNT_SYNC_STATE_IDLE,
+        );
+
+        assert!(matches_upstream_account_filters(
+            &item,
+            &[
+                UPSTREAM_ACCOUNT_WORK_STATUS_WORKING,
+                UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED,
+            ],
+            &[UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED],
+            &[
+                UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL,
+                UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH,
+            ],
+            Some(UPSTREAM_ACCOUNT_SYNC_STATE_IDLE),
+        ));
+
+        assert!(!matches_upstream_account_filters(
+            &item,
+            &[UPSTREAM_ACCOUNT_WORK_STATUS_WORKING],
+            &[UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED],
+            &[UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL],
+            Some(UPSTREAM_ACCOUNT_SYNC_STATE_IDLE),
+        ));
     }
 
     #[test]
@@ -14882,6 +15528,121 @@ mod tests {
         assert_eq!(response.counts.total, counts.total);
         assert_eq!(response.counts.completed, counts.completed);
         assert_eq!(state.upstream_accounts.bulk_sync_jobs.lock().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn finish_bulk_sync_job_completed_exposes_completed_status_in_events_and_response() {
+        let job = Arc::new(BulkUpstreamAccountSyncJob::new(
+            BulkUpstreamAccountSyncSnapshot {
+                job_id: "job-completed".to_string(),
+                status: BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_RUNNING.to_string(),
+                rows: vec![BulkUpstreamAccountSyncRow {
+                    account_id: 5,
+                    display_name: "Existing OAuth".to_string(),
+                    status: BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_SUCCEEDED.to_string(),
+                    detail: None,
+                }],
+            },
+        ));
+        let mut receiver = job.broadcaster.subscribe();
+
+        finish_bulk_upstream_account_sync_job_completed(&job).await;
+
+        match receiver.recv().await.expect("completed event") {
+            BulkUpstreamAccountSyncJobEvent::Completed(payload) => {
+                assert_eq!(
+                    payload.snapshot.status,
+                    BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_COMPLETED
+                );
+                assert_eq!(payload.counts.completed, 1);
+                assert_eq!(payload.counts.failed, 0);
+                assert_eq!(payload.counts.skipped, 0);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        let response =
+            build_bulk_upstream_account_sync_job_response("job-completed".to_string(), &job).await;
+        assert_eq!(
+            response.snapshot.status,
+            BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_COMPLETED
+        );
+    }
+
+    #[tokio::test]
+    async fn finish_bulk_sync_job_failed_exposes_failed_status_in_events_and_response() {
+        let job = Arc::new(BulkUpstreamAccountSyncJob::new(
+            BulkUpstreamAccountSyncSnapshot {
+                job_id: "job-failed".to_string(),
+                status: BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_RUNNING.to_string(),
+                rows: vec![BulkUpstreamAccountSyncRow {
+                    account_id: 5,
+                    display_name: "Existing OAuth".to_string(),
+                    status: BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_FAILED.to_string(),
+                    detail: Some("upstream rejected".to_string()),
+                }],
+            },
+        ));
+        let mut receiver = job.broadcaster.subscribe();
+
+        finish_bulk_upstream_account_sync_job_failed(&job, "job failed".to_string()).await;
+
+        match receiver.recv().await.expect("failed event") {
+            BulkUpstreamAccountSyncJobEvent::Failed(payload) => {
+                assert_eq!(
+                    payload.snapshot.status,
+                    BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_FAILED
+                );
+                assert_eq!(payload.counts.failed, 1);
+                assert_eq!(payload.error, "job failed");
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        let response =
+            build_bulk_upstream_account_sync_job_response("job-failed".to_string(), &job).await;
+        assert_eq!(
+            response.snapshot.status,
+            BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_FAILED
+        );
+    }
+
+    #[tokio::test]
+    async fn finish_bulk_sync_job_cancelled_exposes_cancelled_status_in_events_and_response() {
+        let job = Arc::new(BulkUpstreamAccountSyncJob::new(
+            BulkUpstreamAccountSyncSnapshot {
+                job_id: "job-cancelled".to_string(),
+                status: BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_RUNNING.to_string(),
+                rows: vec![BulkUpstreamAccountSyncRow {
+                    account_id: 5,
+                    display_name: "Existing OAuth".to_string(),
+                    status: BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_SKIPPED.to_string(),
+                    detail: Some("disabled accounts cannot be synced".to_string()),
+                }],
+            },
+        ));
+        let mut receiver = job.broadcaster.subscribe();
+
+        finish_bulk_upstream_account_sync_job_cancelled(&job).await;
+
+        match receiver.recv().await.expect("cancelled event") {
+            BulkUpstreamAccountSyncJobEvent::Cancelled(payload) => {
+                assert_eq!(
+                    payload.snapshot.status,
+                    BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_CANCELLED
+                );
+                assert_eq!(payload.counts.skipped, 1);
+                assert_eq!(payload.counts.completed, 1);
+            }
+            other => panic!("unexpected event: {other:?}"),
+        }
+
+        let response =
+            build_bulk_upstream_account_sync_job_response("job-cancelled".to_string(), &job).await;
+        assert_eq!(
+            response.snapshot.status,
+            BULK_UPSTREAM_ACCOUNT_SYNC_JOB_STATUS_CANCELLED
+        );
     }
 
     #[test]
@@ -15395,6 +16156,7 @@ mod tests {
                 PromptCacheConversationsCacheState {
                     entries: HashMap::new(),
                     in_flight: HashMap::new(),
+                    generation: 0,
                 },
             )),
             maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
@@ -15574,6 +16336,7 @@ mod tests {
                 PromptCacheConversationsCacheState {
                     entries: HashMap::new(),
                     in_flight: HashMap::new(),
+                    generation: 0,
                 },
             )),
             maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
@@ -17395,7 +18158,10 @@ mod tests {
             summary.health_status,
             UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
         );
-        assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_IDLE);
+        assert_eq!(
+            summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE
+        );
         assert_eq!(
             summary.last_action_reason_code.as_deref(),
             Some("upstream_http_402")
@@ -17418,6 +18184,10 @@ mod tests {
         assert_eq!(
             detail.summary.health_status,
             UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
+        );
+        assert_eq!(
+            detail.summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE
         );
         assert_eq!(
             detail.summary.last_action_reason_code.as_deref(),
@@ -17471,6 +18241,58 @@ mod tests {
             Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
         );
         assert!(row.cooldown_until.is_none());
+    }
+
+    #[tokio::test]
+    async fn record_pool_route_http_failure_keeps_server_overloaded_as_retryable_without_cooldown()
+    {
+        let pool = test_pool().await;
+        let account_id = insert_api_key_account(&pool, "Overloaded Key").await;
+
+        record_pool_route_http_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
+            Some("sticky-overloaded"),
+            StatusCode::OK,
+            "[upstream_response_failed] server_is_overloaded: Our servers are currently overloaded. Please try again later.",
+            Some("invk_overloaded"),
+        )
+        .await
+        .expect("record retryable overload route failure");
+
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load overloaded row")
+            .expect("overloaded row exists");
+        assert_eq!(row.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert_eq!(
+            row.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_ROUTE_RETRYABLE_FAILURE)
+        );
+        assert_eq!(
+            row.last_action_reason_code.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED)
+        );
+        assert_eq!(row.last_action_http_status, Some(200));
+        assert_eq!(
+            row.last_route_failure_kind.as_deref(),
+            Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
+        );
+        assert!(row.cooldown_until.is_none());
+        assert_eq!(row.consecutive_route_failures, 0);
+
+        let summary = build_summary_from_row(
+            &row,
+            None,
+            row.last_activity_at.clone(),
+            vec![],
+            None,
+            0,
+            Utc::now(),
+        );
+        assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
+        assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_IDLE);
     }
 
     #[test]
@@ -17682,7 +18504,10 @@ mod tests {
             summary.health_status,
             UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
         );
-        assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_IDLE);
+        assert_eq!(
+            summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE
+        );
         assert_eq!(
             summary.last_action.as_deref(),
             Some(UPSTREAM_ACCOUNT_ACTION_SYNC_HARD_UNAVAILABLE)
@@ -17709,6 +18534,10 @@ mod tests {
         assert_eq!(
             detail.summary.health_status,
             UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
+        );
+        assert_eq!(
+            detail.summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE
         );
         assert_eq!(
             detail.summary.last_action_reason_code.as_deref(),
@@ -17791,7 +18620,10 @@ mod tests {
             summary.health_status,
             UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER
         );
-        assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_IDLE);
+        assert_eq!(
+            summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE
+        );
         assert_eq!(
             summary.last_action_reason_code.as_deref(),
             Some(UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR)
@@ -17815,7 +18647,7 @@ mod tests {
         );
         assert_eq!(
             detail.summary.work_status,
-            UPSTREAM_ACCOUNT_WORK_STATUS_IDLE
+            UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE
         );
     }
 
@@ -17869,7 +18701,10 @@ mod tests {
             summary.health_status,
             UPSTREAM_ACCOUNT_DISPLAY_STATUS_ERROR_OTHER
         );
-        assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_IDLE);
+        assert_eq!(
+            summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE
+        );
         assert_eq!(
             summary.last_action_reason_code.as_deref(),
             Some(UPSTREAM_ACCOUNT_ACTION_REASON_RECOVERY_UNCONFIRMED_MANUAL_REQUIRED)
@@ -17889,7 +18724,7 @@ mod tests {
         );
         assert_eq!(
             detail.summary.work_status,
-            UPSTREAM_ACCOUNT_WORK_STATUS_IDLE
+            UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE
         );
         assert_eq!(
             detail.summary.last_action_reason_code.as_deref(),
@@ -18903,7 +19738,10 @@ mod tests {
         assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH);
         assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH);
         assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH);
-        assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_IDLE);
+        assert_eq!(
+            summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE
+        );
         assert_eq!(summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
 
         let detail = load_upstream_account_detail(&state.pool, account_id)
@@ -18913,6 +19751,10 @@ mod tests {
         assert_eq!(
             detail.summary.display_status,
             UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH
+        );
+        assert_eq!(
+            detail.summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE
         );
         assert_eq!(detail.summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
         assert_eq!(

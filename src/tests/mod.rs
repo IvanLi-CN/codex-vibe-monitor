@@ -246,6 +246,494 @@ fn normalize_single_proxy_url_supports_xray_share_links() {
 }
 
 #[test]
+fn stable_proxy_keys_ignore_share_link_display_name_only_changes() {
+    let vmess_payload_a = serde_json::to_string(&json!({
+        "add": "vmess.example.com",
+        "port": "443",
+        "id": "11111111-1111-1111-1111-111111111111",
+        "aid": "0",
+        "net": "ws",
+        "host": "cdn.vmess.example.com",
+        "path": "/ws",
+        "tls": "tls",
+        "ps": "东京节点"
+    }))
+    .expect("serialize vmess payload a");
+    let vmess_payload_b = serde_json::to_string(&json!({
+        "add": "vmess.example.com",
+        "port": "443",
+        "id": "11111111-1111-1111-1111-111111111111",
+        "aid": "0",
+        "net": "ws",
+        "host": "cdn.vmess.example.com",
+        "path": "/ws",
+        "tls": "tls",
+        "ps": "Tokyo Edge"
+    }))
+    .expect("serialize vmess payload b");
+    let vmess_link_a = format!(
+        "vmess://{}",
+        base64::engine::general_purpose::STANDARD.encode(vmess_payload_a)
+    );
+    let vmess_link_b = format!(
+        "vmess://{}",
+        base64::engine::general_purpose::STANDARD.encode(vmess_payload_b)
+    );
+    assert_eq!(
+        normalize_single_proxy_key(&vmess_link_a),
+        normalize_single_proxy_key(&vmess_link_b)
+    );
+
+    assert_eq!(
+        normalize_single_proxy_key(
+            "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=ws&path=%2Fws&host=cdn.vless.example.com#东京节点"
+        ),
+        normalize_single_proxy_key(
+            "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?type=ws&host=cdn.vless.example.com&path=%2Fws&security=tls#Tokyo%20Edge"
+        ),
+    );
+    assert_eq!(
+        normalize_single_proxy_key(
+            "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443#东京节点"
+        ),
+        normalize_single_proxy_key(
+            "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?encryption=none&security=none&type=tcp#Tokyo%20Edge"
+        ),
+    );
+    assert_eq!(
+        normalize_single_proxy_key(
+            "trojan://password@trojan.example.com:443?type=ws&path=%2Fws&host=cdn.trojan.example.com#东京节点"
+        ),
+        normalize_single_proxy_key(
+            "trojan://password@trojan.example.com:443?host=cdn.trojan.example.com&path=%2Fws&type=ws#Tokyo%20Edge"
+        ),
+    );
+    assert_eq!(
+        normalize_single_proxy_key("trojan://password@trojan.example.com:443#东京节点"),
+        normalize_single_proxy_key(
+            "trojan://password@trojan.example.com:443?security=tls&type=tcp#Tokyo%20Edge"
+        ),
+    );
+    assert_ne!(
+        normalize_single_proxy_key(
+            "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?type=tcp&headerType=http&host=cdn-a.example.com#节点A"
+        ),
+        normalize_single_proxy_key(
+            "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?type=tcp&headerType=http&host=cdn-b.example.com#节点B"
+        ),
+    );
+    assert_ne!(
+        normalize_single_proxy_key(
+            "trojan://password@trojan.example.com:443?type=kcp&seed=alpha#节点A"
+        ),
+        normalize_single_proxy_key(
+            "trojan://password@trojan.example.com:443?type=kcp&seed=beta#节点B"
+        ),
+    );
+    assert_eq!(
+        normalize_single_proxy_key(
+            "ss://2022-blake3-aes-128-gcm:%2B%2F%3D@127.0.0.1:8388#东京节点"
+        ),
+        normalize_single_proxy_key(
+            "ss://2022-blake3-aes-128-gcm:%2B%2F%3D@127.0.0.1:8388#Tokyo%20Edge"
+        ),
+    );
+
+    let stable_http_key =
+        normalize_single_proxy_key("http://127.0.0.1:7890").expect("stable http proxy key");
+    assert_eq!(
+        normalize_bound_proxy_key(&stable_http_key),
+        Some(stable_http_key.clone())
+    );
+    assert_eq!(
+        normalize_bound_proxy_key(FORWARD_PROXY_DIRECT_KEY),
+        Some(FORWARD_PROXY_DIRECT_KEY.to_string())
+    );
+}
+
+#[test]
+fn stable_proxy_keys_change_when_proxy_identity_changes() {
+    let vmess_payload_a = serde_json::to_string(&json!({
+        "add": "vmess.example.com",
+        "port": "443",
+        "id": "11111111-1111-1111-1111-111111111111",
+        "aid": "0",
+        "net": "ws",
+        "type": "none",
+        "host": "cdn.vmess.example.com",
+        "path": "/ws",
+        "tls": "tls",
+        "ps": "节点A"
+    }))
+    .expect("serialize vmess payload a");
+    let vmess_payload_b = serde_json::to_string(&json!({
+        "add": "vmess.example.com",
+        "port": "443",
+        "id": "11111111-1111-1111-1111-111111111111",
+        "aid": "0",
+        "net": "ws",
+        "type": "http",
+        "host": "cdn.vmess.example.com",
+        "path": "/ws",
+        "tls": "tls",
+        "ps": "节点A"
+    }))
+    .expect("serialize vmess payload b");
+    assert_ne!(
+        normalize_single_proxy_key("http://127.0.0.1:7890"),
+        normalize_single_proxy_key("http://127.0.0.1:7891"),
+    );
+    assert_ne!(
+        normalize_single_proxy_key(&format!(
+            "vmess://{}",
+            base64::engine::general_purpose::STANDARD.encode(vmess_payload_a)
+        )),
+        normalize_single_proxy_key(&format!(
+            "vmess://{}",
+            base64::engine::general_purpose::STANDARD.encode(vmess_payload_b)
+        )),
+    );
+    assert_ne!(
+        normalize_single_proxy_key(
+            "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=ws&path=%2Fws&host=cdn-a.example.com#节点A"
+        ),
+        normalize_single_proxy_key(
+            "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=ws&path=%2Fws&host=cdn-b.example.com#节点A"
+        ),
+    );
+    assert_ne!(
+        normalize_single_proxy_key(
+            "ss://2022-blake3-aes-128-gcm:%2B%2F%3D@127.0.0.1:8388?plugin=v2ray-plugin%3Btls#节点A"
+        ),
+        normalize_single_proxy_key(
+            "ss://2022-blake3-aes-128-gcm:%2B%2F%3D@127.0.0.1:8388?plugin=obfs-local%3Bobfs%3Dhttp#节点A"
+        ),
+    );
+}
+
+#[test]
+fn proxy_display_name_from_url_decodes_non_ascii_fragment() {
+    let url = Url::parse(
+        "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls#%E4%B8%9C%E4%BA%AC%E8%8A%82%E7%82%B9",
+    )
+    .expect("valid vless share link");
+    assert_eq!(
+        proxy_display_name_from_url(&url).as_deref(),
+        Some("东京节点")
+    );
+}
+
+#[tokio::test]
+async fn forward_proxy_binding_nodes_restore_display_name_for_missing_bound_keys() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://probe-target.example/").expect("valid probe target"),
+    )
+    .await;
+    let proxy_key = "fpn_deadbeefcafebabe".to_string();
+    persist_forward_proxy_runtime_state(
+        &state.pool,
+        &ForwardProxyRuntimeState {
+            proxy_key: proxy_key.clone(),
+            display_name: "东京专线 A".to_string(),
+            source: FORWARD_PROXY_SOURCE_SUBSCRIPTION.to_string(),
+            endpoint_url: Some(
+                "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=ws&host=cdn.vless.example.com#%E4%B8%9C%E4%BA%AC%E4%B8%93%E7%BA%BF%20A"
+                    .to_string(),
+            ),
+            weight: 0.8,
+            success_ema: 0.65,
+            latency_ema_ms: None,
+            consecutive_failures: 0,
+        },
+    )
+    .await
+    .expect("persist forward proxy metadata history");
+
+    let nodes = build_forward_proxy_binding_nodes_response(state.as_ref(), &[proxy_key.clone()])
+        .await
+        .expect("build binding nodes response");
+
+    assert!(
+        nodes
+            .iter()
+            .any(|node| node.key == FORWARD_PROXY_DIRECT_KEY),
+        "direct binding candidate should still be present",
+    );
+    let missing_node = nodes
+        .iter()
+        .find(|node| node.key == proxy_key)
+        .expect("missing bound node should be present");
+    assert_eq!(missing_node.display_name, "东京专线 A");
+    assert_eq!(missing_node.source, "missing");
+    assert_eq!(missing_node.protocol_label, "UNKNOWN");
+    assert!(!missing_node.selectable);
+    assert!(!missing_node.penalized);
+    assert!(missing_node.last24h.is_empty());
+}
+
+#[tokio::test]
+async fn load_forward_proxy_runtime_states_maps_legacy_proxy_keys_to_stable_keys() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://probe-target.example/").expect("valid probe target"),
+    )
+    .await;
+    let proxy_url = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=ws&host=cdn.vless.example.com#东京专线".to_string();
+    let normalized_proxy = normalize_single_proxy_url(&proxy_url).expect("normalize proxy url");
+    let stable_proxy_key = normalize_single_proxy_key(&proxy_url).expect("normalize proxy key");
+    persist_forward_proxy_runtime_state(
+        &state.pool,
+        &ForwardProxyRuntimeState {
+            proxy_key: normalized_proxy.clone(),
+            display_name: "东京专线".to_string(),
+            source: FORWARD_PROXY_SOURCE_SUBSCRIPTION.to_string(),
+            endpoint_url: Some(normalized_proxy),
+            weight: 0.42,
+            success_ema: 0.8,
+            latency_ema_ms: Some(123.0),
+            consecutive_failures: 1,
+        },
+    )
+    .await
+    .expect("persist legacy runtime state");
+
+    let runtime = load_forward_proxy_runtime_states(&state.pool)
+        .await
+        .expect("load runtime states");
+    assert_eq!(runtime.len(), 1);
+    assert_eq!(runtime[0].proxy_key, stable_proxy_key);
+    assert_eq!(runtime[0].weight, 0.42);
+}
+
+#[tokio::test]
+async fn load_forward_proxy_runtime_states_maps_legacy_vless_hash_keys_from_current_settings() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://probe-target.example/").expect("valid probe target"),
+    )
+    .await;
+    let proxy_url = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=tcp#东京专线".to_string();
+    save_forward_proxy_settings(
+        &state.pool,
+        ForwardProxySettings {
+            proxy_urls: vec![proxy_url.clone()],
+            subscription_urls: Vec::new(),
+            subscription_update_interval_secs: 3600,
+            insert_direct: false,
+        },
+    )
+    .await
+    .expect("persist current forward proxy settings");
+
+    let normalized_proxy =
+        normalize_share_link_scheme(&proxy_url, "vless").expect("normalize vless proxy url");
+    let legacy_proxy_key = {
+        let parsed = Url::parse(&normalized_proxy).expect("parse normalized vless url");
+        stable_forward_proxy_key(&canonical_share_link_identity(&parsed))
+    };
+    let stable_proxy_key = normalize_single_proxy_key(&proxy_url).expect("normalize proxy key");
+    assert_ne!(legacy_proxy_key, stable_proxy_key);
+    persist_forward_proxy_runtime_state(
+        &state.pool,
+        &ForwardProxyRuntimeState {
+            proxy_key: legacy_proxy_key,
+            display_name: "东京专线".to_string(),
+            source: FORWARD_PROXY_SOURCE_MANUAL.to_string(),
+            endpoint_url: None,
+            weight: 0.42,
+            success_ema: 0.8,
+            latency_ema_ms: Some(123.0),
+            consecutive_failures: 1,
+        },
+    )
+    .await
+    .expect("persist legacy hashed runtime state");
+
+    let runtime = load_forward_proxy_runtime_states(&state.pool)
+        .await
+        .expect("load runtime states");
+    assert_eq!(runtime.len(), 1);
+    assert_eq!(runtime[0].proxy_key, stable_proxy_key);
+    assert_eq!(runtime[0].weight, 0.42);
+}
+
+#[tokio::test]
+async fn forward_proxy_binding_nodes_reuse_legacy_hourly_stats_for_stable_keys() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://probe-target.example/").expect("valid probe target"),
+    )
+    .await;
+    let proxy_url = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=ws&host=cdn.vless.example.com#东京专线".to_string();
+    let normalized_proxy = normalize_single_proxy_url(&proxy_url).expect("normalize proxy url");
+    let stable_proxy_key = normalize_single_proxy_key(&proxy_url).expect("normalize proxy key");
+    persist_forward_proxy_runtime_state(
+        &state.pool,
+        &ForwardProxyRuntimeState {
+            proxy_key: normalized_proxy.clone(),
+            display_name: "东京专线".to_string(),
+            source: FORWARD_PROXY_SOURCE_SUBSCRIPTION.to_string(),
+            endpoint_url: Some(normalized_proxy.clone()),
+            weight: 0.8,
+            success_ema: 0.65,
+            latency_ema_ms: None,
+            consecutive_failures: 0,
+        },
+    )
+    .await
+    .expect("persist legacy runtime state");
+
+    let now_epoch = Utc::now().timestamp();
+    let bucket_start_epoch = align_bucket_epoch(now_epoch, 3600, 0);
+    sqlx::query(
+        r#"
+        INSERT INTO forward_proxy_attempt_hourly (
+            proxy_key,
+            bucket_start_epoch,
+            attempts,
+            success_count,
+            failure_count,
+            latency_sample_count,
+            latency_sum_ms,
+            latency_max_ms,
+            updated_at
+        )
+        VALUES (?1, ?2, 5, 4, 1, 4, 480.0, 180.0, datetime('now'))
+        "#,
+    )
+    .bind(&normalized_proxy)
+    .bind(bucket_start_epoch)
+    .execute(&state.pool)
+    .await
+    .expect("insert legacy hourly stats");
+
+    let nodes =
+        build_forward_proxy_binding_nodes_response(state.as_ref(), &[stable_proxy_key.clone()])
+            .await
+            .expect("build binding nodes response");
+    let node = nodes
+        .into_iter()
+        .find(|item| item.key == stable_proxy_key)
+        .expect("stable node should be returned");
+    let bucket = node
+        .last24h
+        .into_iter()
+        .find(|item| item.success_count == 4 || item.failure_count == 1)
+        .expect("matching bucket should exist");
+    assert_eq!(bucket.success_count, 4);
+    assert_eq!(bucket.failure_count, 1);
+}
+
+#[test]
+fn forward_proxy_manager_reuses_legacy_vless_hash_runtime_state() {
+    let proxy_url = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=tcp#东京专线";
+    let normalized_proxy =
+        normalize_share_link_scheme(proxy_url, "vless").expect("normalize vless proxy url");
+    let legacy_proxy_key = {
+        let parsed = Url::parse(&normalized_proxy).expect("parse normalized vless url");
+        stable_forward_proxy_key(&canonical_share_link_identity(&parsed))
+    };
+    let stable_proxy_key = normalize_single_proxy_key(proxy_url).expect("normalize proxy key");
+    assert_ne!(legacy_proxy_key, stable_proxy_key);
+
+    let manager = ForwardProxyManager::new(
+        ForwardProxySettings {
+            proxy_urls: vec![proxy_url.to_string()],
+            subscription_urls: Vec::new(),
+            subscription_update_interval_secs: 3600,
+            insert_direct: false,
+        },
+        vec![ForwardProxyRuntimeState {
+            proxy_key: legacy_proxy_key.clone(),
+            display_name: "东京专线".to_string(),
+            source: FORWARD_PROXY_SOURCE_MANUAL.to_string(),
+            endpoint_url: None,
+            weight: 0.37,
+            success_ema: 0.9,
+            latency_ema_ms: Some(123.0),
+            consecutive_failures: 2,
+        }],
+    );
+
+    let runtime = manager
+        .runtime
+        .get(&stable_proxy_key)
+        .expect("stable runtime should be preserved");
+    assert_eq!(runtime.weight, 0.37);
+    assert_eq!(
+        runtime.endpoint_url.as_deref(),
+        Some(normalized_proxy.as_str())
+    );
+    assert!(!manager.runtime.contains_key(&legacy_proxy_key));
+}
+
+#[tokio::test]
+async fn forward_proxy_binding_nodes_reuse_legacy_hashed_hourly_stats_from_current_settings() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://probe-target.example/").expect("valid probe target"),
+    )
+    .await;
+    let proxy_url = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=tcp#东京专线".to_string();
+    let settings = ForwardProxySettings {
+        proxy_urls: vec![proxy_url.clone()],
+        subscription_urls: Vec::new(),
+        subscription_update_interval_secs: 3600,
+        insert_direct: false,
+    };
+    save_forward_proxy_settings(&state.pool, settings.clone())
+        .await
+        .expect("persist current forward proxy settings");
+    {
+        let mut manager = state.forward_proxy.lock().await;
+        manager.apply_settings(settings);
+    }
+
+    let normalized_proxy =
+        normalize_share_link_scheme(&proxy_url, "vless").expect("normalize vless proxy url");
+    let legacy_proxy_key = {
+        let parsed = Url::parse(&normalized_proxy).expect("parse normalized vless url");
+        stable_forward_proxy_key(&canonical_share_link_identity(&parsed))
+    };
+    let stable_proxy_key = normalize_single_proxy_key(&proxy_url).expect("normalize proxy key");
+
+    let now_epoch = Utc::now().timestamp();
+    let bucket_start_epoch = align_bucket_epoch(now_epoch, 3600, 0);
+    sqlx::query(
+        r#"
+        INSERT INTO forward_proxy_attempt_hourly (
+            proxy_key,
+            bucket_start_epoch,
+            attempts,
+            success_count,
+            failure_count,
+            latency_sample_count,
+            latency_sum_ms,
+            latency_max_ms,
+            updated_at
+        )
+        VALUES (?1, ?2, 5, 4, 1, 4, 480.0, 180.0, datetime('now'))
+        "#,
+    )
+    .bind(&legacy_proxy_key)
+    .bind(bucket_start_epoch)
+    .execute(&state.pool)
+    .await
+    .expect("insert legacy hashed hourly stats");
+
+    let nodes = build_forward_proxy_binding_nodes_response(state.as_ref(), &[])
+        .await
+        .expect("build binding nodes response");
+    let node = nodes
+        .into_iter()
+        .find(|item| item.key == stable_proxy_key)
+        .expect("stable node should be returned");
+    let bucket = node
+        .last24h
+        .into_iter()
+        .find(|item| item.success_count == 4 || item.failure_count == 1)
+        .expect("matching bucket should exist");
+    assert_eq!(bucket.success_count, 4);
+    assert_eq!(bucket.failure_count, 1);
+}
+
+#[test]
 fn parse_proxy_urls_from_subscription_body_supports_xray_links() {
     let vmess_payload = serde_json::to_string(&json!({
         "add": "vmess.example.com",
@@ -785,6 +1273,7 @@ async fn forward_proxy_settings_returns_service_unavailable_when_shutdown_interr
     let runtime_dir = temp_root.join("runtime");
     let xray_url = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=ws&path=%2Fws&host=cdn.vless.example.com#vless".to_string();
     let normalized_proxy = normalize_single_proxy_url(&xray_url).expect("normalize xray proxy url");
+    let proxy_key = normalize_single_proxy_key(&xray_url).expect("normalize xray proxy key");
 
     let mut config = test_config();
     config.xray_binary = "/path/to/non-existent-xray".to_string();
@@ -812,7 +1301,7 @@ async fn forward_proxy_settings_returns_service_unavailable_when_shutdown_interr
         err.1
     );
     assert!(
-        read_forward_proxy_runtime_weight(&state.pool, &normalized_proxy)
+        read_forward_proxy_runtime_weight(&state.pool, &proxy_key)
             .await
             .is_none(),
         "shutdown-interrupted route sync should not persist a partial runtime snapshot"
@@ -836,14 +1325,15 @@ async fn forward_proxy_settings_triggers_async_bootstrap_probe_for_added_manual_
     let (proxy_url, proxy_handle) = spawn_test_forward_proxy_status(StatusCode::NOT_FOUND).await;
     let normalized_proxy =
         normalize_single_proxy_url(&proxy_url).expect("normalize test proxy url");
+    let proxy_key = normalize_single_proxy_key(&proxy_url).expect("normalize test proxy key");
     let state = test_state_with_openai_base(
         Url::parse("http://probe-target.example/").expect("valid probe target"),
     )
     .await;
     let probe_count_before =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+        count_forward_proxy_probe_attempts(&state.pool, &proxy_key, None).await;
     let success_count_before =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, Some(true)).await;
+        count_forward_proxy_probe_attempts(&state.pool, &proxy_key, Some(true)).await;
 
     let Json(updated) = put_forward_proxy_settings(
         State(state.clone()),
@@ -859,10 +1349,9 @@ async fn forward_proxy_settings_triggers_async_bootstrap_probe_for_added_manual_
     .expect("put forward proxy settings should succeed");
     assert!(updated.proxy_urls.contains(&normalized_proxy));
 
-    wait_for_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, probe_count_before + 1)
-        .await;
+    wait_for_forward_proxy_probe_attempts(&state.pool, &proxy_key, probe_count_before + 1).await;
     let success_count =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, Some(true)).await;
+        count_forward_proxy_probe_attempts(&state.pool, &proxy_key, Some(true)).await;
     assert!(
         success_count > success_count_before,
         "expected at least one successful bootstrap probe attempt"
@@ -874,8 +1363,7 @@ async fn forward_proxy_settings_triggers_async_bootstrap_probe_for_added_manual_
 #[tokio::test]
 async fn forward_proxy_settings_does_not_probe_when_no_new_nodes() {
     let (proxy_url, proxy_handle) = spawn_test_forward_proxy_status(StatusCode::NOT_FOUND).await;
-    let normalized_proxy =
-        normalize_single_proxy_url(&proxy_url).expect("normalize test proxy url");
+    let proxy_key = normalize_single_proxy_key(&proxy_url).expect("normalize test proxy key");
     let state = test_state_with_openai_base(
         Url::parse("http://probe-target.example/").expect("valid probe target"),
     )
@@ -888,7 +1376,7 @@ async fn forward_proxy_settings_does_not_probe_when_no_new_nodes() {
         insert_direct: true,
     };
     let probe_count_before =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+        count_forward_proxy_probe_attempts(&state.pool, &proxy_key, None).await;
     let _ = put_forward_proxy_settings(
         State(state.clone()),
         HeaderMap::new(),
@@ -901,18 +1389,15 @@ async fn forward_proxy_settings_does_not_probe_when_no_new_nodes() {
     )
     .await
     .expect("initial put forward proxy settings should succeed");
-    wait_for_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, probe_count_before + 1)
-        .await;
-    let first_count =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+    wait_for_forward_proxy_probe_attempts(&state.pool, &proxy_key, probe_count_before + 1).await;
+    let first_count = count_forward_proxy_probe_attempts(&state.pool, &proxy_key, None).await;
 
     let _ = put_forward_proxy_settings(State(state.clone()), HeaderMap::new(), Json(request))
         .await
         .expect("repeated put forward proxy settings should succeed");
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    let second_count =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+    let second_count = count_forward_proxy_probe_attempts(&state.pool, &proxy_key, None).await;
     assert_eq!(
         second_count, first_count,
         "no newly added endpoint should not trigger extra bootstrap probe"
@@ -924,8 +1409,7 @@ async fn forward_proxy_settings_does_not_probe_when_no_new_nodes() {
 #[tokio::test]
 async fn forward_proxy_settings_does_not_reprobe_when_subscription_is_unchanged() {
     let (proxy_url, proxy_handle) = spawn_test_forward_proxy_status(StatusCode::NOT_FOUND).await;
-    let normalized_proxy =
-        normalize_single_proxy_url(&proxy_url).expect("normalize test proxy url");
+    let proxy_key = normalize_single_proxy_key(&proxy_url).expect("normalize test proxy key");
     let (subscription_url, subscription_handle) =
         spawn_test_subscription_source(format!("{proxy_url}\n")).await;
     let state = test_state_with_openai_base(
@@ -933,7 +1417,7 @@ async fn forward_proxy_settings_does_not_reprobe_when_subscription_is_unchanged(
     )
     .await;
     let probe_count_before =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+        count_forward_proxy_probe_attempts(&state.pool, &proxy_key, None).await;
 
     let _ = put_forward_proxy_settings(
         State(state.clone()),
@@ -947,10 +1431,8 @@ async fn forward_proxy_settings_does_not_reprobe_when_subscription_is_unchanged(
     )
     .await
     .expect("initial put forward proxy settings should succeed");
-    wait_for_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, probe_count_before + 1)
-        .await;
-    let first_count =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+    wait_for_forward_proxy_probe_attempts(&state.pool, &proxy_key, probe_count_before + 1).await;
+    let first_count = count_forward_proxy_probe_attempts(&state.pool, &proxy_key, None).await;
 
     let _ = put_forward_proxy_settings(
         State(state.clone()),
@@ -966,8 +1448,7 @@ async fn forward_proxy_settings_does_not_reprobe_when_subscription_is_unchanged(
     .expect("repeated put forward proxy settings should succeed");
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    let second_count =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+    let second_count = count_forward_proxy_probe_attempts(&state.pool, &proxy_key, None).await;
     assert_eq!(
         second_count, first_count,
         "unchanged subscription endpoints should not trigger extra bootstrap probes"
@@ -980,8 +1461,7 @@ async fn forward_proxy_settings_does_not_reprobe_when_subscription_is_unchanged(
 #[tokio::test]
 async fn refresh_forward_proxy_subscriptions_triggers_bootstrap_probe_for_added_nodes() {
     let (proxy_url, proxy_handle) = spawn_test_forward_proxy_status(StatusCode::NOT_FOUND).await;
-    let normalized_proxy =
-        normalize_single_proxy_url(&proxy_url).expect("normalize test proxy url");
+    let proxy_key = normalize_single_proxy_key(&proxy_url).expect("normalize test proxy key");
     let (subscription_url, subscription_handle) =
         spawn_test_subscription_source(format!("{proxy_url}\n")).await;
     let state = test_state_with_openai_base(
@@ -1002,17 +1482,16 @@ async fn refresh_forward_proxy_subscriptions_triggers_bootstrap_probe_for_added_
         .await
         .expect("sync forward proxy routes before subscription refresh");
     let probe_count_before =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+        count_forward_proxy_probe_attempts(&state.pool, &proxy_key, None).await;
     let success_count_before =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, Some(true)).await;
+        count_forward_proxy_probe_attempts(&state.pool, &proxy_key, Some(true)).await;
 
     refresh_forward_proxy_subscriptions(state.clone(), true, None)
         .await
         .expect("refresh subscriptions should succeed");
-    wait_for_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, probe_count_before + 1)
-        .await;
+    wait_for_forward_proxy_probe_attempts(&state.pool, &proxy_key, probe_count_before + 1).await;
     let success_count =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, Some(true)).await;
+        count_forward_proxy_probe_attempts(&state.pool, &proxy_key, Some(true)).await;
     assert!(
         success_count > success_count_before,
         "expected at least one successful bootstrap probe attempt from subscription refresh"
@@ -1025,8 +1504,7 @@ async fn refresh_forward_proxy_subscriptions_triggers_bootstrap_probe_for_added_
 #[tokio::test]
 async fn refresh_forward_proxy_subscriptions_skips_probe_for_known_subscription_keys() {
     let (proxy_url, proxy_handle) = spawn_test_forward_proxy_status(StatusCode::NOT_FOUND).await;
-    let normalized_proxy =
-        normalize_single_proxy_url(&proxy_url).expect("normalize test proxy url");
+    let proxy_key = normalize_single_proxy_key(&proxy_url).expect("normalize test proxy key");
     let (subscription_url, subscription_handle) =
         spawn_test_subscription_source(format!("{proxy_url}\n")).await;
     let state = test_state_with_openai_base(
@@ -1048,15 +1526,14 @@ async fn refresh_forward_proxy_subscriptions_skips_probe_for_known_subscription_
         .expect("sync forward proxy routes before subscription refresh");
 
     let probe_count_before =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
-    let known_keys = HashSet::from([normalized_proxy.clone()]);
+        count_forward_proxy_probe_attempts(&state.pool, &proxy_key, None).await;
+    let known_keys = HashSet::from([proxy_key.clone()]);
     refresh_forward_proxy_subscriptions(state.clone(), true, Some(known_keys))
         .await
         .expect("refresh subscriptions should succeed");
     tokio::time::sleep(Duration::from_millis(300)).await;
 
-    let probe_count_after =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+    let probe_count_after = count_forward_proxy_probe_attempts(&state.pool, &proxy_key, None).await;
     assert_eq!(
         probe_count_after, probe_count_before,
         "known subscription keys should suppress startup-style reprobe"
@@ -1070,16 +1547,15 @@ async fn refresh_forward_proxy_subscriptions_skips_probe_for_known_subscription_
 async fn forward_proxy_settings_bootstrap_probe_failure_penalizes_runtime_weight() {
     let (proxy_url, proxy_handle) =
         spawn_test_forward_proxy_status(StatusCode::INTERNAL_SERVER_ERROR).await;
-    let normalized_proxy =
-        normalize_single_proxy_url(&proxy_url).expect("normalize test proxy url");
+    let proxy_key = normalize_single_proxy_key(&proxy_url).expect("normalize test proxy key");
     let state = test_state_with_openai_base(
         Url::parse("http://probe-target.example/").expect("valid probe target"),
     )
     .await;
     let probe_count_before =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+        count_forward_proxy_probe_attempts(&state.pool, &proxy_key, None).await;
     let failure_count_before =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, Some(false)).await;
+        count_forward_proxy_probe_attempts(&state.pool, &proxy_key, Some(false)).await;
 
     let _ = put_forward_proxy_settings(
         State(state.clone()),
@@ -1094,16 +1570,15 @@ async fn forward_proxy_settings_bootstrap_probe_failure_penalizes_runtime_weight
     .await
     .expect("put forward proxy settings should succeed");
 
-    wait_for_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, probe_count_before + 1)
-        .await;
+    wait_for_forward_proxy_probe_attempts(&state.pool, &proxy_key, probe_count_before + 1).await;
     let failure_count =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, Some(false)).await;
+        count_forward_proxy_probe_attempts(&state.pool, &proxy_key, Some(false)).await;
     assert!(
         failure_count > failure_count_before,
         "expected at least one failed bootstrap probe attempt"
     );
 
-    let runtime_weight = read_forward_proxy_runtime_weight(&state.pool, &normalized_proxy)
+    let runtime_weight = read_forward_proxy_runtime_weight(&state.pool, &proxy_key)
         .await
         .expect("runtime weight should exist");
     assert!(
@@ -1204,23 +1679,151 @@ fn forward_proxy_manager_v2_keeps_two_positive_weights() {
         .filter_map(|endpoint| manager.runtime.get(&endpoint.key))
         .filter(|entry| entry.weight > 0.0)
         .count();
-    assert_eq!(positive_count, 2);
+    assert_eq!(positive_count, 1);
+}
+
+#[test]
+fn legacy_bound_proxy_keys_still_route_to_matching_stable_endpoints() {
+    let legacy_proxy_url = "http://127.0.0.1:7890";
+    let stable_proxy_key =
+        normalize_single_proxy_key(legacy_proxy_url).expect("legacy proxy url should normalize");
+    let mut manager = ForwardProxyManager::new(
+        ForwardProxySettings {
+            proxy_urls: vec![legacy_proxy_url.to_string()],
+            subscription_urls: vec![],
+            subscription_update_interval_secs: 3600,
+            insert_direct: false,
+        },
+        vec![],
+    );
+
+    let scope = ForwardProxyRouteScope::from_group_binding(
+        Some("东京组"),
+        vec![legacy_proxy_url.to_string()],
+    );
+    let selected = manager
+        .select_proxy_for_scope(&scope)
+        .expect("legacy bound key should still select proxy");
+
+    assert_eq!(selected.key, stable_proxy_key);
+}
+
+#[test]
+fn legacy_vless_and_trojan_bound_proxy_keys_route_to_matching_stable_endpoints() {
+    let explicit_vless_proxy_url = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?encryption=none&security=none&type=tcp#东京节点";
+    let normalized_vless_proxy_url = normalize_share_link_scheme(explicit_vless_proxy_url, "vless")
+        .expect("normalize vless url");
+    let explicit_legacy_vless_proxy_key = {
+        let parsed = Url::parse(&normalized_vless_proxy_url).expect("parse normalized vless url");
+        stable_forward_proxy_key(&canonical_share_link_identity(&parsed))
+    };
+    let omitted_default_vless_proxy_key = stable_forward_proxy_key(&canonical_share_link_identity(
+        &Url::parse("vless://11111111-1111-1111-1111-111111111111@vless.example.com:443#东京节点")
+            .expect("parse omitted-default vless url"),
+    ));
+    let vless_aliases =
+        legacy_bound_proxy_key_aliases(&normalized_vless_proxy_url, ForwardProxyProtocol::Vless);
+    assert!(vless_aliases.contains(&explicit_legacy_vless_proxy_key));
+    assert!(vless_aliases.contains(&omitted_default_vless_proxy_key));
+    assert!(
+        legacy_bound_proxy_key_aliases(&normalized_vless_proxy_url, ForwardProxyProtocol::Trojan)
+            .is_empty()
+    );
+    let stable_vless_proxy_key =
+        normalize_single_proxy_key(explicit_vless_proxy_url).expect("stable vless proxy key");
+    assert_ne!(explicit_legacy_vless_proxy_key, stable_vless_proxy_key);
+    assert_ne!(omitted_default_vless_proxy_key, stable_vless_proxy_key);
+
+    let mut vless_manager = ForwardProxyManager::new(
+        ForwardProxySettings {
+            proxy_urls: vec![explicit_vless_proxy_url.to_string()],
+            subscription_urls: vec![],
+            subscription_update_interval_secs: 3600,
+            insert_direct: false,
+        },
+        vec![],
+    );
+    for endpoint in &mut vless_manager.endpoints {
+        endpoint.endpoint_url = Some(
+            Url::parse("socks5://127.0.0.1:11080").expect("parse synthesized vless endpoint url"),
+        );
+    }
+    let vless_scope = ForwardProxyRouteScope::from_group_binding(
+        Some("东京组"),
+        vec![omitted_default_vless_proxy_key.clone()],
+    );
+    let selected_vless = vless_manager
+        .select_proxy_for_scope(&vless_scope)
+        .expect("legacy vless bound key should still select proxy");
+    assert_eq!(selected_vless.key, stable_vless_proxy_key);
+
+    let explicit_trojan_proxy_url =
+        "trojan://password@trojan.example.com:443?security=tls&type=tcp#东京节点";
+    let normalized_trojan_proxy_url =
+        normalize_share_link_scheme(explicit_trojan_proxy_url, "trojan")
+            .expect("normalize trojan url");
+    let explicit_legacy_trojan_proxy_key = {
+        let parsed = Url::parse(&normalized_trojan_proxy_url).expect("parse normalized trojan url");
+        stable_forward_proxy_key(&canonical_share_link_identity(&parsed))
+    };
+    let omitted_default_trojan_proxy_key =
+        stable_forward_proxy_key(&canonical_share_link_identity(
+            &Url::parse("trojan://password@trojan.example.com:443#东京节点")
+                .expect("parse omitted-default trojan url"),
+        ));
+    let trojan_aliases =
+        legacy_bound_proxy_key_aliases(&normalized_trojan_proxy_url, ForwardProxyProtocol::Trojan);
+    assert!(trojan_aliases.contains(&explicit_legacy_trojan_proxy_key));
+    assert!(trojan_aliases.contains(&omitted_default_trojan_proxy_key));
+    assert!(
+        legacy_bound_proxy_key_aliases(&normalized_trojan_proxy_url, ForwardProxyProtocol::Vless)
+            .is_empty()
+    );
+    let stable_trojan_proxy_key =
+        normalize_single_proxy_key(explicit_trojan_proxy_url).expect("stable trojan proxy key");
+    assert_ne!(explicit_legacy_trojan_proxy_key, stable_trojan_proxy_key);
+    assert_ne!(omitted_default_trojan_proxy_key, stable_trojan_proxy_key);
+
+    let mut trojan_manager = ForwardProxyManager::new(
+        ForwardProxySettings {
+            proxy_urls: vec![explicit_trojan_proxy_url.to_string()],
+            subscription_urls: vec![],
+            subscription_update_interval_secs: 3600,
+            insert_direct: false,
+        },
+        vec![],
+    );
+    for endpoint in &mut trojan_manager.endpoints {
+        endpoint.endpoint_url = Some(
+            Url::parse("socks5://127.0.0.1:11081").expect("parse synthesized trojan endpoint url"),
+        );
+    }
+    let trojan_scope = ForwardProxyRouteScope::from_group_binding(
+        Some("东京组"),
+        vec![omitted_default_trojan_proxy_key.clone()],
+    );
+    let selected_trojan = trojan_manager
+        .select_proxy_for_scope(&trojan_scope)
+        .expect("legacy trojan bound key should still select proxy");
+    assert_eq!(selected_trojan.key, stable_trojan_proxy_key);
 }
 
 #[test]
 fn forward_proxy_manager_v2_clamps_persisted_runtime_weight_on_startup() {
+    let proxy_url = "http://127.0.0.1:7890".to_string();
+    let proxy_key = normalize_single_proxy_key(&proxy_url).expect("normalize proxy key");
     let manager = ForwardProxyManager::with_algo(
         ForwardProxySettings {
-            proxy_urls: vec![],
+            proxy_urls: vec![proxy_url.clone()],
             subscription_urls: vec![],
             subscription_update_interval_secs: 3600,
             insert_direct: true,
         },
         vec![ForwardProxyRuntimeState {
-            proxy_key: FORWARD_PROXY_DIRECT_KEY.to_string(),
-            display_name: FORWARD_PROXY_DIRECT_LABEL.to_string(),
-            source: FORWARD_PROXY_SOURCE_DIRECT.to_string(),
-            endpoint_url: None,
+            proxy_key: proxy_key.clone(),
+            display_name: proxy_url.clone(),
+            source: FORWARD_PROXY_SOURCE_MANUAL.to_string(),
+            endpoint_url: Some(proxy_url.clone()),
             weight: 99.0,
             success_ema: 0.65,
             latency_ema_ms: None,
@@ -1229,11 +1832,11 @@ fn forward_proxy_manager_v2_clamps_persisted_runtime_weight_on_startup() {
         ForwardProxyAlgo::V2,
     );
 
-    let direct_runtime = manager
+    let manual_runtime = manager
         .runtime
-        .get(FORWARD_PROXY_DIRECT_KEY)
-        .expect("direct runtime should exist");
-    assert_eq!(direct_runtime.weight, FORWARD_PROXY_V2_WEIGHT_MAX);
+        .get(&proxy_key)
+        .expect("manual runtime should exist");
+    assert_eq!(manual_runtime.weight, FORWARD_PROXY_V2_WEIGHT_MAX);
 }
 
 #[test]
@@ -3569,6 +4172,8 @@ async fn reserve_test_pool_routing_account(
         },
         upstream_base_url: Url::parse("https://api.openai.com/").expect("valid upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
+        group_name: None,
+        bound_proxy_keys: Vec::new(),
     };
     reserve_pool_routing_account(state.as_ref(), reservation_key, &account);
 }
@@ -3961,9 +4566,9 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
             group_search: Some("prod".to_string()),
             group_ungrouped: None,
             status: None,
-            work_status: None,
-            enable_status: None,
-            health_status: None,
+            work_status: Vec::new(),
+            enable_status: Vec::new(),
+            health_status: Vec::new(),
             page: None,
             page_size: None,
             tag_ids: vec![vip_tag_id, burst_safe_tag_id, vip_tag_id],
@@ -3991,9 +4596,9 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
             group_search: None,
             group_ungrouped: Some(true),
             status: None,
-            work_status: None,
-            enable_status: None,
-            health_status: None,
+            work_status: Vec::new(),
+            enable_status: Vec::new(),
+            health_status: Vec::new(),
             page: None,
             page_size: None,
             tag_ids: vec![vip_tag_id, burst_safe_tag_id],
@@ -4061,9 +4666,9 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
             group_search: None,
             group_ungrouped: None,
             status: Some("active".to_string()),
-            work_status: None,
-            enable_status: None,
-            health_status: None,
+            work_status: Vec::new(),
+            enable_status: Vec::new(),
+            health_status: Vec::new(),
             page: Some(2),
             page_size: Some(20),
             tag_ids: Vec::new(),
@@ -4096,9 +4701,9 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
             group_search: None,
             group_ungrouped: None,
             status: Some("disabled".to_string()),
-            work_status: None,
-            enable_status: None,
-            health_status: None,
+            work_status: Vec::new(),
+            enable_status: Vec::new(),
+            health_status: Vec::new(),
             page: Some(1),
             page_size: Some(20),
             tag_ids: Vec::new(),
@@ -4145,9 +4750,9 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
             group_search: None,
             group_ungrouped: None,
             status: None,
-            work_status: Some("rate_limited".to_string()),
-            enable_status: Some("enabled".to_string()),
-            health_status: Some("normal".to_string()),
+            work_status: vec!["rate_limited".to_string()],
+            enable_status: vec!["enabled".to_string()],
+            health_status: vec!["normal".to_string()],
             page: Some(1),
             page_size: Some(20),
             tag_ids: Vec::new(),
@@ -4253,9 +4858,9 @@ async fn list_upstream_accounts_clamps_work_status_for_abnormal_or_syncing_accou
             group_search: None,
             group_ungrouped: None,
             status: None,
-            work_status: None,
-            enable_status: None,
-            health_status: None,
+            work_status: Vec::new(),
+            enable_status: Vec::new(),
+            health_status: Vec::new(),
             page: Some(1),
             page_size: Some(20),
             tag_ids: Vec::new(),
@@ -4277,7 +4882,7 @@ async fn list_upstream_accounts_clamps_work_status_for_abnormal_or_syncing_accou
         reauth_item
             .get("workStatus")
             .and_then(serde_json::Value::as_str),
-        Some("idle")
+        Some("unavailable")
     );
     assert_eq!(
         reauth_item
@@ -4400,9 +5005,9 @@ async fn list_upstream_accounts_keeps_generic_retry_cooldown_idle() {
             group_search: None,
             group_ungrouped: None,
             status: None,
-            work_status: None,
-            enable_status: None,
-            health_status: None,
+            work_status: Vec::new(),
+            enable_status: Vec::new(),
+            health_status: Vec::new(),
             page: Some(1),
             page_size: Some(20),
             tag_ids: Vec::new(),
@@ -4768,6 +5373,66 @@ async fn create_api_key_account_rejects_invalid_upstream_base_url() {
         .expect_err("invalid upstream base url should fail");
     assert_eq!(err.0, StatusCode::BAD_REQUEST);
     assert_eq!(err.1, "upstreamBaseUrl must be a valid absolute URL");
+}
+
+#[tokio::test]
+async fn update_upstream_account_group_rejects_bindings_without_selectable_nodes() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "LATAM Key",
+        "sk-latam",
+        Some("latam"),
+        None,
+        None,
+    )
+    .await;
+
+    let payload: UpdateUpstreamAccountGroupRequest = serde_json::from_value(json!({
+        "boundProxyKeys": ["fpn_missing_legacy_vless"]
+    }))
+    .expect("deserialize update upstream account group request");
+    let err = update_upstream_account_group(
+        State(state),
+        HeaderMap::new(),
+        axum::extract::Path("latam".to_string()),
+        Json(payload),
+    )
+    .await
+    .expect_err("group binding without selectable nodes should fail");
+
+    assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        err.1,
+        "select at least one available proxy node or clear bindings before saving"
+    );
+}
+
+#[tokio::test]
+async fn update_upstream_account_group_returns_not_found_before_binding_validation() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let payload: UpdateUpstreamAccountGroupRequest = serde_json::from_value(json!({
+        "boundProxyKeys": ["fpn_missing_legacy_vless"]
+    }))
+    .expect("deserialize update upstream account group request");
+    let err = update_upstream_account_group(
+        State(state),
+        HeaderMap::new(),
+        axum::extract::Path("missing-group".to_string()),
+        Json(payload),
+    )
+    .await
+    .expect_err("missing group should still return not found");
+
+    assert_eq!(err.0, StatusCode::NOT_FOUND);
+    assert_eq!(err.1, "group not found");
 }
 
 #[tokio::test]
@@ -7138,6 +7803,7 @@ fn normalize_proxy_location_header_strips_upstream_base_prefix_for_relative_redi
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_forwards_headers_method_query_and_body() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -7227,6 +7893,7 @@ async fn proxy_openai_v1_forwards_headers_method_query_and_body() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_replays_non_capture_body_across_429_retries() {
     let (upstream_base, attempts, seen_bodies, upstream_handle) =
         spawn_retrying_echo_upstream(1, Some("0")).await;
@@ -7277,6 +7944,7 @@ async fn proxy_openai_v1_replays_non_capture_body_across_429_retries() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_records_stream_error_when_final_429_stream_fails() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -7335,6 +8003,7 @@ async fn proxy_openai_v1_records_stream_error_when_final_429_stream_fails() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_streams_request_body_when_429_retry_is_disabled() {
     let (upstream_base, _attempts, _seen_bodies, upstream_handle) =
         spawn_retrying_echo_upstream(0, None).await;
@@ -7445,6 +8114,7 @@ async fn pool_route_non_capture_request_body_read_timeout_applies_to_replay_stre
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_records_end_to_end_latency_for_non_capture_streams() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -7483,6 +8153,7 @@ async fn proxy_openai_v1_records_end_to_end_latency_for_non_capture_streams() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_returns_final_429_body_and_headers_after_retry_exhaustion() {
     let (upstream_base, attempts, seen_bodies, upstream_handle) =
         spawn_retrying_echo_upstream(99, Some("0")).await;
@@ -7591,12 +8262,13 @@ async fn forward_proxy_penalized_probe_skips_recording_when_shutdown_begins_mid_
     .await;
     let normalized_proxy =
         normalize_single_proxy_url(&proxy_url).expect("normalize forward proxy url");
+    let proxy_key = normalize_single_proxy_key(&proxy_url).expect("normalize forward proxy key");
     let state = test_state_with_openai_base(
         Url::parse("http://probe-target.example/").expect("valid upstream base url"),
     )
     .await;
     let endpoint = ForwardProxyEndpoint {
-        key: normalized_proxy.clone(),
+        key: proxy_key.clone(),
         source: FORWARD_PROXY_SOURCE_MANUAL.to_string(),
         display_name: normalized_proxy.clone(),
         protocol: ForwardProxyProtocol::Http,
@@ -7617,7 +8289,7 @@ async fn forward_proxy_penalized_probe_skips_recording_when_shutdown_begins_mid_
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     assert_eq!(
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await,
+        count_forward_proxy_probe_attempts(&state.pool, &proxy_key, None).await,
         0,
         "shutdown should stop an in-flight penalized probe without recording a probe attempt"
     );
@@ -7626,6 +8298,7 @@ async fn forward_proxy_penalized_probe_skips_recording_when_shutdown_begins_mid_
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_retries_429_then_persists_final_success_once() {
     let (upstream_base, attempts, seen_payloads, upstream_handle) =
         spawn_retrying_capture_upstream(1, Some("0")).await;
@@ -7695,6 +8368,7 @@ async fn proxy_capture_target_retries_429_then_persists_final_success_once() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_returns_final_429_after_retry_exhaustion() {
     #[derive(sqlx::FromRow)]
     struct PersistedRow {
@@ -7799,28 +8473,6 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
         Url::parse("https://api.example.com/").expect("valid upstream base url"),
     )
     .await;
-
-    let Json(initial) = get_settings(State(state.clone()))
-        .await
-        .expect("get settings should succeed");
-    assert!(!initial.proxy.hijack_enabled);
-    assert!(!initial.proxy.merge_upstream_enabled);
-    assert_eq!(
-        initial.proxy.fast_mode_rewrite_mode,
-        ProxyFastModeRewriteMode::Disabled
-    );
-    assert_eq!(
-        initial.proxy.upstream_429_max_retries,
-        DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES
-    );
-    assert_eq!(initial.proxy.models.len(), PROXY_PRESET_MODEL_IDS.len());
-    assert_eq!(
-        initial.proxy.enabled_models,
-        PROXY_PRESET_MODEL_IDS
-            .iter()
-            .map(|id| id.to_string())
-            .collect::<Vec<_>>()
-    );
 
     let Json(updated) = put_proxy_settings(
         State(state.clone()),
@@ -8452,18 +9104,6 @@ async fn forward_proxy_live_stats_returns_fixed_24_hour_buckets_with_zero_fill()
     .await
     .expect("put forward proxy settings should succeed");
 
-    let direct_key = settings_response
-        .nodes
-        .iter()
-        .find(|node| node.source == FORWARD_PROXY_SOURCE_DIRECT)
-        .map(|node| node.key.clone())
-        .expect("direct node should exist");
-    let direct_weight = settings_response
-        .nodes
-        .iter()
-        .find(|node| node.source == FORWARD_PROXY_SOURCE_DIRECT)
-        .map(|node| node.weight)
-        .expect("direct node weight should exist");
     let manual_key = settings_response
         .nodes
         .iter()
@@ -8524,14 +9164,9 @@ async fn forward_proxy_live_stats_returns_fixed_24_hour_buckets_with_zero_fill()
     seed_forward_proxy_attempt_at(
         &state.pool,
         &manual_key,
-        now - ChronoDuration::hours(30),
-        true,
-    )
-    .await;
-    seed_forward_proxy_attempt_at(
-        &state.pool,
-        &direct_key,
-        now - ChronoDuration::hours(3) - ChronoDuration::minutes(40),
+        Utc.timestamp_opt(range_start_epoch - 3600, 0)
+            .single()
+            .expect("valid out-of-range bucket timestamp"),
         true,
     )
     .await;
@@ -8541,7 +9176,7 @@ async fn forward_proxy_live_stats_returns_fixed_24_hour_buckets_with_zero_fill()
         .expect("fetch forward proxy live stats should succeed");
 
     assert_eq!(response.bucket_seconds, 3600);
-    assert_eq!(response.nodes.len(), 2);
+    assert_eq!(response.nodes.len(), 1);
     assert_eq!(response.range_end, response.nodes[0].last24h[23].bucket_end);
     assert_eq!(
         response.range_start,
@@ -8637,26 +9272,6 @@ async fn forward_proxy_live_stats_returns_fixed_24_hour_buckets_with_zero_fill()
         .expect("expected carry-forward bucket after recovered manual weight bucket");
     assert_eq!(recovered_bucket_carry.sample_count, 0);
     assert!((recovered_bucket_carry.last_weight - 1.20).abs() < 1e-6);
-    let direct = response
-        .nodes
-        .iter()
-        .find(|node| node.key == direct_key)
-        .expect("direct node should be present");
-    let direct_success_total: i64 = direct
-        .last24h
-        .iter()
-        .map(|bucket| bucket.success_count)
-        .sum();
-    let direct_failure_total: i64 = direct
-        .last24h
-        .iter()
-        .map(|bucket| bucket.failure_count)
-        .sum();
-    assert_eq!(direct_success_total, 1);
-    assert_eq!(direct_failure_total, 0);
-    assert!(direct.weight24h.iter().all(
-        |bucket| bucket.sample_count == 0 && (bucket.last_weight - direct_weight).abs() < 1e-6
-    ));
 
     let display_names = response
         .nodes
@@ -8672,7 +9287,81 @@ async fn forward_proxy_live_stats_returns_fixed_24_hour_buckets_with_zero_fill()
 }
 
 #[tokio::test]
-async fn forward_proxy_live_stats_keeps_direct_node_and_zero_metrics_when_no_attempts() {
+async fn forward_proxy_binding_nodes_preserve_direct_hourly_buckets() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.example.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    let _ = put_forward_proxy_settings(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(ForwardProxySettingsUpdateRequest {
+            proxy_urls: vec!["socks5://127.0.0.1:1080".to_string()],
+            subscription_urls: vec![],
+            subscription_update_interval_secs: 3600,
+            insert_direct: true,
+        }),
+    )
+    .await
+    .expect("put forward proxy settings should succeed");
+
+    let now = Utc::now();
+    seed_forward_proxy_attempt_at(
+        &state.pool,
+        FORWARD_PROXY_DIRECT_KEY,
+        now - ChronoDuration::hours(2) - ChronoDuration::minutes(5),
+        true,
+    )
+    .await;
+    seed_forward_proxy_attempt_at(
+        &state.pool,
+        FORWARD_PROXY_DIRECT_KEY,
+        now - ChronoDuration::hours(1) - ChronoDuration::minutes(11),
+        false,
+    )
+    .await;
+    seed_forward_proxy_attempt_at(
+        &state.pool,
+        FORWARD_PROXY_DIRECT_KEY,
+        now - ChronoDuration::hours(31),
+        true,
+    )
+    .await;
+
+    let extra_proxy_keys = Vec::<String>::new();
+    let nodes = build_forward_proxy_binding_nodes_response(state.as_ref(), &extra_proxy_keys)
+        .await
+        .expect("build forward proxy binding nodes should succeed");
+    let direct = nodes
+        .iter()
+        .find(|node| node.key == FORWARD_PROXY_DIRECT_KEY)
+        .expect("direct binding node should be present");
+
+    assert_eq!(direct.protocol_label, "DIRECT");
+    assert_eq!(direct.last24h.len(), 24);
+    assert_eq!(
+        direct
+            .last24h
+            .iter()
+            .map(|bucket| bucket.success_count)
+            .sum::<i64>(),
+        1,
+        "in-range direct successes should remain visible",
+    );
+    assert_eq!(
+        direct
+            .last24h
+            .iter()
+            .map(|bucket| bucket.failure_count)
+            .sum::<i64>(),
+        1,
+        "in-range direct failures should remain visible",
+    );
+}
+
+#[tokio::test]
+async fn forward_proxy_live_stats_returns_empty_nodes_when_no_endpoints_are_configured() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.example.com/").expect("valid upstream base url"),
     )
@@ -8683,26 +9372,7 @@ async fn forward_proxy_live_stats_keeps_direct_node_and_zero_metrics_when_no_att
         .expect("fetch forward proxy live stats should succeed");
 
     assert_eq!(response.bucket_seconds, 3600);
-    assert_eq!(
-        response.nodes.len(),
-        1,
-        "default runtime should only include direct node"
-    );
-    let direct = &response.nodes[0];
-    assert_eq!(direct.source, FORWARD_PROXY_SOURCE_DIRECT);
-    assert_eq!(direct.stats.one_minute.attempts, 0);
-    assert_eq!(direct.stats.one_day.attempts, 0);
-    assert_eq!(direct.last24h.len(), 24);
-    assert_eq!(direct.weight24h.len(), 24);
-    assert!(
-        direct
-            .last24h
-            .iter()
-            .all(|bucket| bucket.success_count == 0 && bucket.failure_count == 0)
-    );
-    assert!(direct.weight24h.iter().all(
-        |bucket| bucket.sample_count == 0 && (bucket.last_weight - direct.weight).abs() < 1e-6
-    ));
+    assert!(response.nodes.is_empty());
 }
 
 #[tokio::test]
@@ -9730,6 +10400,7 @@ async fn seed_default_pricing_catalog_does_not_override_existing_pricing_for_new
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_models_passthrough_when_hijack_disabled() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -9761,6 +10432,7 @@ async fn proxy_openai_v1_models_passthrough_when_hijack_disabled() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_models_returns_preset_when_hijack_enabled_without_merge() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -9808,6 +10480,7 @@ async fn proxy_openai_v1_models_returns_preset_when_hijack_enabled_without_merge
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_models_returns_gpt_5_4_models_when_enabled() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -9846,6 +10519,7 @@ async fn proxy_openai_v1_models_returns_gpt_5_4_models_when_enabled() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_models_merges_upstream_when_enabled() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -9989,6 +10663,7 @@ async fn proxy_openai_v1_models_pool_failures_do_not_return_untracked_cvm_id() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_models_merges_upstream_after_429_retry() {
     let (upstream_base, attempts, upstream_handle) =
         spawn_retrying_models_upstream(1, Some("0")).await;
@@ -10042,6 +10717,7 @@ async fn proxy_openai_v1_models_merges_upstream_after_429_retry() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_models_falls_back_to_preset_when_merge_upstream_fails() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -10084,6 +10760,7 @@ async fn proxy_openai_v1_models_falls_back_to_preset_when_merge_upstream_fails()
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_models_retries_429_then_falls_back_once_exhausted() {
     let (upstream_base, attempts, upstream_handle) =
         spawn_retrying_models_upstream(99, Some("0")).await;
@@ -10138,6 +10815,7 @@ async fn proxy_openai_v1_models_retries_429_then_falls_back_once_exhausted() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
@@ -10225,6 +10903,7 @@ async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_preserves_streaming_response() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -10255,6 +10934,7 @@ async fn proxy_openai_v1_preserves_streaming_response() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_returns_bad_gateway_when_first_stream_chunk_fails() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -10286,6 +10966,7 @@ async fn proxy_openai_v1_returns_bad_gateway_when_first_stream_chunk_fails() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_propagates_stream_error_after_first_chunk() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -10314,6 +10995,7 @@ async fn proxy_openai_v1_propagates_stream_error_after_first_chunk() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_preserves_redirect_without_following() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -10339,6 +11021,7 @@ async fn proxy_openai_v1_preserves_redirect_without_following() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_blocks_cross_origin_redirect() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -10370,6 +11053,7 @@ async fn proxy_openai_v1_blocks_cross_origin_redirect() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_persists_record_on_redirect_rewrite_error() {
     #[derive(sqlx::FromRow)]
     struct PersistedRow {
@@ -10764,6 +11448,7 @@ async fn broadcast_quota_if_changed_skips_duplicate_payloads() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn read_request_body_timeout_returns_408() {
     #[derive(sqlx::FromRow)]
     struct PersistedRow {
@@ -10845,6 +11530,7 @@ async fn read_request_body_timeout_returns_408() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn capture_target_retries_429_and_persists_single_invocation() {
     let (upstream_base, attempts, seen_payloads, upstream_handle) =
         spawn_retrying_capture_upstream(1, Some("0")).await;
@@ -10917,6 +11603,7 @@ async fn capture_target_retries_429_and_persists_single_invocation() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn capture_target_client_body_disconnect_returns_400_with_failure_kind() {
     #[derive(sqlx::FromRow)]
     struct PersistedRow {
@@ -10990,6 +11677,7 @@ async fn capture_target_client_body_disconnect_returns_400_with_failure_kind() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn capture_target_stream_error_emits_failure_kind_and_persists() {
     #[derive(sqlx::FromRow)]
     struct PersistedRow {
@@ -11069,6 +11757,7 @@ async fn capture_target_stream_error_emits_failure_kind_and_persists() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn capture_target_response_failed_stream_persists_service_failure_details() {
     #[derive(sqlx::FromRow)]
     struct PersistedRow {
@@ -11177,6 +11866,7 @@ async fn capture_target_response_failed_stream_persists_service_failure_details(
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_fill_missing_rewrites_priority_for_responses() {
     #[derive(sqlx::FromRow)]
     struct PersistedRow {
@@ -11253,6 +11943,7 @@ async fn proxy_capture_target_fill_missing_rewrites_priority_for_responses() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_force_priority_overrides_existing_chat_tier() {
     #[derive(sqlx::FromRow)]
     struct PersistedRow {
@@ -11330,6 +12021,7 @@ async fn proxy_capture_target_force_priority_overrides_existing_chat_tier() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_compact_estimates_cost_and_flows_into_stats_without_rewrite() {
     #[derive(sqlx::FromRow)]
     struct PersistedCompactRow {
@@ -11512,6 +12204,7 @@ async fn proxy_capture_target_compact_estimates_cost_and_flows_into_stats_withou
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_compact_uses_dedicated_handshake_timeout() {
     let (upstream_base, _captured_requests, upstream_handle) =
         spawn_capture_target_body_upstream().await;
@@ -11954,6 +12647,7 @@ fn pool_same_account_attempt_budget_keeps_legacy_budget_for_non_responses_routes
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_responses_uses_dedicated_first_byte_timeout() {
     let (upstream_base, _captured_requests, upstream_handle) =
         spawn_capture_target_body_upstream().await;
@@ -11999,6 +12693,7 @@ async fn proxy_capture_target_responses_uses_dedicated_first_byte_timeout() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_allows_slow_upload_with_short_timeout() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
@@ -12088,6 +12783,7 @@ async fn proxy_openai_v1_allows_slow_upload_with_short_timeout() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_e2e_http_roundtrip() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -12164,6 +12860,17 @@ struct PoolCompactUnsupportedUpstreamState {
 struct PoolFirstChunkRetryUpstreamState {
     attempts: Arc<StdMutex<HashMap<String, usize>>>,
     fail_before_success: Arc<HashMap<String, usize>>,
+}
+
+#[derive(Clone)]
+struct PoolResponseFailedRetryUpstreamState {
+    attempts: Arc<StdMutex<HashMap<String, usize>>>,
+    fail_before_success: Arc<HashMap<String, usize>>,
+}
+
+#[derive(Clone)]
+struct PoolLateResponseFailedUpstreamState {
+    attempts: Arc<StdMutex<HashMap<String, usize>>>,
 }
 
 #[derive(Clone)]
@@ -12474,6 +13181,101 @@ async fn pool_first_chunk_retry_upstream(
             "authorization": authorization,
             "attempt": attempt,
         })),
+    )
+        .into_response()
+}
+
+async fn pool_response_failed_retry_upstream(
+    State(state): State<PoolResponseFailedRetryUpstreamState>,
+    headers: HeaderMap,
+) -> Response {
+    let authorization = headers
+        .get(http_header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+
+    let attempt = {
+        let mut attempts = state
+            .attempts
+            .lock()
+            .expect("lock pool response.failed retry attempts");
+        let entry = attempts.entry(authorization.clone()).or_insert(0);
+        *entry += 1;
+        *entry
+    };
+
+    if attempt
+        <= state
+            .fail_before_success
+            .get(&authorization)
+            .copied()
+            .unwrap_or(0)
+    {
+        let payload = [
+            "event: response.failed\n",
+            r#"data: {"type":"response.failed","response":{"id":"resp_overloaded_retry","model":"gpt-5.4","status":"failed","error":{"code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}}"#,
+            "\n\n",
+        ]
+        .concat();
+        return (
+            StatusCode::OK,
+            [(
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("text/event-stream"),
+            )],
+            Body::from(payload),
+        )
+            .into_response();
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "ok": true,
+            "authorization": authorization,
+            "attempt": attempt,
+        })),
+    )
+        .into_response()
+}
+
+async fn pool_late_response_failed_upstream(
+    State(state): State<PoolLateResponseFailedUpstreamState>,
+    headers: HeaderMap,
+) -> Response {
+    let authorization = headers
+        .get(http_header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+
+    {
+        let mut attempts = state
+            .attempts
+            .lock()
+            .expect("lock pool late response.failed attempts");
+        let entry = attempts.entry(authorization).or_insert(0);
+        *entry += 1;
+    }
+
+    let payload = [
+        "event: response.created\n",
+        r#"data: {"type":"response.created","response":{"id":"resp_overloaded_late","model":"gpt-5.4","status":"in_progress"}}"#,
+        "\n\n",
+        "event: response.failed\n",
+        r#"data: {"type":"response.failed","response":{"id":"resp_overloaded_late","model":"gpt-5.4","status":"failed","error":{"code":"server_is_overloaded","message":"Our servers are currently overloaded. Please try again later."}}}"#,
+        "\n\n",
+    ]
+    .concat();
+
+    (
+        StatusCode::OK,
+        [(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("text/event-stream"),
+        )],
+        Body::from(payload),
     )
         .into_response()
 }
@@ -13109,6 +13911,65 @@ async fn spawn_pool_first_chunk_retry_upstream(
         axum::serve(listener, app)
             .await
             .expect("pool first chunk retry upstream should run");
+    });
+    (format!("http://{addr}"), attempts, handle)
+}
+
+async fn spawn_pool_response_failed_retry_upstream(
+    fail_before_success: &[(&str, usize)],
+) -> (
+    String,
+    Arc<StdMutex<HashMap<String, usize>>>,
+    JoinHandle<()>,
+) {
+    let attempts = Arc::new(StdMutex::new(HashMap::new()));
+    let fail_before_success = Arc::new(
+        fail_before_success
+            .iter()
+            .map(|(authorization, failures)| ((*authorization).to_string(), *failures))
+            .collect::<HashMap<_, _>>(),
+    );
+    let app = Router::new()
+        .route("/v1/responses", post(pool_response_failed_retry_upstream))
+        .with_state(PoolResponseFailedRetryUpstreamState {
+            attempts: attempts.clone(),
+            fail_before_success,
+        });
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind pool response.failed retry upstream");
+    let addr = listener
+        .local_addr()
+        .expect("pool response.failed retry upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("pool response.failed retry upstream should run");
+    });
+    (format!("http://{addr}"), attempts, handle)
+}
+
+async fn spawn_pool_late_response_failed_upstream() -> (
+    String,
+    Arc<StdMutex<HashMap<String, usize>>>,
+    JoinHandle<()>,
+) {
+    let attempts = Arc::new(StdMutex::new(HashMap::new()));
+    let app = Router::new()
+        .route("/v1/responses", post(pool_late_response_failed_upstream))
+        .with_state(PoolLateResponseFailedUpstreamState {
+            attempts: attempts.clone(),
+        });
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind pool late response.failed upstream");
+    let addr = listener
+        .local_addr()
+        .expect("pool late response.failed upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("pool late response.failed upstream should run");
     });
     (format!("http://{addr}"), attempts, handle)
 }
@@ -17116,6 +17977,141 @@ async fn pool_openai_v1_responses_stream_timeout_does_not_cap_same_account_retry
 }
 
 #[tokio::test]
+async fn pool_openai_v1_responses_retries_same_account_on_server_overloaded_before_forwarding() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptRouteRow {
+        distinct_account_index: i64,
+        status: String,
+    }
+
+    #[derive(Debug, sqlx::FromRow)]
+    struct AccountActionRow {
+        action: Option<String>,
+        reason_code: Option<String>,
+        cooldown_until: Option<String>,
+    }
+
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_response_failed_retry_upstream(&[("Bearer route-one", 2)]).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Retry Route One",
+        "route-one",
+        None,
+        None,
+        Some(upstream_base.as_str()),
+    )
+    .await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5.4","stream":true,"input":"hello","stickyKey":"sticky-overloaded-retry-001"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read retryable overloaded response");
+    let response_payload: Value =
+        serde_json::from_slice(&body).expect("decode retryable overloaded success body");
+    assert_eq!(response_payload["ok"].as_bool(), Some(true));
+    assert_eq!(
+        response_payload["authorization"].as_str(),
+        Some("Bearer route-one"),
+    );
+    let body_text = String::from_utf8(body.to_vec()).expect("utf8 retryable overloaded body");
+    assert!(!body_text.contains("response.failed"));
+    assert!(!body_text.contains("server_is_overloaded"));
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    wait_for_pool_attempt_row_count(&state.pool, 3).await;
+
+    let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
+        r#"
+        SELECT distinct_account_index, status
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load overloaded retry attempt rows");
+    assert_eq!(attempt_rows.len(), 3);
+    assert_eq!(
+        attempt_rows[0].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
+    );
+    assert_eq!(
+        attempt_rows[1].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
+    );
+    assert_eq!(
+        attempt_rows[2].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
+    );
+    assert!(
+        attempt_rows
+            .iter()
+            .all(|row| row.distinct_account_index == 1)
+    );
+
+    let row = sqlx::query_as::<_, AccountActionRow>(
+        r#"
+        SELECT last_action AS action, last_action_reason_code AS reason_code, cooldown_until
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load overloaded retry account state");
+    assert_eq!(row.action.as_deref(), Some("route_recovered"));
+    assert!(row.reason_code.is_none());
+    assert!(row.cooldown_until.is_none());
+
+    let recent_actions: Vec<String> = sqlx::query_scalar(
+        r#"
+        SELECT action
+        FROM pool_upstream_account_events
+        WHERE account_id = ?1
+        ORDER BY id DESC
+        LIMIT 5
+        "#,
+    )
+    .bind(account_id)
+    .fetch_all(&state.pool)
+    .await
+    .expect("load overloaded retry account events");
+    assert!(
+        !recent_actions
+            .iter()
+            .any(|action| action == "route_cooldown_started")
+    );
+
+    let attempts = attempts.lock().expect("lock retryable overloaded attempts");
+    assert_eq!(attempts.get("Bearer route-one").copied(), Some(3));
+    drop(attempts);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn pool_route_marks_oauth_missing_scopes_as_error_and_persists_upstream_details() {
     let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
         .lock()
@@ -17384,6 +18380,8 @@ async fn pool_route_oauth_passthrough_replays_large_file_backed_body() {
         upstream_base_url: oauth_bridge::oauth_codex_upstream_base_url()
             .expect("oauth upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
+        group_name: None,
+        bound_proxy_keys: Vec::new(),
     };
 
     let upstream = send_pool_request_with_failover(
@@ -18639,6 +19637,8 @@ async fn pool_route_oauth_responses_rejects_large_file_backed_rewrite_body() {
         upstream_base_url: oauth_bridge::oauth_codex_upstream_base_url()
             .expect("oauth upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
+        group_name: None,
+        bound_proxy_keys: Vec::new(),
     };
 
     let err = send_pool_request_with_failover(
@@ -18904,6 +19904,8 @@ fn capture_target_pool_route_prefers_account_upstream_base_for_redirect_rewrite(
         upstream_base_url: Url::parse("https://proxy.example.com/gateway")
             .expect("account upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
+        group_name: None,
+        bound_proxy_keys: Vec::new(),
     };
 
     assert_eq!(
@@ -19001,6 +20003,138 @@ async fn capture_target_pool_route_marks_response_failed_stream_as_route_failure
 }
 
 #[tokio::test]
+async fn capture_target_pool_route_marks_server_overloaded_after_forward_as_retryable_without_cooldown()
+ {
+    #[derive(sqlx::FromRow)]
+    struct RouteStateRow {
+        status: String,
+        last_action: Option<String>,
+        last_action_reason_code: Option<String>,
+        last_action_http_status: Option<i64>,
+        cooldown_until: Option<String>,
+        last_route_failure_kind: Option<String>,
+    }
+
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_late_response_failed_upstream().await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let account_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Primary",
+        "upstream-primary",
+        None,
+        None,
+        Some(upstream_base.as_str()),
+    )
+    .await;
+    record_pool_route_success(
+        &state.pool,
+        account_id,
+        Utc::now(),
+        Some("sticky-cap-overloaded-late"),
+        None,
+    )
+    .await
+    .expect("seed sticky route");
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "stream": true,
+        "input": "hello",
+        "stickyKey": "sticky-cap-overloaded-late"
+    }))
+    .expect("serialize request body");
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(request_body),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read late overloaded response body");
+    let body_text = String::from_utf8(body.to_vec()).expect("utf8 late overloaded body");
+    assert!(body_text.contains("response.created"));
+    assert!(body_text.contains("server_is_overloaded"));
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    let route_state = sqlx::query_as::<_, RouteStateRow>(
+        r#"
+        SELECT
+            status,
+            last_action,
+            last_action_reason_code,
+            last_action_http_status,
+            cooldown_until,
+            last_route_failure_kind
+        FROM pool_upstream_accounts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(account_id)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load late overloaded route state");
+    assert_eq!(route_state.status, "active");
+    assert_eq!(
+        route_state.last_action.as_deref(),
+        Some("route_retryable_failure")
+    );
+    assert_eq!(
+        route_state.last_action_reason_code.as_deref(),
+        Some("upstream_server_overloaded")
+    );
+    assert_eq!(route_state.last_action_http_status, Some(200));
+    assert!(route_state.cooldown_until.is_none());
+    assert_eq!(
+        route_state.last_route_failure_kind.as_deref(),
+        Some("upstream_response_failed")
+    );
+    assert_eq!(
+        load_test_sticky_route_account_id(&state.pool, "sticky-cap-overloaded-late").await,
+        Some(account_id),
+        "retryable overload should keep the sticky binding",
+    );
+
+    let recent_actions: Vec<String> = sqlx::query_scalar(
+        r#"
+        SELECT action
+        FROM pool_upstream_account_events
+        WHERE account_id = ?1
+        ORDER BY id DESC
+        LIMIT 5
+        "#,
+    )
+    .bind(account_id)
+    .fetch_all(&state.pool)
+    .await
+    .expect("load late overloaded events");
+    assert!(
+        !recent_actions
+            .iter()
+            .any(|action| action == "route_cooldown_started")
+    );
+
+    let attempts = attempts.lock().expect("lock late overloaded attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
+    drop(attempts);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
@@ -19430,6 +20564,7 @@ async fn pool_openai_v1_responses_still_times_out_before_first_chunk() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_responses_stream_timeout_applies_after_first_byte() {
     let (upstream_base, _captured_requests, upstream_handle) =
         spawn_capture_target_body_upstream().await;
@@ -19473,6 +20608,7 @@ async fn proxy_capture_target_responses_stream_timeout_applies_after_first_byte(
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_compact_stream_timeout_applies_after_first_byte() {
     let (upstream_base, _captured_requests, upstream_handle) =
         spawn_capture_target_body_upstream().await;
@@ -19713,6 +20849,7 @@ async fn prompt_cache_views_ignore_sticky_only_internal_keys() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_rejects_oversized_request_body() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state = test_state_with_openai_base_and_body_limit(
@@ -19746,6 +20883,7 @@ async fn proxy_openai_v1_rejects_oversized_request_body() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_rejects_dot_segment_path() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -19777,6 +20915,7 @@ async fn proxy_openai_v1_rejects_dot_segment_path() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_rejects_malformed_percent_encoded_path() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let state =
@@ -19808,6 +20947,7 @@ async fn proxy_openai_v1_rejects_malformed_percent_encoded_path() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
@@ -19883,6 +21023,7 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout_with_body() {
     let (upstream_base, upstream_handle) = spawn_test_upstream().await;
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
@@ -20937,6 +22078,7 @@ fn parse_target_response_payload_records_decode_failure_reason() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_extracts_usage_from_gzip_response_stream() {
     #[derive(sqlx::FromRow)]
     struct PersistedUsageRow {
@@ -21020,6 +22162,7 @@ async fn proxy_capture_target_extracts_usage_from_gzip_response_stream() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_gzip_stream_without_event_stream_header_still_extracts_usage() {
     #[derive(sqlx::FromRow)]
     struct PersistedUsageRow {
@@ -21105,6 +22248,7 @@ fn assert_proxy_capture_hot_path_skips_raw_fallbacks() {
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_large_gzip_stream_without_event_stream_header_keeps_raw_capture_without_raw_reread()
  {
     #[derive(sqlx::FromRow)]
@@ -21219,6 +22363,7 @@ async fn proxy_capture_target_large_gzip_stream_without_event_stream_header_keep
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_large_stream_keeps_preview_bounded_without_raw_reread() {
     #[derive(sqlx::FromRow)]
     struct PersistedLargeRow {
@@ -21326,6 +22471,7 @@ async fn proxy_capture_target_large_stream_keeps_preview_bounded_without_raw_rer
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_large_stream_terminal_event_keeps_live_metadata_without_raw_reread() {
     #[derive(sqlx::FromRow)]
     struct PersistedLargeTerminalRow {
@@ -21435,6 +22581,7 @@ async fn proxy_capture_target_large_stream_terminal_event_keeps_live_metadata_wi
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_oversized_stream_keeps_live_metadata_when_raw_file_is_truncated() {
     #[derive(sqlx::FromRow)]
     struct PersistedOversizedRow {
@@ -21527,6 +22674,7 @@ async fn proxy_capture_target_oversized_stream_keeps_live_metadata_when_raw_file
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_large_stream_keeps_usage_when_response_raw_is_truncated() {
     #[derive(sqlx::FromRow)]
     struct PersistedLargeRow {
@@ -21646,6 +22794,7 @@ async fn proxy_capture_target_large_stream_keeps_usage_when_response_raw_is_trun
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_stream_request_json_error_uses_nonstream_parse_fallback() {
     #[derive(sqlx::FromRow)]
     struct PersistedErrorRow {
@@ -21796,6 +22945,7 @@ async fn proxy_capture_target_large_stream_soak_keeps_rss_within_stable_window()
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_large_nonstream_json_skips_bounded_parse_and_keeps_full_raw_file() {
     #[derive(sqlx::FromRow)]
     struct PersistedCompactRow {
@@ -21903,6 +23053,7 @@ async fn proxy_capture_target_large_nonstream_json_skips_bounded_parse_and_keeps
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_large_nonstream_json_error_preserves_prefixed_metadata() {
     #[derive(sqlx::FromRow)]
     struct PersistedErrorRow {
@@ -21986,6 +23137,7 @@ async fn proxy_capture_target_large_nonstream_json_error_preserves_prefixed_meta
 }
 
 #[tokio::test]
+#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_nonstream_usage_survives_response_raw_truncation() {
     #[derive(sqlx::FromRow)]
     struct PersistedCompactRow {
@@ -24611,6 +25763,13 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
         "gpt-5.4-mini",
     )
     .await;
+    sqlx::query(
+        "UPDATE codex_invocations SET payload = json_set(payload, '$.reasoningEffort', 7) WHERE invoke_id = ?1",
+    )
+    .bind("preview-04")
+    .execute(&state.pool)
+    .await
+    .expect("mark preview-04 reasoning effort as non-text");
     insert_row(
         &state.pool,
         "preview-05",
@@ -24653,6 +25812,57 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
         "gpt-5.4",
     )
     .await;
+    sqlx::query(
+        "UPDATE codex_invocations \
+         SET input_tokens = ?1, \
+             output_tokens = ?2, \
+             cache_input_tokens = ?3, \
+             reasoning_tokens = ?4, \
+             error_message = ?5, \
+             failure_kind = ?6, \
+             failure_class = ?7, \
+             is_actionable = ?8, \
+             t_req_read_ms = ?9, \
+             t_req_parse_ms = ?10, \
+             t_upstream_connect_ms = ?11, \
+             t_upstream_ttfb_ms = ?12, \
+             t_upstream_stream_ms = ?13, \
+             t_resp_parse_ms = ?14, \
+             t_persist_ms = ?15, \
+             t_total_ms = ?16, \
+             payload = json_set( \
+                 payload, \
+                 '$.reasoningEffort', ?17, \
+                 '$.responseContentEncoding', ?18, \
+                 '$.requestedServiceTier', ?19, \
+                 '$.serviceTier', ?20 \
+             ) \
+         WHERE invoke_id = ?21",
+    )
+    .bind(120_i64)
+    .bind(80_i64)
+    .bind(40_i64)
+    .bind(12_i64)
+    .bind("[upstream_response_failed] preview extra error")
+    .bind("upstream_response_failed")
+    .bind("service_failure")
+    .bind(1_i64)
+    .bind(10.0_f64)
+    .bind(11.0_f64)
+    .bind(12.0_f64)
+    .bind(13.0_f64)
+    .bind(14.0_f64)
+    .bind(15.0_f64)
+    .bind(16.0_f64)
+    .bind(91.0_f64)
+    .bind("high")
+    .bind("br")
+    .bind("flex")
+    .bind("scale")
+    .bind("preview-06")
+    .execute(&state.pool)
+    .await
+    .expect("augment preview-06 extras");
     insert_row(
         &state.pool,
         "preview-crs-hidden",
@@ -24715,6 +25925,7 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
     assert_eq!(latest.endpoint.as_deref(), Some("/v1/responses"));
     assert_eq!(latest.failure_class.as_deref(), Some("none"));
     assert_eq!(latest.route_mode.as_deref(), Some("pool"));
+    assert_eq!(latest.source.as_deref(), Some(SOURCE_CRS));
 
     let id_only = conversation
         .recent_invocations
@@ -24723,6 +25934,7 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
         .expect("id-only preview should be included");
     assert_eq!(id_only.upstream_account_id, Some(202));
     assert_eq!(id_only.upstream_account_name, None);
+    assert_eq!(id_only.reasoning_effort, None);
 
     let failed_preview = conversation
         .recent_invocations
@@ -24747,6 +25959,44 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
         Some("service_failure")
     );
     assert_eq!(legacy_failed_preview.route_mode.as_deref(), Some("pool"));
+
+    let enriched_preview = conversation
+        .recent_invocations
+        .iter()
+        .find(|item| item.invoke_id == "preview-06")
+        .expect("preview-06 should be included");
+    assert_eq!(enriched_preview.source.as_deref(), Some(SOURCE_PROXY));
+    assert_eq!(enriched_preview.input_tokens, Some(120));
+    assert_eq!(enriched_preview.output_tokens, Some(80));
+    assert_eq!(enriched_preview.cache_input_tokens, Some(40));
+    assert_eq!(enriched_preview.reasoning_tokens, Some(12));
+    assert_eq!(enriched_preview.reasoning_effort.as_deref(), Some("high"));
+    assert_eq!(
+        enriched_preview.error_message.as_deref(),
+        Some("[upstream_response_failed] preview extra error")
+    );
+    assert_eq!(
+        enriched_preview.failure_kind.as_deref(),
+        Some("upstream_response_failed")
+    );
+    assert_eq!(enriched_preview.is_actionable, Some(true));
+    assert_eq!(
+        enriched_preview.response_content_encoding.as_deref(),
+        Some("br")
+    );
+    assert_eq!(
+        enriched_preview.requested_service_tier.as_deref(),
+        Some("flex")
+    );
+    assert_eq!(enriched_preview.service_tier.as_deref(), Some("scale"));
+    assert_eq!(enriched_preview.t_req_read_ms, Some(10.0));
+    assert_eq!(enriched_preview.t_req_parse_ms, Some(11.0));
+    assert_eq!(enriched_preview.t_upstream_connect_ms, Some(12.0));
+    assert_eq!(enriched_preview.t_upstream_ttfb_ms, Some(13.0));
+    assert_eq!(enriched_preview.t_upstream_stream_ms, Some(14.0));
+    assert_eq!(enriched_preview.t_resp_parse_ms, Some(15.0));
+    assert_eq!(enriched_preview.t_persist_ms, Some(16.0));
+    assert_eq!(enriched_preview.t_total_ms, Some(91.0));
 
     let proxy_only_rows = query_prompt_cache_conversation_recent_invocations(
         &state.pool,
@@ -24775,6 +26025,17 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
             .iter()
             .all(|item| item.invoke_id != "preview-crs-hidden")
     );
+    let proxy_enriched_row = proxy_only_rows
+        .iter()
+        .find(|item| item.invoke_id == "preview-06")
+        .expect("preview-06 row should be present");
+    assert_eq!(proxy_enriched_row.source.as_deref(), Some(SOURCE_PROXY));
+    assert_eq!(proxy_enriched_row.input_tokens, Some(120));
+    assert_eq!(
+        proxy_enriched_row.requested_service_tier.as_deref(),
+        Some("flex")
+    );
+    assert_eq!(proxy_enriched_row.t_total_ms, Some(91.0));
 }
 
 #[tokio::test]
@@ -25493,6 +26754,240 @@ async fn prompt_cache_conversations_cache_reuses_recent_result_within_ttl() {
 }
 
 #[tokio::test]
+async fn prompt_cache_conversations_cache_invalidation_exposes_new_proxy_capture_immediately() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+    let occurred_a = format_naive(
+        (now - ChronoDuration::minutes(80))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let occurred_b = format_naive(
+        (now - ChronoDuration::minutes(30))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind("pck-cache-live-1")
+    .bind(&occurred_a)
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(10)
+    .bind(0.01)
+    .bind(r#"{"promptCacheKey":"pck-broadcast-1"}"#)
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert initial prompt cache row");
+
+    let Json(first) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+        }),
+    )
+    .await
+    .expect("first fetch should populate prompt cache stats");
+    let first_count = first
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-broadcast-1")
+        .map(|item| item.request_count)
+        .expect("pck-broadcast-1 should be present");
+    assert_eq!(first_count, 1);
+
+    persist_and_broadcast_proxy_capture(
+        state.as_ref(),
+        Instant::now(),
+        test_proxy_capture_record("pck-cache-live-2", &occurred_b),
+    )
+    .await
+    .expect("persist+broadcast should invalidate prompt cache conversation cache");
+
+    let Json(second) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+        }),
+    )
+    .await
+    .expect("second fetch should see the freshly persisted proxy capture");
+    let second_count = second
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-broadcast-1")
+        .map(|item| item.request_count)
+        .expect("pck-broadcast-1 should remain present");
+    assert_eq!(second_count, 2);
+}
+
+#[tokio::test]
+async fn prompt_cache_conversations_cache_ignores_proxy_captures_without_prompt_cache_key() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+    let occurred_a = format_naive(
+        (now - ChronoDuration::minutes(80))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let occurred_b = format_naive(
+        (now - ChronoDuration::minutes(30))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind("pck-cache-unrelated-1")
+    .bind(&occurred_a)
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(10)
+    .bind(0.01)
+    .bind(r#"{"promptCacheKey":"pck-unrelated"}"#)
+    .bind("{}")
+    .execute(&state.pool)
+    .await
+    .expect("insert prompt cache seed row");
+
+    let Json(first) = fetch_prompt_cache_conversations(
+        State(state.clone()),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+        }),
+    )
+    .await
+    .expect("first fetch should populate prompt cache stats");
+    let first_count = first
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-unrelated")
+        .map(|item| item.request_count)
+        .expect("pck-unrelated should be present");
+    assert_eq!(first_count, 1);
+
+    let mut unrelated_record = test_proxy_capture_record("pck-cache-unrelated-2", &occurred_b);
+    unrelated_record.payload =
+        Some("{\"endpoint\":\"/v1/responses\",\"statusCode\":200}".to_string());
+    persist_and_broadcast_proxy_capture(state.as_ref(), Instant::now(), unrelated_record)
+        .await
+        .expect("persist+broadcast should keep prompt cache cache warm for unrelated traffic");
+
+    let Json(second) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: Some(20),
+            activity_hours: None,
+        }),
+    )
+    .await
+    .expect("second fetch should still use cached result");
+    let second_count = second
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-unrelated")
+        .map(|item| item.request_count)
+        .expect("pck-unrelated should remain present");
+    assert_eq!(second_count, 1);
+}
+
+#[tokio::test]
+async fn prompt_cache_conversations_cache_returns_under_sustained_invalidations() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+
+    for index in 0..256 {
+        let occurred = format_naive(
+            (now - ChronoDuration::minutes(120 - index as i64))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(format!("pck-cache-sustained-{index}"))
+        .bind(&occurred)
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(10 + index as i64)
+        .bind(0.01)
+        .bind(format!(
+            r#"{{"promptCacheKey":"pck-sustained-{index:03}"}}"#
+        ))
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert sustained-invalidations seed row");
+    }
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let invalidator_stop = stop.clone();
+    let cache = state.prompt_cache_conversation_cache.clone();
+    let invalidator = tokio::spawn(async move {
+        while !invalidator_stop.load(Ordering::Relaxed) {
+            invalidate_prompt_cache_conversations_cache(&cache).await;
+            tokio::task::yield_now().await;
+        }
+    });
+
+    let result = tokio::time::timeout(
+        Duration::from_secs(2),
+        fetch_prompt_cache_conversations(
+            State(state.clone()),
+            Query(PromptCacheConversationsQuery {
+                limit: Some(20),
+                activity_hours: None,
+            }),
+        ),
+    )
+    .await;
+
+    stop.store(true, Ordering::Relaxed);
+    invalidator
+        .await
+        .expect("invalidator task should exit cleanly");
+
+    let Json(response) = result
+        .expect("prompt cache fetch should not hang under sustained invalidations")
+        .expect("prompt cache fetch should succeed");
+    assert!(
+        !response.conversations.is_empty(),
+        "sustained invalidations should still return a usable snapshot",
+    );
+}
+
+#[tokio::test]
 async fn prompt_cache_conversations_concurrent_requests_same_limit_do_not_stall() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -25568,7 +27063,10 @@ async fn prompt_cache_conversation_flight_guard_cleans_in_flight_on_drop() {
         let mut state = cache.lock().await;
         state.in_flight.insert(
             PromptCacheConversationSelection::Count(20),
-            PromptCacheConversationInFlight { signal },
+            PromptCacheConversationInFlight {
+                signal,
+                generation: 0,
+            },
         );
     }
 
@@ -25576,6 +27074,7 @@ async fn prompt_cache_conversation_flight_guard_cleans_in_flight_on_drop() {
         let _guard = PromptCacheConversationFlightGuard::new(
             cache.clone(),
             PromptCacheConversationSelection::Count(20),
+            0,
         );
     }
 
@@ -27205,6 +28704,29 @@ async fn insert_timeseries_invocation(
     status: &str,
     t_upstream_ttfb_ms: Option<f64>,
 ) {
+    insert_timeseries_invocation_with_stages(
+        pool,
+        invoke_id,
+        occurred_at,
+        status,
+        None,
+        None,
+        None,
+        t_upstream_ttfb_ms,
+    )
+    .await;
+}
+
+async fn insert_timeseries_invocation_with_stages(
+    pool: &SqlitePool,
+    invoke_id: &str,
+    occurred_at: &str,
+    status: &str,
+    t_req_read_ms: Option<f64>,
+    t_req_parse_ms: Option<f64>,
+    t_upstream_connect_ms: Option<f64>,
+    t_upstream_ttfb_ms: Option<f64>,
+) {
     sqlx::query(
         r#"
         INSERT INTO codex_invocations (
@@ -27214,10 +28736,13 @@ async fn insert_timeseries_invocation(
             status,
             total_tokens,
             cost,
+            t_req_read_ms,
+            t_req_parse_ms,
+            t_upstream_connect_ms,
             t_upstream_ttfb_ms,
             raw_response
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
         "#,
     )
     .bind(invoke_id)
@@ -27226,6 +28751,9 @@ async fn insert_timeseries_invocation(
     .bind(status)
     .bind(10_i64)
     .bind(0.01_f64)
+    .bind(t_req_read_ms)
+    .bind(t_req_parse_ms)
+    .bind(t_upstream_connect_ms)
     .bind(t_upstream_ttfb_ms)
     .bind("{}")
     .execute(pool)
@@ -27242,6 +28770,52 @@ async fn insert_invocation_rollup(
     failure_count: i64,
     total_tokens: i64,
     total_cost: f64,
+) {
+    insert_invocation_rollup_with_latency_samples(
+        pool,
+        stats_date,
+        source,
+        total_count,
+        success_count,
+        failure_count,
+        total_tokens,
+        total_cost,
+        &[],
+        &[],
+    )
+    .await;
+}
+
+fn encode_histogram_from_samples(samples: &[f64]) -> String {
+    let mut histogram = empty_approx_histogram();
+    for sample in samples {
+        add_approx_histogram_sample(&mut histogram, *sample);
+    }
+    encode_approx_histogram(&histogram).expect("encode approximate histogram from samples")
+}
+
+fn sum_f64_samples(samples: &[f64]) -> f64 {
+    samples.iter().copied().sum::<f64>()
+}
+
+fn max_f64_sample(samples: &[f64]) -> f64 {
+    samples
+        .iter()
+        .copied()
+        .fold(0.0_f64, |current, value| current.max(value))
+}
+
+async fn insert_invocation_rollup_with_latency_samples(
+    pool: &SqlitePool,
+    stats_date: NaiveDate,
+    source: &str,
+    total_count: i64,
+    success_count: i64,
+    failure_count: i64,
+    total_tokens: i64,
+    total_cost: f64,
+    first_byte_samples: &[f64],
+    first_response_byte_total_samples: &[f64],
 ) {
     sqlx::query(
         r#"
@@ -27290,9 +28864,13 @@ async fn insert_invocation_rollup(
             first_byte_sum_ms,
             first_byte_max_ms,
             first_byte_histogram,
+            first_response_byte_total_sample_count,
+            first_response_byte_total_sum_ms,
+            first_response_byte_total_max_ms,
+            first_response_byte_total_histogram,
             updated_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0.0, 0.0, ?8, datetime('now'))
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, datetime('now'))
         "#,
     )
     .bind(bucket_start_epoch)
@@ -27302,10 +28880,16 @@ async fn insert_invocation_rollup(
     .bind(failure_count)
     .bind(total_tokens)
     .bind(total_cost)
-    .bind(
-        encode_approx_histogram(&empty_approx_histogram())
-            .expect("encode empty approximate histogram"),
-    )
+    .bind(first_byte_samples.len() as i64)
+    .bind(sum_f64_samples(first_byte_samples))
+    .bind(max_f64_sample(first_byte_samples))
+    .bind(encode_histogram_from_samples(first_byte_samples))
+    .bind(first_response_byte_total_samples.len() as i64)
+    .bind(sum_f64_samples(first_response_byte_total_samples))
+    .bind(max_f64_sample(first_response_byte_total_samples))
+    .bind(encode_histogram_from_samples(
+        first_response_byte_total_samples,
+    ))
     .execute(pool)
     .await
     .expect("insert invocation hourly rollup");
@@ -27321,6 +28905,33 @@ async fn insert_invocation_hourly_rollup_bucket(
     total_tokens: i64,
     total_cost: f64,
 ) {
+    insert_invocation_hourly_rollup_bucket_with_latency_samples(
+        pool,
+        bucket_start,
+        source,
+        total_count,
+        success_count,
+        failure_count,
+        total_tokens,
+        total_cost,
+        &[],
+        &[],
+    )
+    .await;
+}
+
+async fn insert_invocation_hourly_rollup_bucket_with_latency_samples(
+    pool: &SqlitePool,
+    bucket_start: DateTime<Utc>,
+    source: &str,
+    total_count: i64,
+    success_count: i64,
+    failure_count: i64,
+    total_tokens: i64,
+    total_cost: f64,
+    first_byte_samples: &[f64],
+    first_response_byte_total_samples: &[f64],
+) {
     sqlx::query(
         r#"
         INSERT INTO invocation_rollup_hourly (
@@ -27335,9 +28946,13 @@ async fn insert_invocation_hourly_rollup_bucket(
             first_byte_sum_ms,
             first_byte_max_ms,
             first_byte_histogram,
+            first_response_byte_total_sample_count,
+            first_response_byte_total_sum_ms,
+            first_response_byte_total_max_ms,
+            first_response_byte_total_histogram,
             updated_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 0, 0.0, 0.0, ?8, datetime('now'))
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, datetime('now'))
         "#,
     )
     .bind(bucket_start.timestamp())
@@ -27347,10 +28962,16 @@ async fn insert_invocation_hourly_rollup_bucket(
     .bind(failure_count)
     .bind(total_tokens)
     .bind(total_cost)
-    .bind(
-        encode_approx_histogram(&empty_approx_histogram())
-            .expect("encode empty approximate histogram"),
-    )
+    .bind(first_byte_samples.len() as i64)
+    .bind(sum_f64_samples(first_byte_samples))
+    .bind(max_f64_sample(first_byte_samples))
+    .bind(encode_histogram_from_samples(first_byte_samples))
+    .bind(first_response_byte_total_samples.len() as i64)
+    .bind(sum_f64_samples(first_response_byte_total_samples))
+    .bind(max_f64_sample(first_response_byte_total_samples))
+    .bind(encode_histogram_from_samples(
+        first_response_byte_total_samples,
+    ))
     .execute(pool)
     .await
     .expect("insert invocation hourly rollup bucket");
@@ -27706,6 +29327,273 @@ async fn timeseries_daily_bucket_includes_first_byte_stats() {
     );
 }
 
+#[tokio::test]
+async fn timeseries_includes_first_response_byte_total_avg_and_p95_for_complete_stage_samples() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(
+        (Utc::now() - ChronoDuration::minutes(5))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    insert_timeseries_invocation_with_stages(
+        &state.pool,
+        "first-response-byte-total-1",
+        &occurred_at,
+        "success",
+        Some(100.0),
+        Some(200.0),
+        Some(300.0),
+        Some(400.0),
+    )
+    .await;
+    insert_timeseries_invocation_with_stages(
+        &state.pool,
+        "first-response-byte-total-2",
+        &occurred_at,
+        "success",
+        Some(200.0),
+        Some(300.0),
+        Some(400.0),
+        Some(1_100.0),
+    )
+    .await;
+    insert_timeseries_invocation_with_stages(
+        &state.pool,
+        "first-response-byte-total-3",
+        &occurred_at,
+        "success",
+        Some(500.0),
+        Some(500.0),
+        Some(1_000.0),
+        Some(2_000.0),
+    )
+    .await;
+
+    let Json(response) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "1h".to_string(),
+            bucket: Some("15m".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch timeseries");
+    let bucket = response
+        .points
+        .iter()
+        .find(|point| point.total_count >= 3)
+        .expect("should include populated bucket");
+
+    assert_eq!(bucket.first_response_byte_total_sample_count, 3);
+    assert_f64_close(
+        bucket
+            .first_response_byte_total_avg_ms
+            .expect("first response byte total avg should be present"),
+        (1_000.0 + 2_000.0 + 4_000.0) / 3.0,
+    );
+    assert_f64_close(
+        bucket
+            .first_response_byte_total_p95_ms
+            .expect("first response byte total p95 should be present"),
+        3_800.0,
+    );
+}
+
+#[tokio::test]
+async fn timeseries_ignores_incomplete_first_response_byte_total_samples() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(
+        (Utc::now() - ChronoDuration::minutes(10))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    insert_timeseries_invocation_with_stages(
+        &state.pool,
+        "first-response-byte-total-valid",
+        &occurred_at,
+        "success",
+        Some(250.0),
+        Some(250.0),
+        Some(250.0),
+        Some(250.0),
+    )
+    .await;
+    insert_timeseries_invocation_with_stages(
+        &state.pool,
+        "first-response-byte-total-missing-read",
+        &occurred_at,
+        "success",
+        None,
+        Some(250.0),
+        Some(250.0),
+        Some(250.0),
+    )
+    .await;
+    insert_timeseries_invocation_with_stages(
+        &state.pool,
+        "first-response-byte-total-missing-connect",
+        &occurred_at,
+        "success",
+        Some(250.0),
+        Some(250.0),
+        None,
+        Some(250.0),
+    )
+    .await;
+    insert_timeseries_invocation_with_stages(
+        &state.pool,
+        "first-response-byte-total-negative-parse",
+        &occurred_at,
+        "success",
+        Some(250.0),
+        Some(-1.0),
+        Some(250.0),
+        Some(250.0),
+    )
+    .await;
+
+    let Json(response) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "1h".to_string(),
+            bucket: Some("15m".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch timeseries");
+    let bucket = response
+        .points
+        .iter()
+        .find(|point| point.total_count >= 4)
+        .expect("should include populated bucket");
+
+    assert_eq!(bucket.first_response_byte_total_sample_count, 1);
+    assert_f64_close(
+        bucket
+            .first_response_byte_total_avg_ms
+            .expect("first response byte total avg should be present"),
+        1_000.0,
+    );
+    assert_f64_close(
+        bucket
+            .first_response_byte_total_p95_ms
+            .expect("first response byte total p95 should be present"),
+        1_000.0,
+    );
+}
+
+#[tokio::test]
+async fn timeseries_includes_failed_first_response_byte_total_samples() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(
+        (Utc::now() - ChronoDuration::minutes(8))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    insert_timeseries_invocation_with_stages(
+        &state.pool,
+        "first-response-byte-total-failed",
+        &occurred_at,
+        "failed",
+        Some(190.0),
+        Some(200.0),
+        Some(43_400.0),
+        Some(100.0),
+    )
+    .await;
+
+    let Json(response) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "1h".to_string(),
+            bucket: Some("15m".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch timeseries");
+    let bucket = response
+        .points
+        .iter()
+        .find(|point| point.total_count >= 1)
+        .expect("should include populated bucket");
+
+    assert_eq!(bucket.failure_count, 1);
+    assert_eq!(bucket.first_response_byte_total_sample_count, 1);
+    assert_f64_close(
+        bucket
+            .first_response_byte_total_avg_ms
+            .expect("first response byte total avg should be present"),
+        43_890.0,
+    );
+    assert_f64_close(
+        bucket
+            .first_response_byte_total_p95_ms
+            .expect("first response byte total p95 should be present"),
+        43_890.0,
+    );
+}
+
+#[tokio::test]
+async fn timeseries_excludes_zero_ttfb_sentinel_from_first_response_byte_total_samples() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let occurred_at = format_naive(
+        (Utc::now() - ChronoDuration::minutes(7))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    insert_timeseries_invocation_with_stages(
+        &state.pool,
+        "first-response-byte-total-zero-ttfb",
+        &occurred_at,
+        "failed",
+        Some(190.0),
+        Some(200.0),
+        Some(43_400.0),
+        Some(0.0),
+    )
+    .await;
+
+    let Json(response) = fetch_timeseries(
+        State(state),
+        Query(TimeseriesQuery {
+            range: "1h".to_string(),
+            bucket: Some("15m".to_string()),
+            settlement_hour: None,
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch timeseries");
+    let bucket = response
+        .points
+        .iter()
+        .find(|point| point.total_count >= 1)
+        .expect("should include populated bucket");
+
+    assert_eq!(bucket.failure_count, 1);
+    assert_eq!(bucket.first_response_byte_total_sample_count, 0);
+    assert!(bucket.first_response_byte_total_avg_ms.is_none());
+    assert!(bucket.first_response_byte_total_p95_ms.is_none());
+}
+
 #[test]
 fn bucket_aggregate_uses_histogram_for_mixed_rollup_and_exact_p95() {
     let mut bucket = BucketAggregate {
@@ -27773,16 +29661,31 @@ async fn timeseries_daily_stays_continuous_after_rollup_archive() {
     )
     .await;
     let archived_date = Utc::now().with_timezone(&Shanghai).date_naive() - ChronoDuration::days(12);
-    let live_date = Utc::now().with_timezone(&Shanghai).date_naive() - ChronoDuration::days(2);
-    let live_occurred_at = format_naive(live_date.and_hms_opt(15, 30, 0).expect("valid live time"));
+    let live_date = Utc::now().with_timezone(&Shanghai).date_naive();
+    let live_occurred_at = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
 
-    insert_invocation_rollup(&state.pool, archived_date, SOURCE_PROXY, 3, 2, 1, 300, 3.0).await;
-    insert_timeseries_invocation(
+    insert_invocation_rollup_with_latency_samples(
+        &state.pool,
+        archived_date,
+        SOURCE_PROXY,
+        3,
+        2,
+        1,
+        300,
+        3.0,
+        &[],
+        &[30_000.0],
+    )
+    .await;
+    insert_timeseries_invocation_with_stages(
         &state.pool,
         "timeseries-live-after-rollup",
         &live_occurred_at,
         "success",
-        Some(120.0),
+        Some(5_000.0),
+        Some(10_000.0),
+        Some(14_500.0),
+        Some(500.0),
     )
     .await;
 
@@ -27812,6 +29715,32 @@ async fn timeseries_daily_stays_continuous_after_rollup_archive() {
     assert_eq!(archived_bucket.total_count, 3);
     assert_eq!(live_bucket.total_count, 1);
     assert_eq!(live_bucket.first_byte_sample_count, 1);
+    assert_eq!(archived_bucket.first_response_byte_total_sample_count, 1);
+    assert_f64_close(
+        archived_bucket
+            .first_response_byte_total_avg_ms
+            .expect("archived first response byte total avg should be present"),
+        30_000.0,
+    );
+    assert_f64_close(
+        archived_bucket
+            .first_response_byte_total_p95_ms
+            .expect("archived first response byte total p95 should be present"),
+        30_000.0,
+    );
+    assert_eq!(live_bucket.first_response_byte_total_sample_count, 1);
+    assert_f64_close(
+        live_bucket
+            .first_response_byte_total_avg_ms
+            .expect("live first response byte total avg should be present"),
+        30_000.0,
+    );
+    assert_f64_close(
+        live_bucket
+            .first_response_byte_total_p95_ms
+            .expect("live first response byte total p95 should be present"),
+        30_000.0,
+    );
 
     let summed_count: i64 = response.points.iter().map(|point| point.total_count).sum();
     let summed_tokens: i64 = response.points.iter().map(|point| point.total_tokens).sum();
@@ -28923,6 +30852,63 @@ async fn invocation_hourly_rollup_ignores_null_status_for_success_failure_counts
     assert_f64_close(row.total_cost, 0.07);
 }
 
+#[test]
+fn invocation_archive_pruned_success_details_require_empty_legacy_http_200_error_message() {
+    let failed_legacy_http_200 = InvocationHourlySourceRecord {
+        id: 1,
+        occurred_at: "2026-03-28 00:00:00".to_string(),
+        source: SOURCE_PROXY.to_string(),
+        status: Some("http_200".to_string()),
+        detail_level: DETAIL_LEVEL_STRUCTURED_ONLY.to_string(),
+        total_tokens: None,
+        cost: None,
+        error_message: Some("upstream parse failed".to_string()),
+        failure_kind: None,
+        failure_class: None,
+        is_actionable: None,
+        payload: None,
+        t_total_ms: None,
+        t_req_read_ms: None,
+        t_req_parse_ms: None,
+        t_upstream_connect_ms: None,
+        t_upstream_ttfb_ms: None,
+        t_upstream_stream_ms: None,
+        t_resp_parse_ms: None,
+        t_persist_ms: None,
+    };
+    assert!(
+        !invocation_archive_has_pruned_success_details(&[failed_legacy_http_200]),
+        "legacy http_200 rows with a non-empty error message must not suppress archive rollups",
+    );
+
+    let success_like_legacy_http_200 = InvocationHourlySourceRecord {
+        id: 2,
+        occurred_at: "2026-03-28 00:00:00".to_string(),
+        source: SOURCE_PROXY.to_string(),
+        status: Some("http_200".to_string()),
+        detail_level: DETAIL_LEVEL_STRUCTURED_ONLY.to_string(),
+        total_tokens: None,
+        cost: None,
+        error_message: Some("   ".to_string()),
+        failure_kind: None,
+        failure_class: None,
+        is_actionable: None,
+        payload: None,
+        t_total_ms: None,
+        t_req_read_ms: None,
+        t_req_parse_ms: None,
+        t_upstream_connect_ms: None,
+        t_upstream_ttfb_ms: None,
+        t_upstream_stream_ms: None,
+        t_resp_parse_ms: None,
+        t_persist_ms: None,
+    };
+    assert!(
+        invocation_archive_has_pruned_success_details(&[success_like_legacy_http_200]),
+        "legacy http_200 rows with an empty error message should still count as pruned success-like rows",
+    );
+}
+
 #[tokio::test]
 async fn hourly_timeseries_omits_pre_cutoff_partial_hour_rollups() {
     let mut config = test_config();
@@ -29791,6 +31777,142 @@ async fn retention_prunes_old_success_invocation_details_and_sweeps_orphans() {
             .is_none()
     );
     archive_pool.close().await;
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_prunes_old_legacy_http_200_success_like_invocation_details() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("retention-prune-legacy-http200").await;
+    let response_raw = config.proxy_raw_dir.join("legacy-http200-response.bin");
+    fs::write(&response_raw, b"legacy-http200-response").expect("write legacy http_200 raw");
+    let occurred_at = shanghai_local_days_ago(31, 13, 0, 0);
+
+    insert_retention_invocation(
+        &pool,
+        "old-legacy-http200-success-like",
+        &occurred_at,
+        SOURCE_PROXY,
+        "http_200",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":true}",
+        None,
+        Some(&response_raw),
+        Some(456),
+        Some(1.78),
+    )
+    .await;
+
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run retention prune for legacy http_200 success-like row");
+    assert_eq!(summary.invocation_details_pruned, 1);
+    assert_eq!(summary.archive_batches_touched, 1);
+    assert_eq!(summary.raw_files_removed, 1);
+    assert!(!response_raw.exists());
+
+    let row = sqlx::query(
+        r#"
+        SELECT
+            detail_level,
+            detail_prune_reason,
+            request_raw_path,
+            response_raw_path,
+            status,
+            error_message
+        FROM codex_invocations
+        WHERE invoke_id = ?1
+        "#,
+    )
+    .bind("old-legacy-http200-success-like")
+    .fetch_one(&pool)
+    .await
+    .expect("load pruned legacy http_200 invocation");
+    assert_eq!(
+        row.get::<String, _>("detail_level"),
+        DETAIL_LEVEL_STRUCTURED_ONLY
+    );
+    assert_eq!(
+        row.get::<Option<String>, _>("detail_prune_reason")
+            .as_deref(),
+        Some(DETAIL_PRUNE_REASON_SUCCESS_OVER_30D)
+    );
+    assert!(row.get::<Option<String>, _>("request_raw_path").is_none());
+    assert!(row.get::<Option<String>, _>("response_raw_path").is_none());
+    assert_eq!(
+        row.get::<Option<String>, _>("status").as_deref(),
+        Some("http_200")
+    );
+    assert!(row.get::<Option<String>, _>("error_message").is_none());
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_does_not_prune_legacy_http_200_rows_with_error_message() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("retention-prune-legacy-http200-error").await;
+    config.proxy_raw_compression = RawCompressionCodec::None;
+    let response_raw = config
+        .proxy_raw_dir
+        .join("legacy-http200-error-response.bin");
+    fs::write(&response_raw, b"legacy-http200-error-response")
+        .expect("write legacy http_200 error raw");
+    let occurred_at = shanghai_local_days_ago(31, 14, 0, 0);
+
+    insert_retention_invocation(
+        &pool,
+        "old-legacy-http200-error",
+        &occurred_at,
+        SOURCE_PROXY,
+        "http_200",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":false}",
+        None,
+        Some(&response_raw),
+        Some(654),
+        Some(2.34),
+    )
+    .await;
+    sqlx::query("UPDATE codex_invocations SET error_message = ?1 WHERE invoke_id = ?2")
+        .bind("[upstream_response_failed] server_error")
+        .bind("old-legacy-http200-error")
+        .execute(&pool)
+        .await
+        .expect("attach error message to legacy http_200 row");
+
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run retention for legacy http_200 error row");
+    assert_eq!(summary.invocation_details_pruned, 0);
+    assert_eq!(summary.raw_files_removed, 0);
+    assert!(response_raw.exists());
+
+    let row = sqlx::query(
+        r#"
+        SELECT detail_level, response_raw_path, status, error_message
+        FROM codex_invocations
+        WHERE invoke_id = ?1
+        "#,
+    )
+    .bind("old-legacy-http200-error")
+    .fetch_one(&pool)
+    .await
+    .expect("load unpruned legacy http_200 error row");
+    assert_eq!(row.get::<String, _>("detail_level"), DETAIL_LEVEL_FULL);
+    assert_eq!(
+        row.get::<Option<String>, _>("response_raw_path").as_deref(),
+        Some(response_raw.to_string_lossy().as_ref())
+    );
+    assert_eq!(
+        row.get::<Option<String>, _>("status").as_deref(),
+        Some("http_200")
+    );
+    assert_eq!(
+        row.get::<Option<String>, _>("error_message").as_deref(),
+        Some("[upstream_response_failed] server_error")
+    );
 
     cleanup_temp_test_dir(&temp_dir);
 }
@@ -31081,6 +33203,271 @@ async fn archive_manifest_refresh_leaves_missing_batches_pending_for_retry() {
     .expect("load missing manifest account row");
     assert!(row.0.is_none());
     assert_eq!(row.1, 0);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn retention_archives_duplicate_upstream_activity_across_chunks() {
+    let (pool, mut config, temp_dir) =
+        retention_test_pool_and_config("retention-archive-manifest-dedupe").await;
+    config.retention_batch_rows = BACKFILL_ACCOUNT_BIND_BATCH_SIZE + 5;
+
+    let account_id = 995_i64;
+    let created_at = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind(account_id)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Duplicate archive account")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&pool)
+    .await
+    .expect("insert duplicate archive account");
+
+    let base_occurred_at = parse_shanghai_local_naive(&shanghai_local_days_ago(120, 9, 0, 0))
+        .expect("valid shanghai local");
+    let row_count = BACKFILL_ACCOUNT_BIND_BATCH_SIZE + 5;
+    let mut newest_occurred_at = String::new();
+    for idx in 0..row_count {
+        let occurred_at = format_naive(base_occurred_at + ChronoDuration::seconds(idx as i64));
+        newest_occurred_at = occurred_at.clone();
+        let response_raw = config
+            .proxy_raw_dir
+            .join(format!("duplicate-account-{idx}.bin.gz"));
+        write_gzip_test_file(
+            &response_raw,
+            format!("{{\"index\":{idx},\"accountId\":{account_id}}}").as_bytes(),
+        );
+        insert_retention_invocation(
+            &pool,
+            &format!("duplicate-account-{idx}"),
+            &occurred_at,
+            SOURCE_PROXY,
+            "success",
+            Some(
+                &json!({ "endpoint": "/v1/responses", "upstreamAccountId": account_id })
+                    .to_string(),
+            ),
+            "{\"ok\":true}",
+            None,
+            Some(&response_raw),
+            Some(42),
+            Some(0.42),
+        )
+        .await;
+    }
+
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run retention archive for duplicate account rows");
+    assert_eq!(summary.invocation_rows_archived, row_count);
+    assert!(summary.raw_files_removed >= row_count);
+
+    let manifest_rows = sqlx::query_as::<_, (i64, String)>(
+        r#"
+        SELECT account_id, last_activity_at
+        FROM archive_batch_upstream_activity
+        "#,
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("load deduped archive manifest rows");
+    assert_eq!(
+        manifest_rows,
+        vec![(account_id, newest_occurred_at.clone())]
+    );
+
+    let last_activity_at: Option<String> =
+        sqlx::query_scalar("SELECT last_activity_at FROM pool_upstream_accounts WHERE id = ?1")
+            .bind(account_id)
+            .fetch_one(&pool)
+            .await
+            .expect("load updated account activity");
+    assert_eq!(
+        last_activity_at.as_deref(),
+        Some(newest_occurred_at.as_str())
+    );
+
+    let live_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations")
+        .fetch_one(&pool)
+        .await
+        .expect("count remaining live invocations");
+    assert_eq!(live_count, 0);
+    assert_eq!(
+        fs::read_dir(&config.proxy_raw_dir)
+            .expect("read raw dir after archive cleanup")
+            .count(),
+        0
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn archive_manifest_refresh_dedupes_duplicate_account_rows_from_archive_file() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("archive-manifest-refresh-dedupe").await;
+    let primary_account_id = 996_i64;
+    let secondary_account_id = 997_i64;
+    let created_at = format_utc_iso(Utc::now());
+    for (account_id, display_name) in [
+        (primary_account_id, "Manifest duplicate primary"),
+        (secondary_account_id, "Manifest duplicate secondary"),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO pool_upstream_accounts (
+                id, kind, provider, display_name, status, enabled, created_at, updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(account_id)
+        .bind("api_key_codex")
+        .bind("codex")
+        .bind(display_name)
+        .bind("active")
+        .bind(1_i64)
+        .bind(&created_at)
+        .bind(&created_at)
+        .execute(&pool)
+        .await
+        .expect("insert manifest refresh account");
+    }
+
+    let base_occurred_at = parse_shanghai_local_naive(&shanghai_local_days_ago(120, 8, 0, 0))
+        .expect("valid shanghai local");
+    let month_key = format_naive(base_occurred_at)[..7].to_string();
+    let archive_path = archive_batch_file_path(&config, "codex_invocations", &month_key)
+        .expect("resolve archive manifest refresh path");
+    fs::create_dir_all(archive_path.parent().expect("archive parent"))
+        .expect("create archive manifest refresh parent");
+
+    let archive_db_path = temp_dir.join("archive-manifest-refresh-dedupe.sqlite");
+    fs::File::create(&archive_db_path).expect("create archive sqlite file");
+    let archive_pool = SqlitePool::connect(&sqlite_url_for_path(&archive_db_path))
+        .await
+        .expect("open archive sqlite");
+    let create_sql = CODEX_INVOCATIONS_ARCHIVE_CREATE_SQL.replace("archive_db.", "");
+    sqlx::query(&create_sql)
+        .execute(&archive_pool)
+        .await
+        .expect("create archive schema");
+
+    let repeated_rows = BACKFILL_ACCOUNT_BIND_BATCH_SIZE + 5;
+    let mut primary_latest = String::new();
+    let mut secondary_latest = String::new();
+    for idx in 0..repeated_rows {
+        let occurred_at = format_naive(base_occurred_at + ChronoDuration::seconds(idx as i64));
+        primary_latest = occurred_at.clone();
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, raw_response, created_at, payload
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+        )
+        .bind(idx as i64 + 1)
+        .bind(format!("manifest-refresh-primary-{idx}"))
+        .bind(&occurred_at)
+        .bind("{}")
+        .bind(&occurred_at)
+        .bind(json!({ "upstreamAccountId": primary_account_id }).to_string())
+        .execute(&archive_pool)
+        .await
+        .expect("insert repeated primary manifest row");
+    }
+    for idx in 0..2 {
+        let occurred_at = format_naive(
+            base_occurred_at + ChronoDuration::seconds(repeated_rows as i64 + idx as i64 + 1),
+        );
+        secondary_latest = occurred_at.clone();
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                id, invoke_id, occurred_at, raw_response, created_at, payload
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+        )
+        .bind(repeated_rows as i64 + idx as i64 + 1)
+        .bind(format!("manifest-refresh-secondary-{idx}"))
+        .bind(&occurred_at)
+        .bind("{}")
+        .bind(&occurred_at)
+        .bind(json!({ "upstreamAccountId": secondary_account_id }).to_string())
+        .execute(&archive_pool)
+        .await
+        .expect("insert repeated secondary manifest row");
+    }
+    archive_pool.close().await;
+    deflate_sqlite_file_to_gzip(&archive_db_path, &archive_path)
+        .expect("compress manifest refresh archive");
+
+    sqlx::query(
+        r#"
+        INSERT INTO archive_batches (
+            dataset,
+            month_key,
+            file_path,
+            sha256,
+            row_count,
+            status,
+            coverage_start_at,
+            coverage_end_at,
+            created_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, datetime('now'))
+        "#,
+    )
+    .bind("codex_invocations")
+    .bind(&month_key)
+    .bind(archive_path.to_string_lossy().to_string())
+    .bind(sha256_hex_file(&archive_path).expect("archive sha"))
+    .bind((repeated_rows + 2) as i64)
+    .bind(ARCHIVE_STATUS_COMPLETED)
+    .bind(format_naive(base_occurred_at))
+    .bind(secondary_latest.clone())
+    .execute(&pool)
+    .await
+    .expect("insert manifest refresh batch");
+
+    let refresh = refresh_archive_upstream_activity_manifest(&pool, false)
+        .await
+        .expect("refresh manifest rows for duplicate accounts");
+    assert_eq!(refresh.pending_batches, 1);
+    assert_eq!(refresh.refreshed_batches, 1);
+    assert_eq!(refresh.account_rows_written, 2);
+
+    let manifest_rows = sqlx::query_as::<_, (i64, String)>(
+        r#"
+        SELECT account_id, last_activity_at
+        FROM archive_batch_upstream_activity
+        ORDER BY account_id ASC
+        "#,
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("load refreshed manifest rows");
+    assert_eq!(
+        manifest_rows,
+        vec![
+            (primary_account_id, primary_latest),
+            (secondary_account_id, secondary_latest),
+        ]
+    );
 
     cleanup_temp_test_dir(&temp_dir);
 }
@@ -33133,6 +35520,309 @@ async fn bootstrap_hourly_rollups_ignores_missing_replay_markers() {
 }
 
 #[tokio::test]
+async fn ensure_schema_backfills_first_response_byte_totals_for_legacy_invocation_rollups() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("legacy-rollup-first-response-byte-total-backfill").await;
+    let old_invocation = shanghai_local_days_ago((config.invocation_max_days + 2) as i64, 9, 0, 0);
+    insert_retention_invocation(
+        &pool,
+        "legacy-rollup-first-response-byte-total-backfill",
+        &old_invocation,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(42),
+        Some(0.42),
+    )
+    .await;
+    sqlx::query(
+        r#"
+        UPDATE codex_invocations
+        SET t_req_read_ms = ?1,
+            t_req_parse_ms = ?2,
+            t_upstream_connect_ms = ?3,
+            t_upstream_ttfb_ms = ?4
+        WHERE invoke_id = ?5
+        "#,
+    )
+    .bind(120.0_f64)
+    .bind(80.0_f64)
+    .bind(43_000.0_f64)
+    .bind(690.0_f64)
+    .bind("legacy-rollup-first-response-byte-total-backfill")
+    .execute(&pool)
+    .await
+    .expect("seed staged latency fields");
+
+    sync_hourly_rollups_from_live_tables(&pool)
+        .await
+        .expect("seed live hourly rollups before retention");
+    let summary = run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("archive old invocation before schema migration");
+    assert_eq!(summary.invocation_rows_archived, 1);
+
+    sqlx::query("ALTER TABLE invocation_rollup_hourly RENAME TO invocation_rollup_hourly_current")
+        .execute(&pool)
+        .await
+        .expect("rename current invocation rollup table");
+    sqlx::query(
+        r#"
+        CREATE TABLE invocation_rollup_hourly (
+            bucket_start_epoch INTEGER NOT NULL,
+            source TEXT NOT NULL,
+            total_count INTEGER NOT NULL,
+            success_count INTEGER NOT NULL,
+            failure_count INTEGER NOT NULL,
+            total_tokens INTEGER NOT NULL,
+            total_cost REAL NOT NULL,
+            first_byte_sample_count INTEGER NOT NULL DEFAULT 0,
+            first_byte_sum_ms REAL NOT NULL DEFAULT 0,
+            first_byte_max_ms REAL NOT NULL DEFAULT 0,
+            first_byte_histogram TEXT NOT NULL DEFAULT '[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]',
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (bucket_start_epoch, source)
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy invocation rollup table");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram,
+            updated_at
+        )
+        SELECT
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram,
+            updated_at
+        FROM invocation_rollup_hourly_current
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("copy legacy invocation rollup rows");
+    sqlx::query("DROP TABLE invocation_rollup_hourly_current")
+        .execute(&pool)
+        .await
+        .expect("drop current invocation rollup table copy");
+
+    ensure_schema(&pool)
+        .await
+        .expect("ensure schema should backfill first-response-byte totals");
+
+    let row = sqlx::query_as::<_, (i64, f64, f64, String)>(
+        r#"
+        SELECT
+            first_response_byte_total_sample_count,
+            first_response_byte_total_sum_ms,
+            first_response_byte_total_max_ms,
+            first_response_byte_total_histogram
+        FROM invocation_rollup_hourly
+        WHERE source = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load backfilled invocation rollup row");
+
+    assert_eq!(
+        row.0, 1,
+        "legacy rollup row should gain one first-response sample"
+    );
+    assert_eq!(row.1, 43_890.0);
+    assert_eq!(row.2, 43_890.0);
+    assert_ne!(
+        row.3, "[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]",
+        "backfill should write a non-empty histogram"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn ensure_schema_backfill_deduplicates_detail_prune_archives() {
+    let (pool, config, temp_dir) =
+        retention_test_pool_and_config("legacy-rollup-detail-prune-dedup").await;
+    let prune_invocation =
+        shanghai_local_days_ago((config.invocation_success_full_days + 2) as i64, 9, 0, 0);
+    insert_retention_invocation(
+        &pool,
+        "legacy-rollup-detail-prune-dedup",
+        &prune_invocation,
+        SOURCE_PROXY,
+        "success",
+        Some("{\"endpoint\":\"/v1/responses\"}"),
+        "{\"ok\":true}",
+        None,
+        None,
+        Some(42),
+        Some(0.42),
+    )
+    .await;
+    sqlx::query(
+        r#"
+        UPDATE codex_invocations
+        SET t_req_read_ms = ?1,
+            t_req_parse_ms = ?2,
+            t_upstream_connect_ms = ?3,
+            t_upstream_ttfb_ms = ?4
+        WHERE invoke_id = ?5
+        "#,
+    )
+    .bind(120.0_f64)
+    .bind(80.0_f64)
+    .bind(43_000.0_f64)
+    .bind(690.0_f64)
+    .bind("legacy-rollup-detail-prune-dedup")
+    .execute(&pool)
+    .await
+    .expect("seed staged latency fields");
+
+    sync_hourly_rollups_from_live_tables(&pool)
+        .await
+        .expect("seed live hourly rollups before detail prune");
+    run_data_retention_maintenance(&pool, &config, Some(false), None)
+        .await
+        .expect("run retention to produce detail-prune archive");
+
+    let live_row_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations WHERE invoke_id = ?1")
+            .bind("legacy-rollup-detail-prune-dedup")
+            .fetch_one(&pool)
+            .await
+            .expect("load detail-pruned live invocation count");
+    assert_eq!(
+        live_row_count, 1,
+        "detail-pruned invocation should remain live"
+    );
+
+    sqlx::query("ALTER TABLE invocation_rollup_hourly RENAME TO invocation_rollup_hourly_current")
+        .execute(&pool)
+        .await
+        .expect("rename current invocation rollup table");
+    sqlx::query(
+        r#"
+        CREATE TABLE invocation_rollup_hourly (
+            bucket_start_epoch INTEGER NOT NULL,
+            source TEXT NOT NULL,
+            total_count INTEGER NOT NULL,
+            success_count INTEGER NOT NULL,
+            failure_count INTEGER NOT NULL,
+            total_tokens INTEGER NOT NULL,
+            total_cost REAL NOT NULL,
+            first_byte_sample_count INTEGER NOT NULL DEFAULT 0,
+            first_byte_sum_ms REAL NOT NULL DEFAULT 0,
+            first_byte_max_ms REAL NOT NULL DEFAULT 0,
+            first_byte_histogram TEXT NOT NULL DEFAULT '[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]',
+            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (bucket_start_epoch, source)
+        )
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("create legacy invocation rollup table");
+    sqlx::query(
+        r#"
+        INSERT INTO invocation_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram,
+            updated_at
+        )
+        SELECT
+            bucket_start_epoch,
+            source,
+            total_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_byte_sample_count,
+            first_byte_sum_ms,
+            first_byte_max_ms,
+            first_byte_histogram,
+            updated_at
+        FROM invocation_rollup_hourly_current
+        "#,
+    )
+    .execute(&pool)
+    .await
+    .expect("copy legacy invocation rollup rows");
+    sqlx::query("DROP TABLE invocation_rollup_hourly_current")
+        .execute(&pool)
+        .await
+        .expect("drop current invocation rollup table copy");
+
+    ensure_schema(&pool)
+        .await
+        .expect("ensure schema should deduplicate detail-prune archive rows");
+
+    let row = sqlx::query_as::<_, (i64, i64, f64)>(
+        r#"
+        SELECT
+            total_count,
+            first_response_byte_total_sample_count,
+            first_response_byte_total_sum_ms
+        FROM invocation_rollup_hourly
+        WHERE source = ?1
+        LIMIT 1
+        "#,
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_one(&pool)
+    .await
+    .expect("load deduplicated invocation rollup row");
+
+    assert_eq!(
+        row.0, 1,
+        "detail-prune archive and live row should not double-count"
+    );
+    assert_eq!(
+        row.1, 1,
+        "detail-prune archive should still contribute latency sample"
+    );
+    assert_eq!(row.2, 43_890.0);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
 async fn bootstrap_hourly_rollups_ignores_missing_invocation_archive_batch() {
     let (pool, _config, temp_dir) =
         retention_test_pool_and_config("hourly-rollup-missing-invocation-archive").await;
@@ -34812,6 +37502,7 @@ async fn bootstrap_probe_round_skips_work_when_shutdown_is_in_progress() {
     let (proxy_url, proxy_handle) = spawn_test_forward_proxy_status(StatusCode::OK).await;
     let normalized_proxy =
         normalize_single_proxy_url(&proxy_url).expect("normalize forward proxy url");
+    let proxy_key = normalize_single_proxy_key(&proxy_url).expect("normalize forward proxy key");
     let state = test_state_with_openai_base(
         Url::parse("http://probe-target.example/").expect("valid upstream base url"),
     )
@@ -34821,7 +37512,7 @@ async fn bootstrap_probe_round_skips_work_when_shutdown_is_in_progress() {
     spawn_forward_proxy_bootstrap_probe_round(
         state.clone(),
         vec![ForwardProxyEndpoint {
-            key: normalized_proxy.clone(),
+            key: proxy_key.clone(),
             source: FORWARD_PROXY_SOURCE_MANUAL.to_string(),
             display_name: normalized_proxy.clone(),
             protocol: ForwardProxyProtocol::Http,
@@ -34832,8 +37523,7 @@ async fn bootstrap_probe_round_skips_work_when_shutdown_is_in_progress() {
     );
     tokio::time::sleep(Duration::from_millis(200)).await;
 
-    let probe_count =
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await;
+    let probe_count = count_forward_proxy_probe_attempts(&state.pool, &proxy_key, None).await;
     assert_eq!(probe_count, 0);
 
     proxy_handle.abort();
@@ -34851,6 +37541,7 @@ async fn forward_proxy_bootstrap_probe_round_stops_mid_probe_when_shutdown_begin
     .await;
     let normalized_proxy =
         normalize_single_proxy_url(&proxy_url).expect("normalize forward proxy url");
+    let proxy_key = normalize_single_proxy_key(&proxy_url).expect("normalize forward proxy key");
     let state = test_state_with_openai_base(
         Url::parse("http://probe-target.example/").expect("valid upstream base url"),
     )
@@ -34859,7 +37550,7 @@ async fn forward_proxy_bootstrap_probe_round_stops_mid_probe_when_shutdown_begin
     spawn_forward_proxy_bootstrap_probe_round(
         state.clone(),
         vec![ForwardProxyEndpoint {
-            key: normalized_proxy.clone(),
+            key: proxy_key.clone(),
             source: FORWARD_PROXY_SOURCE_MANUAL.to_string(),
             display_name: normalized_proxy.clone(),
             protocol: ForwardProxyProtocol::Http,
@@ -34877,7 +37568,7 @@ async fn forward_proxy_bootstrap_probe_round_stops_mid_probe_when_shutdown_begin
     tokio::time::sleep(Duration::from_millis(200)).await;
 
     assert_eq!(
-        count_forward_proxy_probe_attempts(&state.pool, &normalized_proxy, None).await,
+        count_forward_proxy_probe_attempts(&state.pool, &proxy_key, None).await,
         0,
         "shutdown should stop an in-flight bootstrap probe without recording a probe attempt"
     );

@@ -12,6 +12,7 @@ import { Popover, PopoverAnchor } from "../ui/popover";
 import { Spinner } from "../ui/spinner";
 import { cn } from "../../lib/utils";
 
+const PASSIVE_POPOVER_OPEN_DELAY_MS = 320;
 const LONG_PRESS_DELAY_MS = 420;
 const HOVER_CLOSE_DELAY_MS = 140;
 
@@ -68,6 +69,7 @@ export function BatchOauthActionButton({
   const longPressTimerRef = useRef<number | null>(null);
   const longPressResetTimerRef = useRef<number | null>(null);
   const focusPopoverTimerRef = useRef<number | null>(null);
+  const passiveOpenTimerRef = useRef<number | null>(null);
   const hoverCloseTimerRef = useRef<number | null>(null);
   const manualCopyValueRef = useRef<HTMLDivElement | null>(null);
   const popoverContentRef = useRef<HTMLDivElement | null>(null);
@@ -85,6 +87,9 @@ export function BatchOauthActionButton({
       }
       if (hoverCloseTimerRef.current != null) {
         window.clearTimeout(hoverCloseTimerRef.current);
+      }
+      if (passiveOpenTimerRef.current != null) {
+        window.clearTimeout(passiveOpenTimerRef.current);
       }
       if (longPressResetTimerRef.current != null) {
         window.clearTimeout(longPressResetTimerRef.current);
@@ -127,6 +132,13 @@ export function BatchOauthActionButton({
     }
   };
 
+  const clearPassiveOpenTimer = () => {
+    if (passiveOpenTimerRef.current != null) {
+      window.clearTimeout(passiveOpenTimerRef.current);
+      passiveOpenTimerRef.current = null;
+    }
+  };
+
   const focusFirstPopoverControl = () => {
     const focusNow = () => {
       const container = popoverContentRef.current;
@@ -155,6 +167,7 @@ export function BatchOauthActionButton({
   };
 
   const closePopover = () => {
+    clearPassiveOpenTimer();
     clearHoverCloseTimer();
     setHoverOpen(false);
     setPinnedOpen(false);
@@ -164,11 +177,23 @@ export function BatchOauthActionButton({
   };
 
   const openHoverPopover = () => {
+    clearPassiveOpenTimer();
     clearHoverCloseTimer();
     setHoverOpen(true);
   };
 
+  const schedulePassivePopoverOpen = () => {
+    clearHoverCloseTimer();
+    if (hoverOpen || pinnedOpen || manualCopyValue) return;
+    clearPassiveOpenTimer();
+    passiveOpenTimerRef.current = window.setTimeout(() => {
+      passiveOpenTimerRef.current = null;
+      setHoverOpen(true);
+    }, PASSIVE_POPOVER_OPEN_DELAY_MS);
+  };
+
   const scheduleHoverPopoverClose = () => {
+    clearPassiveOpenTimer();
     clearHoverCloseTimer();
     hoverCloseTimerRef.current = window.setTimeout(() => {
       hoverCloseTimerRef.current = null;
@@ -207,6 +232,7 @@ export function BatchOauthActionButton({
       longPressTriggeredRef.current = false;
       return;
     }
+    clearPassiveOpenTimer();
     if (manualCopyValue) {
       onManualCopyOpenChange?.(false);
     }
@@ -231,6 +257,7 @@ export function BatchOauthActionButton({
       (event.shiftKey && event.key === "F10")
     ) {
       event.preventDefault();
+      clearPassiveOpenTimer();
       clearHoverCloseTimer();
       setPinnedOpen(true);
       if (resolvedOpen) {
@@ -258,15 +285,15 @@ export function BatchOauthActionButton({
           variant={mode === "copy" ? "secondary" : "default"}
           className={cn("h-9 w-9 shrink-0 rounded-full", className)}
           aria-label={primaryAriaLabel}
-          title={primaryAriaLabel}
+          title={disabled ? primaryAriaLabel : undefined}
           disabled={disabled}
-          onMouseEnter={openHoverPopover}
+          onMouseEnter={schedulePassivePopoverOpen}
           onMouseLeave={() => {
             if (!pinnedOpen && !manualCopyValue) {
               scheduleHoverPopoverClose();
             }
           }}
-          onFocus={openHoverPopover}
+          onFocus={schedulePassivePopoverOpen}
           onBlur={(event) => {
             if (
               popoverContentRef.current?.contains(
@@ -287,6 +314,7 @@ export function BatchOauthActionButton({
           onContextMenu={(event) => {
             event.preventDefault();
             clearLongPressTimer();
+            clearPassiveOpenTimer();
             setPinnedOpen(true);
           }}
           onClick={handlePrimaryClick}
@@ -318,6 +346,11 @@ export function BatchOauthActionButton({
           focusFirstPopoverControl();
         }}
         onCloseAutoFocus={(event) => event.preventDefault()}
+        onInteractOutside={(event) => {
+          if (manualCopyValue) {
+            event.preventDefault();
+          }
+        }}
         onMouseEnter={openHoverPopover}
         onMouseLeave={() => {
           if (!pinnedOpen && !manualCopyValue) {
@@ -392,7 +425,6 @@ export function BatchOauthActionButton({
                 variant="outline"
                 className="rounded-full"
                 aria-label={regenerateAriaLabel}
-                title={regenerateAriaLabel}
                 disabled={regenerateDisabled}
                 onClick={handleRegenerate}
               >

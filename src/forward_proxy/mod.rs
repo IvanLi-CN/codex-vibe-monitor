@@ -6,7 +6,7 @@ pub(crate) struct ForwardProxyAttemptStatsRow {
     pub(crate) proxy_key: String,
     pub(crate) attempts: i64,
     pub(crate) success_count: i64,
-    pub(crate) avg_latency_ms: Option<f64>,
+    pub(crate) latency_sum_ms: Option<f64>,
 }
 
 #[derive(Debug, FromRow)]
@@ -26,12 +26,20 @@ pub(crate) struct ForwardProxyWeightHourlyStatsRow {
     pub(crate) max_weight: f64,
     pub(crate) avg_weight: f64,
     pub(crate) last_weight: f64,
+    pub(crate) last_sample_epoch_us: i64,
 }
 
 #[derive(Debug, FromRow)]
 pub(crate) struct ForwardProxyWeightLastBeforeRangeRow {
     pub(crate) proxy_key: String,
     pub(crate) last_weight: f64,
+    pub(crate) last_sample_epoch_us: i64,
+}
+
+#[derive(Debug, Clone, FromRow)]
+pub(crate) struct ForwardProxyKeyAliasRow {
+    pub(crate) proxy_key: String,
+    pub(crate) endpoint_url: Option<String>,
 }
 
 fn ceil_hour_epoch(epoch: i64) -> i64 {
@@ -47,8 +55,7 @@ pub(crate) async fn load_forward_proxy_settings(
         SELECT
             proxy_urls_json,
             subscription_urls_json,
-            subscription_update_interval_secs,
-            insert_direct
+            subscription_update_interval_secs
         FROM forward_proxy_settings
         WHERE id = ?1
         LIMIT 1
@@ -81,15 +88,13 @@ pub(crate) async fn save_forward_proxy_settings(
             proxy_urls_json = ?1,
             subscription_urls_json = ?2,
             subscription_update_interval_secs = ?3,
-            insert_direct = ?4,
             updated_at = datetime('now')
-        WHERE id = ?5
+        WHERE id = ?4
         "#,
     )
     .bind(proxy_urls_json)
     .bind(subscription_urls_json)
     .bind(normalized.subscription_update_interval_secs as i64)
-    .bind(normalized.insert_direct as i64)
     .bind(FORWARD_PROXY_SETTINGS_SINGLETON_ID)
     .execute(pool)
     .await
@@ -113,12 +118,27 @@ pub(crate) async fn load_forward_proxy_runtime_states(
             latency_ema_ms,
             consecutive_failures
         FROM forward_proxy_runtime
+        ORDER BY updated_at DESC
         "#,
     )
     .fetch_all(pool)
     .await
     .context("failed to load forward_proxy_runtime rows")?;
-    Ok(rows.into_iter().map(Into::into).collect())
+    let alias_map = load_forward_proxy_key_aliases(pool).await?;
+
+    let mut runtime = HashMap::new();
+    for row in rows {
+        let mut state: ForwardProxyRuntimeState = row.into();
+        let canonical_proxy_key =
+            canonical_forward_proxy_storage_key(&state.proxy_key, state.endpoint_url.as_deref());
+        state.proxy_key = alias_map
+            .get(&state.proxy_key)
+            .or_else(|| alias_map.get(&canonical_proxy_key))
+            .cloned()
+            .unwrap_or(canonical_proxy_key);
+        runtime.entry(state.proxy_key.clone()).or_insert(state);
+    }
+    Ok(runtime.into_values().collect())
 }
 
 pub(crate) async fn persist_forward_proxy_runtime_state(
@@ -240,6 +260,58 @@ pub(crate) async fn load_forward_proxy_metadata_history(
         .into_iter()
         .map(|row| (row.proxy_key.clone(), row))
         .collect())
+}
+
+fn register_forward_proxy_storage_aliases(alias_map: &mut HashMap<String, String>, raw: &str) {
+    let Some((canonical, aliases)) = forward_proxy_storage_aliases(raw) else {
+        return;
+    };
+    for alias in aliases {
+        alias_map.entry(alias).or_insert_with(|| canonical.clone());
+    }
+}
+
+pub(crate) fn canonical_forward_proxy_storage_key(
+    proxy_key: &str,
+    endpoint_url: Option<&str>,
+) -> String {
+    endpoint_url
+        .and_then(normalize_single_proxy_key)
+        .or_else(|| normalize_bound_proxy_key(proxy_key))
+        .unwrap_or_else(|| proxy_key.to_string())
+}
+
+pub(crate) async fn load_forward_proxy_key_aliases(
+    pool: &Pool<Sqlite>,
+) -> Result<HashMap<String, String>> {
+    let settings = load_forward_proxy_settings(pool).await?;
+    let rows = sqlx::query_as::<_, ForwardProxyKeyAliasRow>(
+        r#"
+        SELECT proxy_key, endpoint_url
+        FROM forward_proxy_metadata_history
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .context("failed to load forward_proxy key aliases")?;
+
+    let mut alias_map = HashMap::new();
+    for raw in settings.proxy_urls {
+        register_forward_proxy_storage_aliases(&mut alias_map, &raw);
+    }
+    for row in rows {
+        let canonical =
+            canonical_forward_proxy_storage_key(&row.proxy_key, row.endpoint_url.as_deref());
+        if canonical != row.proxy_key {
+            alias_map
+                .entry(row.proxy_key.clone())
+                .or_insert(canonical.clone());
+        }
+        if let Some(raw) = row.endpoint_url.as_deref() {
+            register_forward_proxy_storage_aliases(&mut alias_map, raw);
+        }
+    }
+    Ok(alias_map)
 }
 
 pub(crate) async fn delete_forward_proxy_runtime_rows_not_in(
@@ -389,7 +461,7 @@ pub(crate) async fn query_forward_proxy_window_stats(
             proxy_key,
             COUNT(*) AS attempts,
             SUM(CASE WHEN is_success != 0 THEN 1 ELSE 0 END) AS success_count,
-            AVG(CASE WHEN is_success != 0 THEN latency_ms END) AS avg_latency_ms
+            SUM(CASE WHEN is_success != 0 THEN latency_ms END) AS latency_sum_ms
         FROM forward_proxy_attempts
         WHERE occurred_at >= datetime('now', ?1)
         GROUP BY proxy_key
@@ -400,19 +472,33 @@ pub(crate) async fn query_forward_proxy_window_stats(
     .await
     .with_context(|| format!("failed to query forward proxy attempt stats for {window}"))?;
 
-    Ok(rows
-        .into_iter()
-        .map(|row| {
-            (
-                row.proxy_key,
-                ForwardProxyAttemptWindowStats {
-                    attempts: row.attempts,
-                    success_count: row.success_count,
-                    avg_latency_ms: row.avg_latency_ms,
-                },
-            )
-        })
-        .collect())
+    let alias_map = load_forward_proxy_key_aliases(pool).await?;
+    let mut grouped = HashMap::new();
+    let mut latency_totals = HashMap::new();
+
+    for row in rows {
+        let proxy_key = alias_map
+            .get(&row.proxy_key)
+            .cloned()
+            .unwrap_or(row.proxy_key.clone());
+        let stats = grouped
+            .entry(proxy_key.clone())
+            .or_insert_with(ForwardProxyAttemptWindowStats::default);
+        stats.attempts += row.attempts;
+        stats.success_count += row.success_count;
+        *latency_totals.entry(proxy_key).or_insert(0.0) += row.latency_sum_ms.unwrap_or(0.0);
+    }
+
+    for (proxy_key, stats) in &mut grouped {
+        if stats.success_count > 0 {
+            stats.avg_latency_ms = latency_totals
+                .get(proxy_key)
+                .copied()
+                .map(|value| value / stats.success_count as f64);
+        }
+    }
+
+    Ok(grouped)
 }
 
 pub(crate) async fn query_forward_proxy_hourly_stats(
@@ -442,15 +528,20 @@ pub(crate) async fn query_forward_proxy_hourly_stats(
         )
     })?;
 
+    let alias_map = load_forward_proxy_key_aliases(pool).await?;
     let mut grouped: HashMap<String, HashMap<i64, ForwardProxyHourlyStatsPoint>> = HashMap::new();
     for row in rows {
-        grouped.entry(row.proxy_key).or_default().insert(
-            row.bucket_start_epoch,
-            ForwardProxyHourlyStatsPoint {
-                success_count: row.success_count,
-                failure_count: row.failure_count,
-            },
-        );
+        let proxy_key = alias_map
+            .get(&row.proxy_key)
+            .cloned()
+            .unwrap_or(row.proxy_key.clone());
+        let point = grouped
+            .entry(proxy_key)
+            .or_default()
+            .entry(row.bucket_start_epoch)
+            .or_default();
+        point.success_count += row.success_count;
+        point.failure_count += row.failure_count;
     }
 
     Ok(grouped)
@@ -470,7 +561,8 @@ pub(crate) async fn query_forward_proxy_weight_hourly_stats(
             min_weight,
             max_weight,
             avg_weight,
-            last_weight
+            last_weight,
+            last_sample_epoch_us
         FROM forward_proxy_weight_hourly
         WHERE bucket_start_epoch >= ?1
           AND bucket_start_epoch < ?2
@@ -486,19 +578,45 @@ pub(crate) async fn query_forward_proxy_weight_hourly_stats(
         )
     })?;
 
+    let alias_map = load_forward_proxy_key_aliases(pool).await?;
     let mut grouped: HashMap<String, HashMap<i64, ForwardProxyWeightHourlyStatsPoint>> =
         HashMap::new();
+    let mut latest_sample_epochs: HashMap<(String, i64), i64> = HashMap::new();
+
     for row in rows {
-        grouped.entry(row.proxy_key).or_default().insert(
-            row.bucket_start_epoch,
-            ForwardProxyWeightHourlyStatsPoint {
-                sample_count: row.sample_count,
+        let proxy_key = alias_map
+            .get(&row.proxy_key)
+            .cloned()
+            .unwrap_or(row.proxy_key.clone());
+        let key = (proxy_key.clone(), row.bucket_start_epoch);
+        let point = grouped
+            .entry(proxy_key.clone())
+            .or_default()
+            .entry(row.bucket_start_epoch)
+            .or_insert_with(|| ForwardProxyWeightHourlyStatsPoint {
+                sample_count: 0,
                 min_weight: row.min_weight,
                 max_weight: row.max_weight,
-                avg_weight: row.avg_weight,
+                avg_weight: 0.0,
                 last_weight: row.last_weight,
-            },
-        );
+            });
+        let combined_sample_count = point.sample_count + row.sample_count;
+        point.avg_weight = if combined_sample_count > 0 {
+            ((point.avg_weight * point.sample_count as f64)
+                + (row.avg_weight * row.sample_count as f64))
+                / combined_sample_count as f64
+        } else {
+            row.avg_weight
+        };
+        point.sample_count = combined_sample_count;
+        point.min_weight = point.min_weight.min(row.min_weight);
+        point.max_weight = point.max_weight.max(row.max_weight);
+
+        let current_latest = latest_sample_epochs.get(&key).copied().unwrap_or(i64::MIN);
+        if row.last_sample_epoch_us >= current_latest {
+            point.last_weight = row.last_weight;
+            latest_sample_epochs.insert(key, row.last_sample_epoch_us);
+        }
     }
 
     Ok(grouped)
@@ -515,7 +633,7 @@ pub(crate) async fn query_forward_proxy_weight_last_before(
 
     let mut builder = QueryBuilder::<Sqlite>::new(
         r#"
-        SELECT latest.proxy_key, latest.last_weight
+        SELECT latest.proxy_key, latest.last_weight, latest.last_sample_epoch_us
         FROM forward_proxy_weight_hourly AS latest
         INNER JOIN (
             SELECT proxy_key, MAX(bucket_start_epoch) AS bucket_start_epoch
@@ -547,10 +665,24 @@ pub(crate) async fn query_forward_proxy_weight_last_before(
             format!("failed to query forward proxy weight carry values before {range_start_epoch}")
         })?;
 
-    Ok(rows
-        .into_iter()
-        .map(|row| (row.proxy_key, row.last_weight))
-        .collect())
+    let alias_map = load_forward_proxy_key_aliases(pool).await?;
+    let mut grouped = HashMap::new();
+    let mut latest_sample_epochs = HashMap::new();
+    for row in rows {
+        let proxy_key = alias_map
+            .get(&row.proxy_key)
+            .cloned()
+            .unwrap_or(row.proxy_key.clone());
+        let current_latest = latest_sample_epochs
+            .get(&proxy_key)
+            .copied()
+            .unwrap_or(i64::MIN);
+        if row.last_sample_epoch_us >= current_latest {
+            grouped.insert(proxy_key.clone(), row.last_weight);
+            latest_sample_epochs.insert(proxy_key, row.last_sample_epoch_us);
+        }
+    }
+    Ok(grouped)
 }
 
 pub(crate) async fn build_forward_proxy_settings_response(
@@ -558,7 +690,14 @@ pub(crate) async fn build_forward_proxy_settings_response(
 ) -> Result<ForwardProxySettingsResponse> {
     let (settings, runtime_rows) = {
         let manager = state.forward_proxy.lock().await;
-        (manager.settings.clone(), manager.snapshot_runtime())
+        (
+            manager.settings.clone(),
+            manager
+                .snapshot_runtime()
+                .into_iter()
+                .filter(|runtime| runtime.proxy_key != FORWARD_PROXY_DIRECT_KEY)
+                .collect::<Vec<_>>(),
+        )
     };
 
     let windows = [
@@ -606,9 +745,121 @@ pub(crate) async fn build_forward_proxy_settings_response(
         proxy_urls: settings.proxy_urls,
         subscription_urls: settings.subscription_urls,
         subscription_update_interval_secs: settings.subscription_update_interval_secs,
-        insert_direct: settings.insert_direct,
         nodes,
     })
+}
+
+pub(crate) async fn build_forward_proxy_binding_nodes_response(
+    state: &AppState,
+    extra_proxy_keys: &[String],
+) -> Result<Vec<ForwardProxyBindingNodeResponse>> {
+    const BUCKET_SECONDS: i64 = 3600;
+    const BUCKET_COUNT: i64 = 24;
+
+    crate::ensure_hourly_rollups_caught_up(state).await?;
+
+    let mut nodes = {
+        let manager = state.forward_proxy.lock().await;
+        manager.binding_nodes()
+    };
+    let current_node_keys = nodes
+        .iter()
+        .map(|node| node.key.clone())
+        .collect::<HashSet<_>>();
+
+    let mut seen = nodes
+        .iter()
+        .map(|node| node.key.clone())
+        .collect::<HashSet<_>>();
+    let extra_keys = extra_proxy_keys
+        .iter()
+        .map(|key| key.trim())
+        .filter(|key| !key.is_empty())
+        .map(ToOwned::to_owned)
+        .filter(|key| seen.insert(key.clone()))
+        .collect::<Vec<_>>();
+    let mut metadata_keys = nodes
+        .iter()
+        .map(|node| node.key.clone())
+        .collect::<Vec<_>>();
+    metadata_keys.extend(extra_keys.iter().cloned());
+    let metadata_map = load_forward_proxy_metadata_history(&state.pool, &metadata_keys).await?;
+
+    for proxy_key in extra_keys {
+        let metadata = metadata_map.get(&proxy_key);
+        nodes.push(ForwardProxyBindingNodeResponse {
+            key: proxy_key.clone(),
+            alias_keys: Vec::new(),
+            source: "missing".to_string(),
+            display_name: metadata
+                .map(|item| item.display_name.clone())
+                .filter(|value| !value.trim().is_empty())
+                .unwrap_or_else(|| proxy_key.clone()),
+            protocol_label: "UNKNOWN".to_string(),
+            penalized: false,
+            selectable: false,
+            last24h: Vec::new(),
+        });
+    }
+
+    if nodes.is_empty() {
+        return Ok(nodes);
+    }
+
+    let now_epoch = Utc::now().timestamp();
+    let range_end_epoch = align_bucket_epoch(now_epoch, BUCKET_SECONDS, 0) + BUCKET_SECONDS;
+    let range_start_epoch = range_end_epoch - BUCKET_COUNT * BUCKET_SECONDS;
+    let hourly_map =
+        query_forward_proxy_hourly_stats(&state.pool, range_start_epoch, range_end_epoch).await?;
+
+    for node in &mut nodes {
+        let hourly = hourly_map.get(&node.key);
+        node.last24h = if current_node_keys.contains(&node.key) || hourly.is_some() {
+            build_forward_proxy_hourly_buckets(
+                hourly,
+                range_start_epoch,
+                BUCKET_SECONDS,
+                BUCKET_COUNT,
+            )?
+        } else {
+            Vec::new()
+        };
+    }
+    nodes.sort_by(|lhs, rhs| lhs.display_name.cmp(&rhs.display_name));
+
+    Ok(nodes)
+}
+
+fn build_forward_proxy_hourly_buckets(
+    hourly: Option<&HashMap<i64, ForwardProxyHourlyStatsPoint>>,
+    range_start_epoch: i64,
+    bucket_seconds: i64,
+    bucket_count: i64,
+) -> Result<Vec<ForwardProxyHourlyBucketResponse>> {
+    (0..bucket_count)
+        .map(|index| {
+            let bucket_start_epoch = range_start_epoch + index * bucket_seconds;
+            let bucket_end_epoch = bucket_start_epoch + bucket_seconds;
+            let point = hourly
+                .and_then(|items| items.get(&bucket_start_epoch))
+                .cloned()
+                .unwrap_or_default();
+            let bucket_start = Utc
+                .timestamp_opt(bucket_start_epoch, 0)
+                .single()
+                .ok_or_else(|| anyhow!("invalid forward proxy bucket start epoch"))?;
+            let bucket_end = Utc
+                .timestamp_opt(bucket_end_epoch, 0)
+                .single()
+                .ok_or_else(|| anyhow!("invalid forward proxy bucket end epoch"))?;
+            Ok(ForwardProxyHourlyBucketResponse {
+                bucket_start: format_utc_iso(bucket_start),
+                bucket_end: format_utc_iso(bucket_end),
+                success_count: point.success_count,
+                failure_count: point.failure_count,
+            })
+        })
+        .collect::<Result<Vec<_>>>()
 }
 
 pub(crate) async fn build_forward_proxy_live_stats_response(
@@ -619,7 +870,11 @@ pub(crate) async fn build_forward_proxy_live_stats_response(
 
     let runtime_rows = {
         let manager = state.forward_proxy.lock().await;
-        manager.snapshot_runtime()
+        manager
+            .snapshot_runtime()
+            .into_iter()
+            .filter(|runtime| runtime.proxy_key != FORWARD_PROXY_DIRECT_KEY)
+            .collect::<Vec<_>>()
     };
     let runtime_proxy_keys = runtime_rows
         .iter()
@@ -674,30 +929,12 @@ pub(crate) async fn build_forward_proxy_live_stats_response(
             let one_hour = stats_for(2, &proxy_key);
             let one_day = stats_for(3, &proxy_key);
             let seven_days = stats_for(4, &proxy_key);
-            let last24h = (0..BUCKET_COUNT)
-                .map(|index| {
-                    let bucket_start_epoch = range_start_epoch + index * BUCKET_SECONDS;
-                    let bucket_end_epoch = bucket_start_epoch + BUCKET_SECONDS;
-                    let point = hourly
-                        .and_then(|items| items.get(&bucket_start_epoch))
-                        .cloned()
-                        .unwrap_or_default();
-                    let bucket_start = Utc
-                        .timestamp_opt(bucket_start_epoch, 0)
-                        .single()
-                        .ok_or_else(|| anyhow!("invalid forward proxy bucket start epoch"))?;
-                    let bucket_end = Utc
-                        .timestamp_opt(bucket_end_epoch, 0)
-                        .single()
-                        .ok_or_else(|| anyhow!("invalid forward proxy bucket end epoch"))?;
-                    Ok(ForwardProxyHourlyBucketResponse {
-                        bucket_start: format_utc_iso(bucket_start),
-                        bucket_end: format_utc_iso(bucket_end),
-                        success_count: point.success_count,
-                        failure_count: point.failure_count,
-                    })
-                })
-                .collect::<Result<Vec<_>>>()?;
+            let last24h = build_forward_proxy_hourly_buckets(
+                hourly,
+                range_start_epoch,
+                BUCKET_SECONDS,
+                BUCKET_COUNT,
+            )?;
             let weight24h = (0..BUCKET_COUNT)
                 .map(|index| {
                     let bucket_start_epoch = range_start_epoch + index * BUCKET_SECONDS;
@@ -783,7 +1020,11 @@ pub(crate) async fn build_forward_proxy_timeseries_response(
 
     let runtime_rows = {
         let manager = state.forward_proxy.lock().await;
-        manager.snapshot_runtime()
+        manager
+            .snapshot_runtime()
+            .into_iter()
+            .filter(|runtime| runtime.proxy_key != FORWARD_PROXY_DIRECT_KEY)
+            .collect::<Vec<_>>()
     };
     let runtime_map = runtime_rows
         .into_iter()
@@ -811,12 +1052,12 @@ pub(crate) async fn build_forward_proxy_timeseries_response(
         }
     }
     for key in hourly_map.keys() {
-        if seen.insert(key.clone()) {
+        if key != FORWARD_PROXY_DIRECT_KEY && seen.insert(key.clone()) {
             proxy_keys.push(key.clone());
         }
     }
     for key in weight_hourly_map.keys() {
-        if seen.insert(key.clone()) {
+        if key != FORWARD_PROXY_DIRECT_KEY && seen.insert(key.clone()) {
             proxy_keys.push(key.clone());
         }
     }
@@ -1699,9 +1940,29 @@ pub(crate) fn decode_subscription_payload(raw: &str) -> String {
     trimmed.to_string()
 }
 
-pub(crate) async fn select_forward_proxy_for_request(state: &AppState) -> SelectedForwardProxy {
+pub(crate) async fn select_forward_proxy_for_request(
+    state: &AppState,
+) -> Result<SelectedForwardProxy> {
     let mut manager = state.forward_proxy.lock().await;
-    manager.select_proxy()
+    manager.select_proxy_for_scope(&ForwardProxyRouteScope::Automatic)
+}
+
+pub(crate) async fn select_forward_proxy_for_scope(
+    state: &AppState,
+    scope: &ForwardProxyRouteScope,
+) -> Result<SelectedForwardProxy> {
+    let mut manager = state.forward_proxy.lock().await;
+    manager.select_proxy_for_scope(scope)
+}
+
+pub(crate) async fn record_forward_proxy_scope_result(
+    state: &AppState,
+    scope: &ForwardProxyRouteScope,
+    selected_proxy_key: &str,
+    result: ForwardProxyRouteResultKind,
+) {
+    let mut manager = state.forward_proxy.lock().await;
+    manager.record_scope_result(scope, selected_proxy_key, result);
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -2105,7 +2366,7 @@ pub(crate) struct ForwardProxySettings {
     pub(crate) subscription_urls: Vec<String>,
     #[serde(default = "default_forward_proxy_subscription_interval_secs")]
     pub(crate) subscription_update_interval_secs: u64,
-    #[serde(default = "default_forward_proxy_insert_direct")]
+    #[serde(default = "default_forward_proxy_insert_direct_compat")]
     pub(crate) insert_direct: bool,
 }
 
@@ -2115,31 +2376,21 @@ impl Default for ForwardProxySettings {
             proxy_urls: Vec::new(),
             subscription_urls: Vec::new(),
             subscription_update_interval_secs: default_forward_proxy_subscription_interval_secs(),
-            insert_direct: default_forward_proxy_insert_direct(),
+            insert_direct: default_forward_proxy_insert_direct_compat(),
         }
     }
 }
 
 impl ForwardProxySettings {
     pub(crate) fn normalized(self) -> Self {
-        let mut normalized = Self {
+        Self {
             proxy_urls: normalize_proxy_url_entries(self.proxy_urls),
             subscription_urls: normalize_subscription_entries(self.subscription_urls),
             subscription_update_interval_secs: self
                 .subscription_update_interval_secs
                 .clamp(60, 7 * 24 * 60 * 60),
             insert_direct: self.insert_direct,
-        };
-        if !normalized.insert_direct
-            && normalize_proxy_endpoints_from_urls(
-                &normalized.proxy_urls,
-                FORWARD_PROXY_SOURCE_MANUAL,
-            )
-            .is_empty()
-        {
-            normalized.insert_direct = true;
         }
-        normalized
     }
 }
 
@@ -2148,7 +2399,6 @@ pub(crate) struct ForwardProxySettingsRow {
     pub(crate) proxy_urls_json: Option<String>,
     pub(crate) subscription_urls_json: Option<String>,
     pub(crate) subscription_update_interval_secs: Option<i64>,
-    pub(crate) insert_direct: Option<i64>,
 }
 
 impl From<ForwardProxySettingsRow> for ForwardProxySettings {
@@ -2159,15 +2409,11 @@ impl From<ForwardProxySettingsRow> for ForwardProxySettings {
             .subscription_update_interval_secs
             .and_then(|v| u64::try_from(v).ok())
             .unwrap_or_else(default_forward_proxy_subscription_interval_secs);
-        let insert_direct = value
-            .insert_direct
-            .map(|v| v != 0)
-            .unwrap_or_else(default_forward_proxy_insert_direct);
         ForwardProxySettings {
             proxy_urls,
             subscription_urls,
             subscription_update_interval_secs: interval,
-            insert_direct,
+            insert_direct: default_forward_proxy_insert_direct_compat(),
         }
         .normalized()
     }
@@ -2182,7 +2428,7 @@ pub(crate) struct ForwardProxySettingsUpdateRequest {
     pub(crate) subscription_urls: Vec<String>,
     #[serde(default = "default_forward_proxy_subscription_interval_secs")]
     pub(crate) subscription_update_interval_secs: u64,
-    #[serde(default = "default_forward_proxy_insert_direct")]
+    #[serde(default = "default_forward_proxy_insert_direct_compat")]
     pub(crate) insert_direct: bool,
 }
 
@@ -2262,6 +2508,22 @@ pub(crate) enum ForwardProxyProtocol {
     Shadowsocks,
 }
 
+impl ForwardProxyProtocol {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::Direct => "DIRECT",
+            Self::Http => "HTTP",
+            Self::Https => "HTTPS",
+            Self::Socks5 => "SOCKS5",
+            Self::Socks5h => "SOCKS5H",
+            Self::Vmess => "VMESS",
+            Self::Vless => "VLESS",
+            Self::Trojan => "TROJAN",
+            Self::Shadowsocks => "SS",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct ForwardProxyEndpoint {
     pub(crate) key: String,
@@ -2285,7 +2547,11 @@ impl ForwardProxyEndpoint {
     }
 
     pub(crate) fn is_selectable(&self) -> bool {
-        self.protocol == ForwardProxyProtocol::Direct || self.endpoint_url.is_some()
+        self.endpoint_url.is_some()
+    }
+
+    pub(crate) fn is_bound_selectable(&self) -> bool {
+        self.endpoint_url.is_some() || matches!(self.protocol, ForwardProxyProtocol::Direct)
     }
 
     pub(crate) fn requires_xray(&self) -> bool {
@@ -2373,11 +2639,64 @@ pub(crate) struct ForwardProxyManager {
     pub(crate) settings: ForwardProxySettings,
     pub(crate) endpoints: Vec<ForwardProxyEndpoint>,
     pub(crate) runtime: HashMap<String, ForwardProxyRuntimeState>,
+    pub(crate) bound_key_aliases: HashMap<String, String>,
+    pub(crate) bound_group_runtime: HashMap<String, BoundForwardProxyGroupState>,
     pub(crate) selection_counter: u64,
     pub(crate) requests_since_probe: u64,
     pub(crate) probe_in_flight: bool,
     pub(crate) last_probe_at: DateTime<Utc>,
     pub(crate) last_subscription_refresh_at: Option<DateTime<Utc>>,
+}
+
+const BOUND_FORWARD_PROXY_SWITCH_FAILURE_THRESHOLD: u32 = 3;
+
+#[derive(Debug, Clone, Default)]
+pub(crate) struct BoundForwardProxyGroupState {
+    pub(crate) current_proxy_key: Option<String>,
+    pub(crate) consecutive_network_failures: u32,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) enum ForwardProxyRouteScope {
+    Automatic,
+    BoundGroup {
+        group_name: String,
+        bound_proxy_keys: Vec<String>,
+    },
+}
+
+impl ForwardProxyRouteScope {
+    pub(crate) fn from_group_binding(
+        group_name: Option<&str>,
+        bound_proxy_keys: Vec<String>,
+    ) -> Self {
+        let normalized_group_name = group_name
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(ToOwned::to_owned);
+        let normalized_bound_proxy_keys = bound_proxy_keys
+            .into_iter()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .map(|value| normalize_bound_proxy_key(&value).unwrap_or(value))
+            .collect::<Vec<_>>();
+        match (
+            normalized_group_name,
+            normalized_bound_proxy_keys.is_empty(),
+        ) {
+            (Some(group_name), false) => Self::BoundGroup {
+                group_name,
+                bound_proxy_keys: normalized_bound_proxy_keys,
+            },
+            _ => Self::Automatic,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ForwardProxyRouteResultKind {
+    CompletedRequest,
+    NetworkFailure,
 }
 
 impl ForwardProxyManager {
@@ -2406,6 +2725,8 @@ impl ForwardProxyManager {
             settings,
             endpoints: Vec::new(),
             runtime,
+            bound_key_aliases: HashMap::new(),
+            bound_group_runtime: HashMap::new(),
             selection_counter: 0,
             requests_since_probe: 0,
             probe_in_flight: false,
@@ -2467,13 +2788,24 @@ impl ForwardProxyManager {
                 merged.push(endpoint);
             }
         }
-        if self.settings.insert_direct {
-            merged.push(ForwardProxyEndpoint::direct());
-        }
-        if merged.is_empty() {
-            merged.push(ForwardProxyEndpoint::direct());
-        }
         self.endpoints = merged;
+        let mut bound_key_aliases = HashMap::new();
+        for endpoint in &self.endpoints {
+            let Some(raw_url) = endpoint.raw_url.as_deref() else {
+                continue;
+            };
+            for alias in legacy_bound_proxy_key_aliases(raw_url, endpoint.protocol) {
+                if alias != endpoint.key {
+                    bound_key_aliases.insert(alias, endpoint.key.clone());
+                }
+            }
+        }
+        self.bound_key_aliases = bound_key_aliases;
+
+        let endpoint_snapshots = self.endpoints.clone();
+        for endpoint in &endpoint_snapshots {
+            self.migrate_runtime_aliases_to_endpoint(endpoint);
+        }
 
         let algo = self.algo;
         for endpoint in &self.endpoints {
@@ -2492,6 +2824,41 @@ impl ForwardProxyManager {
             }
         }
         self.ensure_non_zero_weight();
+    }
+
+    fn migrate_runtime_aliases_to_endpoint(&mut self, endpoint: &ForwardProxyEndpoint) {
+        let Some(raw_url) = endpoint.raw_url.as_deref() else {
+            return;
+        };
+        let Some((canonical_key, aliases)) = forward_proxy_storage_aliases(raw_url) else {
+            return;
+        };
+        if canonical_key != endpoint.key {
+            return;
+        }
+
+        if self.runtime.contains_key(&endpoint.key) {
+            for alias in aliases {
+                self.runtime.remove(&alias);
+            }
+            return;
+        }
+
+        let mut migrated = None;
+        for alias in &aliases {
+            if let Some(runtime) = self.runtime.remove(alias) {
+                migrated = Some(runtime);
+                break;
+            }
+        }
+        for alias in aliases {
+            self.runtime.remove(&alias);
+        }
+        if let Some(mut runtime) = migrated {
+            runtime.proxy_key = endpoint.key.clone();
+            runtime.endpoint_url = Some(raw_url.to_string());
+            self.runtime.insert(endpoint.key.clone(), runtime);
+        }
     }
 
     pub(crate) fn ensure_non_zero_weight(&mut self) {
@@ -2568,7 +2935,63 @@ impl ForwardProxyManager {
             .collect()
     }
 
-    pub(crate) fn select_proxy(&mut self) -> SelectedForwardProxy {
+    fn next_random_index(&mut self, upper_bound: usize) -> usize {
+        debug_assert!(upper_bound > 0);
+        self.selection_counter = self.selection_counter.wrapping_add(1);
+        let random = deterministic_unit_f64(self.selection_counter);
+        ((random * upper_bound as f64).floor() as usize).min(upper_bound.saturating_sub(1))
+    }
+
+    fn selectable_bound_proxy_keys(&self, bound_proxy_keys: &[String]) -> Vec<String> {
+        let mut selectable = self
+            .endpoints
+            .iter()
+            .filter(|endpoint| endpoint.is_bound_selectable())
+            .map(|endpoint| endpoint.key.as_str())
+            .collect::<HashSet<_>>();
+        selectable.insert(FORWARD_PROXY_DIRECT_KEY);
+        let mut seen = HashSet::new();
+        let mut available = Vec::new();
+        for key in bound_proxy_keys {
+            let normalized = key.trim();
+            if normalized.is_empty() {
+                continue;
+            }
+            let canonical = normalize_bound_proxy_key(normalized)
+                .map(|value| self.bound_key_aliases.get(&value).cloned().unwrap_or(value))
+                .unwrap_or_else(|| normalized.to_string());
+            if !selectable.contains(canonical.as_str()) || !seen.insert(canonical.clone()) {
+                continue;
+            }
+            available.push(canonical);
+        }
+        available.sort();
+        available
+    }
+
+    pub(crate) fn has_selectable_bound_proxy_keys(&self, bound_proxy_keys: &[String]) -> bool {
+        !self
+            .selectable_bound_proxy_keys(bound_proxy_keys)
+            .is_empty()
+    }
+
+    fn choose_random_bound_proxy_key(
+        &mut self,
+        available_keys: &[String],
+        exclude_key: Option<&str>,
+    ) -> Option<String> {
+        let candidates = available_keys
+            .iter()
+            .filter(|candidate| Some(candidate.as_str()) != exclude_key)
+            .cloned()
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            return None;
+        }
+        Some(candidates[self.next_random_index(candidates.len())].clone())
+    }
+
+    pub(crate) fn select_auto_proxy(&mut self) -> Option<SelectedForwardProxy> {
         self.selection_counter = self.selection_counter.wrapping_add(1);
         self.requests_since_probe = self.requests_since_probe.saturating_add(1);
         self.ensure_non_zero_weight();
@@ -2601,20 +3024,7 @@ impl ForwardProxyManager {
         }
 
         if candidates.is_empty() {
-            let fallback = self
-                .endpoints
-                .iter()
-                .find(|endpoint| endpoint.protocol == ForwardProxyProtocol::Direct)
-                .cloned()
-                .or_else(|| {
-                    self.endpoints
-                        .iter()
-                        .find(|endpoint| endpoint.is_selectable())
-                        .cloned()
-                })
-                .or_else(|| self.endpoints.first().cloned())
-                .unwrap_or_else(ForwardProxyEndpoint::direct);
-            return SelectedForwardProxy::from_endpoint(&fallback);
+            return None;
         }
 
         let seed = self.selection_counter;
@@ -2624,17 +3034,174 @@ impl ForwardProxyManager {
         for (endpoint, weight) in candidates {
             last_candidate = Some(endpoint);
             if threshold <= weight {
-                return SelectedForwardProxy::from_endpoint(endpoint);
+                return Some(SelectedForwardProxy::from_endpoint(endpoint));
             }
             threshold -= weight;
         }
-        SelectedForwardProxy::from_endpoint(last_candidate.unwrap_or_else(|| {
-            self.endpoints
-                .iter()
-                .find(|endpoint| endpoint.is_selectable())
-                .or_else(|| self.endpoints.first())
-                .expect("forward proxy endpoints should not be empty")
-        }))
+        last_candidate.map(SelectedForwardProxy::from_endpoint)
+    }
+
+    fn select_bound_group_proxy(
+        &mut self,
+        group_name: &str,
+        bound_proxy_keys: &[String],
+    ) -> Result<SelectedForwardProxy> {
+        let available_keys = self.selectable_bound_proxy_keys(bound_proxy_keys);
+        if available_keys.is_empty() {
+            self.bound_group_runtime.remove(group_name);
+            bail!("bound forward proxy group has no selectable nodes");
+        }
+        let existing_current = self
+            .bound_group_runtime
+            .get(group_name)
+            .and_then(|state| state.current_proxy_key.clone())
+            .filter(|key| available_keys.contains(key));
+        let selected_key = existing_current.unwrap_or_else(|| {
+            self.choose_random_bound_proxy_key(&available_keys, None)
+                .expect("available bound proxy keys should not be empty")
+        });
+        let state = self
+            .bound_group_runtime
+            .entry(group_name.to_string())
+            .or_default();
+        state.current_proxy_key = Some(selected_key.clone());
+        if selected_key == FORWARD_PROXY_DIRECT_KEY {
+            return Ok(SelectedForwardProxy::from_endpoint(
+                &ForwardProxyEndpoint::direct(),
+            ));
+        }
+        let endpoint = self
+            .endpoints
+            .iter()
+            .find(|endpoint| endpoint.key == selected_key)
+            .ok_or_else(|| anyhow!("selected bound proxy disappeared from runtime"))?;
+        Ok(SelectedForwardProxy::from_endpoint(endpoint))
+    }
+
+    pub(crate) fn select_proxy_for_scope(
+        &mut self,
+        scope: &ForwardProxyRouteScope,
+    ) -> Result<SelectedForwardProxy> {
+        match scope {
+            ForwardProxyRouteScope::Automatic => {
+                if let Some(selected) = self.select_auto_proxy() {
+                    Ok(selected)
+                } else {
+                    #[cfg(test)]
+                    {
+                        Ok(SelectedForwardProxy::from_endpoint(
+                            &ForwardProxyEndpoint::direct(),
+                        ))
+                    }
+                    #[cfg(not(test))]
+                    {
+                        Err(anyhow!("no selectable forward proxy nodes configured"))
+                    }
+                }
+            }
+            ForwardProxyRouteScope::BoundGroup {
+                group_name,
+                bound_proxy_keys,
+            } => self.select_bound_group_proxy(group_name, bound_proxy_keys),
+        }
+    }
+
+    pub(crate) fn record_scope_result(
+        &mut self,
+        scope: &ForwardProxyRouteScope,
+        selected_proxy_key: &str,
+        result: ForwardProxyRouteResultKind,
+    ) {
+        let ForwardProxyRouteScope::BoundGroup {
+            group_name,
+            bound_proxy_keys,
+        } = scope
+        else {
+            return;
+        };
+        let available_keys = self.selectable_bound_proxy_keys(bound_proxy_keys);
+        if available_keys.is_empty() {
+            self.bound_group_runtime.remove(group_name);
+            return;
+        }
+
+        let mut should_switch = false;
+        {
+            let state = self
+                .bound_group_runtime
+                .entry(group_name.clone())
+                .or_default();
+            state.current_proxy_key = Some(selected_proxy_key.to_string());
+            match result {
+                ForwardProxyRouteResultKind::CompletedRequest => {
+                    state.consecutive_network_failures = 0;
+                }
+                ForwardProxyRouteResultKind::NetworkFailure => {
+                    state.consecutive_network_failures =
+                        state.consecutive_network_failures.saturating_add(1);
+                    should_switch = state.consecutive_network_failures
+                        >= BOUND_FORWARD_PROXY_SWITCH_FAILURE_THRESHOLD;
+                }
+            }
+        }
+
+        if should_switch
+            && let Some(next_proxy_key) =
+                self.choose_random_bound_proxy_key(&available_keys, Some(selected_proxy_key))
+        {
+            let state = self
+                .bound_group_runtime
+                .entry(group_name.clone())
+                .or_default();
+            state.current_proxy_key = Some(next_proxy_key);
+            state.consecutive_network_failures = 0;
+        }
+    }
+
+    pub(crate) fn binding_nodes(&self) -> Vec<ForwardProxyBindingNodeResponse> {
+        let mut alias_keys_by_key: HashMap<&str, Vec<String>> = HashMap::new();
+        for (alias, canonical) in &self.bound_key_aliases {
+            alias_keys_by_key
+                .entry(canonical.as_str())
+                .or_default()
+                .push(alias.clone());
+        }
+        let mut nodes = self
+            .endpoints
+            .iter()
+            .map(|endpoint| {
+                let penalized = self
+                    .runtime
+                    .get(&endpoint.key)
+                    .is_some_and(ForwardProxyRuntimeState::is_penalized);
+                let mut alias_keys = alias_keys_by_key
+                    .remove(endpoint.key.as_str())
+                    .unwrap_or_default();
+                alias_keys.sort();
+                ForwardProxyBindingNodeResponse {
+                    key: endpoint.key.clone(),
+                    alias_keys,
+                    source: endpoint.source.clone(),
+                    display_name: endpoint.display_name.clone(),
+                    protocol_label: endpoint.protocol.label().to_string(),
+                    penalized,
+                    selectable: endpoint.is_bound_selectable(),
+                    last24h: Vec::new(),
+                }
+            })
+            .collect::<Vec<_>>();
+        nodes.push(ForwardProxyBindingNodeResponse {
+            key: FORWARD_PROXY_DIRECT_KEY.to_string(),
+            alias_keys: Vec::new(),
+            source: FORWARD_PROXY_SOURCE_DIRECT.to_string(),
+            display_name: FORWARD_PROXY_DIRECT_LABEL.to_string(),
+            protocol_label: ForwardProxyProtocol::Direct.label().to_string(),
+            penalized: false,
+            selectable: true,
+            last24h: Vec::new(),
+        });
+        nodes.sort_by(|lhs, rhs| lhs.display_name.cmp(&rhs.display_name));
+        nodes
     }
 
     pub(crate) fn record_attempt(
@@ -3686,7 +4253,7 @@ pub(crate) fn query_flag_true(query: &HashMap<String, String>, key: &str) -> boo
     })
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct ForwardProxyAttemptWindowStats {
     pub(crate) attempts: i64,
     pub(crate) success_count: i64,
@@ -3740,11 +4307,23 @@ pub(crate) struct ForwardProxyNodeResponse {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct ForwardProxyBindingNodeResponse {
+    pub(crate) key: String,
+    pub(crate) alias_keys: Vec<String>,
+    pub(crate) source: String,
+    pub(crate) display_name: String,
+    pub(crate) protocol_label: String,
+    pub(crate) penalized: bool,
+    pub(crate) selectable: bool,
+    pub(crate) last24h: Vec<ForwardProxyHourlyBucketResponse>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct ForwardProxySettingsResponse {
     pub(crate) proxy_urls: Vec<String>,
     pub(crate) subscription_urls: Vec<String>,
     pub(crate) subscription_update_interval_secs: u64,
-    pub(crate) insert_direct: bool,
     pub(crate) nodes: Vec<ForwardProxyNodeResponse>,
 }
 
@@ -3829,4 +4408,121 @@ pub(crate) struct ForwardProxyTimeseriesResponse {
     pub(crate) effective_bucket: String,
     pub(crate) available_buckets: Vec<String>,
     pub(crate) nodes: Vec<ForwardProxyTimeseriesNodeResponse>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn manager_with_manual_proxy() -> ForwardProxyManager {
+        ForwardProxyManager::new(
+            ForwardProxySettings {
+                proxy_urls: vec!["http://jp-edge-01:8080".to_string()],
+                ..ForwardProxySettings::default()
+            },
+            Vec::new(),
+        )
+    }
+
+    #[test]
+    fn binding_nodes_include_selectable_direct_with_protocol_label() {
+        let manager = manager_with_manual_proxy();
+
+        assert!(!manager.runtime.contains_key(FORWARD_PROXY_DIRECT_KEY));
+
+        let direct = manager
+            .binding_nodes()
+            .into_iter()
+            .find(|node| node.key == FORWARD_PROXY_DIRECT_KEY)
+            .expect("missing direct binding node");
+
+        assert_eq!(direct.display_name, FORWARD_PROXY_DIRECT_LABEL);
+        assert_eq!(direct.protocol_label, "DIRECT");
+        assert!(direct.selectable);
+        assert!(!direct.penalized);
+    }
+
+    #[test]
+    fn binding_nodes_include_legacy_vless_aliases() {
+        let proxy_url = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=tcp#东京节点";
+        let normalized_proxy_url =
+            normalize_share_link_scheme(proxy_url, "vless").expect("normalize vless url");
+        let legacy_alias = {
+            let parsed = Url::parse(&normalized_proxy_url).expect("parse normalized vless url");
+            stable_forward_proxy_key(&canonical_share_link_identity(&parsed))
+        };
+        let canonical_key = normalize_single_proxy_key(proxy_url).expect("canonical vless key");
+        assert_ne!(legacy_alias, canonical_key);
+
+        let manager = ForwardProxyManager::new(
+            ForwardProxySettings {
+                proxy_urls: vec![proxy_url.to_string()],
+                ..ForwardProxySettings::default()
+            },
+            Vec::new(),
+        );
+
+        let node = manager
+            .binding_nodes()
+            .into_iter()
+            .find(|candidate| candidate.key == canonical_key)
+            .expect("vless binding node should be present");
+
+        assert!(node.alias_keys.contains(&legacy_alias));
+    }
+
+    #[test]
+    fn automatic_selection_does_not_use_direct() {
+        let mut manager = ForwardProxyManager::new(ForwardProxySettings::default(), Vec::new());
+
+        assert!(manager.select_auto_proxy().is_none());
+    }
+
+    #[test]
+    fn bound_group_network_failures_can_switch_from_direct_to_proxy() {
+        let mut manager = manager_with_manual_proxy();
+        let proxy_key = manager
+            .endpoints
+            .iter()
+            .find(|endpoint| endpoint.key != FORWARD_PROXY_DIRECT_KEY)
+            .map(|endpoint| endpoint.key.clone())
+            .expect("missing non-direct endpoint");
+        let scope = ForwardProxyRouteScope::BoundGroup {
+            group_name: "latam".to_string(),
+            bound_proxy_keys: vec![FORWARD_PROXY_DIRECT_KEY.to_string(), proxy_key.clone()],
+        };
+        manager.bound_group_runtime.insert(
+            "latam".to_string(),
+            BoundForwardProxyGroupState {
+                current_proxy_key: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
+                consecutive_network_failures: 0,
+            },
+        );
+
+        manager.record_scope_result(
+            &scope,
+            FORWARD_PROXY_DIRECT_KEY,
+            ForwardProxyRouteResultKind::NetworkFailure,
+        );
+        manager.record_scope_result(
+            &scope,
+            FORWARD_PROXY_DIRECT_KEY,
+            ForwardProxyRouteResultKind::NetworkFailure,
+        );
+        manager.record_scope_result(
+            &scope,
+            FORWARD_PROXY_DIRECT_KEY,
+            ForwardProxyRouteResultKind::NetworkFailure,
+        );
+
+        let group_state = manager
+            .bound_group_runtime
+            .get("latam")
+            .expect("missing bound group state after failures");
+        assert_eq!(
+            group_state.current_proxy_key.as_deref(),
+            Some(proxy_key.as_str())
+        );
+        assert_eq!(group_state.consecutive_network_failures, 0);
+    }
 }

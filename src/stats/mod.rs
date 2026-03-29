@@ -21,6 +21,9 @@ pub(crate) struct TimeseriesRecord {
     pub(crate) status: Option<String>,
     pub(crate) total_tokens: Option<i64>,
     pub(crate) cost: Option<f64>,
+    pub(crate) t_req_read_ms: Option<f64>,
+    pub(crate) t_req_parse_ms: Option<f64>,
+    pub(crate) t_upstream_connect_ms: Option<f64>,
     pub(crate) t_upstream_ttfb_ms: Option<f64>,
 }
 
@@ -46,6 +49,10 @@ pub(crate) struct InvocationHourlyRollupRecord {
     pub(crate) first_byte_sum_ms: f64,
     pub(crate) first_byte_max_ms: f64,
     pub(crate) first_byte_histogram: String,
+    pub(crate) first_response_byte_total_sample_count: i64,
+    pub(crate) first_response_byte_total_sum_ms: f64,
+    pub(crate) first_response_byte_total_max_ms: f64,
+    pub(crate) first_response_byte_total_histogram: String,
 }
 
 #[derive(Debug, FromRow)]
@@ -114,7 +121,7 @@ pub(crate) fn encode_approx_histogram(counts: &[i64]) -> Result<String> {
 }
 
 pub(crate) fn add_approx_histogram_sample(counts: &mut ApproxHistogramCounts, value_ms: f64) {
-    if !value_ms.is_finite() || value_ms <= 0.0 {
+    if !value_ms.is_finite() || value_ms < 0.0 {
         return;
     }
     let index = APPROX_HISTOGRAM_BUCKETS_MS
@@ -124,6 +131,32 @@ pub(crate) fn add_approx_histogram_sample(counts: &mut ApproxHistogramCounts, va
     if let Some(slot) = counts.get_mut(index) {
         *slot += 1;
     }
+}
+
+pub(crate) fn normalize_non_negative_timing_value(value: Option<f64>) -> Option<f64> {
+    let value = value?;
+    if !value.is_finite() || value < 0.0 {
+        return None;
+    }
+    Some(value)
+}
+
+pub(crate) fn resolve_first_response_byte_total_ms(
+    t_req_read_ms: Option<f64>,
+    t_req_parse_ms: Option<f64>,
+    t_upstream_connect_ms: Option<f64>,
+    t_upstream_ttfb_ms: Option<f64>,
+) -> Option<f64> {
+    let t_upstream_ttfb_ms = normalize_non_negative_timing_value(t_upstream_ttfb_ms)?;
+    if t_upstream_ttfb_ms <= 0.0 {
+        return None;
+    }
+    Some(
+        normalize_non_negative_timing_value(t_req_read_ms)?
+            + normalize_non_negative_timing_value(t_req_parse_ms)?
+            + normalize_non_negative_timing_value(t_upstream_connect_ms)?
+            + t_upstream_ttfb_ms,
+    )
 }
 
 pub(crate) fn merge_approx_histogram_into(
@@ -180,6 +213,10 @@ pub(crate) struct BucketAggregate {
     pub(crate) first_byte_ttfb_values: Vec<f64>,
     pub(crate) first_byte_histogram: ApproxHistogramCounts,
     pub(crate) first_byte_sample_count: i64,
+    pub(crate) first_response_byte_total_sum_ms: f64,
+    pub(crate) first_response_byte_total_values: Vec<f64>,
+    pub(crate) first_response_byte_total_histogram: ApproxHistogramCounts,
+    pub(crate) first_response_byte_total_sample_count: i64,
 }
 
 impl BucketAggregate {
@@ -194,10 +231,7 @@ impl BucketAggregate {
         Some(value)
     }
 
-    pub(crate) fn record_ttfb_sample(&mut self, status: Option<&str>, ttfb_ms: Option<f64>) {
-        let Some(value) = Self::validated_success_ttfb_value(status, ttfb_ms) else {
-            return;
-        };
+    fn record_first_byte_ttfb_value(&mut self, value: f64) {
         self.first_byte_sample_count += 1;
         self.first_byte_ttfb_sum_ms += value;
         self.first_byte_ttfb_values.push(value);
@@ -207,17 +241,64 @@ impl BucketAggregate {
         add_approx_histogram_sample(&mut self.first_byte_histogram, value);
     }
 
+    fn record_first_response_byte_total_value(&mut self, value: f64) {
+        self.first_response_byte_total_sample_count += 1;
+        self.first_response_byte_total_sum_ms += value;
+        self.first_response_byte_total_values.push(value);
+        if self.first_response_byte_total_histogram.is_empty() {
+            self.first_response_byte_total_histogram = empty_approx_histogram();
+        }
+        add_approx_histogram_sample(&mut self.first_response_byte_total_histogram, value);
+    }
+
+    pub(crate) fn record_ttfb_sample(&mut self, status: Option<&str>, ttfb_ms: Option<f64>) {
+        let Some(value) = Self::validated_success_ttfb_value(status, ttfb_ms) else {
+            return;
+        };
+        self.record_first_byte_ttfb_value(value);
+    }
+
     pub(crate) fn record_exact_ttfb_sample(&mut self, status: Option<&str>, ttfb_ms: Option<f64>) {
         let Some(value) = Self::validated_success_ttfb_value(status, ttfb_ms) else {
             return;
         };
-        self.first_byte_sample_count += 1;
-        self.first_byte_ttfb_sum_ms += value;
-        self.first_byte_ttfb_values.push(value);
-        if self.first_byte_histogram.is_empty() {
-            self.first_byte_histogram = empty_approx_histogram();
-        }
-        add_approx_histogram_sample(&mut self.first_byte_histogram, value);
+        self.record_first_byte_ttfb_value(value);
+    }
+
+    pub(crate) fn record_first_response_byte_total_sample(
+        &mut self,
+        t_req_read_ms: Option<f64>,
+        t_req_parse_ms: Option<f64>,
+        t_upstream_connect_ms: Option<f64>,
+        t_upstream_ttfb_ms: Option<f64>,
+    ) {
+        let Some(value) = resolve_first_response_byte_total_ms(
+            t_req_read_ms,
+            t_req_parse_ms,
+            t_upstream_connect_ms,
+            t_upstream_ttfb_ms,
+        ) else {
+            return;
+        };
+        self.record_first_response_byte_total_value(value);
+    }
+
+    pub(crate) fn record_exact_first_response_byte_total_sample(
+        &mut self,
+        t_req_read_ms: Option<f64>,
+        t_req_parse_ms: Option<f64>,
+        t_upstream_connect_ms: Option<f64>,
+        t_upstream_ttfb_ms: Option<f64>,
+    ) {
+        let Some(value) = resolve_first_response_byte_total_ms(
+            t_req_read_ms,
+            t_req_parse_ms,
+            t_upstream_connect_ms,
+            t_upstream_ttfb_ms,
+        ) else {
+            return;
+        };
+        self.record_first_response_byte_total_value(value);
     }
 
     pub(crate) fn first_byte_avg_ms(&self) -> Option<f64> {
@@ -236,6 +317,33 @@ impl BucketAggregate {
             return approx_histogram_percentile_ms(&self.first_byte_histogram, 0.95);
         }
         let mut sorted = self.first_byte_ttfb_values.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        Some(percentile_sorted_f64(&sorted, 0.95))
+    }
+
+    pub(crate) fn first_response_byte_total_avg_ms(&self) -> Option<f64> {
+        if self.first_response_byte_total_sample_count <= 0 {
+            return None;
+        }
+        Some(
+            self.first_response_byte_total_sum_ms
+                / self.first_response_byte_total_sample_count as f64,
+        )
+    }
+
+    pub(crate) fn first_response_byte_total_p95_ms(&self) -> Option<f64> {
+        if self.first_response_byte_total_values.is_empty() {
+            return approx_histogram_percentile_ms(&self.first_response_byte_total_histogram, 0.95);
+        }
+        let histogram_total: i64 = self
+            .first_response_byte_total_histogram
+            .iter()
+            .copied()
+            .sum();
+        if histogram_total > self.first_response_byte_total_values.len() as i64 {
+            return approx_histogram_percentile_ms(&self.first_response_byte_total_histogram, 0.95);
+        }
+        let mut sorted = self.first_response_byte_total_values.clone();
         sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         Some(percentile_sorted_f64(&sorted, 0.95))
     }
@@ -757,7 +865,11 @@ pub(crate) async fn query_invocation_hourly_rollup_range(
             first_byte_sample_count,
             first_byte_sum_ms,
             first_byte_max_ms,
-            first_byte_histogram
+            first_byte_histogram,
+            first_response_byte_total_sample_count,
+            first_response_byte_total_sum_ms,
+            first_response_byte_total_max_ms,
+            first_response_byte_total_histogram
         FROM invocation_rollup_hourly
         WHERE bucket_start_epoch >=
         "#,

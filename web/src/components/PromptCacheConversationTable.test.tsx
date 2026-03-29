@@ -1,11 +1,12 @@
 /** @vitest-environment jsdom */
 import { renderToStaticMarkup } from "react-dom/server";
-import { act, useState } from "react";
+import { act, type ComponentProps, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { I18nProvider } from "../i18n";
 import type {
+  BroadcastPayload,
   PromptCacheConversation,
   PromptCacheConversationsResponse,
   UpstreamAccountDetail,
@@ -19,6 +20,11 @@ const apiMocks = vi.hoisted(() => ({
   fetchInvocationRecords: vi.fn(),
 }));
 
+const sseMocks = vi.hoisted(() => ({
+  listeners: new Set<(payload: BroadcastPayload) => void>(),
+  openListeners: new Set<() => void>(),
+}));
+
 vi.mock("../lib/api", async () => {
   const actual = await vi.importActual<typeof import("../lib/api")>("../lib/api");
   return {
@@ -27,6 +33,17 @@ vi.mock("../lib/api", async () => {
     fetchInvocationRecords: apiMocks.fetchInvocationRecords,
   };
 });
+
+vi.mock("../lib/sse", () => ({
+  subscribeToSse: (listener: (payload: BroadcastPayload) => void) => {
+    sseMocks.listeners.add(listener);
+    return () => sseMocks.listeners.delete(listener);
+  },
+  subscribeToSseOpen: (listener: () => void) => {
+    sseMocks.openListeners.add(listener);
+    return () => sseMocks.openListeners.delete(listener);
+  },
+}));
 
 function renderTable(stats: PromptCacheConversationsResponse) {
   return renderToStaticMarkup(
@@ -97,6 +114,8 @@ describe("PromptCacheConversationTable", () => {
     host?.remove();
     host = null;
     root = null;
+    sseMocks.listeners.clear();
+    sseMocks.openListeners.clear();
     vi.useRealTimers();
   });
 
@@ -117,12 +136,16 @@ describe("PromptCacheConversationTable", () => {
     });
   }
 
-  function renderInteractive(stats: PromptCacheConversationsResponse | null) {
+  function renderInteractive(
+    stats: PromptCacheConversationsResponse | null,
+    props: Partial<ComponentProps<typeof PromptCacheConversationTable>> = {},
+  ) {
     renderInteractiveElement(
       <PromptCacheConversationTable
         stats={stats}
         isLoading={false}
         error={null}
+        {...props}
       />,
     );
   }
@@ -133,6 +156,19 @@ describe("PromptCacheConversationTable", () => {
         button.getAttribute("aria-label") === label ||
         button.textContent?.includes(label) === true,
     )[index] ?? null;
+  }
+
+  function emitSseRecords(payload: BroadcastPayload) {
+    act(() => {
+      sseMocks.listeners.forEach((listener) => listener(payload));
+    });
+  }
+
+  async function flushInteractive() {
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
   }
 
   it("renders conversation metrics and unified 24h sparkline surfaces", () => {
@@ -327,7 +363,7 @@ describe("PromptCacheConversationTable", () => {
 
     const html = renderTable(stats);
 
-    expect(html).toContain("暂无 Prompt Cache Key 对话数据。");
+    expect(html).toContain("暂无对话数据。");
     expect(html).toContain("有 2 个更新创建的对话因未在近 24 小时活动而未显示");
   });
 
@@ -532,60 +568,8 @@ describe("PromptCacheConversationTable", () => {
     expect(html).toContain("tabular-nums");
   });
 
-  it("opens and closes the upstream account drawer from prompt cache rows", async () => {
-    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue({
-      id: 101,
-      kind: "oauth_codex",
-      provider: "openai",
-      displayName: "Pool Alpha",
-      groupName: "group-a",
-      isMother: false,
-      status: "active",
-      enabled: true,
-      email: "pool-alpha@example.com",
-      chatgptAccountId: "org_pool_alpha",
-      chatgptUserId: "user_pool_alpha",
-      planType: "team",
-      maskedApiKey: null,
-      lastSyncedAt: "2026-03-02T16:20:00Z",
-      lastSuccessfulSyncAt: "2026-03-02T16:18:00Z",
-      lastActivityAt: "2026-03-02T16:00:00Z",
-      lastError: null,
-      lastErrorAt: null,
-      tokenExpiresAt: "2026-03-02T22:00:00Z",
-      lastRefreshedAt: "2026-03-02T16:19:00Z",
-      primaryWindow: {
-        usedPercent: 22,
-        usedText: "22 / 100",
-        limitText: "100 requests",
-        resetsAt: "2026-03-02T18:00:00Z",
-        windowDurationMins: 300,
-      },
-      secondaryWindow: {
-        usedPercent: 38,
-        usedText: "38 / 100",
-        limitText: "100 requests",
-        resetsAt: "2026-03-09T00:00:00Z",
-        windowDurationMins: 10080,
-      },
-      credits: null,
-      localLimits: null,
-      duplicateInfo: null,
-      tags: [],
-      effectiveRoutingRule: {
-        guardEnabled: false,
-        lookbackHours: null,
-        maxConversations: null,
-        allowCutOut: true,
-        allowCutIn: true,
-        sourceTagIds: [],
-        sourceTagNames: [],
-        guardRules: [],
-      },
-      note: null,
-      upstreamBaseUrl: null,
-      history: [],
-    });
+  it("forwards prompt cache account clicks to the shared upstream account controller", async () => {
+    const onOpenUpstreamAccount = vi.fn();
 
     renderInteractive({
       rangeStart: "2026-03-02T00:00:00Z",
@@ -623,7 +607,7 @@ describe("PromptCacheConversationTable", () => {
           last24hRequests: [],
         }),
       ],
-    });
+    }, { onOpenUpstreamAccount });
 
     const trigger = Array.from(document.querySelectorAll("button")).find((button) =>
       button.textContent?.includes("Pool Alpha"),
@@ -635,21 +619,8 @@ describe("PromptCacheConversationTable", () => {
       await Promise.resolve();
     });
 
-    expect(apiMocks.fetchUpstreamAccountDetail).toHaveBeenCalledWith(101);
-    expect(document.body.textContent).toContain("上游账号");
-    expect(document.body.textContent).toContain("Pool Alpha");
-    expect(document.body.textContent).toContain("去号池查看完整详情");
-
-    const drawerWrapper = document
-      .querySelector('section[role="dialog"]')
-      ?.parentElement;
-    expect(drawerWrapper).toBeTruthy();
-
-    await act(async () => {
-      drawerWrapper?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      await Promise.resolve();
-    });
-
+    expect(onOpenUpstreamAccount).toHaveBeenCalledWith(101, "Pool Alpha");
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
     expect(document.body.textContent).not.toContain("去号池查看完整详情");
   });
 
@@ -723,14 +694,17 @@ describe("PromptCacheConversationTable", () => {
       await Promise.resolve();
     });
 
-    expect(document.body.textContent).toContain("输入 / 缓存");
+    expect(
+      document.querySelector('[data-testid="invocation-table-scroll"]'),
+    ).toBeTruthy();
+    expect(document.body.textContent).toContain("首字总耗时 / HTTP 压缩");
+    expect(document.body.textContent).not.toContain("输入 / 缓存");
     expect(document.body.textContent).toContain("gpt-5.4");
     expect(document.body.textContent).toContain("Proxy West");
-    expect(document.body.textContent).toContain("失败");
     expect(document.body.textContent).toContain("3,210");
 
     const detailToggle = document.querySelector(
-      'button[aria-controls^="records-list-details-"]',
+      'button[aria-controls^="invocation-table-details-"]',
     ) as HTMLButtonElement | null;
     expect(detailToggle).toBeTruthy();
 
@@ -752,7 +726,7 @@ describe("PromptCacheConversationTable", () => {
       await Promise.resolve();
     });
 
-    expect(document.body.textContent).not.toContain("输入 / 缓存");
+    expect(document.body.textContent).not.toContain("总时延");
   });
 
   it("toggles recent invocation previews inline without external expansion state", async () => {
@@ -803,7 +777,10 @@ describe("PromptCacheConversationTable", () => {
       await Promise.resolve();
     });
 
-    expect(document.body.textContent).toContain("输入 / 缓存");
+    expect(
+      document.querySelector('[data-testid="invocation-table-scroll"]'),
+    ).toBeTruthy();
+    expect(document.body.textContent).toContain("首字总耗时 / HTTP 压缩");
     expect(document.body.textContent).toContain("Proxy Central");
 
     const collapseButton = findButtonByAriaLabel("收起最近调用记录");
@@ -814,7 +791,7 @@ describe("PromptCacheConversationTable", () => {
       await Promise.resolve();
     });
 
-    expect(document.body.textContent).not.toContain("输入 / 缓存");
+    expect(document.body.textContent).not.toContain("总时延");
   });
 
   it("opens the history drawer and preserves loaded records when later pages fail", async () => {
@@ -884,9 +861,8 @@ describe("PromptCacheConversationTable", () => {
 
     await act(async () => {
       historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-      await Promise.resolve();
-      await Promise.resolve();
     });
+    await flushInteractive();
 
     expect(apiMocks.fetchInvocationRecords).toHaveBeenNthCalledWith(1, {
       promptCacheKey: "pck-history",
@@ -904,6 +880,11 @@ describe("PromptCacheConversationTable", () => {
       snapshotId: 901,
     });
     expect(document.body.textContent).toContain("全部保留调用记录");
+    expect(
+      document.querySelector('[data-testid="invocation-table-scroll"]'),
+    ).toBeTruthy();
+    expect(document.body.textContent).toContain("首字总耗时 / HTTP 压缩");
+    expect(document.body.textContent).not.toContain("输入 / 缓存");
     expect(document.body.textContent).toContain("Proxy West");
     expect(document.body.textContent).toContain("HTTP 502");
     expect(document.body.textContent).toContain("page 2 failed");
@@ -918,5 +899,176 @@ describe("PromptCacheConversationTable", () => {
     });
 
     expect(document.body.textContent).not.toContain("全部保留调用记录");
+  });
+
+  it("streams live history rows into the open drawer and replaces running snapshots with final records", async () => {
+    let resolveRefresh!: (value: {
+      snapshotId: number;
+      total: number;
+      page: number;
+      pageSize: number;
+      records: Array<Record<string, unknown>>;
+    }) => void;
+    const refreshPromise = new Promise<{
+      snapshotId: number;
+      total: number;
+      page: number;
+      pageSize: number;
+      records: Array<Record<string, unknown>>;
+    }>((resolve) => {
+      resolveRefresh = resolve;
+    });
+
+    apiMocks.fetchInvocationRecords
+      .mockResolvedValueOnce({
+        snapshotId: 902,
+        total: 1,
+        page: 1,
+        pageSize: 200,
+        records: [
+          {
+            id: 61,
+            invokeId: "history-base-61",
+            occurredAt: "2026-03-02T12:10:00Z",
+            status: "completed",
+            failureClass: "none",
+            totalTokens: 900,
+            cost: 0.2,
+            endpoint: "/v1/responses",
+            promptCacheKey: "pck-history-live",
+            upstreamAccountId: 101,
+            upstreamAccountName: "Pool Alpha",
+            proxyDisplayName: "Proxy Base",
+            createdAt: "2026-03-02T12:10:00Z",
+          },
+        ],
+      })
+      .mockImplementationOnce(async () => refreshPromise);
+
+    renderInteractive({
+      rangeStart: "2026-03-02T00:00:00Z",
+      rangeEnd: "2026-03-03T00:00:00Z",
+      selectionMode: "count",
+      selectedLimit: 50,
+      selectedActivityHours: null,
+      implicitFilter: { kind: null, filteredCount: 0 },
+      conversations: [
+        createConversation({
+          promptCacheKey: "pck-history-live",
+          requestCount: 2,
+          totalTokens: 2400,
+          totalCost: 0.51,
+          createdAt: "2026-03-02T10:00:00Z",
+          lastActivityAt: "2026-03-02T12:35:00Z",
+          last24hRequests: [],
+        }),
+      ],
+    });
+
+    const historyButton = findButtonByAriaLabel("打开全部调用记录");
+    expect(historyButton).toBeTruthy();
+
+    await act(async () => {
+      historyButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(document.body.textContent).toContain("Proxy Base");
+
+    emitSseRecords({
+      type: "records",
+      records: [
+        {
+          id: 62,
+          invokeId: "history-live-62",
+          occurredAt: "2026-03-02T12:35:00Z",
+          createdAt: "2026-03-02T12:35:00Z",
+          status: "running",
+          promptCacheKey: "pck-history-live",
+          totalTokens: 0,
+          cost: 0,
+          proxyDisplayName: "Proxy Running",
+        },
+      ],
+    });
+    await flushInteractive();
+
+    expect(document.body.textContent).toContain("Proxy Running");
+    expect(document.body.textContent).toContain("共 2 条保留调用记录");
+
+    emitSseRecords({
+      type: "records",
+      records: [
+        {
+          id: 62,
+          invokeId: "history-live-62",
+          occurredAt: "2026-03-02T12:35:00Z",
+          createdAt: "2026-03-02T12:35:00Z",
+          status: "completed",
+          promptCacheKey: "pck-history-live",
+          totalTokens: 1500,
+          cost: 0.31,
+          proxyDisplayName: "Proxy Final",
+        },
+      ],
+    });
+    await flushInteractive();
+
+    expect(document.body.textContent).toContain("Proxy Final");
+    expect(document.body.textContent).not.toContain("Proxy Running");
+
+    await act(async () => {
+      resolveRefresh({
+        snapshotId: 903,
+        total: 2,
+        page: 1,
+        pageSize: 200,
+        records: [
+          {
+            id: 62,
+            invokeId: "history-live-62",
+            occurredAt: "2026-03-02T12:35:00Z",
+            status: "completed",
+            failureClass: "none",
+            totalTokens: 1500,
+            cost: 0.31,
+            endpoint: "/v1/responses",
+            promptCacheKey: "pck-history-live",
+            upstreamAccountId: 101,
+            upstreamAccountName: "Pool Alpha",
+            proxyDisplayName: "Proxy Final",
+            createdAt: "2026-03-02T12:35:00Z",
+          },
+          {
+            id: 61,
+            invokeId: "history-base-61",
+            occurredAt: "2026-03-02T12:10:00Z",
+            status: "completed",
+            failureClass: "none",
+            totalTokens: 900,
+            cost: 0.2,
+            endpoint: "/v1/responses",
+            promptCacheKey: "pck-history-live",
+            upstreamAccountId: 101,
+            upstreamAccountName: "Pool Alpha",
+            proxyDisplayName: "Proxy Base",
+            createdAt: "2026-03-02T12:10:00Z",
+          },
+        ],
+      });
+      await refreshPromise;
+    });
+    await flushInteractive();
+
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenNthCalledWith(2, {
+      promptCacheKey: "pck-history-live",
+      page: 1,
+      pageSize: 200,
+      sortBy: "occurredAt",
+      sortOrder: "desc",
+    });
+    expect(document.body.textContent).toContain("Proxy Final");
+    expect(document.body.textContent).not.toContain("Proxy Running");
   });
 });

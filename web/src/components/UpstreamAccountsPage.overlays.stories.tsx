@@ -33,16 +33,18 @@ export default meta
 
 type Story = StoryObj<typeof meta>
 
+function detailRouteEntry(accountId: number, state?: Record<string, unknown>) {
+  return {
+    pathname: '/account-pool/upstream-accounts',
+    search: `?upstreamAccountId=${accountId}`,
+    state,
+  }
+}
+
 export const DetailDrawer: Story = {
   render: () => (
     <AccountPoolStoryRouter
-      initialEntry={{
-        pathname: '/account-pool/upstream-accounts',
-        state: {
-          selectedAccountId: 101,
-          openDetail: true,
-        },
-      }}
+      initialEntry={detailRouteEntry(101)}
     />
   ),
   play: async ({ canvasElement }) => {
@@ -62,17 +64,28 @@ export const DetailDrawer: Story = {
   },
 }
 
+export const MissingWindowPlaceholders: Story = {
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={detailRouteEntry(102)}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const dialog = await documentScope.findByRole('dialog', { name: /Team key - missing weekly limit/i })
+    await expect(within(dialog).getByText(/18 requests/i)).toBeInTheDocument()
+    expect(within(dialog).getAllByText('-').length).toBeGreaterThanOrEqual(4)
+    await expect(within(dialog).queryByText(/还没有额度历史|No quota history yet/i)).not.toBeInTheDocument()
+  },
+}
+
 export const DeleteConfirmation: Story = {
   render: () => (
     <AccountPoolStoryRouter
-      initialEntry={{
-        pathname: '/account-pool/upstream-accounts',
-        state: {
-          selectedAccountId: 101,
-          openDetail: true,
-          openDeleteConfirm: true,
-        },
-      }}
+      initialEntry={detailRouteEntry(101, {
+        selectedAccountId: 101,
+        openDeleteConfirm: true,
+      })}
     />
   ),
   play: async ({ canvasElement }) => {
@@ -86,14 +99,10 @@ export const DeleteConfirmation: Story = {
 export const DeleteFailure: Story = {
   render: () => (
     <AccountPoolStoryRouter
-      initialEntry={{
-        pathname: '/account-pool/upstream-accounts',
-        state: {
-          selectedAccountId: 101,
-          openDetail: true,
-          openDeleteConfirm: true,
-        },
-      }}
+      initialEntry={detailRouteEntry(101, {
+        selectedAccountId: 101,
+        openDeleteConfirm: true,
+      })}
     />
   ),
   play: async ({ canvasElement }) => {
@@ -348,13 +357,7 @@ export const RoutingDialogValidation: Story = {
 export const CompactSupportDetailDrawer: Story = {
   render: () => (
     <AccountPoolStoryRouter
-      initialEntry={{
-        pathname: '/account-pool/upstream-accounts',
-        state: {
-          selectedAccountId: 101,
-          openDetail: true,
-        },
-      }}
+      initialEntry={detailRouteEntry(101)}
     />
   ),
   play: async ({ canvasElement }) => {
@@ -374,13 +377,7 @@ export const CompactSupportDetailDrawer: Story = {
 export const DetailDrawerGroupNotes: Story = {
   render: () => (
     <AccountPoolStoryRouter
-      initialEntry={{
-        pathname: '/account-pool/upstream-accounts',
-        state: {
-          selectedAccountId: 101,
-          openDetail: true,
-        },
-      }}
+      initialEntry={detailRouteEntry(101)}
     />
   ),
   play: async ({ canvasElement }) => {
@@ -389,11 +386,11 @@ export const DetailDrawerGroupNotes: Story = {
     await userEvent.click(within(dialog).getByRole('tab', { name: /编辑|edit/i }))
     await userEvent.click(
       await within(dialog).findByRole('button', {
-        name: /编辑分组备注|edit group note/i,
+        name: /编辑分组设置|edit group settings|编辑分组备注|edit group note/i,
       }),
     )
     await expect(
-      documentScope.getByRole('dialog', { name: /编辑分组备注|edit group note/i }),
+      documentScope.getByRole('dialog', { name: /分组设置|group settings|分组备注|group note/i }),
     ).toBeInTheDocument()
     await expect(documentScope.getByText(/production/i)).toBeInTheDocument()
   },
@@ -402,13 +399,7 @@ export const DetailDrawerGroupNotes: Story = {
 export const DetailDrawerApiKeyInvalidUpstreamUrl: Story = {
   render: () => (
     <AccountPoolStoryRouter
-      initialEntry={{
-        pathname: '/account-pool/upstream-accounts',
-        state: {
-          selectedAccountId: 102,
-          openDetail: true,
-        },
-      }}
+      initialEntry={detailRouteEntry(102)}
     />
   ),
   play: async ({ canvasElement }) => {
@@ -447,13 +438,7 @@ export const DuplicateOauthDetail: Story = {
   name: 'Duplicate OAuth Detail',
   render: () => (
     <AccountPoolStoryRouter
-      initialEntry={{
-        pathname: '/account-pool/upstream-accounts',
-        state: {
-          selectedAccountId: 101,
-          openDetail: true,
-        },
-      }}
+      initialEntry={detailRouteEntry(101)}
     />
   ),
 }

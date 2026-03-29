@@ -57,6 +57,7 @@ const labels = {
       working: 'Working',
       idle: 'Idle',
       rate_limited: 'Rate limited',
+      unavailable: 'Unavailable',
     })[status] ?? status,
   workStatusCount: (count: number) => `Working ${count}`,
   enableStatus: (status: string) =>
@@ -81,6 +82,7 @@ const labels = {
   action: (action?: string | null) =>
     ({
       route_hard_unavailable: 'Hard unavailable',
+      route_retryable_failure: 'Temporary upstream failure',
       route_cooldown_started: 'Route cooldown',
       sync_failed: 'Sync failed',
       sync_recovery_blocked: 'Recovery blocked',
@@ -105,6 +107,7 @@ const labels = {
     ({
       upstream_http_402: 'Plan or billing rejected',
       upstream_http_429_quota_exhausted: 'Weekly cap exhausted',
+      upstream_server_overloaded: 'Upstream is temporarily overloaded',
       quota_still_exhausted: 'Still exhausted',
       reauth_required: 'Needs reauth',
     })[reason ?? ''] ??
@@ -336,6 +339,99 @@ describe('UpstreamAccountsTable', () => {
     expect(html).toContain('truncate whitespace-nowrap')
   })
 
+  it('renders missing secondary windows with weak ASCII placeholders instead of 0%', () => {
+    const html = renderTable([
+      {
+        id: 18,
+        kind: 'api_key_codex',
+        provider: 'codex',
+        displayName: 'Missing weekly limit key',
+        groupName: null,
+        isMother: false,
+        status: 'active',
+        displayStatus: 'active',
+        enabled: true,
+        enableStatus: 'enabled',
+        workStatus: 'idle',
+        healthStatus: 'normal',
+        syncState: 'idle',
+        planType: 'local',
+        lastSuccessfulSyncAt: '2026-03-16T01:55:00.000Z',
+        lastActivityAt: '2026-03-16T02:05:00.000Z',
+        primaryWindow: {
+          usedPercent: 18,
+          usedText: '18 requests',
+          limitText: '120 requests',
+          resetsAt: '2026-03-16T06:55:00.000Z',
+          windowDurationMins: 300,
+        },
+        secondaryWindow: null,
+        credits: null,
+        localLimits: {
+          primaryLimit: 120,
+          secondaryLimit: null,
+          limitUnit: 'requests',
+        },
+        duplicateInfo: null,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
+    ])
+
+    expect(html).toContain('Missing weekly limit key')
+    expect(html).toContain('18 requests')
+    expect((html.match(/>-</g) ?? []).length).toBe(3)
+    expect(html).toContain('text-base-content/55')
+    expect(html).toContain('min-w-[2ch]')
+    expect(html).not.toContain('>7D<')
+    expect(html).not.toContain('>0%</span>')
+    expect(html).not.toContain('>—<')
+  })
+
+  it('keeps the secondary label when the weekly limit still exists but the snapshot is missing', () => {
+    const html = renderTable([
+      {
+        id: 19,
+        kind: 'api_key_codex',
+        provider: 'codex',
+        displayName: 'Missing weekly snapshot',
+        groupName: null,
+        isMother: false,
+        status: 'active',
+        displayStatus: 'active',
+        enabled: true,
+        enableStatus: 'enabled',
+        workStatus: 'idle',
+        healthStatus: 'normal',
+        syncState: 'idle',
+        planType: 'local',
+        lastSuccessfulSyncAt: '2026-03-16T01:55:00.000Z',
+        lastActivityAt: '2026-03-16T02:05:00.000Z',
+        primaryWindow: {
+          usedPercent: 18,
+          usedText: '18 requests',
+          limitText: '120 requests',
+          resetsAt: '2026-03-16T06:55:00.000Z',
+          windowDurationMins: 300,
+        },
+        secondaryWindow: null,
+        credits: null,
+        localLimits: {
+          primaryLimit: 120,
+          secondaryLimit: 500,
+          limitUnit: 'requests',
+        },
+        duplicateInfo: null,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
+    ])
+
+    expect(html).toContain('Missing weekly snapshot')
+    expect(html).toContain('>7D<')
+    expect((html.match(/>-</g) ?? []).length).toBe(3)
+  })
+
   it('renders counted working badges and keeps the rate-limited exception visible', () => {
     const html = renderTable([
       {
@@ -548,7 +644,7 @@ describe('UpstreamAccountsTable', () => {
         displayStatus: 'upstream_rejected',
         enabled: true,
         enableStatus: 'enabled',
-        workStatus: 'idle',
+        workStatus: 'unavailable',
         healthStatus: 'upstream_rejected',
         syncState: 'idle',
         planType: 'team',

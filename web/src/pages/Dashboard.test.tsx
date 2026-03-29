@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
+import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import DashboardPage from './Dashboard'
 
@@ -126,7 +127,7 @@ function render(ui: React.ReactNode) {
   document.body.appendChild(host)
   root = createRoot(host)
   act(() => {
-    root?.render(ui)
+    root?.render(<MemoryRouter>{ui}</MemoryRouter>)
   })
 }
 

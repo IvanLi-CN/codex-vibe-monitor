@@ -6,13 +6,13 @@ import {
   fetchForwardProxyLiveStats,
   fetchForwardProxyTimeseries,
   fetchPromptCacheConversations,
+  fetchTimeseries,
   fetchSettings,
   fetchSummary,
   fetchUpstreamAccountDetail,
   fetchUpstreamAccounts,
   fetchUpstreamStickyConversations,
   updateOauthLoginSession,
-  updateProxySettings,
   updatePoolRoutingSettings,
   validateForwardProxyCandidate,
 } from "./api";
@@ -224,6 +224,70 @@ describe("fetchForwardProxyLiveStats", () => {
     const response = await fetchForwardProxyLiveStats();
     expect(response.nodes).toHaveLength(1);
     expect(response.nodes[0].weight24h).toEqual([]);
+  });
+});
+
+describe("fetchTimeseries", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("normalizes first-response-byte-total fields from the timeseries payload", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(
+          JSON.stringify({
+            rangeStart: "2026-03-26T12:00:00Z",
+            rangeEnd: "2026-03-26T13:00:00Z",
+            bucketSeconds: 900,
+            effectiveBucket: "15m",
+            availableBuckets: ["15m", "1h"],
+            bucketLimitedToDaily: false,
+            points: [
+              {
+                bucketStart: "2026-03-26T12:00:00Z",
+                bucketEnd: "2026-03-26T12:15:00Z",
+                totalCount: 11,
+                successCount: 10,
+                failureCount: 1,
+                totalTokens: 193414,
+                totalCost: 0.0543,
+                firstByteSampleCount: 10,
+                firstByteAvgMs: 81.7,
+                firstByteP95Ms: 95.2,
+                firstResponseByteTotalSampleCount: 10,
+                firstResponseByteTotalAvgMs: 43890,
+                firstResponseByteTotalP95Ms: 52340,
+              },
+              {
+                bucketStart: "2026-03-26T12:15:00Z",
+                bucketEnd: "2026-03-26T12:30:00Z",
+                totalCount: 0,
+                successCount: 0,
+                failureCount: 0,
+                totalTokens: 0,
+                totalCost: 0,
+                firstResponseByteTotalSampleCount: Number.NaN,
+                firstResponseByteTotalAvgMs: "bad",
+                firstResponseByteTotalP95Ms: null,
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch,
+    );
+
+    const response = await fetchTimeseries("1h", { bucket: "15m" });
+    expect(response.bucketSeconds).toBe(900);
+    expect(response.points).toHaveLength(2);
+    expect(response.points[0].firstResponseByteTotalSampleCount).toBe(10);
+    expect(response.points[0].firstResponseByteTotalAvgMs).toBe(43890);
+    expect(response.points[0].firstResponseByteTotalP95Ms).toBe(52340);
+    expect(response.points[1].firstResponseByteTotalSampleCount).toBe(0);
+    expect(response.points[1].firstResponseByteTotalAvgMs).toBeNull();
+    expect(response.points[1].firstResponseByteTotalP95Ms).toBeNull();
   });
 });
 
@@ -511,32 +575,38 @@ describe("createOauthMailboxSession", () => {
   });
 });
 
-describe("proxy settings normalization", () => {
+describe("settings normalization", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
   });
 
-  it("defaults invalid fast rewrite mode to disabled when fetching settings", async () => {
+  it("normalizes forward proxy settings when fetching settings", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => {
         return new Response(
           JSON.stringify({
-            proxy: {
-              hijackEnabled: true,
-              mergeUpstreamEnabled: true,
-              defaultHijackEnabled: false,
-              models: ["gpt-5.3-codex"],
-              enabledModels: ["gpt-5.3-codex"],
-              fastModeRewriteMode: "wat",
-              upstream429MaxRetries: 99,
-            },
             forwardProxy: {
-              proxyUrls: [],
-              subscriptionUrls: [],
-              subscriptionUpdateIntervalSecs: 3600,
-              insertDirect: true,
-              nodes: [],
+              proxyUrls: ["socks5://127.0.0.1:1080"],
+              subscriptionUrls: ["https://example.com/subscription.txt"],
+              subscriptionUpdateIntervalSecs: 900,
+              nodes: [
+                {
+                  key: "jp-edge-01",
+                  source: "manual",
+                  displayName: "JP Edge 01",
+                  endpointUrl: "socks5://127.0.0.1:1080",
+                  weight: 0.9,
+                  penalized: false,
+                  stats: {
+                    oneMinute: { attempts: 2 },
+                    fifteenMinutes: { attempts: 10 },
+                    oneHour: { attempts: 20 },
+                    oneDay: { attempts: 30 },
+                    sevenDays: { attempts: 40 },
+                  },
+                },
+              ],
             },
             pricing: {
               catalogVersion: "v1",
@@ -549,85 +619,76 @@ describe("proxy settings normalization", () => {
     );
 
     const settings = await fetchSettings();
-    expect(settings.proxy.fastModeRewriteMode).toBe("disabled");
-    expect(settings.proxy.upstream429MaxRetries).toBe(5);
+    expect(settings.forwardProxy.subscriptionUpdateIntervalSecs).toBe(900);
+    expect(settings.forwardProxy.nodes).toHaveLength(1);
+    expect(settings.forwardProxy.nodes[0].displayName).toBe("JP Edge 01");
   });
 
-  it("defaults invalid upstream 429 retry count to 3 when fetching settings", async () => {
+  it("normalizes bound proxy keys and binding nodes in upstream account list", async () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async () => {
         return new Response(
           JSON.stringify({
-            proxy: {
-              hijackEnabled: true,
-              mergeUpstreamEnabled: true,
-              defaultHijackEnabled: false,
-              models: ["gpt-5.3-codex"],
-              enabledModels: ["gpt-5.3-codex"],
-              fastModeRewriteMode: "disabled",
-              upstream429MaxRetries: "bad",
-            },
-            forwardProxy: {
-              proxyUrls: [],
-              subscriptionUrls: [],
-              subscriptionUpdateIntervalSecs: 3600,
-              insertDirect: true,
-              nodes: [],
-            },
-            pricing: {
-              catalogVersion: "v1",
-              entries: [],
-            },
+            writesEnabled: true,
+            items: [],
+            groups: [
+              {
+                groupName: "production",
+                note: "Premium traffic",
+                boundProxyKeys: ["jp-edge-01", "sg-edge-02", "jp-edge-01"],
+              },
+            ],
+            forwardProxyNodes: [
+              {
+                key: "jp-edge-01",
+                source: "manual",
+                displayName: "JP Edge 01",
+                protocolLabel: "HTTP",
+                penalized: false,
+                selectable: true,
+                last24h: [
+                  {
+                    bucketStart: "2026-03-01T00:00:00Z",
+                    bucketEnd: "2026-03-01T01:00:00Z",
+                    successCount: 5,
+                    failureCount: 1,
+                  },
+                ],
+              },
+              {
+                key: "fpn_deadbeefcafebabe",
+                source: "missing",
+                displayName: "历史东京中继",
+                protocolLabel: "unknown",
+                penalized: false,
+                selectable: false,
+                last24h: [],
+              },
+            ],
+            hasUngroupedAccounts: false,
+            total: 0,
+            page: 1,
+            pageSize: 20,
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
         );
       }) as typeof fetch,
     );
 
-    const settings = await fetchSettings();
-    expect(settings.proxy.upstream429MaxRetries).toBe(3);
-  });
-
-  it("sends upstream 429 retry count in proxy settings update payload", async () => {
-    const fetchMock = vi.fn(
-      async (_input: RequestInfo | URL, init?: RequestInit) => {
-        expect(init?.method).toBe("PUT");
-        expect(typeof init?.body).toBe("string");
-        expect(JSON.parse(String(init?.body))).toEqual({
-          hijackEnabled: true,
-          mergeUpstreamEnabled: false,
-          enabledModels: ["gpt-5.3-codex"],
-          fastModeRewriteMode: "force_priority",
-          upstream429MaxRetries: 4,
-        });
-        return new Response(
-          JSON.stringify({
-            hijackEnabled: true,
-            mergeUpstreamEnabled: false,
-            defaultHijackEnabled: false,
-            models: ["gpt-5.3-codex"],
-            enabledModels: ["gpt-5.3-codex"],
-            fastModeRewriteMode: "force_priority",
-            upstream429MaxRetries: 4,
-          }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        );
-      },
-    );
-    vi.stubGlobal("fetch", fetchMock as typeof fetch);
-
-    const response = await updateProxySettings({
-      hijackEnabled: true,
-      mergeUpstreamEnabled: false,
-      enabledModels: ["gpt-5.3-codex"],
-      fastModeRewriteMode: "force_priority",
-      upstream429MaxRetries: 4,
-    });
-
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(response.fastModeRewriteMode).toBe("force_priority");
-    expect(response.upstream429MaxRetries).toBe(4);
+    const response = await fetchUpstreamAccounts();
+    expect(response.groups[0].boundProxyKeys).toEqual([
+      "jp-edge-01",
+      "sg-edge-02",
+      "jp-edge-01",
+    ]);
+    expect(response.forwardProxyNodes ?? []).toHaveLength(2);
+    expect(response.forwardProxyNodes?.[0]?.protocolLabel).toBe("HTTP");
+    expect(response.forwardProxyNodes?.[1]?.selectable).toBe(false);
+    expect(response.forwardProxyNodes?.[1]?.protocolLabel).toBe("UNKNOWN");
+    expect(response.forwardProxyNodes?.[1]?.displayName).toBe("历史东京中继");
+    expect(response.forwardProxyNodes?.[0]?.last24h[0]?.successCount).toBe(5);
+    expect(response.forwardProxyNodes?.[1]?.last24h).toEqual([]);
   });
 });
 
@@ -888,7 +949,7 @@ describe("account pool frontend API helpers", () => {
   it("serializes upstream account roster filters into the query string", async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL) => {
       expect(String(_input)).toContain(
-        "/api/pool/upstream-accounts?groupSearch=prod&groupUngrouped=false&workStatus=rate_limited&enableStatus=enabled&healthStatus=normal&tagIds=1&tagIds=2",
+        "/api/pool/upstream-accounts?groupSearch=prod&groupUngrouped=false&workStatus=rate_limited&workStatus=working&enableStatus=enabled&healthStatus=normal&healthStatus=needs_reauth&tagIds=1&tagIds=2",
       );
       return new Response(
         JSON.stringify({
@@ -909,9 +970,9 @@ describe("account pool frontend API helpers", () => {
     const response = await fetchUpstreamAccounts({
       groupSearch: "prod",
       groupUngrouped: false,
-      workStatus: "rate_limited",
-      enableStatus: "enabled",
-      healthStatus: "normal",
+      workStatus: ["rate_limited", "working"],
+      enableStatus: ["enabled"],
+      healthStatus: ["normal", "needs_reauth"],
       tagIds: [1, 2],
     });
 
@@ -949,6 +1010,16 @@ describe("account pool frontend API helpers", () => {
                 displayStatus: "disabled",
                 enabled: false,
               },
+              {
+                id: 11,
+                kind: "oauth_codex",
+                provider: "codex",
+                displayName: "Legacy upstream rejected",
+                isMother: false,
+                status: "error",
+                displayStatus: "upstream_rejected",
+                enabled: true,
+              },
             ],
           }),
           { status: 200, headers: { "Content-Type": "application/json" } },
@@ -968,6 +1039,12 @@ describe("account pool frontend API helpers", () => {
       enableStatus: "disabled",
       workStatus: "idle",
       healthStatus: "normal",
+      syncState: "idle",
+    });
+    expect(response.items[2]).toMatchObject({
+      enableStatus: "enabled",
+      workStatus: "unavailable",
+      healthStatus: "upstream_rejected",
       syncState: "idle",
     });
   });
@@ -1125,6 +1202,26 @@ describe("account pool frontend API helpers", () => {
                   upstreamAccountId: 42,
                   upstreamAccountName: "Pool Alpha",
                   endpoint: "/v1/responses",
+                  source: "proxy",
+                  inputTokens: 18,
+                  outputTokens: 12,
+                  cacheInputTokens: 6,
+                  reasoningTokens: 3,
+                  reasoningEffort: "high",
+                  errorMessage: "[upstream_response_failed] preview error",
+                  failureKind: "upstream_response_failed",
+                  isActionable: true,
+                  responseContentEncoding: "br",
+                  requestedServiceTier: "flex",
+                  serviceTier: "scale",
+                  tReqReadMs: 10,
+                  tReqParseMs: 11,
+                  tUpstreamConnectMs: 12,
+                  tUpstreamTtfbMs: 13,
+                  tUpstreamStreamMs: 14,
+                  tRespParseMs: 15,
+                  tPersistMs: 16,
+                  tTotalMs: 91,
                 },
               ],
               last24hRequests: [],
@@ -1161,5 +1258,40 @@ describe("account pool frontend API helpers", () => {
     expect(response.conversations[0]?.recentInvocations[0]?.endpoint).toBe(
       "/v1/responses",
     );
+    expect(response.conversations[0]?.recentInvocations[0]?.source).toBe("proxy");
+    expect(response.conversations[0]?.recentInvocations[0]?.inputTokens).toBe(18);
+    expect(response.conversations[0]?.recentInvocations[0]?.outputTokens).toBe(12);
+    expect(response.conversations[0]?.recentInvocations[0]?.cacheInputTokens).toBe(6);
+    expect(response.conversations[0]?.recentInvocations[0]?.reasoningTokens).toBe(3);
+    expect(response.conversations[0]?.recentInvocations[0]?.reasoningEffort).toBe(
+      "high",
+    );
+    expect(response.conversations[0]?.recentInvocations[0]?.failureKind).toBe(
+      "upstream_response_failed",
+    );
+    expect(response.conversations[0]?.recentInvocations[0]?.isActionable).toBe(true);
+    expect(
+      response.conversations[0]?.recentInvocations[0]?.responseContentEncoding,
+    ).toBe("br");
+    expect(
+      response.conversations[0]?.recentInvocations[0]?.requestedServiceTier,
+    ).toBe("flex");
+    expect(response.conversations[0]?.recentInvocations[0]?.serviceTier).toBe(
+      "scale",
+    );
+    expect(response.conversations[0]?.recentInvocations[0]?.tReqReadMs).toBe(10);
+    expect(response.conversations[0]?.recentInvocations[0]?.tReqParseMs).toBe(11);
+    expect(response.conversations[0]?.recentInvocations[0]?.tUpstreamConnectMs).toBe(
+      12,
+    );
+    expect(response.conversations[0]?.recentInvocations[0]?.tUpstreamTtfbMs).toBe(
+      13,
+    );
+    expect(response.conversations[0]?.recentInvocations[0]?.tUpstreamStreamMs).toBe(
+      14,
+    );
+    expect(response.conversations[0]?.recentInvocations[0]?.tRespParseMs).toBe(15);
+    expect(response.conversations[0]?.recentInvocations[0]?.tPersistMs).toBe(16);
+    expect(response.conversations[0]?.recentInvocations[0]?.tTotalMs).toBe(91);
   });
 });

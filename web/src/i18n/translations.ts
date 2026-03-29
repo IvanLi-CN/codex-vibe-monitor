@@ -199,6 +199,11 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.actions.openDetails": "Open details",
     "accountPool.upstreamAccounts.actions.dismissDuplicateWarning":
       "Dismiss warning",
+    "accountPool.upstreamAccounts.partialSuccess.title": "Saved with follow-up warning",
+    "accountPool.upstreamAccounts.partialSuccess.createdButGroupSettingsFailed":
+      "The account was created, but saving the draft group settings failed: {error}",
+    "accountPool.upstreamAccounts.partialSuccess.savedButGroupSettingsFailed":
+      "The account was saved, but persisting the draft group settings failed: {error}",
     "accountPool.upstreamAccounts.actions.closeDetails": "Close details",
     "accountPool.upstreamAccounts.groupFilterLabel": "Account groups",
     "accountPool.upstreamAccounts.groupFilter.all": "All groups",
@@ -213,10 +218,28 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.statusFilter.all": "All statuses",
     "accountPool.upstreamAccounts.workStatusFilterLabel": "Work status",
     "accountPool.upstreamAccounts.workStatusFilter.all": "All work statuses",
+    "accountPool.upstreamAccounts.workStatusFilter.searchPlaceholder":
+      "Search work statuses...",
+    "accountPool.upstreamAccounts.workStatusFilter.empty":
+      "No matching work statuses.",
+    "accountPool.upstreamAccounts.workStatusFilter.clear":
+      "Clear work status filters",
     "accountPool.upstreamAccounts.enableStatusFilterLabel": "Enable status",
     "accountPool.upstreamAccounts.enableStatusFilter.all": "All enable statuses",
+    "accountPool.upstreamAccounts.enableStatusFilter.searchPlaceholder":
+      "Search enable statuses...",
+    "accountPool.upstreamAccounts.enableStatusFilter.empty":
+      "No matching enable statuses.",
+    "accountPool.upstreamAccounts.enableStatusFilter.clear":
+      "Clear enable status filters",
     "accountPool.upstreamAccounts.healthStatusFilterLabel": "Account health",
     "accountPool.upstreamAccounts.healthStatusFilter.all": "All account health statuses",
+    "accountPool.upstreamAccounts.healthStatusFilter.searchPlaceholder":
+      "Search account health statuses...",
+    "accountPool.upstreamAccounts.healthStatusFilter.empty":
+      "No matching account health statuses.",
+    "accountPool.upstreamAccounts.healthStatusFilter.clear":
+      "Clear account health filters",
     "accountPool.upstreamAccounts.tagFilterLabel": "Account tags",
     "accountPool.upstreamAccounts.tagFilterPlaceholder": "All tags",
     "accountPool.upstreamAccounts.tagFilterSearchPlaceholder": "Search tags...",
@@ -400,18 +423,39 @@ const baseTranslations = {
       "Optional note",
     "accountPool.upstreamAccounts.batchOauth.tooltip.noteBody":
       "Store row-specific reminders here. This does not affect the OAuth flow and stays hidden unless you expand it.",
-    "accountPool.upstreamAccounts.groupNotes.actions.edit": "Edit group note",
+    "accountPool.upstreamAccounts.groupNotes.actions.edit":
+      "Edit group settings",
     "accountPool.upstreamAccounts.groupNotes.tooltip.body":
-      "Edit the shared note for this group. Existing groups save immediately; brand-new groups stay local until an account actually lands in the group.",
-    "accountPool.upstreamAccounts.groupNotes.dialogTitle": "Group note",
+      "Edit the shared note and bound forward proxy nodes for this group.",
+    "accountPool.upstreamAccounts.groupNotes.dialogTitle": "Group settings",
     "accountPool.upstreamAccounts.groupNotes.existingDescription":
-      "This group already exists. Saving here updates the shared note for every account in the group immediately.",
+      "This group already exists. Saving here updates the shared note and proxy bindings immediately.",
     "accountPool.upstreamAccounts.groupNotes.draftDescription":
-      "This group does not exist yet. Saving here stores a local draft and the note will be persisted when the first account is actually created in this group.",
+      "This group is not populated yet. Saving here creates its shared settings in advance.",
     "accountPool.upstreamAccounts.groupNotes.notePlaceholder":
       "Write a shared note for this group",
     "accountPool.upstreamAccounts.groupNotes.badges.existing": "Saved group",
     "accountPool.upstreamAccounts.groupNotes.badges.draft": "Draft group",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.label":
+      "Bound proxy nodes",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.hint":
+      "Leave empty to keep automatic routing. When multiple nodes are selected, the group will stay on the current node until repeated network failures force a switch.",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.automatic":
+      "No nodes bound. This group uses automatic routing.",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.empty":
+      "No proxy nodes available right now.",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.missing":
+      "Missing",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.unavailable":
+      "Unavailable",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartLabel":
+      "24h request trend",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartSuccess":
+      "ok",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartFailure":
+      "fail",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartEmpty":
+      "No 24h data",
     "accountPool.upstreamAccounts.batchOauth.tooltip.completeTitle":
       "Submit callback",
     "accountPool.upstreamAccounts.batchOauth.tooltip.completeBody":
@@ -447,6 +491,8 @@ const baseTranslations = {
       "Completed rows stay visible on this page so you can finish the rest of the batch without losing context.",
     "accountPool.upstreamAccounts.batchOauth.regenerateRequired":
       "Metadata changed. Generate a fresh OAuth URL for this row before completing login.",
+    "accountPool.upstreamAccounts.batchOauth.generatedAndCopied":
+      "OAuth URL generated and copied. Complete sign-in elsewhere, then paste the callback URL back into this row.",
     "accountPool.upstreamAccounts.batchOauth.copyInlineFallback":
       "Copy failed. Select the Auth URL field and copy it manually.",
     "accountPool.upstreamAccounts.batchOauth.completed":
@@ -523,6 +569,7 @@ const baseTranslations = {
       "Working {{count}}",
     "accountPool.upstreamAccounts.workStatus.idle": "Idle",
     "accountPool.upstreamAccounts.workStatus.rate_limited": "Rate limited",
+    "accountPool.upstreamAccounts.workStatus.unavailable": "Unavailable",
     "accountPool.upstreamAccounts.enableStatus.enabled": "Enabled",
     "accountPool.upstreamAccounts.enableStatus.disabled": "Disabled",
     "accountPool.upstreamAccounts.healthStatus.normal": "Normal",
@@ -826,6 +873,8 @@ const baseTranslations = {
       "Unknown",
     "accountPool.upstreamAccounts.latestAction.actions.route_recovered":
       "Route recovered",
+    "accountPool.upstreamAccounts.latestAction.actions.route_retryable_failure":
+      "Temporary upstream failure",
     "accountPool.upstreamAccounts.latestAction.actions.route_cooldown_started":
       "Route cooldown",
     "accountPool.upstreamAccounts.latestAction.actions.route_hard_unavailable":
@@ -865,6 +914,8 @@ const baseTranslations = {
       "Manual recovery is required before the account can return to routing",
     "accountPool.upstreamAccounts.latestAction.reasons.transport_failure":
       "Transport failure",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_server_overloaded":
+      "Upstream is temporarily overloaded",
     "accountPool.upstreamAccounts.latestAction.reasons.reauth_required":
       "Reauthentication required",
     "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_401":
@@ -915,7 +966,7 @@ const baseTranslations = {
       "{{previous}} is no longer the mother account for {{group}}.",
     "settings.title": "Settings",
     "settings.description":
-      "Configure proxy behavior and pricing catalog for cost estimation.",
+      "Configure forward proxy routing and the pricing catalog used for cost estimation.",
     "settings.loading": "Loading settings…",
     "settings.loadError": "Settings request failed: {{error}}",
     "settings.saving": "Saving…",
@@ -949,10 +1000,7 @@ const baseTranslations = {
     "settings.proxy.upstream429RetriesMany": "{{count}} retries",
     "settings.forwardProxy.title": "Forward proxy routing",
     "settings.forwardProxy.description":
-      "Configure upstream forwarding proxies, subscription refresh interval, and live health metrics.",
-    "settings.forwardProxy.insertDirectLabel": "Insert direct connection",
-    "settings.forwardProxy.insertDirectHint":
-      "Keep a direct route as a special proxy entry for unified scheduling and fallback.",
+      "Configure upstream forwarding proxies, automatic routing inventory, subscription refresh interval, and live health metrics.",
     "settings.forwardProxy.proxyUrls": "Proxy URLs",
     "settings.forwardProxy.proxyUrlsPlaceholder":
       "Examples:\nhttp://127.0.0.1:7890\nsocks5://127.0.0.1:1080\nuser:pass@proxy.example.com:8443",
@@ -1110,10 +1158,10 @@ const baseTranslations = {
     "stats.settlementHour": "Settlement hour",
     "stats.trendTitle": "Trend",
     "stats.successFailureTitle": "Success vs failures",
-    "stats.successFailure.legend.firstByteAvg": "First byte avg (ms)",
+    "stats.successFailure.legend.firstByteAvg": "System to first byte avg",
     "stats.successFailure.tooltip.successRate": "Success rate",
-    "stats.successFailure.tooltip.firstByteAvg": "First byte avg",
-    "stats.successFailure.tooltip.firstByteP95": "First byte P95",
+    "stats.successFailure.tooltip.firstByteAvg": "System to first byte avg",
+    "stats.successFailure.tooltip.firstByteP95": "System to first byte P95",
     "stats.errors.title": "Error reasons",
     "stats.errors.scope.label": "Failure scope",
     "stats.errors.scope.service": "Service failures",
@@ -1147,7 +1195,7 @@ const baseTranslations = {
     "live.window.label": "Window size",
     "live.option.records": "{{count}} records",
     "live.latest.title": "Latest records",
-    "live.conversations.title": "Prompt Cache Key conversations",
+    "live.conversations.title": "Conversations",
     "live.conversations.description":
       "Group requests by Prompt Cache Key. Filter by conversation count or recent activity window, while totals remain full-history metrics.",
     "live.conversations.selectionLabel": "Conversation filter",
@@ -1159,7 +1207,7 @@ const baseTranslations = {
     "live.conversations.option.count": "{{count}} conversations",
     "live.conversations.option.activityHours":
       "Active in last {{hours}} hour(s)",
-    "live.conversations.empty": "No prompt cache key conversations yet.",
+    "live.conversations.empty": "No conversations available.",
     "live.conversations.implicitFilter.inactiveOutside24h":
       "{{count}} newer conversation(s) were hidden because count mode only includes conversations active in the last 24 hours.",
     "live.conversations.implicitFilter.cappedTo50":
@@ -1690,6 +1738,11 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.actions.enable": "启用",
     "accountPool.upstreamAccounts.actions.openDetails": "打开详情",
     "accountPool.upstreamAccounts.actions.dismissDuplicateWarning": "收起提示",
+    "accountPool.upstreamAccounts.partialSuccess.title": "保存成功，但后续步骤有警告",
+    "accountPool.upstreamAccounts.partialSuccess.createdButGroupSettingsFailed":
+      "账号已创建，但保存分组草稿设置失败：{error}",
+    "accountPool.upstreamAccounts.partialSuccess.savedButGroupSettingsFailed":
+      "账号已保存，但持久化分组草稿设置失败：{error}",
     "accountPool.upstreamAccounts.actions.closeDetails": "关闭详情",
     "accountPool.upstreamAccounts.groupFilterLabel": "账号分组",
     "accountPool.upstreamAccounts.groupFilter.all": "全部分组",
@@ -1703,10 +1756,19 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.statusFilter.all": "全部状态",
     "accountPool.upstreamAccounts.workStatusFilterLabel": "工作状态",
     "accountPool.upstreamAccounts.workStatusFilter.all": "全部工作状态",
+    "accountPool.upstreamAccounts.workStatusFilter.searchPlaceholder": "搜索工作状态...",
+    "accountPool.upstreamAccounts.workStatusFilter.empty": "没有匹配的工作状态。",
+    "accountPool.upstreamAccounts.workStatusFilter.clear": "清空工作状态筛选",
     "accountPool.upstreamAccounts.enableStatusFilterLabel": "启用状态",
     "accountPool.upstreamAccounts.enableStatusFilter.all": "全部启用状态",
+    "accountPool.upstreamAccounts.enableStatusFilter.searchPlaceholder": "搜索启用状态...",
+    "accountPool.upstreamAccounts.enableStatusFilter.empty": "没有匹配的启用状态。",
+    "accountPool.upstreamAccounts.enableStatusFilter.clear": "清空启用状态筛选",
     "accountPool.upstreamAccounts.healthStatusFilterLabel": "账号状态",
     "accountPool.upstreamAccounts.healthStatusFilter.all": "全部账号状态",
+    "accountPool.upstreamAccounts.healthStatusFilter.searchPlaceholder": "搜索账号状态...",
+    "accountPool.upstreamAccounts.healthStatusFilter.empty": "没有匹配的账号状态。",
+    "accountPool.upstreamAccounts.healthStatusFilter.clear": "清空账号状态筛选",
     "accountPool.upstreamAccounts.tagFilterLabel": "账号标签",
     "accountPool.upstreamAccounts.tagFilterPlaceholder": "全部标签",
     "accountPool.upstreamAccounts.tagFilterSearchPlaceholder": "搜索标签...",
@@ -1870,18 +1932,38 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.batchOauth.tooltip.noteTitle": "备注（可选）",
     "accountPool.upstreamAccounts.batchOauth.tooltip.noteBody":
       "只用于记录这行账号的附加说明，不影响 OAuth 流程；默认收起，避免占用表格空间。",
-    "accountPool.upstreamAccounts.groupNotes.actions.edit": "编辑分组备注",
+    "accountPool.upstreamAccounts.groupNotes.actions.edit": "编辑分组设置",
     "accountPool.upstreamAccounts.groupNotes.tooltip.body":
-      "编辑这个分组的共享备注。已有分组会立即保存；全新分组会先保存在当前页面，等真正有账号落进该分组时再持久化。",
-    "accountPool.upstreamAccounts.groupNotes.dialogTitle": "分组备注",
+      "编辑这个分组的共享备注和绑定的正向代理节点。",
+    "accountPool.upstreamAccounts.groupNotes.dialogTitle": "分组设置",
     "accountPool.upstreamAccounts.groupNotes.existingDescription":
-      "这个分组已经存在，保存后会立即更新该分组下所有账号共用的备注。",
+      "这个分组已经存在，保存后会立即更新共享备注和代理绑定。",
     "accountPool.upstreamAccounts.groupNotes.draftDescription":
-      "这个分组还没有实际账号，当前保存只会写入本页草稿；等首个账号真正创建到该分组时才会持久化。",
+      "这个分组还没有实际账号，现在保存会提前创建它的共享设置。",
     "accountPool.upstreamAccounts.groupNotes.notePlaceholder":
       "填写这个分组的共享备注",
     "accountPool.upstreamAccounts.groupNotes.badges.existing": "已存在分组",
     "accountPool.upstreamAccounts.groupNotes.badges.draft": "草稿分组",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.label":
+      "绑定代理节点",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.hint":
+      "留空时继续走自动路由。选择多个节点后，只有连续网络失败达到阈值才会切到下一个节点。",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.automatic":
+      "当前没有绑定节点，这个分组会继续使用自动路由。",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.empty":
+      "当前没有可用的代理节点。",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.missing":
+      "已失效",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.unavailable":
+      "不可选",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartLabel":
+      "24 小时请求图",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartSuccess":
+      "成功",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartFailure":
+      "失败",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartEmpty":
+      "暂无 24 小时数据",
     "accountPool.upstreamAccounts.batchOauth.tooltip.completeTitle": "提交回调",
     "accountPool.upstreamAccounts.batchOauth.tooltip.completeBody":
       "浏览器登录成功后，把上方回调链接粘贴完整，再点击这里完成这一行账号的入池。",
@@ -1915,6 +1997,8 @@ const baseTranslations = {
       "已完成的行会保留在当前页面，方便继续处理剩余账号。",
     "accountPool.upstreamAccounts.batchOauth.regenerateRequired":
       "元数据已变更，请先为这一行重新生成 OAuth 地址再完成登录。",
+    "accountPool.upstreamAccounts.batchOauth.generatedAndCopied":
+      "OAuth 地址已生成并复制。请在其他浏览器完成登录，再把回调链接粘贴回这一行。",
     "accountPool.upstreamAccounts.batchOauth.copyInlineFallback":
       "复制失败，请直接选中授权地址字段手动复制。",
     "accountPool.upstreamAccounts.batchOauth.completed":
@@ -1984,6 +2068,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.workStatus.workingWithCount": "工作 {{count}}",
     "accountPool.upstreamAccounts.workStatus.idle": "空闲",
     "accountPool.upstreamAccounts.workStatus.rate_limited": "限流",
+    "accountPool.upstreamAccounts.workStatus.unavailable": "不可用",
     "accountPool.upstreamAccounts.enableStatus.enabled": "启用",
     "accountPool.upstreamAccounts.enableStatus.disabled": "禁用",
     "accountPool.upstreamAccounts.healthStatus.normal": "正常",
@@ -2261,6 +2346,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.latestAction.fields.message": "消息",
     "accountPool.upstreamAccounts.latestAction.actions.route_recovered":
       "路由恢复成功",
+    "accountPool.upstreamAccounts.latestAction.actions.route_retryable_failure":
+      "临时上游失败",
     "accountPool.upstreamAccounts.latestAction.actions.route_cooldown_started":
       "进入冷却",
     "accountPool.upstreamAccounts.latestAction.actions.route_hard_unavailable":
@@ -2298,6 +2385,8 @@ const baseTranslations = {
       "账号返回路由前仍需要人工恢复",
     "accountPool.upstreamAccounts.latestAction.reasons.transport_failure":
       "网络或传输失败",
+    "accountPool.upstreamAccounts.latestAction.reasons.upstream_server_overloaded":
+      "上游暂时过载",
     "accountPool.upstreamAccounts.latestAction.reasons.reauth_required":
       "需要重新登录",
     "accountPool.upstreamAccounts.latestAction.reasons.upstream_http_401":
@@ -2345,7 +2434,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.mother.notifications.cleared":
       "{{previous}} 已不再是 {{group}} 的母号。",
     "settings.title": "设置",
-    "settings.description": "集中配置代理行为与价格目录，用于成本估算。",
+    "settings.description": "集中配置正向代理路由与价格目录，用于成本估算。",
     "settings.loading": "正在加载设置…",
     "settings.loadError": "设置请求失败：{{error}}",
     "settings.saving": "保存中…",
@@ -2377,10 +2466,7 @@ const baseTranslations = {
     "settings.proxy.upstream429RetriesMany": "重试 {{count}} 次",
     "settings.forwardProxy.title": "正向代理路由",
     "settings.forwardProxy.description":
-      "配置上游请求代理、订阅自动刷新周期与运行期健康指标。",
-    "settings.forwardProxy.insertDirectLabel": "插入直连",
-    "settings.forwardProxy.insertDirectHint":
-      "将直连作为特殊代理加入统一调度，便于兜底与对比。",
+      "配置上游请求代理、自动路由节点池、订阅自动刷新周期与运行期健康指标。",
     "settings.forwardProxy.proxyUrls": "代理 URL",
     "settings.forwardProxy.proxyUrlsPlaceholder":
       "示例：\nhttp://127.0.0.1:7890\nsocks5://127.0.0.1:1080\nuser:pass@proxy.example.com:8443",
@@ -2529,10 +2615,10 @@ const baseTranslations = {
     "stats.settlementHour": "结算小时",
     "stats.trendTitle": "趋势",
     "stats.successFailureTitle": "成功/失败次数",
-    "stats.successFailure.legend.firstByteAvg": "首字耗时均值（ms）",
+    "stats.successFailure.legend.firstByteAvg": "首字总耗时均值",
     "stats.successFailure.tooltip.successRate": "成功率",
-    "stats.successFailure.tooltip.firstByteAvg": "首字耗时均值",
-    "stats.successFailure.tooltip.firstByteP95": "首字耗时 P95",
+    "stats.successFailure.tooltip.firstByteAvg": "首字总耗时均值",
+    "stats.successFailure.tooltip.firstByteP95": "首字总耗时 P95",
     "stats.errors.title": "错误原因分布",
     "stats.errors.scope.label": "失败范围",
     "stats.errors.scope.service": "服务端故障",
@@ -2566,7 +2652,7 @@ const baseTranslations = {
     "live.window.label": "窗口大小",
     "live.option.records": "{{count}} 条记录",
     "live.latest.title": "最新记录",
-    "live.conversations.title": "Prompt Cache Key 对话",
+    "live.conversations.title": "对话",
     "live.conversations.description":
       "按 Prompt Cache Key 聚合对话，可按数量或最近活动时间筛选，累计指标按全历史计算。",
     "live.conversations.selectionLabel": "对话筛选",
@@ -2577,7 +2663,7 @@ const baseTranslations = {
     "live.conversations.actions.openHistory": "打开全部调用记录",
     "live.conversations.option.count": "{{count}} 个对话",
     "live.conversations.option.activityHours": "近 {{hours}} 小时活动",
-    "live.conversations.empty": "暂无 Prompt Cache Key 对话数据。",
+    "live.conversations.empty": "暂无对话数据。",
     "live.conversations.implicitFilter.inactiveOutside24h":
       "有 {{count}} 个更新创建的对话因未在近 24 小时活动而未显示；数量模式只统计近 24 小时活跃对话。",
     "live.conversations.implicitFilter.cappedTo50":

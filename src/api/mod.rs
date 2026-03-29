@@ -16,6 +16,7 @@ const INVOCATION_ROUTE_MODE_SQL: &str =
     "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.routeMode') AS TEXT) END";
 const INVOCATION_UPSTREAM_ACCOUNT_ID_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
 const INVOCATION_UPSTREAM_ACCOUNT_NAME_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountName') AS TEXT) END";
+const INVOCATION_REASONING_EFFORT_SQL: &str = "CASE WHEN json_valid(payload) AND json_type(payload, '$.reasoningEffort') = 'text' THEN json_extract(payload, '$.reasoningEffort') END";
 const INVOCATION_RESPONSE_CONTENT_ENCODING_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.responseContentEncoding') AS TEXT) END";
 const INVOCATION_POOL_ATTEMPT_COUNT_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.poolAttemptCount') AS INTEGER) END";
 const INVOCATION_POOL_DISTINCT_ACCOUNT_COUNT_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.poolDistinctAccountCount') AS INTEGER) END";
@@ -35,12 +36,16 @@ fn build_invocation_select_query() -> QueryBuilder<'static, Sqlite> {
          CASE WHEN json_valid(payload) THEN json_extract(payload, '$.proxyDisplayName') END AS proxy_display_name, \
          model, input_tokens, output_tokens, \
          cache_input_tokens, reasoning_tokens, \
-         CASE WHEN json_valid(payload) THEN json_extract(payload, '$.reasoningEffort') END AS reasoning_effort, \
-         total_tokens, cost, status, error_message, \
-         CASE WHEN json_valid(payload) THEN json_extract(payload, '$.endpoint') END AS endpoint, \
          ",
     );
     query
+        .push(INVOCATION_REASONING_EFFORT_SQL)
+        .push(
+            " AS reasoning_effort, \
+         total_tokens, cost, status, error_message, \
+         CASE WHEN json_valid(payload) THEN json_extract(payload, '$.endpoint') END AS endpoint, \
+         ",
+        )
         .push(INVOCATION_FAILURE_KIND_SQL)
         .push(
             " AS failure_kind, \
@@ -2006,26 +2011,48 @@ pub(crate) async fn fetch_prompt_cache_conversations_cached(
     loop {
         let mut wait_on: Option<watch::Receiver<bool>> = None;
         let mut flight_guard: Option<PromptCacheConversationFlightGuard> = None;
+        let build_generation: u64;
         {
             let mut cache = state.prompt_cache_conversation_cache.lock().await;
+            let generation = cache.generation;
             if let Some(entry) = cache.entries.get(&selection)
+                && entry.generation == generation
                 && entry.cached_at.elapsed()
                     <= Duration::from_secs(PROMPT_CACHE_CONVERSATION_CACHE_TTL_SECS)
             {
                 return Ok(entry.response.clone());
             }
 
-            if let Some(in_flight) = cache.in_flight.get(&selection) {
-                wait_on = Some(in_flight.signal.subscribe());
-            } else {
+            let in_flight_generation = cache
+                .in_flight
+                .get(&selection)
+                .map(|flight| flight.generation);
+            match in_flight_generation {
+                Some(current_generation) if current_generation == generation => {
+                    if let Some(in_flight) = cache.in_flight.get(&selection) {
+                        wait_on = Some(in_flight.signal.subscribe());
+                    }
+                }
+                Some(_) => {
+                    cache.in_flight.remove(&selection);
+                }
+                None => {}
+            }
+
+            if wait_on.is_none() {
                 let (signal, _receiver) = watch::channel(false);
-                cache
-                    .in_flight
-                    .insert(selection, PromptCacheConversationInFlight { signal });
+                cache.in_flight.insert(
+                    selection,
+                    PromptCacheConversationInFlight { signal, generation },
+                );
+                build_generation = generation;
                 flight_guard = Some(PromptCacheConversationFlightGuard::new(
                     state.prompt_cache_conversation_cache.clone(),
                     selection,
+                    generation,
                 ));
+            } else {
+                build_generation = generation;
             }
         }
 
@@ -2043,15 +2070,27 @@ pub(crate) async fn fetch_prompt_cache_conversations_cached(
         }
 
         let mut cache = state.prompt_cache_conversation_cache.lock().await;
-        if let Some(in_flight) = cache.in_flight.remove(&selection) {
+        let stale_result = result.is_ok() && cache.generation != build_generation;
+        let in_flight = match cache.in_flight.remove(&selection) {
+            Some(in_flight) if in_flight.generation == build_generation => Some(in_flight),
+            Some(in_flight) => {
+                cache.in_flight.insert(selection, in_flight);
+                None
+            }
+            None => None,
+        };
+        if let Some(in_flight) = in_flight {
             if let Ok(response) = &result {
-                cache.entries.insert(
-                    selection,
-                    PromptCacheConversationsCacheEntry {
-                        cached_at: Instant::now(),
-                        response: response.clone(),
-                    },
-                );
+                if !stale_result && cache.generation == build_generation {
+                    cache.entries.insert(
+                        selection,
+                        PromptCacheConversationsCacheEntry {
+                            cached_at: Instant::now(),
+                            generation: build_generation,
+                            response: response.clone(),
+                        },
+                    );
+                }
             }
             let _ = in_flight.signal.send(true);
         }
@@ -2199,6 +2238,30 @@ pub(crate) async fn build_prompt_cache_conversations_response(
                 upstream_account_id: row.upstream_account_id,
                 upstream_account_name: normalize_trimmed_optional_string(row.upstream_account_name),
                 endpoint: normalize_trimmed_optional_string(row.endpoint),
+                source: normalize_trimmed_optional_string(row.source),
+                input_tokens: row.input_tokens,
+                output_tokens: row.output_tokens,
+                cache_input_tokens: row.cache_input_tokens,
+                reasoning_tokens: row.reasoning_tokens,
+                reasoning_effort: normalize_trimmed_optional_string(row.reasoning_effort),
+                error_message: normalize_trimmed_optional_string(row.error_message),
+                failure_kind: normalize_trimmed_optional_string(row.failure_kind),
+                is_actionable: row.is_actionable.map(|value| value != 0),
+                response_content_encoding: normalize_trimmed_optional_string(
+                    row.response_content_encoding,
+                ),
+                requested_service_tier: normalize_trimmed_optional_string(
+                    row.requested_service_tier,
+                ),
+                service_tier: normalize_trimmed_optional_string(row.service_tier),
+                t_req_read_ms: row.t_req_read_ms,
+                t_req_parse_ms: row.t_req_parse_ms,
+                t_upstream_connect_ms: row.t_upstream_connect_ms,
+                t_upstream_ttfb_ms: row.t_upstream_ttfb_ms,
+                t_upstream_stream_ms: row.t_upstream_stream_ms,
+                t_resp_parse_ms: row.t_resp_parse_ms,
+                t_persist_ms: row.t_persist_ms,
+                t_total_ms: row.t_total_ms,
             });
     }
 
@@ -2603,13 +2666,35 @@ pub(crate) async fn query_prompt_cache_conversation_recent_invocations(
         .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
         .push(" AS failure_class, ")
         .push(INVOCATION_ROUTE_MODE_SQL)
-        .push(" AS route_mode, model, COALESCE(total_tokens, 0) AS total_tokens, cost, ")
+        .push(" AS route_mode, model, COALESCE(total_tokens, 0) AS total_tokens, cost, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, ")
+        .push(INVOCATION_REASONING_EFFORT_SQL)
+        .push(" AS reasoning_effort, error_message, ")
+        .push(INVOCATION_FAILURE_KIND_SQL)
+        .push(" AS failure_kind, CASE WHEN ")
+        .push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
+        .push(" = 'service_failure' THEN 1 ELSE 0 END AS is_actionable, ")
         .push(INVOCATION_PROXY_DISPLAY_SQL)
         .push(" AS proxy_display_name, ")
         .push(INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
         .push(" AS upstream_account_id, ")
         .push(INVOCATION_UPSTREAM_ACCOUNT_NAME_SQL)
         .push(" AS upstream_account_name, ")
+        .push(INVOCATION_RESPONSE_CONTENT_ENCODING_SQL)
+        .push(
+            " AS response_content_encoding, \
+             CASE \
+               WHEN json_valid(payload) AND json_type(payload, '$.requestedServiceTier') = 'text' \
+                 THEN json_extract(payload, '$.requestedServiceTier') \
+               WHEN json_valid(payload) AND json_type(payload, '$.requested_service_tier') = 'text' \
+                 THEN json_extract(payload, '$.requested_service_tier') END AS requested_service_tier, \
+             CASE \
+               WHEN json_valid(payload) AND json_type(payload, '$.serviceTier') = 'text' \
+                 THEN json_extract(payload, '$.serviceTier') \
+               WHEN json_valid(payload) AND json_type(payload, '$.service_tier') = 'text' \
+                 THEN json_extract(payload, '$.service_tier') END AS service_tier, \
+             t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, \
+             t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, ",
+        )
         .push(INVOCATION_ENDPOINT_SQL)
         .push(" AS endpoint, ")
         .push(KEY_EXPR)
@@ -2632,7 +2717,7 @@ pub(crate) async fn query_prompt_cache_conversation_recent_invocations(
     }
 
     query
-        .push(") SELECT prompt_cache_key, id, invoke_id, occurred_at, status, failure_class, route_mode, model, total_tokens, cost, proxy_display_name, upstream_account_id, upstream_account_name, endpoint FROM ranked WHERE row_number <= ")
+        .push(") SELECT prompt_cache_key, id, invoke_id, occurred_at, status, failure_class, route_mode, model, total_tokens, cost, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, reasoning_effort, error_message, failure_kind, is_actionable, proxy_display_name, upstream_account_id, upstream_account_name, response_content_encoding, requested_service_tier, service_tier, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, endpoint FROM ranked WHERE row_number <= ")
         .push_bind(limit_per_key)
         .push(" ORDER BY prompt_cache_key ASC, occurred_at DESC, id DESC");
 
@@ -2729,7 +2814,7 @@ pub(crate) async fn fetch_timeseries(
     let start_str_iso = format_utc_iso(start_dt);
 
     let mut records_query = QueryBuilder::new(
-        "SELECT occurred_at, status, total_tokens, cost, t_upstream_ttfb_ms FROM codex_invocations WHERE occurred_at >= ",
+        "SELECT occurred_at, status, total_tokens, cost, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms FROM codex_invocations WHERE occurred_at >= ",
     );
     records_query.push_bind(db_occurred_at_lower_bound(start_dt));
     if source_scope == InvocationSourceScope::ProxyOnly {
@@ -2763,6 +2848,12 @@ pub(crate) async fn fetch_timeseries(
             None => {}
         }
         entry.record_ttfb_sample(record.status.as_deref(), record.t_upstream_ttfb_ms);
+        entry.record_first_response_byte_total_sample(
+            record.t_req_read_ms,
+            record.t_req_parse_ms,
+            record.t_upstream_connect_ms,
+            record.t_upstream_ttfb_ms,
+        );
         entry.total_tokens += record.total_tokens.unwrap_or(0);
         entry.total_cost += record.cost.unwrap_or(0.0);
     }
@@ -2820,6 +2911,8 @@ pub(crate) async fn fetch_timeseries(
             .ok_or_else(|| anyhow!("invalid bucket epoch"))?;
         let first_byte_avg_ms = agg.first_byte_avg_ms();
         let first_byte_p95_ms = agg.first_byte_p95_ms();
+        let first_response_byte_total_avg_ms = agg.first_response_byte_total_avg_ms();
+        let first_response_byte_total_p95_ms = agg.first_response_byte_total_p95_ms();
         points.push(TimeseriesPoint {
             bucket_start: format_utc_iso(start),
             bucket_end: format_utc_iso(end),
@@ -2831,6 +2924,9 @@ pub(crate) async fn fetch_timeseries(
             first_byte_sample_count: agg.first_byte_sample_count,
             first_byte_avg_ms,
             first_byte_p95_ms,
+            first_response_byte_total_sample_count: agg.first_response_byte_total_sample_count,
+            first_response_byte_total_avg_ms,
+            first_response_byte_total_p95_ms,
         });
     }
 
@@ -2912,6 +3008,20 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
                 )?;
                 merged
             };
+            entry.first_response_byte_total_sample_count +=
+                row.first_response_byte_total_sample_count;
+            entry.first_response_byte_total_sum_ms += row.first_response_byte_total_sum_ms;
+            entry.first_response_byte_total_histogram =
+                if entry.first_response_byte_total_histogram.is_empty() {
+                    decode_approx_histogram(&row.first_response_byte_total_histogram)
+                } else {
+                    let mut merged = entry.first_response_byte_total_histogram.clone();
+                    merge_approx_histogram_into(
+                        &mut merged,
+                        &decode_approx_histogram(&row.first_response_byte_total_histogram),
+                    )?;
+                    merged
+                };
         }
     }
 
@@ -2931,6 +3041,12 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
                 None => {}
             }
             entry.record_exact_ttfb_sample(record.status.as_deref(), record.t_upstream_ttfb_ms);
+            entry.record_exact_first_response_byte_total_sample(
+                record.t_req_read_ms,
+                record.t_req_parse_ms,
+                record.t_upstream_connect_ms,
+                record.t_upstream_ttfb_ms,
+            );
             entry.total_tokens += record.total_tokens.unwrap_or_default();
             entry.total_cost += record.cost.unwrap_or_default();
         }
@@ -2988,6 +3104,9 @@ pub(crate) async fn fetch_timeseries_from_hourly_rollups(
             first_byte_sample_count: agg.first_byte_sample_count,
             first_byte_avg_ms: agg.first_byte_avg_ms(),
             first_byte_p95_ms: agg.first_byte_p95_ms(),
+            first_response_byte_total_sample_count: agg.first_response_byte_total_sample_count,
+            first_response_byte_total_avg_ms: agg.first_response_byte_total_avg_ms(),
+            first_response_byte_total_p95_ms: agg.first_response_byte_total_p95_ms(),
         });
     }
 
@@ -4146,11 +4265,9 @@ pub(crate) struct VersionResponse {
 pub(crate) async fn get_settings(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<SettingsResponse>, ApiError> {
-    let proxy = state.proxy_model_settings.read().await.clone();
     let pricing = state.pricing_catalog.read().await.clone();
     let forward_proxy = build_forward_proxy_settings_response(state.as_ref()).await?;
     Ok(Json(SettingsResponse {
-        proxy: proxy.into(),
         forward_proxy,
         pricing: PricingSettingsResponse::from_catalog(&pricing),
     }))
@@ -4159,7 +4276,7 @@ pub(crate) async fn get_settings(
 pub(crate) async fn removed_proxy_model_settings_endpoint() -> (StatusCode, &'static str) {
     (
         StatusCode::NOT_FOUND,
-        "endpoint removed; use /api/settings and /api/settings/proxy",
+        "endpoint removed; legacy reverse proxy settings are no longer supported",
     )
 }
 
@@ -4608,6 +4725,9 @@ pub(crate) struct TimeseriesPoint {
     pub(crate) first_byte_sample_count: i64,
     pub(crate) first_byte_avg_ms: Option<f64>,
     pub(crate) first_byte_p95_ms: Option<f64>,
+    pub(crate) first_response_byte_total_sample_count: i64,
+    pub(crate) first_response_byte_total_avg_ms: Option<f64>,
+    pub(crate) first_response_byte_total_p95_ms: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -4860,6 +4980,26 @@ pub(crate) struct PromptCacheConversationInvocationPreviewResponse {
     pub(crate) upstream_account_id: Option<i64>,
     pub(crate) upstream_account_name: Option<String>,
     pub(crate) endpoint: Option<String>,
+    pub(crate) source: Option<String>,
+    pub(crate) input_tokens: Option<i64>,
+    pub(crate) output_tokens: Option<i64>,
+    pub(crate) cache_input_tokens: Option<i64>,
+    pub(crate) reasoning_tokens: Option<i64>,
+    pub(crate) reasoning_effort: Option<String>,
+    pub(crate) error_message: Option<String>,
+    pub(crate) failure_kind: Option<String>,
+    pub(crate) is_actionable: Option<bool>,
+    pub(crate) response_content_encoding: Option<String>,
+    pub(crate) requested_service_tier: Option<String>,
+    pub(crate) service_tier: Option<String>,
+    pub(crate) t_req_read_ms: Option<f64>,
+    pub(crate) t_req_parse_ms: Option<f64>,
+    pub(crate) t_upstream_connect_ms: Option<f64>,
+    pub(crate) t_upstream_ttfb_ms: Option<f64>,
+    pub(crate) t_upstream_stream_ms: Option<f64>,
+    pub(crate) t_resp_parse_ms: Option<f64>,
+    pub(crate) t_persist_ms: Option<f64>,
+    pub(crate) t_total_ms: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -4888,12 +5028,14 @@ pub(crate) struct PromptCacheConversationRequestPointResponse {
 #[derive(Debug, Clone)]
 pub(crate) struct PromptCacheConversationsCacheEntry {
     pub(crate) cached_at: Instant,
+    pub(crate) generation: u64,
     pub(crate) response: PromptCacheConversationsResponse,
 }
 
 #[derive(Debug)]
 pub(crate) struct PromptCacheConversationInFlight {
     pub(crate) signal: watch::Sender<bool>,
+    pub(crate) generation: u64,
 }
 
 #[derive(Debug, Default)]
@@ -4902,12 +5044,14 @@ pub(crate) struct PromptCacheConversationsCacheState {
         HashMap<PromptCacheConversationSelection, PromptCacheConversationsCacheEntry>,
     pub(crate) in_flight:
         HashMap<PromptCacheConversationSelection, PromptCacheConversationInFlight>,
+    pub(crate) generation: u64,
 }
 
 #[derive(Debug)]
 pub(crate) struct PromptCacheConversationFlightGuard {
     pub(crate) cache: Arc<Mutex<PromptCacheConversationsCacheState>>,
     pub(crate) selection: PromptCacheConversationSelection,
+    pub(crate) generation: u64,
     pub(crate) active: bool,
 }
 
@@ -4915,10 +5059,12 @@ impl PromptCacheConversationFlightGuard {
     pub(crate) fn new(
         cache: Arc<Mutex<PromptCacheConversationsCacheState>>,
         selection: PromptCacheConversationSelection,
+        generation: u64,
     ) -> Self {
         Self {
             cache,
             selection,
+            generation,
             active: true,
         }
     }
@@ -4936,10 +5082,15 @@ impl Drop for PromptCacheConversationFlightGuard {
 
         let cache = self.cache.clone();
         let selection = self.selection;
+        let generation = self.generation;
         if let Ok(handle) = tokio::runtime::Handle::try_current() {
             handle.spawn(async move {
                 let mut state = cache.lock().await;
                 if let Some(in_flight) = state.in_flight.remove(&selection) {
+                    if in_flight.generation != generation {
+                        state.in_flight.insert(selection, in_flight);
+                        return;
+                    }
                     let _ = in_flight.signal.send(true);
                 }
             });
@@ -4949,8 +5100,27 @@ impl Drop for PromptCacheConversationFlightGuard {
         if let Ok(mut state) = cache.try_lock()
             && let Some(in_flight) = state.in_flight.remove(&selection)
         {
+            if in_flight.generation != generation {
+                state.in_flight.insert(selection, in_flight);
+                return;
+            }
             let _ = in_flight.signal.send(true);
         }
+    }
+}
+
+pub(crate) async fn invalidate_prompt_cache_conversations_cache(
+    cache: &Arc<Mutex<PromptCacheConversationsCacheState>>,
+) {
+    let in_flight = {
+        let mut state = cache.lock().await;
+        state.generation = state.generation.wrapping_add(1);
+        state.entries.clear();
+        std::mem::take(&mut state.in_flight)
+    };
+
+    for flight in in_flight.into_values() {
+        let _ = flight.signal.send(true);
     }
 }
 
@@ -5246,9 +5416,29 @@ pub(crate) struct PromptCacheConversationInvocationPreviewRow {
     pub(crate) model: Option<String>,
     pub(crate) total_tokens: i64,
     pub(crate) cost: Option<f64>,
+    pub(crate) source: Option<String>,
+    pub(crate) input_tokens: Option<i64>,
+    pub(crate) output_tokens: Option<i64>,
+    pub(crate) cache_input_tokens: Option<i64>,
+    pub(crate) reasoning_tokens: Option<i64>,
+    pub(crate) reasoning_effort: Option<String>,
+    pub(crate) error_message: Option<String>,
+    pub(crate) failure_kind: Option<String>,
+    pub(crate) is_actionable: Option<i64>,
     pub(crate) proxy_display_name: Option<String>,
     pub(crate) upstream_account_id: Option<i64>,
     pub(crate) upstream_account_name: Option<String>,
+    pub(crate) response_content_encoding: Option<String>,
+    pub(crate) requested_service_tier: Option<String>,
+    pub(crate) service_tier: Option<String>,
+    pub(crate) t_req_read_ms: Option<f64>,
+    pub(crate) t_req_parse_ms: Option<f64>,
+    pub(crate) t_upstream_connect_ms: Option<f64>,
+    pub(crate) t_upstream_ttfb_ms: Option<f64>,
+    pub(crate) t_upstream_stream_ms: Option<f64>,
+    pub(crate) t_resp_parse_ms: Option<f64>,
+    pub(crate) t_persist_ms: Option<f64>,
+    pub(crate) t_total_ms: Option<f64>,
     pub(crate) endpoint: Option<String>,
 }
 

@@ -3,9 +3,13 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { useTheme } from '../theme/context'
 import type {
   AccountTagSummary,
+  BulkUpstreamAccountSyncCounts,
+  BulkUpstreamAccountSyncSnapshot,
+  BulkUpstreamAccountSyncRow,
   CreateApiKeyAccountPayload,
   CompleteOauthLoginSessionPayload,
   EffectiveRoutingRule,
+  ForwardProxyBindingNode,
   LoginSessionStatusResponse,
   OauthMailboxStatus,
   PoolRoutingMaintenanceSettings,
@@ -31,6 +35,8 @@ type StoryStore = {
   accounts: UpstreamAccountSummary[]
   details: Record<number, UpstreamAccountDetail>
   groupNotes: Record<string, string>
+  groupBoundProxyKeys: Record<string, string[]>
+  forwardProxyNodes: ForwardProxyBindingNode[]
   nextId: number
   sessions: Record<
     string,
@@ -48,6 +54,8 @@ type StoryStore = {
   >
   mailboxStatuses: Record<string, OauthMailboxStatus>
   nextMailboxId: number
+  bulkSyncScenario: StoryBulkSyncScenario
+  bulkSyncJobs: Record<string, StoryBulkSyncJob>
 }
 
 const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
@@ -81,6 +89,74 @@ const compactDefaultTags: AccountTagSummary[] = [
     id: 4,
     name: 'sticky-pool',
     routingRule: defaultEffectiveRoutingRule,
+  },
+]
+
+function buildRequestBuckets(seed: number, baseline: number, failuresEvery: number): ForwardProxyBindingNode['last24h'] {
+  const start = Date.parse('2026-03-01T00:00:00.000Z')
+  return Array.from({ length: 24 }, (_, index) => {
+    const bucketStart = new Date(start + index * 3600_000).toISOString()
+    const bucketEnd = new Date(start + (index + 1) * 3600_000).toISOString()
+    return {
+      bucketStart,
+      bucketEnd,
+      successCount: Math.max(0, Math.round(baseline + Math.sin((index + seed) / 2.3) * (baseline * 0.3))),
+      failureCount: index % failuresEvery === 0 ? Math.max(0, 1 + ((seed + index) % 2)) : 0,
+    }
+  })
+}
+
+const directBindingKey = '__direct__'
+const subscriptionSsKey =
+  'ss://2022-blake3-aes-128-gcm:fixture-passphrase@fixture-ss-edge.example.invalid:443#Ivan-hinet-ss2022-01KF87EBR50MM9JKM9R9BCA9WZ'
+const subscriptionVlessKey =
+  'vless://11111111-2222-3333-4444-555555555555@fixture-vless-edge.example.invalid:443?encryption=none&security=tls&type=ws&host=cdn.example.invalid&path=%2Ffixture&fp=chrome&pbk=fixture-public-key&sid=fixture-subscription-node#Ivan-hinet-vless-vision-01KF874741GBN6MQYD6TNMYDVS'
+
+const defaultForwardProxyNodes: ForwardProxyBindingNode[] = [
+  {
+    key: directBindingKey,
+    source: 'direct',
+    displayName: 'Direct',
+    protocolLabel: 'DIRECT',
+    penalized: false,
+    selectable: true,
+    last24h: buildRequestBuckets(0, 20, 8),
+  },
+  {
+    key: 'jp-edge-01',
+    source: 'manual',
+    displayName: 'JP Edge 01',
+    protocolLabel: 'HTTP',
+    penalized: false,
+    selectable: true,
+    last24h: buildRequestBuckets(1, 18, 6),
+  },
+  {
+    key: subscriptionSsKey,
+    source: 'subscription',
+    displayName: 'Ivan-hinet-ss2022-01KF87EBR50MM9JKM9R9BCA9WZ',
+    protocolLabel: 'SS',
+    penalized: false,
+    selectable: true,
+    last24h: buildRequestBuckets(7, 13, 5),
+  },
+  {
+    key: subscriptionVlessKey,
+    source: 'subscription',
+    displayName: 'Ivan-hinet-vless-vision-01KF874741GBN6MQYD6TNMYDVS',
+    protocolLabel: 'VLESS',
+    penalized: true,
+    selectable: true,
+    last24h: buildRequestBuckets(13, 10, 4),
+  },
+  {
+    key: 'drain-node',
+    source: 'manual',
+    displayName: 'Drain Node',
+    protocolLabel: 'HTTP',
+    penalized: true,
+    selectable: false,
+    last24h: buildRequestBuckets(17, 5, 3),
   },
 ]
 
@@ -134,6 +210,15 @@ export type StoryInitialEntry =
       search?: string
       state?: unknown
     }
+
+type StoryBulkSyncScenario = 'success-auto-hide' | 'partial-failure' | null
+
+type StoryBulkSyncJob = {
+  jobId: string
+  snapshot: BulkUpstreamAccountSyncSnapshot
+  counts: BulkUpstreamAccountSyncCounts
+  error: string | null
+}
 
 const now = '2026-03-17T12:30:00.000Z'
 const storyFutureExpiresAt = '2027-03-20T12:50:00.000Z'
@@ -753,6 +838,81 @@ function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T
 }
 
+function buildBulkSyncCounts(rows: BulkUpstreamAccountSyncRow[]): BulkUpstreamAccountSyncCounts {
+  return rows.reduce<BulkUpstreamAccountSyncCounts>((counts, row) => {
+    counts.total += 1
+    if (row.status === 'succeeded') {
+      counts.completed += 1
+      counts.succeeded += 1
+    } else if (row.status === 'failed') {
+      counts.completed += 1
+      counts.failed += 1
+    } else if (row.status === 'skipped') {
+      counts.completed += 1
+      counts.skipped += 1
+    }
+    return counts
+  }, {
+    total: 0,
+    completed: 0,
+    succeeded: 0,
+    failed: 0,
+    skipped: 0,
+  })
+}
+
+function createBulkSyncRows(store: StoryStore, accountIds: number[]): BulkUpstreamAccountSyncRow[] {
+  return accountIds.map((accountId) => {
+    const account = store.details[accountId] ?? store.accounts.find((item) => item.id === accountId)
+    return {
+      accountId,
+      displayName: account?.displayName ?? `Account ${accountId}`,
+      status: 'pending',
+      detail: null,
+    }
+  })
+}
+
+function buildBulkSyncSnapshot(
+  jobId: string,
+  rows: BulkUpstreamAccountSyncRow[],
+  status: BulkUpstreamAccountSyncSnapshot['status'] = 'running',
+): BulkUpstreamAccountSyncSnapshot {
+  return {
+    jobId,
+    status,
+    rows: clone(rows),
+  }
+}
+
+function buildBulkSyncSnapshotEvent(job: StoryBulkSyncJob) {
+  return {
+    snapshot: clone(job.snapshot),
+    counts: clone(job.counts),
+  }
+}
+
+function buildBulkSyncRowEvent(
+  row: BulkUpstreamAccountSyncRow,
+  counts: BulkUpstreamAccountSyncCounts,
+) {
+  return {
+    row: clone(row),
+    counts: clone(counts),
+  }
+}
+
+function updateStoryBulkSyncJob(
+  job: StoryBulkSyncJob,
+  rows: BulkUpstreamAccountSyncRow[],
+  status: BulkUpstreamAccountSyncSnapshot['status'] = 'running',
+  error: string | null = null,
+) {
+  job.snapshot = buildBulkSyncSnapshot(job.jobId, rows, status)
+  job.counts = buildBulkSyncCounts(job.snapshot.rows)
+  job.error = error
+}
+
 function normalizeGroupName(value?: string | null) {
   const trimmed = value?.trim() ?? ''
   return trimmed || null
@@ -814,7 +974,8 @@ function storyWorkStatus(
 ) {
   if (storyEnableStatus(item) === 'disabled') return 'idle'
   if (syncState === 'syncing') return 'idle'
-  if (healthStatus !== 'normal') return 'idle'
+  if (item.workStatus === 'rate_limited') return 'rate_limited'
+  if (healthStatus !== 'normal') return 'unavailable'
   return typeof item.workStatus === 'string' && item.workStatus
     ? item.workStatus
     : 'idle'
@@ -863,11 +1024,20 @@ function listGroupSummaries(store: StoryStore) {
     const groupName = normalizeGroupName(account.groupName)
     if (groupName) names.add(groupName)
   }
+  for (const groupName of Object.keys(store.groupNotes)) {
+    const normalized = normalizeGroupName(groupName)
+    if (normalized) names.add(normalized)
+  }
+  for (const groupName of Object.keys(store.groupBoundProxyKeys)) {
+    const normalized = normalizeGroupName(groupName)
+    if (normalized) names.add(normalized)
+  }
   return Array.from(names)
     .sort((left, right) => left.localeCompare(right))
     .map((groupName) => ({
       groupName,
       note: store.groupNotes[groupName] ?? null,
+      boundProxyKeys: [...(store.groupBoundProxyKeys[groupName] ?? [])],
     }))
 }
 
@@ -918,9 +1088,18 @@ function filterAccountsForQuery(store: StoryStore, url: URL) {
     .getAll('tagIds')
     .map((value) => Number(value))
     .filter(Number.isFinite)
-  const workStatus = (url.searchParams.get('workStatus') || '').trim()
-  const enableStatus = (url.searchParams.get('enableStatus') || '').trim()
-  const healthStatus = (url.searchParams.get('healthStatus') || '').trim()
+  const workStatuses = url.searchParams
+    .getAll('workStatus')
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0)
+  const enableStatuses = url.searchParams
+    .getAll('enableStatus')
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0)
+  const healthStatuses = url.searchParams
+    .getAll('healthStatus')
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0)
 
   return store.accounts.filter((account) => {
     const normalizedGroup =
@@ -938,10 +1117,10 @@ function filterAccountsForQuery(store: StoryStore, url: URL) {
         ? normalizedGroup.includes(groupSearch)
         : true
     if (!matchesGroup) return false
-    if (workStatus && derivedWorkStatus !== workStatus) return false
-    if (enableStatus && storyEnableStatus(account) !== enableStatus)
+    if (workStatuses.length > 0 && !workStatuses.includes(derivedWorkStatus)) return false
+    if (enableStatuses.length > 0 && !enableStatuses.includes(storyEnableStatus(account)))
       return false
-    if (healthStatus && derivedHealthStatus !== healthStatus) return false
+    if (healthStatuses.length > 0 && !healthStatuses.includes(derivedHealthStatus)) return false
     if (tagIds.length === 0) return true
     const accountTagIds = new Set(account.tags.map((tag) => tag.id))
     return tagIds.every((tagId) => accountTagIds.has(tagId))
@@ -1170,6 +1349,14 @@ function createStore(): StoryStore {
     storyId?.endsWith('--quota-exhausted-oauth') === true
   const upstreamRejected402Story =
     storyId?.endsWith('--upstream-rejected-402') === true
+  const unavailableWorkStatusStory =
+    storyId?.endsWith('--unavailable-work-status-filter') === true
+  const missingWindowPlaceholdersStory =
+    storyId?.endsWith('--missing-window-placeholders') === true
+  const bulkSyncSuccessStory =
+    storyId?.endsWith('--bulk-sync-success-auto-hide') === true
+  const bulkSyncFailureStory =
+    storyId?.endsWith('--bulk-sync-failure-dismiss') === true
   const denseRosterStory =
     storyId?.endsWith('--dense-roster') === true ||
     storyId?.endsWith('--operational') === true ||
@@ -1223,29 +1410,53 @@ function createStore(): StoryStore {
   })
   const apiKey = createApiKeyAccount(
     102,
-    compactStory
+    missingWindowPlaceholdersStory
       ? {
-          enabled: false,
-          enableStatus: 'disabled',
-          workStatus: 'idle',
-          healthStatus: 'normal',
-          syncState: 'idle',
-          status: 'disabled',
-          displayStatus: 'disabled',
-          lastError: null,
-          lastErrorAt: null,
-          tags: [
-            compactDefaultTags[0],
-            compactDefaultTags[1],
-            compactDefaultTags[2],
-            compactDefaultTags[3],
-          ],
+          displayName: 'Team key - missing weekly limit',
+          primaryWindow: buildWindow(
+            18,
+            300,
+            '18 requests',
+            '120 requests',
+            '2026-03-11T13:00:00.000Z',
+          ),
+          secondaryWindow: null,
+          localLimits: {
+            primaryLimit: 120,
+            secondaryLimit: null,
+            limitUnit: 'requests',
+          },
+          history: buildHistory(0).map((point) => ({
+            ...point,
+            primaryUsedPercent: 18,
+            secondaryUsedPercent: null,
+            creditsBalance: null,
+          })),
+          note: 'Secondary quota window is intentionally missing in this story.',
         }
-      : tagFilterStory
+      : compactStory
         ? {
-            tags: [compactDefaultTags[0], compactDefaultTags[3]],
+            enabled: false,
+            enableStatus: 'disabled',
+            workStatus: 'idle',
+            healthStatus: 'normal',
+            syncState: 'idle',
+            status: 'disabled',
+            displayStatus: 'disabled',
+            lastError: null,
+            lastErrorAt: null,
+            tags: [
+              compactDefaultTags[0],
+              compactDefaultTags[1],
+              compactDefaultTags[2],
+              compactDefaultTags[3],
+            ],
           }
-        : undefined,
+        : tagFilterStory
+          ? {
+              tags: [compactDefaultTags[0], compactDefaultTags[3]],
+            }
+          : undefined,
   )
   const duplicateOauth = duplicateStory
     ? createOauthAccount(103, {
@@ -1675,6 +1886,60 @@ function createStore(): StoryStore {
         }),
       ]
     : []
+  const unavailableWorkStatusAccounts = unavailableWorkStatusStory
+    ? [
+        createOauthAccount(601, {
+          displayName: 'Needs reauth unavailable work status',
+          groupName: 'rescue',
+          isMother: false,
+          status: 'needs_reauth',
+          displayStatus: 'needs_reauth',
+          enableStatus: 'enabled',
+          workStatus: 'unavailable',
+          healthStatus: 'needs_reauth',
+          syncState: 'idle',
+          lastError: 'refresh token expired',
+          lastErrorAt: '2026-03-27T08:11:47.000Z',
+          tags: pickStoryTags('rescue'),
+        }),
+        createOauthAccount(602, {
+          displayName: 'Upstream unavailable work status',
+          groupName: 'rescue',
+          isMother: false,
+          status: 'active',
+          displayStatus: 'upstream_unavailable',
+          enableStatus: 'enabled',
+          workStatus: 'unavailable',
+          healthStatus: 'upstream_unavailable',
+          syncState: 'idle',
+          lastError: 'gateway temporarily unavailable',
+          lastErrorAt: '2026-03-27T08:21:47.000Z',
+          tags: pickStoryTags('rescue'),
+        }),
+        createOauthAccount(603, {
+          displayName: 'Upstream rejected unavailable work status',
+          groupName: 'rescue',
+          isMother: false,
+          status: 'error',
+          displayStatus: 'upstream_rejected',
+          enableStatus: 'enabled',
+          workStatus: 'unavailable',
+          healthStatus: 'upstream_rejected',
+          syncState: 'idle',
+          lastError: 'oauth bridge upstream rejected request: 403 forbidden',
+          lastErrorAt: '2026-03-27T08:31:47.000Z',
+          tags: pickStoryTags('rescue'),
+        }),
+        createApiKeyAccount(604, {
+          displayName: 'Rate limited filter control',
+          groupName: 'overflow',
+          workStatus: 'rate_limited',
+          healthStatus: 'normal',
+          syncState: 'idle',
+          tags: pickStoryTags('overflow'),
+        }),
+      ]
+    : []
   const operationalRosterAccounts = compactStory
     ? []
     : buildOperationalRosterAccounts(denseRosterStory ? 3 : 1)
@@ -1684,6 +1949,8 @@ function createStore(): StoryStore {
     ? quotaExhaustedOauthAccounts
     : upstreamRejected402Story
     ? upstreamRejected402Accounts
+    : unavailableWorkStatusStory
+    ? unavailableWorkStatusAccounts
     : availabilityBadgeStory
       ? availabilityBadgeAccounts
       : [
@@ -1706,6 +1973,7 @@ function createStore(): StoryStore {
       maintenance: clone(defaultRoutingMaintenance),
       timeouts: clone(defaultRoutingTimeouts),
     },
+    forwardProxyNodes: clone(defaultForwardProxyNodes),
     groupNotes: {
       production: 'Premium traffic group note.',
       staging: 'Staging fallback group note.',
@@ -1731,12 +1999,23 @@ function createStore(): StoryStore {
       'staging-overflow': 'Fallback keys that often ride the weekly edge.',
       rescue: 'Emergency pool for overflow and incident recovery.',
     },
+    groupBoundProxyKeys: {
+      production: [directBindingKey, subscriptionVlessKey],
+      staging: ['drain-node'],
+      overflow: ['missing-node-legacy'],
+    },
     accounts,
     details,
     nextId: Math.max(...Object.keys(details).map((value) => Number(value))) + 1,
     sessions: {},
     mailboxStatuses: {},
     nextMailboxId: 1,
+    bulkSyncScenario: bulkSyncSuccessStory
+      ? 'success-auto-hide'
+      : bulkSyncFailureStory
+        ? 'partial-failure'
+        : null,
+    bulkSyncJobs: {},
   }
 }
 
@@ -2008,6 +2287,140 @@ function parseBody<T>(raw: BodyInit | null | undefined, fallback: T): T {
   }
 }
 
+class MockStoryBulkSyncEventSource implements EventTarget {
+  private listeners = new Map<string, Set<EventListener>>()
+  private timers: number[] = []
+  private readonly storeRef: { current: StoryStore }
+  readyState = 1
+  onerror: ((this: EventSource, ev: Event) => unknown) | null = null
+
+  constructor(storeRef: { current: StoryStore }, url: string | URL) {
+    this.storeRef = storeRef
+    this.bootstrap(url.toString())
+  }
+
+  addEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+  ) {
+    if (!listener) return
+    const handler =
+      typeof listener === 'function'
+        ? listener
+        : ((event: Event) => listener.handleEvent(event)) as EventListener
+    const current = this.listeners.get(type) ?? new Set<EventListener>()
+    current.add(handler)
+    this.listeners.set(type, current)
+  }
+
+  removeEventListener(
+    type: string,
+    listener: EventListenerOrEventListenerObject | null,
+  ) {
+    if (!listener) return
+    const current = this.listeners.get(type)
+    if (!current) return
+    const handler =
+      typeof listener === 'function'
+        ? listener
+        : ((event: Event) => listener.handleEvent(event)) as EventListener
+    current.delete(handler)
+    if (current.size === 0) {
+      this.listeners.delete(type)
+    }
+  }
+
+  dispatchEvent(event: Event): boolean {
+    const current = Array.from(this.listeners.get(event.type) ?? [])
+    current.forEach((listener) => listener(event))
+    return true
+  }
+
+  close() {
+    this.readyState = 2
+    this.timers.forEach((timer) => window.clearTimeout(timer))
+    this.timers = []
+    this.listeners.clear()
+  }
+
+  private emit(type: string, payload: unknown) {
+    if (this.readyState === 2) return
+    this.dispatchEvent(
+      new MessageEvent(type, {
+        data: JSON.stringify(payload),
+      }),
+    )
+  }
+
+  private schedule(delayMs: number, callback: () => void) {
+    const timer = window.setTimeout(() => {
+      if (this.readyState === 2) return
+      callback()
+    }, delayMs)
+    this.timers.push(timer)
+  }
+
+  private bootstrap(rawUrl: string) {
+    const parsed = new URL(rawUrl, window.location.origin)
+    const match = parsed.pathname.match(
+      /^\/api\/pool\/upstream-accounts\/bulk-sync-jobs\/([^/]+)\/events$/,
+    )
+    if (!match) return
+
+    const jobId = decodeURIComponent(match[1])
+    const store = this.storeRef.current
+    const job = store.bulkSyncJobs[jobId]
+    if (!job) return
+
+    this.schedule(0, () => {
+      this.emit('snapshot', buildBulkSyncSnapshotEvent(job))
+    })
+
+    if (store.bulkSyncScenario === 'success-auto-hide') {
+      this.schedule(80, () => {
+        const nextRows = job.snapshot.rows.map((row) => ({
+          ...row,
+          status: 'succeeded',
+          detail: null,
+        }))
+        const lastRow = clone(nextRows[nextRows.length - 1])
+        updateStoryBulkSyncJob(job, nextRows, 'running')
+        this.emit('row', buildBulkSyncRowEvent(lastRow, job.counts))
+      })
+      this.schedule(160, () => {
+        updateStoryBulkSyncJob(job, job.snapshot.rows, 'completed')
+        this.emit('completed', buildBulkSyncSnapshotEvent(job))
+      })
+      return
+    }
+
+    if (store.bulkSyncScenario === 'partial-failure') {
+      this.schedule(80, () => {
+        const nextRows = job.snapshot.rows.map((row, index) =>
+          index === 0
+            ? {
+                ...row,
+                status: 'failed',
+                detail: 'refresh token already rotated',
+              }
+            : {
+                ...row,
+                status: 'succeeded',
+                detail: null,
+              },
+        )
+        const firstRow = clone(nextRows[0])
+        updateStoryBulkSyncJob(job, nextRows, 'running')
+        this.emit('row', buildBulkSyncRowEvent(firstRow, job.counts))
+      })
+      this.schedule(160, () => {
+        updateStoryBulkSyncJob(job, job.snapshot.rows, 'completed')
+        this.emit('completed', buildBulkSyncSnapshotEvent(job))
+      })
+    }
+  }
+}
+
 function syncLocalWindows(detail: UpstreamAccountDetail) {
   if (detail.kind !== 'api_key_codex') return withDerivedStatusFields(detail)
   const primaryLimit = detail.localLimits?.primaryLimit ?? 120
@@ -2039,11 +2452,13 @@ export function StorybookUpstreamAccountsMock({
 }) {
   const storeRef = useRef<StoryStore>(createStore())
   const originalFetchRef = useRef<typeof window.fetch | null>(null)
+  const originalEventSourceRef = useRef<typeof window.EventSource | null>(null)
   const installedRef = useRef(false)
 
   if (typeof window !== 'undefined' && !installedRef.current) {
     installedRef.current = true
     originalFetchRef.current = window.fetch.bind(window)
+    originalEventSourceRef.current = window.EventSource
 
     const mockedFetch: typeof window.fetch = async (input, init) => {
       const method = (
@@ -2078,6 +2493,7 @@ export function StorybookUpstreamAccountsMock({
         const payload: UpstreamAccountListResponse = {
           writesEnabled: store.writesEnabled,
           groups: listGroupSummaries(store),
+          forwardProxyNodes: clone(store.forwardProxyNodes),
           hasUngroupedAccounts: store.accounts.some(
             (account) => !normalizeGroupName(account.groupName),
           ),
@@ -2112,6 +2528,62 @@ export function StorybookUpstreamAccountsMock({
           writesEnabled: store.writesEnabled,
           items: listTagSummaries(store),
         })
+      }
+
+      if (path === '/api/pool/upstream-accounts/bulk-sync-jobs' && method === 'POST') {
+        const body = parseBody<{ accountIds?: number[] }>(init?.body, {})
+        const accountIds = Array.isArray(body.accountIds) ? body.accountIds : []
+        const rows = createBulkSyncRows(store, accountIds)
+        const jobId = `story-bulk-sync-${Date.now()}`
+        const job: StoryBulkSyncJob = {
+          jobId,
+          snapshot: buildBulkSyncSnapshot(jobId, rows),
+          counts: buildBulkSyncCounts(rows),
+          error: null,
+        }
+        store.bulkSyncJobs[jobId] = job
+        return jsonResponse({
+          jobId,
+          ...buildBulkSyncSnapshotEvent(job),
+        }, 201)
+      }
+
+      if (
+        path.startsWith('/api/pool/upstream-accounts/bulk-sync-jobs/') &&
+        method === 'GET'
+      ) {
+        const match = path.match(
+          /^\/api\/pool\/upstream-accounts\/bulk-sync-jobs\/([^/]+)$/,
+        )
+        if (!match) {
+          return jsonResponse({ message: 'not found' }, 404)
+        }
+        const jobId = decodeURIComponent(match[1])
+        const job = store.bulkSyncJobs[jobId]
+        if (!job) {
+          return jsonResponse({ message: 'not found' }, 404)
+        }
+        return jsonResponse({
+          jobId,
+          ...buildBulkSyncSnapshotEvent(job),
+        })
+      }
+
+      if (
+        path.startsWith('/api/pool/upstream-accounts/bulk-sync-jobs/') &&
+        method === 'DELETE'
+      ) {
+        const match = path.match(
+          /^\/api\/pool\/upstream-accounts\/bulk-sync-jobs\/([^/]+)$/,
+        )
+        if (match) {
+          const jobId = decodeURIComponent(match[1])
+          const job = store.bulkSyncJobs[jobId]
+          if (job) {
+            updateStoryBulkSyncJob(job, job.snapshot.rows, 'cancelled')
+          }
+        }
+        return noContent()
       }
 
       if (path === '/api/pool/routing-settings' && method === 'PUT') {
@@ -2569,9 +3041,9 @@ export function StorybookUpstreamAccountsMock({
       }
 
       const groupMatch = path.match(
-        /^\/api\/pool\/upstream-accounts\/groups\/(.+)$/,
+        /^\/api\/pool\/upstream-account-groups\/(.+)$/,
       )
-      if (groupMatch && method === 'PATCH') {
+      if (groupMatch && method === 'PUT') {
         const groupName = decodeURIComponent(groupMatch[1])
         const body = parseBody<UpdateUpstreamAccountGroupPayload>(
           init?.body,
@@ -2581,9 +3053,27 @@ export function StorybookUpstreamAccountsMock({
         if (!normalized)
           return jsonResponse({ message: 'missing mock group' }, 404)
         const note = body.note?.trim() ?? ''
+        const boundProxyKeys = Array.isArray(body.boundProxyKeys)
+          ? Array.from(
+              new Set(
+                body.boundProxyKeys
+                  .map((value) => value.trim())
+                  .filter(Boolean),
+              ),
+            )
+          : []
         if (note) store.groupNotes[normalized] = note
         else delete store.groupNotes[normalized]
-        return jsonResponse({ groupName: normalized, note: note || null })
+        if (boundProxyKeys.length > 0) {
+          store.groupBoundProxyKeys[normalized] = boundProxyKeys
+        } else {
+          delete store.groupBoundProxyKeys[normalized]
+        }
+        return jsonResponse({
+          groupName: normalized,
+          note: note || null,
+          boundProxyKeys,
+        })
       }
 
       if (detailMatch && method === 'DELETE') {
@@ -2608,6 +3098,11 @@ export function StorybookUpstreamAccountsMock({
     }
 
     window.fetch = mockedFetch
+    window.EventSource = class extends MockStoryBulkSyncEventSource {
+      constructor(url: string | URL) {
+        super(storeRef, url)
+      }
+    } as unknown as typeof window.EventSource
   }
 
   useEffect(() => {
@@ -2615,6 +3110,10 @@ export function StorybookUpstreamAccountsMock({
       if (typeof window !== 'undefined' && originalFetchRef.current) {
         window.fetch = originalFetchRef.current
         originalFetchRef.current = null
+      }
+      if (typeof window !== 'undefined' && originalEventSourceRef.current) {
+        window.EventSource = originalEventSourceRef.current
+        originalEventSourceRef.current = null
       }
     }
   }, [])

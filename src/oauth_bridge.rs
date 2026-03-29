@@ -130,8 +130,14 @@ pub(crate) fn oauth_transport_failure_kind(headers: &HeaderMap) -> Option<&'stat
         .get(OAUTH_TRANSPORT_FAILURE_KIND_HEADER)
         .and_then(|value| value.to_str().ok())?
     {
+        crate::PROXY_FAILURE_FAILED_CONTACT_UPSTREAM => {
+            Some(crate::PROXY_FAILURE_FAILED_CONTACT_UPSTREAM)
+        }
         crate::PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT => {
             Some(crate::PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT)
+        }
+        crate::PROXY_FAILURE_UPSTREAM_STREAM_ERROR => {
+            Some(crate::PROXY_FAILURE_UPSTREAM_STREAM_ERROR)
         }
         _ => None,
     }
@@ -284,25 +290,35 @@ async fn oauth_models(
     let upstream = match timeout(handshake_timeout, request.send()).await {
         Ok(Ok(response)) => response,
         Ok(Err(err)) => {
+            let mut response = error_response(
+                StatusCode::BAD_GATEWAY,
+                &format!("failed to contact oauth codex upstream: {err}"),
+                "oauth_upstream_unavailable",
+            );
+            tag_oauth_transport_failure(
+                &mut response,
+                crate::PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+            );
             return OauthUpstreamResponse {
-                response: error_response(
-                    StatusCode::BAD_GATEWAY,
-                    &format!("failed to contact oauth codex upstream: {err}"),
-                    "oauth_upstream_unavailable",
-                ),
+                response,
                 request_debug: None,
             };
         }
         Err(_) => {
-            return OauthUpstreamResponse {
-                response: error_response(
-                    StatusCode::BAD_GATEWAY,
-                    &format!(
-                        "oauth codex upstream handshake timed out after {}ms",
-                        handshake_timeout.as_millis()
-                    ),
-                    "oauth_upstream_handshake_timeout",
+            let mut response = error_response(
+                StatusCode::BAD_GATEWAY,
+                &format!(
+                    "oauth codex upstream handshake timed out after {}ms",
+                    handshake_timeout.as_millis()
                 ),
+                "oauth_upstream_handshake_timeout",
+            );
+            tag_oauth_transport_failure(
+                &mut response,
+                crate::PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
+            );
+            return OauthUpstreamResponse {
+                response,
                 request_debug: None,
             };
         }
@@ -318,12 +334,14 @@ async fn oauth_models(
     {
         Ok(bytes) => bytes,
         Err(err) => {
+            let mut response = error_response(
+                StatusCode::BAD_GATEWAY,
+                &format!("failed to read oauth codex models response: {err}"),
+                "oauth_upstream_read_failed",
+            );
+            tag_oauth_transport_failure(&mut response, crate::PROXY_FAILURE_UPSTREAM_STREAM_ERROR);
             return OauthUpstreamResponse {
-                response: error_response(
-                    StatusCode::BAD_GATEWAY,
-                    &format!("failed to read oauth codex models response: {err}"),
-                    "oauth_upstream_read_failed",
-                ),
+                response,
                 request_debug: None,
             };
         }
@@ -431,12 +449,17 @@ async fn oauth_responses(
     let upstream = match timeout(response_timeout, request.send()).await {
         Ok(Ok(response)) => response,
         Ok(Err(err)) => {
+            let mut response = error_response(
+                StatusCode::BAD_GATEWAY,
+                &format!("failed to contact oauth codex upstream: {err}"),
+                "oauth_upstream_unavailable",
+            );
+            tag_oauth_transport_failure(
+                &mut response,
+                crate::PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+            );
             return OauthUpstreamResponse {
-                response: error_response(
-                    StatusCode::BAD_GATEWAY,
-                    &format!("failed to contact oauth codex upstream: {err}"),
-                    "oauth_upstream_unavailable",
-                ),
+                response,
                 request_debug: Some(request_debug),
             };
         }
@@ -472,12 +495,17 @@ async fn oauth_responses(
         {
             Ok(bytes) => bytes,
             Err(err) => {
+                let mut response = error_response(
+                    StatusCode::BAD_GATEWAY,
+                    &format!("failed to read oauth codex error response: {err}"),
+                    "oauth_upstream_read_failed",
+                );
+                tag_oauth_transport_failure(
+                    &mut response,
+                    crate::PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
+                );
                 return OauthUpstreamResponse {
-                    response: error_response(
-                        StatusCode::BAD_GATEWAY,
-                        &format!("failed to read oauth codex error response: {err}"),
-                        "oauth_upstream_read_failed",
-                    ),
+                    response,
                     request_debug: Some(request_debug),
                 };
             }
@@ -595,25 +623,35 @@ async fn oauth_passthrough(
     let upstream = match timeout(handshake_timeout, builder.body(body.0).send()).await {
         Ok(Ok(response)) => response,
         Ok(Err(err)) => {
+            let mut response = error_response(
+                StatusCode::BAD_GATEWAY,
+                &format!("failed to contact oauth codex upstream: {err}"),
+                "oauth_upstream_unavailable",
+            );
+            tag_oauth_transport_failure(
+                &mut response,
+                crate::PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+            );
             return OauthUpstreamResponse {
-                response: error_response(
-                    StatusCode::BAD_GATEWAY,
-                    &format!("failed to contact oauth codex upstream: {err}"),
-                    "oauth_upstream_unavailable",
-                ),
+                response,
                 request_debug: Some(request_debug),
             };
         }
         Err(_) => {
-            return OauthUpstreamResponse {
-                response: error_response(
-                    StatusCode::BAD_GATEWAY,
-                    &format!(
-                        "oauth codex upstream handshake timed out after {}ms",
-                        handshake_timeout.as_millis()
-                    ),
-                    "oauth_upstream_handshake_timeout",
+            let mut response = error_response(
+                StatusCode::BAD_GATEWAY,
+                &format!(
+                    "oauth codex upstream handshake timed out after {}ms",
+                    handshake_timeout.as_millis()
                 ),
+                "oauth_upstream_handshake_timeout",
+            );
+            tag_oauth_transport_failure(
+                &mut response,
+                crate::PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
+            );
+            return OauthUpstreamResponse {
+                response,
                 request_debug: Some(request_debug),
             };
         }

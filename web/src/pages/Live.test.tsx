@@ -1,6 +1,7 @@
 /** @vitest-environment jsdom */
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import LivePage from "./Live";
 
@@ -101,7 +102,7 @@ vi.mock("../i18n", () => ({
         case "live.proxy.description":
           return "代理说明";
         case "live.conversations.title":
-          return "Prompt Cache Key 对话";
+          return "对话";
         case "live.conversations.description":
           return "对话说明";
         case "live.conversations.selectionLabel":
@@ -204,13 +205,13 @@ function render(ui: React.ReactNode) {
   document.body.appendChild(host);
   root = createRoot(host);
   act(() => {
-    root?.render(ui);
+    root?.render(<MemoryRouter>{ui}</MemoryRouter>);
   });
 }
 
 function rerender(ui: React.ReactNode) {
   act(() => {
-    root?.render(ui);
+    root?.render(<MemoryRouter>{ui}</MemoryRouter>);
   });
 }
 
@@ -299,6 +300,16 @@ function getPromptCacheExpandAllButton() {
     throw new Error("missing expand-all button");
   }
   return button;
+}
+
+function getPromptCacheExpandAllButtonIcon() {
+  const icon = host?.querySelector(
+    '[data-testid="live-prompt-cache-expand-all-icon"]',
+  );
+  if (!(icon instanceof HTMLElement)) {
+    throw new Error("missing expand-all icon");
+  }
+  return icon;
 }
 
 function getPromptCacheConversationTable() {
@@ -438,19 +449,24 @@ describe("LivePage", () => {
     render(<LivePage />);
 
     const expandAllButton = getPromptCacheExpandAllButton();
+    const expandAllIcon = getPromptCacheExpandAllButtonIcon();
     const table = getPromptCacheConversationTable();
 
+    expect(host?.textContent).toContain("对话");
     expect(expandAllButton.textContent).toContain("展开所有记录");
+    expect(expandAllIcon.dataset.iconName).toBe("chevron-down");
     expect(table.dataset.expanded).toBe("");
 
     pressElement(expandAllButton);
 
     expect(expandAllButton.textContent).toContain("收起所有记录");
+    expect(expandAllIcon.dataset.iconName).toBe("chevron-up");
     expect(table.dataset.expanded).toBe("pck-1,pck-2");
 
     pressElement(expandAllButton);
 
     expect(expandAllButton.textContent).toContain("展开所有记录");
+    expect(expandAllIcon.dataset.iconName).toBe("chevron-down");
     expect(table.dataset.expanded).toBe("");
   });
 

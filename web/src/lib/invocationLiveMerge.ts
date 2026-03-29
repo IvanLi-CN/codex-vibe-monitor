@@ -1,0 +1,302 @@
+import type { ApiInvocation } from "./api";
+import { invocationStableKey } from "./invocation";
+
+function normalizeStatus(value: string | null | undefined) {
+  return value?.trim().toLowerCase() ?? "";
+}
+
+function comparableNumber(value: number | null | undefined) {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function hasMeaningfulString(value: string | null | undefined) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function hasComparableNumber(value: number | null | undefined) {
+  return comparableNumber(value) !== null;
+}
+
+function invocationHasTerminalFailure(record: ApiInvocation) {
+  const status = normalizeStatus(record.status);
+  if (status === "running" || status === "pending") return false;
+  const failureClass = normalizeStatus(record.failureClass);
+  if (failureClass && failureClass !== "none") return true;
+  if (status.startsWith("http_4") || status.startsWith("http_5")) return true;
+  if (hasMeaningfulString(record.errorMessage)) return true;
+  if (hasMeaningfulString(record.failureKind)) return true;
+  if (hasMeaningfulString(record.poolAttemptTerminalReason)) return true;
+  if (hasMeaningfulString(record.upstreamErrorCode)) return true;
+  if (hasMeaningfulString(record.upstreamErrorMessage)) return true;
+  return false;
+}
+
+function canBackfillFailureMetadata(record: ApiInvocation) {
+  return recordLifecycleRank(record) === 1 || invocationHasTerminalFailure(record);
+}
+
+function recordLifecycleRank(record: ApiInvocation) {
+  const status = normalizeStatus(record.status);
+  if (status === "running" || status === "pending") return 1;
+  return 2;
+}
+
+function recordCompletenessScore(record: ApiInvocation) {
+  let score = 0;
+  if (record.source?.trim()) score += 1;
+  if (record.model?.trim()) score += 1;
+  if (record.proxyDisplayName?.trim()) score += 1;
+  if (record.endpoint?.trim()) score += 1;
+  if (record.promptCacheKey?.trim()) score += 1;
+  if (record.requesterIp?.trim()) score += 1;
+  if (record.upstreamAccountName?.trim()) score += 1;
+  if (
+    typeof record.upstreamAccountId === "number" &&
+    Number.isFinite(record.upstreamAccountId)
+  ) {
+    score += 1;
+  }
+  if (record.responseContentEncoding?.trim()) score += 1;
+  if (record.requestedServiceTier?.trim()) score += 1;
+  if (record.serviceTier?.trim()) score += 1;
+  if (record.reasoningEffort?.trim()) score += 1;
+  if (typeof record.inputTokens === "number" && Number.isFinite(record.inputTokens)) {
+    score += 1;
+  }
+  if (typeof record.outputTokens === "number" && Number.isFinite(record.outputTokens)) {
+    score += 1;
+  }
+  if (
+    typeof record.cacheInputTokens === "number" &&
+    Number.isFinite(record.cacheInputTokens)
+  ) {
+    score += 1;
+  }
+  if (
+    typeof record.reasoningTokens === "number" &&
+    Number.isFinite(record.reasoningTokens)
+  ) {
+    score += 1;
+  }
+  if (
+    typeof record.tUpstreamConnectMs === "number" &&
+    Number.isFinite(record.tUpstreamConnectMs) &&
+    record.tUpstreamConnectMs > 0
+  ) {
+    score += 1;
+  }
+  if (
+    typeof record.tUpstreamTtfbMs === "number" &&
+    Number.isFinite(record.tUpstreamTtfbMs) &&
+    record.tUpstreamTtfbMs > 0
+  ) {
+    score += 2;
+  }
+  if (
+    typeof record.tTotalMs === "number" &&
+    Number.isFinite(record.tTotalMs) &&
+    record.tTotalMs > 0
+  ) {
+    score += 3;
+  }
+  if (typeof record.totalTokens === "number" && Number.isFinite(record.totalTokens)) {
+    score += 2;
+  }
+  if (typeof record.cost === "number" && Number.isFinite(record.cost)) {
+    score += 2;
+  }
+  if (record.upstreamRequestId?.trim()) score += 2;
+  if (record.failureKind?.trim()) score += 2;
+  if (record.poolAttemptTerminalReason?.trim()) score += 2;
+  if (record.upstreamErrorCode?.trim()) score += 1;
+  if (record.upstreamErrorMessage?.trim()) score += 1;
+  if (record.errorMessage?.trim()) score += 2;
+  return score;
+}
+
+function compareRecordRuntimeProgress(current: ApiInvocation, next: ApiInvocation) {
+  const fields: Array<[number | null, number | null]> = [
+    [
+      comparableNumber(current.poolAttemptCount),
+      comparableNumber(next.poolAttemptCount),
+    ],
+    [
+      comparableNumber(current.poolDistinctAccountCount),
+      comparableNumber(next.poolDistinctAccountCount),
+    ],
+    [comparableNumber(current.tUpstreamTtfbMs), comparableNumber(next.tUpstreamTtfbMs)],
+    [
+      comparableNumber(current.tUpstreamStreamMs),
+      comparableNumber(next.tUpstreamStreamMs),
+    ],
+    [comparableNumber(current.tRespParseMs), comparableNumber(next.tRespParseMs)],
+    [comparableNumber(current.tPersistMs), comparableNumber(next.tPersistMs)],
+    [comparableNumber(current.tTotalMs), comparableNumber(next.tTotalMs)],
+  ];
+
+  for (const [currentValue, nextValue] of fields) {
+    if (currentValue === nextValue) continue;
+    if (currentValue === null) return 1;
+    if (nextValue === null) return -1;
+    return nextValue > currentValue ? 1 : -1;
+  }
+
+  return 0;
+}
+
+function compareInvocationRecordPreference(
+  current: ApiInvocation | undefined,
+  next: ApiInvocation,
+) {
+  if (!current) return 1;
+
+  const currentRank = recordLifecycleRank(current);
+  const nextRank = recordLifecycleRank(next);
+  if (nextRank !== currentRank) {
+    return nextRank > currentRank ? 1 : -1;
+  }
+
+  const runtimeProgress = compareRecordRuntimeProgress(current, next);
+  if (runtimeProgress !== 0) {
+    return runtimeProgress;
+  }
+
+  const currentScore = recordCompletenessScore(current);
+  const nextScore = recordCompletenessScore(next);
+  if (nextScore !== currentScore) {
+    return nextScore > currentScore ? 1 : -1;
+  }
+
+  return 0;
+}
+
+export function choosePreferredInvocationRecord(
+  current: ApiInvocation | undefined,
+  next: ApiInvocation,
+) {
+  if (!current) return next;
+  if (compareInvocationRecordPreference(current, next) > 0) return next;
+  return current;
+}
+
+function mergeInvocationRecordDetails(
+  preferred: ApiInvocation,
+  fallback: ApiInvocation | undefined,
+) {
+  if (!fallback) return preferred;
+
+  const merged: ApiInvocation = { ...preferred };
+
+  const fillStringFields: Array<keyof ApiInvocation> = [
+    "source",
+    "status",
+    "routeMode",
+    "model",
+    "endpoint",
+    "upstreamAccountName",
+    "proxyDisplayName",
+    "responseContentEncoding",
+    "requestedServiceTier",
+    "serviceTier",
+    "reasoningEffort",
+    "promptCacheKey",
+    "requesterIp",
+    "upstreamRequestId",
+  ];
+  const fillFailureStringFields: Array<keyof ApiInvocation> = [
+    "errorMessage",
+    "failureKind",
+    "failureClass",
+    "poolAttemptTerminalReason",
+    "upstreamErrorCode",
+    "upstreamErrorMessage",
+  ];
+
+  const fillStringFieldGroup = (fields: Array<keyof ApiInvocation>) => {
+    for (const field of fields) {
+      const preferredValue = merged[field];
+      const fallbackValue = fallback[field];
+      if (
+        !hasMeaningfulString(
+          typeof preferredValue === "string" ? preferredValue : undefined,
+        ) &&
+        hasMeaningfulString(typeof fallbackValue === "string" ? fallbackValue : undefined)
+      ) {
+        merged[field] = fallbackValue as never;
+      }
+    }
+  };
+
+  fillStringFieldGroup(fillStringFields);
+  if (canBackfillFailureMetadata(preferred)) {
+    fillStringFieldGroup(fillFailureStringFields);
+  }
+
+  const fillNumberFields: Array<keyof ApiInvocation> = [
+    "inputTokens",
+    "outputTokens",
+    "cacheInputTokens",
+    "reasoningTokens",
+    "totalTokens",
+    "cost",
+    "upstreamAccountId",
+    "poolAttemptCount",
+    "poolDistinctAccountCount",
+    "tReqReadMs",
+    "tReqParseMs",
+    "tUpstreamConnectMs",
+    "tUpstreamTtfbMs",
+    "tUpstreamStreamMs",
+    "tRespParseMs",
+    "tPersistMs",
+    "tTotalMs",
+  ];
+
+  for (const field of fillNumberFields) {
+    const preferredValue = merged[field];
+    const fallbackValue = fallback[field];
+    if (
+      !hasComparableNumber(
+        typeof preferredValue === "number" ? preferredValue : undefined,
+      ) &&
+      hasComparableNumber(typeof fallbackValue === "number" ? fallbackValue : undefined)
+    ) {
+      merged[field] = fallbackValue as never;
+    }
+  }
+
+  if (
+    canBackfillFailureMetadata(preferred) &&
+    merged.isActionable == null &&
+    typeof fallback.isActionable === "boolean"
+  ) {
+    merged.isActionable = fallback.isActionable;
+  }
+
+  return merged;
+}
+
+export function sortInvocationRecords(records: ApiInvocation[]) {
+  return [...records].sort(
+    (left, right) =>
+      new Date(right.occurredAt).getTime() - new Date(left.occurredAt).getTime(),
+  );
+}
+
+export function mergeInvocationRecordCollections(...collections: ApiInvocation[][]) {
+  const dedupe = new Map<string, ApiInvocation>();
+
+  for (const records of collections) {
+    for (const record of records) {
+      const key = invocationStableKey(record);
+      const current = dedupe.get(key);
+      const comparison = compareInvocationRecordPreference(current, record);
+      const preferred =
+        current == null || comparison >= 0 ? record : current;
+      const fallback = preferred === record ? current : record;
+      dedupe.set(key, mergeInvocationRecordDetails(preferred, fallback));
+    }
+  }
+
+  return sortInvocationRecords(Array.from(dedupe.values()));
+}

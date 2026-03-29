@@ -62,6 +62,8 @@ interface UpstreamAccountsTableProps {
   }
 }
 
+const WINDOW_PLACEHOLDER = '-'
+
 function SelectAllCheckbox({
   checked,
   indeterminate,
@@ -294,6 +296,8 @@ function CompactWindowLine({
   percent,
   text,
   resetText,
+  missing,
+  hideLabelWhenMissing,
   accentClassName,
   title,
   labelClassName,
@@ -302,40 +306,68 @@ function CompactWindowLine({
   percent: number
   text: string
   resetText?: string
+  missing?: boolean
+  hideLabelWhenMissing?: boolean
   accentClassName?: string
   title?: string
   labelClassName?: string
 }) {
-  const summary = resetText ? `${text} · ${resetText}` : text
+  const hideLabel = missing && hideLabelWhenMissing
+  const displayLabel = hideLabel ? '' : label
+  const displayText = missing ? WINDOW_PLACEHOLDER : text
+  const displayResetText = missing ? WINDOW_PLACEHOLDER : (resetText ?? '—')
+  const summary = missing
+    ? WINDOW_PLACEHOLDER
+    : resetText
+      ? `${text} · ${resetText}`
+      : text
 
   return (
     <div
       className="grid grid-cols-[max-content,minmax(0,1fr),minmax(0,1fr)] items-center gap-x-2 gap-y-0.5 xl:grid-cols-[max-content,minmax(0,1fr),minmax(0,1fr),minmax(5rem,1fr)]"
-      title={title ?? summary}
+      title={missing ? undefined : (title ?? summary)}
     >
       <span
         className={cn(
-          'truncate whitespace-nowrap text-[10px] font-semibold uppercase tracking-[0.06em] leading-4 text-base-content/48 font-mono tabular-nums',
+          'min-w-[2ch] truncate whitespace-nowrap text-[10px] font-semibold uppercase tracking-[0.06em] leading-4 text-base-content/48 font-mono tabular-nums',
           labelClassName,
         )}
       >
-        {label}
+        {displayLabel}
       </span>
-      <span className="truncate whitespace-nowrap text-[11px] leading-4 text-base-content/68 font-mono tabular-nums">
-        {text}
+      <span
+        className={
+          missing
+            ? 'truncate whitespace-nowrap text-[11px] leading-4 text-base-content/55 font-mono tabular-nums'
+            : 'truncate whitespace-nowrap text-[11px] leading-4 text-base-content/68 font-mono tabular-nums'
+        }
+      >
+        {displayText}
       </span>
-      <span className="truncate whitespace-nowrap text-[11px] leading-4 text-base-content/68 font-mono tabular-nums">
-        {resetText ?? '—'}
+      <span
+        className={
+          missing
+            ? 'truncate whitespace-nowrap text-[11px] leading-4 text-base-content/55 font-mono tabular-nums'
+            : 'truncate whitespace-nowrap text-[11px] leading-4 text-base-content/68 font-mono tabular-nums'
+        }
+      >
+        {displayResetText}
       </span>
       <div className="col-start-2 col-span-2 flex min-w-0 items-center gap-2 xl:col-start-4 xl:col-span-1">
         <div className="h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-base-300/60">
           <div
             className={cn('h-full rounded-full bg-primary', accentClassName)}
-            style={{ width: `${percent}%` }}
+            style={{ width: `${missing ? 0 : percent}%` }}
           />
         </div>
-        <span className="w-[2.75rem] shrink-0 text-right text-[11px] font-semibold leading-4 text-base-content/78 font-mono tabular-nums">
-          {Math.round(percent)}%
+        <span
+          className={
+            missing
+              ? 'w-[2.75rem] shrink-0 text-right text-[11px] font-semibold leading-4 text-base-content/55 font-mono tabular-nums'
+              : 'w-[2.75rem] shrink-0 text-right text-[11px] font-semibold leading-4 text-base-content/78 font-mono tabular-nums'
+          }
+        >
+          {missing ? WINDOW_PLACEHOLDER : `${Math.round(percent)}%`}
         </span>
       </div>
     </div>
@@ -528,6 +560,8 @@ export function UpstreamAccountsTable({
         </thead>
         <tbody>
           {items.map((item, index) => {
+            const primaryWindowMissing = item.primaryWindow == null
+            const secondaryWindowMissing = item.secondaryWindow == null
             const primary = windowPercent(item.primaryWindow?.usedPercent)
             const secondary = windowPercent(item.secondaryWindow?.usedPercent)
             const primaryResetText = item.primaryWindow?.resetsAt
@@ -668,16 +702,19 @@ export function UpstreamAccountsTable({
                     <CompactWindowLine
                       label={primaryLabel}
                       percent={primary}
-                      text={item.primaryWindow?.usedText ?? '—'}
+                      text={item.primaryWindow?.usedText ?? WINDOW_PLACEHOLDER}
                       resetText={primaryResetText}
+                      missing={primaryWindowMissing}
                       title={primaryWindowTitle}
                       labelClassName={primaryWindowUnexpected ? 'text-warning/78' : undefined}
                     />
                     <CompactWindowLine
                       label={secondaryLabel}
                       percent={secondary}
-                      text={item.secondaryWindow?.usedText ?? '—'}
+                      text={item.secondaryWindow?.usedText ?? WINDOW_PLACEHOLDER}
                       resetText={secondaryResetText}
+                      missing={secondaryWindowMissing}
+                      hideLabelWhenMissing={item.localLimits?.secondaryLimit === null}
                       accentClassName="bg-secondary"
                       title={secondaryWindowTitle}
                       labelClassName={secondaryWindowUnexpected ? 'text-warning/78' : undefined}

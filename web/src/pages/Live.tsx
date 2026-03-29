@@ -1,11 +1,13 @@
 import { useEffect, useMemo, useState } from "react";
 import { ForwardProxyLiveTable } from "../components/ForwardProxyLiveTable";
+import { AppIcon } from "../components/AppIcon";
 import { InvocationChart } from "../components/InvocationChart";
 import { InvocationTable } from "../components/InvocationTable";
 import { PromptCacheConversationTable } from "../components/PromptCacheConversationTable";
 import { StatsCards } from "../components/StatsCards";
 import { Button } from "../components/ui/button";
 import { useForwardProxyLiveStats } from "../hooks/useForwardProxyLiveStats";
+import { useUpstreamAccountDetailRoute } from "../hooks/useUpstreamAccountDetailRoute";
 import { useInvocationStream } from "../hooks/useInvocations";
 import { usePromptCacheConversations } from "../hooks/usePromptCacheConversations";
 import { useSummary } from "../hooks/useStats";
@@ -15,6 +17,7 @@ import type { PromptCacheConversationSelection } from "../lib/api";
 import { resolveInvocationDisplayStatus } from "../lib/invocationStatus";
 import { SegmentedControl, SegmentedControlItem } from "../components/ui/segmented-control";
 import { SelectField } from "../components/ui/select-field";
+import { SharedUpstreamAccountDetailDrawer } from "./account-pool/UpstreamAccounts";
 
 const LIMIT_OPTIONS = [20, 50, 100];
 const PROMPT_CACHE_SELECTION_STORAGE_KEY =
@@ -125,6 +128,8 @@ function persistPromptCacheSelectionValue(value: string) {
 
 export default function LivePage() {
   const { t } = useTranslation();
+  const { upstreamAccountId, openUpstreamAccount, closeUpstreamAccount } =
+    useUpstreamAccountDetailRoute();
   const [limit, setLimit] = useState(50);
   const [conversationSelectionValue, setConversationSelectionValue] = useState(
     () => readPromptCacheSelectionValue(),
@@ -311,12 +316,28 @@ export default function LivePage() {
                 type="button"
                 variant="ghost"
                 size="sm"
+                className="gap-2"
                 data-testid="live-prompt-cache-expand-all"
                 disabled={
                   conversationsLoading || !hasVisiblePromptCacheConversations
                 }
                 onClick={toggleAllVisiblePromptCacheKeys}
               >
+                <AppIcon
+                  name={
+                    allVisiblePromptCacheKeysExpanded
+                      ? "chevron-up"
+                      : "chevron-down"
+                  }
+                  className="h-4 w-4"
+                  data-testid="live-prompt-cache-expand-all-icon"
+                  data-icon-name={
+                    allVisiblePromptCacheKeysExpanded
+                      ? "chevron-up"
+                      : "chevron-down"
+                  }
+                  aria-hidden
+                />
                 {allVisiblePromptCacheKeysExpanded
                   ? t("live.conversations.actions.collapseAllRecords")
                   : t("live.conversations.actions.expandAllRecords")}
@@ -343,6 +364,7 @@ export default function LivePage() {
             error={conversationsError}
             expandedPromptCacheKeys={expandedPromptCacheKeys}
             onToggleExpandedPromptCacheKey={toggleExpandedPromptCacheKey}
+            onOpenUpstreamAccount={(accountId) => openUpstreamAccount(accountId)}
           />
         </div>
       </section>
@@ -379,9 +401,17 @@ export default function LivePage() {
             records={records}
             isLoading={isLoading}
             error={error}
+            onOpenUpstreamAccount={(accountId) => openUpstreamAccount(accountId)}
           />
         </div>
       </section>
+      {upstreamAccountId != null ? (
+        <SharedUpstreamAccountDetailDrawer
+          open
+          accountId={upstreamAccountId}
+          onClose={closeUpstreamAccount}
+        />
+      ) : null}
     </div>
   );
 }

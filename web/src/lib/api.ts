@@ -1,4 +1,5 @@
 import { getBrowserTimeZone } from "./timeZone";
+import { normalizeForwardProxyProtocolLabel } from "./forwardProxyDisplay";
 
 const rawBase = import.meta.env.VITE_API_BASE_URL ?? "";
 const API_BASE = rawBase.endsWith("/") ? rawBase.slice(0, -1) : rawBase;
@@ -549,6 +550,9 @@ export interface TimeseriesPoint {
   firstByteSampleCount?: number;
   firstByteAvgMs?: number | null;
   firstByteP95Ms?: number | null;
+  firstResponseByteTotalSampleCount?: number;
+  firstResponseByteTotalAvgMs?: number | null;
+  firstResponseByteTotalP95Ms?: number | null;
 }
 
 export interface TimeseriesResponse {
@@ -756,24 +760,6 @@ export interface VersionResponse {
   frontend: string;
 }
 
-export type ProxyFastModeRewriteMode =
-  | "disabled"
-  | "fill_missing"
-  | "force_priority";
-
-const DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES = 3;
-const MAX_PROXY_UPSTREAM_429_MAX_RETRIES = 5;
-
-export interface ProxySettings {
-  hijackEnabled: boolean;
-  mergeUpstreamEnabled: boolean;
-  models: string[];
-  enabledModels: string[];
-  defaultHijackEnabled: boolean;
-  fastModeRewriteMode: ProxyFastModeRewriteMode;
-  upstream429MaxRetries: number;
-}
-
 export interface PricingEntry {
   model: string;
   inputPer1m: number;
@@ -812,11 +798,21 @@ export interface ForwardProxyNode {
   stats: ForwardProxyNodeStats;
 }
 
+export interface ForwardProxyBindingNode {
+  key: string;
+  aliasKeys?: string[];
+  source: string;
+  displayName: string;
+  protocolLabel: string;
+  penalized: boolean;
+  selectable: boolean;
+  last24h: ForwardProxyHourlyBucket[];
+}
+
 export interface ForwardProxySettings {
   proxyUrls: string[];
   subscriptionUrls: string[];
   subscriptionUpdateIntervalSecs: number;
-  insertDirect: boolean;
   nodes: ForwardProxyNode[];
 }
 
@@ -911,6 +907,26 @@ export interface PromptCacheConversationInvocationPreview {
   upstreamAccountId: number | null;
   upstreamAccountName: string | null;
   endpoint: string | null;
+  source?: ApiInvocation["source"];
+  inputTokens?: ApiInvocation["inputTokens"];
+  outputTokens?: ApiInvocation["outputTokens"];
+  cacheInputTokens?: ApiInvocation["cacheInputTokens"];
+  reasoningTokens?: ApiInvocation["reasoningTokens"];
+  reasoningEffort?: ApiInvocation["reasoningEffort"];
+  errorMessage?: ApiInvocation["errorMessage"];
+  failureKind?: ApiInvocation["failureKind"];
+  isActionable?: ApiInvocation["isActionable"];
+  responseContentEncoding?: ApiInvocation["responseContentEncoding"];
+  requestedServiceTier?: ApiInvocation["requestedServiceTier"];
+  serviceTier?: ApiInvocation["serviceTier"];
+  tReqReadMs?: ApiInvocation["tReqReadMs"];
+  tReqParseMs?: ApiInvocation["tReqParseMs"];
+  tUpstreamConnectMs?: ApiInvocation["tUpstreamConnectMs"];
+  tUpstreamTtfbMs?: ApiInvocation["tUpstreamTtfbMs"];
+  tUpstreamStreamMs?: ApiInvocation["tUpstreamStreamMs"];
+  tRespParseMs?: ApiInvocation["tRespParseMs"];
+  tPersistMs?: ApiInvocation["tPersistMs"];
+  tTotalMs?: ApiInvocation["tTotalMs"];
 }
 
 export interface PromptCacheConversation {
@@ -985,7 +1001,6 @@ function forwardProxyValidationTimeoutMs(
 }
 
 export interface SettingsPayload {
-  proxy: ProxySettings;
   forwardProxy: ForwardProxySettings;
   pricing: PricingSettings;
 }
@@ -1000,46 +1015,50 @@ function normalizeFiniteNumber(value: unknown): number | undefined {
   return value;
 }
 
-function normalizeProxyFastModeRewriteMode(
-  value: unknown,
-): ProxyFastModeRewriteMode {
-  return value === "fill_missing" || value === "force_priority"
-    ? value
-    : "disabled";
-}
-
-function normalizeProxyUpstream429MaxRetries(value: unknown): number {
-  if (typeof value !== "number" || !Number.isFinite(value))
-    return DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES;
-  const normalized = Math.trunc(value);
-  return Math.min(MAX_PROXY_UPSTREAM_429_MAX_RETRIES, Math.max(0, normalized));
-}
-
-function normalizeProxySettings(raw: unknown): ProxySettings {
+function normalizeTimeseriesPoint(raw: unknown): TimeseriesPoint | null {
   const payload = (raw ?? {}) as Record<string, unknown>;
-  const models = normalizeStringArray(payload.models);
-  const hasEnabledModelsField = Object.prototype.hasOwnProperty.call(
-    payload,
-    "enabledModels",
-  );
-  const enabledModelsRaw = normalizeStringArray(payload.enabledModels);
-  const allowSet = new Set(models);
-  const enabledModels = (
-    hasEnabledModelsField ? enabledModelsRaw : models
-  ).filter((modelId) => allowSet.has(modelId));
-
+  const bucketStart =
+    typeof payload.bucketStart === "string" ? payload.bucketStart : "";
+  const bucketEnd =
+    typeof payload.bucketEnd === "string" ? payload.bucketEnd : "";
+  if (!bucketStart || !bucketEnd) return null;
   return {
-    hijackEnabled: Boolean(payload.hijackEnabled),
-    mergeUpstreamEnabled: Boolean(payload.mergeUpstreamEnabled),
-    models,
-    enabledModels,
-    defaultHijackEnabled: Boolean(payload.defaultHijackEnabled),
-    fastModeRewriteMode: normalizeProxyFastModeRewriteMode(
-      payload.fastModeRewriteMode ?? payload.fast_mode_rewrite_mode,
-    ),
-    upstream429MaxRetries: normalizeProxyUpstream429MaxRetries(
-      payload.upstream429MaxRetries ?? payload.upstream_429_max_retries,
-    ),
+    bucketStart,
+    bucketEnd,
+    totalCount: normalizeFiniteNumber(payload.totalCount) ?? 0,
+    successCount: normalizeFiniteNumber(payload.successCount) ?? 0,
+    failureCount: normalizeFiniteNumber(payload.failureCount) ?? 0,
+    totalTokens: normalizeFiniteNumber(payload.totalTokens) ?? 0,
+    totalCost: normalizeFiniteNumber(payload.totalCost) ?? 0,
+    firstByteSampleCount:
+      normalizeFiniteNumber(payload.firstByteSampleCount) ?? 0,
+    firstByteAvgMs: normalizeFiniteNumber(payload.firstByteAvgMs) ?? null,
+    firstByteP95Ms: normalizeFiniteNumber(payload.firstByteP95Ms) ?? null,
+    firstResponseByteTotalSampleCount:
+      normalizeFiniteNumber(payload.firstResponseByteTotalSampleCount) ?? 0,
+    firstResponseByteTotalAvgMs:
+      normalizeFiniteNumber(payload.firstResponseByteTotalAvgMs) ?? null,
+    firstResponseByteTotalP95Ms:
+      normalizeFiniteNumber(payload.firstResponseByteTotalP95Ms) ?? null,
+  };
+}
+
+function normalizeTimeseriesResponse(raw: unknown): TimeseriesResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const pointsRaw = Array.isArray(payload.points) ? payload.points : [];
+  return {
+    rangeStart: typeof payload.rangeStart === "string" ? payload.rangeStart : "",
+    rangeEnd: typeof payload.rangeEnd === "string" ? payload.rangeEnd : "",
+    bucketSeconds: normalizeFiniteNumber(payload.bucketSeconds) ?? 3600,
+    effectiveBucket:
+      typeof payload.effectiveBucket === "string"
+        ? payload.effectiveBucket
+        : undefined,
+    availableBuckets: normalizeStringArray(payload.availableBuckets),
+    bucketLimitedToDaily: payload.bucketLimitedToDaily === true,
+    points: pointsRaw
+      .map(normalizeTimeseriesPoint)
+      .filter((point): point is TimeseriesPoint => point != null),
   };
 }
 
@@ -1132,6 +1151,31 @@ function normalizeForwardProxyNode(raw: unknown): ForwardProxyNode | null {
   };
 }
 
+function normalizeForwardProxyBindingNode(
+  raw: unknown,
+): ForwardProxyBindingNode | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const key = typeof payload.key === "string" ? payload.key.trim() : "";
+  if (!key) return null;
+  const bucketsRaw = Array.isArray(payload.last24h) ? payload.last24h : [];
+  return {
+    key,
+    source: typeof payload.source === "string" ? payload.source : "manual",
+    displayName:
+      typeof payload.displayName === "string" && payload.displayName.trim()
+        ? payload.displayName.trim()
+        : key,
+    protocolLabel: normalizeForwardProxyProtocolLabel(
+      typeof payload.protocolLabel === "string" ? payload.protocolLabel : undefined,
+    ),
+    penalized: Boolean(payload.penalized),
+    selectable: payload.selectable === true,
+    last24h: bucketsRaw
+      .map(normalizeForwardProxyHourlyBucket)
+      .filter((item): item is ForwardProxyHourlyBucket => item != null),
+  };
+}
+
 function normalizeForwardProxySettings(raw: unknown): ForwardProxySettings {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const nodesRaw = Array.isArray(payload.nodes) ? payload.nodes : [];
@@ -1144,7 +1188,6 @@ function normalizeForwardProxySettings(raw: unknown): ForwardProxySettings {
     subscriptionUrls: normalizeStringArray(payload.subscriptionUrls),
     subscriptionUpdateIntervalSecs:
       normalizeFiniteNumber(payload.subscriptionUpdateIntervalSecs) ?? 3600,
-    insertDirect: payload.insertDirect !== false,
     nodes: nodes.map((node) => ({
       ...node,
       stats: node.stats ?? emptyForwardProxyNodeStats(),
@@ -1380,6 +1423,52 @@ function normalizePromptCacheConversationInvocationPreview(
       typeof payload.endpoint === "string" && payload.endpoint.trim()
         ? payload.endpoint.trim()
         : null,
+    source:
+      typeof payload.source === "string" && payload.source.trim()
+        ? payload.source.trim()
+        : undefined,
+    inputTokens: normalizeFiniteNumber(payload.inputTokens),
+    outputTokens: normalizeFiniteNumber(payload.outputTokens),
+    cacheInputTokens: normalizeFiniteNumber(payload.cacheInputTokens),
+    reasoningTokens: normalizeFiniteNumber(payload.reasoningTokens),
+    reasoningEffort:
+      typeof payload.reasoningEffort === "string" && payload.reasoningEffort.trim()
+        ? payload.reasoningEffort.trim()
+        : undefined,
+    errorMessage:
+      typeof payload.errorMessage === "string" && payload.errorMessage.trim()
+        ? payload.errorMessage
+        : undefined,
+    failureKind:
+      typeof payload.failureKind === "string" && payload.failureKind.trim()
+        ? payload.failureKind.trim()
+        : undefined,
+    isActionable:
+      typeof payload.isActionable === "boolean"
+        ? payload.isActionable
+        : undefined,
+    responseContentEncoding:
+      typeof payload.responseContentEncoding === "string" &&
+      payload.responseContentEncoding.trim()
+        ? payload.responseContentEncoding.trim()
+        : undefined,
+    requestedServiceTier:
+      typeof payload.requestedServiceTier === "string" &&
+      payload.requestedServiceTier.trim()
+        ? payload.requestedServiceTier.trim()
+        : undefined,
+    serviceTier:
+      typeof payload.serviceTier === "string" && payload.serviceTier.trim()
+        ? payload.serviceTier.trim()
+        : undefined,
+    tReqReadMs: normalizeFiniteNumber(payload.tReqReadMs),
+    tReqParseMs: normalizeFiniteNumber(payload.tReqParseMs),
+    tUpstreamConnectMs: normalizeFiniteNumber(payload.tUpstreamConnectMs),
+    tUpstreamTtfbMs: normalizeFiniteNumber(payload.tUpstreamTtfbMs),
+    tUpstreamStreamMs: normalizeFiniteNumber(payload.tUpstreamStreamMs),
+    tRespParseMs: normalizeFiniteNumber(payload.tRespParseMs),
+    tPersistMs: normalizeFiniteNumber(payload.tPersistMs),
+    tTotalMs: normalizeFiniteNumber(payload.tTotalMs),
   };
 }
 
@@ -1624,7 +1713,6 @@ function normalizeForwardProxyValidationResult(
 function normalizeSettingsPayload(raw: unknown): SettingsPayload {
   const payload = (raw ?? {}) as Record<string, unknown>;
   return {
-    proxy: normalizeProxySettings(payload.proxy),
     forwardProxy: normalizeForwardProxySettings(payload.forwardProxy),
     pricing: normalizePricingSettings(payload.pricing),
   };
@@ -1719,7 +1807,7 @@ export interface UpstreamAccountSummary {
   groupName?: string | null;
   isMother: boolean;
   status: "active" | "syncing" | "needs_reauth" | "error" | "disabled" | string;
-  workStatus?: "working" | "idle" | "rate_limited" | string;
+  workStatus?: "working" | "idle" | "rate_limited" | "unavailable" | string;
   enableStatus?: "enabled" | "disabled" | string;
   healthStatus?:
     | "normal"
@@ -1793,6 +1881,7 @@ export interface UpstreamAccountDetail extends UpstreamAccountSummary {
 export interface UpstreamAccountGroupSummary {
   groupName: string;
   note?: string | null;
+  boundProxyKeys?: string[];
 }
 
 export interface PoolRoutingSettings {
@@ -1832,6 +1921,7 @@ export interface UpstreamAccountListResponse {
   writesEnabled: boolean;
   items: UpstreamAccountSummary[];
   groups: UpstreamAccountGroupSummary[];
+  forwardProxyNodes?: ForwardProxyBindingNode[];
   hasUngroupedAccounts: boolean;
   total?: number;
   page?: number;
@@ -1844,9 +1934,9 @@ export interface FetchUpstreamAccountsQuery {
   groupSearch?: string;
   groupUngrouped?: boolean;
   status?: string;
-  workStatus?: string;
-  enableStatus?: string;
-  healthStatus?: string;
+  workStatus?: string[];
+  enableStatus?: string[];
+  healthStatus?: string[];
   page?: number;
   pageSize?: number;
   tagIds?: number[];
@@ -2201,6 +2291,7 @@ export interface FetchTagsQuery {
 
 export interface UpdateUpstreamAccountGroupPayload {
   note?: string;
+  boundProxyKeys?: string[];
 }
 
 function normalizeRateWindowSnapshot(raw: unknown): RateWindowSnapshot | null {
@@ -2383,7 +2474,13 @@ function normalizeUpstreamAccountSummary(
             ? "error_other"
             : "normal";
   const workStatus =
-    typeof payload.workStatus === "string" ? payload.workStatus : "idle";
+    typeof payload.workStatus === "string"
+      ? payload.workStatus
+      : enableStatus !== "enabled" || syncState === "syncing"
+        ? "idle"
+        : healthStatus !== "normal"
+          ? "unavailable"
+          : "idle";
   if (id == null || !displayName || !kind || !provider) return null;
   return {
     id,
@@ -2595,6 +2692,9 @@ function normalizeUpstreamAccountGroupSummary(
   return {
     groupName,
     note: typeof payload.note === "string" ? payload.note : null,
+    boundProxyKeys: normalizeStringArray(payload.boundProxyKeys).map((item) =>
+      item.trim(),
+    ).filter((item) => item.length > 0),
   };
 }
 
@@ -2615,6 +2715,11 @@ function normalizeUpstreamAccountListResponse(
     groups: groupsRaw
       .map(normalizeUpstreamAccountGroupSummary)
       .filter((item): item is UpstreamAccountGroupSummary => item != null),
+    forwardProxyNodes: Array.isArray(payload.forwardProxyNodes)
+      ? payload.forwardProxyNodes
+          .map(normalizeForwardProxyBindingNode)
+          .filter((item): item is ForwardProxyBindingNode => item != null)
+      : [],
     hasUngroupedAccounts: payload.hasUngroupedAccounts === true,
     total,
     page,
@@ -3121,20 +3226,6 @@ export async function fetchSettings(): Promise<SettingsPayload> {
   return normalizeSettingsPayload(response);
 }
 
-export async function updateProxySettings(payload: {
-  hijackEnabled: boolean;
-  mergeUpstreamEnabled: boolean;
-  enabledModels: string[];
-  fastModeRewriteMode: ProxyFastModeRewriteMode;
-  upstream429MaxRetries: number;
-}): Promise<ProxySettings> {
-  const response = await fetchJson<unknown>("/api/settings/proxy", {
-    method: "PUT",
-    body: JSON.stringify(payload),
-  });
-  return normalizeProxySettings(response);
-}
-
 export async function updatePricingSettings(
   payload: PricingSettings,
 ): Promise<PricingSettings> {
@@ -3149,7 +3240,6 @@ export async function updateForwardProxySettings(payload: {
   proxyUrls: string[];
   subscriptionUrls: string[];
   subscriptionUpdateIntervalSecs: number;
-  insertDirect: boolean;
 }): Promise<ForwardProxySettings> {
   const response = await fetchJson<unknown>("/api/settings/forward-proxy", {
     method: "PUT",
@@ -3260,10 +3350,11 @@ export async function fetchTimeseries(
   if (params?.bucket) search.set("bucket", params.bucket);
   if (params?.settlementHour !== undefined)
     search.set("settlementHour", String(params.settlementHour));
-  return fetchJson<TimeseriesResponse>(
+  const response = await fetchJson<unknown>(
     `/api/stats/timeseries?${search.toString()}`,
     { signal: params?.signal },
   );
+  return normalizeTimeseriesResponse(response);
 }
 
 export async function fetchErrorDistribution(
@@ -3321,9 +3412,15 @@ export async function fetchUpstreamAccounts(
   if (query?.groupUngrouped != null)
     search.set("groupUngrouped", String(query.groupUngrouped));
   if (query?.status) search.set("status", query.status);
-  if (query?.workStatus) search.set("workStatus", query.workStatus);
-  if (query?.enableStatus) search.set("enableStatus", query.enableStatus);
-  if (query?.healthStatus) search.set("healthStatus", query.healthStatus);
+  for (const workStatus of query?.workStatus ?? []) {
+    if (workStatus) search.append("workStatus", workStatus);
+  }
+  for (const enableStatus of query?.enableStatus ?? []) {
+    if (enableStatus) search.append("enableStatus", enableStatus);
+  }
+  for (const healthStatus of query?.healthStatus ?? []) {
+    if (healthStatus) search.append("healthStatus", healthStatus);
+  }
   if (query?.page != null) search.set("page", String(query.page));
   if (query?.pageSize != null) search.set("pageSize", String(query.pageSize));
   for (const tagId of query?.tagIds ?? []) {

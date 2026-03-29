@@ -32,6 +32,7 @@ import {
   type CompleteOauthLoginSessionPayload,
   type CreateOauthLoginSessionPayload,
   type FetchUpstreamAccountsQuery,
+  type ForwardProxyBindingNode,
   type ImportValidatedOauthAccountsPayload,
   type ImportedOauthImportResponse,
   type ImportedOauthValidationJobResponse,
@@ -52,13 +53,32 @@ import {
 } from '../lib/api'
 import { upsertGroupSummary } from '../lib/upstreamAccountGroups'
 import { UPSTREAM_ACCOUNTS_CHANGED_EVENT, emitUpstreamAccountsChanged } from '../lib/upstreamAccountsEvents'
+import { isUpstreamAccountNotFoundError } from '../lib/upstreamAccountErrors'
 
 const LOAD_LIST_FAILED = Symbol('load-list-failed')
 const DEFAULT_FETCH_UPSTREAM_ACCOUNTS_QUERY: FetchUpstreamAccountsQuery = {}
 
-export function useUpstreamAccounts(query: FetchUpstreamAccountsQuery = DEFAULT_FETCH_UPSTREAM_ACCOUNTS_QUERY) {
+type UseUpstreamAccountsOptions = {
+  allowSelectionOutsideList?: boolean
+  fallbackToFirstItem?: boolean
+}
+
+const DEFAULT_OPTIONS: Required<UseUpstreamAccountsOptions> = {
+  allowSelectionOutsideList: false,
+  fallbackToFirstItem: true,
+}
+
+export function useUpstreamAccounts(
+  query: FetchUpstreamAccountsQuery = DEFAULT_FETCH_UPSTREAM_ACCOUNTS_QUERY,
+  options?: UseUpstreamAccountsOptions,
+) {
+  const resolvedOptions = {
+    ...DEFAULT_OPTIONS,
+    ...options,
+  }
   const [items, setItems] = useState<UpstreamAccountSummary[]>([])
   const [groups, setGroups] = useState<UpstreamAccountGroupSummary[]>([])
+  const [forwardProxyNodes, setForwardProxyNodes] = useState<ForwardProxyBindingNode[]>([])
   const [hasUngroupedAccounts, setHasUngroupedAccounts] = useState(false)
   const [writesEnabled, setWritesEnabled] = useState(true)
   const [routing, setRouting] = useState<PoolRoutingSettings | null>(null)
@@ -77,6 +97,7 @@ export function useUpstreamAccounts(query: FetchUpstreamAccountsQuery = DEFAULT_
   const [isDetailLoading, setIsDetailLoading] = useState(false)
   const [listError, setListError] = useState<string | null>(null)
   const [detailErrors, setDetailErrors] = useState<Record<number, string>>({})
+  const [missingDetailAccountId, setMissingDetailAccountId] = useState<number | null>(null)
   const selectedIdRef = useRef<number | null>(null)
   const listRequestSeqRef = useRef(0)
   const detailRequestSeqRef = useRef(0)
@@ -86,6 +107,10 @@ export function useUpstreamAccounts(query: FetchUpstreamAccountsQuery = DEFAULT_
   const setSelectedAccount = useCallback((accountId: number | null) => {
     selectedIdRef.current = accountId
     setSelectedId(accountId)
+    setMissingDetailAccountId((current) => {
+      if (accountId == null) return null
+      return current === accountId ? null : current
+    })
   }, [])
 
   const clearDetailError = useCallback((accountId: number) => {
@@ -132,13 +157,20 @@ export function useUpstreamAccounts(query: FetchUpstreamAccountsQuery = DEFAULT_
           preferredId != null &&
           (!options?.respectCurrentSelection || currentSelectedId === selectionAnchorId)
         const candidateId = shouldPreferRequestedId ? preferredId : currentSelectedId
-        const nextSelectedId =
+        const hasCandidateInList =
           candidateId != null && response.items.some((item) => item.id === candidateId)
+        const nextSelectedId =
+          hasCandidateInList
             ? candidateId
-            : response.items[0]?.id ?? null
+            : candidateId != null && resolvedOptions.allowSelectionOutsideList
+              ? candidateId
+              : resolvedOptions.fallbackToFirstItem
+                ? response.items[0]?.id ?? null
+                : null
 
         setItems(response.items)
         setGroups(response.groups)
+        setForwardProxyNodes(response.forwardProxyNodes ?? [])
         setHasUngroupedAccounts(response.hasUngroupedAccounts)
         setWritesEnabled(response.writesEnabled)
         setRouting(response.routing ?? null)
@@ -166,7 +198,7 @@ export function useUpstreamAccounts(query: FetchUpstreamAccountsQuery = DEFAULT_
         }
       }
     },
-    [query, setSelectedAccount],
+    [query, resolvedOptions.allowSelectionOutsideList, resolvedOptions.fallbackToFirstItem, setSelectedAccount],
   )
 
   const loadDetail = useCallback(async (accountId: number | null) => {
@@ -178,6 +210,7 @@ export function useUpstreamAccounts(query: FetchUpstreamAccountsQuery = DEFAULT_
     if (accountId == null) {
       setDetail(null)
       setIsDetailLoading(false)
+      setMissingDetailAccountId(null)
       return null
     }
 
@@ -192,12 +225,19 @@ export function useUpstreamAccounts(query: FetchUpstreamAccountsQuery = DEFAULT_
       }
       setDetail(response)
       clearDetailError(accountId)
+      setMissingDetailAccountId((current) => (current === accountId ? null : current))
       return response
     } catch (err) {
       if (controller.signal.aborted) {
         return null
       }
       if (requestSeq !== detailRequestSeqRef.current || selectedIdRef.current !== accountId) {
+        return null
+      }
+      if (isUpstreamAccountNotFoundError(err)) {
+        setDetail((current) => (current?.id === accountId ? null : current))
+        clearDetailError(accountId)
+        setMissingDetailAccountId(accountId)
         return null
       }
       setDetailErrors((current) => ({
@@ -262,7 +302,7 @@ export function useUpstreamAccounts(query: FetchUpstreamAccountsQuery = DEFAULT_
     }
   }, [refresh])
 
-  const selectAccount = useCallback((accountId: number) => {
+  const selectAccount = useCallback((accountId: number | null) => {
     setSelectedAccount(accountId)
   }, [setSelectedAccount])
 
@@ -478,14 +518,17 @@ export function useUpstreamAccounts(query: FetchUpstreamAccountsQuery = DEFAULT_
       await deleteUpstreamAccount(accountId)
       const currentSelectedId = selectedIdRef.current
       const shouldReanchorSelection = currentSelectedId === accountId
-      const fallbackId = items.find((item) => item.id !== accountId)?.id ?? null
+      const fallbackSelectedId =
+        shouldReanchorSelection && resolvedOptions.fallbackToFirstItem
+          ? items.find((item) => item.id !== accountId)?.id ?? null
+          : null
       invalidateListRequest()
       if (shouldReanchorSelection) {
         invalidateDetailRequest(accountId)
-        setSelectedAccount(fallbackId)
+        setSelectedAccount(fallbackSelectedId)
         setDetail((current) => (current?.id === accountId ? null : current))
       }
-      const preferredId = shouldReanchorSelection ? fallbackId : currentSelectedId
+      const preferredId = shouldReanchorSelection ? fallbackSelectedId : currentSelectedId
       await loadList(preferredId, {
         respectCurrentSelection: !shouldReanchorSelection,
         selectionAnchorId: preferredId,
@@ -494,7 +537,16 @@ export function useUpstreamAccounts(query: FetchUpstreamAccountsQuery = DEFAULT_
       await refreshCurrentSelectedDetail(accountId)
       emitUpstreamAccountsChanged()
     },
-    [clearDetailError, invalidateDetailRequest, invalidateListRequest, items, loadList, refreshCurrentSelectedDetail, setSelectedAccount],
+    [
+      clearDetailError,
+      invalidateDetailRequest,
+      invalidateListRequest,
+      items,
+      loadList,
+      refreshCurrentSelectedDetail,
+      resolvedOptions.fallbackToFirstItem,
+      setSelectedAccount,
+    ],
   )
 
   useEffect(
@@ -513,6 +565,7 @@ export function useUpstreamAccounts(query: FetchUpstreamAccountsQuery = DEFAULT_
   return {
     items,
     groups,
+    forwardProxyNodes,
     hasUngroupedAccounts,
     writesEnabled,
     routing,
@@ -524,6 +577,7 @@ export function useUpstreamAccounts(query: FetchUpstreamAccountsQuery = DEFAULT_
     listError,
     detailError: selectedDetailError,
     error: selectedDetailError ?? listError,
+    missingDetailAccountId,
     selectAccount,
     refresh,
     loadDetail,
