@@ -91,7 +91,7 @@ def parse_args() -> argparse.Namespace:
     export_cmd.add_argument(
         "--resolve-publication-tags",
         action="store_true",
-        help="Re-resolve stable manifest tags so superseded releases stop updating latest.",
+        help="Resolve publish-time tags so latest follows the newest published stable release only.",
     )
     export_cmd.add_argument("--github-output", default=os.environ.get("GITHUB_OUTPUT", ""))
 
@@ -371,14 +371,25 @@ def commits_after_target(main_ref: str, target_sha: str) -> list[str]:
     return [commit for commit in commits.splitlines() if commit]
 
 
-def has_newer_stable_snapshot(notes_ref: str, main_ref: str, target_sha: str) -> bool:
+def release_image(snapshot: dict[str, Any]) -> str:
+    return f"{snapshot['registry']}/{snapshot['image_name_lower']}"
+
+
+def immutable_release_tags(snapshot: dict[str, Any]) -> list[str]:
+    if not snapshot.get("release_enabled"):
+        return []
+    return [f"{release_image(snapshot)}:{snapshot['release_tag']}"]
+
+
+def has_newer_published_stable(notes_ref: str, main_ref: str, target_sha: str) -> bool:
     for commit in commits_after_target(main_ref, target_sha):
         snapshot = read_snapshot(notes_ref, commit)
         if not snapshot or not snapshot.get("release_enabled"):
             continue
         if snapshot.get("release_channel") != "stable":
             continue
-        return True
+        if release_tag_points_to_target(snapshot):
+            return True
     return False
 
 
@@ -386,13 +397,11 @@ def publication_tags(snapshot: dict[str, Any], *, notes_ref: str, main_ref: str)
     if not snapshot.get("release_enabled"):
         return ""
 
-    image = f"{snapshot['registry']}/{snapshot['image_name_lower']}"
-    release_tag = str(snapshot["release_tag"])
-    tags = [f"{image}:{release_tag}"]
-    if snapshot.get("release_channel") == "stable" and not has_newer_stable_snapshot(
+    tags = immutable_release_tags(snapshot)
+    if snapshot.get("release_channel") == "stable" and not has_newer_published_stable(
         notes_ref, main_ref, str(snapshot["target_sha"])
     ):
-        tags.append(f"{image}:latest")
+        tags.append(f"{release_image(snapshot)}:latest")
     return ",".join(tags)
 
 
@@ -484,11 +493,7 @@ def build_snapshot(
                 "release_prerelease": prerelease,
             }
         )
-        image = f"{registry}/{image_name_lower}"
-        if release_channel == "stable":
-            snapshot["tags_csv"] = f"{image}:{snapshot['release_tag']},{image}:latest"
-        else:
-            snapshot["tags_csv"] = f"{image}:{snapshot['release_tag']}"
+        snapshot["tags_csv"] = ",".join(immutable_release_tags(snapshot))
 
     return validate_snapshot(snapshot, expected_sha=target_sha)
 

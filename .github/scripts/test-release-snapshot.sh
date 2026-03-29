@@ -86,6 +86,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
         assert snapshot1["snapshot_source"] == "ci-main"
         assert snapshot1["next_stable_version"] == "0.1.1"
         assert snapshot1["release_tag"] == "v0.1.1"
+        assert snapshot1["tags_csv"] == "ghcr.io/ivanli-cn/codex-vibe-monitor:v0.1.1"
         run("notes", f"--ref={module.DEFAULT_NOTES_REF}", "add", "-f", "-m", json.dumps(snapshot1), sha1, cwd=repo)
 
         snapshot2 = module.build_snapshot(
@@ -98,6 +99,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
         )
         assert snapshot2["base_stable_version"] == "0.1.1"
         assert snapshot2["next_stable_version"] == "0.2.0"
+        assert snapshot2["tags_csv"] == "ghcr.io/ivanli-cn/codex-vibe-monitor:v0.2.0"
         run("notes", f"--ref={module.DEFAULT_NOTES_REF}", "add", "-f", "-m", json.dumps(snapshot2), sha2, cwd=repo)
 
         snapshot3 = module.build_snapshot(
@@ -112,13 +114,17 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
         assert snapshot3["next_stable_version"] == "0.2.1"
         assert snapshot3["app_effective_version"] == f"0.2.1-rc.{sha3[:7]}"
         assert snapshot3["release_prerelease"] is True
+        assert snapshot3["tags_csv"] == f"ghcr.io/ivanli-cn/codex-vibe-monitor:v0.2.1-rc.{sha3[:7]}"
         run("notes", f"--ref={module.DEFAULT_NOTES_REF}", "add", "-f", "-m", json.dumps(snapshot3), sha3, cwd=repo)
 
         assert module.publication_tags(snapshot1, notes_ref=module.DEFAULT_NOTES_REF, main_ref=sha3) == (
-            "ghcr.io/ivanli-cn/codex-vibe-monitor:v0.1.1"
+            "ghcr.io/ivanli-cn/codex-vibe-monitor:v0.1.1,ghcr.io/ivanli-cn/codex-vibe-monitor:latest"
         )
         assert module.publication_tags(snapshot2, notes_ref=module.DEFAULT_NOTES_REF, main_ref=sha3) == (
             "ghcr.io/ivanli-cn/codex-vibe-monitor:v0.2.0,ghcr.io/ivanli-cn/codex-vibe-monitor:latest"
+        )
+        assert module.publication_tags(snapshot3, notes_ref=module.DEFAULT_NOTES_REF, main_ref=sha3) == (
+            f"ghcr.io/ivanli-cn/codex-vibe-monitor:v0.2.1-rc.{sha3[:7]}"
         )
 
         docs_snapshot = module.build_snapshot(
@@ -165,6 +171,15 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-") as tmp:
         assert pending == [sha2, sha3], (pending, sha2, sha3)
         assert module.release_tag_points_to_target(snapshot1) is True
         assert module.release_tag_points_to_target(snapshot2) is False
+        assert module.publication_tags(snapshot1, notes_ref=module.DEFAULT_NOTES_REF, main_ref=sha3) == (
+            "ghcr.io/ivanli-cn/codex-vibe-monitor:v0.1.1,ghcr.io/ivanli-cn/codex-vibe-monitor:latest"
+        )
+
+        run("tag", "v0.2.0", sha2, cwd=repo)
+        assert module.release_tag_points_to_target(snapshot2) is True
+        assert module.publication_tags(snapshot1, notes_ref=module.DEFAULT_NOTES_REF, main_ref=sha3) == (
+            "ghcr.io/ivanli-cn/codex-vibe-monitor:v0.1.1"
+        )
     finally:
         module.load_pr_for_commit = original_loader
         os.chdir(original_cwd)
@@ -220,7 +235,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-target-only-") as tmp:
             "next_stable_version": "0.1.1",
             "app_effective_version": "0.1.1",
             "release_tag": "v0.1.1",
-            "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v0.1.1,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+            "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v0.1.1",
             "notes_ref": module.DEFAULT_NOTES_REF,
             "snapshot_source": "ci-main",
             "created_at": "2026-03-15T00:00:00Z",
@@ -391,7 +406,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-catch-up-") as tmp:
         "next_stable_version": "0.1.1",
         "app_effective_version": "0.1.1",
         "release_tag": "v0.1.1",
-        "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v0.1.1,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+        "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v0.1.1",
         "notes_ref": module.DEFAULT_NOTES_REF,
         "snapshot_source": "ci-main",
         "created_at": "2026-03-15T00:00:00Z",
@@ -432,7 +447,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-catch-up-") as tmp:
             "next_stable_version": next_version,
             "app_effective_version": next_version,
             "release_tag": release_tag,
-            "tags_csv": f"ghcr.io/ivanli-cn/codex-vibe-monitor:{release_tag},ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+            "tags_csv": f"ghcr.io/ivanli-cn/codex-vibe-monitor:{release_tag}",
             "notes_ref": module.DEFAULT_NOTES_REF,
             "snapshot_source": "ci-main",
             "created_at": "2026-03-15T00:00:00Z",
@@ -548,7 +563,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-sparse-history-") as t
             "next_stable_version": next_version,
             "app_effective_version": next_version,
             "release_tag": release_tag,
-            "tags_csv": f"ghcr.io/ivanli-cn/codex-vibe-monitor:{release_tag},ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+            "tags_csv": f"ghcr.io/ivanli-cn/codex-vibe-monitor:{release_tag}",
             "notes_ref": module.DEFAULT_NOTES_REF,
             "snapshot_source": "ci-main",
             "created_at": "2026-03-15T00:00:00Z",
@@ -572,7 +587,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-sparse-history-") as t
         "next_stable_version": "0.1.1",
         "app_effective_version": "0.1.1",
         "release_tag": "v0.1.1",
-        "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v0.1.1,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+        "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v0.1.1",
         "notes_ref": module.DEFAULT_NOTES_REF,
         "snapshot_source": "ci-main",
         "created_at": "2026-03-15T00:00:00Z",
@@ -586,7 +601,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-sparse-history-") as t
         "next_stable_version": "0.1.3",
         "app_effective_version": "0.1.3",
         "release_tag": "v0.1.3",
-        "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v0.1.3,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+        "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v0.1.3",
     }
 
     run("notes", f"--ref={module.DEFAULT_NOTES_REF}", "add", "-f", "-m", json.dumps(existing_snapshot), existing_sha, cwd=repo)
@@ -687,7 +702,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-catch-up-window-") as 
         "next_stable_version": "0.1.1",
         "app_effective_version": "0.1.1",
         "release_tag": "v0.1.1",
-        "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v0.1.1,ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+        "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v0.1.1",
         "notes_ref": module.DEFAULT_NOTES_REF,
         "snapshot_source": "ci-main",
         "created_at": "2026-03-15T00:00:00Z",
@@ -727,7 +742,7 @@ with tempfile.TemporaryDirectory(prefix="release-snapshot-catch-up-window-") as 
             "next_stable_version": next_version,
             "app_effective_version": next_version,
             "release_tag": release_tag,
-            "tags_csv": f"ghcr.io/ivanli-cn/codex-vibe-monitor:{release_tag},ghcr.io/ivanli-cn/codex-vibe-monitor:latest",
+            "tags_csv": f"ghcr.io/ivanli-cn/codex-vibe-monitor:{release_tag}",
             "notes_ref": module.DEFAULT_NOTES_REF,
             "snapshot_source": "ci-main",
             "created_at": "2026-03-15T00:00:00Z",
