@@ -5619,6 +5619,69 @@ async fn update_upstream_account_group_preserves_upstream_429_retry_settings_whe
 }
 
 #[tokio::test]
+async fn update_upstream_account_group_disabling_retry_clears_retry_count_and_deletes_empty_row() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "LATAM Key",
+        "sk-latam",
+        Some("latam"),
+        None,
+        None,
+    )
+    .await;
+
+    let initial_payload: UpdateUpstreamAccountGroupRequest = serde_json::from_value(json!({
+        "upstream429RetryEnabled": true,
+        "upstream429MaxRetries": 4
+    }))
+    .expect("deserialize initial group payload");
+    let _ = update_upstream_account_group(
+        State(state.clone()),
+        HeaderMap::new(),
+        axum::extract::Path("latam".to_string()),
+        Json(initial_payload),
+    )
+    .await
+    .expect("save initial group retry settings");
+
+    let disable_payload: UpdateUpstreamAccountGroupRequest = serde_json::from_value(json!({
+        "upstream429RetryEnabled": false
+    }))
+    .expect("deserialize disable payload");
+    let Json(updated) = update_upstream_account_group(
+        State(state.clone()),
+        HeaderMap::new(),
+        axum::extract::Path("latam".to_string()),
+        Json(disable_payload),
+    )
+    .await
+    .expect("disable group retry settings");
+    let updated_json = serde_json::to_value(updated).expect("serialize updated group");
+    assert_eq!(
+        updated_json["upstream429RetryEnabled"].as_bool(),
+        Some(false)
+    );
+    assert_eq!(updated_json["upstream429MaxRetries"].as_u64(), Some(0));
+
+    let persisted = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM pool_upstream_account_group_notes
+        WHERE group_name = ?1
+        "#,
+    )
+    .bind("latam")
+    .fetch_one(&state.pool)
+    .await
+    .expect("count persisted group metadata rows");
+    assert_eq!(persisted, 0);
+}
+
+#[tokio::test]
 async fn update_upstream_account_clears_mother_without_promoting_group_peers() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -13037,6 +13100,12 @@ struct PoolStaticFailureResponsesUpstreamState {
 }
 
 #[derive(Clone)]
+struct PoolSequentialFailureResponsesUpstreamState {
+    attempts: Arc<StdMutex<HashMap<String, usize>>>,
+    statuses_by_attempt: Arc<HashMap<String, Vec<StatusCode>>>,
+}
+
+#[derive(Clone)]
 struct PoolCompactUnsupportedUpstreamState {
     attempts: Arc<StdMutex<HashMap<String, usize>>>,
 }
@@ -13251,6 +13320,68 @@ async fn pool_static_failure_responses_upstream(
     let status = state
         .statuses
         .get(&authorization)
+        .copied()
+        .unwrap_or(StatusCode::OK);
+    if !status.is_success() {
+        let (error_code, error_message) = if status == StatusCode::TOO_MANY_REQUESTS {
+            (
+                "rate_limit_exceeded",
+                format!("rate limited for {authorization}"),
+            )
+        } else {
+            (
+                "server_error",
+                format!("upstream failure for {authorization}"),
+            )
+        };
+        return (
+            status,
+            Json(json!({
+                "error": {
+                    "code": error_code,
+                    "message": error_message,
+                },
+                "attempt": attempt,
+            })),
+        )
+            .into_response();
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "ok": true,
+            "authorization": authorization,
+            "attempt": attempt,
+        })),
+    )
+        .into_response()
+}
+
+async fn pool_sequential_failure_responses_upstream(
+    State(state): State<PoolSequentialFailureResponsesUpstreamState>,
+    headers: HeaderMap,
+) -> Response {
+    let authorization = headers
+        .get(http_header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+
+    let attempt = {
+        let mut attempts = state
+            .attempts
+            .lock()
+            .expect("lock pool sequential failure attempts");
+        let entry = attempts.entry(authorization.clone()).or_insert(0);
+        *entry += 1;
+        *entry
+    };
+
+    let status = state
+        .statuses_by_attempt
+        .get(&authorization)
+        .and_then(|statuses| statuses.get(attempt.saturating_sub(1)))
         .copied()
         .unwrap_or(StatusCode::OK);
     if !status.is_success() {
@@ -14000,6 +14131,43 @@ async fn spawn_pool_static_failure_responses_upstream(
         axum::serve(listener, app)
             .await
             .expect("pool static failure upstream should run");
+    });
+    (format!("http://{addr}"), attempts, handle)
+}
+
+async fn spawn_pool_sequential_failure_responses_upstream(
+    statuses_by_attempt: Vec<(&str, Vec<StatusCode>)>,
+) -> (
+    String,
+    Arc<StdMutex<HashMap<String, usize>>>,
+    JoinHandle<()>,
+) {
+    let attempts = Arc::new(StdMutex::new(HashMap::new()));
+    let statuses_by_attempt = Arc::new(
+        statuses_by_attempt
+            .into_iter()
+            .map(|(authorization, statuses)| (authorization.to_string(), statuses))
+            .collect::<HashMap<_, _>>(),
+    );
+    let app = Router::new()
+        .route(
+            "/v1/responses",
+            post(pool_sequential_failure_responses_upstream),
+        )
+        .with_state(PoolSequentialFailureResponsesUpstreamState {
+            attempts: attempts.clone(),
+            statuses_by_attempt,
+        });
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind pool sequential failure upstream");
+    let addr = listener
+        .local_addr()
+        .expect("pool sequential failure upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("pool sequential failure upstream should run");
     });
     (format!("http://{addr}"), attempts, handle)
 }
@@ -15236,6 +15404,131 @@ async fn pool_route_group_upstream_429_retry_retries_same_account_before_succeed
 
     let route_account_id =
         wait_for_test_sticky_route_account_id(&state.pool, "sticky-429-group-retry")
+            .await
+            .expect("sticky route should stay on primary account");
+    assert_eq!(route_account_id, primary_id);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_route_group_upstream_429_retry_keeps_separate_budget_from_server_errors() {
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_sequential_failure_responses_upstream(vec![(
+            "Bearer upstream-primary",
+            vec![
+                StatusCode::INTERNAL_SERVER_ERROR,
+                StatusCode::TOO_MANY_REQUESTS,
+                StatusCode::TOO_MANY_REQUESTS,
+            ],
+        )])
+        .await;
+    let base_state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    let state =
+        clone_state_with_pool_group_429_retry_delay_override(&base_state, Some(Duration::ZERO));
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Primary",
+        "upstream-primary",
+        Some("latam"),
+        None,
+        None,
+    )
+    .await;
+    insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+
+    let retry_payload: UpdateUpstreamAccountGroupRequest = serde_json::from_value(json!({
+        "upstream429RetryEnabled": true,
+        "upstream429MaxRetries": 2
+    }))
+    .expect("deserialize retry payload");
+    let _ = update_upstream_account_group(
+        State(state.clone()),
+        HeaderMap::new(),
+        axum::extract::Path("latam".to_string()),
+        Json(retry_payload),
+    )
+    .await
+    .expect("enable group 429 retry");
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-429-mixed-budget"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read proxy response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode proxy response");
+    assert_eq!(payload["authorization"], "Bearer upstream-primary");
+    assert_eq!(payload["attempt"], 4);
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(4));
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
+    drop(attempts);
+
+    wait_for_pool_upstream_request_attempts(&state.pool, 4).await;
+    let attempt_rows = sqlx::query_as::<_, (i64, i64, i64, Option<String>)>(
+        r#"
+        SELECT attempt_index, distinct_account_index, same_account_retry_index, failure_kind
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load retry attempt rows");
+    assert_eq!(attempt_rows.len(), 4);
+    assert_eq!(
+        attempt_rows[0],
+        (
+            1,
+            1,
+            1,
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX.to_string())
+        )
+    );
+    assert_eq!(
+        attempt_rows[1],
+        (
+            2,
+            1,
+            2,
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429.to_string())
+        )
+    );
+    assert_eq!(
+        attempt_rows[2],
+        (
+            3,
+            1,
+            3,
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429.to_string())
+        )
+    );
+    assert_eq!(attempt_rows[3].0, 4);
+    assert_eq!(attempt_rows[3].1, 1);
+    assert_eq!(attempt_rows[3].2, 4);
+    assert_eq!(attempt_rows[3].3, None);
+
+    let route_account_id =
+        wait_for_test_sticky_route_account_id(&state.pool, "sticky-429-mixed-budget")
             .await
             .expect("sticky route should stay on primary account");
     assert_eq!(route_account_id, primary_id);

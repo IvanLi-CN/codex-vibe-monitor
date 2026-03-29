@@ -8408,18 +8408,25 @@ async fn load_upstream_account_groups(
                 bound_proxy_keys_json,
                 upstream_429_retry_enabled,
                 upstream_429_max_retries,
-            )| UpstreamAccountGroupSummary {
-                group_name,
-                note: normalize_optional_text(note),
-                bound_proxy_keys: decode_group_bound_proxy_keys_json(
-                    bound_proxy_keys_json.as_deref(),
-                ),
-                upstream_429_retry_enabled: decode_group_upstream_429_retry_enabled(
+            )| {
+                let upstream_429_retry_enabled = decode_group_upstream_429_retry_enabled(
                     upstream_429_retry_enabled.unwrap_or_default(),
-                ),
-                upstream_429_max_retries: decode_group_upstream_429_max_retries(
-                    upstream_429_max_retries.unwrap_or_default(),
-                ),
+                );
+                let upstream_429_max_retries = normalize_group_upstream_429_retry_metadata(
+                    upstream_429_retry_enabled,
+                    decode_group_upstream_429_max_retries(
+                        upstream_429_max_retries.unwrap_or_default(),
+                    ),
+                );
+                UpstreamAccountGroupSummary {
+                    group_name,
+                    note: normalize_optional_text(note),
+                    bound_proxy_keys: decode_group_bound_proxy_keys_json(
+                        bound_proxy_keys_json.as_deref(),
+                    ),
+                    upstream_429_retry_enabled,
+                    upstream_429_max_retries,
+                }
             },
         )
         .collect())
@@ -9517,6 +9524,17 @@ fn normalize_group_upstream_429_max_retries(value: u8) -> u8 {
     value.min(MAX_PROXY_UPSTREAM_429_MAX_RETRIES)
 }
 
+fn normalize_group_upstream_429_retry_metadata(
+    upstream_429_retry_enabled: bool,
+    upstream_429_max_retries: u8,
+) -> u8 {
+    if upstream_429_retry_enabled {
+        normalize_group_upstream_429_max_retries(upstream_429_max_retries)
+    } else {
+        0
+    }
+}
+
 fn decode_group_upstream_429_max_retries(raw: i64) -> u8 {
     normalize_group_upstream_429_max_retries(raw.max(0) as u8)
 }
@@ -9550,17 +9568,21 @@ async fn load_group_metadata_conn(
                 bound_proxy_keys_json,
                 upstream_429_retry_enabled,
                 upstream_429_max_retries,
-            )| UpstreamAccountGroupMetadata {
-                note: normalize_optional_text(Some(note)),
-                bound_proxy_keys: decode_group_bound_proxy_keys_json(
-                    bound_proxy_keys_json.as_deref(),
-                ),
-                upstream_429_retry_enabled: decode_group_upstream_429_retry_enabled(
+            )| {
+                let upstream_429_retry_enabled =
+                    decode_group_upstream_429_retry_enabled(upstream_429_retry_enabled);
+                let upstream_429_max_retries = normalize_group_upstream_429_retry_metadata(
                     upstream_429_retry_enabled,
-                ),
-                upstream_429_max_retries: decode_group_upstream_429_max_retries(
+                    decode_group_upstream_429_max_retries(upstream_429_max_retries),
+                );
+                UpstreamAccountGroupMetadata {
+                    note: normalize_optional_text(Some(note)),
+                    bound_proxy_keys: decode_group_bound_proxy_keys_json(
+                        bound_proxy_keys_json.as_deref(),
+                    ),
+                    upstream_429_retry_enabled,
                     upstream_429_max_retries,
-                ),
+                }
             },
         )
     })
@@ -9588,8 +9610,10 @@ async fn save_group_metadata_record_conn(
     let normalized_note = normalize_optional_text(metadata.note);
     let normalized_bound_proxy_keys = normalize_bound_proxy_keys(metadata.bound_proxy_keys);
     let normalized_upstream_429_retry_enabled = metadata.upstream_429_retry_enabled;
-    let normalized_upstream_429_max_retries =
-        normalize_group_upstream_429_max_retries(metadata.upstream_429_max_retries);
+    let normalized_upstream_429_max_retries = normalize_group_upstream_429_retry_metadata(
+        normalized_upstream_429_retry_enabled,
+        metadata.upstream_429_max_retries,
+    );
     if normalized_note.is_none()
         && normalized_bound_proxy_keys.is_empty()
         && !normalized_upstream_429_retry_enabled

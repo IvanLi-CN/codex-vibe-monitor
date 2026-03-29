@@ -12835,7 +12835,8 @@ async fn send_pool_request_with_failover(
         );
         let group_upstream_429_max_retries = account.effective_group_upstream_429_max_retries();
         let same_account_attempt_loop_budget =
-            same_account_attempt_budget.max(group_upstream_429_max_retries.saturating_add(1));
+            same_account_attempt_budget.saturating_add(group_upstream_429_max_retries);
+        let mut group_upstream_429_retry_count = 0_u8;
 
         for same_account_attempt in 0..same_account_attempt_loop_budget {
             let attempt_total_timeout_started_at = ensure_pool_total_timeout_started_at(
@@ -13444,7 +13445,7 @@ async fn send_pool_request_with_failover(
             {
                 let has_retry_budget = same_account_attempt + 1 < same_account_attempt_budget;
                 let has_group_upstream_429_retry_budget = status == StatusCode::TOO_MANY_REQUESTS
-                    && same_account_attempt < group_upstream_429_max_retries;
+                    && group_upstream_429_retry_count < group_upstream_429_max_retries;
                 let upstream_request_id_header = response
                     .headers()
                     .get("x-request-id")
@@ -13562,15 +13563,18 @@ async fn send_pool_request_with_failover(
                 }
                 if has_group_upstream_429_retry_budget {
                     let retry_delay = pool_group_upstream_429_retry_delay(state.as_ref());
+                    let group_retry_index = group_upstream_429_retry_count + 1;
                     info!(
                         account_id = account.account_id,
                         status = status.as_u16(),
                         retry_index = same_account_attempt + 1,
+                        group_retry_index,
                         max_same_account_attempts = same_account_attempt_loop_budget,
                         group_upstream_429_max_retries,
                         retry_after_ms = retry_delay.as_millis(),
                         "pool upstream responded with group retryable 429; retrying same account"
                     );
+                    group_upstream_429_retry_count += 1;
                     sleep(retry_delay).await;
                     continue;
                 }
