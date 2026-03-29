@@ -54,9 +54,12 @@ import {
 import { upsertGroupSummary } from '../lib/upstreamAccountGroups'
 import { UPSTREAM_ACCOUNTS_CHANGED_EVENT, emitUpstreamAccountsChanged } from '../lib/upstreamAccountsEvents'
 import { isUpstreamAccountNotFoundError } from '../lib/upstreamAccountErrors'
+import { subscribeToSse, subscribeToSseOpen } from '../lib/sse'
 
 const LOAD_LIST_FAILED = Symbol('load-list-failed')
 const DEFAULT_FETCH_UPSTREAM_ACCOUNTS_QUERY: FetchUpstreamAccountsQuery = {}
+export const UPSTREAM_ACCOUNTS_SSE_REFRESH_THROTTLE_MS = 5_000
+export const UPSTREAM_ACCOUNTS_OPEN_RESYNC_COOLDOWN_MS = 3_000
 
 type UseUpstreamAccountsOptions = {
   allowSelectionOutsideList?: boolean
@@ -66,6 +69,19 @@ type UseUpstreamAccountsOptions = {
 const DEFAULT_OPTIONS: Required<UseUpstreamAccountsOptions> = {
   allowSelectionOutsideList: false,
   fallbackToFirstItem: true,
+}
+
+interface LoadOptions {
+  silent?: boolean
+}
+
+export function getUpstreamAccountsSseRefreshDelay(lastRefreshAt: number, now: number) {
+  return Math.max(0, UPSTREAM_ACCOUNTS_SSE_REFRESH_THROTTLE_MS - (now - lastRefreshAt))
+}
+
+export function shouldTriggerUpstreamAccountsOpenResync(lastResyncAt: number, now: number, force = false) {
+  if (force) return true
+  return now - lastResyncAt >= UPSTREAM_ACCOUNTS_OPEN_RESYNC_COOLDOWN_MS
 }
 
 export function useUpstreamAccounts(
@@ -104,6 +120,11 @@ export function useUpstreamAccounts(
   const detailRequestSeqRef = useRef(0)
   const detailRequestAccountIdRef = useRef<number | null>(null)
   const detailAbortControllerRef = useRef<AbortController | null>(null)
+  const hasHydratedRef = useRef(false)
+  const detailHydratedAccountIdsRef = useRef(new Set<number>())
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lastRefreshAtRef = useRef(0)
+  const lastOpenResyncAtRef = useRef(0)
 
   const setSelectedAccount = useCallback((accountId: number | null) => {
     selectedIdRef.current = accountId
@@ -139,14 +160,21 @@ export function useUpstreamAccounts(
     setIsLoading(false)
   }, [])
 
+  const clearPendingRefreshTimer = useCallback(() => {
+    if (!refreshTimerRef.current) return
+    clearTimeout(refreshTimerRef.current)
+    refreshTimerRef.current = null
+  }, [])
+
   const loadList = useCallback(
     async (
       preferredId?: number | null,
-      options?: { respectCurrentSelection?: boolean; selectionAnchorId?: number | null },
+      options?: { respectCurrentSelection?: boolean; selectionAnchorId?: number | null; silent?: boolean },
     ): Promise<number | null | typeof LOAD_LIST_FAILED> => {
       listRequestSeqRef.current += 1
       const requestSeq = listRequestSeqRef.current
-      setIsLoading(true)
+      const shouldShowLoading = !(options?.silent && hasHydratedRef.current)
+      if (shouldShowLoading) setIsLoading(true)
       try {
         const response = await fetchUpstreamAccounts(effectiveQuery)
         if (requestSeq !== listRequestSeqRef.current) {
@@ -184,6 +212,7 @@ export function useUpstreamAccounts(
           apiKey: 0,
           attention: 0,
         })
+        hasHydratedRef.current = true
         setListError(null)
         setSelectedAccount(nextSelectedId)
         return nextSelectedId
@@ -194,7 +223,7 @@ export function useUpstreamAccounts(
         setListError(err instanceof Error ? err.message : String(err))
         return LOAD_LIST_FAILED
       } finally {
-        if (requestSeq === listRequestSeqRef.current) {
+        if (requestSeq === listRequestSeqRef.current && shouldShowLoading) {
           setIsLoading(false)
         }
       }
@@ -202,7 +231,7 @@ export function useUpstreamAccounts(
     [effectiveQuery, resolvedOptions.allowSelectionOutsideList, resolvedOptions.fallbackToFirstItem, setSelectedAccount],
   )
 
-  const loadDetail = useCallback(async (accountId: number | null) => {
+  const loadDetail = useCallback(async (accountId: number | null, options: LoadOptions = {}) => {
     detailRequestSeqRef.current += 1
     const requestSeq = detailRequestSeqRef.current
     detailAbortControllerRef.current?.abort()
@@ -216,7 +245,9 @@ export function useUpstreamAccounts(
     }
 
     setDetail((current) => (current?.id === accountId ? current : null))
-    setIsDetailLoading(true)
+    const shouldShowLoading =
+      !(options.silent && detailHydratedAccountIdsRef.current.has(accountId))
+    if (shouldShowLoading) setIsDetailLoading(true)
     const controller = new AbortController()
     detailAbortControllerRef.current = controller
     try {
@@ -225,6 +256,7 @@ export function useUpstreamAccounts(
         return null
       }
       setDetail(response)
+      detailHydratedAccountIdsRef.current.add(accountId)
       clearDetailError(accountId)
       setMissingDetailAccountId((current) => (current === accountId ? null : current))
       return response
@@ -250,7 +282,7 @@ export function useUpstreamAccounts(
       if (requestSeq === detailRequestSeqRef.current) {
         detailRequestAccountIdRef.current = null
         detailAbortControllerRef.current = null
-        setIsDetailLoading(false)
+        if (shouldShowLoading) setIsDetailLoading(false)
       }
     }
   }, [clearDetailError])
@@ -274,17 +306,17 @@ export function useUpstreamAccounts(
   )
 
   const refreshCurrentSelectedDetail = useCallback(
-    async (skipAccountId?: number | null) => {
+    async (skipAccountId?: number | null, options: LoadOptions = {}) => {
       const currentSelectedId = selectedIdRef.current
       if (currentSelectedId == null || currentSelectedId === skipAccountId) {
         return
       }
-      await loadDetail(currentSelectedId)
+      await loadDetail(currentSelectedId, options)
     },
     [loadDetail],
   )
 
-  const refresh = useCallback(async () => {
+  const refresh = useCallback(async (options: LoadOptions = {}) => {
     if (query == null) {
       return
     }
@@ -292,12 +324,13 @@ export function useUpstreamAccounts(
     const nextSelectedId = await loadList(currentSelectedId, {
       respectCurrentSelection: true,
       selectionAnchorId: currentSelectedId,
+      silent: options.silent,
     })
     if (nextSelectedId === LOAD_LIST_FAILED) {
       return
     }
     if (nextSelectedId != null && nextSelectedId === selectedIdRef.current) {
-      await loadDetail(nextSelectedId)
+      await loadDetail(nextSelectedId, options)
     }
   }, [loadDetail, loadList, query])
 
@@ -310,6 +343,49 @@ export function useUpstreamAccounts(
       window.removeEventListener(UPSTREAM_ACCOUNTS_CHANGED_EVENT, handleChanged)
     }
   }, [refresh])
+
+  const triggerSseRefresh = useCallback(() => {
+    const now = Date.now()
+    const delay = getUpstreamAccountsSseRefreshDelay(lastRefreshAtRef.current, now)
+    const run = () => {
+      refreshTimerRef.current = null
+      lastRefreshAtRef.current = Date.now()
+      void refresh({ silent: true })
+    }
+    if (delay === 0) {
+      clearPendingRefreshTimer()
+      run()
+      return
+    }
+    if (refreshTimerRef.current) return
+    refreshTimerRef.current = setTimeout(run, delay)
+  }, [clearPendingRefreshTimer, refresh])
+
+  const triggerOpenResync = useCallback(
+    (force = false) => {
+      if (!hasHydratedRef.current) return
+      const now = Date.now()
+      if (!shouldTriggerUpstreamAccountsOpenResync(lastOpenResyncAtRef.current, now, force)) return
+      lastOpenResyncAtRef.current = now
+      void refresh({ silent: true })
+    },
+    [refresh],
+  )
+
+  useEffect(() => {
+    const unsubscribe = subscribeToSse((payload) => {
+      if (payload.type !== 'records') return
+      triggerSseRefresh()
+    })
+    return unsubscribe
+  }, [triggerSseRefresh])
+
+  useEffect(() => {
+    const unsubscribe = subscribeToSseOpen(() => {
+      triggerOpenResync()
+    })
+    return unsubscribe
+  }, [triggerOpenResync])
 
   const selectAccount = useCallback((accountId: number | null) => {
     setSelectedAccount(accountId)
@@ -565,8 +641,9 @@ export function useUpstreamAccounts(
       detailRequestAccountIdRef.current = null
       detailAbortControllerRef.current?.abort()
       detailAbortControllerRef.current = null
+      clearPendingRefreshTimer()
     },
-    [],
+    [clearPendingRefreshTimer],
   )
 
   const selectedDetailError = selectedId == null ? null : detailErrors[selectedId] ?? null
