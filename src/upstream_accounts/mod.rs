@@ -15003,6 +15003,13 @@ pub(crate) async fn resolve_pool_account_for_request(
                 continue;
             };
             let snapshot_exhausted = routing_candidate_snapshot_is_exhausted(&candidate);
+            let candidate_route_is_excluded_by_route_key = resolve_pool_account_upstream_base_url(
+                &row,
+                &state.config.openai_upstream_base_url,
+            )
+            .ok()
+            .map(|url| canonical_pool_upstream_route_key(&url))
+            .is_some_and(|route_key| excluded_upstream_route_keys.contains(&route_key));
             if !is_account_selectable_for_fresh_assignment(&row, snapshot_exhausted, now) {
                 if is_account_rate_limited_for_routing(&row, snapshot_exhausted) {
                     saw_rate_limited_candidate = true;
@@ -15037,7 +15044,11 @@ pub(crate) async fn resolve_pool_account_for_request(
             {
                 PoolAccountGroupProxyRoutingReadiness::Ready(group_metadata) => group_metadata,
                 PoolAccountGroupProxyRoutingReadiness::Blocked(message) => {
-                    group_proxy_blocked_messages.push(message);
+                    if candidate_route_is_excluded_by_route_key {
+                        saw_other_non_rate_limited_routing_candidate = true;
+                    } else {
+                        group_proxy_blocked_messages.push(message);
+                    }
                     continue;
                 }
             };
