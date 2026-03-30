@@ -2315,8 +2315,29 @@ impl AccountWindowUsageAccumulator {
 
 #[derive(Debug, Clone, Default)]
 struct AccountWindowUsagePlan {
-    primary_start_at: Option<String>,
-    secondary_start_at: Option<String>,
+    primary: Option<AccountWindowUsageRange>,
+    secondary: Option<AccountWindowUsageRange>,
+}
+
+#[derive(Debug, Clone)]
+struct AccountWindowUsageRange {
+    start_at: String,
+    end_at: String,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AccountWindowUsageRangeBounds {
+    start_at: DateTime<Utc>,
+    end_at: DateTime<Utc>,
+}
+
+impl AccountWindowUsageRangeBounds {
+    fn into_range(self) -> AccountWindowUsageRange {
+        AccountWindowUsageRange {
+            start_at: format_naive(self.start_at.with_timezone(&Shanghai).naive_local()),
+            end_at: format_naive(self.end_at.with_timezone(&Shanghai).naive_local()),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -9264,7 +9285,7 @@ async fn enrich_window_actual_usage_for_summaries(
     }
 
     let now = Utc::now();
-    let Some((plans, max_window_duration_mins)) = collect_account_window_usage_plans(items, now)
+    let Some((plans, query_start, query_end)) = collect_account_window_usage_plans(items, now)
     else {
         return Ok(());
     };
@@ -9273,41 +9294,41 @@ async fn enrich_window_actual_usage_for_summaries(
         return Ok(());
     }
 
-    let query_end_at = format_naive(now.with_timezone(&Shanghai).naive_local());
-    let query_start = now - ChronoDuration::minutes(max_window_duration_mins);
+    let query_start_at = format_naive(query_start.with_timezone(&Shanghai).naive_local());
+    let query_end_at = format_naive(query_end.with_timezone(&Shanghai).naive_local());
     let retention_cutoff = shanghai_retention_cutoff(state.config.invocation_max_days);
     let mut rows = Vec::new();
 
     let live_start = query_start.max(retention_cutoff);
-    let live_start_at = format_naive(live_start.with_timezone(&Shanghai).naive_local());
-    rows.extend(
-        load_window_actual_usage_rows_from_pool(
-            &state.pool,
-            &account_ids,
-            &live_start_at,
-            &query_end_at,
-            None,
-        )
-        .await?,
-    );
-
-    if query_start < retention_cutoff {
-        let archive_end_at = format_naive(
-            (retention_cutoff - ChronoDuration::seconds(1))
-                .with_timezone(&Shanghai)
-                .naive_local(),
-        );
-        let query_start_at = format_naive(query_start.with_timezone(&Shanghai).naive_local());
+    if live_start <= query_end {
+        let live_start_at = format_naive(live_start.with_timezone(&Shanghai).naive_local());
         rows.extend(
-            load_window_actual_usage_rows_from_archives(
+            load_window_actual_usage_rows_from_pool(
                 &state.pool,
                 &account_ids,
-                &query_start_at,
-                &archive_end_at,
-                &state.config.archive_dir,
+                &live_start_at,
+                &query_end_at,
+                None,
             )
             .await?,
         );
+    }
+
+    if query_start < retention_cutoff {
+        let archive_end = query_end.min(retention_cutoff - ChronoDuration::seconds(1));
+        if query_start <= archive_end {
+            let archive_end_at = format_naive(archive_end.with_timezone(&Shanghai).naive_local());
+            rows.extend(
+                load_window_actual_usage_rows_from_archives(
+                    &state.pool,
+                    &account_ids,
+                    &query_start_at,
+                    &archive_end_at,
+                    &state.config.archive_dir,
+                )
+                .await?,
+            );
+        }
     }
 
     let usage = fold_account_window_usage_rows(rows, &plans);
@@ -9318,54 +9339,72 @@ async fn enrich_window_actual_usage_for_summaries(
 fn collect_account_window_usage_plans(
     items: &[UpstreamAccountSummary],
     now: DateTime<Utc>,
-) -> Option<(HashMap<i64, AccountWindowUsagePlan>, i64)> {
+) -> Option<(
+    HashMap<i64, AccountWindowUsagePlan>,
+    DateTime<Utc>,
+    DateTime<Utc>,
+)> {
     let mut plans = HashMap::new();
-    let mut max_window_duration_mins = 0_i64;
+    let mut earliest_start_at: Option<DateTime<Utc>> = None;
+    let mut latest_end_at: Option<DateTime<Utc>> = None;
 
     for item in items {
-        let primary_start_at = item
-            .primary_window
-            .as_ref()
-            .and_then(|window| build_window_start_at(now, window.window_duration_mins));
-        let secondary_start_at = item
-            .secondary_window
-            .as_ref()
-            .and_then(|window| build_window_start_at(now, window.window_duration_mins));
-        if primary_start_at.is_none() && secondary_start_at.is_none() {
+        let primary = item.primary_window.as_ref().and_then(|window| {
+            build_window_usage_range(
+                now,
+                window.window_duration_mins,
+                window.resets_at.as_deref(),
+            )
+        });
+        let secondary = item.secondary_window.as_ref().and_then(|window| {
+            build_window_usage_range(
+                now,
+                window.window_duration_mins,
+                window.resets_at.as_deref(),
+            )
+        });
+        if primary.is_none() && secondary.is_none() {
             continue;
         }
-        if let Some(window) = item.primary_window.as_ref() {
-            max_window_duration_mins =
-                max_window_duration_mins.max(window.window_duration_mins.max(0));
+
+        for range in [primary, secondary].into_iter().flatten() {
+            earliest_start_at = Some(
+                earliest_start_at
+                    .map(|value| value.min(range.start_at))
+                    .unwrap_or(range.start_at),
+            );
+            latest_end_at = Some(
+                latest_end_at
+                    .map(|value| value.max(range.end_at))
+                    .unwrap_or(range.end_at),
+            );
         }
-        if let Some(window) = item.secondary_window.as_ref() {
-            max_window_duration_mins =
-                max_window_duration_mins.max(window.window_duration_mins.max(0));
-        }
+
         plans.insert(
             item.id,
             AccountWindowUsagePlan {
-                primary_start_at,
-                secondary_start_at,
+                primary: primary.map(AccountWindowUsageRangeBounds::into_range),
+                secondary: secondary.map(AccountWindowUsageRangeBounds::into_range),
             },
         );
     }
 
-    if plans.is_empty() || max_window_duration_mins <= 0 {
-        return None;
-    }
-    Some((plans, max_window_duration_mins))
+    Some((plans, earliest_start_at?, latest_end_at?))
 }
 
-fn build_window_start_at(now: DateTime<Utc>, window_duration_mins: i64) -> Option<String> {
+fn build_window_usage_range(
+    now: DateTime<Utc>,
+    window_duration_mins: i64,
+    resets_at: Option<&str>,
+) -> Option<AccountWindowUsageRangeBounds> {
     if window_duration_mins <= 0 {
         return None;
     }
-    Some(format_naive(
-        (now - ChronoDuration::minutes(window_duration_mins))
-            .with_timezone(&Shanghai)
-            .naive_local(),
-    ))
+    let window_anchor = resets_at.and_then(parse_rfc3339_utc).unwrap_or(now);
+    Some(AccountWindowUsageRangeBounds {
+        start_at: window_anchor - ChronoDuration::minutes(window_duration_mins),
+        end_at: window_anchor.min(now),
+    })
 }
 
 async fn load_window_actual_usage_rows_from_pool(
@@ -9525,18 +9564,16 @@ fn fold_account_window_usage_rows(
             continue;
         };
         let entry = usage.entry(row.upstream_account_id).or_default();
-        if plan
-            .primary_start_at
-            .as_deref()
-            .is_some_and(|start_at| row.occurred_at.as_str() >= start_at)
-        {
+        if plan.primary.as_ref().is_some_and(|range| {
+            row.occurred_at.as_str() >= range.start_at.as_str()
+                && row.occurred_at.as_str() <= range.end_at.as_str()
+        }) {
             entry.primary.add_row(&row);
         }
-        if plan
-            .secondary_start_at
-            .as_deref()
-            .is_some_and(|start_at| row.occurred_at.as_str() >= start_at)
-        {
+        if plan.secondary.as_ref().is_some_and(|range| {
+            row.occurred_at.as_str() >= range.start_at.as_str()
+                && row.occurred_at.as_str() <= range.end_at.as_str()
+        }) {
             entry.secondary.add_row(&row);
         }
     }
@@ -25218,6 +25255,35 @@ mod tests {
         assert!(token.chars().any(|ch| ch.is_ascii_digit()));
     }
 
+    #[test]
+    fn build_window_usage_range_aligns_to_current_reset_window() {
+        let now = parse_rfc3339_utc("2026-03-30T12:30:00Z").expect("fixed now");
+        let range = build_window_usage_range(now, 300, Some("2026-03-30T14:00:00Z"))
+            .expect("aligned range");
+
+        assert_eq!(
+            range.start_at,
+            parse_rfc3339_utc("2026-03-30T09:00:00Z").expect("expected start")
+        );
+        assert_eq!(range.end_at, now);
+    }
+
+    #[test]
+    fn build_window_usage_range_reuses_stale_reset_window_bounds() {
+        let now = parse_rfc3339_utc("2026-03-30T12:30:00Z").expect("fixed now");
+        let range = build_window_usage_range(now, 300, Some("2026-03-29T23:00:00Z"))
+            .expect("historical range");
+
+        assert_eq!(
+            range.start_at,
+            parse_rfc3339_utc("2026-03-29T18:00:00Z").expect("expected historical start")
+        );
+        assert_eq!(
+            range.end_at,
+            parse_rfc3339_utc("2026-03-29T23:00:00Z").expect("expected historical end")
+        );
+    }
+
     #[tokio::test]
     async fn enrich_window_actual_usage_for_summaries_counts_live_window_rows() {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
@@ -25315,6 +25381,85 @@ mod tests {
         assert_eq!(secondary_usage.output_tokens, 1700);
         assert_eq!(secondary_usage.cache_input_tokens, 850);
         assert_cost_close(secondary_usage.total_cost, 0.0595);
+    }
+
+    #[tokio::test]
+    async fn enrich_window_actual_usage_for_summaries_uses_matching_stale_reset_window() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        ensure_window_actual_usage_test_tables(&state.pool).await;
+
+        let account_id = 402_i64;
+        let reset_at = Utc::now() - ChronoDuration::hours(10);
+        let mut summary = test_summary_with_statuses(
+            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED,
+            UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED,
+            UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL,
+            UPSTREAM_ACCOUNT_SYNC_STATE_IDLE,
+        );
+        summary.id = account_id;
+        summary.primary_window = Some(RateWindowSnapshot {
+            used_percent: 100.0,
+            used_text: "100% used".to_string(),
+            limit_text: "5h window".to_string(),
+            resets_at: Some(format_utc_iso(reset_at)),
+            window_duration_mins: 300,
+            actual_usage: None,
+        });
+
+        let inside_window_at = shanghai_local_iso(reset_at - ChronoDuration::hours(1));
+        let before_window_at = shanghai_local_iso(reset_at - ChronoDuration::hours(6));
+        let after_window_at = shanghai_local_iso(Utc::now() - ChronoDuration::minutes(30));
+
+        insert_window_actual_usage_invocation(
+            &state.pool,
+            account_id,
+            &inside_window_at,
+            Some(1800),
+            Some(900),
+            Some(450),
+            Some(3150),
+            Some(0.0315),
+        )
+        .await;
+        insert_window_actual_usage_invocation(
+            &state.pool,
+            account_id,
+            &before_window_at,
+            Some(3000),
+            Some(1200),
+            Some(600),
+            Some(4800),
+            Some(0.048),
+        )
+        .await;
+        insert_window_actual_usage_invocation(
+            &state.pool,
+            account_id,
+            &after_window_at,
+            Some(500),
+            Some(250),
+            Some(100),
+            Some(850),
+            Some(0.0085),
+        )
+        .await;
+
+        let mut items = vec![summary];
+        enrich_window_actual_usage_for_summaries(state.as_ref(), &mut items)
+            .await
+            .expect("enrich stale window actual usage");
+
+        let usage = items[0]
+            .primary_window
+            .as_ref()
+            .and_then(|window| window.actual_usage)
+            .expect("stale primary actual usage");
+        assert_eq!(usage.request_count, 1);
+        assert_eq!(usage.total_tokens, 3150);
+        assert_eq!(usage.input_tokens, 1800);
+        assert_eq!(usage.output_tokens, 900);
+        assert_eq!(usage.cache_input_tokens, 450);
+        assert_cost_close(usage.total_cost, 0.0315);
     }
 
     #[tokio::test]
