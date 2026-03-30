@@ -22871,29 +22871,59 @@ pub(crate) fn legacy_bound_proxy_key_aliases(
             LegacyDefaultQueryParamSpec {
                 keys: &["encryption"],
                 explicit_keys: &["encryption"],
-                default_value: "none",
+                default_value: Some("none"),
             },
             LegacyDefaultQueryParamSpec {
                 keys: &["security"],
                 explicit_keys: &["security"],
-                default_value: "none",
+                default_value: Some("none"),
             },
             LegacyDefaultQueryParamSpec {
                 keys: &["type", "net"],
                 explicit_keys: &["type", "net"],
-                default_value: "tcp",
+                default_value: Some("tcp"),
+            },
+            LegacyDefaultQueryParamSpec {
+                keys: &["sni", "serverName"],
+                explicit_keys: &["sni", "serverName"],
+                default_value: None,
+            },
+            LegacyDefaultQueryParamSpec {
+                keys: &["fp", "fingerprint"],
+                explicit_keys: &["fp", "fingerprint"],
+                default_value: None,
+            },
+            LegacyDefaultQueryParamSpec {
+                keys: &["serviceName", "service_name"],
+                explicit_keys: &["serviceName", "service_name"],
+                default_value: None,
             },
         ][..],
         ForwardProxyProtocol::Trojan => &[
             LegacyDefaultQueryParamSpec {
                 keys: &["security"],
                 explicit_keys: &["security"],
-                default_value: "tls",
+                default_value: Some("tls"),
             },
             LegacyDefaultQueryParamSpec {
                 keys: &["type", "net"],
                 explicit_keys: &["type", "net"],
-                default_value: "tcp",
+                default_value: Some("tcp"),
+            },
+            LegacyDefaultQueryParamSpec {
+                keys: &["sni", "serverName"],
+                explicit_keys: &["sni", "serverName"],
+                default_value: None,
+            },
+            LegacyDefaultQueryParamSpec {
+                keys: &["fp", "fingerprint"],
+                explicit_keys: &["fp", "fingerprint"],
+                default_value: None,
+            },
+            LegacyDefaultQueryParamSpec {
+                keys: &["serviceName", "service_name"],
+                explicit_keys: &["serviceName", "service_name"],
+                default_value: None,
             },
         ][..],
         _ => &[][..],
@@ -23162,7 +23192,47 @@ fn canonical_query_string(query_pairs: Vec<(String, String)>) -> String {
 struct LegacyDefaultQueryParamSpec {
     keys: &'static [&'static str],
     explicit_keys: &'static [&'static str],
-    default_value: &'static str,
+    default_value: Option<&'static str>,
+}
+
+fn build_legacy_query_param_variant_choices(
+    matching_pairs: &[(String, String)],
+    spec: &LegacyDefaultQueryParamSpec,
+) -> Option<Vec<Vec<(String, String)>>> {
+    let shared_value = if let Some((_, value)) = matching_pairs.first() {
+        if !matching_pairs
+            .iter()
+            .all(|(_, candidate)| candidate.trim().eq_ignore_ascii_case(value.trim()))
+        {
+            return None;
+        }
+        value.trim().to_string()
+    } else {
+        spec.default_value?.to_string()
+    };
+
+    let explicit_keys = if spec.explicit_keys.is_empty() {
+        spec.keys
+    } else {
+        spec.explicit_keys
+    };
+    let mut choices = Vec::new();
+    if spec
+        .default_value
+        .is_some_and(|default_value| shared_value.eq_ignore_ascii_case(default_value))
+    {
+        choices.push(Vec::new());
+    }
+    for mask in 1usize..(1usize << explicit_keys.len()) {
+        let mut pairs = Vec::new();
+        for (index, key) in explicit_keys.iter().enumerate() {
+            if (mask & (1usize << index)) != 0 {
+                pairs.push(((*key).to_string(), shared_value.clone()));
+            }
+        }
+        choices.push(pairs);
+    }
+    Some(choices)
 }
 
 fn legacy_share_link_identity_variants(
@@ -23172,7 +23242,7 @@ fn legacy_share_link_identity_variants(
     let original_query_pairs = sorted_query_pairs(url);
     let mut static_pairs = Vec::new();
     let mut handled_keys = HashSet::new();
-    let mut variant_choices: Vec<Vec<Option<(String, String)>>> = Vec::new();
+    let mut variant_choices: Vec<Vec<Vec<(String, String)>>> = Vec::new();
 
     for spec in default_specs {
         let matching_pairs = original_query_pairs
@@ -23185,28 +23255,10 @@ fn legacy_share_link_identity_variants(
             handled_keys.insert(*key);
         }
 
-        let all_default = matching_pairs.is_empty()
-            || matching_pairs
-                .iter()
-                .all(|(_, value)| value.trim().eq_ignore_ascii_case(spec.default_value));
-        if !all_default {
+        let Some(choices) = build_legacy_query_param_variant_choices(&matching_pairs, spec) else {
             static_pairs.extend(matching_pairs);
             continue;
-        }
-
-        let mut explicit_pairs = matching_pairs
-            .iter()
-            .map(|(key, _)| (key.clone(), spec.default_value.to_string()))
-            .collect::<Vec<_>>();
-        for key in spec.explicit_keys {
-            if explicit_pairs.iter().any(|(existing, _)| existing == key) {
-                continue;
-            }
-            explicit_pairs.push(((*key).to_string(), spec.default_value.to_string()));
-        }
-
-        let mut choices = vec![None];
-        choices.extend(explicit_pairs.into_iter().map(Some));
+        };
         variant_choices.push(choices);
     }
 
@@ -23224,9 +23276,7 @@ fn legacy_share_link_identity_variants(
         for variant in &variants {
             for choice in &choices {
                 let mut updated = variant.clone();
-                if let Some((key, value)) = choice {
-                    updated.push((key.clone(), value.clone()));
-                }
+                updated.extend(choice.iter().cloned());
                 updated.sort();
                 let query = canonical_query_string(updated.clone());
                 if seen.insert(query) {
@@ -23302,13 +23352,14 @@ fn canonical_stream_query_pairs(
         "tls" => {
             consumed_keys.extend([
                 "sni",
+                "serverName",
                 "allowInsecure",
                 "insecure",
                 "fp",
                 "fingerprint",
                 "alpn",
             ]);
-            let server_name = normalized_query_value(&query, &["sni"])
+            let server_name = normalized_query_value(&query, &["sni", "serverName"])
                 .map(|value| value.to_ascii_lowercase())
                 .or_else(|| (!host.is_empty()).then_some(host.clone()))
                 .or_else(|| url.host_str().map(|value| value.to_ascii_lowercase()))
@@ -23337,8 +23388,16 @@ fn canonical_stream_query_pairs(
             query_pairs.push(("serverName".to_string(), server_name));
         }
         "reality" => {
-            consumed_keys.extend(["sni", "fp", "fingerprint", "pbk", "sid", "spx"]);
-            let server_name = normalized_query_value(&query, &["sni"])
+            consumed_keys.extend([
+                "sni",
+                "serverName",
+                "fp",
+                "fingerprint",
+                "pbk",
+                "sid",
+                "spx",
+            ]);
+            let server_name = normalized_query_value(&query, &["sni", "serverName"])
                 .map(|value| value.to_ascii_lowercase())
                 .or_else(|| (!host.is_empty()).then_some(host.clone()))
                 .or_else(|| url.host_str().map(|value| value.to_ascii_lowercase()))
