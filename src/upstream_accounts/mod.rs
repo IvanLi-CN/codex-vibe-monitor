@@ -15052,6 +15052,9 @@ pub(crate) async fn resolve_pool_account_for_request(
         }
     }
 
+    // Surface concrete group-proxy misconfiguration before generic pool exhaustion
+    // when every non-degraded, non-transferable fresh candidate was filtered for
+    // that reason, even if the rest of the pool is already rate-limited.
     if !saw_other_non_rate_limited_routing_candidate
         && !saw_degraded_candidate
         && let Some(message) =
@@ -22399,6 +22402,57 @@ mod tests {
             .expect("resolve pool account");
         let PoolAccountResolution::BlockedByPolicy(message) = resolution else {
             panic!("expected specific group proxy error");
+        };
+        assert_eq!(
+            message,
+            "upstream account group \"missing-bindings\" has no bound forward proxy nodes; bind at least one proxy node to the group"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolver_prefers_group_proxy_error_over_rate_limited_pool_when_no_healthy_candidates_remain()
+     {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let rate_limited = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Rate Limited Candidate",
+            "rate-limited-candidate@example.com",
+            "org_rate_limited_candidate",
+            "user_rate_limited_candidate",
+        )
+        .await;
+        let blocked = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Blocked Missing Binding",
+            "blocked-missing-binding-mixed@example.com",
+            "org_blocked_missing_binding_mixed",
+            "user_blocked_missing_binding_mixed",
+        )
+        .await;
+        set_test_account_group_name(&state.pool, blocked, Some("missing-bindings")).await;
+        let now_iso = format_utc_iso(Utc::now());
+        insert_limit_sample_with_usage(
+            &state.pool,
+            rate_limited,
+            &now_iso,
+            Some(100.0),
+            Some(50.0),
+        )
+        .await;
+        insert_limit_sample_with_usage(&state.pool, blocked, &now_iso, Some(1.0), Some(1.0)).await;
+
+        let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
+            .await
+            .expect("resolve pool account");
+        let PoolAccountResolution::BlockedByPolicy(message) = resolution else {
+            panic!("expected group proxy error to win over mixed rate-limited pool");
         };
         assert_eq!(
             message,
