@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.32.3",
+  "base_stable_version": "1.32.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-30T09:33:02Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.32.3",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "18177ca0bc214d29cf9e2a6c469a19c478461de4",
+  "pr_number": 271,
+  "pr_title": "fix(account-pool): align actual usage to quota window",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.32.3",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.32.3",
+  "target_sha": "28b9ab97d8fb4e6a02c504488582714c733468d0",
+  "type_label": "type:patch"
+}
