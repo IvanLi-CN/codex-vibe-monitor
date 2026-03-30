@@ -19945,7 +19945,7 @@ mod tests {
         assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
         assert_eq!(
             summary.work_status,
-            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+            UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED
         );
         assert_eq!(
             summary.last_error.as_deref(),
@@ -19986,7 +19986,7 @@ mod tests {
         );
         assert_eq!(
             detail.summary.work_status,
-            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+            UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED
         );
         assert_eq!(
             detail.summary.last_action_reason_code.as_deref(),
@@ -20444,7 +20444,7 @@ mod tests {
         assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
         assert_eq!(
             summary.work_status,
-            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+            UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED
         );
         assert_eq!(
             summary.last_action_reason_code.as_deref(),
@@ -21438,7 +21438,7 @@ mod tests {
         assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
         assert_eq!(
             summary.work_status,
-            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+            UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED
         );
         assert_eq!(summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
 
@@ -21452,7 +21452,7 @@ mod tests {
         );
         assert_eq!(
             detail.summary.work_status,
-            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+            UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED
         );
         assert_eq!(detail.summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
         assert_eq!(
@@ -21584,7 +21584,7 @@ mod tests {
         assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
         assert_eq!(
             summary.work_status,
-            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+            UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED
         );
         assert_eq!(summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
 
@@ -21697,7 +21697,7 @@ mod tests {
         assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
         assert_eq!(
             summary.work_status,
-            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+            UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED
         );
         assert_eq!(summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
 
@@ -21804,7 +21804,7 @@ mod tests {
         assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
         assert_eq!(
             summary.work_status,
-            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+            UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED
         );
         assert_eq!(summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
 
@@ -21818,7 +21818,7 @@ mod tests {
         );
         assert_eq!(
             detail.summary.work_status,
-            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+            UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED
         );
         assert_eq!(detail.summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
         server.abort();
@@ -21913,7 +21913,7 @@ mod tests {
         assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
         assert_eq!(
             summary.work_status,
-            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+            UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED
         );
         assert_eq!(summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
     }

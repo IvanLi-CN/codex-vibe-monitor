@@ -5220,7 +5220,7 @@ async fn list_upstream_accounts_keeps_generic_retry_cooldown_idle() {
         generic_item
             .get("workStatus")
             .and_then(serde_json::Value::as_str),
-        Some("idle")
+        Some("degraded")
     );
     assert_eq!(
         generic_item
@@ -5228,7 +5228,7 @@ async fn list_upstream_accounts_keeps_generic_retry_cooldown_idle() {
             .and_then(serde_json::Value::as_str),
         Some("normal")
     );
-    assert_eq!(response_json["metrics"]["attention"].as_u64(), Some(0));
+    assert_eq!(response_json["metrics"]["attention"].as_u64(), Some(1));
 }
 
 #[tokio::test]
