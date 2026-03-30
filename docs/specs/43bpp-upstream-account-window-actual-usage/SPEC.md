@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 已实现，待截图提交授权 / PR 收敛
+- Status: 已实现
 
 ## 背景 / 问题陈述
 
@@ -14,7 +14,7 @@
 
 ### Goals
 
-- 在账号池 roster 的每个窗口块中，把主摘要切换为本地 rolling window 的 `请求数 / Tokens / 金额`。
+- 在账号池 roster 的每个窗口块中，把主摘要切换为与当前额度窗口对齐的本地 `请求数 / Tokens / 金额`。
 - 保留窗口名、重置时间与 quota progress bar，让“额度窗口”语义不丢失。
 - `Token` 指标支持 hover / focus tooltip，完整展示 `输入 / 输出 / 缓存输入` 三类 token 明细。
 - 后端列表 / 详情接口统一为 `primaryWindow` / `secondaryWindow` 扩展 `actualUsage` 子结构。
@@ -63,11 +63,12 @@
 ## 聚合规则
 
 - “实际使用量”口径固定为本系统本地 `codex_invocations` 中带 `upstreamAccountId` 的调用累计。
-- 每个窗口按 trailing rolling duration 计算，即 `[now - windowDurationMins, now]`。
+- 当窗口带有 `resetsAt` 时，实际使用量必须对齐该 quota 窗口本身：聚合区间为 `[resetsAt - windowDurationMins, min(now, resetsAt)]`。
+- 当窗口没有 `resetsAt` 时，回退为 trailing duration，即 `[now - windowDurationMins, now]`。
 - `requestCount` 统计所有命中的持久化请求，即使该次调用没有 token/cost 也应计数。
 - `totalTokens / totalCost / inputTokens / outputTokens / cacheInputTokens` 仅累加非空数值；缺失字段按 `0` 处理。
 - 若窗口起点早于在线 retention cutoff，则需要联合读取主库 `codex_invocations` 与 `archive_batches` 中的 `codex_invocations` 归档片段。
-- `resetsAt` 只用于展示 quota 信息，不参与 rolling window 聚合边界。
+- `resetsAt` 不只是展示字段；只要存在，就必须参与实际使用量的窗口边界计算。
 
 ## 前端表现
 
@@ -88,8 +89,8 @@
 
 ## 验收标准（Acceptance Criteria）
 
-- Given OAuth 账号同时存在 primary/secondary 窗口，When roster 渲染，Then 每个窗口都显示该 rolling window 内的 `请求数 / Tokens / 金额`，且仍保留原 reset + progress + percent。
-- Given API key 账号没有上游 reset 语义，When roster 渲染，Then 仍按本地 `5h / 7d` rolling window 展示实际使用量。
+- Given OAuth 账号同时存在 primary/secondary 窗口，When roster 渲染，Then 每个窗口都显示与该 `resetsAt + windowDurationMins` 对齐的 quota window 内 `请求数 / Tokens / 金额`，且仍保留原 reset + progress + percent。
+- Given API key 账号没有上游 reset 语义，When roster 渲染，Then 仍按本地 `5h / 7d` trailing window 展示实际使用量。
 - Given 某窗口缺失，When roster 渲染，Then inline 指标、reset 文案与 percent 全部保持 `-` 占位，不出现误导性的 `0`，也不出现空 tooltip。
 - Given 用户 hover 或 focus `Token` 指标，When tooltip 打开，Then 能看到 `输入 / 输出 / 缓存输入` 三类完整数值。
 - Given `/events` 收到新的 `records` 事件，When 页面已完成首轮加载，Then 当前可见账号在节流窗口后静默刷新实际使用量。
@@ -114,7 +115,7 @@
   submission_gate: pending-owner-approval
   story_id_or_title: Account Pool/Components/Upstream Accounts Table/Default
   state: default
-  evidence_note: 验证窗口主摘要已切换为本地 rolling window 的 `Req / Token / Cost`，并保留原有 `Reset + progress + percent` 额度语义。
+  evidence_note: 验证窗口主摘要已切换为与当前额度窗口对齐的 `Req / Token / Cost`，并保留原有 `Reset + progress + percent` 额度语义。
   image:
   ![号池窗口实际使用量默认态](./assets/upstream-account-window-actual-usage-default.png)
 
