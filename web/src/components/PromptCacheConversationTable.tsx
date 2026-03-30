@@ -10,6 +10,7 @@ import {
 import { useTranslation } from "../i18n";
 import type {
   ApiInvocation,
+  InvocationRecordsQuery,
   PromptCacheConversation,
   PromptCacheConversationUpstreamAccount,
   PromptCacheConversationsResponse,
@@ -37,7 +38,23 @@ interface PromptCacheConversationTableProps {
   expandedPromptCacheKeys?: string[];
   onToggleExpandedPromptCacheKey?: (promptCacheKey: string) => void;
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
+  keyColumnLabel?: string;
+  emptyLabel?: string;
+  historyQueryForConversationKey?: (
+    conversationKey: string,
+  ) => Partial<InvocationRecordsQuery>;
+  historyRecordMatchesConversationKey?: (
+    record: ApiInvocation,
+    conversationKey: string,
+  ) => boolean;
 }
+
+type ConversationHistoryQueryBuilder = NonNullable<
+  PromptCacheConversationTableProps["historyQueryForConversationKey"]
+>;
+type ConversationHistoryRecordMatcher = NonNullable<
+  PromptCacheConversationTableProps["historyRecordMatchesConversationKey"]
+>;
 
 const PROMPT_CACHE_NOW_TICK_MS = 30_000;
 const PROMPT_CACHE_CHART_MAX_WINDOW_MS = 24 * 3_600_000;
@@ -50,13 +67,21 @@ function parseEpoch(raw?: string | null) {
   return Number.isNaN(epoch) ? null : epoch;
 }
 
-function formatNumber(value: number | null | undefined, formatter: Intl.NumberFormat) {
-  if (typeof value !== "number" || !Number.isFinite(value)) return FALLBACK_CELL;
+function formatNumber(
+  value: number | null | undefined,
+  formatter: Intl.NumberFormat,
+) {
+  if (typeof value !== "number" || !Number.isFinite(value))
+    return FALLBACK_CELL;
   return formatter.format(value);
 }
 
-function formatCurrency(value: number | null | undefined, formatter: Intl.NumberFormat) {
-  if (typeof value !== "number" || !Number.isFinite(value)) return FALLBACK_CELL;
+function formatCurrency(
+  value: number | null | undefined,
+  formatter: Intl.NumberFormat,
+) {
+  if (typeof value !== "number" || !Number.isFinite(value))
+    return FALLBACK_CELL;
   return formatter.format(value);
 }
 
@@ -151,10 +176,14 @@ function UpstreamAccountsBlock({
   numberFormatter: Intl.NumberFormat;
   currencyFormatter: Intl.NumberFormat;
   fallbackAccountLabel: (id: number) => string;
-  onOpenAccountDetail?: (account: PromptCacheConversationUpstreamAccount) => void;
+  onOpenAccountDetail?: (
+    account: PromptCacheConversationUpstreamAccount,
+  ) => void;
 }) {
   if (upstreamAccounts.length === 0) {
-    return <div className="text-[11px] text-base-content/55">{FALLBACK_CELL}</div>;
+    return (
+      <div className="text-[11px] text-base-content/55">{FALLBACK_CELL}</div>
+    );
   }
 
   return (
@@ -184,12 +213,10 @@ function UpstreamAccountsBlock({
               <span className="truncate font-medium">{accountLabel}</span>
             )}
             <span className="min-w-0 truncate text-base-content/62">
-              {formatNumber(account.requestCount, numberFormatter)}
-              {" "}
+              {formatNumber(account.requestCount, numberFormatter)}{" "}
               {labels.requestCountCompact}
               {" · "}
-              {labels.totalTokensCompact}
-              {" "}
+              {labels.totalTokensCompact}{" "}
               {formatNumber(account.totalTokens, numberFormatter)}
               {" · "}
               {formatCurrency(account.totalCost, currencyFormatter)}
@@ -248,16 +275,20 @@ function PromptCacheConversationInvocationTable({
 
 function PromptCacheConversationHistoryDrawer({
   open,
-  promptCacheKey,
+  conversationKey,
   onClose,
   t,
   onOpenUpstreamAccount,
+  historyQueryForConversationKey,
+  historyRecordMatchesConversationKey,
 }: {
   open: boolean;
-  promptCacheKey: string | null;
+  conversationKey: string | null;
   onClose: () => void;
   t: (key: string, values?: Record<string, string | number>) => string;
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
+  historyQueryForConversationKey?: ConversationHistoryQueryBuilder;
+  historyRecordMatchesConversationKey?: ConversationHistoryRecordMatcher;
 }) {
   const titleId = useId();
   const requestSeqRef = useRef(0);
@@ -279,74 +310,82 @@ function PromptCacheConversationHistoryDrawer({
     refreshTimerRef.current = null;
   }, []);
 
-  const runLoad = useCallback(async ({ silent = false }: { silent?: boolean } = {}) => {
-    if (!open || !promptCacheKey) return;
+  const runLoad = useCallback(
+    async ({ silent = false }: { silent?: boolean } = {}) => {
+      if (!open || !conversationKey) return;
 
-    inFlightRef.current = true;
-    const requestSeq = requestSeqRef.current + 1;
-    requestSeqRef.current = requestSeq;
-    const shouldShowLoading = !(silent && hasHydratedRef.current);
-    if (shouldShowLoading) setIsLoading(true);
-    try {
-      let page = 1;
-      let snapshotId: number | undefined;
-      let loaded: ApiInvocation[] = [];
-      let totalRecords = 0;
+      inFlightRef.current = true;
+      const requestSeq = requestSeqRef.current + 1;
+      requestSeqRef.current = requestSeq;
+      const shouldShowLoading = !(silent && hasHydratedRef.current);
+      if (shouldShowLoading) setIsLoading(true);
+      try {
+        let page = 1;
+        let snapshotId: number | undefined;
+        let loaded: ApiInvocation[] = [];
+        let totalRecords = 0;
 
-      while (true) {
-        const response = await fetchInvocationRecords({
-          promptCacheKey,
-          page,
-          pageSize: PROMPT_CACHE_HISTORY_PAGE_SIZE,
-          sortBy: "occurredAt",
-          sortOrder: "desc",
-          ...(snapshotId != null ? { snapshotId } : {}),
-        });
-        if (requestSeq !== requestSeqRef.current) return;
+        while (true) {
+          const historyFilters = historyQueryForConversationKey?.(
+            conversationKey,
+          ) ?? {
+            promptCacheKey: conversationKey,
+          };
+          const response = await fetchInvocationRecords({
+            ...historyFilters,
+            page,
+            pageSize: PROMPT_CACHE_HISTORY_PAGE_SIZE,
+            sortBy: "occurredAt",
+            sortOrder: "desc",
+            ...(snapshotId != null ? { snapshotId } : {}),
+          });
+          if (requestSeq !== requestSeqRef.current) return;
 
-        snapshotId = response.snapshotId;
-        totalRecords = response.total;
-        loaded = [...loaded, ...response.records];
-        setRecords(loaded);
-        setTotal(totalRecords);
+          snapshotId = response.snapshotId;
+          totalRecords = response.total;
+          loaded = [...loaded, ...response.records];
+          setRecords(loaded);
+          setTotal(totalRecords);
 
-        if (loaded.length >= totalRecords || response.records.length === 0) {
-          break;
+          if (loaded.length >= totalRecords || response.records.length === 0) {
+            break;
+          }
+          page += 1;
         }
-        page += 1;
-      }
 
-      if (requestSeq !== requestSeqRef.current) return;
-      hasHydratedRef.current = true;
-      const loadedStableKeys = new Set(loaded.map(invocationStableKey));
-      setLiveRecords((current) =>
-        current.filter(
-          (record) => !loadedStableKeys.has(invocationStableKey(record)),
-        ),
-      );
-      setError(null);
-      if (pendingOpenResyncRef.current) {
-        pendingOpenResyncRef.current = false;
-        const pendingSilent = pendingLoadRef.current?.silent ?? true;
-        pendingLoadRef.current = { silent: pendingSilent };
+        if (requestSeq !== requestSeqRef.current) return;
+        hasHydratedRef.current = true;
+        const loadedStableKeys = new Set(loaded.map(invocationStableKey));
+        setLiveRecords((current) =>
+          current.filter(
+            (record) => !loadedStableKeys.has(invocationStableKey(record)),
+          ),
+        );
+        setError(null);
+        if (pendingOpenResyncRef.current) {
+          pendingOpenResyncRef.current = false;
+          const pendingSilent = pendingLoadRef.current?.silent ?? true;
+          pendingLoadRef.current = { silent: pendingSilent };
+        }
+      } catch (err) {
+        if (requestSeq !== requestSeqRef.current) return;
+        setError(err instanceof Error ? err.message : String(err));
+      } finally {
+        if (requestSeq === requestSeqRef.current && shouldShowLoading) {
+          setIsLoading(false);
+        }
+        if (requestSeq === requestSeqRef.current) {
+          inFlightRef.current = false;
+        }
+        const pendingLoad = pendingLoadRef.current;
+        if (requestSeq === requestSeqRef.current && pendingLoad) {
+          pendingLoadRef.current = null;
+          void runLoad(pendingLoad);
+        }
       }
-    } catch (err) {
-      if (requestSeq !== requestSeqRef.current) return;
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      if (requestSeq === requestSeqRef.current && shouldShowLoading) {
-        setIsLoading(false);
-      }
-      if (requestSeq === requestSeqRef.current) {
-        inFlightRef.current = false;
-      }
-      const pendingLoad = pendingLoadRef.current;
-      if (requestSeq === requestSeqRef.current && pendingLoad) {
-        pendingLoadRef.current = null;
-        void runLoad(pendingLoad);
-      }
-    }
-  }, [open, promptCacheKey]);
+    },
+    [conversationKey, historyQueryForConversationKey, open],
+  );
 
   const load = useCallback(
     async (options: { silent?: boolean } = {}) => {
@@ -365,7 +404,8 @@ function PromptCacheConversationHistoryDrawer({
     const now = Date.now();
     const delay = Math.max(
       0,
-      PROMPT_CACHE_HISTORY_RESYNC_THROTTLE_MS - (now - lastRefreshAtRef.current),
+      PROMPT_CACHE_HISTORY_RESYNC_THROTTLE_MS -
+        (now - lastRefreshAtRef.current),
     );
     const run = () => {
       refreshTimerRef.current = null;
@@ -388,7 +428,10 @@ function PromptCacheConversationHistoryDrawer({
         return;
       }
       const now = Date.now();
-      if (!force && now - lastRefreshAtRef.current < PROMPT_CACHE_HISTORY_RESYNC_THROTTLE_MS) {
+      if (
+        !force &&
+        now - lastRefreshAtRef.current < PROMPT_CACHE_HISTORY_RESYNC_THROTTLE_MS
+      ) {
         return;
       }
       lastRefreshAtRef.current = now;
@@ -406,7 +449,7 @@ function PromptCacheConversationHistoryDrawer({
     lastRefreshAtRef.current = 0;
     clearPendingRefreshTimer();
 
-    if (!open || !promptCacheKey) {
+    if (!open || !conversationKey) {
       setRecords([]);
       setLiveRecords([]);
       setTotal(0);
@@ -421,14 +464,16 @@ function PromptCacheConversationHistoryDrawer({
     setIsLoading(false);
     setError(null);
     void load();
-  }, [clearPendingRefreshTimer, load, open, promptCacheKey]);
+  }, [clearPendingRefreshTimer, conversationKey, load, open]);
 
   useEffect(() => {
-    if (!open || !promptCacheKey) return;
+    if (!open || !conversationKey) return;
     const unsubscribe = subscribeToSse((payload) => {
       if (payload.type !== "records") return;
       const matching = payload.records.filter(
-        (record) => record.promptCacheKey?.trim() === promptCacheKey,
+        (record) =>
+          historyRecordMatchesConversationKey?.(record, conversationKey) ??
+          record.promptCacheKey?.trim() === conversationKey,
       );
       if (matching.length === 0) return;
       setLiveRecords((current) =>
@@ -440,7 +485,12 @@ function PromptCacheConversationHistoryDrawer({
       triggerSseRefresh();
     });
     return unsubscribe;
-  }, [open, promptCacheKey, triggerSseRefresh]);
+  }, [
+    conversationKey,
+    historyRecordMatchesConversationKey,
+    open,
+    triggerSseRefresh,
+  ]);
 
   useEffect(() => {
     if (!open) return;
@@ -488,7 +538,7 @@ function PromptCacheConversationHistoryDrawer({
               {t("live.conversations.drawer.eyebrow")}
             </p>
             <h2 id={titleId} className="section-title break-all">
-              {promptCacheKey || FALLBACK_CELL}
+              {conversationKey || FALLBACK_CELL}
             </h2>
             <p className="section-description">
               {t("live.conversations.drawer.description")}
@@ -533,10 +583,15 @@ export function PromptCacheConversationTable({
   expandedPromptCacheKeys,
   onToggleExpandedPromptCacheKey,
   onOpenUpstreamAccount,
+  keyColumnLabel,
+  emptyLabel,
+  historyQueryForConversationKey,
+  historyRecordMatchesConversationKey,
 }: PromptCacheConversationTableProps) {
   const { t, locale } = useTranslation();
   const [now, setNow] = useState(() => Date.now());
-  const [historyDrawerPromptCacheKey, setHistoryDrawerPromptCacheKey] = useState<string | null>(null);
+  const [historyDrawerPromptCacheKey, setHistoryDrawerPromptCacheKey] =
+    useState<string | null>(null);
   const [internalExpandedPromptCacheKeys, setInternalExpandedPromptCacheKeys] =
     useState<string[]>([]);
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
@@ -635,6 +690,18 @@ export function PromptCacheConversationTable({
       return null;
     }
     if (stats.implicitFilter.kind === "inactiveOutside24h") {
+      if (
+        stats.selectionMode === "activityWindow" &&
+        stats.selectedActivityHours != null
+      ) {
+        return t(
+          "live.conversations.implicitFilter.inactiveOutsideActivityWindow",
+          {
+            count: stats.implicitFilter.filteredCount,
+            hours: stats.selectedActivityHours,
+          },
+        );
+      }
       return t("live.conversations.implicitFilter.inactiveOutside24h", {
         count: stats.implicitFilter.filteredCount,
       });
@@ -653,7 +720,12 @@ export function PromptCacheConversationTable({
     [t],
   );
   const chartInteractionHint = t("live.chart.tooltip.instructions");
-  const chartAriaLabel = t("live.conversations.chartAria", { hours: chartHours });
+  const resolvedKeyColumnLabel =
+    keyColumnLabel ?? t("live.conversations.table.promptCacheKey");
+  const resolvedEmptyLabel = emptyLabel ?? t("live.conversations.empty");
+  const chartAriaLabel = t("live.conversations.chartAria", {
+    hours: chartHours,
+  });
   const chartColumnLabel = t("live.conversations.table.chartWindow", {
     hours: chartHours,
   });
@@ -717,7 +789,9 @@ export function PromptCacheConversationTable({
     );
   }, [isExpansionControlled, stats]);
 
-  const openAccountDrawer = (account: PromptCacheConversationUpstreamAccount) => {
+  const openAccountDrawer = (
+    account: PromptCacheConversationUpstreamAccount,
+  ) => {
     if (!canOpenPromptCacheUpstreamAccount(account)) return;
     setHistoryDrawerPromptCacheKey(null);
     onOpenUpstreamAccount?.(
@@ -761,7 +835,7 @@ export function PromptCacheConversationTable({
   if (!stats || stats.conversations.length === 0) {
     return (
       <div className="space-y-2">
-        <Alert>{t("live.conversations.empty")}</Alert>
+        <Alert>{resolvedEmptyLabel}</Alert>
         {footerNote ? (
           <p className="px-1 text-[11px] text-base-content/55">{footerNote}</p>
         ) : null}
@@ -795,7 +869,7 @@ export function PromptCacheConversationTable({
                   <div className="space-y-2">
                     <div className="min-w-0 space-y-1">
                       <div className="text-[10px] uppercase tracking-[0.08em] text-base-content/60">
-                        {t("live.conversations.table.promptCacheKey")}
+                        {resolvedKeyColumnLabel}
                       </div>
                       <div className="break-all font-mono text-xs">
                         {conversation.promptCacheKey}
@@ -825,7 +899,9 @@ export function PromptCacheConversationTable({
                         type="button"
                         className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-base-300/70 bg-base-100/80 text-base-content/72 transition hover:border-primary/40 hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                         aria-label={previewLabels.historyAction}
-                        onClick={() => openHistoryDrawer(conversation.promptCacheKey)}
+                        onClick={() =>
+                          openHistoryDrawer(conversation.promptCacheKey)
+                        }
                       >
                         <AppIcon
                           name="account-details-outline"
@@ -920,7 +996,7 @@ export function PromptCacheConversationTable({
           <thead className="bg-base-200/70 uppercase tracking-[0.08em] text-base-content/65">
             <tr>
               <th className="w-[18%] px-2 py-2 text-left font-semibold sm:px-3 sm:py-3">
-                {t("live.conversations.table.promptCacheKey")}
+                {resolvedKeyColumnLabel}
               </th>
               <th className="w-[34%] px-2 py-2 text-left font-semibold sm:px-3 sm:py-3">
                 {t("live.conversations.table.upstreamAccounts")}
@@ -964,7 +1040,9 @@ export function PromptCacheConversationTable({
                             }
                             aria-expanded={isExpanded}
                             onClick={() =>
-                              togglePromptCachePreview(conversation.promptCacheKey)
+                              togglePromptCachePreview(
+                                conversation.promptCacheKey,
+                              )
                             }
                           >
                             <AppIcon
@@ -1015,7 +1093,10 @@ export function PromptCacheConversationTable({
                             {totalLabels.createdAtShort}
                           </span>
                           <span className="whitespace-nowrap font-medium tabular-nums">
-                            {formatDateLabel(conversation.createdAt, dateFormatter)}
+                            {formatDateLabel(
+                              conversation.createdAt,
+                              dateFormatter,
+                            )}
                           </span>
                         </div>
                         <div className="grid grid-cols-[2rem_minmax(0,1fr)] items-center gap-x-2">
@@ -1023,7 +1104,10 @@ export function PromptCacheConversationTable({
                             {totalLabels.lastActivityAtShort}
                           </span>
                           <span className="whitespace-nowrap font-medium tabular-nums">
-                            {formatDateLabel(conversation.lastActivityAt, dateFormatter)}
+                            {formatDateLabel(
+                              conversation.lastActivityAt,
+                              dateFormatter,
+                            )}
                           </span>
                         </div>
                       </div>
@@ -1069,10 +1153,14 @@ export function PromptCacheConversationTable({
       ) : null}
       <PromptCacheConversationHistoryDrawer
         open={historyDrawerPromptCacheKey != null}
-        promptCacheKey={historyDrawerPromptCacheKey}
+        conversationKey={historyDrawerPromptCacheKey}
         onClose={closeHistoryDrawer}
         t={t}
         onOpenUpstreamAccount={onOpenUpstreamAccount}
+        historyQueryForConversationKey={historyQueryForConversationKey}
+        historyRecordMatchesConversationKey={
+          historyRecordMatchesConversationKey
+        }
       />
     </div>
   );

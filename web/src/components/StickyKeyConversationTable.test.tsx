@@ -131,6 +131,7 @@ function renderStatic(stats: UpstreamStickyConversationsResponse) {
     <I18nProvider>
       <StickyKeyConversationTable
         accountId={101}
+        accountDisplayName="Codex Pro - Tokyo"
         stats={stats}
         isLoading={false}
         error={null}
@@ -151,6 +152,7 @@ function renderInteractive(stats: UpstreamStickyConversationsResponse) {
       <I18nProvider>
         <StickyKeyConversationTable
           accountId={101}
+          accountDisplayName="Codex Pro - Tokyo"
           stats={stats}
           isLoading={false}
           error={null}
@@ -182,7 +184,8 @@ describe('StickyKeyConversationTable', () => {
     const html = renderStatic(createStats())
 
     expect(html).toContain('sticky-chat-001')
-    expect(html.includes('Actions') || html.includes('操作')).toBe(true)
+    expect(html.includes('Upstream Accounts') || html.includes('上游账号')).toBe(true)
+    expect(html).toContain('Codex Pro - Tokyo')
     expect(html).toContain('data-chart-kind="keyed-conversation-sparkline"')
   })
 
@@ -224,7 +227,7 @@ describe('StickyKeyConversationTable', () => {
     ).toBe(true)
   })
 
-  it('loads sticky history incrementally with stickyKey and upstreamAccountId filters', async () => {
+  it('loads sticky history with the shared live drawer and sticky filters', async () => {
     apiMocks.fetchInvocationRecords
       .mockResolvedValueOnce({
         snapshotId: 1,
@@ -308,15 +311,6 @@ describe('StickyKeyConversationTable', () => {
       sortBy: 'occurredAt',
       sortOrder: 'desc',
     })
-    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(1)
-
-    const loadMoreButton = findButton(['Load more records', '继续加载更多记录'])
-    expect(loadMoreButton).not.toBeNull()
-
-    await act(async () => {
-      loadMoreButton?.click()
-    })
-    await flushAsync()
 
     expect(apiMocks.fetchInvocationRecords).toHaveBeenNthCalledWith(2, {
       stickyKey: 'sticky-chat-001',
@@ -328,14 +322,6 @@ describe('StickyKeyConversationTable', () => {
       snapshotId: 1,
     })
 
-    const loadMoreAgainButton = findButton(['Load more records', '继续加载更多记录'])
-    expect(loadMoreAgainButton).not.toBeNull()
-
-    await act(async () => {
-      loadMoreAgainButton?.click()
-    })
-    await flushAsync()
-
     expect(apiMocks.fetchInvocationRecords).toHaveBeenNthCalledWith(3, {
       stickyKey: 'sticky-chat-001',
       upstreamAccountId: 101,
@@ -345,6 +331,7 @@ describe('StickyKeyConversationTable', () => {
       sortOrder: 'desc',
       snapshotId: 1,
     })
+    expect(apiMocks.fetchInvocationRecords).toHaveBeenCalledTimes(3)
 
     expect(document.body.textContent).toContain('sticky-chat-001')
     expect(document.body.textContent).toContain('gpt-5.4')

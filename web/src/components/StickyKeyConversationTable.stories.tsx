@@ -174,6 +174,7 @@ const meta = {
   ],
   args: {
     accountId: 101,
+    accountDisplayName: 'Codex Pro - Tokyo',
     isLoading: false,
     error: null,
   },

@@ -2367,6 +2367,7 @@ export function SharedUpstreamAccountDetailDrawer({
                     <CardContent>
                       <StickyKeyConversationTable
                         accountId={selectedDetail.id}
+                        accountDisplayName={selectedDetail.displayName}
                         stats={stickyConversationStats}
                         isLoading={stickyConversationLoading}
                         error={stickyConversationError}
