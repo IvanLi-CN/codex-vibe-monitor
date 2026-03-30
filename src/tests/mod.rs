@@ -15067,6 +15067,102 @@ async fn resolve_pool_account_for_request_allows_timeout_failover_past_cut_out_r
 }
 
 #[tokio::test]
+async fn resolve_pool_account_for_request_allows_timeout_failover_past_cut_out_rule_with_invalid_sticky_group()
+ {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let source_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Broken Sticky Source",
+        "upstream-broken-source",
+        None,
+        None,
+        Some("https://route-a.example.com/backend-api/"),
+    )
+    .await;
+    let alternate_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Healthy Alternate",
+        "upstream-healthy-alternate",
+        None,
+        None,
+        Some("https://route-b.example.com/backend-api/"),
+    )
+    .await;
+    let recent_seen_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(5));
+    let now_iso = format_utc_iso(Utc::now());
+
+    upsert_test_sticky_route_at(
+        &state.pool,
+        "sticky-timeout-invalid-group",
+        source_id,
+        &recent_seen_at,
+    )
+    .await;
+
+    let disallow_cut_out_tag_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO pool_tags (
+            name, guard_enabled, lookback_hours, max_conversations,
+            allow_cut_out, allow_cut_in, created_at, updated_at
+        ) VALUES (?1, 0, NULL, NULL, 0, 1, ?2, ?2)
+        RETURNING id
+        "#,
+    )
+    .bind("invalid-group-no-cut-out")
+    .bind(&now_iso)
+    .fetch_one(&state.pool)
+    .await
+    .expect("insert no-cut-out tag");
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_account_tags (
+            account_id, tag_id, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?3)
+        "#,
+    )
+    .bind(source_id)
+    .bind(disallow_cut_out_tag_id)
+    .bind(&now_iso)
+    .execute(&state.pool)
+    .await
+    .expect("attach no-cut-out tag");
+    sqlx::query("UPDATE pool_upstream_accounts SET group_name = ?2 WHERE id = ?1")
+        .bind(source_id)
+        .bind("broken-sticky-group")
+        .execute(&state.pool)
+        .await
+        .expect("set broken sticky group");
+
+    let mut excluded_upstream_route_keys = HashSet::new();
+    excluded_upstream_route_keys.insert(
+        crate::upstream_accounts::canonical_pool_upstream_route_key(
+            &Url::parse("https://route-a.example.com/backend-api/").expect("valid route a url"),
+        ),
+    );
+
+    let account = match resolve_pool_account_for_request(
+        state.as_ref(),
+        Some("sticky-timeout-invalid-group"),
+        &[],
+        &excluded_upstream_route_keys,
+    )
+    .await
+    .expect("resolve pool account")
+    {
+        PoolAccountResolution::Resolved(account) => account,
+        other => {
+            panic!("pool account should resolve after excluding broken sticky route, got {other:?}")
+        }
+    };
+
+    assert_eq!(account.account_id, alternate_id);
+    assert_ne!(account.account_id, source_id);
+}
+
+#[tokio::test]
 async fn resolve_pool_account_for_request_soft_deprioritizes_accounts_with_only_remote_limit_signals()
  {
     let state = test_state_with_openai_base(

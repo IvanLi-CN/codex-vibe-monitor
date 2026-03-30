@@ -14893,6 +14893,13 @@ pub(crate) async fn resolve_pool_account_for_request(
             let sticky_snapshot_exhausted = sticky_candidate
                 .as_ref()
                 .is_some_and(routing_candidate_snapshot_is_exhausted);
+            let sticky_route_is_excluded_by_route_key = resolve_pool_account_upstream_base_url(
+                &row,
+                &state.config.openai_upstream_base_url,
+            )
+            .ok()
+            .map(|url| canonical_pool_upstream_route_key(&url))
+            .is_some_and(|route_key| excluded_upstream_route_keys.contains(&route_key));
             if is_account_selectable_for_sticky_reuse(&row, sticky_snapshot_exhausted, now) {
                 sticky_route_still_reusable = true;
                 let mut sticky_route_was_excluded = false;
@@ -14923,8 +14930,13 @@ pub(crate) async fn resolve_pool_account_for_request(
                         }
                     }
                     PoolAccountGroupProxyRoutingReadiness::Blocked(message) => {
-                        sticky_route_group_proxy_blocked_message = Some(message.clone());
-                        group_proxy_blocked_messages.push(message);
+                        if sticky_route_is_excluded_by_route_key {
+                            sticky_route_excluded_by_route_key = true;
+                            sticky_route_was_excluded = true;
+                        } else {
+                            sticky_route_group_proxy_blocked_message = Some(message.clone());
+                            group_proxy_blocked_messages.push(message);
+                        }
                     }
                 }
                 if !sticky_route_was_excluded {
