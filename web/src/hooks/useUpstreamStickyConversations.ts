@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { fetchUpstreamStickyConversations, type UpstreamStickyConversationsResponse } from '../lib/api'
+import {
+  fetchUpstreamStickyConversations,
+  type StickyKeyConversationSelection,
+  type UpstreamStickyConversationsResponse,
+} from '../lib/api'
 import { subscribeToSse, subscribeToSseOpen } from '../lib/sse'
 
 export const UPSTREAM_STICKY_SSE_REFRESH_THROTTLE_MS = 5_000
@@ -23,12 +27,30 @@ function isAbortError(error: unknown) {
   return error instanceof DOMException && error.name === 'AbortError'
 }
 
-export function useUpstreamStickyConversations(accountId: number | null, limit: number, enabled = true) {
+function isSameSelection(
+  left: StickyKeyConversationSelection,
+  right: StickyKeyConversationSelection,
+) {
+  return (
+    left.mode === right.mode
+    && (
+      left.mode === 'count'
+        ? right.mode === 'count' && left.limit === right.limit
+        : right.mode === 'activityWindow' && left.activityHours === right.activityHours
+    )
+  )
+}
+
+export function useUpstreamStickyConversations(
+  accountId: number | null,
+  selection: StickyKeyConversationSelection,
+  enabled = true,
+) {
   const [stats, setStats] = useState<UpstreamStickyConversationsResponse | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const accountIdRef = useRef(accountId)
-  const limitRef = useRef(limit)
+  const selectionRef = useRef(selection)
   const enabledRef = useRef(enabled)
   const hasHydratedRef = useRef(false)
   const inFlightRef = useRef(false)
@@ -51,8 +73,8 @@ export function useUpstreamStickyConversations(accountId: number | null, limit: 
   }, [accountId])
 
   useEffect(() => {
-    limitRef.current = limit
-  }, [limit])
+    selectionRef.current = selection
+  }, [selection])
 
   useEffect(() => {
     enabledRef.current = enabled
@@ -80,17 +102,21 @@ export function useUpstreamStickyConversations(accountId: number | null, limit: 
     inFlightRef.current = true
     const requestSeq = requestSeqRef.current + 1
     requestSeqRef.current = requestSeq
-    const requestedLimit = limitRef.current
+    const requestedSelection = selectionRef.current
     const controller = new AbortController()
     abortControllerRef.current = controller
     const shouldShowLoading = !(silent && hasHydratedRef.current)
     if (shouldShowLoading) setIsLoading(true)
     try {
-      const response = await fetchUpstreamStickyConversations(targetAccountId, requestedLimit, controller.signal)
+      const response = await fetchUpstreamStickyConversations(
+        targetAccountId,
+        requestedSelection,
+        controller.signal,
+      )
       if (
         requestSeq !== requestSeqRef.current
         || accountIdRef.current !== targetAccountId
-        || limitRef.current !== requestedLimit
+        || !isSameSelection(selectionRef.current, requestedSelection)
         || !enabledRef.current
       ) {
         return
@@ -180,7 +206,7 @@ export function useUpstreamStickyConversations(accountId: number | null, limit: 
       return
     }
     void load()
-  }, [accountId, enabled, invalidateCurrentRequest, limit, load])
+  }, [accountId, enabled, invalidateCurrentRequest, load, selection])
 
   useEffect(() => {
     const unsubscribe = subscribeToSse((payload) => {

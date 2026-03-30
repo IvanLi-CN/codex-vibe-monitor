@@ -3,6 +3,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { useTheme } from '../theme/context'
 import type {
   AccountTagSummary,
+  ApiInvocation,
   BulkUpstreamAccountSyncCounts,
   BulkUpstreamAccountSyncSnapshot,
   BulkUpstreamAccountSyncRow,
@@ -15,11 +16,13 @@ import type {
   PoolRoutingMaintenanceSettings,
   PoolRoutingSettings,
   PoolRoutingTimeoutSettings,
+  PromptCacheConversationInvocationPreview,
   TagSummary,
   UpdateOauthLoginSessionPayload,
   UpdatePoolRoutingSettingsPayload,
   UpdateUpstreamAccountGroupPayload,
   UpdateUpstreamAccountPayload,
+  UpstreamStickyConversationsResponse,
   UpstreamAccountDetail,
   UpstreamAccountListResponse,
   UpstreamAccountSummary,
@@ -2047,8 +2050,118 @@ function buildStickyRequestPoints(
   })
 }
 
-function buildStickyConversations(accountId: number) {
-  const stickyKeys =
+type StoryStickyConversationSeed = {
+  stickyKey: string
+  requestCount: number
+  totalTokens: number
+  totalCost: number
+  createdAt: string
+  lastActivityAt: string
+  last24hRequests: Array<{
+    occurredAt: string
+    status: string
+    isSuccess: boolean
+    requestTokens: number
+    cumulativeTokens: number
+  }>
+}
+
+function buildStickyInvocationPreview(
+  accountId: number,
+  conversation: StoryStickyConversationSeed,
+  point: StoryStickyConversationSeed['last24hRequests'][number],
+  index: number,
+): PromptCacheConversationInvocationPreview {
+  const invokeId = `sticky-${accountId}-${conversation.stickyKey.slice(-6)}-${index + 1}`
+  const isFailure = point.isSuccess === false
+  return {
+    id: accountId * 10_000 + index + 1 + conversation.stickyKey.length,
+    invokeId,
+    occurredAt: point.occurredAt,
+    status: isFailure ? 'failed' : 'completed',
+    failureClass: isFailure ? 'service_failure' : 'none',
+    routeMode: 'sticky',
+    model: 'gpt-5.4',
+    totalTokens: point.requestTokens,
+    cost: Number((point.requestTokens / 1_000_000).toFixed(4)),
+    proxyDisplayName: accountId === 101 ? 'Tokyo Edge' : 'Fallback Edge',
+    upstreamAccountId: accountId,
+    upstreamAccountName: storyDisplayNameForAccount(accountId),
+    endpoint: '/v1/responses',
+    source: 'proxy',
+    inputTokens: Math.max(1, Math.round(point.requestTokens * 0.68)),
+    outputTokens: Math.max(1, Math.round(point.requestTokens * 0.27)),
+    cacheInputTokens: Math.max(0, Math.round(point.requestTokens * 0.05)),
+    reasoningTokens: Math.max(0, Math.round(point.requestTokens * 0.02)),
+    reasoningEffort: isFailure ? 'xhigh' : 'high',
+    errorMessage: isFailure ? '[pool_no_available_slot] Sticky fallback exhausted.' : undefined,
+    failureKind: isFailure ? 'pool_no_available_slot' : undefined,
+    isActionable: isFailure ? true : undefined,
+    responseContentEncoding: 'br',
+    requestedServiceTier: 'flex',
+    serviceTier: 'scale',
+    tReqReadMs: 12,
+    tReqParseMs: 14,
+    tUpstreamConnectMs: 18,
+    tUpstreamTtfbMs: 220 + index * 11,
+    tUpstreamStreamMs: 1_200 + index * 80,
+    tRespParseMs: 16,
+    tPersistMs: 8,
+    tTotalMs: 1_580 + index * 90,
+  }
+}
+
+function buildStickyInvocationRecord(
+  preview: PromptCacheConversationInvocationPreview,
+  stickyKey: string,
+): ApiInvocation {
+  return {
+    id: preview.id,
+    invokeId: preview.invokeId,
+    occurredAt: preview.occurredAt,
+    source: preview.source,
+    proxyDisplayName: preview.proxyDisplayName ?? undefined,
+    model: preview.model ?? undefined,
+    inputTokens: preview.inputTokens,
+    outputTokens: preview.outputTokens,
+    cacheInputTokens: preview.cacheInputTokens,
+    reasoningTokens: preview.reasoningTokens,
+    reasoningEffort: preview.reasoningEffort,
+    totalTokens: preview.totalTokens,
+    cost: preview.cost ?? undefined,
+    status: preview.status,
+    errorMessage: preview.errorMessage,
+    failureKind: preview.failureKind,
+    failureClass: preview.failureClass ?? undefined,
+    isActionable: preview.isActionable,
+    endpoint: preview.endpoint ?? undefined,
+    promptCacheKey: stickyKey,
+    routeMode: preview.routeMode ?? undefined,
+    upstreamAccountId: preview.upstreamAccountId,
+    upstreamAccountName: preview.upstreamAccountName ?? undefined,
+    responseContentEncoding: preview.responseContentEncoding,
+    requestedServiceTier: preview.requestedServiceTier,
+    serviceTier: preview.serviceTier,
+    tTotalMs: preview.tTotalMs ?? null,
+    tReqReadMs: preview.tReqReadMs ?? null,
+    tReqParseMs: preview.tReqParseMs ?? null,
+    tUpstreamConnectMs: preview.tUpstreamConnectMs ?? null,
+    tUpstreamTtfbMs: preview.tUpstreamTtfbMs ?? null,
+    tUpstreamStreamMs: preview.tUpstreamStreamMs ?? null,
+    tRespParseMs: preview.tRespParseMs ?? null,
+    tPersistMs: preview.tPersistMs ?? null,
+    createdAt: preview.occurredAt,
+  }
+}
+
+function storyDisplayNameForAccount(accountId: number) {
+  if (accountId === 101) return 'Codex Pro - Tokyo'
+  if (accountId === 102) return 'Team key - missing weekly limit'
+  return `Story account #${accountId}`
+}
+
+function buildStickyConversationSeeds(accountId: number): StoryStickyConversationSeed[] {
+  return (
     accountId === 101
       ? [
           {
@@ -2068,7 +2181,7 @@ function buildStickyConversations(accountId: number) {
                 requestTokens: 154_380,
               },
               {
-                occurredAt: '2026-03-13T04:03:02.000Z',
+                occurredAt: '2026-03-13T02:03:02.000Z',
                 requestTokens: 198_350,
               },
             ]),
@@ -2090,7 +2203,7 @@ function buildStickyConversations(accountId: number) {
                 requestTokens: 212_875,
               },
               {
-                occurredAt: '2026-03-13T04:06:08.000Z',
+                occurredAt: '2026-03-13T03:06:08.000Z',
                 requestTokens: 276_300,
               },
             ]),
@@ -2112,7 +2225,7 @@ function buildStickyConversations(accountId: number) {
                 requestTokens: 131_400,
               },
               {
-                occurredAt: '2026-03-13T04:00:52.000Z',
+                occurredAt: '2026-03-12T23:00:52.000Z',
                 requestTokens: 146_799,
               },
             ]),
@@ -2164,7 +2277,7 @@ function buildStickyConversations(accountId: number) {
                 requestTokens: 334_000,
               },
               {
-                occurredAt: '2026-03-13T03:54:08.000Z',
+                occurredAt: '2026-03-12T22:54:08.000Z',
                 requestTokens: 365_000,
                 status: 'failed',
                 isSuccess: false,
@@ -2235,7 +2348,7 @@ function buildStickyConversations(accountId: number) {
             last24hRequests: buildStickyRequestPoints([
               { occurredAt: '2026-03-12T18:00:00.000Z', requestTokens: 28_440 },
               { occurredAt: '2026-03-13T01:00:00.000Z', requestTokens: 44_000 },
-              { occurredAt: '2026-03-13T03:14:00.000Z', requestTokens: 50_000 },
+              { occurredAt: '2026-03-12T22:14:00.000Z', requestTokens: 50_000 },
             ]),
           },
           {
@@ -2252,11 +2365,67 @@ function buildStickyConversations(accountId: number) {
             ]),
           },
         ]
+  )
+}
+
+function buildStickyConversations(
+  accountId: number,
+  parsedUrl: URL,
+): UpstreamStickyConversationsResponse {
+  const selectionLimit = Number(parsedUrl.searchParams.get('limit') || 50)
+  const selectionActivityHours = Number(parsedUrl.searchParams.get('activityHours') || 0)
+  const selectionMode = selectionActivityHours > 0 ? 'activityWindow' : 'count'
+  const rangeEnd = '2026-03-13T04:10:00.000Z'
+  const rangeEndEpoch = Date.parse(rangeEnd)
+  const conversations = buildStickyConversationSeeds(accountId)
+    .map((conversation) => {
+      const recentInvocations = [...conversation.last24hRequests]
+        .sort((left, right) => Date.parse(right.occurredAt) - Date.parse(left.occurredAt))
+        .slice(0, 5)
+        .map((point, index) => buildStickyInvocationPreview(accountId, conversation, point, index))
+      return {
+        ...conversation,
+        recentInvocations,
+      }
+    })
+    .sort((left, right) => Date.parse(right.lastActivityAt) - Date.parse(left.lastActivityAt))
+
+  const filteredConversations =
+    selectionMode === 'activityWindow'
+      ? conversations.filter((conversation) => {
+          const lastActivityEpoch = Date.parse(conversation.lastActivityAt)
+          const boundary = rangeEndEpoch - selectionActivityHours * 3_600_000
+          return Number.isFinite(lastActivityEpoch) && lastActivityEpoch >= boundary
+        })
+      : conversations.slice(0, Math.max(1, selectionLimit))
+
   return {
     rangeStart: '2026-03-12T04:00:00.000Z',
     rangeEnd: '2026-03-13T04:10:00.000Z',
-    conversations: stickyKeys,
+    selectionMode,
+    selectedLimit: selectionMode === 'count' ? Math.max(1, selectionLimit) : null,
+    selectedActivityHours: selectionMode === 'activityWindow' ? selectionActivityHours : null,
+    implicitFilter: {
+      kind: null,
+      filteredCount: 0,
+    },
+    conversations: filteredConversations,
   }
+}
+
+function buildStickyInvocationRecords(accountId: number) {
+  return buildStickyConversationSeeds(accountId)
+    .flatMap((conversation) =>
+      [...conversation.last24hRequests]
+        .sort((left, right) => Date.parse(right.occurredAt) - Date.parse(left.occurredAt))
+        .map((point, index) =>
+          buildStickyInvocationRecord(
+            buildStickyInvocationPreview(accountId, conversation, point, index),
+            conversation.stickyKey,
+          ),
+        ),
+    )
+    .sort((left, right) => Date.parse(right.occurredAt) - Date.parse(left.occurredAt))
 }
 
 function jsonResponse(payload: unknown, status = 200) {
@@ -2972,12 +3141,34 @@ export function StorybookUpstreamAccountsMock({
         return jsonResponse(clone(detail))
       }
 
+      if (path === '/api/invocations' && method === 'GET') {
+        const requestedAccountId = Number(parsedUrl.searchParams.get('upstreamAccountId') || 0)
+        const stickyKey = parsedUrl.searchParams.get('stickyKey')?.trim() || ''
+        const pageSize = Math.max(1, Number(parsedUrl.searchParams.get('pageSize') || 20))
+        const page = Math.max(1, Number(parsedUrl.searchParams.get('page') || 1))
+        const allRecords = buildStickyInvocationRecords(
+          requestedAccountId > 0 ? requestedAccountId : 101,
+        )
+        const filteredRecords = allRecords.filter((record) => (
+          (requestedAccountId > 0 ? record.upstreamAccountId === requestedAccountId : true)
+          && (stickyKey ? record.promptCacheKey === stickyKey : true)
+        ))
+        const start = (page - 1) * pageSize
+        return jsonResponse({
+          snapshotId: 1,
+          total: filteredRecords.length,
+          page,
+          pageSize,
+          records: filteredRecords.slice(start, start + pageSize),
+        })
+      }
+
       const stickyMatch = path.match(
         /^\/api\/pool\/upstream-accounts\/(\d+)\/sticky-keys$/,
       )
       if (stickyMatch && method === 'GET') {
         const accountId = Number(stickyMatch[1])
-        return jsonResponse(buildStickyConversations(accountId))
+        return jsonResponse(buildStickyConversations(accountId, parsedUrl))
       }
 
       if (detailMatch && method === 'PATCH') {
