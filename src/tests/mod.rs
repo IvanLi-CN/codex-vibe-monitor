@@ -302,10 +302,26 @@ fn stable_proxy_keys_ignore_share_link_display_name_only_changes() {
     );
     assert_eq!(
         normalize_single_proxy_key(
+            "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=ws&path=%2Fws&host=cdn.vless.example.com&sni=edge.vless.example.com&fingerprint=chrome#东京节点"
+        ),
+        normalize_single_proxy_key(
+            "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&net=ws&path=%2Fws&host=cdn.vless.example.com&serverName=edge.vless.example.com&fp=chrome#Tokyo%20Edge"
+        ),
+    );
+    assert_eq!(
+        normalize_single_proxy_key(
             "trojan://password@trojan.example.com:443?type=ws&path=%2Fws&host=cdn.trojan.example.com#东京节点"
         ),
         normalize_single_proxy_key(
             "trojan://password@trojan.example.com:443?host=cdn.trojan.example.com&path=%2Fws&type=ws#Tokyo%20Edge"
+        ),
+    );
+    assert_eq!(
+        normalize_single_proxy_key(
+            "trojan://password@trojan.example.com:443?security=tls&type=ws&path=%2Fws&host=cdn.trojan.example.com&sni=edge.trojan.example.com&fingerprint=chrome#东京节点"
+        ),
+        normalize_single_proxy_key(
+            "trojan://password@trojan.example.com:443?security=tls&net=ws&path=%2Fws&host=cdn.trojan.example.com&serverName=edge.trojan.example.com&fp=chrome#Tokyo%20Edge"
         ),
     );
     assert_eq!(
@@ -1806,6 +1822,64 @@ fn legacy_vless_and_trojan_bound_proxy_keys_route_to_matching_stable_endpoints()
         .select_proxy_for_scope(&trojan_scope)
         .expect("legacy trojan bound key should still select proxy");
     assert_eq!(selected_trojan.key, stable_trojan_proxy_key);
+}
+
+#[test]
+fn legacy_vless_bound_proxy_keys_still_match_when_query_param_names_change() {
+    let legacy_type_proxy_url = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?encryption=none&security=tls&type=ws&host=cdn.example.com&path=%2Fws&sni=edge.example.com&fingerprint=chrome#东京节点";
+    let current_net_proxy_url = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?encryption=none&security=tls&net=ws&host=cdn.example.com&path=%2Fws&serverName=edge.example.com&fp=chrome#东京节点";
+    let normalized_legacy_type_proxy_url =
+        normalize_share_link_scheme(legacy_type_proxy_url, "vless")
+            .expect("normalize legacy vless url");
+    let normalized_current_net_proxy_url =
+        normalize_share_link_scheme(current_net_proxy_url, "vless")
+            .expect("normalize current vless url");
+
+    let legacy_bound_proxy_key = {
+        let parsed = Url::parse(&normalized_legacy_type_proxy_url)
+            .expect("parse legacy normalized vless url");
+        stable_forward_proxy_key(&canonical_share_link_identity(&parsed))
+    };
+    let stable_proxy_key = normalize_single_proxy_key(current_net_proxy_url)
+        .expect("normalize stable vless proxy key");
+    assert_ne!(legacy_bound_proxy_key, stable_proxy_key);
+
+    let aliases = legacy_bound_proxy_key_aliases(
+        &normalized_current_net_proxy_url,
+        ForwardProxyProtocol::Vless,
+    );
+    assert!(
+        aliases.contains(&legacy_bound_proxy_key),
+        "legacy alias list should include the historical type=ws key"
+    );
+
+    let mut manager = ForwardProxyManager::new(
+        ForwardProxySettings {
+            proxy_urls: vec![current_net_proxy_url.to_string()],
+            subscription_urls: vec![],
+            subscription_update_interval_secs: 3600,
+            insert_direct: false,
+        },
+        vec![],
+    );
+    for endpoint in &mut manager.endpoints {
+        endpoint.endpoint_url = Some(
+            Url::parse("socks5://127.0.0.1:11082")
+                .expect("parse synthesized synonym-compatible endpoint url"),
+        );
+    }
+
+    assert!(
+        manager.has_selectable_bound_proxy_keys(&[legacy_bound_proxy_key.clone()]),
+        "legacy key with synonymous query params should remain selectable"
+    );
+
+    let scope =
+        ForwardProxyRouteScope::from_group_binding(Some("东京组"), vec![legacy_bound_proxy_key]);
+    let selected = manager
+        .select_proxy_for_scope(&scope)
+        .expect("legacy bound key with synonymous query params should still route");
+    assert_eq!(selected.key, stable_proxy_key);
 }
 
 #[test]
@@ -4091,6 +4165,38 @@ async fn seed_pool_routing_api_key(state: &Arc<AppState>, api_key: &str) {
         .expect("save pool routing api key");
 }
 
+fn test_required_group_name() -> &'static str {
+    "test-direct-group"
+}
+
+fn test_required_group_bound_proxy_keys() -> Vec<String> {
+    vec![FORWARD_PROXY_DIRECT_KEY.to_string()]
+}
+
+async fn ensure_test_group_binding(pool: &SqlitePool, group_name: &str, note: Option<&str>) {
+    let now_iso = format_utc_iso(Utc::now());
+    let bound_proxy_keys_json = serde_json::to_string(&test_required_group_bound_proxy_keys())
+        .expect("encode test direct group bindings");
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_account_group_notes (
+            group_name, note, bound_proxy_keys_json, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?4)
+        ON CONFLICT(group_name) DO UPDATE SET
+            note = COALESCE(excluded.note, pool_upstream_account_group_notes.note),
+            bound_proxy_keys_json = excluded.bound_proxy_keys_json,
+            updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(group_name)
+    .bind(note.unwrap_or(""))
+    .bind(bound_proxy_keys_json)
+    .bind(&now_iso)
+    .execute(pool)
+    .await
+    .expect("ensure test group binding");
+}
+
 async fn insert_test_pool_api_key_account(
     state: &Arc<AppState>,
     display_name: &str,
@@ -4111,10 +4217,13 @@ async fn insert_test_pool_api_key_account_with_options(
     ensure_upstream_accounts_schema(&state.pool)
         .await
         .expect("ensure upstream account schema");
+    let normalized_group_name = group_name.unwrap_or(test_required_group_name());
+    ensure_test_group_binding(&state.pool, normalized_group_name, None).await;
     let payload: CreateApiKeyAccountRequest = serde_json::from_value(json!({
         "displayName": display_name,
         "apiKey": api_key,
-        "groupName": group_name,
+        "groupName": normalized_group_name,
+        "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
         "isMother": is_mother,
         "upstreamBaseUrl": upstream_base_url,
     }))
@@ -4210,8 +4319,8 @@ async fn reserve_test_pool_routing_account(
         },
         upstream_base_url: Url::parse("https://api.openai.com/").expect("valid upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
-        group_name: None,
-        bound_proxy_keys: Vec::new(),
+        group_name: Some(test_required_group_name().to_string()),
+        bound_proxy_keys: test_required_group_bound_proxy_keys(),
         group_upstream_429_retry_enabled: false,
         group_upstream_429_max_retries: 0,
     };
@@ -4277,7 +4386,7 @@ async fn set_test_account_rate_limited_cooldown(
     set_test_account_route_cooldown(
         pool,
         account_id,
-        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
+        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
         "test rate limit cooldown",
         cooldown_secs,
     )
@@ -4297,6 +4406,38 @@ async fn set_test_account_generic_route_cooldown(
         cooldown_secs,
     )
     .await;
+}
+
+async fn set_test_account_degraded_route_state(
+    pool: &SqlitePool,
+    account_id: i64,
+    failure_kind: &str,
+    error_message: &str,
+) {
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET status = ?1,
+            last_error = ?2,
+            last_error_at = ?3,
+            last_route_failure_at = ?3,
+            last_route_failure_kind = ?4,
+            cooldown_until = NULL,
+            consecutive_route_failures = 1,
+            temporary_route_failure_streak_started_at = ?3,
+            updated_at = ?3
+        WHERE id = ?5
+        "#,
+    )
+    .bind("active")
+    .bind(error_message)
+    .bind(&now_iso)
+    .bind(failure_kind)
+    .bind(account_id)
+    .execute(pool)
+    .await
+    .expect("set test pool account degraded route state");
 }
 
 async fn set_test_account_route_cooldown(
@@ -4319,6 +4460,7 @@ async fn set_test_account_route_cooldown(
             last_route_failure_kind = ?4,
             cooldown_until = ?5,
             consecutive_route_failures = 1,
+            temporary_route_failure_streak_started_at = NULL,
             updated_at = ?3
         WHERE id = ?6
         "#,
@@ -4382,6 +4524,7 @@ async fn insert_test_pool_oauth_account_with_chatgpt_account_id(
     ensure_upstream_accounts_schema(&state.pool)
         .await
         .expect("ensure upstream account schema");
+    ensure_test_group_binding(&state.pool, test_required_group_name(), None).await;
     let encrypted_credentials = encrypt_test_oauth_credentials(access_token);
     let now_iso = format_utc_iso(Utc::now());
 
@@ -4394,16 +4537,17 @@ async fn insert_test_pool_oauth_account_with_chatgpt_account_id(
             token_expires_at, last_refreshed_at, last_synced_at, last_successful_sync_at, last_error,
             last_error_at, local_primary_limit, local_secondary_limit, local_limit_unit, created_at, updated_at
         ) VALUES (
-            ?1, ?2, ?3, NULL, 0, NULL, ?4, 1,
-            ?5, ?6, ?7, ?8, NULL, ?9,
-            ?10, NULL, NULL, NULL, NULL,
-            NULL, NULL, NULL, NULL, ?11, ?11
+            ?1, ?2, ?3, ?4, 0, NULL, ?5, 1,
+            ?6, ?7, ?8, ?9, NULL, ?10,
+            ?11, NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL, ?12, ?12
         ) RETURNING id
         "#,
     )
     .bind("oauth_codex")
     .bind("codex")
     .bind(display_name)
+    .bind(test_required_group_name())
     .bind("active")
     .bind("oauth@example.com")
     .bind(chatgpt_account_id)
@@ -4547,6 +4691,11 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
         None,
     )
     .await;
+    sqlx::query("UPDATE pool_upstream_accounts SET group_name = NULL WHERE id = ?1")
+        .bind(gamma_id)
+        .execute(&state.pool)
+        .await
+        .expect("clear gamma group to simulate legacy ungrouped account");
     let now_iso = format_utc_iso(Utc::now());
 
     let vip_tag_id: i64 = sqlx::query_scalar(
@@ -5071,7 +5220,7 @@ async fn list_upstream_accounts_keeps_generic_retry_cooldown_idle() {
         generic_item
             .get("workStatus")
             .and_then(serde_json::Value::as_str),
-        Some("idle")
+        Some("degraded")
     );
     assert_eq!(
         generic_item
@@ -5079,7 +5228,7 @@ async fn list_upstream_accounts_keeps_generic_retry_cooldown_idle() {
             .and_then(serde_json::Value::as_str),
         Some("normal")
     );
-    assert_eq!(response_json["metrics"]["attention"].as_u64(), Some(0));
+    assert_eq!(response_json["metrics"]["attention"].as_u64(), Some(1));
 }
 
 #[tokio::test]
@@ -5170,6 +5319,8 @@ async fn create_api_key_account_persists_upstream_base_url() {
     let payload: CreateApiKeyAccountRequest = serde_json::from_value(json!({
         "displayName": "Gateway Key",
         "apiKey": "sk-gateway",
+        "groupName": test_required_group_name(),
+        "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
         "upstreamBaseUrl": "https://proxy.example.com/gateway",
     }))
     .expect("deserialize api key account request");
@@ -5313,6 +5464,9 @@ async fn delete_upstream_account_removes_related_rows_in_one_transaction() {
         INSERT INTO pool_upstream_account_group_notes (
             group_name, note, created_at, updated_at
         ) VALUES (?1, ?2, ?3, ?3)
+        ON CONFLICT(group_name) DO UPDATE SET
+            note = excluded.note,
+            updated_at = excluded.updated_at
         "#,
     )
     .bind("prod")
@@ -5404,6 +5558,8 @@ async fn create_api_key_account_rejects_invalid_upstream_base_url() {
     let payload: CreateApiKeyAccountRequest = serde_json::from_value(json!({
         "displayName": "Broken Key",
         "apiKey": "sk-broken",
+        "groupName": test_required_group_name(),
+        "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
         "upstreamBaseUrl": "not-a-url",
     }))
     .expect("deserialize api key account request");
@@ -5717,9 +5873,12 @@ async fn update_upstream_account_group_disabling_retry_clears_retry_count_and_de
     );
     assert_eq!(updated_json["upstream429MaxRetries"].as_u64(), Some(0));
 
-    let persisted = sqlx::query_scalar::<_, i64>(
+    let persisted = sqlx::query_as::<_, (i64, i64, String)>(
         r#"
-        SELECT COUNT(*)
+        SELECT
+            upstream_429_retry_enabled,
+            upstream_429_max_retries,
+            bound_proxy_keys_json
         FROM pool_upstream_account_group_notes
         WHERE group_name = ?1
         "#,
@@ -5727,8 +5886,13 @@ async fn update_upstream_account_group_disabling_retry_clears_retry_count_and_de
     .bind("latam")
     .fetch_one(&state.pool)
     .await
-    .expect("count persisted group metadata rows");
-    assert_eq!(persisted, 0);
+    .expect("load persisted group metadata row");
+    assert_eq!(persisted.0, 0);
+    assert_eq!(persisted.1, 0);
+    assert_eq!(
+        serde_json::from_str::<Vec<String>>(&persisted.2).expect("decode bound proxy keys"),
+        test_required_group_bound_proxy_keys()
+    );
 }
 
 #[tokio::test]
@@ -5790,6 +5954,7 @@ async fn create_oauth_login_session_persists_mother_flag() {
     let payload: CreateOauthLoginSessionRequest = serde_json::from_value(json!({
         "displayName": "OAuth Mother",
         "groupName": "prod",
+        "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
         "isMother": true,
     }))
     .expect("deserialize oauth session request");
@@ -5853,6 +6018,7 @@ async fn create_oauth_login_session_relink_preserves_existing_metadata() {
     .fetch_one(&state.pool)
     .await
     .expect("insert oauth account");
+    ensure_test_group_binding(&state.pool, "prod", None).await;
 
     let payload: CreateOauthLoginSessionRequest = serde_json::from_value(json!({
         "accountId": account_id,
@@ -14529,6 +14695,130 @@ async fn resolve_pool_account_for_request_keeps_existing_sticky_binding_when_sou
 }
 
 #[tokio::test]
+async fn resolver_skips_degraded_accounts_for_fresh_assignment() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let degraded_id =
+        insert_test_pool_api_key_account(&state, "Degraded", "upstream-degraded").await;
+    let healthy_id = insert_test_pool_api_key_account(&state, "Healthy", "upstream-healthy").await;
+    set_test_account_degraded_route_state(
+        &state.pool,
+        degraded_id,
+        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
+        "test degraded plain 429",
+    )
+    .await;
+
+    let account = match resolve_pool_account_for_request(state.as_ref(), None, &[], &HashSet::new())
+        .await
+        .expect("resolve pool account")
+    {
+        PoolAccountResolution::Resolved(account) => account,
+        other => panic!("pool account should resolve, got {other:?}"),
+    };
+
+    assert_eq!(account.account_id, healthy_id);
+    assert_ne!(account.account_id, degraded_id);
+    assert_eq!(
+        account.routing_source,
+        PoolRoutingSelectionSource::FreshAssignment
+    );
+}
+
+#[tokio::test]
+async fn resolver_keeps_degraded_sticky_binding_until_temporary_cooldown_starts() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let degraded_id =
+        insert_test_pool_api_key_account(&state, "Degraded", "upstream-degraded").await;
+    let healthy_id = insert_test_pool_api_key_account(&state, "Healthy", "upstream-healthy").await;
+    let sticky_seen_at = format_utc_iso(Utc::now());
+    upsert_test_sticky_route_at(&state.pool, "sticky-degraded", degraded_id, &sticky_seen_at).await;
+    set_test_account_degraded_route_state(
+        &state.pool,
+        degraded_id,
+        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX,
+        "test degraded 5xx",
+    )
+    .await;
+
+    let sticky_account = match resolve_pool_account_for_request(
+        state.as_ref(),
+        Some("sticky-degraded"),
+        &[],
+        &HashSet::new(),
+    )
+    .await
+    .expect("resolve degraded sticky account")
+    {
+        PoolAccountResolution::Resolved(account) => account,
+        other => panic!("sticky degraded account should resolve, got {other:?}"),
+    };
+
+    assert_eq!(sticky_account.account_id, degraded_id);
+    assert_eq!(
+        sticky_account.routing_source,
+        PoolRoutingSelectionSource::StickyReuse
+    );
+
+    set_test_account_generic_route_cooldown(&state.pool, degraded_id, 120).await;
+
+    let failover_account = match resolve_pool_account_for_request(
+        state.as_ref(),
+        Some("sticky-degraded"),
+        &[],
+        &HashSet::new(),
+    )
+    .await
+    .expect("resolve after temporary cooldown")
+    {
+        PoolAccountResolution::Resolved(account) => account,
+        other => panic!("resolver should fail over once temporary cooldown starts, got {other:?}"),
+    };
+
+    assert_eq!(failover_account.account_id, healthy_id);
+    assert_eq!(
+        failover_account.routing_source,
+        PoolRoutingSelectionSource::FreshAssignment
+    );
+}
+
+#[tokio::test]
+async fn resolver_returns_degraded_only_when_only_temporary_failure_accounts_remain() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let plain_429_id =
+        insert_test_pool_api_key_account(&state, "Plain429", "upstream-plain-429").await;
+    let upstream_5xx_id =
+        insert_test_pool_api_key_account(&state, "Upstream5xx", "upstream-5xx").await;
+    set_test_account_degraded_route_state(
+        &state.pool,
+        plain_429_id,
+        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
+        "test degraded plain 429",
+    )
+    .await;
+    set_test_account_degraded_route_state(
+        &state.pool,
+        upstream_5xx_id,
+        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX,
+        "test degraded 5xx",
+    )
+    .await;
+
+    let resolution = resolve_pool_account_for_request(state.as_ref(), None, &[], &HashSet::new())
+        .await
+        .expect("resolve degraded-only pool");
+    assert!(matches!(resolution, PoolAccountResolution::DegradedOnly));
+}
+
+#[tokio::test]
 async fn resolve_pool_account_for_request_prefers_candidates_within_soft_sticky_limit() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -16131,6 +16421,58 @@ async fn pool_route_returns_clear_429_when_only_account_is_rate_limited() {
 }
 
 #[tokio::test]
+async fn pool_route_returns_clear_503_when_all_accounts_are_temporarily_degraded() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let secondary_id =
+        insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+    set_test_account_degraded_route_state(
+        &state.pool,
+        primary_id,
+        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
+        "test degraded plain 429",
+    )
+    .await;
+    set_test_account_degraded_route_state(
+        &state.pool,
+        secondary_id,
+        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX,
+        "test degraded 5xx",
+    )
+    .await;
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-degraded-only"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read failure body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode failure payload");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some(POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE)
+    );
+}
+
+#[tokio::test]
 async fn pool_route_returns_clear_429_when_all_accounts_are_already_in_429_cooldown() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -16318,7 +16660,7 @@ async fn pool_route_keeps_generic_no_candidate_when_other_accounts_are_unavailab
     insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
     let secondary_id =
         insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
-    set_test_account_generic_route_cooldown(&state.pool, secondary_id, 120).await;
+    set_test_account_status(&state.pool, secondary_id, "needs_reauth").await;
 
     let response = proxy_openai_v1(
         State(state),
@@ -19118,8 +19460,8 @@ async fn pool_route_oauth_passthrough_replays_large_file_backed_body() {
         upstream_base_url: oauth_bridge::oauth_codex_upstream_base_url()
             .expect("oauth upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
-        group_name: None,
-        bound_proxy_keys: Vec::new(),
+        group_name: Some(test_required_group_name().to_string()),
+        bound_proxy_keys: test_required_group_bound_proxy_keys(),
         group_upstream_429_retry_enabled: false,
         group_upstream_429_max_retries: 0,
     };
@@ -20377,8 +20719,8 @@ async fn pool_route_oauth_responses_rejects_large_file_backed_rewrite_body() {
         upstream_base_url: oauth_bridge::oauth_codex_upstream_base_url()
             .expect("oauth upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
-        group_name: None,
-        bound_proxy_keys: Vec::new(),
+        group_name: Some(test_required_group_name().to_string()),
+        bound_proxy_keys: test_required_group_bound_proxy_keys(),
         group_upstream_429_retry_enabled: false,
         group_upstream_429_max_retries: 0,
     };
@@ -20646,8 +20988,8 @@ fn capture_target_pool_route_prefers_account_upstream_base_for_redirect_rewrite(
         upstream_base_url: Url::parse("https://proxy.example.com/gateway")
             .expect("account upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
-        group_name: None,
-        bound_proxy_keys: Vec::new(),
+        group_name: Some(test_required_group_name().to_string()),
+        bound_proxy_keys: test_required_group_bound_proxy_keys(),
         group_upstream_429_retry_enabled: false,
         group_upstream_429_max_retries: 0,
     };
@@ -20739,8 +21081,8 @@ async fn capture_target_pool_route_marks_response_failed_stream_as_route_failure
     assert!(
         load_test_sticky_route_account_id(&state.pool, "sticky-cap-logical")
             .await
-            .is_none(),
-        "logical stream failure should detach the sticky binding",
+            .is_some_and(|sticky_account_id| sticky_account_id == account_id),
+        "logical stream failure should preserve sticky binding until cooldown begins",
     );
 
     upstream_handle.abort();
@@ -37958,7 +38300,12 @@ fn build_large_imported_oauth_validate_body(item_count: usize, padding_len: usiz
             })
         })
         .collect::<Vec<_>>();
-    json!({ "items": items }).to_string()
+    json!({
+        "groupName": test_required_group_name(),
+        "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
+        "items": items,
+    })
+    .to_string()
 }
 
 fn build_large_imported_oauth_import_body(item_count: usize, padding_len: usize) -> String {
@@ -37985,6 +38332,8 @@ fn build_large_imported_oauth_import_body(item_count: usize, padding_len: usize)
         })
         .collect::<Vec<_>>();
     json!({
+        "groupName": test_required_group_name(),
+        "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
         "items": items,
         "selectedSourceIds": selected_source_ids,
         "tagIds": [],
@@ -38183,6 +38532,8 @@ async fn imported_oauth_validation_job_stream_replays_snapshot_and_completed_ter
         addr,
         "/api/pool/upstream-accounts/oauth/imports/validation-jobs",
         json!({
+            "groupName": test_required_group_name(),
+            "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
             "items": [
                 {
                     "sourceId": "invalid-source",
@@ -38251,6 +38602,8 @@ async fn imported_oauth_validation_job_delete_removes_completed_job() {
         addr,
         "/api/pool/upstream-accounts/oauth/imports/validation-jobs",
         json!({
+            "groupName": test_required_group_name(),
+            "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
             "items": [
                 {
                     "sourceId": "invalid-source",

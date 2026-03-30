@@ -4,7 +4,7 @@
 
 - Status: 已完成
 - Created: 2026-03-26
-- Last: 2026-03-29
+- Last: 2026-03-30
 
 ## 背景
 
@@ -94,13 +94,13 @@
   - `selectable`
 - 新保存的 `boundProxyKeys` 必须写入稳定节点身份键；稳定键默认忽略纯展示字段，如 share-link fragment、`ps`、仅用于命名的 label，但保留协议、主机、端口、账号/UUID/密码与传输配置等真实连接身份字段。
 - 若当前 inventory 中仍能定位到同一真实节点，`forwardProxyNodes[].aliasKeys` 必须返回可映射到当前稳定键的历史 legacy key，供前端在编辑弹窗中自动规范化旧绑定并继续保存。
-- `forwardProxyNodes[].aliasKeys` 对 `vless/trojan` 必须同时覆盖“显式写出默认参数”和“省略默认参数”这两类旧式 share-link 哈希，只要真实连接身份不变，都应映射回同一当前稳定键。
+- `forwardProxyNodes[].aliasKeys` 对 `vless/trojan` 必须同时覆盖“显式写出默认参数”、“省略默认参数”以及 `type/net`、`sni/serverName`、`fp/fingerprint`、`serviceName/service_name` 这类同义 query key 命名差异导致的旧式 share-link 哈希，只要真实连接身份不变，都应映射回同一当前稳定键。
 - `forwardProxyNodes[].displayName` 只负责展示，不参与绑定匹配；非 ASCII 名称必须按人类可读文本返回。
 - `PUT /api/pool/upstream-account-groups/:groupName` 支持更新 `note` 与 `boundProxyKeys`；若分组不存在实际账号，返回 `404`。
 - 当 `boundProxyKeys` 非空但当前选中集合里没有任何 `selectable=true` 的节点时，`PUT /api/pool/upstream-account-groups/:groupName` 必须返回 `400`，拒绝把“零可选节点”状态再次写回 metadata。
 - 已保存但当前 inventory 已不存在的 `boundProxyKeys` 会继续保留在分组 metadata 中；前端需标记为失效，运行时只使用仍然 `selectable=true` 的 key。
 - 历史旧 key 不做自动迁移；若当前 inventory 中找不到它们，接口应优先从 metadata history 恢复 `displayName` 并返回不可用节点，只有在完全没有展示元数据时才允许回退到原始 key。
-- `forward_proxy_runtime`、attempt/hourly 统计与 metadata history 中的历史旧 key 也不做 DB migration；只要当前 settings 或 metadata 仍能提供同一真实节点的 raw identity，运行时和统计查询都必须把旧 raw URL key、旧式 `vless/trojan` 哈希以及默认参数显式/省略两种 legacy key 归并回当前稳定键。
+- `forward_proxy_runtime`、attempt/hourly 统计与 metadata history 中的历史旧 key 也不做 DB migration；只要当前 settings 或 metadata 仍能提供同一真实节点的 raw identity，运行时和统计查询都必须把旧 raw URL key、旧式 `vless/trojan` 哈希、默认参数显式/省略变体，以及同义 query key 命名差异产生的 legacy key 归并回当前稳定键。
 
 ### 分组绑定弹窗
 
@@ -131,8 +131,8 @@
 - Given 用户已保存分组绑定，When 订阅刷新或节点备注名变化但真实连接身份不变，Then 刷新后 `boundProxyKeys` 仍稳定回显到同一节点。
 - Given 节点名称包含非 ASCII 字符，When 打开号池分组设置，Then 可选、不可选与历史失效三种状态都显示人类可读名称，且只在没有任何展示元数据时才回退到 key。
 - Given 打开号池分组设置且当前选中的绑定节点全部不可用，When 用户尝试保存，Then UI 禁用保存按钮并显示 warning，后端接口也返回 `400` 拒绝该提交。
-- Given 分组 metadata 中仍保存着旧版 VLESS/Trojan legacy key，When 当前 inventory 里还能匹配到同一真实节点，Then 弹窗会自动将其规范到当前稳定键、保持该节点可选可保存，且不会误显示为 Missing / Unavailable。
-- Given 历史 runtime 或 hourly 统计仍使用旧版 VLESS/Trojan legacy key，When 当前 settings 或 metadata 里还能定位到同一真实节点，Then 权重、惩罚态和 24 小时趋势都会继续归并到当前稳定键，不因 stable-key 语义修正而断档。
+- Given 分组 metadata 中仍保存着旧版 VLESS/Trojan legacy key，When 当前 inventory 里还能匹配到同一真实节点，即使订阅把 `type/net`、`sni/serverName`、`fp/fingerprint`、`serviceName/service_name` 改成了另一套同义命名，Then 弹窗也会自动将其规范到当前稳定键、保持该节点可选可保存，且不会误显示为 Missing / Unavailable。
+- Given 历史 runtime 或 hourly 统计仍使用旧版 VLESS/Trojan legacy key，When 当前 settings 或 metadata 里还能定位到同一真实节点，即使当前 share-link 只剩同义 query key 命名差异，Then 权重、惩罚态和 24 小时趋势都会继续归并到当前稳定键，不因 stable-key 语义修正而断档。
 - Given 用户在已被删除的分组设置弹窗里发起保存，When 请求同时带着无效 `boundProxyKeys`，Then API 仍优先返回 `404 group not found`，而不是把它误判成绑定校验失败。
 - Given 打开号池分组设置，When 用户查看绑定节点列表，Then 页面不显示任何 `ss://`、`vless://`、`vmess://`、`trojan://`、`http://`、`https://` 原始订阅地址，只显示截断标题和协议类型。
 - Given 打开号池分组设置且存在 `9+` 个节点，When 用户浏览节点列表，Then footer 仍然可见，节点区内部可滚动，页面本身不需要额外滚动。

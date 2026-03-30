@@ -300,6 +300,31 @@ export const UnavailableWorkStatusFilter: Story = {
   },
 }
 
+export const DegradedWorkStatusFilter: Story = {
+  render: () => (
+    <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await choosePageSize(canvasElement, 50)
+    await chooseCommandOptions(
+      canvasElement,
+      /工作状态|work status/i,
+      [/工作降级|degraded/i],
+    )
+
+    await expect(
+      await canvas.findByText(/Plain 429 degraded work status/i),
+    ).toBeInTheDocument()
+    await expect(
+      await canvas.findByText(/5xx degraded work status/i),
+    ).toBeInTheDocument()
+    await expect(
+      canvas.queryByText(/Healthy filter control/i),
+    ).not.toBeInTheDocument()
+  },
+}
+
 export const BulkSelection: Story = {
   render: () => (
     <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />

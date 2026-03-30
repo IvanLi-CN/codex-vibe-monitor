@@ -588,6 +588,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.workStatus.working": "Working",
     "accountPool.upstreamAccounts.workStatus.workingWithCount":
       "Working {{count}}",
+    "accountPool.upstreamAccounts.workStatus.degraded": "Degraded",
     "accountPool.upstreamAccounts.workStatus.idle": "Idle",
     "accountPool.upstreamAccounts.workStatus.rate_limited": "Rate limited",
     "accountPool.upstreamAccounts.workStatus.unavailable": "Unavailable",
@@ -2117,6 +2118,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.kind.apiKey": "API Key",
     "accountPool.upstreamAccounts.workStatus.working": "工作",
     "accountPool.upstreamAccounts.workStatus.workingWithCount": "工作 {{count}}",
+    "accountPool.upstreamAccounts.workStatus.degraded": "工作降级",
     "accountPool.upstreamAccounts.workStatus.idle": "空闲",
     "accountPool.upstreamAccounts.workStatus.rate_limited": "限流",
     "accountPool.upstreamAccounts.workStatus.unavailable": "不可用",

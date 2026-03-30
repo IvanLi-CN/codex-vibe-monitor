@@ -260,8 +260,10 @@ const PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED: &str = "upstream_response_failed";
 const UPSTREAM_ERROR_CODE_SERVER_IS_OVERLOADED: &str = "server_is_overloaded";
 const PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT: &str = "pool_no_available_account";
 const PROXY_FAILURE_POOL_ALL_ACCOUNTS_RATE_LIMITED: &str = "pool_all_accounts_rate_limited";
+const PROXY_FAILURE_POOL_ALL_ACCOUNTS_DEGRADED: &str = "pool_all_accounts_degraded";
 const PROXY_FAILURE_POOL_MAX_DISTINCT_ACCOUNTS_EXHAUSTED: &str = "max_distinct_accounts_exhausted";
 const POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE: &str = "no pool account is currently available because all candidate accounts are rate limited upstream (429 / quota exhausted)";
+const POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE: &str = "no pool account is currently accepting fresh conversations because all candidate accounts are in temporary degraded state";
 const PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT: &str =
     "no_alternate_upstream_after_timeout";
 const PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED: &str = "pool_total_timeout_exhausted";
@@ -11718,6 +11720,28 @@ fn build_pool_no_available_account_error(
     }
 }
 
+fn build_pool_degraded_only_error(
+    attempt_count: usize,
+    distinct_account_count: usize,
+) -> PoolUpstreamError {
+    PoolUpstreamError {
+        account: None,
+        status: StatusCode::SERVICE_UNAVAILABLE,
+        message: POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
+        failure_kind: PROXY_FAILURE_POOL_ALL_ACCOUNTS_DEGRADED,
+        connect_latency_ms: 0.0,
+        upstream_error_code: None,
+        upstream_error_message: None,
+        upstream_request_id: None,
+        oauth_responses_debug: None,
+        attempt_summary: pool_attempt_summary(
+            attempt_count,
+            distinct_account_count,
+            Some(PROXY_FAILURE_POOL_ALL_ACCOUNTS_DEGRADED.to_string()),
+        ),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct PendingPoolAttemptRecord {
     pub(crate) attempt_id: Option<i64>,
@@ -12582,6 +12606,12 @@ async fn send_pool_request_with_failover(
                         attempt_count,
                         distinct_account_count,
                         PROXY_FAILURE_POOL_ALL_ACCOUNTS_RATE_LIMITED,
+                    ));
+                }
+                Ok(PoolAccountResolution::DegradedOnly) => {
+                    return Err(build_pool_degraded_only_error(
+                        attempt_count,
+                        distinct_account_count,
                     ));
                 }
                 Ok(PoolAccountResolution::Unavailable) => {
@@ -14295,6 +14325,12 @@ async fn proxy_openai_v1_via_pool(
                     return Err((
                         StatusCode::TOO_MANY_REQUESTS,
                         POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
+                    ));
+                }
+                Ok(PoolAccountResolution::DegradedOnly) => {
+                    return Err((
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
                     ));
                 }
                 Ok(PoolAccountResolution::Unavailable) => {
@@ -16598,21 +16634,35 @@ fn pool_failure_is_timeout_shaped(failure_kind: &str, message: &str) -> bool {
     ) && pool_error_message_indicates_proxy_timeout(message)
 }
 
-fn pool_account_forward_proxy_scope(account: &PoolResolvedAccount) -> ForwardProxyRouteScope {
-    ForwardProxyRouteScope::from_group_binding(
+fn pool_account_forward_proxy_scope(
+    account: &PoolResolvedAccount,
+) -> std::result::Result<ForwardProxyRouteScope, String> {
+    crate::upstream_accounts::required_account_forward_proxy_scope(
         account.group_name.as_deref(),
         account.bound_proxy_keys.clone(),
     )
+    .map_err(|err| err.to_string())
 }
 
 async fn select_pool_account_forward_proxy_client(
     state: &AppState,
     account: &PoolResolvedAccount,
 ) -> Result<(ForwardProxyRouteScope, SelectedForwardProxy, Client), String> {
-    let scope = pool_account_forward_proxy_scope(account);
+    let scope = pool_account_forward_proxy_scope(account)?;
     let selected_proxy = select_forward_proxy_for_scope(state, &scope)
         .await
-        .map_err(|err| format!("failed to select forward proxy node: {err}"))?;
+        .map_err(|err| match &scope {
+            ForwardProxyRouteScope::BoundGroup { group_name, .. }
+                if err
+                    .to_string()
+                    .contains("bound forward proxy group has no selectable nodes") =>
+            {
+                format!(
+                    "upstream account group \"{group_name}\" has no selectable bound forward proxy nodes"
+                )
+            }
+            _ => format!("failed to select forward proxy node: {err}"),
+        })?;
     let client = match state
         .http_clients
         .client_for_forward_proxy(selected_proxy.endpoint_url.as_ref())
@@ -22857,29 +22907,59 @@ pub(crate) fn legacy_bound_proxy_key_aliases(
             LegacyDefaultQueryParamSpec {
                 keys: &["encryption"],
                 explicit_keys: &["encryption"],
-                default_value: "none",
+                default_value: Some("none"),
             },
             LegacyDefaultQueryParamSpec {
                 keys: &["security"],
                 explicit_keys: &["security"],
-                default_value: "none",
+                default_value: Some("none"),
             },
             LegacyDefaultQueryParamSpec {
                 keys: &["type", "net"],
                 explicit_keys: &["type", "net"],
-                default_value: "tcp",
+                default_value: Some("tcp"),
+            },
+            LegacyDefaultQueryParamSpec {
+                keys: &["sni", "serverName"],
+                explicit_keys: &["sni", "serverName"],
+                default_value: None,
+            },
+            LegacyDefaultQueryParamSpec {
+                keys: &["fp", "fingerprint"],
+                explicit_keys: &["fp", "fingerprint"],
+                default_value: None,
+            },
+            LegacyDefaultQueryParamSpec {
+                keys: &["serviceName", "service_name"],
+                explicit_keys: &["serviceName", "service_name"],
+                default_value: None,
             },
         ][..],
         ForwardProxyProtocol::Trojan => &[
             LegacyDefaultQueryParamSpec {
                 keys: &["security"],
                 explicit_keys: &["security"],
-                default_value: "tls",
+                default_value: Some("tls"),
             },
             LegacyDefaultQueryParamSpec {
                 keys: &["type", "net"],
                 explicit_keys: &["type", "net"],
-                default_value: "tcp",
+                default_value: Some("tcp"),
+            },
+            LegacyDefaultQueryParamSpec {
+                keys: &["sni", "serverName"],
+                explicit_keys: &["sni", "serverName"],
+                default_value: None,
+            },
+            LegacyDefaultQueryParamSpec {
+                keys: &["fp", "fingerprint"],
+                explicit_keys: &["fp", "fingerprint"],
+                default_value: None,
+            },
+            LegacyDefaultQueryParamSpec {
+                keys: &["serviceName", "service_name"],
+                explicit_keys: &["serviceName", "service_name"],
+                default_value: None,
             },
         ][..],
         _ => &[][..],
@@ -23148,7 +23228,47 @@ fn canonical_query_string(query_pairs: Vec<(String, String)>) -> String {
 struct LegacyDefaultQueryParamSpec {
     keys: &'static [&'static str],
     explicit_keys: &'static [&'static str],
-    default_value: &'static str,
+    default_value: Option<&'static str>,
+}
+
+fn build_legacy_query_param_variant_choices(
+    matching_pairs: &[(String, String)],
+    spec: &LegacyDefaultQueryParamSpec,
+) -> Option<Vec<Vec<(String, String)>>> {
+    let shared_value = if let Some((_, value)) = matching_pairs.first() {
+        if !matching_pairs
+            .iter()
+            .all(|(_, candidate)| candidate.trim().eq_ignore_ascii_case(value.trim()))
+        {
+            return None;
+        }
+        value.trim().to_string()
+    } else {
+        spec.default_value?.to_string()
+    };
+
+    let explicit_keys = if spec.explicit_keys.is_empty() {
+        spec.keys
+    } else {
+        spec.explicit_keys
+    };
+    let mut choices = Vec::new();
+    if spec
+        .default_value
+        .is_some_and(|default_value| shared_value.eq_ignore_ascii_case(default_value))
+    {
+        choices.push(Vec::new());
+    }
+    for mask in 1usize..(1usize << explicit_keys.len()) {
+        let mut pairs = Vec::new();
+        for (index, key) in explicit_keys.iter().enumerate() {
+            if (mask & (1usize << index)) != 0 {
+                pairs.push(((*key).to_string(), shared_value.clone()));
+            }
+        }
+        choices.push(pairs);
+    }
+    Some(choices)
 }
 
 fn legacy_share_link_identity_variants(
@@ -23158,7 +23278,7 @@ fn legacy_share_link_identity_variants(
     let original_query_pairs = sorted_query_pairs(url);
     let mut static_pairs = Vec::new();
     let mut handled_keys = HashSet::new();
-    let mut variant_choices: Vec<Vec<Option<(String, String)>>> = Vec::new();
+    let mut variant_choices: Vec<Vec<Vec<(String, String)>>> = Vec::new();
 
     for spec in default_specs {
         let matching_pairs = original_query_pairs
@@ -23171,28 +23291,10 @@ fn legacy_share_link_identity_variants(
             handled_keys.insert(*key);
         }
 
-        let all_default = matching_pairs.is_empty()
-            || matching_pairs
-                .iter()
-                .all(|(_, value)| value.trim().eq_ignore_ascii_case(spec.default_value));
-        if !all_default {
+        let Some(choices) = build_legacy_query_param_variant_choices(&matching_pairs, spec) else {
             static_pairs.extend(matching_pairs);
             continue;
-        }
-
-        let mut explicit_pairs = matching_pairs
-            .iter()
-            .map(|(key, _)| (key.clone(), spec.default_value.to_string()))
-            .collect::<Vec<_>>();
-        for key in spec.explicit_keys {
-            if explicit_pairs.iter().any(|(existing, _)| existing == key) {
-                continue;
-            }
-            explicit_pairs.push(((*key).to_string(), spec.default_value.to_string()));
-        }
-
-        let mut choices = vec![None];
-        choices.extend(explicit_pairs.into_iter().map(Some));
+        };
         variant_choices.push(choices);
     }
 
@@ -23210,9 +23312,7 @@ fn legacy_share_link_identity_variants(
         for variant in &variants {
             for choice in &choices {
                 let mut updated = variant.clone();
-                if let Some((key, value)) = choice {
-                    updated.push((key.clone(), value.clone()));
-                }
+                updated.extend(choice.iter().cloned());
                 updated.sort();
                 let query = canonical_query_string(updated.clone());
                 if seen.insert(query) {
@@ -23288,13 +23388,14 @@ fn canonical_stream_query_pairs(
         "tls" => {
             consumed_keys.extend([
                 "sni",
+                "serverName",
                 "allowInsecure",
                 "insecure",
                 "fp",
                 "fingerprint",
                 "alpn",
             ]);
-            let server_name = normalized_query_value(&query, &["sni"])
+            let server_name = normalized_query_value(&query, &["sni", "serverName"])
                 .map(|value| value.to_ascii_lowercase())
                 .or_else(|| (!host.is_empty()).then_some(host.clone()))
                 .or_else(|| url.host_str().map(|value| value.to_ascii_lowercase()))
@@ -23323,8 +23424,16 @@ fn canonical_stream_query_pairs(
             query_pairs.push(("serverName".to_string(), server_name));
         }
         "reality" => {
-            consumed_keys.extend(["sni", "fp", "fingerprint", "pbk", "sid", "spx"]);
-            let server_name = normalized_query_value(&query, &["sni"])
+            consumed_keys.extend([
+                "sni",
+                "serverName",
+                "fp",
+                "fingerprint",
+                "pbk",
+                "sid",
+                "spx",
+            ]);
+            let server_name = normalized_query_value(&query, &["sni", "serverName"])
                 .map(|value| value.to_ascii_lowercase())
                 .or_else(|| (!host.is_empty()).then_some(host.clone()))
                 .or_else(|| url.host_str().map(|value| value.to_ascii_lowercase()))

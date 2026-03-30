@@ -39,6 +39,33 @@ export const NameConflict: Story = {
   ),
 }
 
+export const BlockedByUnselectableGroupProxy: Story = {
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={{
+        pathname: '/account-pool/upstream-accounts/new',
+        search: '?mode=apiKey',
+        state: {
+          draft: {
+            apiKey: {
+              displayName: 'Staging Key',
+              groupName: 'staging',
+              apiKeyValue: 'sk-storybookstaging1234',
+            },
+          },
+        },
+      }}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(
+      canvas.getByText(/group "staging" does not have any selectable bound proxy nodes\./i),
+    ).toBeInTheDocument()
+    await expect(canvas.getByRole('button', { name: /create api key account/i })).toBeDisabled()
+  },
+}
+
 export const InvalidUpstreamUrl: Story = {
   render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts/new?mode=apiKey" />,
   play: async ({ canvasElement }) => {

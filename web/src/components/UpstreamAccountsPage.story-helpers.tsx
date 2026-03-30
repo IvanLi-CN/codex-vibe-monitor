@@ -977,6 +977,7 @@ function storyWorkStatus(
 ) {
   if (storyEnableStatus(item) === 'disabled') return 'idle'
   if (syncState === 'syncing') return 'idle'
+  if (item.workStatus === 'degraded') return 'degraded'
   if (item.workStatus === 'rate_limited') return 'rate_limited'
   if (healthStatus !== 'normal') return 'unavailable'
   return typeof item.workStatus === 'string' && item.workStatus
@@ -1352,6 +1353,8 @@ function createStore(): StoryStore {
     storyId?.endsWith('--quota-exhausted-oauth') === true
   const upstreamRejected402Story =
     storyId?.endsWith('--upstream-rejected-402') === true
+  const degradedWorkStatusStory =
+    storyId?.endsWith('--degraded-work-status-filter') === true
   const unavailableWorkStatusStory =
     storyId?.endsWith('--unavailable-work-status-filter') === true
   const missingWindowPlaceholdersStory =
@@ -1943,6 +1946,59 @@ function createStore(): StoryStore {
         }),
       ]
     : []
+  const degradedWorkStatusAccounts = degradedWorkStatusStory
+    ? [
+        createOauthAccount(611, {
+          displayName: 'Plain 429 degraded work status',
+          groupName: 'production',
+          isMother: false,
+          status: 'active',
+          displayStatus: 'active',
+          enableStatus: 'enabled',
+          workStatus: 'degraded',
+          healthStatus: 'normal',
+          syncState: 'idle',
+          lastError: 'pool upstream responded with 429: too many requests',
+          lastErrorAt: '2026-03-30T08:31:47.000Z',
+          lastAction: 'route_retryable_failure',
+          lastActionSource: 'call',
+          lastActionReasonCode: 'upstream_http_429_rate_limit',
+          lastActionReasonMessage: 'pool upstream responded with 429: too many requests',
+          lastActionHttpStatus: 429,
+          lastActionAt: '2026-03-30T08:31:47.000Z',
+          tags: pickStoryTags('vip', 'priority'),
+        }),
+        createOauthAccount(612, {
+          displayName: '5xx degraded work status',
+          groupName: 'production',
+          isMother: false,
+          status: 'active',
+          displayStatus: 'active',
+          enableStatus: 'enabled',
+          workStatus: 'degraded',
+          healthStatus: 'normal',
+          syncState: 'idle',
+          lastError: 'pool upstream responded with 503 service unavailable',
+          lastErrorAt: '2026-03-30T08:32:47.000Z',
+          lastAction: 'route_retryable_failure',
+          lastActionSource: 'call',
+          lastActionReasonCode: 'upstream_http_5xx',
+          lastActionReasonMessage: 'pool upstream responded with 503 service unavailable',
+          lastActionHttpStatus: 503,
+          lastActionAt: '2026-03-30T08:32:47.000Z',
+          tags: pickStoryTags('prodApac'),
+        }),
+        createApiKeyAccount(613, {
+          displayName: 'Healthy filter control',
+          groupName: 'staging',
+          workStatus: 'working',
+          healthStatus: 'normal',
+          syncState: 'idle',
+          activeConversationCount: 2,
+          tags: pickStoryTags('fallback'),
+        }),
+      ]
+    : []
   const operationalRosterAccounts = compactStory
     ? []
     : buildOperationalRosterAccounts(denseRosterStory ? 3 : 1)
@@ -1952,6 +2008,8 @@ function createStore(): StoryStore {
     ? quotaExhaustedOauthAccounts
     : upstreamRejected402Story
     ? upstreamRejected402Accounts
+    : degradedWorkStatusStory
+    ? degradedWorkStatusAccounts
     : unavailableWorkStatusStory
     ? unavailableWorkStatusAccounts
     : availabilityBadgeStory

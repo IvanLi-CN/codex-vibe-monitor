@@ -199,6 +199,7 @@ const labels = {
   workStatus: (status: string) =>
     ({
       working: 'Working',
+      degraded: 'Degraded',
       idle: 'Idle',
       rate_limited: 'Rate limited',
       unavailable: 'Unavailable',
@@ -275,6 +276,7 @@ const chineseLabels = {
   workStatus: (status: string) =>
     ({
       working: '工作中',
+      degraded: '工作降级',
       idle: '空闲',
       rate_limited: '限流中',
       unavailable: '不可用',
@@ -472,6 +474,13 @@ export const AvailabilityBadges: Story = {
       {
         ...items[1],
         id: 14,
+        displayName: 'Degraded badge visible',
+        workStatus: 'degraded',
+        activeConversationCount: 1,
+      },
+      {
+        ...items[1],
+        id: 16,
         displayName: 'Rate-limited badge visible',
         workStatus: 'rate_limited',
         activeConversationCount: 4,

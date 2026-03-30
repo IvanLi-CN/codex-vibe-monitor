@@ -37,6 +37,7 @@ export type ImportedOauthValidationDialogState = {
 type ImportedOauthValidationDialogProps = {
   open: boolean;
   state: ImportedOauthValidationDialogState | null;
+  importDisabledReason?: string | null;
   onClose: () => void;
   onRetryFailed: () => void;
   onRetryOne: (sourceId: string) => void;
@@ -282,6 +283,7 @@ export const IMPORT_VALIDATION_PAGE_SIZE = 100;
 export function ImportedOauthValidationDialog({
   open,
   state,
+  importDisabledReason,
   onClose,
   onRetryFailed,
   onRetryOne,
@@ -309,7 +311,8 @@ export function ImportedOauthValidationDialog({
   }, [activeFilter, state]);
   const isBusy = state?.checking === true || state?.importing === true;
   const canRetryFailed = !isBusy && (counts.invalid > 0 || counts.error > 0);
-  const canImportValid = !isBusy && validRows.length > 0;
+  const canImportValid =
+    !isBusy && validRows.length > 0 && !importDisabledReason;
   const totalSegments = Math.max(1, state?.uniqueInInput ?? 0);
   const progressSegments: Array<{
     key: ValidationFilterKey;
@@ -444,14 +447,16 @@ export function ImportedOauthValidationDialog({
           </DialogHeader>
 
           <div className="grid h-full min-h-0 grid-rows-[auto,minmax(0,1fr)] overflow-hidden px-6 py-5">
-            {state?.importError ? (
+            {state?.importError || importDisabledReason ? (
               <Alert variant="error" className="mb-4">
                 <AppIcon
                   name="alert-outline"
                   className="mt-0.5 h-4 w-4 shrink-0"
                   aria-hidden
                 />
-                <div className="text-sm">{state.importError}</div>
+                <div className="text-sm">
+                  {state?.importError ?? importDisabledReason}
+                </div>
               </Alert>
             ) : null}
 
