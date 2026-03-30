@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.32.0",
+  "base_stable_version": "1.31.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-03-30T04:55:04Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.32.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "3a3076f466d786ef3d19b43c9796d1e37ef1cb18",
+  "pr_number": 268,
+  "pr_title": "feat(pool): add group upstream 429 retries",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.32.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.32.0",
+  "target_sha": "599da2d45e75cf3f47e0de144e3344d717d3b227",
+  "type_label": "type:minor"
+}
