@@ -1559,7 +1559,7 @@ export function SharedUpstreamAccountDetailDrawer({
   }, [hasVisibleStickyConversations, visibleStickyKeys])
 
   const handleOpenRelatedUpstreamAccount = useCallback(
-    (nextAccountId: number, _accountLabel?: string) => {
+    (nextAccountId: number) => {
       openUpstreamAccount(nextAccountId)
     },
     [openUpstreamAccount],
