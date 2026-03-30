@@ -637,6 +637,8 @@ describe("settings normalization", () => {
                 groupName: "production",
                 note: "Premium traffic",
                 boundProxyKeys: ["jp-edge-01", "sg-edge-02", "jp-edge-01"],
+                upstream429RetryEnabled: true,
+                upstream429MaxRetries: 3,
               },
             ],
             forwardProxyNodes: [
@@ -682,6 +684,8 @@ describe("settings normalization", () => {
       "sg-edge-02",
       "jp-edge-01",
     ]);
+    expect(response.groups[0].upstream429RetryEnabled).toBe(true);
+    expect(response.groups[0].upstream429MaxRetries).toBe(3);
     expect(response.forwardProxyNodes ?? []).toHaveLength(2);
     expect(response.forwardProxyNodes?.[0]?.protocolLabel).toBe("HTTP");
     expect(response.forwardProxyNodes?.[1]?.selectable).toBe(false);

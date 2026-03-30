@@ -1892,6 +1892,8 @@ export interface UpstreamAccountGroupSummary {
   groupName: string;
   note?: string | null;
   boundProxyKeys?: string[];
+  upstream429RetryEnabled?: boolean;
+  upstream429MaxRetries?: number;
 }
 
 export interface PoolRoutingSettings {
@@ -2302,6 +2304,8 @@ export interface FetchTagsQuery {
 export interface UpdateUpstreamAccountGroupPayload {
   note?: string;
   boundProxyKeys?: string[];
+  upstream429RetryEnabled?: boolean;
+  upstream429MaxRetries?: number;
 }
 
 function normalizeRateWindowActualUsage(
@@ -2723,6 +2727,12 @@ function normalizeUpstreamAccountDetail(raw: unknown): UpstreamAccountDetail {
   };
 }
 
+function normalizeUpstreamAccountGroupMaxRetries(raw: unknown): number {
+  const value = normalizeFiniteNumber(raw);
+  if (value == null) return 0;
+  return Math.min(5, Math.max(0, Math.trunc(value)));
+}
+
 function normalizeUpstreamAccountGroupSummary(
   raw: unknown,
 ): UpstreamAccountGroupSummary | null {
@@ -2736,6 +2746,10 @@ function normalizeUpstreamAccountGroupSummary(
     boundProxyKeys: normalizeStringArray(payload.boundProxyKeys).map((item) =>
       item.trim(),
     ).filter((item) => item.length > 0),
+    upstream429RetryEnabled: payload.upstream429RetryEnabled === true,
+    upstream429MaxRetries: normalizeUpstreamAccountGroupMaxRetries(
+      payload.upstream429MaxRetries,
+    ),
   };
 }
 

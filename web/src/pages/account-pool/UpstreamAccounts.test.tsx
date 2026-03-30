@@ -4099,6 +4099,8 @@ describe("UpstreamAccountsPage api key details", () => {
       groupName: "latam",
       note: "LATAM draft note",
       boundProxyKeys: ["jp-edge-01"],
+      upstream429RetryEnabled: false,
+      upstream429MaxRetries: 0,
     });
 
     hookMocks.useUpstreamAccounts.mockReturnValue({
@@ -4216,6 +4218,7 @@ describe("UpstreamAccountsPage api key details", () => {
       throw new Error("missing group settings dialog");
     }
     expect(groupSettingsDialog.textContent || "").toContain("Bound proxy nodes");
+    expect(groupSettingsDialog.textContent || "").toContain("Upstream 429 retry");
     expect(groupSettingsDialog.textContent || "").toContain("Direct");
     expect(groupSettingsDialog.textContent || "").toContain("DIRECT");
     expect(groupSettingsDialog.textContent || "").toContain("VLESS");
@@ -4271,6 +4274,8 @@ describe("UpstreamAccountsPage api key details", () => {
     expect(saveGroupNote).toHaveBeenCalledWith("latam", {
       note: "LATAM draft note",
       boundProxyKeys: ["jp-edge-01"],
+      upstream429RetryEnabled: false,
+      upstream429MaxRetries: 0,
     });
   });
 });

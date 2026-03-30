@@ -436,6 +436,17 @@ const baseTranslations = {
       "Write a shared note for this group",
     "accountPool.upstreamAccounts.groupNotes.badges.existing": "Saved group",
     "accountPool.upstreamAccounts.groupNotes.badges.draft": "Draft group",
+    "accountPool.upstreamAccounts.groupNotes.upstream429.label":
+      "Upstream 429 retry",
+    "accountPool.upstreamAccounts.groupNotes.upstream429.hint":
+      "When enabled, this group keeps the same account and retries after upstream 429 with a random 1-10 second delay before falling back to account cooldown and failover.",
+    "accountPool.upstreamAccounts.groupNotes.upstream429.toggle":
+      "Retry the same account after upstream 429",
+    "accountPool.upstreamAccounts.groupNotes.upstream429.countLabel":
+      "Retry count",
+    "accountPool.upstreamAccounts.groupNotes.upstream429.countOnce": "1 retry",
+    "accountPool.upstreamAccounts.groupNotes.upstream429.countMany":
+      "{{count}} retries",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.label":
       "Bound proxy nodes",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.hint":
@@ -1950,6 +1961,17 @@ const baseTranslations = {
       "填写这个分组的共享备注",
     "accountPool.upstreamAccounts.groupNotes.badges.existing": "已存在分组",
     "accountPool.upstreamAccounts.groupNotes.badges.draft": "草稿分组",
+    "accountPool.upstreamAccounts.groupNotes.upstream429.label":
+      "上游 429 重试",
+    "accountPool.upstreamAccounts.groupNotes.upstream429.hint":
+      "开启后，这个分组遇到上游 429 时会先保留当前账号，并在随机 1-10 秒后重试；耗尽后再回到当前的账号冷却和切号流程。",
+    "accountPool.upstreamAccounts.groupNotes.upstream429.toggle":
+      "上游 429 后继续重试当前账号",
+    "accountPool.upstreamAccounts.groupNotes.upstream429.countLabel":
+      "重试次数",
+    "accountPool.upstreamAccounts.groupNotes.upstream429.countOnce": "重试 1 次",
+    "accountPool.upstreamAccounts.groupNotes.upstream429.countMany":
+      "重试 {{count}} 次",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.label":
       "绑定代理节点",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.hint":

@@ -917,12 +917,16 @@ pub(crate) struct UpstreamAccountGroupSummary {
     group_name: String,
     note: Option<String>,
     bound_proxy_keys: Vec<String>,
+    upstream_429_retry_enabled: bool,
+    upstream_429_max_retries: u8,
 }
 
 #[derive(Debug, Clone, Default)]
 struct UpstreamAccountGroupMetadata {
     note: Option<String>,
     bound_proxy_keys: Vec<String>,
+    upstream_429_retry_enabled: bool,
+    upstream_429_max_retries: u8,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1666,6 +1670,10 @@ pub(crate) struct UpdateUpstreamAccountGroupRequest {
     note: Option<String>,
     #[serde(default)]
     bound_proxy_keys: Option<Vec<String>>,
+    #[serde(default)]
+    upstream_429_retry_enabled: Option<bool>,
+    #[serde(default)]
+    upstream_429_max_retries: Option<u8>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2719,6 +2727,8 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             group_name TEXT PRIMARY KEY,
             note TEXT NOT NULL,
             bound_proxy_keys_json TEXT NOT NULL DEFAULT '[]',
+            upstream_429_retry_enabled INTEGER NOT NULL DEFAULT 0,
+            upstream_429_max_retries INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
@@ -2739,6 +2749,28 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
         .execute(pool)
         .await
         .context("failed to add pool_upstream_account_group_notes.bound_proxy_keys_json")?;
+    }
+    if !existing_group_note_columns.contains("upstream_429_retry_enabled") {
+        sqlx::query(
+            r#"
+            ALTER TABLE pool_upstream_account_group_notes
+            ADD COLUMN upstream_429_retry_enabled INTEGER NOT NULL DEFAULT 0
+            "#,
+        )
+        .execute(pool)
+        .await
+        .context("failed to add pool_upstream_account_group_notes.upstream_429_retry_enabled")?;
+    }
+    if !existing_group_note_columns.contains("upstream_429_max_retries") {
+        sqlx::query(
+            r#"
+            ALTER TABLE pool_upstream_account_group_notes
+            ADD COLUMN upstream_429_max_retries INTEGER NOT NULL DEFAULT 0
+            "#,
+        )
+        .execute(pool)
+        .await
+        .context("failed to add pool_upstream_account_group_notes.upstream_429_max_retries")?;
     }
 
     sqlx::query(
@@ -3221,6 +3253,12 @@ pub(crate) async fn update_upstream_account_group(
         .bound_proxy_keys
         .map(normalize_bound_proxy_keys)
         .unwrap_or_else(Vec::new);
+    let upstream_429_retry_enabled_was_updated = payload.upstream_429_retry_enabled.is_some();
+    let upstream_429_max_retries_was_updated = payload.upstream_429_max_retries.is_some();
+    let normalized_upstream_429_max_retries = payload
+        .upstream_429_max_retries
+        .map(normalize_group_upstream_429_max_retries)
+        .unwrap_or_default();
 
     let mut tx = state
         .pool
@@ -3260,6 +3298,16 @@ pub(crate) async fn update_upstream_account_group(
             } else {
                 existing_metadata.bound_proxy_keys
             },
+            upstream_429_retry_enabled: if upstream_429_retry_enabled_was_updated {
+                payload.upstream_429_retry_enabled.unwrap_or(false)
+            } else {
+                existing_metadata.upstream_429_retry_enabled
+            },
+            upstream_429_max_retries: if upstream_429_max_retries_was_updated {
+                normalized_upstream_429_max_retries
+            } else {
+                existing_metadata.upstream_429_max_retries
+            },
         },
     )
     .await
@@ -3273,6 +3321,8 @@ pub(crate) async fn update_upstream_account_group(
         group_name,
         note: saved.note,
         bound_proxy_keys: saved.bound_proxy_keys,
+        upstream_429_retry_enabled: saved.upstream_429_retry_enabled,
+        upstream_429_max_retries: saved.upstream_429_max_retries,
     }))
 }
 
@@ -8319,9 +8369,23 @@ async fn count_recent_account_conversations(
 async fn load_upstream_account_groups(
     pool: &Pool<Sqlite>,
 ) -> Result<Vec<UpstreamAccountGroupSummary>> {
-    let rows = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+    let rows = sqlx::query_as::<
+        _,
+        (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+            Option<i64>,
+        ),
+    >(
         r#"
-        SELECT groups.group_name, notes.note, notes.bound_proxy_keys_json
+        SELECT
+            groups.group_name,
+            notes.note,
+            notes.bound_proxy_keys_json,
+            notes.upstream_429_retry_enabled,
+            notes.upstream_429_max_retries
         FROM (
             SELECT DISTINCT TRIM(group_name) AS group_name
             FROM pool_upstream_accounts
@@ -8338,12 +8402,31 @@ async fn load_upstream_account_groups(
     Ok(rows
         .into_iter()
         .map(
-            |(group_name, note, bound_proxy_keys_json)| UpstreamAccountGroupSummary {
+            |(
                 group_name,
-                note: normalize_optional_text(note),
-                bound_proxy_keys: decode_group_bound_proxy_keys_json(
-                    bound_proxy_keys_json.as_deref(),
-                ),
+                note,
+                bound_proxy_keys_json,
+                upstream_429_retry_enabled,
+                upstream_429_max_retries,
+            )| {
+                let upstream_429_retry_enabled = decode_group_upstream_429_retry_enabled(
+                    upstream_429_retry_enabled.unwrap_or_default(),
+                );
+                let upstream_429_max_retries = normalize_group_upstream_429_retry_metadata(
+                    upstream_429_retry_enabled,
+                    decode_group_upstream_429_max_retries(
+                        upstream_429_max_retries.unwrap_or_default(),
+                    ),
+                );
+                UpstreamAccountGroupSummary {
+                    group_name,
+                    note: normalize_optional_text(note),
+                    bound_proxy_keys: decode_group_bound_proxy_keys_json(
+                        bound_proxy_keys_json.as_deref(),
+                    ),
+                    upstream_429_retry_enabled,
+                    upstream_429_max_retries,
+                }
             },
         )
         .collect())
@@ -9433,6 +9516,33 @@ fn decode_group_bound_proxy_keys_json(raw: Option<&str>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn decode_group_upstream_429_retry_enabled(raw: i64) -> bool {
+    raw != 0
+}
+
+fn normalize_group_upstream_429_max_retries(value: u8) -> u8 {
+    value.min(MAX_PROXY_UPSTREAM_429_MAX_RETRIES)
+}
+
+fn normalize_enabled_group_upstream_429_max_retries(value: u8) -> u8 {
+    normalize_group_upstream_429_max_retries(value).max(1)
+}
+
+fn normalize_group_upstream_429_retry_metadata(
+    upstream_429_retry_enabled: bool,
+    upstream_429_max_retries: u8,
+) -> u8 {
+    if upstream_429_retry_enabled {
+        normalize_enabled_group_upstream_429_max_retries(upstream_429_max_retries)
+    } else {
+        0
+    }
+}
+
+fn decode_group_upstream_429_max_retries(raw: i64) -> u8 {
+    normalize_group_upstream_429_max_retries(raw.max(0) as u8)
+}
+
 fn encode_group_bound_proxy_keys_json(bound_proxy_keys: &[String]) -> Result<String> {
     serde_json::to_string(bound_proxy_keys).context("failed to encode group bound proxy keys")
 }
@@ -9441,9 +9551,13 @@ async fn load_group_metadata_conn(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     group_name: &str,
 ) -> Result<Option<UpstreamAccountGroupMetadata>> {
-    sqlx::query_as::<_, (String, Option<String>)>(
+    sqlx::query_as::<_, (String, Option<String>, i64, i64)>(
         r#"
-        SELECT note, bound_proxy_keys_json
+        SELECT
+            note,
+            bound_proxy_keys_json,
+            upstream_429_retry_enabled,
+            upstream_429_max_retries
         FROM pool_upstream_account_group_notes
         WHERE group_name = ?1
         "#,
@@ -9453,11 +9567,26 @@ async fn load_group_metadata_conn(
     .await
     .map(|row| {
         row.map(
-            |(note, bound_proxy_keys_json)| UpstreamAccountGroupMetadata {
-                note: normalize_optional_text(Some(note)),
-                bound_proxy_keys: decode_group_bound_proxy_keys_json(
-                    bound_proxy_keys_json.as_deref(),
-                ),
+            |(
+                note,
+                bound_proxy_keys_json,
+                upstream_429_retry_enabled,
+                upstream_429_max_retries,
+            )| {
+                let upstream_429_retry_enabled =
+                    decode_group_upstream_429_retry_enabled(upstream_429_retry_enabled);
+                let upstream_429_max_retries = normalize_group_upstream_429_retry_metadata(
+                    upstream_429_retry_enabled,
+                    decode_group_upstream_429_max_retries(upstream_429_max_retries),
+                );
+                UpstreamAccountGroupMetadata {
+                    note: normalize_optional_text(Some(note)),
+                    bound_proxy_keys: decode_group_bound_proxy_keys_json(
+                        bound_proxy_keys_json.as_deref(),
+                    ),
+                    upstream_429_retry_enabled,
+                    upstream_429_max_retries,
+                }
             },
         )
     })
@@ -9484,7 +9613,16 @@ async fn save_group_metadata_record_conn(
 ) -> Result<()> {
     let normalized_note = normalize_optional_text(metadata.note);
     let normalized_bound_proxy_keys = normalize_bound_proxy_keys(metadata.bound_proxy_keys);
-    if normalized_note.is_none() && normalized_bound_proxy_keys.is_empty() {
+    let normalized_upstream_429_retry_enabled = metadata.upstream_429_retry_enabled;
+    let normalized_upstream_429_max_retries = normalize_group_upstream_429_retry_metadata(
+        normalized_upstream_429_retry_enabled,
+        metadata.upstream_429_max_retries,
+    );
+    if normalized_note.is_none()
+        && normalized_bound_proxy_keys.is_empty()
+        && !normalized_upstream_429_retry_enabled
+        && normalized_upstream_429_max_retries == 0
+    {
         sqlx::query(
             r#"
             DELETE FROM pool_upstream_account_group_notes
@@ -9505,19 +9643,29 @@ async fn save_group_metadata_record_conn(
             group_name,
             note,
             bound_proxy_keys_json,
+            upstream_429_retry_enabled,
+            upstream_429_max_retries,
             created_at,
             updated_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?4)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
         ON CONFLICT(group_name) DO UPDATE SET
             note = excluded.note,
             bound_proxy_keys_json = excluded.bound_proxy_keys_json,
+            upstream_429_retry_enabled = excluded.upstream_429_retry_enabled,
+            upstream_429_max_retries = excluded.upstream_429_max_retries,
             updated_at = excluded.updated_at
         "#,
     )
     .bind(group_name)
     .bind(normalized_note.unwrap_or_default())
     .bind(bound_proxy_keys_json)
+    .bind(if normalized_upstream_429_retry_enabled {
+        1_i64
+    } else {
+        0_i64
+    })
+    .bind(i64::from(normalized_upstream_429_max_retries))
     .bind(now_iso)
     .execute(conn)
     .await?;
@@ -14059,6 +14207,8 @@ pub(crate) struct PoolResolvedAccount {
     pub(crate) auth: PoolResolvedAuth,
     pub(crate) group_name: Option<String>,
     pub(crate) bound_proxy_keys: Vec<String>,
+    pub(crate) group_upstream_429_retry_enabled: bool,
+    pub(crate) group_upstream_429_max_retries: u8,
     pub(crate) upstream_base_url: Url,
     pub(crate) routing_source: PoolRoutingSelectionSource,
 }
@@ -14066,6 +14216,13 @@ pub(crate) struct PoolResolvedAccount {
 impl PoolResolvedAccount {
     pub(crate) fn upstream_route_key(&self) -> String {
         canonical_pool_upstream_route_key(&self.upstream_base_url)
+    }
+
+    pub(crate) fn effective_group_upstream_429_max_retries(&self) -> u8 {
+        normalize_group_upstream_429_retry_metadata(
+            self.group_upstream_429_retry_enabled,
+            self.group_upstream_429_max_retries,
+        )
     }
 }
 
@@ -14706,6 +14863,8 @@ async fn prepare_pool_account(
             },
             group_name: row.group_name.clone(),
             bound_proxy_keys: group_metadata.bound_proxy_keys.clone(),
+            group_upstream_429_retry_enabled: group_metadata.upstream_429_retry_enabled,
+            group_upstream_429_max_retries: group_metadata.upstream_429_max_retries,
             upstream_base_url,
             routing_source: PoolRoutingSelectionSource::FreshAssignment,
         })),
@@ -14867,6 +15026,8 @@ async fn prepare_pool_account(
                 },
                 group_name: row.group_name.clone(),
                 bound_proxy_keys: group_metadata.bound_proxy_keys,
+                group_upstream_429_retry_enabled: group_metadata.upstream_429_retry_enabled,
+                group_upstream_429_max_retries: group_metadata.upstream_429_max_retries,
                 upstream_base_url,
                 routing_source: PoolRoutingSelectionSource::FreshAssignment,
             }))
@@ -16557,6 +16718,7 @@ mod tests {
             )),
             maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
             pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            pool_group_429_retry_delay_override: None,
             hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
             upstream_accounts: Arc::new(
                 UpstreamAccountsRuntime::test_instance_with_maintenance_parallelism(
@@ -16966,6 +17128,7 @@ mod tests {
             )),
             maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
             pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
+            pool_group_429_retry_delay_override: None,
             hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
             upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
         });

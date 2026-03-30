@@ -117,6 +117,8 @@ type GroupNoteEditorState = {
   note: string;
   existing: boolean;
   boundProxyKeys: string[];
+  upstream429RetryEnabled: boolean;
+  upstream429MaxRetries: number;
 };
 type MailboxCopyTone = "idle" | "copied" | "manual";
 const MAILBOX_REFRESH_INTERVAL_MS = 5_000;
@@ -124,6 +126,7 @@ const MAILBOX_REFRESH_TICK_MS = 1_000;
 const OAUTH_SESSION_SYNC_DEBOUNCE_MS = 300;
 const OAUTH_SESSION_SYNC_RETRY_MS = 1_000;
 const MAX_SHARED_TAG_SYNC_ATTEMPTS = 2;
+const GROUP_UPSTREAM_429_RETRY_OPTIONS = [1, 2, 3, 4, 5] as const;
 const IMPORTED_OAUTH_DUPLICATE_DETAIL =
   "duplicate credential in current import selection";
 
@@ -240,6 +243,17 @@ function normalizeBoundProxyKeys(values?: string[]): string[] {
       values.map((value) => value.trim()).filter((value) => value.length > 0),
     ),
   );
+}
+
+function normalizeGroupUpstream429MaxRetries(value?: number | null): number {
+  if (!Number.isFinite(value ?? NaN)) return 0;
+  return Math.min(5, Math.max(0, Math.trunc(value ?? 0)));
+}
+
+function normalizeEnabledGroupUpstream429MaxRetries(
+  value?: number | null,
+): number {
+  return Math.max(1, normalizeGroupUpstream429MaxRetries(value) || 1);
 }
 
 function formatDateTime(value?: string | null) {
@@ -1546,12 +1560,18 @@ export default function UpstreamAccountCreatePage() {
   const [groupDraftBoundProxyKeys, setGroupDraftBoundProxyKeys] = useState<
     Record<string, string[]>
   >({});
+  const [groupDraftUpstream429RetryEnabled, setGroupDraftUpstream429RetryEnabled] =
+    useState<Record<string, boolean>>({});
+  const [groupDraftUpstream429MaxRetries, setGroupDraftUpstream429MaxRetries] =
+    useState<Record<string, number>>({});
   const [groupNoteEditor, setGroupNoteEditor] = useState<GroupNoteEditorState>({
     open: false,
     groupName: "",
     note: "",
     existing: false,
     boundProxyKeys: [],
+    upstream429RetryEnabled: false,
+    upstream429MaxRetries: 0,
   });
   const [groupNoteBusy, setGroupNoteBusy] = useState(false);
   const [groupNoteError, setGroupNoteError] = useState<string | null>(null);
@@ -1705,10 +1725,29 @@ export default function UpstreamAccountCreatePage() {
               "",
             ]),
           ),
+          ...Object.fromEntries(
+            Object.keys(groupDraftUpstream429RetryEnabled).map((groupName) => [
+              groupName,
+              "",
+            ]),
+          ),
+          ...Object.fromEntries(
+            Object.keys(groupDraftUpstream429MaxRetries).map((groupName) => [
+              groupName,
+              "",
+            ]),
+          ),
           ...groupDraftNotes,
         },
       ),
-    [groupDraftBoundProxyKeys, groupDraftNotes, groups, items],
+    [
+      groupDraftBoundProxyKeys,
+      groupDraftNotes,
+      groupDraftUpstream429MaxRetries,
+      groupDraftUpstream429RetryEnabled,
+      groups,
+      items,
+    ],
   );
   const oauthConflictExcludeId =
     relinkAccountId ??
@@ -2665,6 +2704,28 @@ export default function UpstreamAccountCreatePage() {
       return Object.fromEntries(nextEntries);
     });
   }, [groups]);
+  useEffect(() => {
+    setGroupDraftUpstream429RetryEnabled((current) => {
+      const nextEntries = Object.entries(current).filter(
+        ([groupName]) => !isExistingGroup(groups, groupName),
+      );
+      if (nextEntries.length === Object.keys(current).length) {
+        return current;
+      }
+      return Object.fromEntries(nextEntries);
+    });
+  }, [groups]);
+  useEffect(() => {
+    setGroupDraftUpstream429MaxRetries((current) => {
+      const nextEntries = Object.entries(current).filter(
+        ([groupName]) => !isExistingGroup(groups, groupName),
+      );
+      if (nextEntries.length === Object.keys(current).length) {
+        return current;
+      }
+      return Object.fromEntries(nextEntries);
+    });
+  }, [groups]);
 
   function resolveGroupSummaryForName(groupName: string) {
     const normalized = normalizeGroupName(groupName);
@@ -2680,6 +2741,29 @@ export default function UpstreamAccountCreatePage() {
   }
   function resolveGroupBoundProxyKeysForName(groupName: string) {
     return resolveGroupSummaryForName(groupName)?.boundProxyKeys ?? [];
+  }
+  function resolveGroupUpstream429RetryEnabledForName(groupName: string) {
+    const normalized = normalizeGroupName(groupName);
+    if (!normalized) return false;
+    const existingGroup = resolveGroupSummaryForName(normalized);
+    if (existingGroup) {
+      return existingGroup.upstream429RetryEnabled === true;
+    }
+    return groupDraftUpstream429RetryEnabled[normalized] === true;
+  }
+  function resolveGroupUpstream429MaxRetriesForName(groupName: string) {
+    const normalized = normalizeGroupName(groupName);
+    if (!normalized) return 0;
+    const existingGroup = resolveGroupSummaryForName(normalized);
+    const retryEnabled = existingGroup
+      ? existingGroup.upstream429RetryEnabled === true
+      : groupDraftUpstream429RetryEnabled[normalized] === true;
+    const rawValue = existingGroup
+      ? existingGroup.upstream429MaxRetries
+      : groupDraftUpstream429MaxRetries[normalized];
+    return retryEnabled
+      ? normalizeEnabledGroupUpstream429MaxRetries(rawValue)
+      : normalizeGroupUpstream429MaxRetries(rawValue);
   }
   function resolvePendingGroupNoteForName(groupName: string) {
     const normalized = normalizeGroupName(groupName);
@@ -2697,7 +2781,9 @@ export default function UpstreamAccountCreatePage() {
   function hasGroupSettings(groupName: string) {
     return (
       resolveGroupNoteForName(groupName).trim().length > 0 ||
-      resolvePendingGroupBoundProxyKeysForName(groupName).length > 0
+      resolvePendingGroupBoundProxyKeysForName(groupName).length > 0 ||
+      resolveGroupUpstream429RetryEnabledForName(groupName) ||
+      resolveGroupUpstream429MaxRetriesForName(groupName) > 0
     );
   }
 
@@ -2716,6 +2802,18 @@ export default function UpstreamAccountCreatePage() {
       delete next[normalized];
       return next;
     });
+    setGroupDraftUpstream429RetryEnabled((current) => {
+      if (!(normalized in current)) return current;
+      const next = { ...current };
+      delete next[normalized];
+      return next;
+    });
+    setGroupDraftUpstream429MaxRetries((current) => {
+      if (!(normalized in current)) return current;
+      const next = { ...current };
+      delete next[normalized];
+      return next;
+    });
   }, []);
 
   const persistDraftGroupSettings = useCallback(
@@ -2725,7 +2823,16 @@ export default function UpstreamAccountCreatePage() {
       const hasDraftNote = normalizedGroupName in groupDraftNotes;
       const hasDraftBoundProxyKeys =
         normalizedGroupName in groupDraftBoundProxyKeys;
-      if (!hasDraftNote && !hasDraftBoundProxyKeys) {
+      const hasDraftUpstream429RetryEnabled =
+        normalizedGroupName in groupDraftUpstream429RetryEnabled;
+      const hasDraftUpstream429MaxRetries =
+        normalizedGroupName in groupDraftUpstream429MaxRetries;
+      if (
+        !hasDraftNote &&
+        !hasDraftBoundProxyKeys &&
+        !hasDraftUpstream429RetryEnabled &&
+        !hasDraftUpstream429MaxRetries
+      ) {
         return;
       }
       const normalizedNote = hasDraftNote
@@ -2734,12 +2841,21 @@ export default function UpstreamAccountCreatePage() {
       const normalizedBoundProxyKeys = hasDraftBoundProxyKeys
         ? normalizeBoundProxyKeys(groupDraftBoundProxyKeys[normalizedGroupName])
         : [];
-      if (!normalizedNote && normalizedBoundProxyKeys.length === 0) {
-        return;
-      }
+      const normalizedUpstream429RetryEnabled = hasDraftUpstream429RetryEnabled
+        ? groupDraftUpstream429RetryEnabled[normalizedGroupName] === true
+        : false;
+      const normalizedUpstream429MaxRetries = normalizedUpstream429RetryEnabled
+        ? normalizeEnabledGroupUpstream429MaxRetries(
+            groupDraftUpstream429MaxRetries[normalizedGroupName],
+          )
+        : normalizeGroupUpstream429MaxRetries(
+            groupDraftUpstream429MaxRetries[normalizedGroupName],
+          );
       await saveGroupNote(normalizedGroupName, {
         note: normalizedNote || undefined,
         boundProxyKeys: normalizedBoundProxyKeys,
+        upstream429RetryEnabled: normalizedUpstream429RetryEnabled,
+        upstream429MaxRetries: normalizedUpstream429MaxRetries,
       });
       clearDraftGroupSettings(normalizedGroupName);
     },
@@ -2747,6 +2863,8 @@ export default function UpstreamAccountCreatePage() {
       clearDraftGroupSettings,
       groupDraftBoundProxyKeys,
       groupDraftNotes,
+      groupDraftUpstream429MaxRetries,
+      groupDraftUpstream429RetryEnabled,
       saveGroupNote,
     ],
   );
@@ -2765,6 +2883,15 @@ export default function UpstreamAccountCreatePage() {
       boundProxyKeys:
         existingGroup?.boundProxyKeys ??
         resolvePendingGroupBoundProxyKeysForName(normalized),
+      upstream429RetryEnabled:
+        existingGroup?.upstream429RetryEnabled ??
+        resolveGroupUpstream429RetryEnabledForName(normalized),
+      upstream429MaxRetries:
+        existingGroup?.upstream429RetryEnabled === true
+          ? normalizeEnabledGroupUpstream429MaxRetries(
+              existingGroup.upstream429MaxRetries,
+            )
+          : resolveGroupUpstream429MaxRetriesForName(normalized),
     });
   };
 
@@ -2782,6 +2909,15 @@ export default function UpstreamAccountCreatePage() {
     const normalizedBoundProxyKeys = normalizeBoundProxyKeys(
       groupNoteEditor.boundProxyKeys,
     );
+    const normalizedUpstream429RetryEnabled =
+      groupNoteEditor.upstream429RetryEnabled === true;
+    const normalizedUpstream429MaxRetries = normalizedUpstream429RetryEnabled
+      ? normalizeEnabledGroupUpstream429MaxRetries(
+          groupNoteEditor.upstream429MaxRetries,
+        )
+      : normalizeGroupUpstream429MaxRetries(
+          groupNoteEditor.upstream429MaxRetries,
+        );
     const shouldInvalidateSingleOauthSessionForDraftGroup =
       normalizeGroupName(oauthGroupName) === normalizedGroupName &&
       resolvePendingGroupNoteForName(oauthGroupName).trim() !== normalizedNote;
@@ -2805,6 +2941,30 @@ export default function UpstreamAccountCreatePage() {
         }
         return next;
       });
+      setGroupDraftUpstream429RetryEnabled((current) => {
+        const next = { ...current };
+        if (
+          normalizedUpstream429RetryEnabled ||
+          normalizedUpstream429MaxRetries > 0
+        ) {
+          next[normalizedGroupName] = normalizedUpstream429RetryEnabled;
+        } else {
+          delete next[normalizedGroupName];
+        }
+        return next;
+      });
+      setGroupDraftUpstream429MaxRetries((current) => {
+        const next = { ...current };
+        if (
+          normalizedUpstream429RetryEnabled ||
+          normalizedUpstream429MaxRetries > 0
+        ) {
+          next[normalizedGroupName] = normalizedUpstream429MaxRetries;
+        } else {
+          delete next[normalizedGroupName];
+        }
+        return next;
+      });
       if (shouldInvalidateSingleOauthSessionForDraftGroup) {
         invalidateSingleOauthSessionForMetadataEdit();
       }
@@ -2817,6 +2977,8 @@ export default function UpstreamAccountCreatePage() {
       await saveGroupNote(normalizedGroupName, {
         note: normalizedNote || undefined,
         boundProxyKeys: normalizedBoundProxyKeys,
+        upstream429RetryEnabled: normalizedUpstream429RetryEnabled,
+        upstream429MaxRetries: normalizedUpstream429MaxRetries,
       });
       clearDraftGroupSettings(normalizedGroupName);
       setGroupNoteEditor((current) => ({ ...current, open: false }));
@@ -7175,6 +7337,31 @@ export default function UpstreamAccountCreatePage() {
             boundProxyKeys: value,
           }));
         }}
+        upstream429RetryEnabled={groupNoteEditor.upstream429RetryEnabled}
+        upstream429MaxRetries={groupNoteEditor.upstream429MaxRetries}
+        onUpstream429RetryEnabledChange={(value) => {
+          setGroupNoteError(null);
+          setGroupNoteEditor((current) => ({
+            ...current,
+            upstream429RetryEnabled: value,
+            upstream429MaxRetries: value
+              ? normalizeEnabledGroupUpstream429MaxRetries(
+                  current.upstream429MaxRetries,
+                )
+              : normalizeGroupUpstream429MaxRetries(
+                  current.upstream429MaxRetries,
+                ),
+          }));
+        }}
+        onUpstream429MaxRetriesChange={(value) => {
+          setGroupNoteError(null);
+          setGroupNoteEditor((current) => ({
+            ...current,
+            upstream429MaxRetries: current.upstream429RetryEnabled
+              ? normalizeEnabledGroupUpstream429MaxRetries(value)
+              : normalizeGroupUpstream429MaxRetries(value),
+          }));
+        }}
         onClose={closeGroupNoteEditor}
         onSave={() => void handleSaveGroupNote()}
         title={t("accountPool.upstreamAccounts.groupNotes.dialogTitle")}
@@ -7196,6 +7383,32 @@ export default function UpstreamAccountCreatePage() {
         )}
         draftBadgeLabel={t(
           "accountPool.upstreamAccounts.groupNotes.badges.draft",
+        )}
+        upstream429RetryLabel={t(
+          "accountPool.upstreamAccounts.groupNotes.upstream429.label",
+        )}
+        upstream429RetryHint={t(
+          "accountPool.upstreamAccounts.groupNotes.upstream429.hint",
+        )}
+        upstream429RetryToggleLabel={t(
+          "accountPool.upstreamAccounts.groupNotes.upstream429.toggle",
+        )}
+        upstream429RetryCountLabel={t(
+          "accountPool.upstreamAccounts.groupNotes.upstream429.countLabel",
+        )}
+        upstream429RetryCountOptions={GROUP_UPSTREAM_429_RETRY_OPTIONS.map(
+          (value) => ({
+            value,
+            label:
+              value === 1
+                ? t(
+                    "accountPool.upstreamAccounts.groupNotes.upstream429.countOnce",
+                  )
+                : t(
+                    "accountPool.upstreamAccounts.groupNotes.upstream429.countMany",
+                    { count: value },
+                  ),
+          }),
         )}
         proxyBindingsLabel={t(
           "accountPool.upstreamAccounts.groupNotes.proxyBindings.label",

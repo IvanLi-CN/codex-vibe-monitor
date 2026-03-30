@@ -11,6 +11,8 @@ type DialogHarnessProps = {
   busy?: boolean
   error?: string | null
   boundProxyKeys?: string[]
+  upstream429RetryEnabled?: boolean
+  upstream429MaxRetries?: number
   availableProxyNodes?: ForwardProxyBindingNode[]
 }
 
@@ -183,11 +185,15 @@ const legacyAliasBindingNodes: ForwardProxyBindingNode[] = [
 function DialogHarness({
   note: initialNote,
   boundProxyKeys: initialBoundProxyKeys = [],
+  upstream429RetryEnabled: initialUpstream429RetryEnabled = false,
+  upstream429MaxRetries: initialUpstream429MaxRetries = 0,
   availableProxyNodes = defaultForwardProxyNodes,
   ...args
 }: DialogHarnessProps) {
   const [note, setNote] = useState(initialNote)
   const [boundProxyKeys, setBoundProxyKeys] = useState(initialBoundProxyKeys)
+  const [upstream429RetryEnabled, setUpstream429RetryEnabled] = useState(initialUpstream429RetryEnabled)
+  const [upstream429MaxRetries, setUpstream429MaxRetries] = useState(initialUpstream429MaxRetries)
 
   return (
     <div className="min-h-screen bg-base-200 px-6 py-10 text-base-content">
@@ -206,9 +212,18 @@ function DialogHarness({
           {...args}
           note={note}
           boundProxyKeys={boundProxyKeys}
+          upstream429RetryEnabled={upstream429RetryEnabled}
+          upstream429MaxRetries={upstream429MaxRetries}
           availableProxyNodes={availableProxyNodes}
           onNoteChange={setNote}
           onBoundProxyKeysChange={setBoundProxyKeys}
+          onUpstream429RetryEnabledChange={(value) => {
+            setUpstream429RetryEnabled(value)
+            if (value && upstream429MaxRetries <= 0) {
+              setUpstream429MaxRetries(1)
+            }
+          }}
+          onUpstream429MaxRetriesChange={setUpstream429MaxRetries}
           onClose={() => undefined}
           onSave={() => undefined}
           title="Edit group settings"
@@ -221,6 +236,17 @@ function DialogHarness({
           closeLabel="Close dialog"
           existingBadgeLabel="Persisted group"
           draftBadgeLabel="Draft group"
+          upstream429RetryLabel="Upstream 429 retry"
+          upstream429RetryHint="When enabled, this group keeps the same account and retries after upstream 429 with a random 1-10 second delay."
+          upstream429RetryToggleLabel="Retry the same account after upstream 429"
+          upstream429RetryCountLabel="Retry count"
+          upstream429RetryCountOptions={[
+            { value: 1, label: '1 retry' },
+            { value: 2, label: '2 retries' },
+            { value: 3, label: '3 retries' },
+            { value: 4, label: '4 retries' },
+            { value: 5, label: '5 retries' },
+          ]}
           proxyBindingsLabel="Bound proxy nodes"
           proxyBindingsHint="Leave empty to keep automatic routing. Selected nodes are used as a hard-bound pool for this group."
           proxyBindingsAutomaticLabel="No nodes bound. This group uses automatic routing."
@@ -256,6 +282,8 @@ const meta = {
     busy: false,
     error: null,
     boundProxyKeys: [],
+    upstream429RetryEnabled: false,
+    upstream429MaxRetries: 0,
     availableProxyNodes: defaultForwardProxyNodes,
   },
 } satisfies Meta<typeof DialogHarness>
@@ -265,6 +293,31 @@ export default meta
 type Story = StoryObj<typeof meta>
 
 export const AutomaticRouting: Story = {}
+
+export const Upstream429RetryEnabled: Story = {
+  args: {
+    upstream429RetryEnabled: true,
+    upstream429MaxRetries: 3,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByText(/Upstream 429 retry/i)).toBeInTheDocument()
+    await expect(canvas.getByRole('switch', { name: /Retry the same account after upstream 429/i })).toHaveAttribute('aria-checked', 'true')
+    await expect(canvas.getByText(/3 retries/i)).toBeInTheDocument()
+  },
+}
+
+export const Upstream429RetryDisabled: Story = {
+  args: {
+    upstream429RetryEnabled: false,
+    upstream429MaxRetries: 0,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByRole('switch', { name: /Retry the same account after upstream 429/i })).toHaveAttribute('aria-checked', 'false')
+    await expect(canvas.getByRole('combobox', { name: /Retry count/i })).toHaveAttribute('data-disabled')
+  },
+}
 
 export const HardBoundMultipleNodes: Story = {
   args: {
