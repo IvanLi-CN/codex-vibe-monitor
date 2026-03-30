@@ -1809,6 +1809,64 @@ fn legacy_vless_and_trojan_bound_proxy_keys_route_to_matching_stable_endpoints()
 }
 
 #[test]
+fn legacy_vless_bound_proxy_keys_still_match_when_query_param_names_change() {
+    let legacy_type_proxy_url = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?encryption=none&security=tls&type=ws&host=cdn.example.com&path=%2Fws&sni=edge.example.com&fingerprint=chrome#东京节点";
+    let current_net_proxy_url = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?encryption=none&security=tls&net=ws&host=cdn.example.com&path=%2Fws&serverName=edge.example.com&fp=chrome#东京节点";
+    let normalized_legacy_type_proxy_url =
+        normalize_share_link_scheme(legacy_type_proxy_url, "vless")
+            .expect("normalize legacy vless url");
+    let normalized_current_net_proxy_url =
+        normalize_share_link_scheme(current_net_proxy_url, "vless")
+            .expect("normalize current vless url");
+
+    let legacy_bound_proxy_key = {
+        let parsed = Url::parse(&normalized_legacy_type_proxy_url)
+            .expect("parse legacy normalized vless url");
+        stable_forward_proxy_key(&canonical_share_link_identity(&parsed))
+    };
+    let stable_proxy_key = normalize_single_proxy_key(current_net_proxy_url)
+        .expect("normalize stable vless proxy key");
+    assert_ne!(legacy_bound_proxy_key, stable_proxy_key);
+
+    let aliases = legacy_bound_proxy_key_aliases(
+        &normalized_current_net_proxy_url,
+        ForwardProxyProtocol::Vless,
+    );
+    assert!(
+        aliases.contains(&legacy_bound_proxy_key),
+        "legacy alias list should include the historical type=ws key"
+    );
+
+    let mut manager = ForwardProxyManager::new(
+        ForwardProxySettings {
+            proxy_urls: vec![current_net_proxy_url.to_string()],
+            subscription_urls: vec![],
+            subscription_update_interval_secs: 3600,
+            insert_direct: false,
+        },
+        vec![],
+    );
+    for endpoint in &mut manager.endpoints {
+        endpoint.endpoint_url = Some(
+            Url::parse("socks5://127.0.0.1:11082")
+                .expect("parse synthesized synonym-compatible endpoint url"),
+        );
+    }
+
+    assert!(
+        manager.has_selectable_bound_proxy_keys(&[legacy_bound_proxy_key.clone()]),
+        "legacy key with synonymous query params should remain selectable"
+    );
+
+    let scope =
+        ForwardProxyRouteScope::from_group_binding(Some("东京组"), vec![legacy_bound_proxy_key]);
+    let selected = manager
+        .select_proxy_for_scope(&scope)
+        .expect("legacy bound key with synonymous query params should still route");
+    assert_eq!(selected.key, stable_proxy_key);
+}
+
+#[test]
 fn forward_proxy_manager_v2_clamps_persisted_runtime_weight_on_startup() {
     let proxy_url = "http://127.0.0.1:7890".to_string();
     let proxy_key = normalize_single_proxy_key(&proxy_url).expect("normalize proxy key");
