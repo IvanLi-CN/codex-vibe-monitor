@@ -79,6 +79,7 @@ const labels = {
   workStatus: (status: string) =>
     ({
       working: 'Working',
+      degraded: 'Degraded',
       idle: 'Idle',
       rate_limited: 'Rate limited',
       unavailable: 'Unavailable',
@@ -519,6 +520,32 @@ describe('UpstreamAccountsTable', () => {
         effectiveRoutingRule: defaultEffectiveRoutingRule,
       },
       {
+        id: 13,
+        kind: 'api_key_codex',
+        provider: 'codex',
+        displayName: 'Degraded account',
+        groupName: null,
+        isMother: false,
+        status: 'active',
+        displayStatus: 'active',
+        enabled: true,
+        enableStatus: 'enabled',
+        workStatus: 'degraded',
+        healthStatus: 'normal',
+        syncState: 'idle',
+        activeConversationCount: 1,
+        planType: null,
+        lastSuccessfulSyncAt: null,
+        lastActivityAt: null,
+        primaryWindow: null,
+        secondaryWindow: null,
+        credits: null,
+        localLimits: null,
+        duplicateInfo: null,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
+      {
         id: 16,
         kind: 'api_key_codex',
         provider: 'codex',
@@ -599,6 +626,7 @@ describe('UpstreamAccountsTable', () => {
     ])
 
     expect(html).toContain('Working 3')
+    expect((html.match(/>Degraded</g) ?? []).length).toBe(1)
     expect(html).toContain('>Idle<')
     expect((html.match(/>Rate limited</g) ?? []).length).toBe(1)
     expect(html).toContain('Needs reauth')

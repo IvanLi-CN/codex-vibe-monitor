@@ -1076,7 +1076,7 @@ describe("account pool frontend API helpers", () => {
   it("serializes upstream account roster filters into the query string", async () => {
     const fetchMock = vi.fn(async (_input: RequestInfo | URL) => {
       expect(String(_input)).toContain(
-        "/api/pool/upstream-accounts?groupSearch=prod&groupUngrouped=false&workStatus=rate_limited&workStatus=working&enableStatus=enabled&healthStatus=normal&healthStatus=needs_reauth&tagIds=1&tagIds=2",
+        "/api/pool/upstream-accounts?groupSearch=prod&groupUngrouped=false&workStatus=degraded&workStatus=rate_limited&workStatus=working&enableStatus=enabled&healthStatus=normal&healthStatus=needs_reauth&tagIds=1&tagIds=2",
       );
       return new Response(
         JSON.stringify({
@@ -1097,7 +1097,7 @@ describe("account pool frontend API helpers", () => {
     const response = await fetchUpstreamAccounts({
       groupSearch: "prod",
       groupUngrouped: false,
-      workStatus: ["rate_limited", "working"],
+      workStatus: ["degraded", "rate_limited", "working"],
       enableStatus: ["enabled"],
       healthStatus: ["normal", "needs_reauth"],
       tagIds: [1, 2],

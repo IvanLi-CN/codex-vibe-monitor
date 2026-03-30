@@ -4386,7 +4386,7 @@ async fn set_test_account_rate_limited_cooldown(
     set_test_account_route_cooldown(
         pool,
         account_id,
-        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
+        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
         "test rate limit cooldown",
         cooldown_secs,
     )
@@ -4406,6 +4406,38 @@ async fn set_test_account_generic_route_cooldown(
         cooldown_secs,
     )
     .await;
+}
+
+async fn set_test_account_degraded_route_state(
+    pool: &SqlitePool,
+    account_id: i64,
+    failure_kind: &str,
+    error_message: &str,
+) {
+    let now_iso = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET status = ?1,
+            last_error = ?2,
+            last_error_at = ?3,
+            last_route_failure_at = ?3,
+            last_route_failure_kind = ?4,
+            cooldown_until = NULL,
+            consecutive_route_failures = 1,
+            temporary_route_failure_streak_started_at = ?3,
+            updated_at = ?3
+        WHERE id = ?5
+        "#,
+    )
+    .bind("active")
+    .bind(error_message)
+    .bind(&now_iso)
+    .bind(failure_kind)
+    .bind(account_id)
+    .execute(pool)
+    .await
+    .expect("set test pool account degraded route state");
 }
 
 async fn set_test_account_route_cooldown(
@@ -4428,6 +4460,7 @@ async fn set_test_account_route_cooldown(
             last_route_failure_kind = ?4,
             cooldown_until = ?5,
             consecutive_route_failures = 1,
+            temporary_route_failure_streak_started_at = NULL,
             updated_at = ?3
         WHERE id = ?6
         "#,
@@ -14662,6 +14695,130 @@ async fn resolve_pool_account_for_request_keeps_existing_sticky_binding_when_sou
 }
 
 #[tokio::test]
+async fn resolver_skips_degraded_accounts_for_fresh_assignment() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let degraded_id =
+        insert_test_pool_api_key_account(&state, "Degraded", "upstream-degraded").await;
+    let healthy_id = insert_test_pool_api_key_account(&state, "Healthy", "upstream-healthy").await;
+    set_test_account_degraded_route_state(
+        &state.pool,
+        degraded_id,
+        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
+        "test degraded plain 429",
+    )
+    .await;
+
+    let account = match resolve_pool_account_for_request(state.as_ref(), None, &[], &HashSet::new())
+        .await
+        .expect("resolve pool account")
+    {
+        PoolAccountResolution::Resolved(account) => account,
+        other => panic!("pool account should resolve, got {other:?}"),
+    };
+
+    assert_eq!(account.account_id, healthy_id);
+    assert_ne!(account.account_id, degraded_id);
+    assert_eq!(
+        account.routing_source,
+        PoolRoutingSelectionSource::FreshAssignment
+    );
+}
+
+#[tokio::test]
+async fn resolver_keeps_degraded_sticky_binding_until_temporary_cooldown_starts() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let degraded_id =
+        insert_test_pool_api_key_account(&state, "Degraded", "upstream-degraded").await;
+    let healthy_id = insert_test_pool_api_key_account(&state, "Healthy", "upstream-healthy").await;
+    let sticky_seen_at = format_utc_iso(Utc::now());
+    upsert_test_sticky_route_at(&state.pool, "sticky-degraded", degraded_id, &sticky_seen_at).await;
+    set_test_account_degraded_route_state(
+        &state.pool,
+        degraded_id,
+        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX,
+        "test degraded 5xx",
+    )
+    .await;
+
+    let sticky_account = match resolve_pool_account_for_request(
+        state.as_ref(),
+        Some("sticky-degraded"),
+        &[],
+        &HashSet::new(),
+    )
+    .await
+    .expect("resolve degraded sticky account")
+    {
+        PoolAccountResolution::Resolved(account) => account,
+        other => panic!("sticky degraded account should resolve, got {other:?}"),
+    };
+
+    assert_eq!(sticky_account.account_id, degraded_id);
+    assert_eq!(
+        sticky_account.routing_source,
+        PoolRoutingSelectionSource::StickyReuse
+    );
+
+    set_test_account_generic_route_cooldown(&state.pool, degraded_id, 120).await;
+
+    let failover_account = match resolve_pool_account_for_request(
+        state.as_ref(),
+        Some("sticky-degraded"),
+        &[],
+        &HashSet::new(),
+    )
+    .await
+    .expect("resolve after temporary cooldown")
+    {
+        PoolAccountResolution::Resolved(account) => account,
+        other => panic!("resolver should fail over once temporary cooldown starts, got {other:?}"),
+    };
+
+    assert_eq!(failover_account.account_id, healthy_id);
+    assert_eq!(
+        failover_account.routing_source,
+        PoolRoutingSelectionSource::FreshAssignment
+    );
+}
+
+#[tokio::test]
+async fn resolver_returns_degraded_only_when_only_temporary_failure_accounts_remain() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let plain_429_id =
+        insert_test_pool_api_key_account(&state, "Plain429", "upstream-plain-429").await;
+    let upstream_5xx_id =
+        insert_test_pool_api_key_account(&state, "Upstream5xx", "upstream-5xx").await;
+    set_test_account_degraded_route_state(
+        &state.pool,
+        plain_429_id,
+        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
+        "test degraded plain 429",
+    )
+    .await;
+    set_test_account_degraded_route_state(
+        &state.pool,
+        upstream_5xx_id,
+        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX,
+        "test degraded 5xx",
+    )
+    .await;
+
+    let resolution = resolve_pool_account_for_request(state.as_ref(), None, &[], &HashSet::new())
+        .await
+        .expect("resolve degraded-only pool");
+    assert!(matches!(resolution, PoolAccountResolution::DegradedOnly));
+}
+
+#[tokio::test]
 async fn resolve_pool_account_for_request_prefers_candidates_within_soft_sticky_limit() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -16264,6 +16421,58 @@ async fn pool_route_returns_clear_429_when_only_account_is_rate_limited() {
 }
 
 #[tokio::test]
+async fn pool_route_returns_clear_503_when_all_accounts_are_temporarily_degraded() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let secondary_id =
+        insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+    set_test_account_degraded_route_state(
+        &state.pool,
+        primary_id,
+        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429,
+        "test degraded plain 429",
+    )
+    .await;
+    set_test_account_degraded_route_state(
+        &state.pool,
+        secondary_id,
+        FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX,
+        "test degraded 5xx",
+    )
+    .await;
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-degraded-only"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read failure body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode failure payload");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some(POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE)
+    );
+}
+
+#[tokio::test]
 async fn pool_route_returns_clear_429_when_all_accounts_are_already_in_429_cooldown() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -16451,7 +16660,7 @@ async fn pool_route_keeps_generic_no_candidate_when_other_accounts_are_unavailab
     insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
     let secondary_id =
         insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
-    set_test_account_generic_route_cooldown(&state.pool, secondary_id, 120).await;
+    set_test_account_status(&state.pool, secondary_id, "needs_reauth").await;
 
     let response = proxy_openai_v1(
         State(state),
@@ -20872,8 +21081,8 @@ async fn capture_target_pool_route_marks_response_failed_stream_as_route_failure
     assert!(
         load_test_sticky_route_account_id(&state.pool, "sticky-cap-logical")
             .await
-            .is_none(),
-        "logical stream failure should detach the sticky binding",
+            .is_some_and(|sticky_account_id| sticky_account_id == account_id),
+        "logical stream failure should preserve sticky binding until cooldown begins",
     );
 
     upstream_handle.abort();
