@@ -23338,13 +23338,14 @@ fn canonical_stream_query_pairs(
         "tls" => {
             consumed_keys.extend([
                 "sni",
+                "serverName",
                 "allowInsecure",
                 "insecure",
                 "fp",
                 "fingerprint",
                 "alpn",
             ]);
-            let server_name = normalized_query_value(&query, &["sni"])
+            let server_name = normalized_query_value(&query, &["sni", "serverName"])
                 .map(|value| value.to_ascii_lowercase())
                 .or_else(|| (!host.is_empty()).then_some(host.clone()))
                 .or_else(|| url.host_str().map(|value| value.to_ascii_lowercase()))
@@ -23373,8 +23374,16 @@ fn canonical_stream_query_pairs(
             query_pairs.push(("serverName".to_string(), server_name));
         }
         "reality" => {
-            consumed_keys.extend(["sni", "fp", "fingerprint", "pbk", "sid", "spx"]);
-            let server_name = normalized_query_value(&query, &["sni"])
+            consumed_keys.extend([
+                "sni",
+                "serverName",
+                "fp",
+                "fingerprint",
+                "pbk",
+                "sid",
+                "spx",
+            ]);
+            let server_name = normalized_query_value(&query, &["sni", "serverName"])
                 .map(|value| value.to_ascii_lowercase())
                 .or_else(|| (!host.is_empty()).then_some(host.clone()))
                 .or_else(|| url.host_str().map(|value| value.to_ascii_lowercase()))

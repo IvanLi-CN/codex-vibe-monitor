@@ -302,10 +302,26 @@ fn stable_proxy_keys_ignore_share_link_display_name_only_changes() {
     );
     assert_eq!(
         normalize_single_proxy_key(
+            "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=ws&path=%2Fws&host=cdn.vless.example.com&sni=edge.vless.example.com&fingerprint=chrome#东京节点"
+        ),
+        normalize_single_proxy_key(
+            "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&net=ws&path=%2Fws&host=cdn.vless.example.com&serverName=edge.vless.example.com&fp=chrome#Tokyo%20Edge"
+        ),
+    );
+    assert_eq!(
+        normalize_single_proxy_key(
             "trojan://password@trojan.example.com:443?type=ws&path=%2Fws&host=cdn.trojan.example.com#东京节点"
         ),
         normalize_single_proxy_key(
             "trojan://password@trojan.example.com:443?host=cdn.trojan.example.com&path=%2Fws&type=ws#Tokyo%20Edge"
+        ),
+    );
+    assert_eq!(
+        normalize_single_proxy_key(
+            "trojan://password@trojan.example.com:443?security=tls&type=ws&path=%2Fws&host=cdn.trojan.example.com&sni=edge.trojan.example.com&fingerprint=chrome#东京节点"
+        ),
+        normalize_single_proxy_key(
+            "trojan://password@trojan.example.com:443?security=tls&net=ws&path=%2Fws&host=cdn.trojan.example.com&serverName=edge.trojan.example.com&fp=chrome#Tokyo%20Edge"
         ),
     );
     assert_eq!(
