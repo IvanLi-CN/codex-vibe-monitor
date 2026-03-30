@@ -5766,9 +5766,12 @@ async fn update_upstream_account_group_disabling_retry_clears_retry_count_and_de
     );
     assert_eq!(updated_json["upstream429MaxRetries"].as_u64(), Some(0));
 
-    let persisted = sqlx::query_scalar::<_, i64>(
+    let persisted = sqlx::query_as::<_, (i64, i64, String)>(
         r#"
-        SELECT COUNT(*)
+        SELECT
+            upstream_429_retry_enabled,
+            upstream_429_max_retries,
+            bound_proxy_keys_json
         FROM pool_upstream_account_group_notes
         WHERE group_name = ?1
         "#,
@@ -5776,8 +5779,13 @@ async fn update_upstream_account_group_disabling_retry_clears_retry_count_and_de
     .bind("latam")
     .fetch_one(&state.pool)
     .await
-    .expect("count persisted group metadata rows");
-    assert_eq!(persisted, 0);
+    .expect("load persisted group metadata row");
+    assert_eq!(persisted.0, 0);
+    assert_eq!(persisted.1, 0);
+    assert_eq!(
+        serde_json::from_str::<Vec<String>>(&persisted.2).expect("decode bound proxy keys"),
+        test_required_group_bound_proxy_keys()
+    );
 }
 
 #[tokio::test]
