@@ -4165,6 +4165,38 @@ async fn seed_pool_routing_api_key(state: &Arc<AppState>, api_key: &str) {
         .expect("save pool routing api key");
 }
 
+fn test_required_group_name() -> &'static str {
+    "test-direct-group"
+}
+
+fn test_required_group_bound_proxy_keys() -> Vec<String> {
+    vec![FORWARD_PROXY_DIRECT_KEY.to_string()]
+}
+
+async fn ensure_test_group_binding(pool: &SqlitePool, group_name: &str, note: Option<&str>) {
+    let now_iso = format_utc_iso(Utc::now());
+    let bound_proxy_keys_json = serde_json::to_string(&test_required_group_bound_proxy_keys())
+        .expect("encode test direct group bindings");
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_account_group_notes (
+            group_name, note, bound_proxy_keys_json, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?4)
+        ON CONFLICT(group_name) DO UPDATE SET
+            note = COALESCE(excluded.note, pool_upstream_account_group_notes.note),
+            bound_proxy_keys_json = excluded.bound_proxy_keys_json,
+            updated_at = excluded.updated_at
+        "#,
+    )
+    .bind(group_name)
+    .bind(note.unwrap_or(""))
+    .bind(bound_proxy_keys_json)
+    .bind(&now_iso)
+    .execute(pool)
+    .await
+    .expect("ensure test group binding");
+}
+
 async fn insert_test_pool_api_key_account(
     state: &Arc<AppState>,
     display_name: &str,
@@ -4185,10 +4217,13 @@ async fn insert_test_pool_api_key_account_with_options(
     ensure_upstream_accounts_schema(&state.pool)
         .await
         .expect("ensure upstream account schema");
+    let normalized_group_name = group_name.unwrap_or(test_required_group_name());
+    ensure_test_group_binding(&state.pool, normalized_group_name, None).await;
     let payload: CreateApiKeyAccountRequest = serde_json::from_value(json!({
         "displayName": display_name,
         "apiKey": api_key,
-        "groupName": group_name,
+        "groupName": normalized_group_name,
+        "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
         "isMother": is_mother,
         "upstreamBaseUrl": upstream_base_url,
     }))
@@ -4284,8 +4319,8 @@ async fn reserve_test_pool_routing_account(
         },
         upstream_base_url: Url::parse("https://api.openai.com/").expect("valid upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
-        group_name: None,
-        bound_proxy_keys: Vec::new(),
+        group_name: Some(test_required_group_name().to_string()),
+        bound_proxy_keys: test_required_group_bound_proxy_keys(),
         group_upstream_429_retry_enabled: false,
         group_upstream_429_max_retries: 0,
     };
@@ -4456,6 +4491,7 @@ async fn insert_test_pool_oauth_account_with_chatgpt_account_id(
     ensure_upstream_accounts_schema(&state.pool)
         .await
         .expect("ensure upstream account schema");
+    ensure_test_group_binding(&state.pool, test_required_group_name(), None).await;
     let encrypted_credentials = encrypt_test_oauth_credentials(access_token);
     let now_iso = format_utc_iso(Utc::now());
 
@@ -4468,16 +4504,17 @@ async fn insert_test_pool_oauth_account_with_chatgpt_account_id(
             token_expires_at, last_refreshed_at, last_synced_at, last_successful_sync_at, last_error,
             last_error_at, local_primary_limit, local_secondary_limit, local_limit_unit, created_at, updated_at
         ) VALUES (
-            ?1, ?2, ?3, NULL, 0, NULL, ?4, 1,
-            ?5, ?6, ?7, ?8, NULL, ?9,
-            ?10, NULL, NULL, NULL, NULL,
-            NULL, NULL, NULL, NULL, ?11, ?11
+            ?1, ?2, ?3, ?4, 0, NULL, ?5, 1,
+            ?6, ?7, ?8, ?9, NULL, ?10,
+            ?11, NULL, NULL, NULL, NULL,
+            NULL, NULL, NULL, NULL, ?12, ?12
         ) RETURNING id
         "#,
     )
     .bind("oauth_codex")
     .bind("codex")
     .bind(display_name)
+    .bind(test_required_group_name())
     .bind("active")
     .bind("oauth@example.com")
     .bind(chatgpt_account_id)
@@ -4621,6 +4658,11 @@ async fn list_upstream_accounts_filters_groups_and_tags_server_side() {
         None,
     )
     .await;
+    sqlx::query("UPDATE pool_upstream_accounts SET group_name = NULL WHERE id = ?1")
+        .bind(gamma_id)
+        .execute(&state.pool)
+        .await
+        .expect("clear gamma group to simulate legacy ungrouped account");
     let now_iso = format_utc_iso(Utc::now());
 
     let vip_tag_id: i64 = sqlx::query_scalar(
@@ -5244,6 +5286,8 @@ async fn create_api_key_account_persists_upstream_base_url() {
     let payload: CreateApiKeyAccountRequest = serde_json::from_value(json!({
         "displayName": "Gateway Key",
         "apiKey": "sk-gateway",
+        "groupName": test_required_group_name(),
+        "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
         "upstreamBaseUrl": "https://proxy.example.com/gateway",
     }))
     .expect("deserialize api key account request");
@@ -5387,6 +5431,9 @@ async fn delete_upstream_account_removes_related_rows_in_one_transaction() {
         INSERT INTO pool_upstream_account_group_notes (
             group_name, note, created_at, updated_at
         ) VALUES (?1, ?2, ?3, ?3)
+        ON CONFLICT(group_name) DO UPDATE SET
+            note = excluded.note,
+            updated_at = excluded.updated_at
         "#,
     )
     .bind("prod")
@@ -5478,6 +5525,8 @@ async fn create_api_key_account_rejects_invalid_upstream_base_url() {
     let payload: CreateApiKeyAccountRequest = serde_json::from_value(json!({
         "displayName": "Broken Key",
         "apiKey": "sk-broken",
+        "groupName": test_required_group_name(),
+        "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
         "upstreamBaseUrl": "not-a-url",
     }))
     .expect("deserialize api key account request");
@@ -5791,9 +5840,12 @@ async fn update_upstream_account_group_disabling_retry_clears_retry_count_and_de
     );
     assert_eq!(updated_json["upstream429MaxRetries"].as_u64(), Some(0));
 
-    let persisted = sqlx::query_scalar::<_, i64>(
+    let persisted = sqlx::query_as::<_, (i64, i64, String)>(
         r#"
-        SELECT COUNT(*)
+        SELECT
+            upstream_429_retry_enabled,
+            upstream_429_max_retries,
+            bound_proxy_keys_json
         FROM pool_upstream_account_group_notes
         WHERE group_name = ?1
         "#,
@@ -5801,8 +5853,13 @@ async fn update_upstream_account_group_disabling_retry_clears_retry_count_and_de
     .bind("latam")
     .fetch_one(&state.pool)
     .await
-    .expect("count persisted group metadata rows");
-    assert_eq!(persisted, 0);
+    .expect("load persisted group metadata row");
+    assert_eq!(persisted.0, 0);
+    assert_eq!(persisted.1, 0);
+    assert_eq!(
+        serde_json::from_str::<Vec<String>>(&persisted.2).expect("decode bound proxy keys"),
+        test_required_group_bound_proxy_keys()
+    );
 }
 
 #[tokio::test]
@@ -5864,6 +5921,7 @@ async fn create_oauth_login_session_persists_mother_flag() {
     let payload: CreateOauthLoginSessionRequest = serde_json::from_value(json!({
         "displayName": "OAuth Mother",
         "groupName": "prod",
+        "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
         "isMother": true,
     }))
     .expect("deserialize oauth session request");
@@ -5927,6 +5985,7 @@ async fn create_oauth_login_session_relink_preserves_existing_metadata() {
     .fetch_one(&state.pool)
     .await
     .expect("insert oauth account");
+    ensure_test_group_binding(&state.pool, "prod", None).await;
 
     let payload: CreateOauthLoginSessionRequest = serde_json::from_value(json!({
         "accountId": account_id,
@@ -19192,8 +19251,8 @@ async fn pool_route_oauth_passthrough_replays_large_file_backed_body() {
         upstream_base_url: oauth_bridge::oauth_codex_upstream_base_url()
             .expect("oauth upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
-        group_name: None,
-        bound_proxy_keys: Vec::new(),
+        group_name: Some(test_required_group_name().to_string()),
+        bound_proxy_keys: test_required_group_bound_proxy_keys(),
         group_upstream_429_retry_enabled: false,
         group_upstream_429_max_retries: 0,
     };
@@ -20451,8 +20510,8 @@ async fn pool_route_oauth_responses_rejects_large_file_backed_rewrite_body() {
         upstream_base_url: oauth_bridge::oauth_codex_upstream_base_url()
             .expect("oauth upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
-        group_name: None,
-        bound_proxy_keys: Vec::new(),
+        group_name: Some(test_required_group_name().to_string()),
+        bound_proxy_keys: test_required_group_bound_proxy_keys(),
         group_upstream_429_retry_enabled: false,
         group_upstream_429_max_retries: 0,
     };
@@ -20720,8 +20779,8 @@ fn capture_target_pool_route_prefers_account_upstream_base_for_redirect_rewrite(
         upstream_base_url: Url::parse("https://proxy.example.com/gateway")
             .expect("account upstream base url"),
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
-        group_name: None,
-        bound_proxy_keys: Vec::new(),
+        group_name: Some(test_required_group_name().to_string()),
+        bound_proxy_keys: test_required_group_bound_proxy_keys(),
         group_upstream_429_retry_enabled: false,
         group_upstream_429_max_retries: 0,
     };
@@ -37571,7 +37630,12 @@ fn build_large_imported_oauth_validate_body(item_count: usize, padding_len: usiz
             })
         })
         .collect::<Vec<_>>();
-    json!({ "items": items }).to_string()
+    json!({
+        "groupName": test_required_group_name(),
+        "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
+        "items": items,
+    })
+    .to_string()
 }
 
 fn build_large_imported_oauth_import_body(item_count: usize, padding_len: usize) -> String {
@@ -37598,6 +37662,8 @@ fn build_large_imported_oauth_import_body(item_count: usize, padding_len: usize)
         })
         .collect::<Vec<_>>();
     json!({
+        "groupName": test_required_group_name(),
+        "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
         "items": items,
         "selectedSourceIds": selected_source_ids,
         "tagIds": [],
@@ -37796,6 +37862,8 @@ async fn imported_oauth_validation_job_stream_replays_snapshot_and_completed_ter
         addr,
         "/api/pool/upstream-accounts/oauth/imports/validation-jobs",
         json!({
+            "groupName": test_required_group_name(),
+            "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
             "items": [
                 {
                     "sourceId": "invalid-source",
@@ -37864,6 +37932,8 @@ async fn imported_oauth_validation_job_delete_removes_completed_job() {
         addr,
         "/api/pool/upstream-accounts/oauth/imports/validation-jobs",
         json!({
+            "groupName": test_required_group_name(),
+            "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
             "items": [
                 {
                     "sourceId": "invalid-source",

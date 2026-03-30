@@ -159,3 +159,16 @@ export const FilterToFailedRows: Story = {
     await expect(canvas.queryByText(/duplicate credential in current import selection/i)).toBeNull()
   },
 }
+
+export const ImportBlockedByGroupProxy: Story = {
+  args: {
+    importDisabledReason: 'Group "staging" does not have any selectable bound proxy nodes.',
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(
+      canvas.getByText(/group "staging" does not have any selectable bound proxy nodes\./i),
+    ).toBeInTheDocument()
+    await expect(canvas.getByRole('button', { name: /import valid/i })).toBeDisabled()
+  },
+}

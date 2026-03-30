@@ -16598,21 +16598,35 @@ fn pool_failure_is_timeout_shaped(failure_kind: &str, message: &str) -> bool {
     ) && pool_error_message_indicates_proxy_timeout(message)
 }
 
-fn pool_account_forward_proxy_scope(account: &PoolResolvedAccount) -> ForwardProxyRouteScope {
-    ForwardProxyRouteScope::from_group_binding(
+fn pool_account_forward_proxy_scope(
+    account: &PoolResolvedAccount,
+) -> std::result::Result<ForwardProxyRouteScope, String> {
+    crate::upstream_accounts::required_account_forward_proxy_scope(
         account.group_name.as_deref(),
         account.bound_proxy_keys.clone(),
     )
+    .map_err(|err| err.to_string())
 }
 
 async fn select_pool_account_forward_proxy_client(
     state: &AppState,
     account: &PoolResolvedAccount,
 ) -> Result<(ForwardProxyRouteScope, SelectedForwardProxy, Client), String> {
-    let scope = pool_account_forward_proxy_scope(account);
+    let scope = pool_account_forward_proxy_scope(account)?;
     let selected_proxy = select_forward_proxy_for_scope(state, &scope)
         .await
-        .map_err(|err| format!("failed to select forward proxy node: {err}"))?;
+        .map_err(|err| match &scope {
+            ForwardProxyRouteScope::BoundGroup { group_name, .. }
+                if err
+                    .to_string()
+                    .contains("bound forward proxy group has no selectable nodes") =>
+            {
+                format!(
+                    "upstream account group \"{group_name}\" has no selectable bound forward proxy nodes"
+                )
+            }
+            _ => format!("failed to select forward proxy node: {err}"),
+        })?;
     let client = match state
         .http_clients
         .client_for_forward_proxy(selected_proxy.endpoint_url.as_ref())
