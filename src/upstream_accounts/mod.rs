@@ -19702,7 +19702,10 @@ mod tests {
         );
         assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
         assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
-        assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED);
+        assert_eq!(
+            summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+        );
     }
 
     #[tokio::test]
@@ -19755,7 +19758,10 @@ mod tests {
             Utc::now(),
         );
         assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
-        assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED);
+        assert_eq!(
+            summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+        );
     }
 
     #[tokio::test]
@@ -19841,7 +19847,10 @@ mod tests {
         );
         assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
         assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
-        assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED);
+        assert_eq!(
+            summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+        );
     }
 
     #[test]
@@ -19943,7 +19952,10 @@ mod tests {
         assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
         assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
         assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
-        assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED);
+        assert_eq!(
+            summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+        );
         assert_eq!(
             summary.last_error.as_deref(),
             Some(
@@ -19983,7 +19995,7 @@ mod tests {
         );
         assert_eq!(
             detail.summary.work_status,
-            UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED
+            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
         );
         assert_eq!(
             detail.summary.last_action_reason_code.as_deref(),
@@ -20439,7 +20451,10 @@ mod tests {
         assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
         assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
         assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
-        assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED);
+        assert_eq!(
+            summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+        );
         assert_eq!(
             summary.last_action_reason_code.as_deref(),
             Some(UPSTREAM_ACCOUNT_ACTION_REASON_ACCOUNT_UPDATED)
@@ -21430,7 +21445,10 @@ mod tests {
         assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
         assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
         assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
-        assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED);
+        assert_eq!(
+            summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+        );
         assert_eq!(summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
 
         let detail = load_upstream_account_detail(&state.pool, account_id)
@@ -21573,7 +21591,10 @@ mod tests {
         assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
         assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
         assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
-        assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED);
+        assert_eq!(
+            summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+        );
         assert_eq!(summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
 
         let detail = load_upstream_account_detail(&state.pool, account_id)
@@ -21683,7 +21704,10 @@ mod tests {
         assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
         assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
         assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
-        assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED);
+        assert_eq!(
+            summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+        );
         assert_eq!(summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
 
         let detail = load_upstream_account_detail(&state.pool, account_id)
@@ -21787,7 +21811,10 @@ mod tests {
         assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
         assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
         assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
-        assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED);
+        assert_eq!(
+            summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+        );
         assert_eq!(summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
 
         let detail = load_upstream_account_detail(&state.pool, account_id)
@@ -21800,7 +21827,7 @@ mod tests {
         );
         assert_eq!(
             detail.summary.work_status,
-            UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED
+            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
         );
         assert_eq!(detail.summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
         server.abort();
