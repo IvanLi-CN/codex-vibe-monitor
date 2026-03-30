@@ -176,6 +176,7 @@ function enableBadgeVariant(status: string): 'success' | 'secondary' {
 
 function workBadgeVariant(status: string): 'info' | 'warning' | 'secondary' {
   if (status === 'working') return 'info'
+  if (status === 'degraded') return 'warning'
   if (status === 'rate_limited') return 'warning'
   return 'secondary'
 }
@@ -187,6 +188,18 @@ function resolveAvailabilityBadge(
   const enableStatus = accountEnableStatus(item)
   const healthStatus = accountHealthStatus(item)
   const syncState = accountSyncState(item)
+
+  if (
+    item.workStatus === 'degraded' &&
+    enableStatus === 'enabled' &&
+    healthStatus === 'normal' &&
+    syncState === 'idle'
+  ) {
+    return {
+      label: labels.workStatus('degraded'),
+      variant: workBadgeVariant('degraded'),
+    }
+  }
 
   if (
     item.workStatus === 'rate_limited' &&

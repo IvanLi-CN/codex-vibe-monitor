@@ -260,8 +260,10 @@ const PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED: &str = "upstream_response_failed";
 const UPSTREAM_ERROR_CODE_SERVER_IS_OVERLOADED: &str = "server_is_overloaded";
 const PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT: &str = "pool_no_available_account";
 const PROXY_FAILURE_POOL_ALL_ACCOUNTS_RATE_LIMITED: &str = "pool_all_accounts_rate_limited";
+const PROXY_FAILURE_POOL_ALL_ACCOUNTS_DEGRADED: &str = "pool_all_accounts_degraded";
 const PROXY_FAILURE_POOL_MAX_DISTINCT_ACCOUNTS_EXHAUSTED: &str = "max_distinct_accounts_exhausted";
 const POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE: &str = "no pool account is currently available because all candidate accounts are rate limited upstream (429 / quota exhausted)";
+const POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE: &str = "no pool account is currently accepting fresh conversations because all candidate accounts are in temporary degraded state";
 const PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT: &str =
     "no_alternate_upstream_after_timeout";
 const PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED: &str = "pool_total_timeout_exhausted";
@@ -11718,6 +11720,28 @@ fn build_pool_no_available_account_error(
     }
 }
 
+fn build_pool_degraded_only_error(
+    attempt_count: usize,
+    distinct_account_count: usize,
+) -> PoolUpstreamError {
+    PoolUpstreamError {
+        account: None,
+        status: StatusCode::SERVICE_UNAVAILABLE,
+        message: POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
+        failure_kind: PROXY_FAILURE_POOL_ALL_ACCOUNTS_DEGRADED,
+        connect_latency_ms: 0.0,
+        upstream_error_code: None,
+        upstream_error_message: None,
+        upstream_request_id: None,
+        oauth_responses_debug: None,
+        attempt_summary: pool_attempt_summary(
+            attempt_count,
+            distinct_account_count,
+            Some(PROXY_FAILURE_POOL_ALL_ACCOUNTS_DEGRADED.to_string()),
+        ),
+    }
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct PendingPoolAttemptRecord {
     pub(crate) attempt_id: Option<i64>,
@@ -12582,6 +12606,12 @@ async fn send_pool_request_with_failover(
                         attempt_count,
                         distinct_account_count,
                         PROXY_FAILURE_POOL_ALL_ACCOUNTS_RATE_LIMITED,
+                    ));
+                }
+                Ok(PoolAccountResolution::DegradedOnly) => {
+                    return Err(build_pool_degraded_only_error(
+                        attempt_count,
+                        distinct_account_count,
                     ));
                 }
                 Ok(PoolAccountResolution::Unavailable) => {
@@ -14295,6 +14325,12 @@ async fn proxy_openai_v1_via_pool(
                     return Err((
                         StatusCode::TOO_MANY_REQUESTS,
                         POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
+                    ));
+                }
+                Ok(PoolAccountResolution::DegradedOnly) => {
+                    return Err((
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
                     ));
                 }
                 Ok(PoolAccountResolution::Unavailable) => {

@@ -1817,7 +1817,13 @@ export interface UpstreamAccountSummary {
   groupName?: string | null;
   isMother: boolean;
   status: "active" | "syncing" | "needs_reauth" | "error" | "disabled" | string;
-  workStatus?: "working" | "idle" | "rate_limited" | "unavailable" | string;
+  workStatus?:
+    | "working"
+    | "degraded"
+    | "idle"
+    | "rate_limited"
+    | "unavailable"
+    | string;
   enableStatus?: "enabled" | "disabled" | string;
   healthStatus?:
     | "normal"

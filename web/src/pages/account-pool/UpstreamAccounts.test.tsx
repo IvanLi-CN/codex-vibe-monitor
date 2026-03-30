@@ -1459,6 +1459,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     render("/account-pool/upstream-accounts");
 
     clickCombobox(/work status/i);
+    clickCommandItem(/^degraded$/i);
     clickCommandItem(/^unavailable$/i);
     clickCommandItem(/^rate limited$/i);
     clickCommandItem(/^working$/i);
@@ -1471,7 +1472,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect(hookMocks.useUpstreamAccounts).toHaveBeenLastCalledWith({
       groupSearch: undefined,
       groupUngrouped: undefined,
-      workStatus: ["unavailable", "rate_limited", "working"],
+      workStatus: ["degraded", "unavailable", "rate_limited", "working"],
       enableStatus: ["enabled"],
       healthStatus: ["needs_reauth", "normal"],
       page: 1,
@@ -1512,6 +1513,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     render("/account-pool/upstream-accounts");
 
     clickCombobox(/work status/i);
+    clickCommandItem(/^degraded$/i);
     clickCommandItem(/^unavailable$/i);
     clickCombobox(/group/i);
     clickCommandItem(/^ungrouped$/i);
@@ -1523,7 +1525,7 @@ describe("UpstreamAccountsPage duplicates", () => {
       expect.any(String),
     );
     expect(readStoredUpstreamFilters()).toEqual({
-      workStatus: ["unavailable"],
+      workStatus: ["degraded", "unavailable"],
       enableStatus: [],
       healthStatus: [],
       tagIds: [1],
@@ -1532,6 +1534,37 @@ describe("UpstreamAccountsPage duplicates", () => {
         query: "",
       },
     });
+  });
+
+  it("renders degraded work status for temporary route failures without reusing rate-limited labels", () => {
+    mockAccountsPage({
+      selectedSummary: {
+        status: "active",
+        displayStatus: "active",
+        healthStatus: "normal",
+        workStatus: "degraded",
+        lastAction: "route_retryable_failure",
+        lastActionSource: "call",
+        lastActionReasonCode: "upstream_http_429_rate_limit",
+        lastActionReasonMessage: "pool upstream responded with 429: too many requests",
+        lastActionHttpStatus: 429,
+      },
+      detail: {
+        status: "active",
+        displayStatus: "active",
+        healthStatus: "normal",
+        workStatus: "degraded",
+        lastAction: "route_retryable_failure",
+        lastActionSource: "call",
+        lastActionReasonCode: "upstream_http_429_rate_limit",
+        lastActionReasonMessage: "pool upstream responded with 429: too many requests",
+        lastActionHttpStatus: 429,
+      },
+    });
+
+    render("/account-pool/upstream-accounts");
+
+    expect(document.body.textContent).toContain("Degraded");
   });
 
   it("falls back to safe defaults when persisted filters are malformed", () => {

@@ -61,6 +61,7 @@ const UPSTREAM_ACCOUNT_STATUS_DISABLED: &str = "disabled";
 const UPSTREAM_ACCOUNT_ENABLE_STATUS_ENABLED: &str = "enabled";
 const UPSTREAM_ACCOUNT_ENABLE_STATUS_DISABLED: &str = "disabled";
 const UPSTREAM_ACCOUNT_WORK_STATUS_WORKING: &str = "working";
+const UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED: &str = "degraded";
 const UPSTREAM_ACCOUNT_WORK_STATUS_IDLE: &str = "idle";
 const UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED: &str = "rate_limited";
 const UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE: &str = "unavailable";
@@ -138,6 +139,8 @@ const DEFAULT_STICKY_KEY_LIMIT: i64 = 50;
 const DEFAULT_UPSTREAM_ACCOUNT_LIST_PAGE_SIZE: usize = 20;
 const UPSTREAM_ACCOUNT_LIST_PAGE_SIZE_OPTIONS: [usize; 3] = [20, 50, 100];
 const POOL_ROUTE_ACTIVE_STICKY_WINDOW_MINUTES: i64 = 30;
+const POOL_ROUTE_TEMPORARY_FAILURE_STREAK_THRESHOLD: i64 = 5;
+const POOL_ROUTE_TEMPORARY_FAILURE_DEGRADED_WINDOW_SECS: i64 = 30;
 pub(crate) const COMPACT_SUPPORT_STATUS_UNKNOWN: &str = "unknown";
 pub(crate) const COMPACT_SUPPORT_STATUS_SUPPORTED: &str = "supported";
 pub(crate) const COMPACT_SUPPORT_STATUS_UNSUPPORTED: &str = "unsupported";
@@ -1916,6 +1919,7 @@ struct UpstreamAccountRow {
     last_route_failure_kind: Option<String>,
     cooldown_until: Option<String>,
     consecutive_route_failures: i64,
+    temporary_route_failure_streak_started_at: Option<String>,
     compact_support_status: Option<String>,
     compact_support_observed_at: Option<String>,
     compact_support_reason: Option<String>,
@@ -2474,6 +2478,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             last_route_failure_kind TEXT,
             cooldown_until TEXT,
             consecutive_route_failures INTEGER NOT NULL DEFAULT 0,
+            temporary_route_failure_streak_started_at TEXT,
             compact_support_status TEXT,
             compact_support_observed_at TEXT,
             compact_support_reason TEXT,
@@ -2593,6 +2598,13 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
         return Err(err)
             .context("failed to ensure pool_upstream_accounts.consecutive_route_failures");
     }
+    ensure_nullable_text_column(
+        pool,
+        "pool_upstream_accounts",
+        "temporary_route_failure_streak_started_at",
+    )
+    .await
+    .context("failed to ensure pool_upstream_accounts.temporary_route_failure_streak_started_at")?;
 
     sqlx::query(
         r#"
@@ -7084,7 +7096,8 @@ async fn find_existing_import_match(
             last_action, last_action_source, last_action_reason_code, last_action_reason_message,
             last_action_http_status, last_action_invoke_id, last_action_at,
             last_selected_at, last_route_failure_at, last_route_failure_kind, cooldown_until,
-            consecutive_route_failures, local_primary_limit, local_secondary_limit,
+            consecutive_route_failures, temporary_route_failure_streak_started_at,
+            local_primary_limit, local_secondary_limit,
             local_limit_unit, upstream_base_url, created_at, updated_at
         FROM pool_upstream_accounts
         WHERE kind = ?1
@@ -7116,7 +7129,8 @@ async fn find_existing_import_match(
             last_action, last_action_source, last_action_reason_code, last_action_reason_message,
             last_action_http_status, last_action_invoke_id, last_action_at,
             last_selected_at, last_route_failure_at, last_route_failure_kind, cooldown_until,
-            consecutive_route_failures, local_primary_limit, local_secondary_limit,
+            consecutive_route_failures, temporary_route_failure_streak_started_at,
+            local_primary_limit, local_secondary_limit,
             local_limit_unit, upstream_base_url, created_at, updated_at
         FROM pool_upstream_accounts
         WHERE kind = ?1
@@ -8714,7 +8728,8 @@ async fn load_upstream_account_summaries_filtered(
             last_action, last_action_source, last_action_reason_code, last_action_reason_message,
             last_action_http_status, last_action_invoke_id, last_action_at,
             last_selected_at, last_route_failure_at, last_route_failure_kind, cooldown_until,
-            consecutive_route_failures, compact_support_status, compact_support_observed_at,
+            consecutive_route_failures, temporary_route_failure_streak_started_at,
+            compact_support_status, compact_support_observed_at,
             compact_support_reason, local_primary_limit, local_secondary_limit,
             local_limit_unit, upstream_base_url, created_at, updated_at
         FROM pool_upstream_accounts
@@ -9056,7 +9071,8 @@ async fn load_upstream_account_row_conn(
             last_action, last_action_source, last_action_reason_code, last_action_reason_message,
             last_action_http_status, last_action_invoke_id, last_action_at,
             last_selected_at, last_route_failure_at, last_route_failure_kind, cooldown_until,
-            consecutive_route_failures, compact_support_status, compact_support_observed_at,
+            consecutive_route_failures, temporary_route_failure_streak_started_at,
+            compact_support_status, compact_support_observed_at,
             compact_support_reason, local_primary_limit, local_secondary_limit,
             local_limit_unit, upstream_base_url, created_at, updated_at
         FROM pool_upstream_accounts
@@ -9208,6 +9224,7 @@ fn build_summary_from_row(
         row.last_route_failure_at.as_deref(),
         row.last_route_failure_kind.as_deref(),
         row.last_action_reason_code.as_deref(),
+        row.temporary_route_failure_streak_started_at.as_deref(),
         row.last_selected_at.as_deref(),
         now,
     );
@@ -11693,6 +11710,7 @@ fn normalize_upstream_account_work_status_filter(value: Option<&str>) -> Option<
     }
     match normalized.as_str() {
         UPSTREAM_ACCOUNT_WORK_STATUS_WORKING => Some(UPSTREAM_ACCOUNT_WORK_STATUS_WORKING),
+        UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED => Some(UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED),
         UPSTREAM_ACCOUNT_WORK_STATUS_IDLE => Some(UPSTREAM_ACCOUNT_WORK_STATUS_IDLE),
         UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED => {
             Some(UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED)
@@ -12074,18 +12092,8 @@ fn is_transient_route_failure_error(
     ) {
         return matches!(failure_kind, Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED));
     }
-    route_failure_kind_is_rate_limited(failure_kind)
-        || matches!(
-            failure_kind,
-            Some(
-                FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX
-                    | FORWARD_PROXY_FAILURE_SEND_ERROR
-                    | FORWARD_PROXY_FAILURE_HANDSHAKE_TIMEOUT
-                    | FORWARD_PROXY_FAILURE_STREAM_ERROR
-                    | PROXY_FAILURE_FAILED_CONTACT_UPSTREAM
-                    | PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT
-            )
-        )
+    route_failure_kind_is_temporary(failure_kind)
+        || route_failure_kind_is_rate_limited(failure_kind)
 }
 
 fn derive_upstream_account_work_status(
@@ -12099,6 +12107,7 @@ fn derive_upstream_account_work_status(
     last_route_failure_at: Option<&str>,
     last_route_failure_kind: Option<&str>,
     last_action_reason_code: Option<&str>,
+    temporary_route_failure_streak_started_at: Option<&str>,
     last_selected_at: Option<&str>,
     now: DateTime<Utc>,
 ) -> &'static str {
@@ -12116,23 +12125,20 @@ fn derive_upstream_account_work_status(
     {
         return UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED;
     }
-    if cooldown_until
-        .and_then(parse_rfc3339_utc)
-        .is_some_and(|until| {
-            until > now
-                && upstream_account_rate_limit_state_is_current(
-                    raw_status,
-                    last_error_at,
-                    last_route_failure_at,
-                    last_route_failure_kind,
-                    last_action_reason_code,
-                )
-        })
-    {
-        return UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED;
-    }
     if health_status != UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL {
         return UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE;
+    }
+    if upstream_account_degraded_state_is_current(
+        raw_status,
+        cooldown_until,
+        last_error_at,
+        last_route_failure_at,
+        last_route_failure_kind,
+        last_action_reason_code,
+        temporary_route_failure_streak_started_at,
+        now,
+    ) {
+        return UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED;
     }
     let active_cutoff = now - ChronoDuration::minutes(POOL_ROUTE_ACTIVE_STICKY_WINDOW_MINUTES);
     if last_selected_at
@@ -12210,7 +12216,11 @@ fn build_upstream_account_list_metrics(
             .iter()
             .filter(|item| {
                 item.health_status != UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL
-                    || item.work_status == UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+                    || matches!(
+                        item.work_status.as_str(),
+                        UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+                            | UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED
+                    )
             })
             .count(),
     }
@@ -12467,10 +12477,17 @@ fn classify_sync_failure(
 
 fn account_reason_is_rate_limited(reason_code: Option<&str>) -> bool {
     account_reason_is_quota_exhausted(reason_code)
-        || matches!(
-            reason_code,
-            Some(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_RATE_LIMIT)
+}
+
+fn account_reason_is_temporary_failure(reason_code: Option<&str>) -> bool {
+    matches!(
+        reason_code,
+        Some(
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_RATE_LIMIT
+                | UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE
+                | UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED
         )
+    )
 }
 
 fn account_reason_is_upstream_rejected(reason_code: Option<&str>) -> bool {
@@ -12518,14 +12535,23 @@ fn account_reason_overrides_current_route_failure(
 }
 
 fn route_failure_kind_is_rate_limited(failure_kind: Option<&str>) -> bool {
+    route_failure_kind_is_quota_exhausted(failure_kind)
+}
+
+fn route_failure_kind_is_temporary(failure_kind: Option<&str>) -> bool {
     matches!(
         failure_kind
             .map(str::trim)
             .filter(|value| !value.is_empty()),
         Some(
             FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429
-                | FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
-                | PROXY_FAILURE_UPSTREAM_USAGE_SNAPSHOT_QUOTA_EXHAUSTED
+                | FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX
+                | FORWARD_PROXY_FAILURE_SEND_ERROR
+                | FORWARD_PROXY_FAILURE_HANDSHAKE_TIMEOUT
+                | FORWARD_PROXY_FAILURE_STREAM_ERROR
+                | PROXY_FAILURE_FAILED_CONTACT_UPSTREAM
+                | PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT
+                | PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED
         )
     )
 }
@@ -12567,6 +12593,15 @@ fn current_route_failure_is_rate_limited(
         && route_failure_kind_is_rate_limited(last_route_failure_kind)
 }
 
+fn current_route_failure_is_temporary(
+    last_error_at: Option<&str>,
+    last_route_failure_at: Option<&str>,
+    last_route_failure_kind: Option<&str>,
+) -> bool {
+    route_failure_is_current(last_error_at, last_route_failure_at)
+        && route_failure_kind_is_temporary(last_route_failure_kind)
+}
+
 fn current_route_failure_is_quota_exhausted(
     last_error_at: Option<&str>,
     last_route_failure_at: Option<&str>,
@@ -12599,6 +12634,48 @@ fn upstream_account_rate_limit_state_is_current(
                 last_route_failure_at,
                 last_route_failure_kind,
             ))
+}
+
+fn account_has_active_cooldown(cooldown_until: Option<&str>, now: DateTime<Utc>) -> bool {
+    cooldown_until
+        .and_then(parse_rfc3339_utc)
+        .is_some_and(|until| until > now)
+}
+
+fn upstream_account_degraded_state_is_current(
+    raw_status: &str,
+    cooldown_until: Option<&str>,
+    last_error_at: Option<&str>,
+    last_route_failure_at: Option<&str>,
+    last_route_failure_kind: Option<&str>,
+    last_action_reason_code: Option<&str>,
+    temporary_route_failure_streak_started_at: Option<&str>,
+    now: DateTime<Utc>,
+) -> bool {
+    if account_reason_overrides_current_route_failure(raw_status, last_action_reason_code) {
+        return false;
+    }
+    let degraded_anchor_at = last_route_failure_at
+        .and_then(parse_rfc3339_utc)
+        .or_else(|| temporary_route_failure_streak_started_at.and_then(parse_rfc3339_utc));
+    if account_has_active_cooldown(cooldown_until, now)
+        && route_failure_kind_is_temporary(last_route_failure_kind)
+    {
+        return true;
+    }
+    if current_route_failure_is_temporary(
+        last_error_at,
+        last_route_failure_at,
+        last_route_failure_kind,
+    ) || account_reason_is_temporary_failure(last_action_reason_code)
+        && route_failure_kind_is_temporary(last_route_failure_kind)
+    {
+        return degraded_anchor_at.is_some_and(|failed_at| {
+            failed_at + ChronoDuration::seconds(POOL_ROUTE_TEMPORARY_FAILURE_DEGRADED_WINDOW_SECS)
+                > now
+        });
+    }
+    false
 }
 
 fn upstream_account_quota_exhausted_state_is_current(
@@ -12697,6 +12774,10 @@ async fn set_account_status(
                 WHEN ?2 = ?5 AND ?3 IS NULL THEN 0
                 ELSE consecutive_route_failures
             END,
+            temporary_route_failure_streak_started_at = CASE
+                WHEN ?2 = ?5 AND ?3 IS NULL THEN NULL
+                ELSE temporary_route_failure_streak_started_at
+            END,
             updated_at = ?4
         WHERE id = ?1
         "#,
@@ -12752,6 +12833,7 @@ async fn mark_account_sync_success(
                     last_route_failure_kind = NULL,
                     cooldown_until = NULL,
                     consecutive_route_failures = 0,
+                    temporary_route_failure_streak_started_at = NULL,
                     updated_at = ?3
                 WHERE id = ?1
                 "#,
@@ -12847,6 +12929,7 @@ async fn record_account_sync_hard_unavailable(
             last_route_failure_at = ?3,
             last_route_failure_kind = ?5,
             cooldown_until = NULL,
+            temporary_route_failure_streak_started_at = NULL,
             updated_at = ?3
         WHERE id = ?1
         "#,
@@ -12951,20 +13034,7 @@ async fn record_classified_account_sync_failure(
                 row.last_route_failure_at.as_deref(),
                 row.last_route_failure_kind.as_deref(),
                 row.last_action_reason_code.as_deref(),
-            ) || row
-                .cooldown_until
-                .as_deref()
-                .and_then(parse_rfc3339_utc)
-                .is_some_and(|until| {
-                    until > Utc::now()
-                        && upstream_account_rate_limit_state_is_current(
-                            &row.status,
-                            row.last_error_at.as_deref(),
-                            row.last_route_failure_at.as_deref(),
-                            row.last_route_failure_kind.as_deref(),
-                            row.last_action_reason_code.as_deref(),
-                        )
-                }))
+            ) || route_failure_kind_is_temporary(row.last_route_failure_kind.as_deref()))
     });
     record_account_sync_failure(
         pool,
@@ -14675,6 +14745,7 @@ pub(crate) enum PoolRoutingSelectionSource {
 pub(crate) enum PoolAccountResolution {
     Resolved(PoolResolvedAccount),
     RateLimited,
+    DegradedOnly,
     Unavailable,
     NoCandidate,
     BlockedByPolicy(String),
@@ -14725,11 +14796,14 @@ pub(crate) async fn resolve_pool_account_for_request(
     excluded_ids: &[i64],
     excluded_upstream_route_keys: &HashSet<String>,
 ) -> Result<PoolAccountResolution> {
+    let now = Utc::now();
     let mut tried = excluded_ids.iter().copied().collect::<HashSet<_>>();
     let mut saw_rate_limited_candidate = false;
+    let mut saw_degraded_candidate = false;
     let mut saw_non_rate_limited_routing_candidate = false;
     let mut saw_non_routing_candidate = false;
     let mut sticky_route_excluded_by_route_key = false;
+    let mut sticky_route_still_reusable = false;
 
     let sticky_route = if let Some(sticky_key) = sticky_key {
         load_sticky_route(&state.pool, sticky_key).await?
@@ -14753,7 +14827,8 @@ pub(crate) async fn resolve_pool_account_for_request(
             let sticky_snapshot_exhausted = sticky_candidate
                 .as_ref()
                 .is_some_and(routing_candidate_snapshot_is_exhausted);
-            if is_account_selectable_for_routing(&row, sticky_snapshot_exhausted) {
+            if is_account_selectable_for_sticky_reuse(&row, sticky_snapshot_exhausted, now) {
+                sticky_route_still_reusable = true;
                 let mut sticky_route_was_excluded = false;
                 if let Some(account) = prepare_pool_account(state, &row).await? {
                     let mut account = account;
@@ -14763,13 +14838,23 @@ pub(crate) async fn resolve_pool_account_for_request(
                     }
                     sticky_route_excluded_by_route_key = true;
                     sticky_route_was_excluded = true;
-                    saw_non_rate_limited_routing_candidate = true;
+                    if is_account_degraded_for_routing(&row, sticky_snapshot_exhausted, now) {
+                        saw_degraded_candidate = true;
+                    } else {
+                        saw_non_rate_limited_routing_candidate = true;
+                    }
                 }
                 if !sticky_route_was_excluded {
-                    saw_non_rate_limited_routing_candidate = true;
+                    if is_account_degraded_for_routing(&row, sticky_snapshot_exhausted, now) {
+                        saw_degraded_candidate = true;
+                    } else {
+                        saw_non_rate_limited_routing_candidate = true;
+                    }
                 }
             } else if is_account_rate_limited_for_routing(&row, sticky_snapshot_exhausted) {
                 saw_rate_limited_candidate = true;
+            } else if is_account_degraded_for_routing(&row, sticky_snapshot_exhausted, now) {
+                saw_degraded_candidate = true;
             } else if is_routing_eligible_account(&row) {
                 saw_non_rate_limited_routing_candidate = true;
             } else if is_pool_account_routing_candidate(&row) {
@@ -14781,6 +14866,7 @@ pub(crate) async fn resolve_pool_account_for_request(
         if sticky_source_rule
             .as_ref()
             .is_some_and(|rule| !rule.allow_cut_out)
+            && sticky_route_still_reusable
             && !sticky_route_excluded_by_route_key
         {
             return Ok(PoolAccountResolution::BlockedByPolicy(
@@ -14817,9 +14903,11 @@ pub(crate) async fn resolve_pool_account_for_request(
                 continue;
             };
             let snapshot_exhausted = routing_candidate_snapshot_is_exhausted(&candidate);
-            if !is_account_selectable_for_routing(&row, snapshot_exhausted) {
+            if !is_account_selectable_for_fresh_assignment(&row, snapshot_exhausted, now) {
                 if is_account_rate_limited_for_routing(&row, snapshot_exhausted) {
                     saw_rate_limited_candidate = true;
+                } else if is_account_degraded_for_routing(&row, snapshot_exhausted, now) {
+                    saw_degraded_candidate = true;
                 } else if is_routing_eligible_account(&row) {
                     saw_non_rate_limited_routing_candidate = true;
                 } else {
@@ -14852,11 +14940,22 @@ pub(crate) async fn resolve_pool_account_for_request(
         }
     }
 
-    if saw_rate_limited_candidate && !saw_non_rate_limited_routing_candidate {
+    if saw_rate_limited_candidate
+        && !saw_degraded_candidate
+        && !saw_non_rate_limited_routing_candidate
+    {
         return Ok(PoolAccountResolution::RateLimited);
     }
+    if saw_degraded_candidate
+        && !saw_rate_limited_candidate
+        && !saw_non_rate_limited_routing_candidate
+        && !saw_non_routing_candidate
+    {
+        return Ok(PoolAccountResolution::DegradedOnly);
+    }
     if saw_non_rate_limited_routing_candidate
-        || (!saw_rate_limited_candidate && saw_non_routing_candidate)
+        || saw_non_routing_candidate
+        || (saw_rate_limited_candidate && saw_degraded_candidate)
     {
         return Ok(PoolAccountResolution::Unavailable);
     }
@@ -14884,6 +14983,7 @@ pub(crate) async fn record_pool_route_success(
             last_route_failure_kind = NULL,
             cooldown_until = NULL,
             consecutive_route_failures = 0,
+            temporary_route_failure_streak_started_at = NULL,
             updated_at = ?3
         WHERE id = ?1
           AND (
@@ -14960,6 +15060,7 @@ pub(crate) async fn record_pool_route_http_failure(
                     last_route_failure_kind = ?5,
                     cooldown_until = NULL,
                     consecutive_route_failures = consecutive_route_failures + 1,
+                    temporary_route_failure_streak_started_at = NULL,
                     updated_at = ?4
                 WHERE id = ?1
                 "#,
@@ -15023,44 +15124,18 @@ pub(crate) async fn record_pool_route_retryable_overload_failure(
     error_message: &str,
     invoke_id: Option<&str>,
 ) -> Result<()> {
-    let now_iso = format_utc_iso(Utc::now());
-    sqlx::query(
-        r#"
-        UPDATE pool_upstream_accounts
-        SET status = ?2,
-            last_error = ?3,
-            last_error_at = ?4,
-            last_route_failure_at = ?4,
-            last_route_failure_kind = ?5,
-            cooldown_until = NULL,
-            updated_at = ?4
-        WHERE id = ?1
-        "#,
-    )
-    .bind(account_id)
-    .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
-    .bind(error_message)
-    .bind(&now_iso)
-    .bind(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
-    .execute(pool)
-    .await?;
-    record_upstream_account_action(
+    apply_pool_route_cooldown_failure(
         pool,
         account_id,
-        UpstreamAccountActionPayload {
-            action: UPSTREAM_ACCOUNT_ACTION_ROUTE_RETRYABLE_FAILURE,
-            source: UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL,
-            reason_code: Some(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED),
-            reason_message: Some(error_message),
-            http_status: Some(StatusCode::OK),
-            failure_kind: Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED),
-            invoke_id,
-            sticky_key,
-            occurred_at: &now_iso,
-        },
+        sticky_key,
+        error_message,
+        PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED,
+        UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED,
+        StatusCode::OK,
+        5,
+        invoke_id,
     )
-    .await?;
-    Ok(())
+    .await
 }
 
 pub(crate) async fn record_pool_route_transport_failure(
@@ -15364,6 +15439,7 @@ async fn prepare_pool_account(
                                 last_route_failure_kind = ?5,
                                 cooldown_until = NULL,
                                 consecutive_route_failures = consecutive_route_failures + 1,
+                                temporary_route_failure_streak_started_at = NULL,
                                 updated_at = ?4
                             WHERE id = ?1
                             "#,
@@ -15410,6 +15486,7 @@ async fn prepare_pool_account(
                                         last_route_failure_kind = ?5,
                                         cooldown_until = NULL,
                                         consecutive_route_failures = consecutive_route_failures + 1,
+                                        temporary_route_failure_streak_started_at = NULL,
                                         updated_at = ?4
                                     WHERE id = ?1
                                     "#,
@@ -15478,16 +15555,43 @@ async fn prepare_pool_account(
     }
 }
 
-fn is_account_selectable_for_routing(row: &UpstreamAccountRow, snapshot_exhausted: bool) -> bool {
+fn is_account_selectable_for_sticky_reuse(
+    row: &UpstreamAccountRow,
+    snapshot_exhausted: bool,
+    now: DateTime<Utc>,
+) -> bool {
     if !is_routing_eligible_account(row) || snapshot_exhausted {
         return false;
     }
-    let Some(cooldown_until) = row.cooldown_until.as_deref() else {
-        return true;
-    };
-    parse_rfc3339_utc(cooldown_until)
-        .map(|until| until <= Utc::now())
-        .unwrap_or(true)
+    !account_has_active_cooldown(row.cooldown_until.as_deref(), now)
+}
+
+fn is_account_selectable_for_fresh_assignment(
+    row: &UpstreamAccountRow,
+    snapshot_exhausted: bool,
+    now: DateTime<Utc>,
+) -> bool {
+    is_account_selectable_for_sticky_reuse(row, snapshot_exhausted, now)
+        && !is_account_degraded_for_routing(row, snapshot_exhausted, now)
+}
+
+fn is_account_degraded_for_routing(
+    row: &UpstreamAccountRow,
+    snapshot_exhausted: bool,
+    now: DateTime<Utc>,
+) -> bool {
+    is_routing_eligible_account(row)
+        && !snapshot_exhausted
+        && upstream_account_degraded_state_is_current(
+            &row.status,
+            row.cooldown_until.as_deref(),
+            row.last_error_at.as_deref(),
+            row.last_route_failure_at.as_deref(),
+            row.last_route_failure_kind.as_deref(),
+            row.last_action_reason_code.as_deref(),
+            row.temporary_route_failure_streak_started_at.as_deref(),
+            now,
+        )
 }
 
 fn is_pool_account_routing_candidate(row: &UpstreamAccountRow) -> bool {
@@ -15509,22 +15613,8 @@ fn is_account_rate_limited_for_routing(row: &UpstreamAccountRow, snapshot_exhaus
     }
     let quota_exhausted_hard_stop =
         route_failure_kind_is_quota_exhausted(row.last_route_failure_kind.as_deref());
-    let in_429_cooldown = row
-        .cooldown_until
-        .as_deref()
-        .and_then(parse_rfc3339_utc)
-        .map(|until| until > Utc::now())
-        .unwrap_or(false)
-        && matches!(
-            row.last_route_failure_kind.as_deref(),
-            Some(
-                FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429
-                    | FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED
-            )
-        );
     snapshot_exhausted
         || quota_exhausted_hard_stop
-        || in_429_cooldown
         || account_reason_is_rate_limited(row.last_action_reason_code.as_deref())
 }
 
@@ -15837,18 +15927,42 @@ async fn apply_pool_route_cooldown_failure(
     base_secs: i64,
     invoke_id: Option<&str>,
 ) -> Result<()> {
-    if let Some(sticky_key) = sticky_key {
-        delete_sticky_route(pool, sticky_key).await?;
-    }
     let row = load_upstream_account_row(pool, account_id)
         .await?
         .ok_or_else(|| anyhow!("account not found"))?;
-    let next_failures = row.consecutive_route_failures.max(0) + 1;
+    let now = Utc::now();
+    let continuing_temporary_streak = row.consecutive_route_failures > 0
+        && route_failure_kind_is_temporary(row.last_route_failure_kind.as_deref());
+    let next_failures = if continuing_temporary_streak {
+        row.consecutive_route_failures.max(0) + 1
+    } else {
+        1
+    };
+    let streak_started_at = if continuing_temporary_streak {
+        row.temporary_route_failure_streak_started_at
+            .as_deref()
+            .and_then(parse_rfc3339_utc)
+            .or_else(|| {
+                row.last_route_failure_at
+                    .as_deref()
+                    .and_then(parse_rfc3339_utc)
+            })
+            .unwrap_or(now)
+    } else {
+        now
+    };
+    let should_start_cooldown = next_failures >= POOL_ROUTE_TEMPORARY_FAILURE_STREAK_THRESHOLD
+        || now.signed_duration_since(streak_started_at).num_seconds()
+            >= POOL_ROUTE_TEMPORARY_FAILURE_DEGRADED_WINDOW_SECS;
+    if should_start_cooldown && let Some(sticky_key) = sticky_key {
+        delete_sticky_route(pool, sticky_key).await?;
+    }
     let exponent = (next_failures - 1).clamp(0, 5) as u32;
     let cooldown_secs = (base_secs * (1_i64 << exponent)).min(300);
-    let now = Utc::now();
     let now_iso = format_utc_iso(now);
-    let cooldown_until = format_utc_iso(now + ChronoDuration::seconds(cooldown_secs));
+    let streak_started_at_iso = format_utc_iso(streak_started_at);
+    let cooldown_until =
+        should_start_cooldown.then(|| format_utc_iso(now + ChronoDuration::seconds(cooldown_secs)));
     sqlx::query(
         r#"
         UPDATE pool_upstream_accounts
@@ -15859,6 +15973,7 @@ async fn apply_pool_route_cooldown_failure(
             last_route_failure_kind = ?5,
             cooldown_until = ?6,
             consecutive_route_failures = ?7,
+            temporary_route_failure_streak_started_at = ?8,
             updated_at = ?4
         WHERE id = ?1
         "#,
@@ -15870,13 +15985,18 @@ async fn apply_pool_route_cooldown_failure(
     .bind(failure_kind)
     .bind(cooldown_until)
     .bind(next_failures)
+    .bind(streak_started_at_iso)
     .execute(pool)
     .await?;
     record_upstream_account_action(
         pool,
         account_id,
         UpstreamAccountActionPayload {
-            action: UPSTREAM_ACCOUNT_ACTION_ROUTE_COOLDOWN_STARTED,
+            action: if should_start_cooldown {
+                UPSTREAM_ACCOUNT_ACTION_ROUTE_COOLDOWN_STARTED
+            } else {
+                UPSTREAM_ACCOUNT_ACTION_ROUTE_RETRYABLE_FAILURE
+            },
             source: UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL,
             reason_code: Some(reason_code),
             reason_message: Some(error_message),
@@ -16726,6 +16846,7 @@ mod tests {
                 last_route_failure_kind: None,
                 cooldown_until: None,
                 consecutive_route_failures: 0,
+                temporary_route_failure_streak_started_at: None,
                 compact_support_status: None,
                 compact_support_observed_at: None,
                 compact_support_reason: None,
@@ -19518,6 +19639,73 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn record_pool_route_http_failure_exports_first_plain_429_as_degraded_without_cooldown() {
+        let pool = test_pool().await;
+        let account_id = insert_api_key_account(&pool, "Degraded Plain 429").await;
+        upsert_sticky_route(
+            &pool,
+            "sticky-degraded-first-hit",
+            account_id,
+            &format_utc_iso(Utc::now()),
+        )
+        .await
+        .expect("seed sticky route");
+
+        record_pool_route_http_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX,
+            Some("sticky-degraded-first-hit"),
+            StatusCode::TOO_MANY_REQUESTS,
+            "pool upstream responded with 429: too many requests",
+            Some("invk_degraded_first_hit"),
+        )
+        .await
+        .expect("record first degraded 429 failure");
+
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load degraded row")
+            .expect("degraded row exists");
+        assert_eq!(row.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert_eq!(
+            row.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_ROUTE_RETRYABLE_FAILURE)
+        );
+        assert_eq!(
+            row.last_action_reason_code.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_RATE_LIMIT)
+        );
+        assert_eq!(
+            row.last_route_failure_kind.as_deref(),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
+        );
+        assert!(row.cooldown_until.is_none());
+        assert_eq!(row.consecutive_route_failures, 1);
+        assert!(row.temporary_route_failure_streak_started_at.is_some());
+        assert_eq!(
+            load_sticky_route(&pool, "sticky-degraded-first-hit")
+                .await
+                .expect("load sticky route after degraded hit")
+                .map(|route| route.account_id),
+            Some(account_id)
+        );
+
+        let summary = build_summary_from_row(
+            &row,
+            None,
+            row.last_activity_at.clone(),
+            vec![],
+            None,
+            0,
+            Utc::now(),
+        );
+        assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
+        assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED);
+    }
+
+    #[tokio::test]
     async fn record_pool_route_http_failure_keeps_server_overloaded_as_retryable_without_cooldown()
     {
         let pool = test_pool().await;
@@ -19554,7 +19742,8 @@ mod tests {
             Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
         );
         assert!(row.cooldown_until.is_none());
-        assert_eq!(row.consecutive_route_failures, 0);
+        assert_eq!(row.consecutive_route_failures, 1);
+        assert!(row.temporary_route_failure_streak_started_at.is_some());
 
         let summary = build_summary_from_row(
             &row,
@@ -19566,7 +19755,93 @@ mod tests {
             Utc::now(),
         );
         assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
-        assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_IDLE);
+        assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED);
+    }
+
+    #[tokio::test]
+    async fn record_pool_route_transport_failure_starts_temporary_cooldown_after_streak_window_expires()
+     {
+        let pool = test_pool().await;
+        let account_id = insert_api_key_account(&pool, "Cooldown Escalation").await;
+        upsert_sticky_route(
+            &pool,
+            "sticky-degraded-cooldown",
+            account_id,
+            &format_utc_iso(Utc::now()),
+        )
+        .await
+        .expect("seed sticky route");
+
+        record_pool_route_transport_failure(
+            &pool,
+            account_id,
+            Some("sticky-degraded-cooldown"),
+            "failed to contact upstream",
+            Some("invk_transport_first"),
+        )
+        .await
+        .expect("record first transport failure");
+
+        let stale_started_at = format_utc_iso(
+            Utc::now()
+                - ChronoDuration::seconds(POOL_ROUTE_TEMPORARY_FAILURE_DEGRADED_WINDOW_SECS + 1),
+        );
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET temporary_route_failure_streak_started_at = ?2
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .bind(&stale_started_at)
+        .execute(&pool)
+        .await
+        .expect("stale degraded streak start");
+
+        record_pool_route_transport_failure(
+            &pool,
+            account_id,
+            Some("sticky-degraded-cooldown"),
+            "failed to contact upstream again",
+            Some("invk_transport_second"),
+        )
+        .await
+        .expect("record second transport failure");
+
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load escalated row")
+            .expect("escalated row exists");
+        assert_eq!(
+            row.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_ROUTE_COOLDOWN_STARTED)
+        );
+        assert_eq!(
+            row.last_route_failure_kind.as_deref(),
+            Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM)
+        );
+        assert!(row.cooldown_until.is_some());
+        assert_eq!(row.consecutive_route_failures, 2);
+        assert!(
+            load_sticky_route(&pool, "sticky-degraded-cooldown")
+                .await
+                .expect("load sticky route after cooldown escalation")
+                .is_none()
+        );
+
+        let summary = build_summary_from_row(
+            &row,
+            None,
+            row.last_activity_at.clone(),
+            vec![],
+            None,
+            0,
+            Utc::now(),
+        );
+        assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
+        assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED);
     }
 
     #[test]
@@ -20260,6 +20535,7 @@ mod tests {
                 last_route_failure_kind = ?5,
                 cooldown_until = ?6,
                 consecutive_route_failures = 1,
+                temporary_route_failure_streak_started_at = NULL,
                 updated_at = ?4
             WHERE id = ?1
             "#,
@@ -20294,6 +20570,7 @@ mod tests {
                 last_route_failure_kind = ?5,
                 cooldown_until = NULL,
                 consecutive_route_failures = 1,
+                temporary_route_failure_streak_started_at = NULL,
                 last_action = ?6,
                 last_action_source = ?7,
                 last_action_reason_code = ?8,
@@ -21159,10 +21436,7 @@ mod tests {
         assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
         assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
         assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
-        assert_eq!(
-            summary.work_status,
-            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
-        );
+        assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED);
         assert_eq!(summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
 
         let detail = load_upstream_account_detail(&state.pool, account_id)
@@ -21175,7 +21449,7 @@ mod tests {
         );
         assert_eq!(
             detail.summary.work_status,
-            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
+            UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED
         );
         assert_eq!(detail.summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
         assert_eq!(
@@ -21634,10 +21908,7 @@ mod tests {
         assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
         assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
         assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
-        assert_eq!(
-            summary.work_status,
-            UPSTREAM_ACCOUNT_WORK_STATUS_RATE_LIMITED
-        );
+        assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED);
         assert_eq!(summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
     }
 

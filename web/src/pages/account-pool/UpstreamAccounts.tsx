@@ -109,7 +109,7 @@ const POSITIVE_INTEGER_PATTERN = /^[1-9]\d*$/
 const STICKY_CONVERSATION_LIMIT_OPTIONS = [20, 50, 100] as const
 const GROUP_UPSTREAM_429_RETRY_OPTIONS = [1, 2, 3, 4, 5] as const
 const UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY = 'codex-vibe-monitor.account-pool.upstream-accounts.filters'
-const WORK_STATUS_FILTER_VALUES = ['working', 'idle', 'rate_limited', 'unavailable'] as const
+const WORK_STATUS_FILTER_VALUES = ['working', 'degraded', 'idle', 'rate_limited', 'unavailable'] as const
 const ENABLE_STATUS_FILTER_VALUES = ['enabled', 'disabled'] as const
 const HEALTH_STATUS_FILTER_VALUES = [
   'normal',
@@ -467,6 +467,7 @@ function accountWorkStatus(item?: AccountStatusSnapshot | null) {
   if (!item) return 'idle'
   if (accountEnableStatus(item) !== 'enabled') return 'idle'
   if (accountSyncState(item) === 'syncing') return 'idle'
+  if (item?.workStatus === 'degraded') return 'degraded'
   if (item?.workStatus === 'rate_limited') return 'rate_limited'
   if (accountHealthStatus(item) !== 'normal') return 'unavailable'
   return item?.workStatus ?? 'idle'
@@ -508,6 +509,7 @@ function enableStatusVariant(status: string): 'success' | 'secondary' {
 
 function workStatusVariant(status: string): 'info' | 'warning' | 'secondary' {
   if (status === 'working') return 'info'
+  if (status === 'degraded') return 'warning'
   if (status === 'rate_limited') return 'warning'
   return 'secondary'
 }
@@ -2488,6 +2490,7 @@ export default function UpstreamAccountsPage() {
   const workStatusFilterOptions = useMemo(
     () => [
       { value: 'working', label: t('accountPool.upstreamAccounts.workStatus.working') },
+      { value: 'degraded', label: t('accountPool.upstreamAccounts.workStatus.degraded') },
       { value: 'idle', label: t('accountPool.upstreamAccounts.workStatus.idle') },
       { value: 'rate_limited', label: t('accountPool.upstreamAccounts.workStatus.rate_limited') },
       { value: 'unavailable', label: t('accountPool.upstreamAccounts.workStatus.unavailable') },
