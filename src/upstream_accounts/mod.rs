@@ -22576,6 +22576,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resolver_prefers_sticky_cut_in_policy_over_group_proxy_error() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let sticky_source = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Sticky Source",
+            "sticky-source@example.com",
+            "org_sticky_source",
+            "user_sticky_source",
+        )
+        .await;
+        let blocked_target = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Sticky Cut In Blocked",
+            "sticky-cut-in-blocked@example.com",
+            "org_sticky_cut_in_blocked",
+            "user_sticky_cut_in_blocked",
+        )
+        .await;
+        set_test_account_group_name(&state.pool, blocked_target, Some("sticky-cut-in-missing"))
+            .await;
+        let no_cut_in_tag = insert_tag(
+            &state.pool,
+            "sticky-no-cut-in",
+            &TagRoutingRule {
+                guard_enabled: false,
+                lookback_hours: None,
+                max_conversations: None,
+                allow_cut_out: true,
+                allow_cut_in: false,
+            },
+        )
+        .await
+        .expect("insert no cut-in tag");
+        sync_account_tag_links(&state.pool, blocked_target, &[no_cut_in_tag.summary.id])
+            .await
+            .expect("attach no cut-in tag");
+        upsert_sticky_route(
+            &state.pool,
+            "sticky-cut-in-policy-first",
+            sticky_source,
+            &format_utc_iso(Utc::now()),
+        )
+        .await
+        .expect("upsert sticky route");
+
+        let resolution = resolve_pool_account_for_request(
+            &state,
+            Some("sticky-cut-in-policy-first"),
+            &[sticky_source],
+            &HashSet::new(),
+        )
+        .await
+        .expect("resolve pool account");
+        assert!(matches!(resolution, PoolAccountResolution::Unavailable));
+    }
+
+    #[tokio::test]
     async fn update_oauth_login_session_preserves_pending_url_and_persists_metadata() {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
         let tag_id = insert_tag(&state.pool, "pending-sync", &test_tag_routing_rule())
