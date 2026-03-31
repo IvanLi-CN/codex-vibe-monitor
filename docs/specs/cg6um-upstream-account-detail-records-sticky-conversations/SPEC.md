@@ -2,9 +2,9 @@
 
 ## 状态
 
-- Status: 已实现，待截图提交授权 / PR 收敛
+- Status: 已实现，待 PR 收敛
 - Created: 2026-03-30
-- Last: 2026-03-30
+- Last: 2026-03-31
 
 ## 背景 / 问题陈述
 
@@ -130,37 +130,21 @@
   target_program: mock-only
   capture_scope: browser-viewport
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
   story_id_or_title: Account Pool/Pages/Upstream Accounts/Overlays / Detail Drawer
-  state: account detail records tab populated
-  evidence_note: 验证共享账号详情抽屉新增 `调用记录` tab，且表内直接复用 `InvocationTable` 展示当前账号过滤后的最新调用。
+  state: detail drawer routing tab list
+  evidence_note: 验证共享上游账号详情抽屉的 `路由` tab 内，Sticky 对话列表使用与 Live 一致的列表结构与交互入口。
+  ![详情抽屉里的 Sticky 列表](./assets/detail-routing-sticky-list.png)
 
 - source_type: storybook_canvas
   target_program: mock-only
   capture_scope: browser-viewport
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
-  story_id_or_title: Monitoring/StickyKeyConversationTable / ActivityWindow3h
-  state: activityHours=3
-  evidence_note: 验证 Sticky 对话切到 `近 3 小时活动` 后只展示命中窗口的会话，并保留统一选择器与批量展开按钮。
-
-- source_type: storybook_canvas
-  target_program: mock-only
-  capture_scope: browser-viewport
-  sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
-  story_id_or_title: Monitoring/StickyKeyConversationTable / SingleExpanded
-  state: single row expanded
-  evidence_note: 验证 Sticky 对话单行展开时显示最近 5 条调用记录，并复用 `InvocationTable`。
-
-- source_type: storybook_canvas
-  target_program: mock-only
-  capture_scope: browser-viewport
-  sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
-  story_id_or_title: Monitoring/StickyKeyConversationTable / DrawerOpen
-  state: retained history drawer open
-  evidence_note: 验证 Sticky 历史抽屉按时间倒序展示当前账号 + Sticky Key 的全部保留调用记录。
+  submission_gate: approved
+  story_id_or_title: Account Pool/Pages/Upstream Accounts/Overlays / Detail Drawer
+  state: detail drawer routing tab row expanded
+  evidence_note: 验证详情抽屉里的 Sticky 对话行展开后，内嵌预览直接复用 `InvocationTable` 展示最近调用记录。
+  ![详情抽屉里的 Sticky 列表展开态](./assets/detail-routing-sticky-list-expanded.png)
 
 ## 实现里程碑（Milestones / Delivery checklist）
 
@@ -188,3 +172,4 @@
 
 - 2026-03-30: 创建 spec，冻结共享账号详情 `调用记录` tab、Sticky 选择模型、历史抽屉与 visual evidence gate。
 - 2026-03-30: 完成后端查询扩展、共享抽屉 `调用记录` tab、Sticky 富交互组件、Storybook/Vitest/Rust 验证，并生成待主人审批的 mock-only 视觉证据。
+- 2026-03-31: 主人批准后，将详情抽屉 `路由` tab 的最终 mock-only 截图写入 spec assets，并在 `## Visual Evidence` 中落盘引用。
