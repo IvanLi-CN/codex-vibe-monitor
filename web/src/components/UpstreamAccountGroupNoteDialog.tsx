@@ -1,6 +1,8 @@
 import { useEffect, useMemo } from 'react'
 import { AppIcon } from './AppIcon'
+import { ConcurrencyLimitSlider } from './ConcurrencyLimitSlider'
 import type { ForwardProxyBindingNode } from '../lib/api'
+import { apiConcurrencyLimitToSliderValue } from '../lib/concurrencyLimit'
 import { cn } from '../lib/utils'
 import { Button } from './ui/button'
 import { ForwardProxyRequestTrendChart } from './ForwardProxyRequestTrendChart'
@@ -26,6 +28,7 @@ interface UpstreamAccountGroupNoteDialogProps {
   container?: HTMLElement | null
   groupName: string
   note: string
+  concurrencyLimit?: number
   busy?: boolean
   error?: string | null
   existing: boolean
@@ -34,6 +37,7 @@ interface UpstreamAccountGroupNoteDialogProps {
   upstream429MaxRetries?: number
   availableProxyNodes?: ForwardProxyBindingNode[]
   onNoteChange: (value: string) => void
+  onConcurrencyLimitChange?: (value: number) => void
   onBoundProxyKeysChange?: (value: string[]) => void
   onUpstream429RetryEnabledChange?: (value: boolean) => void
   onUpstream429MaxRetriesChange?: (value: number) => void
@@ -44,6 +48,10 @@ interface UpstreamAccountGroupNoteDialogProps {
   draftDescription: string
   noteLabel: string
   notePlaceholder: string
+  concurrencyLimitLabel?: string
+  concurrencyLimitHint?: string
+  concurrencyLimitCurrentLabel?: string
+  concurrencyLimitUnlimitedLabel?: string
   cancelLabel: string
   saveLabel: string
   closeLabel: string
@@ -240,6 +248,7 @@ export function UpstreamAccountGroupNoteDialog({
   container,
   groupName,
   note,
+  concurrencyLimit = apiConcurrencyLimitToSliderValue(0),
   busy = false,
   error,
   existing,
@@ -248,6 +257,7 @@ export function UpstreamAccountGroupNoteDialog({
   upstream429MaxRetries = 0,
   availableProxyNodes,
   onNoteChange,
+  onConcurrencyLimitChange = () => undefined,
   onBoundProxyKeysChange,
   onUpstream429RetryEnabledChange,
   onUpstream429MaxRetriesChange,
@@ -258,6 +268,10 @@ export function UpstreamAccountGroupNoteDialog({
   draftDescription,
   noteLabel,
   notePlaceholder,
+  concurrencyLimitLabel,
+  concurrencyLimitHint,
+  concurrencyLimitCurrentLabel,
+  concurrencyLimitUnlimitedLabel,
   cancelLabel,
   saveLabel,
   closeLabel,
@@ -422,6 +436,16 @@ export function UpstreamAccountGroupNoteDialog({
                 onChange={(event) => onNoteChange(event.target.value)}
               />
             </label>
+
+            <ConcurrencyLimitSlider
+              value={concurrencyLimit}
+              disabled={busy}
+              title={concurrencyLimitLabel ?? 'Concurrency limit'}
+              description={concurrencyLimitHint ?? 'Use 1-30 to cap fresh assignments for this group. The last step means unlimited.'}
+              currentLabel={concurrencyLimitCurrentLabel ?? 'Current'}
+              unlimitedLabel={concurrencyLimitUnlimitedLabel ?? 'Unlimited'}
+              onChange={onConcurrencyLimitChange}
+            />
 
             {showUpstream429RetrySection ? (
               <section className="flex flex-col gap-3 rounded-2xl border border-base-300/80 bg-base-200/25 px-4 py-4">

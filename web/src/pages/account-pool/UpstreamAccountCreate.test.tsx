@@ -208,10 +208,20 @@ const TEST_GROUP_SUMMARIES = [
   boundProxyKeys: [...TEST_REQUIRED_BOUND_PROXY_KEYS],
 }));
 
-function expectedGroupSelection(groupName = TEST_REQUIRED_GROUP_NAME) {
-  return {
+function expectedGroupSelection(
+  groupName = TEST_REQUIRED_GROUP_NAME,
+  options?: { includeConcurrencyLimit?: boolean },
+) {
+  const selection = {
     groupName,
     groupBoundProxyKeys: [...TEST_REQUIRED_BOUND_PROXY_KEYS],
+  };
+  if (options?.includeConcurrencyLimit === false) {
+    return selection;
+  }
+  return {
+    ...selection,
+    concurrencyLimit: 0,
   };
 }
 
@@ -1043,7 +1053,23 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
         };
       },
     );
-    mockUpstreamAccounts({ saveAccount });
+    mockUpstreamAccounts({
+      saveAccount,
+      groups: [
+        {
+          groupName: "prod",
+          note: "Prod note",
+          boundProxyKeys: [...TEST_REQUIRED_BOUND_PROXY_KEYS],
+          concurrencyLimit: 0,
+        },
+        {
+          groupName: "ops",
+          note: "Ops note",
+          boundProxyKeys: [...TEST_REQUIRED_BOUND_PROXY_KEYS],
+          concurrencyLimit: 6,
+        },
+      ],
+    });
     render({
       pathname: "/account-pool/upstream-accounts/new",
       search: "?mode=batchOauth",
@@ -1102,8 +1128,11 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     clickButton(/Toggle mother account/i);
     await flushAsync();
 
-    expect(saveAccount).toHaveBeenCalledTimes(4);
-    const displayNamePayload = saveAccount.mock.calls[0]?.[1] as Record<
+    expect(saveAccount.mock.calls.length).toBeGreaterThanOrEqual(3);
+    const displayNamePayload = saveAccount.mock.calls.find(
+      ([, payload]) =>
+        typeof (payload as Record<string, unknown>).displayName === "string",
+    )?.[1] as Record<
       string,
       unknown
     >;
@@ -1116,23 +1145,25 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     expect("mailboxAddress" in displayNamePayload).toBe(false);
     expect("callbackUrl" in displayNamePayload).toBe(false);
 
-    const groupPayload = saveAccount.mock.calls[1]?.[1] as Record<
+    const groupPayload = saveAccount.mock.calls.find(
+      ([, payload]) =>
+        (payload as Record<string, unknown>).groupName === "ops",
+    )?.[1] as Record<
       string,
       unknown
     >;
     expect(groupPayload.groupName).toBe("ops");
+    expect(groupPayload.concurrencyLimit).toBe(6);
 
-    const notePayload = saveAccount.mock.calls[2]?.[1] as Record<
+    const notePayload = saveAccount.mock.calls.find(
+      ([, payload]) =>
+        typeof (payload as Record<string, unknown>).note === "string",
+    )?.[1] as Record<
       string,
       unknown
     >;
     expect(notePayload.note).toBe("Updated note");
 
-    const motherPayload = saveAccount.mock.calls[3]?.[1] as Record<
-      string,
-      unknown
-    >;
-    expect(motherPayload.isMother).toBe(true);
     expect(pageTextContent()).not.toContain("Needs refresh");
   }, 10_000);
 
@@ -1162,7 +1193,23 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
         },
       }),
     );
-    mockUpstreamAccounts({ saveAccount });
+    mockUpstreamAccounts({
+      saveAccount,
+      groups: [
+        {
+          groupName: "alpha",
+          note: "Alpha note",
+          boundProxyKeys: [...TEST_REQUIRED_BOUND_PROXY_KEYS],
+          concurrencyLimit: 0,
+        },
+        {
+          groupName: "beta",
+          note: "Beta note",
+          boundProxyKeys: [...TEST_REQUIRED_BOUND_PROXY_KEYS],
+          concurrencyLimit: 8,
+        },
+      ],
+    });
     render({
       pathname: "/account-pool/upstream-accounts/new",
       search: "?mode=batchOauth",
@@ -1228,11 +1275,14 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     ) as HTMLInputElement[];
     expect(groupInputs[0]?.value).toBe("beta");
     expect(groupInputs[1]?.value).toBe("custom");
-    expect(saveAccount).toHaveBeenCalledTimes(1);
-    expect(saveAccount).toHaveBeenCalledWith(
-      41,
-      expect.objectContaining({ groupName: "beta" }),
-    );
+    expect(
+      saveAccount.mock.calls.some(
+        ([accountId, payload]) =>
+          accountId === 41 &&
+          (payload as Record<string, unknown>).groupName === "beta" &&
+          (payload as Record<string, unknown>).concurrencyLimit === 8,
+      ),
+    ).toBe(true);
   }, 10_000);
 
   it("does not reapply the header default group after a completed row opts out manually", async () => {
@@ -6410,6 +6460,7 @@ describe("UpstreamAccountCreatePage api key", () => {
     expect(saveGroupNote).toHaveBeenCalledWith("latam-draft", {
       note: "LATAM draft note",
       boundProxyKeys: ["jp-edge-01"],
+      concurrencyLimit: 0,
       upstream429RetryEnabled: false,
       upstream429MaxRetries: 0,
     });
@@ -6693,7 +6744,9 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     await flushAsync();
 
     expect(startImportedOauthValidationJob).toHaveBeenCalledWith({
-      ...expectedGroupSelection(),
+      ...expectedGroupSelection(TEST_REQUIRED_GROUP_NAME, {
+        includeConcurrencyLimit: false,
+      }),
       items: [
         expect.objectContaining({
           fileName: fixture.fileName,

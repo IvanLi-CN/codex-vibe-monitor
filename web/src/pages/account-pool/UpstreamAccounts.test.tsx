@@ -4307,6 +4307,7 @@ describe("UpstreamAccountsPage api key details", () => {
     expect(saveGroupNote).toHaveBeenCalledWith("latam", {
       note: "LATAM draft note",
       boundProxyKeys: ["jp-edge-01"],
+      concurrencyLimit: 0,
       upstream429RetryEnabled: false,
       upstream429MaxRetries: 0,
     });

@@ -4,7 +4,7 @@
 
 - Status: 已完成
 - Created: 2026-03-14
-- Last: 2026-03-25
+- Last: 2026-04-01
 
 ## 背景 / 问题陈述
 
@@ -120,11 +120,12 @@
 
 ## Change log
 
+- 2026-04-01：补充标签规则弹窗在有限值与无限值两种并发档位下的 owner-facing Storybook 视觉证据，并把本 spec 的历史 `## Visual Evidence (PR)` 迁移为标准 `## Visual Evidence`。
 - 2026-03-25：修正半小时活跃 sticky 软降权的“有限额账号”定义，改为本地限额或最新远程额度窗口任一存在即生效；远程单窗口与 `0%` 已知窗口同样视为有限额信号，并补齐端到端回归，明确只有本地与远程额度信号都缺失时才继续豁免该软降权；主干 freshness 合入后继续保持路由候选比较器回归夹具与 credits 元数据字段对齐，不改变既有规则语义。
 - 2026-03-22：补充半小时活跃 sticky 软降权的适用范围，明确该软降权只作用于至少配置了一个本地 `5 小时` 或 `7 天` 限额的账号；两个本地限额都为空的账号继续沿用既有候选排序，不受该软降权影响。
 - 2026-03-18：补充账号页与新增页的 tag 字段交互契约，明确必须收敛为“内联 chips + 尾部添加触发器 + anchored popover 搜索/多选/创建”的单控件模型，并要求多选过程保持 popover 打开；本轮 PR 视觉证据继续限定为 Storybook mock-only。
 
-## Visual Evidence (PR)
+## Visual Evidence
 
 - source_type: storybook_canvas
   target_program: mock-only
@@ -169,3 +170,25 @@
   evidence_note: 验证账号详情抽屉中的 tag 添加面板展开后仍保持可见并停留在抽屉语义层内，证明嵌套 overlay 已继承最近宿主而不再被抽屉层级压住。
   image:
   ![Account detail drawer tag picker open](./assets/account-detail-drawer-tag-picker-open.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Account Pool/Components/Tag Rule Dialog/Finite Limit
+  state: finite-concurrency-limit
+  evidence_note: 验证标签规则弹窗在有限并发值场景下，会把当前值、滑块与其它路由规则控件稳定收敛到同一张 owner-facing 画面中。
+  image:
+  ![Tag rule dialog finite concurrency limit](./assets/tag-rule-dialog-finite-limit.png)
+
+- source_type: storybook_canvas
+  target_program: mock-only
+  capture_scope: element
+  sensitive_exclusion: N/A
+  submission_gate: pending-owner-approval
+  story_id_or_title: Account Pool/Components/Tag Rule Dialog/Unlimited Limit
+  state: unlimited-concurrency-step
+  evidence_note: 验证标签规则弹窗在末档使用 `∞` 表达无限，避免把 `30` 与无限文案误读成同一个短语，同时保持当前值胶囊继续回显 `Unlimited`。
+  image:
+  ![Tag rule dialog unlimited infinity step](./assets/tag-rule-dialog-unlimited-infinity.png)

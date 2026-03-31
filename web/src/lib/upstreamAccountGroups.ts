@@ -10,6 +10,18 @@ export function buildGroupNoteMap(groups: UpstreamAccountGroupSummary[]): Map<st
   )
 }
 
+export function resolveGroupConcurrencyLimit(
+  groups: UpstreamAccountGroupSummary[],
+  drafts: Record<string, number>,
+  groupName?: string | null,
+): number {
+  const normalized = normalizeGroupName(groupName)
+  if (!normalized) return 0
+  const existing = groups.find((group) => normalizeGroupName(group.groupName) === normalized)
+  if (existing) return existing.concurrencyLimit ?? 0
+  return drafts[normalized] ?? 0
+}
+
 export function buildGroupNameSuggestions(
   names: Array<string | null | undefined>,
   groups: UpstreamAccountGroupSummary[],

@@ -434,6 +434,13 @@ const baseTranslations = {
       "This group is not populated yet. Saving here creates its shared settings in advance.",
     "accountPool.upstreamAccounts.groupNotes.notePlaceholder":
       "Write a shared note for this group",
+    "accountPool.upstreamAccounts.groupNotes.concurrency.label":
+      "Concurrency limit",
+    "accountPool.upstreamAccounts.groupNotes.concurrency.hint":
+      "Use 1-30 to cap fresh assignments for this group. The last slider step means unlimited.",
+    "accountPool.upstreamAccounts.groupNotes.concurrency.current": "Current",
+    "accountPool.upstreamAccounts.groupNotes.concurrency.unlimited":
+      "Unlimited",
     "accountPool.upstreamAccounts.groupNotes.badges.existing": "Saved group",
     "accountPool.upstreamAccounts.groupNotes.badges.draft": "Draft group",
     "accountPool.upstreamAccounts.groupNotes.upstream429.label":
@@ -746,6 +753,7 @@ const baseTranslations = {
     "accountPool.tags.rule.cutOutOff": "Cut-out blocked",
     "accountPool.tags.rule.cutInOn": "Cut-in allowed",
     "accountPool.tags.rule.cutInOff": "Cut-in blocked",
+    "accountPool.tags.rule.concurrency": "Concurrency {{count}}",
     "accountPool.tags.field.label": "Tags",
     "accountPool.tags.field.add": "Add tag",
     "accountPool.tags.field.empty": "No tag selected yet.",
@@ -772,6 +780,11 @@ const baseTranslations = {
       "Allow moving conversations out of this account",
     "accountPool.tags.dialog.allowCutIn":
       "Allow moving conversations into this account",
+    "accountPool.tags.dialog.concurrencyLimit": "Concurrency limit",
+    "accountPool.tags.dialog.concurrencyHint":
+      "Use 1-30 to cap fresh assignments. The final slider step means unlimited.",
+    "accountPool.tags.dialog.currentValue": "Current",
+    "accountPool.tags.dialog.unlimited": "Unlimited",
     "accountPool.tags.dialog.cancel": "Cancel",
     "accountPool.tags.dialog.save": "Save tag",
     "accountPool.tags.dialog.createAction": "Create tag",
@@ -1973,6 +1986,12 @@ const baseTranslations = {
       "这个分组还没有实际账号，现在保存会提前创建它的共享设置。",
     "accountPool.upstreamAccounts.groupNotes.notePlaceholder":
       "填写这个分组的共享备注",
+    "accountPool.upstreamAccounts.groupNotes.concurrency.label":
+      "并发限制",
+    "accountPool.upstreamAccounts.groupNotes.concurrency.hint":
+      "用 1-30 限制这个分组的新分配并发，最后一档表示无限。",
+    "accountPool.upstreamAccounts.groupNotes.concurrency.current": "当前",
+    "accountPool.upstreamAccounts.groupNotes.concurrency.unlimited": "无限",
     "accountPool.upstreamAccounts.groupNotes.badges.existing": "已存在分组",
     "accountPool.upstreamAccounts.groupNotes.badges.draft": "草稿分组",
     "accountPool.upstreamAccounts.groupNotes.upstream429.label":
@@ -2266,6 +2285,7 @@ const baseTranslations = {
     "accountPool.tags.rule.cutOutOff": "禁止切出",
     "accountPool.tags.rule.cutInOn": "允许切入",
     "accountPool.tags.rule.cutInOff": "禁止切入",
+    "accountPool.tags.rule.concurrency": "并发 {{count}}",
     "accountPool.tags.field.label": "Tags",
     "accountPool.tags.field.add": "添加 tag",
     "accountPool.tags.field.empty": "还没有选择任何 tag。",
@@ -2289,6 +2309,11 @@ const baseTranslations = {
     "accountPool.tags.dialog.maxConversations": "最大对话数",
     "accountPool.tags.dialog.allowCutOut": "允许把对话切出到其他账号",
     "accountPool.tags.dialog.allowCutIn": "允许把对话切入到当前账号",
+    "accountPool.tags.dialog.concurrencyLimit": "并发限制",
+    "accountPool.tags.dialog.concurrencyHint":
+      "用 1-30 限制新分配并发，最后一档表示无限。",
+    "accountPool.tags.dialog.currentValue": "当前",
+    "accountPool.tags.dialog.unlimited": "无限",
     "accountPool.tags.dialog.cancel": "取消",
     "accountPool.tags.dialog.save": "保存 tag",
     "accountPool.tags.dialog.createAction": "创建 tag",
