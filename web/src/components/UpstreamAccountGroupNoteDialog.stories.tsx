@@ -2,11 +2,13 @@ import { useState } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, userEvent, within } from 'storybook/test'
 import type { ForwardProxyBindingNode } from '../lib/api'
+import { apiConcurrencyLimitToSliderValue } from '../lib/concurrencyLimit'
 import { UpstreamAccountGroupNoteDialog } from './UpstreamAccountGroupNoteDialog'
 
 type DialogHarnessProps = {
   groupName: string
   note: string
+  concurrencyLimit?: number
   existing: boolean
   busy?: boolean
   error?: string | null
@@ -191,6 +193,9 @@ function DialogHarness({
   ...args
 }: DialogHarnessProps) {
   const [note, setNote] = useState(initialNote)
+  const [concurrencyLimit, setConcurrencyLimit] = useState(
+    apiConcurrencyLimitToSliderValue(args.concurrencyLimit ?? 0),
+  )
   const [boundProxyKeys, setBoundProxyKeys] = useState(initialBoundProxyKeys)
   const [upstream429RetryEnabled, setUpstream429RetryEnabled] = useState(initialUpstream429RetryEnabled)
   const [upstream429MaxRetries, setUpstream429MaxRetries] = useState(initialUpstream429MaxRetries)
@@ -211,11 +216,13 @@ function DialogHarness({
           open
           {...args}
           note={note}
+          concurrencyLimit={concurrencyLimit}
           boundProxyKeys={boundProxyKeys}
           upstream429RetryEnabled={upstream429RetryEnabled}
           upstream429MaxRetries={upstream429MaxRetries}
           availableProxyNodes={availableProxyNodes}
           onNoteChange={setNote}
+          onConcurrencyLimitChange={setConcurrencyLimit}
           onBoundProxyKeysChange={setBoundProxyKeys}
           onUpstream429RetryEnabledChange={(value) => {
             setUpstream429RetryEnabled(value)
@@ -231,6 +238,10 @@ function DialogHarness({
           draftDescription="This group is not populated yet. Saving here creates its shared settings in advance."
           noteLabel="Group note"
           notePlaceholder="Capture what this group is for, ownership, and any operational caveats."
+          concurrencyLimitLabel="Concurrency limit"
+          concurrencyLimitHint="Use 1-30 to cap fresh assignments for this group. The last slider step means unlimited."
+          concurrencyLimitCurrentLabel="Current"
+          concurrencyLimitUnlimitedLabel="Unlimited"
           cancelLabel="Cancel"
           saveLabel="Save group settings"
           closeLabel="Close dialog"
@@ -278,6 +289,7 @@ const meta = {
   args: {
     groupName: 'production',
     note: 'Primary team group for premium traffic and shared routing policies.',
+    concurrencyLimit: 6,
     existing: true,
     busy: false,
     error: null,
@@ -400,5 +412,15 @@ export const LegacyAliasBindingsRemainSaveable: Story = {
       canvas.queryByText(/select at least one available proxy node or clear bindings before saving\./i),
     ).not.toBeInTheDocument()
     await expect(canvas.getByRole('button', { name: /save group settings/i })).toBeEnabled()
+  },
+}
+
+export const UnlimitedDraft: Story = {
+  args: {
+    groupName: 'bursting',
+    note: '',
+    concurrencyLimit: 0,
+    existing: false,
+    boundProxyKeys: [],
   },
 }

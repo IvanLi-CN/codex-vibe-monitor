@@ -29,6 +29,10 @@ interface AccountTagFieldLabels {
   maxConversations: string
   allowCutOut: string
   allowCutIn: string
+  concurrencyLimit?: string
+  concurrencyHint?: string
+  currentValue?: string
+  unlimited?: string
   cancel: string
   save: string
   createAction: string
@@ -274,6 +278,10 @@ export function AccountTagField({
           maxConversations: labels.maxConversations,
           allowCutOut: labels.allowCutOut,
           allowCutIn: labels.allowCutIn,
+          concurrencyLimit: labels.concurrencyLimit,
+          concurrencyHint: labels.concurrencyHint,
+          currentValue: labels.currentValue,
+          unlimited: labels.unlimited,
           cancel: labels.cancel,
           save: labels.save,
           create: labels.createAction,

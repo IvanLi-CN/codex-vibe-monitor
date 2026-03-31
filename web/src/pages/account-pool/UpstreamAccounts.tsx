@@ -67,8 +67,13 @@ import {
   buildGroupNameSuggestions,
   isExistingGroup,
   normalizeGroupName,
+  resolveGroupConcurrencyLimit,
   resolveGroupNote,
 } from '../../lib/upstreamAccountGroups'
+import {
+  apiConcurrencyLimitToSliderValue,
+  sliderConcurrencyLimitToApiValue,
+} from '../../lib/concurrencyLimit'
 import { validateUpstreamBaseUrl } from '../../lib/upstreamBaseUrl'
 import { generatePoolRoutingKey } from '../../lib/poolRouting'
 import { applyMotherUpdateToItems } from '../../lib/upstreamMother'
@@ -170,6 +175,7 @@ type GroupSettingsEditorState = {
   groupName: string
   note: string
   existing: boolean
+  concurrencyLimit: number
   boundProxyKeys: string[]
   upstream429RetryEnabled: boolean
   upstream429MaxRetries: number
@@ -1009,6 +1015,7 @@ export function SharedUpstreamAccountDetailDrawer({
   const [accountRecordsError, setAccountRecordsError] = useState<string | null>(null)
   const [groupDraftNotes, setGroupDraftNotes] = useState<Record<string, string>>({})
   const [groupDraftBoundProxyKeys, setGroupDraftBoundProxyKeys] = useState<Record<string, string[]>>({})
+  const [groupDraftConcurrencyLimits, setGroupDraftConcurrencyLimits] = useState<Record<string, number>>({})
   const [groupDraftUpstream429RetryEnabled, setGroupDraftUpstream429RetryEnabled] = useState<Record<string, boolean>>({})
   const [groupDraftUpstream429MaxRetries, setGroupDraftUpstream429MaxRetries] = useState<Record<string, number>>({})
   const [groupNoteEditor, setGroupNoteEditor] = useState<GroupSettingsEditorState>({
@@ -1016,6 +1023,7 @@ export function SharedUpstreamAccountDetailDrawer({
     groupName: '',
     note: '',
     existing: false,
+    concurrencyLimit: apiConcurrencyLimitToSliderValue(0),
     boundProxyKeys: [],
     upstream429RetryEnabled: false,
     upstream429MaxRetries: 0,
@@ -1082,6 +1090,11 @@ export function SharedUpstreamAccountDetailDrawer({
       if (nextEntries.length === Object.keys(current).length) return current
       return Object.fromEntries(nextEntries)
     })
+    setGroupDraftConcurrencyLimits((current) => {
+      const nextEntries = Object.entries(current).filter(([groupName]) => !isExistingGroup(groups, groupName))
+      if (nextEntries.length === Object.keys(current).length) return current
+      return Object.fromEntries(nextEntries)
+    })
     setGroupDraftUpstream429RetryEnabled((current) => {
       const nextEntries = Object.entries(current).filter(([groupName]) => !isExistingGroup(groups, groupName))
       if (nextEntries.length === Object.keys(current).length) return current
@@ -1106,6 +1119,7 @@ export function SharedUpstreamAccountDetailDrawer({
     const draftNames = Object.fromEntries([
       ...Object.keys(groupDraftNotes).map((groupName) => [groupName, '']),
       ...Object.keys(groupDraftBoundProxyKeys).map((groupName) => [groupName, '']),
+      ...Object.keys(groupDraftConcurrencyLimits).map((groupName) => [groupName, '']),
       ...Object.keys(groupDraftUpstream429RetryEnabled).map((groupName) => [groupName, '']),
       ...Object.keys(groupDraftUpstream429MaxRetries).map((groupName) => [groupName, '']),
     ])
@@ -1113,7 +1127,7 @@ export function SharedUpstreamAccountDetailDrawer({
       names: buildGroupNameSuggestions(items.map((item) => item.groupName), groups, draftNames),
       hasUngrouped: hasUngroupedAccounts,
     }
-  }, [groupDraftBoundProxyKeys, groupDraftNotes, groupDraftUpstream429MaxRetries, groupDraftUpstream429RetryEnabled, groups, hasUngroupedAccounts, items])
+  }, [groupDraftBoundProxyKeys, groupDraftConcurrencyLimits, groupDraftNotes, groupDraftUpstream429MaxRetries, groupDraftUpstream429RetryEnabled, groups, hasUngroupedAccounts, items])
 
   const resolveGroupSummaryForName = useCallback((groupName: string) => {
     const normalized = normalizeGroupName(groupName)
@@ -1124,6 +1138,12 @@ export function SharedUpstreamAccountDetailDrawer({
   const resolveGroupNoteForName = useCallback(
     (groupName: string) => resolveGroupNote(groups, groupDraftNotes, groupName),
     [groupDraftNotes, groups],
+  )
+
+  const resolveGroupConcurrencyLimitForName = useCallback(
+    (groupName: string) =>
+      resolveGroupConcurrencyLimit(groups, groupDraftConcurrencyLimits, groupName),
+    [groupDraftConcurrencyLimits, groups],
   )
 
   const resolvePendingGroupNoteForName = useCallback((groupName: string) => {
@@ -1166,9 +1186,10 @@ export function SharedUpstreamAccountDetailDrawer({
   const hasGroupSettings = useCallback((groupName: string) => (
     resolveGroupNoteForName(groupName).trim().length > 0 ||
     resolveGroupBoundProxyKeysForName(groupName).length > 0 ||
+    resolveGroupConcurrencyLimitForName(groupName) > 0 ||
     resolveGroupUpstream429RetryEnabledForName(groupName) ||
     resolveGroupUpstream429MaxRetriesForName(groupName) > 0
-  ), [resolveGroupBoundProxyKeysForName, resolveGroupNoteForName, resolveGroupUpstream429MaxRetriesForName, resolveGroupUpstream429RetryEnabledForName])
+  ), [resolveGroupBoundProxyKeysForName, resolveGroupConcurrencyLimitForName, resolveGroupNoteForName, resolveGroupUpstream429MaxRetriesForName, resolveGroupUpstream429RetryEnabledForName])
 
   const clearDraftGroupSettings = useCallback((groupName: string) => {
     const normalizedGroupName = normalizeGroupName(groupName)
@@ -1180,6 +1201,12 @@ export function SharedUpstreamAccountDetailDrawer({
       return next
     })
     setGroupDraftBoundProxyKeys((current) => {
+      if (!(normalizedGroupName in current)) return current
+      const next = { ...current }
+      delete next[normalizedGroupName]
+      return next
+    })
+    setGroupDraftConcurrencyLimits((current) => {
       if (!(normalizedGroupName in current)) return current
       const next = { ...current }
       delete next[normalizedGroupName]
@@ -1204,9 +1231,10 @@ export function SharedUpstreamAccountDetailDrawer({
     if (!normalizedGroupName) return
     const hasDraftNote = normalizedGroupName in groupDraftNotes
     const hasDraftBindings = normalizedGroupName in groupDraftBoundProxyKeys
+    const hasDraftConcurrency = normalizedGroupName in groupDraftConcurrencyLimits
     const hasDraftUpstream429RetryEnabled = normalizedGroupName in groupDraftUpstream429RetryEnabled
     const hasDraftUpstream429MaxRetries = normalizedGroupName in groupDraftUpstream429MaxRetries
-    if (!hasDraftNote && !hasDraftBindings && !hasDraftUpstream429RetryEnabled && !hasDraftUpstream429MaxRetries) return
+    if (!hasDraftNote && !hasDraftBindings && !hasDraftConcurrency && !hasDraftUpstream429RetryEnabled && !hasDraftUpstream429MaxRetries) return
 
     const normalizedNote = hasDraftNote ? groupDraftNotes[normalizedGroupName]?.trim() ?? '' : ''
     const normalizedBoundProxyKeys = Array.from(
@@ -1216,6 +1244,9 @@ export function SharedUpstreamAccountDetailDrawer({
           .filter((value) => value.length > 0),
       ),
     )
+    const normalizedConcurrencyLimit = hasDraftConcurrency
+      ? groupDraftConcurrencyLimits[normalizedGroupName] ?? 0
+      : 0
     const normalizedUpstream429RetryEnabled = hasDraftUpstream429RetryEnabled
       ? groupDraftUpstream429RetryEnabled[normalizedGroupName] === true
       : false
@@ -1226,11 +1257,12 @@ export function SharedUpstreamAccountDetailDrawer({
     await saveGroupNote(normalizedGroupName, {
       note: normalizedNote || undefined,
       boundProxyKeys: normalizedBoundProxyKeys,
+      concurrencyLimit: normalizedConcurrencyLimit,
       upstream429RetryEnabled: normalizedUpstream429RetryEnabled,
       upstream429MaxRetries: normalizedUpstream429MaxRetries,
     })
     clearDraftGroupSettings(normalizedGroupName)
-  }, [clearDraftGroupSettings, groupDraftBoundProxyKeys, groupDraftNotes, groupDraftUpstream429MaxRetries, groupDraftUpstream429RetryEnabled, saveGroupNote])
+  }, [clearDraftGroupSettings, groupDraftBoundProxyKeys, groupDraftConcurrencyLimits, groupDraftNotes, groupDraftUpstream429MaxRetries, groupDraftUpstream429RetryEnabled, saveGroupNote])
 
   const openGroupNoteEditor = useCallback((groupName: string) => {
     if (!writesEnabled) return
@@ -1243,11 +1275,12 @@ export function SharedUpstreamAccountDetailDrawer({
       groupName: normalized,
       note: resolveGroupNoteForName(normalized),
       existing: existingGroup != null,
+      concurrencyLimit: apiConcurrencyLimitToSliderValue(resolveGroupConcurrencyLimitForName(normalized)),
       boundProxyKeys: resolveGroupBoundProxyKeysForName(normalized),
       upstream429RetryEnabled: resolveGroupUpstream429RetryEnabledForName(normalized),
       upstream429MaxRetries: resolveGroupUpstream429MaxRetriesForName(normalized),
     })
-  }, [resolveGroupBoundProxyKeysForName, resolveGroupNoteForName, resolveGroupSummaryForName, resolveGroupUpstream429MaxRetriesForName, resolveGroupUpstream429RetryEnabledForName, writesEnabled])
+  }, [resolveGroupBoundProxyKeysForName, resolveGroupConcurrencyLimitForName, resolveGroupNoteForName, resolveGroupSummaryForName, resolveGroupUpstream429MaxRetriesForName, resolveGroupUpstream429RetryEnabledForName, writesEnabled])
 
   const closeGroupNoteEditor = useCallback(() => {
     if (groupNoteBusy) return
@@ -1260,6 +1293,7 @@ export function SharedUpstreamAccountDetailDrawer({
     const normalizedGroupName = normalizeGroupName(groupNoteEditor.groupName)
     if (!normalizedGroupName) return
     const normalizedNote = groupNoteEditor.note.trim()
+    const normalizedConcurrencyLimit = sliderConcurrencyLimitToApiValue(groupNoteEditor.concurrencyLimit)
     const normalizedBoundProxyKeys = Array.from(
       new Set(groupNoteEditor.boundProxyKeys.map((value) => value.trim()).filter((value) => value.length > 0)),
     )
@@ -1279,6 +1313,12 @@ export function SharedUpstreamAccountDetailDrawer({
       setGroupDraftBoundProxyKeys((current) => {
         const next = { ...current }
         if (normalizedBoundProxyKeys.length > 0) next[normalizedGroupName] = normalizedBoundProxyKeys
+        else delete next[normalizedGroupName]
+        return next
+      })
+      setGroupDraftConcurrencyLimits((current) => {
+        const next = { ...current }
+        if (normalizedConcurrencyLimit > 0) next[normalizedGroupName] = normalizedConcurrencyLimit
         else delete next[normalizedGroupName]
         return next
       })
@@ -1309,6 +1349,7 @@ export function SharedUpstreamAccountDetailDrawer({
       await saveGroupNote(normalizedGroupName, {
         note: normalizedNote || undefined,
         boundProxyKeys: normalizedBoundProxyKeys,
+        concurrencyLimit: normalizedConcurrencyLimit,
         upstream429RetryEnabled: normalizedUpstream429RetryEnabled,
         upstream429MaxRetries: normalizedUpstream429MaxRetries,
       })
@@ -1319,7 +1360,7 @@ export function SharedUpstreamAccountDetailDrawer({
     } finally {
       setGroupNoteBusy(false)
     }
-  }, [clearDraftGroupSettings, groupNoteEditor.boundProxyKeys, groupNoteEditor.existing, groupNoteEditor.groupName, groupNoteEditor.note, groupNoteEditor.upstream429MaxRetries, groupNoteEditor.upstream429RetryEnabled, saveGroupNote, writesEnabled])
+  }, [clearDraftGroupSettings, groupNoteEditor.boundProxyKeys, groupNoteEditor.concurrencyLimit, groupNoteEditor.existing, groupNoteEditor.groupName, groupNoteEditor.note, groupNoteEditor.upstream429MaxRetries, groupNoteEditor.upstream429RetryEnabled, saveGroupNote, writesEnabled])
 
   const handleCreateTag = useCallback(async (payload: Parameters<typeof createTag>[0]) => {
     const detail = await createTag(payload)
@@ -1481,6 +1522,10 @@ export function SharedUpstreamAccountDetailDrawer({
     maxConversations: t('accountPool.tags.dialog.maxConversations'),
     allowCutOut: t('accountPool.tags.dialog.allowCutOut'),
     allowCutIn: t('accountPool.tags.dialog.allowCutIn'),
+    concurrencyLimit: t('accountPool.tags.dialog.concurrencyLimit'),
+    concurrencyHint: t('accountPool.tags.dialog.concurrencyHint'),
+    currentValue: t('accountPool.tags.dialog.currentValue'),
+    unlimited: t('accountPool.tags.dialog.unlimited'),
     cancel: t('accountPool.tags.dialog.cancel'),
     save: t('accountPool.tags.dialog.save'),
     createAction: t('accountPool.tags.dialog.createAction'),
@@ -2551,6 +2596,7 @@ export function SharedUpstreamAccountDetailDrawer({
         container={detailDrawerPortalContainer}
         groupName={groupNoteEditor.groupName}
         note={groupNoteEditor.note}
+        concurrencyLimit={groupNoteEditor.concurrencyLimit}
         boundProxyKeys={groupNoteEditor.boundProxyKeys}
         availableProxyNodes={forwardProxyNodes}
         busy={groupNoteBusy}
@@ -2559,6 +2605,10 @@ export function SharedUpstreamAccountDetailDrawer({
         onNoteChange={(value) => {
           setGroupNoteError(null)
           setGroupNoteEditor((current) => ({ ...current, note: value }))
+        }}
+        onConcurrencyLimitChange={(value) => {
+          setGroupNoteError(null)
+          setGroupNoteEditor((current) => ({ ...current, concurrencyLimit: value }))
         }}
         onBoundProxyKeysChange={(value) => {
           setGroupNoteError(null)
@@ -2592,6 +2642,10 @@ export function SharedUpstreamAccountDetailDrawer({
         draftDescription={t('accountPool.upstreamAccounts.groupNotes.draftDescription')}
         noteLabel={t('accountPool.upstreamAccounts.fields.note')}
         notePlaceholder={t('accountPool.upstreamAccounts.groupNotes.notePlaceholder')}
+        concurrencyLimitLabel={t('accountPool.upstreamAccounts.groupNotes.concurrency.label')}
+        concurrencyLimitHint={t('accountPool.upstreamAccounts.groupNotes.concurrency.hint')}
+        concurrencyLimitCurrentLabel={t('accountPool.upstreamAccounts.groupNotes.concurrency.current')}
+        concurrencyLimitUnlimitedLabel={t('accountPool.upstreamAccounts.groupNotes.concurrency.unlimited')}
         cancelLabel={t('accountPool.upstreamAccounts.actions.cancel')}
         saveLabel={t('accountPool.upstreamAccounts.actions.save')}
         closeLabel={t('accountPool.upstreamAccounts.actions.closeDetails')}

@@ -875,6 +875,7 @@ pub(crate) struct EffectiveRoutingRule {
     max_conversations: Option<i64>,
     allow_cut_out: bool,
     allow_cut_in: bool,
+    concurrency_limit: i64,
     source_tag_ids: Vec<i64>,
     source_tag_names: Vec<String>,
     guard_rules: Vec<EffectiveConversationGuard>,
@@ -888,6 +889,7 @@ pub(crate) struct TagRoutingRule {
     max_conversations: Option<i64>,
     allow_cut_out: bool,
     allow_cut_in: bool,
+    concurrency_limit: i64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -923,6 +925,7 @@ pub(crate) struct UpstreamAccountGroupSummary {
     bound_proxy_keys: Vec<String>,
     upstream_429_retry_enabled: bool,
     upstream_429_max_retries: u8,
+    concurrency_limit: i64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -931,6 +934,7 @@ struct UpstreamAccountGroupMetadata {
     bound_proxy_keys: Vec<String>,
     upstream_429_retry_enabled: bool,
     upstream_429_max_retries: u8,
+    concurrency_limit: i64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -939,11 +943,15 @@ struct RequestedGroupMetadataChanges {
     note_was_requested: bool,
     bound_proxy_keys: Vec<String>,
     bound_proxy_keys_was_requested: bool,
+    concurrency_limit: i64,
+    concurrency_limit_was_requested: bool,
 }
 
 impl RequestedGroupMetadataChanges {
     fn was_requested(&self) -> bool {
-        self.note_was_requested || self.bound_proxy_keys_was_requested
+        self.note_was_requested
+            || self.bound_proxy_keys_was_requested
+            || self.concurrency_limit_was_requested
     }
 }
 
@@ -1359,6 +1367,7 @@ pub(crate) struct CreateOauthLoginSessionRequest {
     group_bound_proxy_keys: Option<Vec<String>>,
     note: Option<String>,
     group_note: Option<String>,
+    concurrency_limit: Option<i64>,
     account_id: Option<i64>,
     #[serde(default)]
     tag_ids: Vec<i64>,
@@ -1390,6 +1399,8 @@ pub(crate) struct UpdateOauthLoginSessionRequest {
     note: OptionalField<String>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     group_note: OptionalField<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    concurrency_limit: OptionalField<i64>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     tag_ids: OptionalField<Vec<i64>>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
@@ -1426,6 +1437,7 @@ pub(crate) struct CreateApiKeyAccountRequest {
     group_bound_proxy_keys: Option<Vec<String>>,
     note: Option<String>,
     group_note: Option<String>,
+    concurrency_limit: Option<i64>,
     upstream_base_url: Option<String>,
     api_key: String,
     is_mother: Option<bool>,
@@ -1467,6 +1479,7 @@ pub(crate) struct ImportValidatedOauthAccountsRequest {
     #[serde(default)]
     group_bound_proxy_keys: Option<Vec<String>>,
     group_note: Option<String>,
+    concurrency_limit: Option<i64>,
     #[serde(default)]
     tag_ids: Vec<i64>,
 }
@@ -1756,6 +1769,7 @@ pub(crate) struct UpdateUpstreamAccountRequest {
     group_bound_proxy_keys: Option<Vec<String>>,
     note: Option<String>,
     group_note: Option<String>,
+    concurrency_limit: Option<i64>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     upstream_base_url: OptionalField<String>,
     enabled: Option<bool>,
@@ -1776,6 +1790,7 @@ pub(crate) struct CreateTagRequest {
     max_conversations: Option<i64>,
     allow_cut_out: bool,
     allow_cut_in: bool,
+    concurrency_limit: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1787,6 +1802,7 @@ pub(crate) struct UpdateTagRequest {
     max_conversations: Option<i64>,
     allow_cut_out: Option<bool>,
     allow_cut_in: Option<bool>,
+    concurrency_limit: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1816,6 +1832,7 @@ pub(crate) struct UpdateUpstreamAccountGroupRequest {
     upstream_429_retry_enabled: Option<bool>,
     #[serde(default)]
     upstream_429_max_retries: Option<u8>,
+    concurrency_limit: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2329,6 +2346,7 @@ struct TagRow {
     max_conversations: Option<i64>,
     allow_cut_out: i64,
     allow_cut_in: i64,
+    concurrency_limit: i64,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -2341,6 +2359,7 @@ struct AccountTagRow {
     max_conversations: Option<i64>,
     allow_cut_out: i64,
     allow_cut_in: i64,
+    concurrency_limit: i64,
 }
 
 #[derive(Debug, Clone, FromRow)]
@@ -2352,6 +2371,7 @@ struct TagListRow {
     max_conversations: Option<i64>,
     allow_cut_out: i64,
     allow_cut_in: i64,
+    concurrency_limit: i64,
     updated_at: String,
     account_count: i64,
     group_count: i64,
@@ -2540,6 +2560,7 @@ struct OauthLoginSessionRow {
     note: Option<String>,
     tag_ids_json: Option<String>,
     group_note: Option<String>,
+    group_concurrency_limit: i64,
     mailbox_session_id: Option<String>,
     mailbox_address: Option<String>,
     state: String,
@@ -2807,6 +2828,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             note TEXT,
             tag_ids_json TEXT,
             group_note TEXT,
+            group_concurrency_limit INTEGER NOT NULL DEFAULT 0,
             mailbox_session_id TEXT,
             generated_mailbox_address TEXT,
             state TEXT NOT NULL UNIQUE,
@@ -2861,6 +2883,14 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     ensure_nullable_text_column(pool, "pool_oauth_login_sessions", "tag_ids_json")
         .await
         .context("failed to ensure pool_oauth_login_sessions.tag_ids_json")?;
+    ensure_integer_column_with_default(
+        pool,
+        "pool_oauth_login_sessions",
+        "group_concurrency_limit",
+        "0",
+    )
+    .await
+    .context("failed to ensure pool_oauth_login_sessions.group_concurrency_limit")?;
 
     sqlx::query(
         r#"
@@ -2872,6 +2902,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             max_conversations INTEGER,
             allow_cut_out INTEGER NOT NULL DEFAULT 1,
             allow_cut_in INTEGER NOT NULL DEFAULT 1,
+            concurrency_limit INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
@@ -2880,6 +2911,9 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to ensure pool_tags table existence")?;
+    ensure_integer_column_with_default(pool, "pool_tags", "concurrency_limit", "0")
+        .await
+        .context("failed to ensure pool_tags.concurrency_limit")?;
 
     sqlx::query(
         r#"
@@ -2954,6 +2988,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             bound_proxy_keys_json TEXT NOT NULL DEFAULT '[]',
             upstream_429_retry_enabled INTEGER NOT NULL DEFAULT 0,
             upstream_429_max_retries INTEGER NOT NULL DEFAULT 0,
+            concurrency_limit INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
         )
@@ -2997,6 +3032,14 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
         .await
         .context("failed to add pool_upstream_account_group_notes.upstream_429_max_retries")?;
     }
+    ensure_integer_column_with_default(
+        pool,
+        "pool_upstream_account_group_notes",
+        "concurrency_limit",
+        "0",
+    )
+    .await
+    .context("failed to ensure pool_upstream_account_group_notes.concurrency_limit")?;
 
     sqlx::query(
         r#"
@@ -3384,6 +3427,7 @@ pub(crate) async fn create_tag(
         payload.max_conversations,
         payload.allow_cut_out,
         payload.allow_cut_in,
+        payload.concurrency_limit,
     )?;
     let detail = insert_tag(&state.pool, &name, &rule)
         .await
@@ -3429,6 +3473,7 @@ pub(crate) async fn update_tag(
         payload.max_conversations.or(existing.max_conversations),
         payload.allow_cut_out.unwrap_or(existing.allow_cut_out != 0),
         payload.allow_cut_in.unwrap_or(existing.allow_cut_in != 0),
+        payload.concurrency_limit.or(Some(existing.concurrency_limit)),
     )?;
     let detail = persist_tag_update(&state.pool, id, &name, &rule)
         .await
@@ -3484,6 +3529,10 @@ pub(crate) async fn update_upstream_account_group(
         .upstream_429_max_retries
         .map(normalize_group_upstream_429_max_retries)
         .unwrap_or_default();
+    let concurrency_limit = normalize_concurrency_limit(
+        payload.concurrency_limit.or(Some(0)),
+        "concurrencyLimit",
+    )?;
 
     let mut tx = state
         .pool
@@ -3533,6 +3582,10 @@ pub(crate) async fn update_upstream_account_group(
             } else {
                 existing_metadata.upstream_429_max_retries
             },
+            concurrency_limit: payload
+                .concurrency_limit
+                .map(|_| concurrency_limit)
+                .unwrap_or(existing_metadata.concurrency_limit),
         },
     )
     .await
@@ -3548,6 +3601,7 @@ pub(crate) async fn update_upstream_account_group(
         bound_proxy_keys: saved.bound_proxy_keys,
         upstream_429_retry_enabled: saved.upstream_429_retry_enabled,
         upstream_429_max_retries: saved.upstream_429_max_retries,
+        concurrency_limit: saved.concurrency_limit,
     }))
 }
 
@@ -4740,6 +4794,7 @@ pub(crate) async fn import_validated_oauth_accounts(
         group_name,
         group_bound_proxy_keys,
         group_note,
+        concurrency_limit,
         tag_ids,
     } = payload;
     let crypto_key = state.upstream_accounts.require_crypto_key()?;
@@ -4755,12 +4810,16 @@ pub(crate) async fn import_validated_oauth_accounts(
     }
     let group_name = normalize_optional_text(group_name);
     let group_note = normalize_optional_text(group_note);
+    let group_concurrency_limit =
+        normalize_concurrency_limit(concurrency_limit, "concurrencyLimit")?;
     validate_group_note_target(group_name.as_deref(), group_note.is_some())?;
     let requested_group_metadata_changes = build_requested_group_metadata_changes(
         group_note.clone(),
         group_note.is_some(),
         group_bound_proxy_keys.clone(),
         group_bound_proxy_keys.is_some(),
+        group_concurrency_limit,
+        concurrency_limit.is_some(),
     );
     let resolved_group_binding = resolve_required_group_proxy_binding_for_write(
         state.as_ref(),
@@ -5416,6 +5475,7 @@ pub(crate) async fn create_oauth_login_session(
     let mut preserved_display_name = None;
     let mut preserved_group_name = None;
     let mut preserved_note = None;
+    let mut preserved_group_concurrency_limit = 0;
 
     if let Some(account_id) = payload.account_id {
         let Some(existing) = load_upstream_account_row(&state.pool, account_id)
@@ -5434,12 +5494,23 @@ pub(crate) async fn create_oauth_login_session(
         preserved_display_name = Some(existing.display_name);
         preserved_group_name = existing.group_name;
         preserved_note = existing.note;
+        preserved_group_concurrency_limit =
+            load_group_metadata(&state.pool, preserved_group_name.as_deref())
+                .await
+                .map_err(internal_error_tuple)?
+                .concurrency_limit;
     }
 
     let is_mother = payload.is_mother.unwrap_or(preserved_mother_flag);
     let display_name = normalize_optional_text(payload.display_name).or(preserved_display_name);
     let group_name = normalize_optional_text(payload.group_name).or(preserved_group_name);
     let note = normalize_optional_text(payload.note).or(preserved_note);
+    let requested_group_concurrency_limit =
+        normalize_concurrency_limit(payload.concurrency_limit, "concurrencyLimit")?;
+    let group_concurrency_limit = payload
+        .concurrency_limit
+        .map(|_| requested_group_concurrency_limit)
+        .unwrap_or(preserved_group_concurrency_limit);
     let resolved_group_binding = resolve_required_group_proxy_binding_for_write(
         state.as_ref(),
         group_name.clone(),
@@ -5493,9 +5564,9 @@ pub(crate) async fn create_oauth_login_session(
         r#"
         INSERT INTO pool_oauth_login_sessions (
             login_id, account_id, display_name, group_name, group_bound_proxy_keys_json, is_mother, note, tag_ids_json, group_note,
-            mailbox_session_id, generated_mailbox_address, state, pkce_verifier, redirect_uri, status, auth_url,
+            group_concurrency_limit, mailbox_session_id, generated_mailbox_address, state, pkce_verifier, redirect_uri, status, auth_url,
             error_message, expires_at, consumed_at, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, NULL, ?17, NULL, ?18, ?18)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, NULL, ?18, NULL, ?19, ?19)
         "#,
     )
     .bind(&login_id)
@@ -5510,6 +5581,7 @@ pub(crate) async fn create_oauth_login_session(
     .bind(note)
     .bind(tag_ids_json)
     .bind(stored_group_note)
+    .bind(group_concurrency_limit)
     .bind(normalize_optional_text(payload.mailbox_session_id.clone()))
     .bind(normalize_optional_text(payload.mailbox_address.clone()))
     .bind(&state_token)
@@ -5633,6 +5705,7 @@ pub(crate) async fn update_oauth_login_session(
             && session.group_note == current_group_metadata.note
             && decode_group_bound_proxy_keys_json(session.group_bound_proxy_keys_json.as_deref())
                 == current_group_metadata.bound_proxy_keys
+            && session.group_concurrency_limit == current_group_metadata.concurrency_limit
             && (session.is_mother != 0) == (account.is_mother != 0)
             && parse_tag_ids_json(session.tag_ids_json.as_deref()) == current_tag_ids
     } else {
@@ -5671,6 +5744,7 @@ pub(crate) async fn update_oauth_login_session(
         group_bound_proxy_keys: requested_group_bound_proxy_keys,
         note: requested_note,
         group_note: requested_group_note,
+        concurrency_limit: requested_concurrency_limit,
         tag_ids: requested_tag_ids,
         is_mother: requested_is_mother,
         mailbox_session_id: requested_mailbox_session_id,
@@ -5680,6 +5754,8 @@ pub(crate) async fn update_oauth_login_session(
     let requested_group_bound_proxy_keys_was_updated =
         !matches!(requested_group_bound_proxy_keys, OptionalField::Missing);
     let requested_group_note_was_updated = !matches!(requested_group_note, OptionalField::Missing);
+    let requested_group_concurrency_limit_was_updated =
+        !matches!(requested_concurrency_limit, OptionalField::Missing);
 
     let display_name = match requested_display_name {
         OptionalField::Missing => session.display_name.clone(),
@@ -5704,6 +5780,15 @@ pub(crate) async fn update_oauth_login_session(
         OptionalField::Null => None,
         OptionalField::Value(value) => normalize_optional_text(Some(value)),
     };
+    let requested_group_concurrency_limit_missing =
+        matches!(requested_concurrency_limit, OptionalField::Missing);
+    let mut normalized_group_concurrency_limit = match requested_concurrency_limit {
+        OptionalField::Missing => session.group_concurrency_limit,
+        OptionalField::Null => 0,
+        OptionalField::Value(value) => {
+            normalize_concurrency_limit(Some(value), "concurrencyLimit")?
+        }
+    };
     let group_name_changed = group_name.as_deref() != session.group_name.as_deref();
     let requested_group_bound_proxy_keys = match requested_group_bound_proxy_keys {
         OptionalField::Missing if group_name_changed => None,
@@ -5715,6 +5800,11 @@ pub(crate) async fn update_oauth_login_session(
         && (group_name.is_none() || (requested_group_note_missing && group_name_changed))
     {
         normalized_group_note = None;
+    }
+    if requested_group_name_was_updated
+        && (group_name.is_none() || (requested_group_concurrency_limit_missing && group_name_changed))
+    {
+        normalized_group_concurrency_limit = 0;
     }
     let mailbox_session_id = match requested_mailbox_session_id {
         OptionalField::Missing => session.mailbox_session_id.clone(),
@@ -5756,6 +5846,8 @@ pub(crate) async fn update_oauth_login_session(
         requested_group_note_was_updated,
         Some(resolved_group_binding.bound_proxy_keys.clone()),
         requested_group_bound_proxy_keys_was_updated,
+        normalized_group_concurrency_limit,
+        requested_group_concurrency_limit_was_updated,
     );
 
     if display_name.as_deref() != session.display_name.as_deref() {
@@ -5795,10 +5887,11 @@ pub(crate) async fn update_oauth_login_session(
             &tag_ids,
         )
         .await?;
-        let completed_group_note_snapshot = load_group_note_snapshot_conn(
+        let completed_group_metadata_snapshot = load_group_metadata_snapshot_conn_with_limit(
             tx.as_mut(),
             group_name.as_deref(),
             normalized_group_note.as_deref(),
+            normalized_group_concurrency_limit,
         )
         .await
         .map_err(internal_error_tuple)?;
@@ -5813,9 +5906,10 @@ pub(crate) async fn update_oauth_login_session(
                 note = ?6,
                 tag_ids_json = ?7,
                 group_note = ?8,
-                mailbox_session_id = ?9,
-                generated_mailbox_address = ?10,
-                updated_at = ?11
+                group_concurrency_limit = ?9,
+                mailbox_session_id = ?10,
+                generated_mailbox_address = ?11,
+                updated_at = ?12
             WHERE login_id = ?1
             "#,
         )
@@ -5829,7 +5923,8 @@ pub(crate) async fn update_oauth_login_session(
         .bind(if is_mother { 1 } else { 0 })
         .bind(note)
         .bind(&tag_ids_json)
-        .bind(completed_group_note_snapshot)
+        .bind(completed_group_metadata_snapshot.note)
+        .bind(completed_group_metadata_snapshot.concurrency_limit)
         .bind(mailbox_session_id)
         .bind(mailbox_address)
         .bind(&now_iso)
@@ -5856,11 +5951,12 @@ pub(crate) async fn update_oauth_login_session(
             note = ?6,
             tag_ids_json = ?7,
             group_note = ?8,
-            mailbox_session_id = ?9,
-            generated_mailbox_address = ?10,
-            updated_at = ?11
+            group_concurrency_limit = ?9,
+            mailbox_session_id = ?10,
+            generated_mailbox_address = ?11,
+            updated_at = ?12
         WHERE login_id = ?1
-          AND (?12 IS NULL OR updated_at = ?12)
+          AND (?13 IS NULL OR updated_at = ?13)
         "#,
     )
     .bind(&login_id)
@@ -5874,6 +5970,7 @@ pub(crate) async fn update_oauth_login_session(
     .bind(note)
     .bind(tag_ids_json)
     .bind(stored_group_note)
+    .bind(normalized_group_concurrency_limit)
     .bind(mailbox_session_id)
     .bind(mailbox_address)
     .bind(&now_iso)
@@ -5983,6 +6080,7 @@ pub(crate) async fn relogin_upstream_account(
         group_bound_proxy_keys: None,
         note: None,
         group_note: None,
+        concurrency_limit: None,
         account_id: Some(id),
         tag_ids,
         is_mother: None,
@@ -6057,11 +6155,15 @@ async fn create_api_key_account_inner(
     let note = normalize_optional_text(payload.note);
     let has_group_note = payload.group_note.is_some();
     let group_note = normalize_optional_text(payload.group_note);
+    let group_concurrency_limit =
+        normalize_concurrency_limit(payload.concurrency_limit, "concurrencyLimit")?;
     let requested_group_metadata_changes = build_requested_group_metadata_changes(
         group_note.clone(),
         has_group_note,
         payload.group_bound_proxy_keys.clone(),
         payload.group_bound_proxy_keys.is_some(),
+        group_concurrency_limit,
+        payload.concurrency_limit.is_some(),
     );
     validate_group_note_target(group_name.as_deref(), has_group_note)?;
     let resolved_group_binding = resolve_required_group_proxy_binding_for_write(
@@ -6193,11 +6295,15 @@ async fn update_upstream_account_inner(
         .group_note
         .clone()
         .map(|value| normalize_optional_text(Some(value)));
+    let normalized_group_concurrency_limit =
+        normalize_concurrency_limit(payload.concurrency_limit, "concurrencyLimit")?;
     let requested_group_metadata_changes = build_requested_group_metadata_changes(
         requested_group_note.clone().flatten(),
         payload.group_note.is_some(),
         payload.group_bound_proxy_keys.clone(),
         payload.group_bound_proxy_keys.is_some(),
+        normalized_group_concurrency_limit,
+        payload.concurrency_limit.is_some(),
     );
 
     if let Some(display_name) = payload.display_name {
@@ -6792,6 +6898,8 @@ async fn persist_oauth_callback_inner(
                     session.group_bound_proxy_keys_json.as_deref(),
                 )),
                 true,
+                session.group_concurrency_limit,
+                true,
             ),
             claims: &input.claims,
             encrypted_credentials: input.encrypted_credentials,
@@ -6800,10 +6908,11 @@ async fn persist_oauth_callback_inner(
     )
     .await
     .map_err(internal_error_tuple)?;
-    let completed_group_note_snapshot = load_group_note_snapshot_conn(
+    let completed_group_metadata_snapshot = load_group_metadata_snapshot_conn_with_limit(
         tx.as_mut(),
         session.group_name.as_deref(),
         session.group_note.as_deref(),
+        session.group_concurrency_limit,
     )
     .await
     .map_err(internal_error_tuple)?;
@@ -6811,7 +6920,8 @@ async fn persist_oauth_callback_inner(
         &mut *tx,
         &session.login_id,
         account_id,
-        completed_group_note_snapshot,
+        completed_group_metadata_snapshot.note,
+        completed_group_metadata_snapshot.concurrency_limit,
         &session.updated_at,
         session.account_id.is_none(),
     )
@@ -8393,7 +8503,8 @@ async fn load_account_tag_map(
             tag.lookback_hours,
             tag.max_conversations,
             tag.allow_cut_out,
-            tag.allow_cut_in
+            tag.allow_cut_in,
+            tag.concurrency_limit
         FROM pool_upstream_account_tags link
         INNER JOIN pool_tags tag ON tag.id = link.tag_id
         WHERE link.account_id IN (
@@ -8432,7 +8543,8 @@ async fn load_tags_by_ids(pool: &Pool<Sqlite>, tag_ids: &[i64]) -> Result<Vec<Ta
             lookback_hours,
             max_conversations,
             allow_cut_out,
-            allow_cut_in
+            allow_cut_in,
+            concurrency_limit
         FROM pool_tags
         WHERE id IN (
         "#,
@@ -8460,7 +8572,8 @@ async fn load_tag_row(pool: &Pool<Sqlite>, tag_id: i64) -> Result<Option<TagRow>
             lookback_hours,
             max_conversations,
             allow_cut_out,
-            allow_cut_in
+            allow_cut_in,
+            concurrency_limit
         FROM pool_tags
         WHERE id = ?1
         LIMIT 1
@@ -8504,6 +8617,7 @@ async fn load_tag_summaries(
             tag.max_conversations,
             tag.allow_cut_out,
             tag.allow_cut_in,
+            tag.concurrency_limit,
             tag.updated_at,
             COUNT(DISTINCT link.account_id) AS account_count,
             COUNT(DISTINCT NULLIF(TRIM(account.group_name), '')) AS group_count
@@ -8538,7 +8652,7 @@ async fn load_tag_summaries(
             .push_bind(if allow_cut_out { 1 } else { 0 });
     }
     query.push(
-        " GROUP BY tag.id, tag.name, tag.guard_enabled, tag.lookback_hours, tag.max_conversations, tag.allow_cut_out, tag.allow_cut_in, tag.updated_at",
+        " GROUP BY tag.id, tag.name, tag.guard_enabled, tag.lookback_hours, tag.max_conversations, tag.allow_cut_out, tag.allow_cut_in, tag.concurrency_limit, tag.updated_at",
     );
     if let Some(has_accounts) = params.has_accounts {
         query.push(if has_accounts {
@@ -8563,8 +8677,8 @@ async fn insert_tag(pool: &Pool<Sqlite>, name: &str, rule: &TagRoutingRule) -> R
     let inserted_id = sqlx::query_scalar::<_, i64>(
         r#"
         INSERT INTO pool_tags (
-            name, guard_enabled, lookback_hours, max_conversations, allow_cut_out, allow_cut_in, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+            name, guard_enabled, lookback_hours, max_conversations, allow_cut_out, allow_cut_in, concurrency_limit, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
         RETURNING id
         "#,
     )
@@ -8574,6 +8688,7 @@ async fn insert_tag(pool: &Pool<Sqlite>, name: &str, rule: &TagRoutingRule) -> R
     .bind(rule.max_conversations)
     .bind(if rule.allow_cut_out { 1 } else { 0 })
     .bind(if rule.allow_cut_in { 1 } else { 0 })
+    .bind(rule.concurrency_limit)
     .bind(&now_iso)
     .fetch_one(pool)
     .await?;
@@ -8598,7 +8713,8 @@ async fn persist_tag_update(
             max_conversations = ?5,
             allow_cut_out = ?6,
             allow_cut_in = ?7,
-            updated_at = ?8
+            concurrency_limit = ?8,
+            updated_at = ?9
         WHERE id = ?1
         "#,
     )
@@ -8609,6 +8725,7 @@ async fn persist_tag_update(
     .bind(rule.max_conversations)
     .bind(if rule.allow_cut_out { 1 } else { 0 })
     .bind(if rule.allow_cut_in { 1 } else { 0 })
+    .bind(rule.concurrency_limit)
     .bind(&now_iso)
     .execute(pool)
     .await?;
@@ -8764,6 +8881,7 @@ async fn load_upstream_account_groups(
             Option<String>,
             Option<i64>,
             Option<i64>,
+            Option<i64>,
         ),
     >(
         r#"
@@ -8772,7 +8890,8 @@ async fn load_upstream_account_groups(
             notes.note,
             notes.bound_proxy_keys_json,
             notes.upstream_429_retry_enabled,
-            notes.upstream_429_max_retries
+            notes.upstream_429_max_retries,
+            notes.concurrency_limit
         FROM (
             SELECT DISTINCT TRIM(group_name) AS group_name
             FROM pool_upstream_accounts
@@ -8795,6 +8914,7 @@ async fn load_upstream_account_groups(
                 bound_proxy_keys_json,
                 upstream_429_retry_enabled,
                 upstream_429_max_retries,
+                concurrency_limit,
             )| {
                 let upstream_429_retry_enabled = decode_group_upstream_429_retry_enabled(
                     upstream_429_retry_enabled.unwrap_or_default(),
@@ -8813,6 +8933,7 @@ async fn load_upstream_account_groups(
                     ),
                     upstream_429_retry_enabled,
                     upstream_429_max_retries,
+                    concurrency_limit: concurrency_limit.unwrap_or_default(),
                 }
             },
         )
@@ -8977,6 +9098,7 @@ async fn apply_bulk_upstream_account_action(
             group_bound_proxy_keys: None,
             note: None,
             group_note: None,
+            concurrency_limit: None,
             upstream_base_url: OptionalField::Missing,
             enabled: Some(true),
             is_mother: None,
@@ -8992,6 +9114,7 @@ async fn apply_bulk_upstream_account_action(
             group_bound_proxy_keys: None,
             note: None,
             group_note: None,
+            concurrency_limit: None,
             upstream_base_url: OptionalField::Missing,
             enabled: Some(false),
             is_mother: None,
@@ -9007,6 +9130,7 @@ async fn apply_bulk_upstream_account_action(
             group_bound_proxy_keys: None,
             note: None,
             group_note: None,
+            concurrency_limit: None,
             upstream_base_url: OptionalField::Missing,
             enabled: None,
             is_mother: None,
@@ -9043,6 +9167,7 @@ async fn apply_bulk_upstream_account_action(
                 group_bound_proxy_keys: None,
                 note: None,
                 group_note: None,
+                concurrency_limit: None,
                 upstream_base_url: OptionalField::Missing,
                 enabled: None,
                 is_mother: None,
@@ -9980,6 +10105,8 @@ fn build_requested_group_metadata_changes(
     note_was_requested: bool,
     bound_proxy_keys: Option<Vec<String>>,
     bound_proxy_keys_was_requested: bool,
+    concurrency_limit: i64,
+    concurrency_limit_was_requested: bool,
 ) -> RequestedGroupMetadataChanges {
     RequestedGroupMetadataChanges {
         note: normalize_optional_text(note),
@@ -9990,6 +10117,8 @@ fn build_requested_group_metadata_changes(
             Vec::new()
         },
         bound_proxy_keys_was_requested,
+        concurrency_limit,
+        concurrency_limit_was_requested,
     }
 }
 
@@ -10076,13 +10205,14 @@ async fn load_group_metadata_conn(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     group_name: &str,
 ) -> Result<Option<UpstreamAccountGroupMetadata>> {
-    sqlx::query_as::<_, (String, Option<String>, i64, i64)>(
+    sqlx::query_as::<_, (String, Option<String>, i64, i64, i64)>(
         r#"
         SELECT
             note,
             bound_proxy_keys_json,
             upstream_429_retry_enabled,
-            upstream_429_max_retries
+            upstream_429_max_retries,
+            concurrency_limit
         FROM pool_upstream_account_group_notes
         WHERE group_name = ?1
         "#,
@@ -10097,6 +10227,7 @@ async fn load_group_metadata_conn(
                 bound_proxy_keys_json,
                 upstream_429_retry_enabled,
                 upstream_429_max_retries,
+                concurrency_limit,
             )| {
                 let upstream_429_retry_enabled =
                     decode_group_upstream_429_retry_enabled(upstream_429_retry_enabled);
@@ -10111,6 +10242,7 @@ async fn load_group_metadata_conn(
                     ),
                     upstream_429_retry_enabled,
                     upstream_429_max_retries,
+                    concurrency_limit,
                 }
             },
         )
@@ -10153,10 +10285,14 @@ async fn save_group_metadata_record_conn(
         normalized_upstream_429_retry_enabled,
         metadata.upstream_429_max_retries,
     );
+    let normalized_concurrency_limit =
+        normalize_concurrency_limit(Some(metadata.concurrency_limit), "concurrencyLimit")
+            .map_err(|(status, message)| anyhow!("{status}: {message}"))?;
     if normalized_note.is_none()
         && normalized_bound_proxy_keys.is_empty()
         && !normalized_upstream_429_retry_enabled
         && normalized_upstream_429_max_retries == 0
+        && normalized_concurrency_limit == 0
     {
         sqlx::query(
             r#"
@@ -10180,15 +10316,17 @@ async fn save_group_metadata_record_conn(
             bound_proxy_keys_json,
             upstream_429_retry_enabled,
             upstream_429_max_retries,
+            concurrency_limit,
             created_at,
             updated_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
         ON CONFLICT(group_name) DO UPDATE SET
             note = excluded.note,
             bound_proxy_keys_json = excluded.bound_proxy_keys_json,
             upstream_429_retry_enabled = excluded.upstream_429_retry_enabled,
             upstream_429_max_retries = excluded.upstream_429_max_retries,
+            concurrency_limit = excluded.concurrency_limit,
             updated_at = excluded.updated_at
         "#,
     )
@@ -10201,6 +10339,7 @@ async fn save_group_metadata_record_conn(
         0_i64
     })
     .bind(i64::from(normalized_upstream_429_max_retries))
+    .bind(normalized_concurrency_limit)
     .bind(now_iso)
     .execute(conn)
     .await?;
@@ -10252,6 +10391,9 @@ async fn save_group_metadata_for_single_account_group(
     if changes.bound_proxy_keys_was_requested {
         metadata.bound_proxy_keys = changes.bound_proxy_keys.clone();
     }
+    if changes.concurrency_limit_was_requested {
+        metadata.concurrency_limit = changes.concurrency_limit;
+    }
     save_group_metadata_record_conn(conn, group_name, metadata).await
 }
 
@@ -10297,6 +10439,7 @@ async fn load_login_session_by_login_id_with_executor(
         r#"
         SELECT
             login_id, account_id, display_name, group_name, group_bound_proxy_keys_json, is_mother, note, tag_ids_json, group_note,
+            group_concurrency_limit,
             mailbox_session_id, generated_mailbox_address AS mailbox_address, state, pkce_verifier, redirect_uri, status, auth_url,
             error_message, expires_at, consumed_at, created_at, updated_at
         FROM pool_oauth_login_sessions
@@ -10325,6 +10468,7 @@ async fn load_login_session_by_state(
         r#"
         SELECT
             login_id, account_id, display_name, group_name, group_bound_proxy_keys_json, is_mother, note, tag_ids_json, group_note,
+            group_concurrency_limit,
             mailbox_session_id, generated_mailbox_address AS mailbox_address, state, pkce_verifier, redirect_uri, status, auth_url,
             error_message, expires_at, consumed_at, created_at, updated_at
         FROM pool_oauth_login_sessions
@@ -10467,6 +10611,7 @@ async fn complete_login_session_with_executor(
     login_id: &str,
     account_id: i64,
     group_note_snapshot: Option<String>,
+    group_concurrency_limit_snapshot: i64,
     previous_updated_at: &str,
     preserve_pending_updated_at: bool,
 ) -> Result<()> {
@@ -10482,8 +10627,9 @@ async fn complete_login_session_with_executor(
         SET status = ?2,
             account_id = ?3,
             group_note = ?4,
-            updated_at = ?5,
-            consumed_at = ?6
+            group_concurrency_limit = ?5,
+            updated_at = ?6,
+            consumed_at = ?7
         WHERE login_id = ?1
         "#,
     )
@@ -10491,6 +10637,7 @@ async fn complete_login_session_with_executor(
     .bind(LOGIN_SESSION_STATUS_COMPLETED)
     .bind(account_id)
     .bind(group_note_snapshot)
+    .bind(group_concurrency_limit_snapshot)
     .bind(&completed_updated_at)
     .bind(&consumed_at)
     .execute(executor)
@@ -10498,26 +10645,44 @@ async fn complete_login_session_with_executor(
     Ok(())
 }
 
-async fn load_group_note_snapshot_conn(
+async fn load_group_metadata_snapshot_conn(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     group_name: Option<&str>,
     fallback_note: Option<&str>,
-) -> Result<Option<String>> {
+) -> Result<UpstreamAccountGroupMetadata> {
+    load_group_metadata_snapshot_conn_with_limit(executor, group_name, fallback_note, 0).await
+}
+
+async fn load_group_metadata_snapshot_conn_with_limit(
+    executor: impl sqlx::Executor<'_, Database = Sqlite>,
+    group_name: Option<&str>,
+    fallback_note: Option<&str>,
+    fallback_concurrency_limit: i64,
+) -> Result<UpstreamAccountGroupMetadata> {
+    let normalized_fallback_concurrency_limit =
+        normalize_concurrency_limit(Some(fallback_concurrency_limit), "concurrencyLimit")
+            .map_err(|(_, message)| anyhow!(message))?;
     let Some(group_name) = group_name else {
-        return Ok(None);
+        return Ok(UpstreamAccountGroupMetadata {
+            note: fallback_note.map(str::to_string),
+            bound_proxy_keys: Vec::new(),
+            upstream_429_retry_enabled: false,
+            upstream_429_max_retries: 0,
+            concurrency_limit: normalized_fallback_concurrency_limit,
+        });
     };
-    let group_note = sqlx::query_scalar::<_, Option<String>>(
-        r#"
-        SELECT note
-        FROM pool_upstream_account_group_notes
-        WHERE group_name = ?1
-        "#,
-    )
-    .bind(group_name)
-    .fetch_optional(executor)
-    .await?
-    .flatten();
-    Ok(normalize_optional_text(group_note).or_else(|| fallback_note.map(str::to_string)))
+    let metadata = load_group_metadata_conn(executor, group_name)
+        .await?
+        .unwrap_or_default();
+    Ok(UpstreamAccountGroupMetadata {
+        note: metadata
+            .note
+            .or_else(|| normalize_optional_text(fallback_note.map(str::to_string))),
+        bound_proxy_keys: metadata.bound_proxy_keys,
+        upstream_429_retry_enabled: metadata.upstream_429_retry_enabled,
+        upstream_429_max_retries: metadata.upstream_429_max_retries,
+        concurrency_limit: metadata.concurrency_limit,
+    })
 }
 
 fn next_login_session_updated_at(previous_updated_at: Option<&str>) -> String {
@@ -11994,9 +12159,11 @@ fn normalize_tag_rule(
     max_conversations: Option<i64>,
     allow_cut_out: bool,
     allow_cut_in: bool,
+    concurrency_limit: Option<i64>,
 ) -> Result<TagRoutingRule, (StatusCode, String)> {
     let lookback_hours = normalize_positive_i64(lookback_hours, "lookbackHours")?;
     let max_conversations = normalize_positive_i64(max_conversations, "maxConversations")?;
+    let concurrency_limit = normalize_concurrency_limit(concurrency_limit, "concurrencyLimit")?;
     if guard_enabled && (lookback_hours.is_none() || max_conversations.is_none()) {
         return Err((
             StatusCode::BAD_REQUEST,
@@ -12013,7 +12180,22 @@ fn normalize_tag_rule(
         },
         allow_cut_out,
         allow_cut_in,
+        concurrency_limit,
     })
+}
+
+fn normalize_concurrency_limit(
+    value: Option<i64>,
+    field_name: &str,
+) -> Result<i64, (StatusCode, String)> {
+    let value = value.unwrap_or(0);
+    if !(0..=30).contains(&value) {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            format!("{field_name} must be between 0 and 30"),
+        ));
+    }
+    Ok(value)
 }
 
 fn parse_tag_ids_json(raw: Option<&str>) -> Vec<i64> {
@@ -12041,6 +12223,7 @@ fn account_tag_summary_from_row(row: &AccountTagRow) -> AccountTagSummary {
             max_conversations: row.max_conversations,
             allow_cut_out: row.allow_cut_out != 0,
             allow_cut_in: row.allow_cut_in != 0,
+            concurrency_limit: row.concurrency_limit,
         },
     }
 }
@@ -12055,6 +12238,7 @@ fn tag_summary_from_row(row: &TagListRow) -> TagSummary {
             max_conversations: row.max_conversations,
             allow_cut_out: row.allow_cut_out != 0,
             allow_cut_in: row.allow_cut_in != 0,
+            concurrency_limit: row.concurrency_limit,
         },
         account_count: row.account_count,
         group_count: row.group_count,
@@ -12068,6 +12252,7 @@ fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingR
     let mut guard_rules = Vec::new();
     let mut allow_cut_out = true;
     let mut allow_cut_in = true;
+    let mut concurrency_limit = 0;
     let mut representative_guard: Option<(i64, i64)> = None;
 
     for tag in tags {
@@ -12075,6 +12260,10 @@ fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingR
         source_tag_names.push(tag.name.clone());
         allow_cut_out &= tag.routing_rule.allow_cut_out;
         allow_cut_in &= tag.routing_rule.allow_cut_in;
+        concurrency_limit = merge_concurrency_limits(
+            concurrency_limit,
+            tag.routing_rule.concurrency_limit,
+        );
         if tag.routing_rule.guard_enabled
             && let (Some(lookback_hours), Some(max_conversations)) = (
                 tag.routing_rule.lookback_hours,
@@ -12106,9 +12295,19 @@ fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingR
         max_conversations: representative_guard.map(|(_, max)| max),
         allow_cut_out,
         allow_cut_in,
+        concurrency_limit,
         source_tag_ids,
         source_tag_names,
         guard_rules,
+    }
+}
+
+fn merge_concurrency_limits(current: i64, next: i64) -> i64 {
+    match (current, next) {
+        (0, 0) => 0,
+        (0, next) if next > 0 => next,
+        (current, 0) if current > 0 => current,
+        (current, next) => current.min(next),
     }
 }
 
@@ -14928,11 +15127,30 @@ async fn load_effective_routing_rule_for_account(
     pool: &Pool<Sqlite>,
     account_id: i64,
 ) -> Result<EffectiveRoutingRule> {
+    let group_name = load_upstream_account_row(pool, account_id)
+        .await?
+        .and_then(|row| row.group_name);
+    let group_metadata = load_group_metadata(pool, group_name.as_deref()).await?;
     let tags = load_account_tag_map(pool, &[account_id])
         .await?
         .remove(&account_id)
         .unwrap_or_default();
-    Ok(build_effective_routing_rule(&tags))
+    let mut rule = build_effective_routing_rule(&tags);
+    rule.concurrency_limit = merge_concurrency_limits(
+        rule.concurrency_limit,
+        group_metadata.concurrency_limit,
+    );
+    Ok(rule)
+}
+
+fn account_accepts_concurrency_limit(
+    effective_load: i64,
+    routing_source: PoolRoutingSelectionSource,
+    rule: &EffectiveRoutingRule,
+) -> bool {
+    routing_source == PoolRoutingSelectionSource::StickyReuse
+        || rule.concurrency_limit == 0
+        || effective_load < rule.concurrency_limit
 }
 
 async fn account_accepts_sticky_assignment(
@@ -15205,6 +15423,14 @@ pub(crate) async fn resolve_pool_account_for_request(
             }
             let effective_rule =
                 load_effective_routing_rule_for_account(&state.pool, row.id).await?;
+            if !account_accepts_concurrency_limit(
+                candidate.effective_load(),
+                PoolRoutingSelectionSource::FreshAssignment,
+                &effective_rule,
+            ) {
+                saw_other_non_rate_limited_routing_candidate = true;
+                continue;
+            }
             if !account_accepts_sticky_assignment(
                 &state.pool,
                 row.id,
@@ -16676,6 +16902,7 @@ mod tests {
                 max_conversations: None,
                 allow_cut_out: true,
                 allow_cut_in: true,
+                concurrency_limit: 0,
                 source_tag_ids: vec![],
                 source_tag_names: vec![],
                 guard_rules: vec![],
@@ -18318,6 +18545,31 @@ mod tests {
             max_conversations: None,
             allow_cut_out: true,
             allow_cut_in: true,
+            concurrency_limit: 0,
+        }
+    }
+
+    fn test_account_tag_summary(id: i64, name: &str, concurrency_limit: i64) -> AccountTagSummary {
+        let mut routing_rule = test_tag_routing_rule();
+        routing_rule.concurrency_limit = concurrency_limit;
+        AccountTagSummary {
+            id,
+            name: name.to_string(),
+            routing_rule,
+        }
+    }
+
+    fn test_effective_routing_rule(concurrency_limit: i64) -> EffectiveRoutingRule {
+        EffectiveRoutingRule {
+            guard_enabled: false,
+            lookback_hours: None,
+            max_conversations: None,
+            allow_cut_out: true,
+            allow_cut_in: true,
+            concurrency_limit,
+            source_tag_ids: vec![],
+            source_tag_names: vec![],
+            guard_rules: vec![],
         }
     }
 
@@ -18908,6 +19160,7 @@ mod tests {
                     group_bound_proxy_keys: None,
                     note: Some("updated while maintenance runs".to_string()),
                     group_note: None,
+                    concurrency_limit: None,
                     upstream_base_url: OptionalField::Missing,
                     enabled: Some(false),
                     is_mother: None,
@@ -19082,6 +19335,7 @@ mod tests {
                             group_bound_proxy_keys: None,
                             note: Some("queued note".to_string()),
                             group_note: None,
+                            concurrency_limit: None,
                             upstream_base_url: OptionalField::Missing,
                             enabled: None,
                             is_mother: None,
@@ -19785,6 +20039,259 @@ mod tests {
         assert_eq!(local_capacity.hard_cap, 2);
     }
 
+    #[test]
+    fn normalize_concurrency_limit_rejects_values_outside_supported_range() {
+        assert_eq!(
+            normalize_concurrency_limit(Some(-1), "concurrencyLimit"),
+            Err((
+                StatusCode::BAD_REQUEST,
+                "concurrencyLimit must be between 0 and 30".to_string(),
+            ))
+        );
+        assert_eq!(
+            normalize_concurrency_limit(Some(31), "concurrencyLimit"),
+            Err((
+                StatusCode::BAD_REQUEST,
+                "concurrencyLimit must be between 0 and 30".to_string(),
+            ))
+        );
+        assert_eq!(normalize_concurrency_limit(None, "concurrencyLimit"), Ok(0));
+        assert_eq!(normalize_concurrency_limit(Some(30), "concurrencyLimit"), Ok(30));
+    }
+
+    #[test]
+    fn build_effective_routing_rule_uses_smallest_non_zero_concurrency_limit() {
+        let tags = vec![
+            test_account_tag_summary(1, "unlimited", 0),
+            test_account_tag_summary(2, "soft", 6),
+            test_account_tag_summary(3, "strict", 3),
+        ];
+
+        let rule = build_effective_routing_rule(&tags);
+
+        assert_eq!(rule.concurrency_limit, 3);
+        assert_eq!(rule.source_tag_ids, vec![1, 2, 3]);
+        assert_eq!(
+            rule.source_tag_names,
+            vec![
+                "unlimited".to_string(),
+                "soft".to_string(),
+                "strict".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn account_accepts_concurrency_limit_treats_zero_as_unlimited_and_allows_sticky_reuse() {
+        let unlimited = test_effective_routing_rule(0);
+        let limited = test_effective_routing_rule(2);
+
+        assert!(account_accepts_concurrency_limit(
+            99,
+            PoolRoutingSelectionSource::FreshAssignment,
+            &unlimited,
+        ));
+        assert!(account_accepts_concurrency_limit(
+            1,
+            PoolRoutingSelectionSource::FreshAssignment,
+            &limited,
+        ));
+        assert!(!account_accepts_concurrency_limit(
+            2,
+            PoolRoutingSelectionSource::FreshAssignment,
+            &limited,
+        ));
+        assert!(account_accepts_concurrency_limit(
+            2,
+            PoolRoutingSelectionSource::StickyReuse,
+            &limited,
+        ));
+    }
+
+    #[tokio::test]
+    async fn load_effective_routing_rule_for_account_uses_strictest_group_and_tag_limit() {
+        let pool = test_pool().await;
+        let account_id = insert_api_key_account(&pool, "Group Tag Limit").await;
+        sqlx::query("UPDATE pool_upstream_accounts SET group_name = ?2 WHERE id = ?1")
+            .bind(account_id)
+            .bind("alpha")
+            .execute(&pool)
+            .await
+            .expect("assign group name");
+
+        let mut relaxed_rule = test_tag_routing_rule();
+        relaxed_rule.concurrency_limit = 6;
+        let relaxed_tag = insert_tag(&pool, "alpha-relaxed", &relaxed_rule)
+            .await
+            .expect("insert relaxed tag");
+
+        let mut strict_rule = test_tag_routing_rule();
+        strict_rule.concurrency_limit = 2;
+        let strict_tag = insert_tag(&pool, "alpha-strict", &strict_rule)
+            .await
+            .expect("insert strict tag");
+
+        sync_account_tag_links(&pool, account_id, &[relaxed_tag.summary.id, strict_tag.summary.id])
+            .await
+            .expect("attach tags");
+
+        let mut conn = pool.acquire().await.expect("acquire metadata conn");
+        save_group_metadata_record_conn(
+            &mut conn,
+            "alpha",
+            UpstreamAccountGroupMetadata {
+                note: None,
+                bound_proxy_keys: vec![],
+                upstream_429_retry_enabled: false,
+                upstream_429_max_retries: 0,
+                concurrency_limit: 4,
+            },
+        )
+        .await
+        .expect("save group metadata");
+        drop(conn);
+
+        let rule = load_effective_routing_rule_for_account(&pool, account_id)
+            .await
+            .expect("load effective routing rule");
+
+        assert_eq!(rule.concurrency_limit, 2);
+        assert_eq!(rule.source_tag_ids, vec![relaxed_tag.summary.id, strict_tag.summary.id]);
+    }
+
+    #[tokio::test]
+    async fn resolver_skips_account_when_effective_concurrency_limit_is_reached() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let limited_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Limited Account",
+            "limited@example.com",
+            "org_limited",
+            "user_limited",
+        )
+        .await;
+        let fallback_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Fallback Account",
+            "fallback@example.com",
+            "org_fallback",
+            "user_fallback",
+        )
+        .await;
+
+        sqlx::query("UPDATE pool_upstream_accounts SET group_name = ?2 WHERE id = ?1")
+            .bind(limited_account_id)
+            .bind("limited")
+            .execute(&state.pool)
+            .await
+            .expect("assign limited group");
+
+        let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+        save_group_metadata_record_conn(
+            &mut conn,
+            "limited",
+            UpstreamAccountGroupMetadata {
+                note: None,
+                bound_proxy_keys: test_required_group_bound_proxy_keys(),
+                upstream_429_retry_enabled: false,
+                upstream_429_max_retries: 0,
+                concurrency_limit: 1,
+            },
+        )
+        .await
+        .expect("save limited group metadata");
+        drop(conn);
+
+        let now_iso = format_utc_iso(Utc::now());
+        upsert_sticky_route(&state.pool, "load-seed", limited_account_id, &now_iso)
+            .await
+            .expect("seed active sticky route");
+
+        let resolution = resolve_pool_account_for_request(
+            &state,
+            None,
+            &[],
+            &std::collections::HashSet::new(),
+        )
+        .await
+        .expect("resolve pool account");
+
+        let PoolAccountResolution::Resolved(account) = resolution else {
+            panic!("expected fallback account to be selected");
+        };
+        assert_eq!(account.account_id, fallback_account_id);
+        assert_eq!(account.routing_source, PoolRoutingSelectionSource::FreshAssignment);
+    }
+
+    #[tokio::test]
+    async fn resolver_allows_sticky_reuse_even_when_concurrency_limit_is_reached() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let limited_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Sticky Limited",
+            "sticky-limited@example.com",
+            "org_sticky_limited",
+            "user_sticky_limited",
+        )
+        .await;
+
+        sqlx::query("UPDATE pool_upstream_accounts SET group_name = ?2 WHERE id = ?1")
+            .bind(limited_account_id)
+            .bind("sticky-group")
+            .execute(&state.pool)
+            .await
+            .expect("assign sticky group");
+
+        let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+        save_group_metadata_record_conn(
+            &mut conn,
+            "sticky-group",
+            UpstreamAccountGroupMetadata {
+                note: None,
+                bound_proxy_keys: test_required_group_bound_proxy_keys(),
+                upstream_429_retry_enabled: false,
+                upstream_429_max_retries: 0,
+                concurrency_limit: 1,
+            },
+        )
+        .await
+        .expect("save sticky group metadata");
+        drop(conn);
+
+        let now_iso = format_utc_iso(Utc::now());
+        upsert_sticky_route(&state.pool, "sticky-reuse", limited_account_id, &now_iso)
+            .await
+            .expect("seed sticky route");
+
+        let resolution = resolve_pool_account_for_request(
+            &state,
+            Some("sticky-reuse"),
+            &[],
+            &std::collections::HashSet::new(),
+        )
+        .await
+        .expect("resolve sticky reuse");
+
+        let PoolAccountResolution::Resolved(account) = resolution else {
+            panic!("expected sticky reuse to resolve the existing account");
+        };
+        assert_eq!(account.account_id, limited_account_id);
+        assert_eq!(account.routing_source, PoolRoutingSelectionSource::StickyReuse);
+    }
+
     #[tokio::test]
     async fn maintenance_pass_skips_secondary_overflow_accounts_until_secondary_interval() {
         async fn handler(State(requests): State<Arc<AtomicUsize>>) -> (StatusCode, String) {
@@ -19929,6 +20436,7 @@ mod tests {
                     group_bound_proxy_keys: None,
                     note: Some("released".to_string()),
                     group_note: None,
+                    concurrency_limit: None,
                     upstream_base_url: OptionalField::Missing,
                     enabled: None,
                     is_mother: None,
@@ -21425,6 +21933,7 @@ mod tests {
                     group_bound_proxy_keys: None,
                     note: None,
                     group_note: None,
+                    concurrency_limit: None,
                     upstream_base_url: OptionalField::Missing,
                     enabled: None,
                     is_mother: None,
@@ -22991,6 +23500,7 @@ mod tests {
                 max_conversations: None,
                 allow_cut_out: true,
                 allow_cut_in: false,
+                concurrency_limit: 0,
             },
         )
         .await
@@ -23265,6 +23775,7 @@ mod tests {
                 max_conversations: None,
                 allow_cut_out: false,
                 allow_cut_in: true,
+                concurrency_limit: 0,
             },
         )
         .await
@@ -23335,6 +23846,7 @@ mod tests {
                 max_conversations: None,
                 allow_cut_out: true,
                 allow_cut_in: false,
+                concurrency_limit: 0,
             },
         )
         .await
@@ -23387,6 +23899,7 @@ mod tests {
                 group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
                 note: Some("before".to_string()),
                 group_note: Some("alpha note".to_string()),
+                concurrency_limit: None,
                 account_id: None,
                 tag_ids: vec![],
                 is_mother: Some(false),
@@ -23411,6 +23924,7 @@ mod tests {
                     ),
                     note: OptionalField::Value("after".to_string()),
                     group_note: OptionalField::Value("beta shared".to_string()),
+                    concurrency_limit: OptionalField::Missing,
                     tag_ids: OptionalField::Value(vec![tag_id]),
                     is_mother: OptionalField::Value(true),
                     mailbox_session_id: OptionalField::Value("mailbox-session-1".to_string()),
@@ -23463,6 +23977,7 @@ mod tests {
                 group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
                 note: Some("before".to_string()),
                 group_note: Some("alpha note".to_string()),
+                concurrency_limit: None,
                 account_id: None,
                 tag_ids: vec![],
                 is_mother: Some(false),
@@ -23492,6 +24007,7 @@ mod tests {
                     ),
                     note: OptionalField::Value("newest note".to_string()),
                     group_note: OptionalField::Value("beta note".to_string()),
+                    concurrency_limit: OptionalField::Missing,
                     tag_ids: OptionalField::Value(vec![]),
                     is_mother: OptionalField::Value(true),
                     mailbox_session_id: OptionalField::Missing,
@@ -23522,6 +24038,7 @@ mod tests {
                     ),
                     note: OptionalField::Value("stale note".to_string()),
                     group_note: OptionalField::Value("gamma note".to_string()),
+                    concurrency_limit: OptionalField::Missing,
                     tag_ids: OptionalField::Value(vec![]),
                     is_mother: OptionalField::Value(false),
                     mailbox_session_id: OptionalField::Missing,
@@ -23572,6 +24089,7 @@ mod tests {
                 group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
                 note: Some("before partial patch".to_string()),
                 group_note: Some("partial draft note".to_string()),
+                concurrency_limit: None,
                 account_id: None,
                 tag_ids: vec![tag_id],
                 is_mother: Some(true),
@@ -23593,6 +24111,7 @@ mod tests {
                 group_bound_proxy_keys: OptionalField::Missing,
                 note: OptionalField::Value("after partial patch".to_string()),
                 group_note: OptionalField::Missing,
+                concurrency_limit: OptionalField::Missing,
                 tag_ids: OptionalField::Missing,
                 is_mother: OptionalField::Missing,
                 mailbox_session_id: OptionalField::Missing,
@@ -23643,6 +24162,7 @@ mod tests {
                 group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
                 note: Some("before note".to_string()),
                 group_note: Some("before draft note".to_string()),
+                concurrency_limit: None,
                 account_id: None,
                 tag_ids: vec![],
                 is_mother: Some(false),
@@ -23667,6 +24187,7 @@ mod tests {
                     ),
                     note: OptionalField::Missing,
                     group_note: OptionalField::Missing,
+                    concurrency_limit: OptionalField::Missing,
                     tag_ids: OptionalField::Missing,
                     is_mother: OptionalField::Missing,
                     mailbox_session_id: OptionalField::Missing,
@@ -23703,6 +24224,7 @@ mod tests {
                 group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
                 note: Some("before clearing group".to_string()),
                 group_note: Some("draft group note".to_string()),
+                concurrency_limit: None,
                 account_id: None,
                 tag_ids: vec![],
                 is_mother: Some(false),
@@ -23724,6 +24246,7 @@ mod tests {
                 group_bound_proxy_keys: OptionalField::Value(vec![]),
                 note: OptionalField::Missing,
                 group_note: OptionalField::Missing,
+                concurrency_limit: OptionalField::Missing,
                 tag_ids: OptionalField::Missing,
                 is_mother: OptionalField::Missing,
                 mailbox_session_id: OptionalField::Missing,
@@ -23769,6 +24292,7 @@ mod tests {
                 group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
                 note: Some("before note".to_string()),
                 group_note: Some("old group note".to_string()),
+                concurrency_limit: None,
                 account_id: None,
                 tag_ids: vec![],
                 is_mother: Some(false),
@@ -23793,6 +24317,7 @@ mod tests {
                     ),
                     note: OptionalField::Value("after note".to_string()),
                     group_note: OptionalField::Value("draft group note".to_string()),
+                    concurrency_limit: OptionalField::Missing,
                     tag_ids: OptionalField::Value(vec![tag_id]),
                     is_mother: OptionalField::Value(true),
                     mailbox_session_id: OptionalField::Value("mailbox-session-2".to_string()),
@@ -23910,6 +24435,7 @@ mod tests {
                 group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
                 note: Some("before note".to_string()),
                 group_note: Some("before group note".to_string()),
+                concurrency_limit: None,
                 account_id: None,
                 tag_ids: vec![],
                 is_mother: Some(false),
@@ -23979,6 +24505,7 @@ mod tests {
                     ),
                     note: OptionalField::Value("after note".to_string()),
                     group_note: OptionalField::Value("after group note".to_string()),
+                    concurrency_limit: OptionalField::Missing,
                     tag_ids: OptionalField::Value(vec![tag_id]),
                     is_mother: OptionalField::Value(true),
                     mailbox_session_id: OptionalField::Missing,
@@ -24053,6 +24580,7 @@ mod tests {
                 group_bound_proxy_keys: OptionalField::Missing,
                 note: OptionalField::Missing,
                 group_note: OptionalField::Missing,
+                concurrency_limit: OptionalField::Missing,
                 tag_ids: OptionalField::Missing,
                 is_mother: OptionalField::Missing,
                 mailbox_session_id: OptionalField::Missing,
@@ -24125,6 +24653,7 @@ mod tests {
                 group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
                 note: Some("before note".to_string()),
                 group_note: Some("before group note".to_string()),
+                concurrency_limit: None,
                 account_id: None,
                 tag_ids: vec![],
                 is_mother: Some(false),
@@ -24201,6 +24730,7 @@ mod tests {
                     ),
                     note: OptionalField::Value("latest note".to_string()),
                     group_note: OptionalField::Value("latest group note".to_string()),
+                    concurrency_limit: OptionalField::Missing,
                     tag_ids: OptionalField::Value(vec![]),
                     is_mother: OptionalField::Value(true),
                     mailbox_session_id: OptionalField::Missing,
@@ -24232,6 +24762,7 @@ mod tests {
                     ),
                     note: OptionalField::Value("stale note".to_string()),
                     group_note: OptionalField::Value("stale group note".to_string()),
+                    concurrency_limit: OptionalField::Missing,
                     tag_ids: OptionalField::Value(vec![]),
                     is_mother: OptionalField::Value(false),
                     mailbox_session_id: OptionalField::Missing,
@@ -24268,6 +24799,7 @@ mod tests {
                 group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
                 note: Some("before note".to_string()),
                 group_note: Some("before group note".to_string()),
+                concurrency_limit: None,
                 account_id: None,
                 tag_ids: vec![],
                 is_mother: Some(false),
@@ -24353,6 +24885,7 @@ mod tests {
                     ),
                     note: OptionalField::Value("latest note".to_string()),
                     group_note: OptionalField::Value("latest group note".to_string()),
+                    concurrency_limit: OptionalField::Missing,
                     tag_ids: OptionalField::Value(vec![]),
                     is_mother: OptionalField::Value(true),
                     mailbox_session_id: OptionalField::Missing,
@@ -24401,6 +24934,7 @@ mod tests {
                 group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
                 note: Some("before note".to_string()),
                 group_note: Some("before group note".to_string()),
+                concurrency_limit: None,
                 account_id: None,
                 tag_ids: vec![],
                 is_mother: Some(false),
@@ -24496,6 +25030,7 @@ mod tests {
                     ),
                     note: OptionalField::Value("stale note".to_string()),
                     group_note: OptionalField::Value("stale group note".to_string()),
+                    concurrency_limit: OptionalField::Missing,
                     tag_ids: OptionalField::Value(vec![]),
                     is_mother: OptionalField::Value(false),
                     mailbox_session_id: OptionalField::Missing,
@@ -24529,6 +25064,7 @@ mod tests {
             group_bound_proxy_keys: OptionalField::Value(test_required_group_bound_proxy_keys()),
             note: OptionalField::Value("edited note".to_string()),
             group_note: OptionalField::Value("edited group note".to_string()),
+            concurrency_limit: OptionalField::Missing,
             tag_ids: OptionalField::Value(vec![]),
             is_mother: OptionalField::Value(false),
             mailbox_session_id: OptionalField::Missing,
@@ -24544,6 +25080,7 @@ mod tests {
                 group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
                 note: None,
                 group_note: None,
+                concurrency_limit: None,
                 account_id: None,
                 tag_ids: vec![],
                 is_mother: Some(false),
@@ -24583,6 +25120,7 @@ mod tests {
                 group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
                 note: None,
                 group_note: None,
+                concurrency_limit: None,
                 account_id: None,
                 tag_ids: vec![],
                 is_mother: Some(false),
@@ -24619,6 +25157,7 @@ mod tests {
                 group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
                 note: None,
                 group_note: None,
+                concurrency_limit: None,
                 account_id: None,
                 tag_ids: vec![],
                 is_mother: Some(false),
@@ -24669,6 +25208,7 @@ mod tests {
                 group_bound_proxy_keys: None,
                 note: None,
                 group_note: None,
+                concurrency_limit: None,
                 account_id: Some(account_id),
                 tag_ids: vec![],
                 is_mother: Some(false),
@@ -24690,6 +25230,7 @@ mod tests {
                 group_bound_proxy_keys: OptionalField::Missing,
                 note: OptionalField::Missing,
                 group_note: OptionalField::Missing,
+                concurrency_limit: OptionalField::Missing,
                 tag_ids: OptionalField::Value(vec![]),
                 is_mother: OptionalField::Value(false),
                 mailbox_session_id: OptionalField::Missing,
@@ -24718,6 +25259,7 @@ mod tests {
                 group_bound_proxy_keys: None,
                 note: None,
                 group_note: None,
+                concurrency_limit: None,
                 account_id: Some(account_id),
                 tag_ids: vec![],
                 is_mother: Some(false),
@@ -24799,6 +25341,7 @@ mod tests {
                     ),
                     note: OptionalField::Value("edited note".to_string()),
                     group_note: OptionalField::Value("edited group note".to_string()),
+                    concurrency_limit: OptionalField::Missing,
                     tag_ids: OptionalField::Value(vec![]),
                     is_mother: OptionalField::Value(true),
                     mailbox_session_id: OptionalField::Missing,

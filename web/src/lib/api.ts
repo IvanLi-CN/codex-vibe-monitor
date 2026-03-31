@@ -1835,6 +1835,7 @@ export interface TagRoutingRule {
   maxConversations?: number | null;
   allowCutOut: boolean;
   allowCutIn: boolean;
+  concurrencyLimit?: number | null;
 }
 
 export interface EffectiveConversationGuard {
@@ -1961,6 +1962,7 @@ export interface UpstreamAccountGroupSummary {
   groupName: string;
   note?: string | null;
   boundProxyKeys?: string[];
+  concurrencyLimit?: number | null;
   upstream429RetryEnabled?: boolean;
   upstream429MaxRetries?: number;
 }
@@ -2166,6 +2168,7 @@ export interface CreateOauthLoginSessionPayload {
   groupBoundProxyKeys?: string[];
   note?: string;
   groupNote?: string;
+  concurrencyLimit?: number;
   accountId?: number;
   tagIds?: number[];
   isMother?: boolean;
@@ -2179,6 +2182,7 @@ export interface UpdateOauthLoginSessionPayload {
   groupBoundProxyKeys?: string[];
   note?: string;
   groupNote?: string;
+  concurrencyLimit?: number;
   tagIds?: number[];
   isMother?: boolean;
   mailboxSessionId?: string;
@@ -2227,6 +2231,7 @@ export interface CreateApiKeyAccountPayload {
   groupBoundProxyKeys?: string[];
   note?: string;
   groupNote?: string;
+  concurrencyLimit?: number;
   upstreamBaseUrl?: string;
   apiKey: string;
   isMother?: boolean;
@@ -2240,6 +2245,7 @@ export interface UpdateUpstreamAccountPayload {
   displayName?: string;
   groupName?: string;
   groupBoundProxyKeys?: string[];
+  concurrencyLimit?: number;
   note?: string;
   groupNote?: string;
   upstreamBaseUrl?: string | null;
@@ -2336,6 +2342,7 @@ export interface ImportValidatedOauthAccountsPayload {
   groupName?: string;
   groupBoundProxyKeys?: string[];
   groupNote?: string;
+  concurrencyLimit?: number;
   tagIds?: number[];
 }
 
@@ -2380,6 +2387,7 @@ export interface FetchTagsQuery {
 export interface UpdateUpstreamAccountGroupPayload {
   note?: string;
   boundProxyKeys?: string[];
+  concurrencyLimit?: number;
   upstream429RetryEnabled?: boolean;
   upstream429MaxRetries?: number;
 }
@@ -2467,12 +2475,17 @@ function normalizeLocalLimitSnapshot(raw: unknown): LocalLimitSnapshot | null {
 
 function normalizeTagRoutingRule(raw: unknown): TagRoutingRule {
   const payload = (raw ?? {}) as Record<string, unknown>;
+  const concurrencyLimit = normalizeFiniteNumber(payload.concurrencyLimit);
   return {
     guardEnabled: payload.guardEnabled === true,
     lookbackHours: normalizeFiniteNumber(payload.lookbackHours) ?? null,
     maxConversations: normalizeFiniteNumber(payload.maxConversations) ?? null,
     allowCutOut: payload.allowCutOut !== false,
     allowCutIn: payload.allowCutIn !== false,
+    concurrencyLimit:
+      concurrencyLimit != null && concurrencyLimit >= 0
+        ? Math.min(concurrencyLimit, 30)
+        : 0,
   };
 }
 
@@ -2822,6 +2835,10 @@ function normalizeUpstreamAccountGroupSummary(
     boundProxyKeys: normalizeStringArray(payload.boundProxyKeys).map((item) =>
       item.trim(),
     ).filter((item) => item.length > 0),
+    concurrencyLimit: (() => {
+      const value = normalizeFiniteNumber(payload.concurrencyLimit);
+      return value != null && value >= 0 ? Math.min(value, 30) : 0;
+    })(),
     upstream429RetryEnabled: payload.upstream429RetryEnabled === true,
     upstream429MaxRetries: normalizeUpstreamAccountGroupMaxRetries(
       payload.upstream429MaxRetries,
