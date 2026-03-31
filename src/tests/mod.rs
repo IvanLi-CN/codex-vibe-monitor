@@ -21835,10 +21835,16 @@ async fn build_account_sticky_keys_response_keeps_attached_keys_without_recent_a
         .await
         .expect("sync hourly rollups before sticky aggregate response");
 
-    let response = build_account_sticky_keys_response(&state.pool, account_id, 20)
-        .await
-        .expect("build sticky response");
+    let response = build_account_sticky_keys_response(
+        &state.pool,
+        account_id,
+        AccountStickyKeySelection::Count(20),
+    )
+    .await
+    .expect("build sticky response");
     let json = serde_json::to_value(&response).expect("serialize sticky response");
+    assert_eq!(json["selectionMode"].as_str(), Some("count"));
+    assert_eq!(json["selectedLimit"].as_i64(), Some(20));
     let conversations = json["conversations"]
         .as_array()
         .expect("sticky conversations array");
@@ -21850,6 +21856,385 @@ async fn build_account_sticky_keys_response_keeps_attached_keys_without_recent_a
     assert_eq!(
         conversation["last24hRequests"].as_array().map(Vec::len),
         Some(0)
+    );
+}
+
+#[test]
+fn resolve_sticky_key_selection_rejects_mutually_exclusive_params() {
+    let err = crate::upstream_accounts::resolve_sticky_key_selection(&AccountStickyKeysQuery {
+        limit: Some(20),
+        activity_hours: Some(3),
+    })
+    .expect_err("selection should reject mutually exclusive params");
+
+    assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    assert!(err.1.contains("provide either limit or activityHours"));
+}
+
+#[test]
+fn resolve_sticky_key_selection_rejects_unsupported_activity_hours() {
+    let err = crate::upstream_accounts::resolve_sticky_key_selection(&AccountStickyKeysQuery {
+        limit: None,
+        activity_hours: Some(2),
+    })
+    .expect_err("selection should reject unsupported activityHours");
+
+    assert_eq!(err.0, StatusCode::BAD_REQUEST);
+    assert!(
+        err.1
+            .contains("activityHours must be one of 1, 3, 6, 12, or 24")
+    );
+}
+
+#[tokio::test]
+async fn build_account_sticky_keys_response_activity_window_filters_recent_keys_only() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let recent_time = format_naive(
+        (Utc::now() - ChronoDuration::hours(2))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let stale_time = format_naive(
+        (Utc::now() - ChronoDuration::hours(5))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+
+    for (sticky_key, occurred_at) in [
+        ("sticky-window-recent", recent_time.as_str()),
+        ("sticky-window-stale", stale_time.as_str()),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO pool_sticky_routes (sticky_key, account_id, created_at, updated_at, last_seen_at)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+        )
+        .bind(sticky_key)
+        .bind(account_id)
+        .bind(occurred_at)
+        .bind(occurred_at)
+        .bind(occurred_at)
+        .execute(&state.pool)
+        .await
+        .expect("insert sticky route");
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(format!("{sticky_key}-invoke"))
+        .bind(occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(64_i64)
+        .bind(0.08_f64)
+        .bind(
+            json!({
+                "stickyKey": sticky_key,
+                "upstreamAccountId": account_id,
+            })
+            .to_string(),
+        )
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert sticky invocation");
+    }
+
+    sync_hourly_rollups_from_live_tables(&state.pool)
+        .await
+        .expect("sync hourly rollups before sticky activity-window response");
+
+    let response = build_account_sticky_keys_response(
+        &state.pool,
+        account_id,
+        AccountStickyKeySelection::ActivityWindow(3),
+    )
+    .await
+    .expect("build sticky response");
+    let json = serde_json::to_value(&response).expect("serialize sticky response");
+    assert_eq!(json["selectionMode"].as_str(), Some("activityWindow"));
+    assert_eq!(json["selectedLimit"], Value::Null);
+    assert_eq!(json["selectedActivityHours"].as_i64(), Some(3));
+    assert_eq!(
+        json["implicitFilter"]["kind"].as_str(),
+        Some("inactiveOutside24h")
+    );
+    assert_eq!(json["implicitFilter"]["filteredCount"].as_i64(), Some(1));
+    let conversations = json["conversations"]
+        .as_array()
+        .expect("sticky conversations array");
+    assert_eq!(conversations.len(), 1);
+    assert_eq!(
+        conversations[0]["stickyKey"].as_str(),
+        Some("sticky-window-recent")
+    );
+}
+
+#[tokio::test]
+async fn build_account_sticky_keys_response_activity_window_previews_respect_time_window() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let sticky_key = "sticky-window-preview";
+    let recent_time = format_naive(
+        (Utc::now() - ChronoDuration::minutes(20))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    let stale_time = format_naive(
+        (Utc::now() - ChronoDuration::hours(8))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_sticky_routes (sticky_key, account_id, created_at, updated_at, last_seen_at)
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        "#,
+    )
+    .bind(sticky_key)
+    .bind(account_id)
+    .bind(&stale_time)
+    .bind(&recent_time)
+    .bind(&recent_time)
+    .execute(&state.pool)
+    .await
+    .expect("insert sticky route");
+
+    for (invoke_id, occurred_at) in [
+        ("sticky-window-preview-recent", recent_time.as_str()),
+        ("sticky-window-preview-stale", stale_time.as_str()),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(64_i64)
+        .bind(0.08_f64)
+        .bind(
+            json!({
+                "stickyKey": sticky_key,
+                "upstreamAccountId": account_id,
+                "model": "gpt-5.4",
+            })
+            .to_string(),
+        )
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert sticky invocation");
+    }
+
+    sync_hourly_rollups_from_live_tables(&state.pool)
+        .await
+        .expect("sync hourly rollups before sticky preview response");
+
+    let response = build_account_sticky_keys_response(
+        &state.pool,
+        account_id,
+        AccountStickyKeySelection::ActivityWindow(3),
+    )
+    .await
+    .expect("build sticky response");
+    let json = serde_json::to_value(&response).expect("serialize sticky response");
+    let previews = json["conversations"][0]["recentInvocations"]
+        .as_array()
+        .expect("recent invocations array");
+    assert_eq!(previews.len(), 1);
+    assert_eq!(
+        previews[0]["invokeId"].as_str(),
+        Some("sticky-window-preview-recent")
+    );
+}
+
+#[tokio::test]
+async fn build_account_sticky_keys_response_activity_window_caps_results_to_fifty() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let now = Utc::now();
+
+    for index in 0..55 {
+        let occurred_at = format_naive(
+            (now - ChronoDuration::minutes(index as i64))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        let sticky_key = format!("sticky-window-cap-{index}");
+        sqlx::query(
+            r#"
+            INSERT INTO pool_sticky_routes (sticky_key, account_id, created_at, updated_at, last_seen_at)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+        )
+        .bind(&sticky_key)
+        .bind(account_id)
+        .bind(&occurred_at)
+        .bind(&occurred_at)
+        .bind(&occurred_at)
+        .execute(&state.pool)
+        .await
+        .expect("insert sticky route");
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(format!("sticky-window-cap-invoke-{index}"))
+        .bind(&occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(64_i64)
+        .bind(0.08_f64)
+        .bind(
+            json!({
+                "stickyKey": sticky_key,
+                "upstreamAccountId": account_id,
+            })
+            .to_string(),
+        )
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert sticky invocation");
+    }
+
+    sync_hourly_rollups_from_live_tables(&state.pool)
+        .await
+        .expect("sync hourly rollups before sticky activity-window response");
+
+    let response = build_account_sticky_keys_response(
+        &state.pool,
+        account_id,
+        AccountStickyKeySelection::ActivityWindow(3),
+    )
+    .await
+    .expect("build sticky response");
+    let json = serde_json::to_value(&response).expect("serialize sticky response");
+    let conversations = json["conversations"]
+        .as_array()
+        .expect("sticky conversations array");
+    assert_eq!(conversations.len(), 50);
+    assert_eq!(json["implicitFilter"]["kind"].as_str(), Some("cappedTo50"));
+    assert_eq!(json["implicitFilter"]["filteredCount"].as_i64(), Some(5));
+}
+
+#[tokio::test]
+async fn build_account_sticky_keys_response_includes_recent_invocations_sorted_and_capped() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let sticky_key = "sticky-preview-cap";
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_sticky_routes (sticky_key, account_id, created_at, updated_at, last_seen_at)
+        VALUES (?1, ?2, ?3, ?4, ?5)
+        "#,
+    )
+    .bind(sticky_key)
+    .bind(account_id)
+    .bind(format_naive(
+        (Utc::now() - ChronoDuration::minutes(6))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    ))
+    .bind(format_naive(
+        Utc::now().with_timezone(&Shanghai).naive_local(),
+    ))
+    .bind(format_naive(
+        Utc::now().with_timezone(&Shanghai).naive_local(),
+    ))
+    .execute(&state.pool)
+    .await
+    .expect("insert sticky preview route");
+
+    for minutes_ago in 0..6 {
+        let occurred_at = format_naive(
+            (Utc::now() - ChronoDuration::minutes(minutes_ago))
+                .with_timezone(&Shanghai)
+                .naive_local(),
+        );
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(format!("sticky-preview-invoke-{minutes_ago}"))
+        .bind(occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(100_i64 + i64::from(minutes_ago))
+        .bind(0.01_f64 + (minutes_ago as f64) * 0.001_f64)
+        .bind(
+            json!({
+                "stickyKey": sticky_key,
+                "upstreamAccountId": account_id,
+                "endpoint": "/v1/responses",
+                "routeMode": "sticky",
+                "model": "gpt-5.4",
+            })
+            .to_string(),
+        )
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert preview invocation");
+    }
+
+    sync_hourly_rollups_from_live_tables(&state.pool)
+        .await
+        .expect("sync hourly rollups before sticky preview response");
+
+    let response = build_account_sticky_keys_response(
+        &state.pool,
+        account_id,
+        AccountStickyKeySelection::Count(20),
+    )
+    .await
+    .expect("build sticky response");
+    let json = serde_json::to_value(&response).expect("serialize sticky response");
+    let previews = json["conversations"][0]["recentInvocations"]
+        .as_array()
+        .expect("recent invocations array");
+    assert_eq!(previews.len(), 5);
+    assert_eq!(
+        previews[0]["invokeId"].as_str(),
+        Some("sticky-preview-invoke-0")
+    );
+    assert_eq!(
+        previews[4]["invokeId"].as_str(),
+        Some("sticky-preview-invoke-4")
     );
 }
 
@@ -24440,6 +24825,82 @@ async fn list_invocations_projects_payload_context_fields() {
     assert_eq!(record.proxy_display_name.as_deref(), Some("jp-relay-01"));
     assert_eq!(record.proxy_weight_delta, Some(-0.68));
     assert_eq!(record.reasoning_effort.as_deref(), Some("high"));
+}
+
+#[tokio::test]
+async fn list_invocations_filters_by_sticky_key_and_upstream_account_id() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+
+    for (invoke_id, payload) in [
+        (
+            "sticky-filter-fallback",
+            json!({
+                "promptCacheKey": "sticky-filter-key",
+                "upstreamAccountId": 7,
+            }),
+        ),
+        (
+            "sticky-filter-wrong-account",
+            json!({
+                "stickyKey": "sticky-filter-key",
+                "upstreamAccountId": 8,
+            }),
+        ),
+        (
+            "sticky-filter-wrong-key",
+            json!({
+                "stickyKey": "other-sticky-key",
+                "upstreamAccountId": 7,
+            }),
+        ),
+    ] {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                payload,
+                raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind("2026-03-11 10:00:00")
+        .bind(SOURCE_PROXY)
+        .bind("success")
+        .bind(payload.to_string())
+        .bind("{}")
+        .execute(&state.pool)
+        .await
+        .expect("insert sticky filter invocation");
+    }
+
+    let Json(response) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            sticky_key: Some("sticky-filter-key".to_string()),
+            upstream_account_id: Some(7),
+            page: Some(1),
+            page_size: Some(20),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("sticky key + upstream account filter should succeed");
+
+    assert_eq!(response.total, 1);
+    assert_eq!(response.records[0].invoke_id, "sticky-filter-fallback");
+    assert_eq!(
+        response.records[0].prompt_cache_key.as_deref(),
+        Some("sticky-filter-key")
+    );
+    assert_eq!(response.records[0].upstream_account_id, Some(7));
 }
 
 #[tokio::test]

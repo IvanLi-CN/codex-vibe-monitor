@@ -724,6 +724,30 @@ describe("account pool frontend API helpers", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("adds stickyKey and upstreamAccountId to invocation records query parameters", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      expect(url).toContain("/api/invocations?");
+      expect(url).toContain("stickyKey=sticky-001");
+      expect(url).toContain("upstreamAccountId=42");
+      return new Response(
+        JSON.stringify({
+          snapshotId: 7,
+          total: 0,
+          page: 1,
+          pageSize: 20,
+          records: [],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    await fetchInvocationRecords({ stickyKey: "sticky-001", upstreamAccountId: 42 });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("normalizes routing settings from the upstream account list payload", async () => {
     vi.stubGlobal(
       "fetch",
@@ -1241,11 +1265,21 @@ describe("account pool frontend API helpers", () => {
   it("normalizes sticky key conversations for one upstream account", async () => {
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => {
+      vi.fn(async (input: RequestInfo | URL) => {
+        expect(String(input)).toContain(
+          "/api/pool/upstream-accounts/101/sticky-keys?limit=20",
+        );
         return new Response(
           JSON.stringify({
             rangeStart: "2026-03-10T00:00:00Z",
             rangeEnd: "2026-03-11T00:00:00Z",
+            selectionMode: "count",
+            selectedLimit: 20,
+            selectedActivityHours: null,
+            implicitFilter: {
+              kind: null,
+              filteredCount: 0,
+            },
             conversations: [
               {
                 stickyKey: "sticky-001",
@@ -1254,6 +1288,40 @@ describe("account pool frontend API helpers", () => {
                 totalCost: 0.12,
                 createdAt: "2026-03-10T01:00:00Z",
                 lastActivityAt: "2026-03-10T02:00:00Z",
+                recentInvocations: [
+                  {
+                    id: 101,
+                    invokeId: "sticky-invoke-101",
+                    occurredAt: "2026-03-10T02:00:00Z",
+                    status: "completed",
+                    failureClass: "none",
+                    routeMode: "sticky",
+                    model: "gpt-5.4",
+                    totalTokens: 30,
+                    cost: 0.12,
+                    proxyDisplayName: "Proxy Alpha",
+                    upstreamAccountId: 101,
+                    upstreamAccountName: "Pool Alpha",
+                    endpoint: "/v1/responses",
+                    source: "proxy",
+                    inputTokens: 18,
+                    outputTokens: 12,
+                    cacheInputTokens: 4,
+                    reasoningTokens: 2,
+                    reasoningEffort: "high",
+                    responseContentEncoding: "br",
+                    requestedServiceTier: "flex",
+                    serviceTier: "scale",
+                    tReqReadMs: 10,
+                    tReqParseMs: 11,
+                    tUpstreamConnectMs: 12,
+                    tUpstreamTtfbMs: 13,
+                    tUpstreamStreamMs: 14,
+                    tRespParseMs: 15,
+                    tPersistMs: 16,
+                    tTotalMs: 91,
+                  },
+                ],
                 last24hRequests: [
                   {
                     occurredAt: "2026-03-10T02:00:00Z",
@@ -1271,10 +1339,19 @@ describe("account pool frontend API helpers", () => {
       }) as typeof fetch,
     );
 
-    const response = await fetchUpstreamStickyConversations(101, 20);
+    const response = await fetchUpstreamStickyConversations(101, {
+      mode: "count",
+      limit: 20,
+    });
 
+    expect(response.selectionMode).toBe("count");
+    expect(response.selectedLimit).toBe(20);
+    expect(response.selectedActivityHours).toBeNull();
     expect(response.conversations).toHaveLength(1);
     expect(response.conversations[0]?.stickyKey).toBe("sticky-001");
+    expect(response.conversations[0]?.recentInvocations[0]?.invokeId).toBe(
+      "sticky-invoke-101",
+    );
     expect(
       response.conversations[0]?.last24hRequests[0]?.cumulativeTokens,
     ).toBe(30);

@@ -312,6 +312,7 @@ export interface ApiInvocation {
   endpoint?: string;
   requesterIp?: string;
   promptCacheKey?: string;
+  stickyKey?: string | null;
   routeMode?: string;
   upstreamAccountId?: number | null;
   upstreamAccountName?: string;
@@ -431,8 +432,10 @@ export interface InvocationRecordsQuery {
   failureClass?: string;
   failureKind?: string;
   promptCacheKey?: string;
+  stickyKey?: string;
   requesterIp?: string;
   upstreamScope?: InvocationUpstreamScope;
+  upstreamAccountId?: number;
   keyword?: string;
   minTotalTokens?: number;
   maxTotalTokens?: number;
@@ -679,8 +682,11 @@ function appendInvocationRecordsQuery(
   if (query.failureClass) search.set("failureClass", query.failureClass);
   if (query.failureKind) search.set("failureKind", query.failureKind);
   if (query.promptCacheKey) search.set("promptCacheKey", query.promptCacheKey);
+  if (query.stickyKey) search.set("stickyKey", query.stickyKey);
   if (query.upstreamScope && query.upstreamScope !== "all")
     search.set("upstreamScope", query.upstreamScope);
+  if (query.upstreamAccountId != null)
+    search.set("upstreamAccountId", String(query.upstreamAccountId));
   if (query.requesterIp) search.set("requesterIp", query.requesterIp);
   if (query.keyword) search.set("keyword", query.keyword);
   if (query.minTotalTokens != null)
@@ -966,6 +972,22 @@ export interface PromptCacheConversationsResponse {
   conversations: PromptCacheConversation[];
 }
 
+export type StickyKeyConversationSelectionMode =
+  PromptCacheConversationSelectionMode;
+
+export type StickyKeyConversationImplicitFilterKind =
+  PromptCacheConversationImplicitFilterKind;
+
+export interface StickyKeyConversationImplicitFilter {
+  kind: StickyKeyConversationImplicitFilterKind | null;
+  filteredCount: number;
+}
+
+export type StickyKeyConversationSelection = PromptCacheConversationSelection;
+
+export type StickyKeyConversationInvocationPreview =
+  PromptCacheConversationInvocationPreview;
+
 export interface StickyKeyConversation {
   stickyKey: string;
   requestCount: number;
@@ -973,12 +995,17 @@ export interface StickyKeyConversation {
   totalCost: number;
   createdAt: string;
   lastActivityAt: string;
+  recentInvocations: StickyKeyConversationInvocationPreview[];
   last24hRequests: StickyKeyConversationRequestPoint[];
 }
 
 export interface UpstreamStickyConversationsResponse {
   rangeStart: string;
   rangeEnd: string;
+  selectionMode: StickyKeyConversationSelectionMode;
+  selectedLimit: number | null;
+  selectedActivityHours: number | null;
+  implicitFilter: StickyKeyConversationImplicitFilter;
   conversations: StickyKeyConversation[];
 }
 
@@ -1542,6 +1569,9 @@ function normalizeStickyKeyConversation(
   const requestsRaw = Array.isArray(payload.last24hRequests)
     ? payload.last24hRequests
     : [];
+  const recentInvocationsRaw = Array.isArray(payload.recentInvocations)
+    ? payload.recentInvocations
+    : [];
   return {
     stickyKey,
     requestCount: normalizeFiniteNumber(payload.requestCount) ?? 0,
@@ -1550,6 +1580,11 @@ function normalizeStickyKeyConversation(
     createdAt: typeof payload.createdAt === "string" ? payload.createdAt : "",
     lastActivityAt:
       typeof payload.lastActivityAt === "string" ? payload.lastActivityAt : "",
+    recentInvocations: recentInvocationsRaw
+      .map(normalizePromptCacheConversationInvocationPreview)
+      .filter(
+        (item): item is StickyKeyConversationInvocationPreview => item != null,
+      ),
     last24hRequests: requestsRaw
       .map(normalizeConversationRequestPoint)
       .filter(
@@ -1565,10 +1600,38 @@ function normalizeUpstreamStickyConversationsResponse(
   const conversationsRaw = Array.isArray(payload.conversations)
     ? payload.conversations
     : [];
+  const implicitFilterPayload =
+    payload.implicitFilter && typeof payload.implicitFilter === "object"
+      ? (payload.implicitFilter as Record<string, unknown>)
+      : null;
+  const implicitFilterKindRaw =
+    typeof implicitFilterPayload?.kind === "string"
+      ? implicitFilterPayload.kind
+      : null;
+  const implicitFilterKind: StickyKeyConversationImplicitFilterKind | null =
+    implicitFilterKindRaw === "inactiveOutside24h" ||
+    implicitFilterKindRaw === "cappedTo50"
+      ? implicitFilterKindRaw
+      : null;
+  const selectionModeRaw =
+    payload.selectionMode === "activityWindow" ? "activityWindow" : "count";
   return {
     rangeStart:
       typeof payload.rangeStart === "string" ? payload.rangeStart : "",
     rangeEnd: typeof payload.rangeEnd === "string" ? payload.rangeEnd : "",
+    selectionMode: selectionModeRaw,
+    selectedLimit:
+      selectionModeRaw === "count"
+        ? (normalizeFiniteNumber(payload.selectedLimit) ??
+          DEFAULT_STICKY_KEY_CONVERSATION_LIMIT)
+        : (normalizeFiniteNumber(payload.selectedLimit) ?? null),
+    selectedActivityHours:
+      normalizeFiniteNumber(payload.selectedActivityHours) ?? null,
+    implicitFilter: {
+      kind: implicitFilterKind,
+      filteredCount:
+        normalizeFiniteNumber(implicitFilterPayload?.filteredCount) ?? 0,
+    },
     conversations: conversationsRaw
       .map(normalizeStickyKeyConversation)
       .filter((item): item is StickyKeyConversation => item != null),
@@ -3383,6 +3446,7 @@ export async function fetchForwardProxyTimeseries(
 }
 
 const DEFAULT_PROMPT_CACHE_CONVERSATION_LIMIT = 50;
+const DEFAULT_STICKY_KEY_CONVERSATION_LIMIT = 50;
 
 export async function fetchPromptCacheConversations(
   selection: PromptCacheConversationSelection,
@@ -3564,11 +3628,15 @@ export async function updatePoolRoutingSettings(
 
 export async function fetchUpstreamStickyConversations(
   accountId: number,
-  limit: number,
+  selection: StickyKeyConversationSelection,
   signal?: AbortSignal,
 ): Promise<UpstreamStickyConversationsResponse> {
   const search = new URLSearchParams();
-  search.set("limit", String(limit));
+  if (selection.mode === "count") {
+    search.set("limit", String(selection.limit));
+  } else {
+    search.set("activityHours", String(selection.activityHours));
+  }
   const response = await fetchJson<unknown>(
     `/api/pool/upstream-accounts/${accountId}/sticky-keys?${search.toString()}`,
     {

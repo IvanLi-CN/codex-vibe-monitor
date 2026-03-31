@@ -53,6 +53,9 @@ export const DetailDrawer: Story = {
     await expect(within(dialog).getByRole('tab', { name: /概览|overview/i })).toHaveAttribute('aria-selected', 'true')
     await expect(within(dialog).getByText(/最近成功同步|last successful sync/i)).toBeInTheDocument()
     await expect(within(dialog).getByText(/5 小时窗口|5h window/i)).toBeInTheDocument()
+    await userEvent.click(within(dialog).getByRole('tab', { name: /调用记录|records/i }))
+    await expect(within(dialog).getByText(/查看这个上游账号最近保留的调用记录|latest retained invocations routed to this upstream account/i)).toBeInTheDocument()
+    await expect(within(dialog).getByText(/gpt-5\.4/i)).toBeInTheDocument()
     await userEvent.click(within(dialog).getByRole('tab', { name: /路由|routing/i }))
     await expect(within(dialog).getByText(/最终生效规则|effective routing rule/i)).toBeInTheDocument()
     await expect(within(dialog).getByText(/sticky-pool/i)).toBeInTheDocument()
@@ -61,6 +64,24 @@ export const DetailDrawer: Story = {
     await expect(within(dialog).getByText(/Weekly cap exhausted; traffic was moved to a sibling Tokyo lane\./i)).toBeInTheDocument()
     await userEvent.click(within(dialog).getByRole('tab', { name: /编辑|edit/i }))
     await expect(within(dialog).getByLabelText(/显示名称|display name/i)).toBeInTheDocument()
+  },
+}
+
+export const DetailDrawerStickyHistory: Story = {
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={detailRouteEntry(101)}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const dialog = await documentScope.findByRole('dialog', { name: /Codex Pro - Tokyo/i })
+    await userEvent.click(within(dialog).getByRole('tab', { name: /路由|routing/i }))
+    await userEvent.click(
+      within(dialog).getAllByRole('button', { name: /打开全部调用记录|open full call history/i })[0],
+    )
+    await expect(documentScope.getByText(/019ce3a1-6787-7910-b0fd-c246d6f6a901/i)).toBeInTheDocument()
+    await expect(documentScope.getByText(/gpt-5\.4/i)).toBeInTheDocument()
   },
 }
 
