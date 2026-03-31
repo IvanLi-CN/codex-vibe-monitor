@@ -70,8 +70,10 @@ export function ConcurrencyLimitSlider({
           <span
             className="justify-self-end pl-2"
             style={{ gridColumn: `${CONCURRENCY_LIMIT_MAX + 1} / span 1` }}
+            aria-label={unlimitedLabel}
+            title={unlimitedLabel}
           >
-            {unlimitedLabel}
+            ∞
           </span>
         </div>
       </div>

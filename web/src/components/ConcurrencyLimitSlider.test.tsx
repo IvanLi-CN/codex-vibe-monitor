@@ -54,12 +54,13 @@ describe('ConcurrencyLimitSlider', () => {
     expect(maxLabel).toBeTruthy()
     const legend = maxLabel?.parentElement ?? null
     const unlimitedLabel = Array.from(legend?.querySelectorAll('span') ?? []).find(
-      (element) => element.textContent?.trim() === 'Unlimited',
+      (element) => element.textContent?.trim() === '∞',
     )
 
     expect(unlimitedLabel).toBeTruthy()
     expect(maxLabel?.style.gridColumn).toBe('30 / span 1')
     expect(unlimitedLabel?.style.gridColumn).toBe('31 / span 1')
+    expect(unlimitedLabel?.getAttribute('aria-label')).toBe('Unlimited')
     expect(legend?.style.gridTemplateColumns).toBe(
       'repeat(30, minmax(0, 1fr)) max-content',
     )
