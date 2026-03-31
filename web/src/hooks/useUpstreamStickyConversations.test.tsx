@@ -2,7 +2,10 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import type { UpstreamStickyConversationsResponse } from "../lib/api";
+import type {
+  StickyKeyConversationSelection,
+  UpstreamStickyConversationsResponse,
+} from "../lib/api";
 import {
   UPSTREAM_STICKY_OPEN_RESYNC_COOLDOWN_MS,
   UPSTREAM_STICKY_SSE_REFRESH_THROTTLE_MS,
@@ -16,7 +19,7 @@ const apiMocks = vi.hoisted(() => ({
     vi.fn<
       (
         accountId: number,
-        limit: number,
+        selection: StickyKeyConversationSelection,
         signal?: AbortSignal,
       ) => Promise<UpstreamStickyConversationsResponse>
     >(),
@@ -93,6 +96,13 @@ function createResponse(
   return {
     rangeStart: "2026-03-10T00:00:00Z",
     rangeEnd: "2026-03-11T00:00:00Z",
+    selectionMode: "count",
+    selectedLimit: 20,
+    selectedActivityHours: null,
+    implicitFilter: {
+      kind: null,
+      filteredCount: 0,
+    },
     conversations: [
       {
         stickyKey,
@@ -101,6 +111,7 @@ function createResponse(
         totalCost: 0.12,
         createdAt: "2026-03-10T01:00:00Z",
         lastActivityAt: "2026-03-10T02:00:00Z",
+        recentInvocations: [],
         last24hRequests: [],
       },
     ],
@@ -119,16 +130,16 @@ function deferred<T>() {
 
 function Probe({
   accountId,
-  limit,
+  selection,
   enabled = true,
 }: {
   accountId: number | null;
-  limit: number;
+  selection: StickyKeyConversationSelection;
   enabled?: boolean;
 }) {
   const { stats, isLoading, error } = useUpstreamStickyConversations(
     accountId,
-    limit,
+    selection,
     enabled,
   );
 
@@ -177,10 +188,10 @@ describe("useUpstreamStickyConversations sync guards", () => {
       .mockImplementationOnce(async () => first.promise)
       .mockImplementationOnce(async () => second.promise);
 
-    render(<Probe accountId={101} limit={20} />);
+    render(<Probe accountId={101} selection={{ mode: "count", limit: 20 }} />);
     expect(text("loading")).toBe("true");
 
-    rerender(<Probe accountId={202} limit={20} />);
+    rerender(<Probe accountId={202} selection={{ mode: "count", limit: 20 }} />);
     await flushAsync();
 
     second.resolve(createResponse("sticky-b"));

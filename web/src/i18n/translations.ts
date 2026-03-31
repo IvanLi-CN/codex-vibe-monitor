@@ -535,6 +535,15 @@ const baseTranslations = {
       "24h token cumulative chart",
     "accountPool.upstreamAccounts.stickyConversations.table.stickyKey":
       "Sticky Key",
+    "accountPool.upstreamAccounts.stickyConversations.table.actions":
+      "Actions",
+    "accountPool.upstreamAccounts.records.title": "Call records",
+    "accountPool.upstreamAccounts.records.description":
+      "Review the latest retained invocations routed to this upstream account.",
+    "accountPool.upstreamAccounts.records.limitLabel": "Rows",
+    "accountPool.upstreamAccounts.records.limitOption": "{{count}} records",
+    "accountPool.upstreamAccounts.records.empty":
+      "No retained call records for this upstream account yet.",
     "accountPool.upstreamAccounts.effectiveRule.title":
       "Effective routing rule",
     "accountPool.upstreamAccounts.effectiveRule.description":
@@ -556,6 +565,7 @@ const baseTranslations = {
       "All active guards must pass",
     "accountPool.upstreamAccounts.detailTitle": "Account details",
     "accountPool.upstreamAccounts.detailTabs.overview": "Overview",
+    "accountPool.upstreamAccounts.detailTabs.records": "Records",
     "accountPool.upstreamAccounts.detailTabs.edit": "Edit",
     "accountPool.upstreamAccounts.detailTabs.routing": "Routing",
     "accountPool.upstreamAccounts.detailTabs.healthEvents": "Health & events",
@@ -1228,6 +1238,8 @@ const baseTranslations = {
     "live.conversations.empty": "No conversations available.",
     "live.conversations.implicitFilter.inactiveOutside24h":
       "{{count}} newer conversation(s) were hidden because count mode only includes conversations active in the last 24 hours.",
+    "live.conversations.implicitFilter.inactiveOutsideActivityWindow":
+      "{{count}} conversation(s) were hidden because they had no activity in the last {{hours}} hour(s).",
     "live.conversations.implicitFilter.cappedTo50":
       "{{count}} conversation(s) matched the activity window but were hidden because activity-window mode shows at most 50 conversations.",
     "live.conversations.accountLabel.idFallback": "Account #{{id}}",
@@ -1261,6 +1273,7 @@ const baseTranslations = {
       "Loaded {{loaded}} / {{total}} retained record(s)",
     "live.conversations.drawer.progressComplete":
       "{{count}} retained record(s)",
+    "live.conversations.drawer.loadMore": "Load more records",
     "live.conversations.drawer.loadingMore": "Loading more records…",
     "live.conversations.drawer.empty":
       "No retained call records for this conversation.",
@@ -2056,6 +2069,15 @@ const baseTranslations = {
       "24 小时 Token 累计图",
     "accountPool.upstreamAccounts.stickyConversations.table.stickyKey":
       "Sticky Key",
+    "accountPool.upstreamAccounts.stickyConversations.table.actions":
+      "操作",
+    "accountPool.upstreamAccounts.records.title": "调用记录",
+    "accountPool.upstreamAccounts.records.description":
+      "查看这个上游账号最近保留的调用记录。",
+    "accountPool.upstreamAccounts.records.limitLabel": "记录数量",
+    "accountPool.upstreamAccounts.records.limitOption": "{{count}} 条记录",
+    "accountPool.upstreamAccounts.records.empty":
+      "这个上游账号暂时还没有保留的调用记录。",
     "accountPool.upstreamAccounts.effectiveRule.title": "最终生效规则",
     "accountPool.upstreamAccounts.effectiveRule.description":
       "这里展示的是当前账号在所有已关联 tag 合并后，真正参与路由判定的规则。",
@@ -2075,6 +2097,7 @@ const baseTranslations = {
       "所有已开启的上限规则都会同时生效",
     "accountPool.upstreamAccounts.detailTitle": "账号详情",
     "accountPool.upstreamAccounts.detailTabs.overview": "概览",
+    "accountPool.upstreamAccounts.detailTabs.records": "调用记录",
     "accountPool.upstreamAccounts.detailTabs.edit": "编辑",
     "accountPool.upstreamAccounts.detailTabs.routing": "路由",
     "accountPool.upstreamAccounts.detailTabs.healthEvents": "健康与事件",
@@ -2702,6 +2725,8 @@ const baseTranslations = {
     "live.conversations.empty": "暂无对话数据。",
     "live.conversations.implicitFilter.inactiveOutside24h":
       "有 {{count}} 个更新创建的对话因未在近 24 小时活动而未显示；数量模式只统计近 24 小时活跃对话。",
+    "live.conversations.implicitFilter.inactiveOutsideActivityWindow":
+      "有 {{count}} 个对话因近 {{hours}} 小时内没有活动而未显示。",
     "live.conversations.implicitFilter.cappedTo50":
       "有 {{count}} 个对话命中了活动时间筛选，但因时间模式最多只展示 50 个对话而未显示。",
     "live.conversations.accountLabel.idFallback": "账号 #{{id}}",
@@ -2735,6 +2760,7 @@ const baseTranslations = {
       "已加载 {{loaded}} / {{total}} 条保留调用记录",
     "live.conversations.drawer.progressComplete":
       "共 {{count}} 条保留调用记录",
+    "live.conversations.drawer.loadMore": "继续加载更多记录",
     "live.conversations.drawer.loadingMore": "继续加载调用记录中…",
     "live.conversations.drawer.empty":
       "当前对话暂无可回放的调用记录。",

@@ -136,6 +136,7 @@ const DEFAULT_USAGE_LIMIT_ID: &str = "codex";
 const DEFAULT_API_KEY_LIMIT_UNIT: &str = "requests";
 const POOL_SETTINGS_SINGLETON_ID: i64 = 1;
 const DEFAULT_STICKY_KEY_LIMIT: i64 = 50;
+const STICKY_KEY_ACTIVITY_MODE_LIMIT: i64 = 50;
 const DEFAULT_UPSTREAM_ACCOUNT_LIST_PAGE_SIZE: usize = 20;
 const UPSTREAM_ACCOUNT_LIST_PAGE_SIZE_OPTIONS: [usize; 3] = [20, 50, 100];
 const POOL_ROUTE_ACTIVE_STICKY_WINDOW_MINUTES: i64 = 30;
@@ -1112,7 +1113,103 @@ pub(crate) struct UpdatePoolRoutingTimeoutSettingsRequest {
 pub(crate) struct AccountStickyKeysResponse {
     range_start: String,
     range_end: String,
+    selection_mode: AccountStickyKeySelectionMode,
+    selected_limit: Option<i64>,
+    selected_activity_hours: Option<i64>,
+    implicit_filter: AccountStickyKeyImplicitFilter,
     conversations: Vec<AccountStickyKeyConversation>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum AccountStickyKeySelectionMode {
+    Count,
+    ActivityWindow,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AccountStickyKeySelection {
+    Count(i64),
+    ActivityWindow(i64),
+}
+
+impl AccountStickyKeySelection {
+    fn selection_mode(self) -> AccountStickyKeySelectionMode {
+        match self {
+            Self::Count(_) => AccountStickyKeySelectionMode::Count,
+            Self::ActivityWindow(_) => AccountStickyKeySelectionMode::ActivityWindow,
+        }
+    }
+
+    fn selected_limit(self) -> Option<i64> {
+        match self {
+            Self::Count(limit) => Some(limit),
+            Self::ActivityWindow(_) => None,
+        }
+    }
+
+    fn selected_activity_hours(self) -> Option<i64> {
+        match self {
+            Self::Count(_) => None,
+            Self::ActivityWindow(hours) => Some(hours),
+        }
+    }
+
+    fn activity_window_hours(self) -> i64 {
+        match self {
+            Self::Count(_) => 24,
+            Self::ActivityWindow(hours) => hours,
+        }
+    }
+
+    fn display_limit(self) -> i64 {
+        match self {
+            Self::Count(limit) => limit,
+            Self::ActivityWindow(_) => STICKY_KEY_ACTIVITY_MODE_LIMIT,
+        }
+    }
+
+    fn implicit_filter(
+        self,
+        filtered_counts: AccountStickyKeyFilteredCounts,
+    ) -> AccountStickyKeyImplicitFilter {
+        let (kind, filtered_count) = match self {
+            Self::Count(_) => (None, 0),
+            Self::ActivityWindow(_) if filtered_counts.capped_count > 0 => (
+                Some(AccountStickyKeyImplicitFilterKind::CappedTo50),
+                filtered_counts.capped_count,
+            ),
+            Self::ActivityWindow(_) if filtered_counts.inactive_count > 0 => (
+                Some(AccountStickyKeyImplicitFilterKind::InactiveOutside24h),
+                filtered_counts.inactive_count,
+            ),
+            Self::ActivityWindow(_) => (None, 0),
+        };
+        AccountStickyKeyImplicitFilter {
+            kind,
+            filtered_count: filtered_count.max(0),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct AccountStickyKeyFilteredCounts {
+    inactive_count: i64,
+    capped_count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AccountStickyKeyImplicitFilter {
+    kind: Option<AccountStickyKeyImplicitFilterKind>,
+    filtered_count: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum AccountStickyKeyImplicitFilterKind {
+    InactiveOutside24h,
+    CappedTo50,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1126,6 +1223,7 @@ pub(crate) struct AccountStickyKeyConversation {
     created_at: String,
     #[serde(serialize_with = "serialize_local_naive_to_utc_iso")]
     last_activity_at: String,
+    recent_invocations: Vec<crate::api::PromptCacheConversationInvocationPreviewResponse>,
     last24h_requests: Vec<AccountStickyKeyRequestPoint>,
 }
 
@@ -1704,7 +1802,8 @@ pub(crate) struct ListTagsQuery {
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct AccountStickyKeysQuery {
-    limit: Option<i64>,
+    pub(crate) limit: Option<i64>,
+    pub(crate) activity_hours: Option<i64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2371,6 +2470,44 @@ struct StickyKeyEventRow {
     status: String,
     request_tokens: i64,
     sticky_key: String,
+}
+
+#[derive(Debug, FromRow)]
+struct AccountStickyKeyInvocationPreviewRow {
+    sticky_key: String,
+    id: i64,
+    invoke_id: String,
+    occurred_at: String,
+    status: String,
+    failure_class: Option<String>,
+    route_mode: Option<String>,
+    model: Option<String>,
+    total_tokens: i64,
+    cost: Option<f64>,
+    source: Option<String>,
+    input_tokens: Option<i64>,
+    output_tokens: Option<i64>,
+    cache_input_tokens: Option<i64>,
+    reasoning_tokens: Option<i64>,
+    reasoning_effort: Option<String>,
+    error_message: Option<String>,
+    failure_kind: Option<String>,
+    is_actionable: Option<i64>,
+    proxy_display_name: Option<String>,
+    upstream_account_id: Option<i64>,
+    upstream_account_name: Option<String>,
+    response_content_encoding: Option<String>,
+    requested_service_tier: Option<String>,
+    service_tier: Option<String>,
+    t_req_read_ms: Option<f64>,
+    t_req_parse_ms: Option<f64>,
+    t_upstream_connect_ms: Option<f64>,
+    t_upstream_ttfb_ms: Option<f64>,
+    t_upstream_stream_ms: Option<f64>,
+    t_resp_parse_ms: Option<f64>,
+    t_persist_ms: Option<f64>,
+    t_total_ms: Option<f64>,
+    endpoint: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -4942,8 +5079,8 @@ pub(crate) async fn get_upstream_account_sticky_keys(
     if !exists {
         return Err((StatusCode::NOT_FOUND, "account not found".to_string()));
     }
-    let limit = normalize_sticky_key_limit(params.limit);
-    let response = build_account_sticky_keys_response(&state.pool, id, limit)
+    let selection = resolve_sticky_key_selection(&params)?;
+    let response = build_account_sticky_keys_response(&state.pool, id, selection)
         .await
         .map_err(internal_error_tuple)?;
     Ok(Json(response))
@@ -14136,6 +14273,36 @@ fn normalize_sticky_key_limit(raw: Option<i64>) -> i64 {
     }
 }
 
+fn normalize_sticky_key_activity_hours(raw: Option<i64>) -> Option<i64> {
+    match raw {
+        Some(1 | 3 | 6 | 12 | 24) => raw,
+        _ => None,
+    }
+}
+
+pub(crate) fn resolve_sticky_key_selection(
+    params: &AccountStickyKeysQuery,
+) -> Result<AccountStickyKeySelection, (StatusCode, String)> {
+    if params.limit.is_some() && params.activity_hours.is_some() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            "provide either limit or activityHours, not both".to_string(),
+        ));
+    }
+    if let Some(raw_hours) = params.activity_hours {
+        let hours = normalize_sticky_key_activity_hours(Some(raw_hours)).ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                "activityHours must be one of 1, 3, 6, 12, or 24".to_string(),
+            )
+        })?;
+        return Ok(AccountStickyKeySelection::ActivityWindow(hours));
+    }
+    Ok(AccountStickyKeySelection::Count(
+        normalize_sticky_key_limit(params.limit),
+    ))
+}
+
 fn seconds_to_window_minutes(seconds: i64) -> i64 {
     (seconds + 59) / 60
 }
@@ -15294,16 +15461,20 @@ pub(crate) async fn record_pool_route_transport_failure(
 pub(crate) async fn build_account_sticky_keys_response(
     pool: &Pool<Sqlite>,
     account_id: i64,
-    limit: i64,
+    selection: AccountStickyKeySelection,
 ) -> Result<AccountStickyKeysResponse> {
     let range_end = Utc::now();
-    let range_start = range_end - ChronoDuration::hours(24);
+    let range_start = range_end - ChronoDuration::hours(selection.activity_window_hours());
     let range_start_bound = db_occurred_at_lower_bound(range_start);
     let routes = load_account_sticky_routes(pool, account_id).await?;
     if routes.is_empty() {
         return Ok(AccountStickyKeysResponse {
             range_start: format_utc_iso(range_start),
             range_end: format_utc_iso(range_end),
+            selection_mode: selection.selection_mode(),
+            selected_limit: selection.selected_limit(),
+            selected_activity_hours: selection.selected_activity_hours(),
+            implicit_filter: selection.implicit_filter(AccountStickyKeyFilteredCounts::default()),
             conversations: Vec::new(),
         });
     }
@@ -15362,6 +15533,7 @@ pub(crate) async fn build_account_sticky_keys_response(
                     .as_ref()
                     .map(|row| row.last_activity_at.clone())
                     .unwrap_or_else(|| route.last_seen_at.clone()),
+                recent_invocations: Vec::new(),
                 last24h_requests,
             }
         })
@@ -15383,11 +15555,97 @@ pub(crate) async fn build_account_sticky_keys_response(
             .then_with(|| right.created_at.cmp(&left.created_at))
             .then_with(|| left.sticky_key.cmp(&right.sticky_key))
     });
-    conversations.truncate(limit.max(0) as usize);
+
+    let mut filtered_counts = AccountStickyKeyFilteredCounts::default();
+    if matches!(selection, AccountStickyKeySelection::ActivityWindow(_)) {
+        filtered_counts.inactive_count = conversations
+            .iter()
+            .filter(|conversation| conversation.last24h_requests.is_empty())
+            .count() as i64;
+        conversations.retain(|conversation| !conversation.last24h_requests.is_empty());
+    }
+
+    filtered_counts.capped_count = conversations
+        .len()
+        .saturating_sub(selection.display_limit().max(0) as usize)
+        as i64;
+    conversations.truncate(selection.display_limit().max(0) as usize);
+
+    let selected_keys = conversations
+        .iter()
+        .map(|conversation| conversation.sticky_key.clone())
+        .collect::<Vec<_>>();
+    let preview_range_start_bound = match selection {
+        AccountStickyKeySelection::ActivityWindow(_) => Some(range_start_bound.as_str()),
+        AccountStickyKeySelection::Count(_) => None,
+    };
+    let preview_rows = query_account_sticky_key_recent_invocations(
+        pool,
+        account_id,
+        &selected_keys,
+        5,
+        preview_range_start_bound,
+    )
+    .await?;
+    let mut grouped_preview_rows: HashMap<
+        String,
+        Vec<crate::api::PromptCacheConversationInvocationPreviewResponse>,
+    > = HashMap::new();
+    for row in preview_rows {
+        grouped_preview_rows
+            .entry(row.sticky_key.clone())
+            .or_default()
+            .push(
+                crate::api::PromptCacheConversationInvocationPreviewResponse {
+                    id: row.id,
+                    invoke_id: row.invoke_id,
+                    occurred_at: row.occurred_at,
+                    status: row.status,
+                    failure_class: row.failure_class,
+                    route_mode: row.route_mode,
+                    model: row.model,
+                    total_tokens: row.total_tokens,
+                    cost: row.cost,
+                    proxy_display_name: row.proxy_display_name,
+                    upstream_account_id: row.upstream_account_id,
+                    upstream_account_name: row.upstream_account_name,
+                    endpoint: row.endpoint,
+                    source: row.source,
+                    input_tokens: row.input_tokens,
+                    output_tokens: row.output_tokens,
+                    cache_input_tokens: row.cache_input_tokens,
+                    reasoning_tokens: row.reasoning_tokens,
+                    reasoning_effort: row.reasoning_effort,
+                    error_message: row.error_message,
+                    failure_kind: row.failure_kind,
+                    is_actionable: row.is_actionable.map(|value| value != 0),
+                    response_content_encoding: row.response_content_encoding,
+                    requested_service_tier: row.requested_service_tier,
+                    service_tier: row.service_tier,
+                    t_req_read_ms: row.t_req_read_ms,
+                    t_req_parse_ms: row.t_req_parse_ms,
+                    t_upstream_connect_ms: row.t_upstream_connect_ms,
+                    t_upstream_ttfb_ms: row.t_upstream_ttfb_ms,
+                    t_upstream_stream_ms: row.t_upstream_stream_ms,
+                    t_resp_parse_ms: row.t_resp_parse_ms,
+                    t_persist_ms: row.t_persist_ms,
+                    t_total_ms: row.t_total_ms,
+                },
+            );
+    }
+    for conversation in &mut conversations {
+        conversation.recent_invocations = grouped_preview_rows
+            .remove(&conversation.sticky_key)
+            .unwrap_or_default();
+    }
 
     Ok(AccountStickyKeysResponse {
         range_start: format_utc_iso(range_start),
         range_end: format_utc_iso(range_end),
+        selection_mode: selection.selection_mode(),
+        selected_limit: selection.selected_limit(),
+        selected_activity_hours: selection.selected_activity_hours(),
+        implicit_filter: selection.implicit_filter(filtered_counts),
         conversations,
     })
 }
@@ -15453,14 +15711,13 @@ async fn query_account_sticky_key_events(
     if selected_keys.is_empty() {
         return Ok(Vec::new());
     }
-    const KEY_EXPR: &str = "CASE WHEN json_valid(payload) THEN TRIM(COALESCE(CAST(json_extract(payload, '$.stickyKey') AS TEXT), CAST(json_extract(payload, '$.promptCacheKey') AS TEXT))) END";
     const ACCOUNT_EXPR: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountId') AS INTEGER) END";
 
     let mut query = QueryBuilder::<Sqlite>::new(
         "SELECT occurred_at, COALESCE(status, 'unknown') AS status, COALESCE(total_tokens, 0) AS request_tokens, ",
     );
     query
-        .push(KEY_EXPR)
+        .push(crate::api::INVOCATION_STICKY_KEY_SQL)
         .push(" AS sticky_key FROM codex_invocations WHERE occurred_at >= ")
         .push_bind(range_start_bound)
         .push(" AND ")
@@ -15468,7 +15725,7 @@ async fn query_account_sticky_key_events(
         .push(" = ")
         .push_bind(account_id)
         .push(" AND ")
-        .push(KEY_EXPR)
+        .push(crate::api::INVOCATION_STICKY_KEY_SQL)
         .push(" IN (");
     {
         let mut separated = query.separated(", ");
@@ -15480,6 +15737,94 @@ async fn query_account_sticky_key_events(
 
     query
         .build_query_as::<StickyKeyEventRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}
+
+async fn query_account_sticky_key_recent_invocations(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+    selected_keys: &[String],
+    limit_per_key: i64,
+    range_start_bound: Option<&str>,
+) -> Result<Vec<AccountStickyKeyInvocationPreviewRow>> {
+    if selected_keys.is_empty() || limit_per_key <= 0 {
+        return Ok(Vec::new());
+    }
+
+    let mut query =
+        QueryBuilder::<Sqlite>::new("WITH ranked AS (SELECT id, invoke_id, occurred_at, ");
+    query
+        .push(crate::api::invocation_display_status_sql())
+        .push(" AS status, ")
+        .push(crate::api::INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
+        .push(" AS failure_class, ")
+        .push(crate::api::INVOCATION_ROUTE_MODE_SQL)
+        .push(" AS route_mode, model, COALESCE(total_tokens, 0) AS total_tokens, cost, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, ")
+        .push(crate::api::INVOCATION_REASONING_EFFORT_SQL)
+        .push(" AS reasoning_effort, error_message, ")
+        .push(crate::api::INVOCATION_FAILURE_KIND_SQL)
+        .push(" AS failure_kind, CASE WHEN ")
+        .push(crate::api::INVOCATION_RESOLVED_FAILURE_CLASS_SQL)
+        .push(" = 'service_failure' THEN 1 ELSE 0 END AS is_actionable, ")
+        .push(crate::api::INVOCATION_PROXY_DISPLAY_SQL)
+        .push(" AS proxy_display_name, ")
+        .push(crate::api::INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+        .push(" AS upstream_account_id, ")
+        .push(crate::api::INVOCATION_UPSTREAM_ACCOUNT_NAME_SQL)
+        .push(" AS upstream_account_name, ")
+        .push(crate::api::INVOCATION_RESPONSE_CONTENT_ENCODING_SQL)
+        .push(
+            " AS response_content_encoding, \
+             CASE \
+               WHEN json_valid(payload) AND json_type(payload, '$.requestedServiceTier') = 'text' \
+                 THEN json_extract(payload, '$.requestedServiceTier') \
+               WHEN json_valid(payload) AND json_type(payload, '$.requested_service_tier') = 'text' \
+                 THEN json_extract(payload, '$.requested_service_tier') END AS requested_service_tier, \
+             CASE \
+               WHEN json_valid(payload) AND json_type(payload, '$.serviceTier') = 'text' \
+                 THEN json_extract(payload, '$.serviceTier') \
+               WHEN json_valid(payload) AND json_type(payload, '$.service_tier') = 'text' \
+                 THEN json_extract(payload, '$.service_tier') END AS service_tier, \
+             t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, \
+             t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, ",
+        )
+        .push(crate::api::INVOCATION_ENDPOINT_SQL)
+        .push(" AS endpoint, ")
+        .push(crate::api::INVOCATION_STICKY_KEY_SQL)
+        .push(" AS sticky_key, ROW_NUMBER() OVER (PARTITION BY ")
+        .push(crate::api::INVOCATION_STICKY_KEY_SQL)
+        .push(" ORDER BY occurred_at DESC, id DESC) AS row_number FROM codex_invocations WHERE ")
+        .push(crate::api::INVOCATION_UPSTREAM_ACCOUNT_ID_SQL)
+        .push(" = ")
+        .push_bind(account_id);
+
+    if let Some(range_start_bound) = range_start_bound {
+        query
+            .push(" AND occurred_at >= ")
+            .push_bind(range_start_bound);
+    }
+
+    query
+        .push(" AND ")
+        .push(crate::api::INVOCATION_STICKY_KEY_SQL)
+        .push(" IN (");
+
+    {
+        let mut separated = query.separated(", ");
+        for key in selected_keys {
+            separated.push_bind(key);
+        }
+    }
+
+    query
+        .push(")) SELECT sticky_key, id, invoke_id, occurred_at, status, failure_class, route_mode, model, total_tokens, cost, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, reasoning_effort, error_message, failure_kind, is_actionable, proxy_display_name, upstream_account_id, upstream_account_name, response_content_encoding, requested_service_tier, service_tier, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, endpoint FROM ranked WHERE row_number <= ")
+        .push_bind(limit_per_key)
+        .push(" ORDER BY sticky_key ASC, occurred_at DESC, id DESC");
+
+    query
+        .build_query_as::<AccountStickyKeyInvocationPreviewRow>()
         .fetch_all(pool)
         .await
         .map_err(Into::into)

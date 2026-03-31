@@ -28,6 +28,7 @@ import { Switch } from '../../components/ui/switch'
 import { AccountTagField } from '../../components/AccountTagField'
 import { AccountTagFilterCombobox } from '../../components/AccountTagFilterCombobox'
 import { EffectiveRoutingRuleCard } from '../../components/EffectiveRoutingRuleCard'
+import { InvocationTable } from '../../components/InvocationTable'
 import { MultiSelectFilterCombobox } from '../../components/MultiSelectFilterCombobox'
 import { UpstreamAccountGroupCombobox } from '../../components/UpstreamAccountGroupCombobox'
 import { UpstreamAccountGroupNoteDialog } from '../../components/UpstreamAccountGroupNoteDialog'
@@ -40,6 +41,7 @@ import { useUpstreamAccountDetailRoute } from '../../hooks/useUpstreamAccountDet
 import { useUpstreamAccounts } from '../../hooks/useUpstreamAccounts'
 import { useUpstreamStickyConversations } from '../../hooks/useUpstreamStickyConversations'
 import type {
+  ApiInvocation,
   BulkUpstreamAccountActionPayload,
   BulkUpstreamAccountSyncCounts,
   BulkUpstreamAccountSyncRow,
@@ -47,6 +49,7 @@ import type {
   PoolRoutingMaintenanceSettings,
   CompactSupportState,
   FetchUpstreamAccountsQuery,
+  StickyKeyConversationSelection,
   PoolRoutingTimeoutSettings,
   UpstreamAccountDetail,
   UpstreamAccountDuplicateInfo,
@@ -55,6 +58,7 @@ import type {
 import { DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS } from '../../lib/api'
 import {
   createBulkUpstreamAccountSyncJobEventSource,
+  fetchInvocationRecords,
   normalizeBulkUpstreamAccountSyncFailedEventPayload,
   normalizeBulkUpstreamAccountSyncRowEventPayload,
   normalizeBulkUpstreamAccountSyncSnapshotEventPayload,
@@ -106,7 +110,21 @@ const DEFAULT_ROUTING_TIMEOUTS: PoolRoutingTimeoutSettings = {
 }
 const POSITIVE_INTEGER_PATTERN = /^[1-9]\d*$/
 
-const STICKY_CONVERSATION_LIMIT_OPTIONS = [20, 50, 100] as const
+const ACCOUNT_RECORD_LIMIT_OPTIONS = [20, 50, 100] as const
+const DEFAULT_STICKY_CONVERSATION_SELECTION_VALUE = 'count:50'
+const STICKY_CONVERSATION_SELECTION_OPTIONS = [
+  { value: 'count:20', selection: { mode: 'count', limit: 20 } satisfies StickyKeyConversationSelection },
+  { value: 'count:50', selection: { mode: 'count', limit: 50 } satisfies StickyKeyConversationSelection },
+  { value: 'count:100', selection: { mode: 'count', limit: 100 } satisfies StickyKeyConversationSelection },
+  { value: 'activityWindow:1', selection: { mode: 'activityWindow', activityHours: 1 } satisfies StickyKeyConversationSelection },
+  { value: 'activityWindow:3', selection: { mode: 'activityWindow', activityHours: 3 } satisfies StickyKeyConversationSelection },
+  { value: 'activityWindow:6', selection: { mode: 'activityWindow', activityHours: 6 } satisfies StickyKeyConversationSelection },
+  { value: 'activityWindow:12', selection: { mode: 'activityWindow', activityHours: 12 } satisfies StickyKeyConversationSelection },
+  { value: 'activityWindow:24', selection: { mode: 'activityWindow', activityHours: 24 } satisfies StickyKeyConversationSelection },
+] as const
+const STICKY_CONVERSATION_SELECTION_LOOKUP = new Map<string, StickyKeyConversationSelection>(
+  STICKY_CONVERSATION_SELECTION_OPTIONS.map((option) => [option.value, option.selection]),
+)
 const GROUP_UPSTREAM_429_RETRY_OPTIONS = [1, 2, 3, 4, 5] as const
 const UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY = 'codex-vibe-monitor.account-pool.upstream-accounts.filters'
 const WORK_STATUS_FILTER_VALUES = ['working', 'degraded', 'idle', 'rate_limited', 'unavailable'] as const
@@ -174,7 +192,7 @@ type BusyActionState = {
   accountActions: Set<string>
 }
 
-type AccountDetailTab = 'overview' | 'edit' | 'routing' | 'healthEvents'
+type AccountDetailTab = 'overview' | 'records' | 'edit' | 'routing' | 'healthEvents'
 
 type SharedUpstreamAccountDetailDrawerCloseOptions = {
   replace?: boolean
@@ -946,6 +964,7 @@ export function SharedUpstreamAccountDetailDrawer({
 }: SharedUpstreamAccountDetailDrawerProps) {
   const { t, locale } = useTranslation()
   const navigate = useNavigate()
+  const { openUpstreamAccount } = useUpstreamAccountDetailRoute()
   const {
     items,
     groups = [],
@@ -980,7 +999,14 @@ export function SharedUpstreamAccountDetailDrawer({
   }))
   const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false)
   const [pageCreatedTagIds, setPageCreatedTagIds] = useState<number[]>([])
-  const [stickyConversationLimit, setStickyConversationLimit] = useState<number>(50)
+  const [stickyConversationSelectionValue, setStickyConversationSelectionValue] = useState(
+    DEFAULT_STICKY_CONVERSATION_SELECTION_VALUE,
+  )
+  const [expandedStickyKeys, setExpandedStickyKeys] = useState<string[]>([])
+  const [accountRecordLimit, setAccountRecordLimit] = useState<number>(ACCOUNT_RECORD_LIMIT_OPTIONS[1])
+  const [accountRecords, setAccountRecords] = useState<ApiInvocation[]>([])
+  const [accountRecordsLoading, setAccountRecordsLoading] = useState(false)
+  const [accountRecordsError, setAccountRecordsError] = useState<string | null>(null)
   const [groupDraftNotes, setGroupDraftNotes] = useState<Record<string, string>>({})
   const [groupDraftBoundProxyKeys, setGroupDraftBoundProxyKeys] = useState<Record<string, string[]>>({})
   const [groupDraftUpstream429RetryEnabled, setGroupDraftUpstream429RetryEnabled] = useState<Record<string, boolean>>({})
@@ -1003,6 +1029,7 @@ export function SharedUpstreamAccountDetailDrawer({
   const detailDrawerTabsBaseId = useId()
   const deleteConfirmTitleId = useId()
   const selectedIdRef = useRef<number | null>(selectedId)
+  const accountRecordsRequestSeqRef = useRef(0)
 
   useEffect(() => {
     selectedIdRef.current = selectedId
@@ -1041,6 +1068,7 @@ export function SharedUpstreamAccountDetailDrawer({
 
   useEffect(() => {
     setDetailTab('overview')
+    setExpandedStickyKeys([])
   }, [accountId])
 
   useEffect(() => {
@@ -1305,11 +1333,85 @@ export function SharedUpstreamAccountDetailDrawer({
     setDraft((current) => ({ ...current, tagIds: current.tagIds.filter((value) => value !== tagId) }))
   }, [deleteTag])
 
+  const stickyConversationSelection =
+    STICKY_CONVERSATION_SELECTION_LOOKUP.get(stickyConversationSelectionValue)
+    ?? STICKY_CONVERSATION_SELECTION_LOOKUP.get(DEFAULT_STICKY_CONVERSATION_SELECTION_VALUE)
+    ?? { mode: 'count', limit: 50 }
+  const stickyConversationSelectionOptions = useMemo(
+    () =>
+      STICKY_CONVERSATION_SELECTION_OPTIONS.map((option) => ({
+        value: option.value,
+        label: option.selection.mode === 'count'
+          ? t('live.conversations.option.count', { count: option.selection.limit })
+          : t('live.conversations.option.activityHours', { hours: option.selection.activityHours }),
+      })),
+    [t],
+  )
+  const accountRecordLimitOptions = useMemo(
+    () => ACCOUNT_RECORD_LIMIT_OPTIONS.map((value) => ({
+      value: String(value),
+      label: t('accountPool.upstreamAccounts.records.limitOption', { count: value }),
+    })),
+    [t],
+  )
   const {
     stats: stickyConversationStats,
     isLoading: stickyConversationLoading,
     error: stickyConversationError,
-  } = useUpstreamStickyConversations(selectedId, stickyConversationLimit, Boolean(open && selectedId))
+  } = useUpstreamStickyConversations(selectedId, stickyConversationSelection, Boolean(open && selectedId))
+  const visibleStickyKeys = useMemo(
+    () => stickyConversationStats?.conversations.map((conversation) => conversation.stickyKey) ?? [],
+    [stickyConversationStats],
+  )
+  const hasVisibleStickyConversations = visibleStickyKeys.length > 0
+  const allVisibleStickyKeysExpanded =
+    hasVisibleStickyConversations &&
+    visibleStickyKeys.every((stickyKey) => expandedStickyKeys.includes(stickyKey))
+
+  useEffect(() => {
+    if (!stickyConversationStats) return
+    const visibleStickyKeySet = new Set(
+      stickyConversationStats.conversations.map((conversation) => conversation.stickyKey),
+    )
+    setExpandedStickyKeys((current) => {
+      const next = current.filter((stickyKey) => visibleStickyKeySet.has(stickyKey))
+      return next.length === current.length ? current : next
+    })
+  }, [stickyConversationStats])
+
+  useEffect(() => {
+    const requestSeq = accountRecordsRequestSeqRef.current + 1
+    accountRecordsRequestSeqRef.current = requestSeq
+    setAccountRecords([])
+    setAccountRecordsError(null)
+    setAccountRecordsLoading(false)
+
+    if (!open || accountId == null || detailTab !== 'records') {
+      return
+    }
+
+    setAccountRecordsLoading(true)
+    void fetchInvocationRecords({
+      upstreamAccountId: accountId,
+      page: 1,
+      pageSize: accountRecordLimit,
+      sortBy: 'occurredAt',
+      sortOrder: 'desc',
+    })
+      .then((response) => {
+        if (requestSeq !== accountRecordsRequestSeqRef.current) return
+        setAccountRecords(response.records)
+      })
+      .catch((error) => {
+        if (requestSeq !== accountRecordsRequestSeqRef.current) return
+        setAccountRecordsError(error instanceof Error ? error.message : String(error))
+      })
+      .finally(() => {
+        if (requestSeq === accountRecordsRequestSeqRef.current) {
+          setAccountRecordsLoading(false)
+        }
+      })
+  }, [accountId, accountRecordLimit, detailTab, open])
 
   const selectedDetail = detail?.id === selectedId ? detail : null
   const selected = selectedDetail ?? selectedSummary
@@ -1324,6 +1426,10 @@ export function SharedUpstreamAccountDetailDrawer({
     overview: {
       tab: `${detailDrawerTabsBaseId}-overview-tab`,
       panel: `${detailDrawerTabsBaseId}-overview-panel`,
+    },
+    records: {
+      tab: `${detailDrawerTabsBaseId}-records-tab`,
+      panel: `${detailDrawerTabsBaseId}-records-panel`,
     },
     edit: {
       tab: `${detailDrawerTabsBaseId}-edit-tab`,
@@ -1430,6 +1536,34 @@ export function SharedUpstreamAccountDetailDrawer({
     const nextItems = applyMotherUpdateToItems(items, updated)
     notifyMotherSwitches(items, nextItems)
   }, [items, notifyMotherSwitches])
+
+  const toggleExpandedStickyKey = useCallback((stickyKey: string) => {
+    setExpandedStickyKeys((current) => (
+      current.includes(stickyKey)
+        ? current.filter((value) => value !== stickyKey)
+        : [...current, stickyKey]
+    ))
+  }, [])
+
+  const toggleAllVisibleStickyKeys = useCallback(() => {
+    if (!hasVisibleStickyConversations) return
+    setExpandedStickyKeys((current) => {
+      const allExpanded = visibleStickyKeys.every((stickyKey) => current.includes(stickyKey))
+      if (allExpanded) {
+        return current.filter((stickyKey) => !visibleStickyKeys.includes(stickyKey))
+      }
+
+      const preserved = current.filter((stickyKey) => !visibleStickyKeys.includes(stickyKey))
+      return [...preserved, ...visibleStickyKeys]
+    })
+  }, [hasVisibleStickyConversations, visibleStickyKeys])
+
+  const handleOpenRelatedUpstreamAccount = useCallback(
+    (nextAccountId: number) => {
+      openUpstreamAccount(nextAccountId)
+    },
+    [openUpstreamAccount],
+  )
 
   const handleOauthLogin = useCallback(async (nextAccountId: number) => {
     navigate(`/account-pool/upstream-accounts/new?accountId=${nextAccountId}`)
@@ -1853,6 +1987,17 @@ export function SharedUpstreamAccountDetailDrawer({
                   {t('accountPool.upstreamAccounts.detailTabs.overview')}
                 </SegmentedControlItem>
                 <SegmentedControlItem
+                  id={detailTabIds.records.tab}
+                  active={detailTab === 'records'}
+                  role="tab"
+                  aria-selected={detailTab === 'records'}
+                  aria-controls={detailTabIds.records.panel}
+                  aria-pressed={detailTab === 'records'}
+                  onClick={() => setDetailTab('records')}
+                >
+                  {t('accountPool.upstreamAccounts.detailTabs.records')}
+                </SegmentedControlItem>
+                <SegmentedControlItem
                   id={detailTabIds.edit.tab}
                   active={detailTab === 'edit'}
                   role="tab"
@@ -1942,6 +2087,47 @@ export function SharedUpstreamAccountDetailDrawer({
                       accentClassName="text-secondary"
                     />
                   </div>
+                </div>
+              ) : null}
+
+              {detailTab === 'records' ? (
+                <div
+                  id={detailTabIds.records.panel}
+                  role="tabpanel"
+                  aria-labelledby={detailTabIds.records.tab}
+                >
+                  <Card className="border-base-300/80 bg-base-100/72">
+                    <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
+                      <div>
+                        <CardTitle>{t('accountPool.upstreamAccounts.records.title')}</CardTitle>
+                        <CardDescription>{t('accountPool.upstreamAccounts.records.description')}</CardDescription>
+                      </div>
+                      <SelectField
+                        label={t('accountPool.upstreamAccounts.records.limitLabel')}
+                        className="w-36"
+                        name="upstreamAccountRecordLimit"
+                        size="sm"
+                        value={String(accountRecordLimit)}
+                        options={accountRecordLimitOptions}
+                        onValueChange={(value) => {
+                          const nextLimit = Number(value)
+                          if (!ACCOUNT_RECORD_LIMIT_OPTIONS.includes(nextLimit as (typeof ACCOUNT_RECORD_LIMIT_OPTIONS)[number])) {
+                            return
+                          }
+                          setAccountRecordLimit(nextLimit)
+                        }}
+                      />
+                    </CardHeader>
+                    <CardContent>
+                      <InvocationTable
+                        records={accountRecords}
+                        isLoading={accountRecordsLoading}
+                        error={accountRecordsError}
+                        emptyLabel={t('accountPool.upstreamAccounts.records.empty')}
+                        onOpenUpstreamAccount={handleOpenRelatedUpstreamAccount}
+                      />
+                    </CardContent>
+                  </Card>
                 </div>
               ) : null}
 
@@ -2146,24 +2332,48 @@ export function SharedUpstreamAccountDetailDrawer({
                         <CardTitle>{t('accountPool.upstreamAccounts.stickyConversations.title')}</CardTitle>
                         <CardDescription>{t('accountPool.upstreamAccounts.stickyConversations.description')}</CardDescription>
                       </div>
-                      <SelectField
-                        label={t('accountPool.upstreamAccounts.stickyConversations.limitLabel')}
-                        className="w-36"
-                        name="stickyConversationLimit"
-                        size="sm"
-                        value={String(stickyConversationLimit)}
-                        options={STICKY_CONVERSATION_LIMIT_OPTIONS.map((value) => ({
-                          value: String(value),
-                          label: t('accountPool.upstreamAccounts.stickyConversations.limitOption', { count: value }),
-                        }))}
-                        onValueChange={(value) => setStickyConversationLimit(Number(value))}
-                      />
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="gap-2"
+                          disabled={stickyConversationLoading || !hasVisibleStickyConversations}
+                          onClick={toggleAllVisibleStickyKeys}
+                        >
+                          <AppIcon
+                            name={allVisibleStickyKeysExpanded ? 'chevron-up' : 'chevron-down'}
+                            className="h-4 w-4"
+                            aria-hidden
+                          />
+                          {allVisibleStickyKeysExpanded
+                            ? t('live.conversations.actions.collapseAllRecords')
+                            : t('live.conversations.actions.expandAllRecords')}
+                        </Button>
+                        <SelectField
+                          label={t('live.conversations.selectionLabel')}
+                          className="w-40"
+                          name="stickyConversationSelection"
+                          size="sm"
+                          value={stickyConversationSelectionValue}
+                          options={stickyConversationSelectionOptions}
+                          onValueChange={(value) => {
+                            if (!STICKY_CONVERSATION_SELECTION_LOOKUP.has(value)) return
+                            setStickyConversationSelectionValue(value)
+                          }}
+                        />
+                      </div>
                     </CardHeader>
                     <CardContent>
                       <StickyKeyConversationTable
+                        accountId={selectedDetail.id}
+                        accountDisplayName={selectedDetail.displayName}
                         stats={stickyConversationStats}
                         isLoading={stickyConversationLoading}
                         error={stickyConversationError}
+                        expandedStickyKeys={expandedStickyKeys}
+                        onToggleExpandedStickyKey={toggleExpandedStickyKey}
+                        onOpenUpstreamAccount={handleOpenRelatedUpstreamAccount}
                       />
                     </CardContent>
                   </Card>
