@@ -18200,6 +18200,126 @@ async fn capture_target_pool_route_timeout_ignores_broken_same_route_groups() {
 }
 
 #[tokio::test]
+async fn capture_target_pool_route_timeout_prefers_real_alternate_group_proxy_error() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct PersistedPayloadRow {
+        error_message: Option<String>,
+        payload: Option<String>,
+    }
+
+    let (shared_upstream_base, shared_upstream_handle) =
+        spawn_pool_delayed_first_chunk_upstream(Duration::from_millis(250)).await;
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.pool_upstream_responses_attempt_timeout = Duration::from_millis(120);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Shared Route A",
+        "route-shared-a-broken-alt",
+        None,
+        None,
+        Some(shared_upstream_base.as_str()),
+    )
+    .await;
+    let broken_same_route_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Broken Shared Route",
+        "route-shared-b-broken-alt",
+        None,
+        None,
+        Some(shared_upstream_base.as_str()),
+    )
+    .await;
+    sqlx::query("UPDATE pool_upstream_accounts SET group_name = ?2 WHERE id = ?1")
+        .bind(broken_same_route_id)
+        .bind("broken-shared-route-group")
+        .execute(&state.pool)
+        .await
+        .expect("mark broken same-route account");
+    let broken_alternate_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Broken Alternate Route",
+        "route-broken-alt-invalid-group",
+        None,
+        None,
+        Some("https://broken-alt.example.com/backend-api/codex"),
+    )
+    .await;
+    sqlx::query("UPDATE pool_upstream_accounts SET group_name = ?2 WHERE id = ?1")
+        .bind(broken_alternate_id)
+        .bind("broken-alt-group")
+        .execute(&state.pool)
+        .await
+        .expect("mark broken alternate-route account");
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-timeout-broken-alt-group"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read timeout broken-alt response body");
+    let response_payload: Value =
+        serde_json::from_slice(&body).expect("decode timeout broken-alt response body");
+    assert!(
+        response_payload["error"]
+            .as_str()
+            .expect("timeout broken-alt error should be present")
+            .contains(
+                "upstream account group \"broken-alt-group\" has no bound forward proxy nodes"
+            )
+    );
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    wait_for_pool_attempt_row_count(&state.pool, 2).await;
+
+    let row = sqlx::query_as::<_, PersistedPayloadRow>(
+        r#"
+        SELECT error_message, payload
+        FROM codex_invocations
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load timeout broken-alt payload");
+    let payload: Value = serde_json::from_str(
+        row.payload
+            .as_deref()
+            .expect("timeout broken-alt payload should be present"),
+    )
+    .expect("decode timeout broken-alt payload");
+    assert!(row.error_message.as_deref().is_some_and(|msg| {
+        msg.contains("upstream account group \"broken-alt-group\" has no bound forward proxy nodes")
+    }));
+    assert_eq!(payload["poolAttemptCount"].as_i64(), Some(1));
+    assert_eq!(payload["poolDistinctAccountCount"].as_i64(), Some(1));
+    assert_eq!(
+        payload["poolAttemptTerminalReason"].as_str(),
+        Some(PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT),
+    );
+    assert!(payload["upstreamErrorMessage"].is_null());
+
+    shared_upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn capture_target_pool_route_timeout_replay_failover_preserves_no_alternate_terminal_reason()
 {
     #[derive(Debug, sqlx::FromRow)]

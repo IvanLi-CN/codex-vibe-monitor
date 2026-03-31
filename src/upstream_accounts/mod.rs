@@ -15032,6 +15032,7 @@ pub(crate) async fn resolve_pool_account_for_request(
     let mut saw_rate_limited_candidate = false;
     let mut saw_degraded_candidate = false;
     let mut saw_other_non_rate_limited_routing_candidate = false;
+    let mut saw_excluded_route_non_rate_limited_candidate = false;
     let mut saw_non_routing_candidate = false;
     let mut sticky_route_excluded_by_route_key = false;
     let mut sticky_route_still_reusable = false;
@@ -15092,7 +15093,7 @@ pub(crate) async fn resolve_pool_account_for_request(
                             {
                                 saw_degraded_candidate = true;
                             } else {
-                                saw_other_non_rate_limited_routing_candidate = true;
+                                saw_excluded_route_non_rate_limited_candidate = true;
                             }
                         }
                     }
@@ -15100,6 +15101,7 @@ pub(crate) async fn resolve_pool_account_for_request(
                         if sticky_route_is_excluded_by_route_key {
                             sticky_route_excluded_by_route_key = true;
                             sticky_route_was_excluded = true;
+                            saw_excluded_route_non_rate_limited_candidate = true;
                         } else {
                             sticky_route_group_proxy_blocked_message = Some(message.clone());
                             group_proxy_blocked_messages.push(message);
@@ -15212,7 +15214,7 @@ pub(crate) async fn resolve_pool_account_for_request(
                 PoolAccountGroupProxyRoutingReadiness::Ready(group_metadata) => group_metadata,
                 PoolAccountGroupProxyRoutingReadiness::Blocked(message) => {
                     if candidate_route_is_excluded_by_route_key {
-                        saw_other_non_rate_limited_routing_candidate = true;
+                        saw_excluded_route_non_rate_limited_candidate = true;
                     } else {
                         group_proxy_blocked_messages.push(message);
                     }
@@ -15221,7 +15223,7 @@ pub(crate) async fn resolve_pool_account_for_request(
             };
             if let Some(account) = prepare_pool_account(state, &row, group_metadata).await? {
                 if excluded_upstream_route_keys.contains(&account.upstream_route_key()) {
-                    saw_other_non_rate_limited_routing_candidate = true;
+                    saw_excluded_route_non_rate_limited_candidate = true;
                     continue;
                 }
                 return Ok(PoolAccountResolution::Resolved(account));
@@ -15242,17 +15244,20 @@ pub(crate) async fn resolve_pool_account_for_request(
     if saw_rate_limited_candidate
         && !saw_degraded_candidate
         && !saw_other_non_rate_limited_routing_candidate
+        && !saw_excluded_route_non_rate_limited_candidate
     {
         return Ok(PoolAccountResolution::RateLimited);
     }
     if saw_degraded_candidate
         && !saw_rate_limited_candidate
         && !saw_other_non_rate_limited_routing_candidate
+        && !saw_excluded_route_non_rate_limited_candidate
         && !saw_non_routing_candidate
     {
         return Ok(PoolAccountResolution::DegradedOnly);
     }
     if saw_other_non_rate_limited_routing_candidate
+        || saw_excluded_route_non_rate_limited_candidate
         || saw_non_routing_candidate
         || (saw_rate_limited_candidate && saw_degraded_candidate)
     {
@@ -18455,6 +18460,33 @@ mod tests {
         .fetch_one(pool)
         .await
         .expect("insert syncable oauth account")
+    }
+
+    async fn insert_test_pool_api_key_account_with_options(
+        state: &Arc<AppState>,
+        display_name: &str,
+        api_key: &str,
+        group_name: Option<&str>,
+        upstream_base_url: Option<&str>,
+    ) -> i64 {
+        let normalized_group_name = group_name.unwrap_or(test_required_group_name());
+        ensure_test_group_binding(&state.pool, normalized_group_name).await;
+        let payload: CreateApiKeyAccountRequest = serde_json::from_value(serde_json::json!({
+            "displayName": display_name,
+            "apiKey": api_key,
+            "groupName": normalized_group_name,
+            "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
+            "upstreamBaseUrl": upstream_base_url,
+        }))
+        .expect("deserialize api key account request");
+        let Json(_) = create_api_key_account(State(state.clone()), HeaderMap::new(), Json(payload))
+            .await
+            .expect("insert test pool api key account");
+        sqlx::query_scalar("SELECT id FROM pool_upstream_accounts WHERE display_name = ?1")
+            .bind(display_name)
+            .fetch_one(&state.pool)
+            .await
+            .expect("load inserted test pool api key account id")
     }
 
     async fn spawn_usage_snapshot_server(
@@ -22812,6 +22844,64 @@ mod tests {
         assert_eq!(
             message,
             "upstream account group \"missing-bindings\" has no bound forward proxy nodes; bind at least one proxy node to the group"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolver_prefers_real_group_proxy_error_over_excluded_route_blockers() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let excluded_blocked = insert_test_pool_api_key_account_with_options(
+            &state,
+            "Excluded Route Blocked",
+            "sk-excluded-route-blocked",
+            None,
+            Some("https://same-route.example.com/backend-api/codex"),
+        )
+        .await;
+        let alternate_blocked = insert_test_pool_api_key_account_with_options(
+            &state,
+            "Alternate Route Blocked",
+            "sk-alternate-route-blocked",
+            None,
+            Some("https://alternate-route.example.com/backend-api/codex"),
+        )
+        .await;
+        set_test_account_group_name(&state.pool, excluded_blocked, Some("same-route-missing"))
+            .await;
+        set_test_account_group_name(&state.pool, alternate_blocked, Some("alternate-missing"))
+            .await;
+        let now_iso = format_utc_iso(Utc::now());
+        insert_limit_sample_with_usage(
+            &state.pool,
+            excluded_blocked,
+            &now_iso,
+            Some(1.0),
+            Some(1.0),
+        )
+        .await;
+        insert_limit_sample_with_usage(
+            &state.pool,
+            alternate_blocked,
+            &now_iso,
+            Some(5.0),
+            Some(1.0),
+        )
+        .await;
+        let excluded_upstream_route_keys = HashSet::from([canonical_pool_upstream_route_key(
+            &Url::parse("https://same-route.example.com/backend-api/codex")
+                .expect("valid excluded route"),
+        )]);
+
+        let resolution =
+            resolve_pool_account_for_request(&state, None, &[], &excluded_upstream_route_keys)
+                .await
+                .expect("resolve pool account");
+        let PoolAccountResolution::BlockedByPolicy(message) = resolution else {
+            panic!("expected actionable group proxy error to survive excluded same-route blockers");
+        };
+        assert_eq!(
+            message,
+            "upstream account group \"alternate-missing\" has no bound forward proxy nodes; bind at least one proxy node to the group"
         );
     }
 
