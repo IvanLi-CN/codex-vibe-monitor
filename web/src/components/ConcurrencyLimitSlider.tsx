@@ -54,10 +54,25 @@ export function ConcurrencyLimitSlider({
           onChange={(event) => onChange(Number(event.target.value))}
           className="h-2 w-full cursor-pointer appearance-none rounded-full bg-base-300 accent-primary disabled:cursor-not-allowed disabled:opacity-60"
         />
-        <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-[0.12em] text-base-content/45">
-          <span>{CONCURRENCY_LIMIT_MIN}</span>
-          <span>{CONCURRENCY_LIMIT_MAX}</span>
-          <span>{unlimitedLabel}</span>
+        <div
+          className="grid items-center text-[11px] font-semibold uppercase tracking-[0.12em] text-base-content/45"
+          style={{
+            gridTemplateColumns: `repeat(${CONCURRENCY_LIMIT_MAX}, minmax(0, 1fr)) max-content`,
+          }}
+        >
+          <span className="justify-self-start">{CONCURRENCY_LIMIT_MIN}</span>
+          <span
+            className="justify-self-center"
+            style={{ gridColumn: `${CONCURRENCY_LIMIT_MAX} / span 1` }}
+          >
+            {CONCURRENCY_LIMIT_MAX}
+          </span>
+          <span
+            className="justify-self-end pl-2"
+            style={{ gridColumn: `${CONCURRENCY_LIMIT_MAX + 1} / span 1` }}
+          >
+            {unlimitedLabel}
+          </span>
         </div>
       </div>
     </div>
