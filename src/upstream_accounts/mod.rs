@@ -15032,7 +15032,7 @@ pub(crate) async fn resolve_pool_account_for_request(
     let mut saw_rate_limited_candidate = false;
     let mut saw_degraded_candidate = false;
     let mut saw_other_non_rate_limited_routing_candidate = false;
-    let mut saw_excluded_route_non_rate_limited_candidate = false;
+    let mut saw_excluded_route_candidate = false;
     let mut saw_non_routing_candidate = false;
     let mut sticky_route_excluded_by_route_key = false;
     let mut sticky_route_still_reusable = false;
@@ -15093,7 +15093,7 @@ pub(crate) async fn resolve_pool_account_for_request(
                             {
                                 saw_degraded_candidate = true;
                             } else {
-                                saw_excluded_route_non_rate_limited_candidate = true;
+                                saw_excluded_route_candidate = true;
                             }
                         }
                     }
@@ -15101,7 +15101,7 @@ pub(crate) async fn resolve_pool_account_for_request(
                         if sticky_route_is_excluded_by_route_key {
                             sticky_route_excluded_by_route_key = true;
                             sticky_route_was_excluded = true;
-                            saw_excluded_route_non_rate_limited_candidate = true;
+                            saw_excluded_route_candidate = true;
                         } else {
                             sticky_route_group_proxy_blocked_message = Some(message.clone());
                             group_proxy_blocked_messages.push(message);
@@ -15117,6 +15117,12 @@ pub(crate) async fn resolve_pool_account_for_request(
                         }
                     }
                 }
+            } else if sticky_route_is_excluded_by_route_key
+                && (is_account_rate_limited_for_routing(&row, sticky_snapshot_exhausted)
+                    || is_account_degraded_for_routing(&row, sticky_snapshot_exhausted, now)
+                    || is_routing_eligible_account(&row))
+            {
+                saw_excluded_route_candidate = true;
             } else if is_account_rate_limited_for_routing(&row, sticky_snapshot_exhausted) {
                 saw_rate_limited_candidate = true;
             } else if is_account_degraded_for_routing(&row, sticky_snapshot_exhausted, now) {
@@ -15180,7 +15186,13 @@ pub(crate) async fn resolve_pool_account_for_request(
             .map(|url| canonical_pool_upstream_route_key(&url))
             .is_some_and(|route_key| excluded_upstream_route_keys.contains(&route_key));
             if !is_account_selectable_for_fresh_assignment(&row, snapshot_exhausted, now) {
-                if is_account_rate_limited_for_routing(&row, snapshot_exhausted) {
+                if candidate_route_is_excluded_by_route_key
+                    && (is_account_rate_limited_for_routing(&row, snapshot_exhausted)
+                        || is_account_degraded_for_routing(&row, snapshot_exhausted, now)
+                        || is_routing_eligible_account(&row))
+                {
+                    saw_excluded_route_candidate = true;
+                } else if is_account_rate_limited_for_routing(&row, snapshot_exhausted) {
                     saw_rate_limited_candidate = true;
                 } else if is_account_degraded_for_routing(&row, snapshot_exhausted, now) {
                     saw_degraded_candidate = true;
@@ -15202,7 +15214,11 @@ pub(crate) async fn resolve_pool_account_for_request(
             )
             .await?
             {
-                saw_other_non_rate_limited_routing_candidate = true;
+                if candidate_route_is_excluded_by_route_key {
+                    saw_excluded_route_candidate = true;
+                } else {
+                    saw_other_non_rate_limited_routing_candidate = true;
+                }
                 continue;
             }
             let group_metadata = match resolve_pool_account_group_proxy_routing_readiness(
@@ -15214,7 +15230,7 @@ pub(crate) async fn resolve_pool_account_for_request(
                 PoolAccountGroupProxyRoutingReadiness::Ready(group_metadata) => group_metadata,
                 PoolAccountGroupProxyRoutingReadiness::Blocked(message) => {
                     if candidate_route_is_excluded_by_route_key {
-                        saw_excluded_route_non_rate_limited_candidate = true;
+                        saw_excluded_route_candidate = true;
                     } else {
                         group_proxy_blocked_messages.push(message);
                     }
@@ -15223,7 +15239,7 @@ pub(crate) async fn resolve_pool_account_for_request(
             };
             if let Some(account) = prepare_pool_account(state, &row, group_metadata).await? {
                 if excluded_upstream_route_keys.contains(&account.upstream_route_key()) {
-                    saw_excluded_route_non_rate_limited_candidate = true;
+                    saw_excluded_route_candidate = true;
                     continue;
                 }
                 return Ok(PoolAccountResolution::Resolved(account));
@@ -15244,20 +15260,20 @@ pub(crate) async fn resolve_pool_account_for_request(
     if saw_rate_limited_candidate
         && !saw_degraded_candidate
         && !saw_other_non_rate_limited_routing_candidate
-        && !saw_excluded_route_non_rate_limited_candidate
+        && !saw_excluded_route_candidate
     {
         return Ok(PoolAccountResolution::RateLimited);
     }
     if saw_degraded_candidate
         && !saw_rate_limited_candidate
         && !saw_other_non_rate_limited_routing_candidate
-        && !saw_excluded_route_non_rate_limited_candidate
+        && !saw_excluded_route_candidate
         && !saw_non_routing_candidate
     {
         return Ok(PoolAccountResolution::DegradedOnly);
     }
     if saw_other_non_rate_limited_routing_candidate
-        || saw_excluded_route_non_rate_limited_candidate
+        || saw_excluded_route_candidate
         || saw_non_routing_candidate
         || (saw_rate_limited_candidate && saw_degraded_candidate)
     {
@@ -22898,6 +22914,136 @@ mod tests {
                 .expect("resolve pool account");
         let PoolAccountResolution::BlockedByPolicy(message) = resolution else {
             panic!("expected actionable group proxy error to survive excluded same-route blockers");
+        };
+        assert_eq!(
+            message,
+            "upstream account group \"alternate-missing\" has no bound forward proxy nodes; bind at least one proxy node to the group"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolver_treats_excluded_rate_limited_routes_as_unavailable() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let excluded_rate_limited = insert_test_pool_api_key_account_with_options(
+            &state,
+            "Excluded Rate Limited Route",
+            "sk-excluded-rate-limited",
+            None,
+            Some("https://same-route-rate-limited.example.com/backend-api/codex"),
+        )
+        .await;
+        let now_iso = format_utc_iso(Utc::now());
+        insert_limit_sample_with_usage(
+            &state.pool,
+            excluded_rate_limited,
+            &now_iso,
+            Some(100.0),
+            Some(50.0),
+        )
+        .await;
+        let excluded_upstream_route_keys = HashSet::from([canonical_pool_upstream_route_key(
+            &Url::parse("https://same-route-rate-limited.example.com/backend-api/codex")
+                .expect("valid excluded route"),
+        )]);
+
+        let resolution =
+            resolve_pool_account_for_request(&state, None, &[], &excluded_upstream_route_keys)
+                .await
+                .expect("resolve pool account");
+        assert!(matches!(resolution, PoolAccountResolution::Unavailable));
+    }
+
+    #[tokio::test]
+    async fn resolver_prefers_group_proxy_error_over_excluded_route_cut_in_rejects() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let sticky_source = insert_test_pool_api_key_account_with_options(
+            &state,
+            "Sticky Source Route",
+            "sk-sticky-source-route",
+            None,
+            Some("https://route-a.example.com/backend-api/codex"),
+        )
+        .await;
+        let excluded_cut_in_reject = insert_test_pool_api_key_account_with_options(
+            &state,
+            "Excluded Cut In Reject",
+            "sk-excluded-cut-in-reject",
+            None,
+            Some("https://route-a.example.com/backend-api/codex"),
+        )
+        .await;
+        let alternate_blocked = insert_test_pool_api_key_account_with_options(
+            &state,
+            "Alternate Blocked Route",
+            "sk-alternate-blocked-route",
+            None,
+            Some("https://route-b.example.com/backend-api/codex"),
+        )
+        .await;
+        set_test_account_group_name(&state.pool, alternate_blocked, Some("alternate-missing"))
+            .await;
+        let no_cut_in_tag = insert_tag(
+            &state.pool,
+            "excluded-route-no-cut-in",
+            &TagRoutingRule {
+                guard_enabled: false,
+                lookback_hours: None,
+                max_conversations: None,
+                allow_cut_out: true,
+                allow_cut_in: false,
+            },
+        )
+        .await
+        .expect("insert no-cut-in tag");
+        sync_account_tag_links(
+            &state.pool,
+            excluded_cut_in_reject,
+            &[no_cut_in_tag.summary.id],
+        )
+        .await
+        .expect("attach no-cut-in tag");
+        let now_iso = format_utc_iso(Utc::now());
+        upsert_sticky_route(
+            &state.pool,
+            "sticky-excluded-cut-in-reject",
+            sticky_source,
+            &now_iso,
+        )
+        .await
+        .expect("upsert sticky route");
+        insert_limit_sample_with_usage(&state.pool, sticky_source, &now_iso, Some(1.0), Some(1.0))
+            .await;
+        insert_limit_sample_with_usage(
+            &state.pool,
+            excluded_cut_in_reject,
+            &now_iso,
+            Some(5.0),
+            Some(1.0),
+        )
+        .await;
+        insert_limit_sample_with_usage(
+            &state.pool,
+            alternate_blocked,
+            &now_iso,
+            Some(10.0),
+            Some(1.0),
+        )
+        .await;
+        let excluded_upstream_route_keys = HashSet::from([canonical_pool_upstream_route_key(
+            &Url::parse("https://route-a.example.com/backend-api/codex")
+                .expect("valid excluded route"),
+        )]);
+
+        let resolution = resolve_pool_account_for_request(
+            &state,
+            Some("sticky-excluded-cut-in-reject"),
+            &[],
+            &excluded_upstream_route_keys,
+        )
+        .await
+        .expect("resolve pool account");
+        let PoolAccountResolution::BlockedByPolicy(message) = resolution else {
+            panic!("expected alternate group proxy error to survive excluded cut-in reject");
         };
         assert_eq!(
             message,
