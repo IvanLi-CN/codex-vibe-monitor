@@ -312,6 +312,7 @@ export interface ApiInvocation {
   endpoint?: string;
   requesterIp?: string;
   promptCacheKey?: string;
+  stickyKey?: string | null;
   routeMode?: string;
   upstreamAccountId?: number | null;
   upstreamAccountName?: string;
