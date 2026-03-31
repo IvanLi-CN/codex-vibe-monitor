@@ -3473,7 +3473,9 @@ pub(crate) async fn update_tag(
         payload.max_conversations.or(existing.max_conversations),
         payload.allow_cut_out.unwrap_or(existing.allow_cut_out != 0),
         payload.allow_cut_in.unwrap_or(existing.allow_cut_in != 0),
-        payload.concurrency_limit.or(Some(existing.concurrency_limit)),
+        payload
+            .concurrency_limit
+            .or(Some(existing.concurrency_limit)),
     )?;
     let detail = persist_tag_update(&state.pool, id, &name, &rule)
         .await
@@ -3529,10 +3531,8 @@ pub(crate) async fn update_upstream_account_group(
         .upstream_429_max_retries
         .map(normalize_group_upstream_429_max_retries)
         .unwrap_or_default();
-    let concurrency_limit = normalize_concurrency_limit(
-        payload.concurrency_limit.or(Some(0)),
-        "concurrencyLimit",
-    )?;
+    let concurrency_limit =
+        normalize_concurrency_limit(payload.concurrency_limit.or(Some(0)), "concurrencyLimit")?;
 
     let mut tx = state
         .pool
@@ -5802,7 +5802,8 @@ pub(crate) async fn update_oauth_login_session(
         normalized_group_note = None;
     }
     if requested_group_name_was_updated
-        && (group_name.is_none() || (requested_group_concurrency_limit_missing && group_name_changed))
+        && (group_name.is_none()
+            || (requested_group_concurrency_limit_missing && group_name_changed))
     {
         normalized_group_concurrency_limit = 0;
     }
@@ -12260,10 +12261,8 @@ fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingR
         source_tag_names.push(tag.name.clone());
         allow_cut_out &= tag.routing_rule.allow_cut_out;
         allow_cut_in &= tag.routing_rule.allow_cut_in;
-        concurrency_limit = merge_concurrency_limits(
-            concurrency_limit,
-            tag.routing_rule.concurrency_limit,
-        );
+        concurrency_limit =
+            merge_concurrency_limits(concurrency_limit, tag.routing_rule.concurrency_limit);
         if tag.routing_rule.guard_enabled
             && let (Some(lookback_hours), Some(max_conversations)) = (
                 tag.routing_rule.lookback_hours,
@@ -15136,10 +15135,8 @@ async fn load_effective_routing_rule_for_account(
         .remove(&account_id)
         .unwrap_or_default();
     let mut rule = build_effective_routing_rule(&tags);
-    rule.concurrency_limit = merge_concurrency_limits(
-        rule.concurrency_limit,
-        group_metadata.concurrency_limit,
-    );
+    rule.concurrency_limit =
+        merge_concurrency_limits(rule.concurrency_limit, group_metadata.concurrency_limit);
     Ok(rule)
 }
 
@@ -20056,7 +20053,10 @@ mod tests {
             ))
         );
         assert_eq!(normalize_concurrency_limit(None, "concurrencyLimit"), Ok(0));
-        assert_eq!(normalize_concurrency_limit(Some(30), "concurrencyLimit"), Ok(30));
+        assert_eq!(
+            normalize_concurrency_limit(Some(30), "concurrencyLimit"),
+            Ok(30)
+        );
     }
 
     #[test]
@@ -20131,9 +20131,13 @@ mod tests {
             .await
             .expect("insert strict tag");
 
-        sync_account_tag_links(&pool, account_id, &[relaxed_tag.summary.id, strict_tag.summary.id])
-            .await
-            .expect("attach tags");
+        sync_account_tag_links(
+            &pool,
+            account_id,
+            &[relaxed_tag.summary.id, strict_tag.summary.id],
+        )
+        .await
+        .expect("attach tags");
 
         let mut conn = pool.acquire().await.expect("acquire metadata conn");
         save_group_metadata_record_conn(
@@ -20156,7 +20160,10 @@ mod tests {
             .expect("load effective routing rule");
 
         assert_eq!(rule.concurrency_limit, 2);
-        assert_eq!(rule.source_tag_ids, vec![relaxed_tag.summary.id, strict_tag.summary.id]);
+        assert_eq!(
+            rule.source_tag_ids,
+            vec![relaxed_tag.summary.id, strict_tag.summary.id]
+        );
     }
 
     #[tokio::test]
@@ -20214,20 +20221,19 @@ mod tests {
             .await
             .expect("seed active sticky route");
 
-        let resolution = resolve_pool_account_for_request(
-            &state,
-            None,
-            &[],
-            &std::collections::HashSet::new(),
-        )
-        .await
-        .expect("resolve pool account");
+        let resolution =
+            resolve_pool_account_for_request(&state, None, &[], &std::collections::HashSet::new())
+                .await
+                .expect("resolve pool account");
 
         let PoolAccountResolution::Resolved(account) = resolution else {
             panic!("expected fallback account to be selected");
         };
         assert_eq!(account.account_id, fallback_account_id);
-        assert_eq!(account.routing_source, PoolRoutingSelectionSource::FreshAssignment);
+        assert_eq!(
+            account.routing_source,
+            PoolRoutingSelectionSource::FreshAssignment
+        );
     }
 
     #[tokio::test]
@@ -20289,7 +20295,10 @@ mod tests {
             panic!("expected sticky reuse to resolve the existing account");
         };
         assert_eq!(account.account_id, limited_account_id);
-        assert_eq!(account.routing_source, PoolRoutingSelectionSource::StickyReuse);
+        assert_eq!(
+            account.routing_source,
+            PoolRoutingSelectionSource::StickyReuse
+        );
     }
 
     #[tokio::test]
