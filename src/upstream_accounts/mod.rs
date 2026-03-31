@@ -14918,6 +14918,12 @@ pub(crate) enum PoolAccountResolution {
     BlockedByPolicy(String),
 }
 
+#[derive(Debug, Clone)]
+enum PoolAccountGroupProxyRoutingReadiness {
+    Ready(UpstreamAccountGroupMetadata),
+    Blocked(String),
+}
+
 async fn load_effective_routing_rule_for_account(
     pool: &Pool<Sqlite>,
     account_id: i64,
@@ -14957,6 +14963,64 @@ async fn account_accepts_sticky_assignment(
     Ok(true)
 }
 
+async fn resolve_pool_account_group_proxy_routing_readiness(
+    state: &AppState,
+    group_name: Option<&str>,
+) -> Result<PoolAccountGroupProxyRoutingReadiness> {
+    let group_metadata = load_group_metadata(&state.pool, group_name).await?;
+    let scope = match required_account_forward_proxy_scope(
+        group_name,
+        group_metadata.bound_proxy_keys.clone(),
+    ) {
+        Ok(scope) => scope,
+        Err(err) => {
+            return Ok(PoolAccountGroupProxyRoutingReadiness::Blocked(
+                err.to_string(),
+            ));
+        }
+    };
+    let has_selectable_bound_proxy_keys = match &scope {
+        ForwardProxyRouteScope::BoundGroup {
+            bound_proxy_keys, ..
+        } => {
+            let manager = state.forward_proxy.lock().await;
+            manager.has_selectable_bound_proxy_keys(bound_proxy_keys)
+        }
+        ForwardProxyRouteScope::Automatic => true,
+    };
+    if !has_selectable_bound_proxy_keys {
+        let ForwardProxyRouteScope::BoundGroup { group_name, .. } = &scope else {
+            unreachable!("strict pool account routing should never fall back to automatic");
+        };
+        return Ok(PoolAccountGroupProxyRoutingReadiness::Blocked(
+            missing_selectable_group_bound_proxy_error_message(group_name),
+        ));
+    }
+    Ok(PoolAccountGroupProxyRoutingReadiness::Ready(group_metadata))
+}
+
+fn summarize_pool_group_proxy_blocked_messages(messages: &[String]) -> Option<String> {
+    let mut seen = HashSet::new();
+    let mut unique_messages = Vec::new();
+    for message in messages {
+        let normalized = message.trim();
+        if normalized.is_empty() {
+            continue;
+        }
+        if seen.insert(normalized.to_string()) {
+            unique_messages.push(normalized.to_string());
+        }
+    }
+    let first_message = unique_messages.first()?.clone();
+    if unique_messages.len() == 1 {
+        return Some(first_message);
+    }
+    Some(format!(
+        "{first_message}; plus {} additional upstream account group routing configuration issue(s)",
+        unique_messages.len() - 1
+    ))
+}
+
 pub(crate) async fn resolve_pool_account_for_request(
     state: &AppState,
     sticky_key: Option<&str>,
@@ -14967,10 +15031,13 @@ pub(crate) async fn resolve_pool_account_for_request(
     let mut tried = excluded_ids.iter().copied().collect::<HashSet<_>>();
     let mut saw_rate_limited_candidate = false;
     let mut saw_degraded_candidate = false;
-    let mut saw_non_rate_limited_routing_candidate = false;
+    let mut saw_other_non_rate_limited_routing_candidate = false;
+    let mut saw_excluded_route_candidate = false;
     let mut saw_non_routing_candidate = false;
     let mut sticky_route_excluded_by_route_key = false;
     let mut sticky_route_still_reusable = false;
+    let mut sticky_route_group_proxy_blocked_message = None;
+    let mut group_proxy_blocked_messages = Vec::new();
 
     let sticky_route = if let Some(sticky_key) = sticky_key {
         load_sticky_route(&state.pool, sticky_key).await?
@@ -14994,36 +15061,74 @@ pub(crate) async fn resolve_pool_account_for_request(
             let sticky_snapshot_exhausted = sticky_candidate
                 .as_ref()
                 .is_some_and(routing_candidate_snapshot_is_exhausted);
+            let sticky_route_is_excluded_by_route_key = resolve_pool_account_upstream_base_url(
+                &row,
+                &state.config.openai_upstream_base_url,
+            )
+            .ok()
+            .map(|url| canonical_pool_upstream_route_key(&url))
+            .is_some_and(|route_key| excluded_upstream_route_keys.contains(&route_key));
             if is_account_selectable_for_sticky_reuse(&row, sticky_snapshot_exhausted, now) {
                 sticky_route_still_reusable = true;
                 let mut sticky_route_was_excluded = false;
-                if let Some(account) = prepare_pool_account(state, &row).await? {
-                    let mut account = account;
-                    account.routing_source = PoolRoutingSelectionSource::StickyReuse;
-                    if !excluded_upstream_route_keys.contains(&account.upstream_route_key()) {
-                        return Ok(PoolAccountResolution::Resolved(account));
+                match resolve_pool_account_group_proxy_routing_readiness(
+                    state,
+                    row.group_name.as_deref(),
+                )
+                .await?
+                {
+                    PoolAccountGroupProxyRoutingReadiness::Ready(group_metadata) => {
+                        if let Some(account) =
+                            prepare_pool_account(state, &row, group_metadata).await?
+                        {
+                            let mut account = account;
+                            account.routing_source = PoolRoutingSelectionSource::StickyReuse;
+                            if !excluded_upstream_route_keys.contains(&account.upstream_route_key())
+                            {
+                                return Ok(PoolAccountResolution::Resolved(account));
+                            }
+                            sticky_route_excluded_by_route_key = true;
+                            sticky_route_was_excluded = true;
+                            if is_account_degraded_for_routing(&row, sticky_snapshot_exhausted, now)
+                            {
+                                saw_degraded_candidate = true;
+                            } else {
+                                saw_excluded_route_candidate = true;
+                            }
+                        }
                     }
-                    sticky_route_excluded_by_route_key = true;
-                    sticky_route_was_excluded = true;
-                    if is_account_degraded_for_routing(&row, sticky_snapshot_exhausted, now) {
-                        saw_degraded_candidate = true;
-                    } else {
-                        saw_non_rate_limited_routing_candidate = true;
+                    PoolAccountGroupProxyRoutingReadiness::Blocked(message) => {
+                        if sticky_route_is_excluded_by_route_key {
+                            sticky_route_excluded_by_route_key = true;
+                            sticky_route_was_excluded = true;
+                            saw_excluded_route_candidate = true;
+                        } else {
+                            sticky_route_group_proxy_blocked_message = Some(message.clone());
+                            group_proxy_blocked_messages.push(message);
+                        }
                     }
                 }
                 if !sticky_route_was_excluded {
-                    if is_account_degraded_for_routing(&row, sticky_snapshot_exhausted, now) {
-                        saw_degraded_candidate = true;
-                    } else {
-                        saw_non_rate_limited_routing_candidate = true;
+                    if sticky_route_group_proxy_blocked_message.is_none() {
+                        if is_account_degraded_for_routing(&row, sticky_snapshot_exhausted, now) {
+                            saw_degraded_candidate = true;
+                        } else {
+                            saw_other_non_rate_limited_routing_candidate = true;
+                        }
                     }
                 }
+            } else if sticky_route_is_excluded_by_route_key
+                && (is_account_rate_limited_for_routing(&row, sticky_snapshot_exhausted)
+                    || is_account_degraded_for_routing(&row, sticky_snapshot_exhausted, now)
+                    || is_routing_eligible_account(&row))
+            {
+                saw_excluded_route_candidate = true;
             } else if is_account_rate_limited_for_routing(&row, sticky_snapshot_exhausted) {
                 saw_rate_limited_candidate = true;
             } else if is_account_degraded_for_routing(&row, sticky_snapshot_exhausted, now) {
                 saw_degraded_candidate = true;
             } else if is_routing_eligible_account(&row) {
-                saw_non_rate_limited_routing_candidate = true;
+                saw_other_non_rate_limited_routing_candidate = true;
             } else if is_pool_account_routing_candidate(&row) {
                 // Active accounts without usable credentials are not real
                 // routing candidates and should not mask an all-429 pool.
@@ -15036,6 +15141,9 @@ pub(crate) async fn resolve_pool_account_for_request(
             && sticky_route_still_reusable
             && !sticky_route_excluded_by_route_key
         {
+            if let Some(message) = sticky_route_group_proxy_blocked_message {
+                return Ok(PoolAccountResolution::BlockedByPolicy(message));
+            }
             return Ok(PoolAccountResolution::BlockedByPolicy(
                 "sticky conversation cannot cut out of the current account because a tag rule forbids it"
                     .to_string(),
@@ -15070,13 +15178,26 @@ pub(crate) async fn resolve_pool_account_for_request(
                 continue;
             };
             let snapshot_exhausted = routing_candidate_snapshot_is_exhausted(&candidate);
+            let candidate_route_is_excluded_by_route_key = resolve_pool_account_upstream_base_url(
+                &row,
+                &state.config.openai_upstream_base_url,
+            )
+            .ok()
+            .map(|url| canonical_pool_upstream_route_key(&url))
+            .is_some_and(|route_key| excluded_upstream_route_keys.contains(&route_key));
             if !is_account_selectable_for_fresh_assignment(&row, snapshot_exhausted, now) {
-                if is_account_rate_limited_for_routing(&row, snapshot_exhausted) {
+                if candidate_route_is_excluded_by_route_key
+                    && (is_account_rate_limited_for_routing(&row, snapshot_exhausted)
+                        || is_account_degraded_for_routing(&row, snapshot_exhausted, now)
+                        || is_routing_eligible_account(&row))
+                {
+                    saw_excluded_route_candidate = true;
+                } else if is_account_rate_limited_for_routing(&row, snapshot_exhausted) {
                     saw_rate_limited_candidate = true;
                 } else if is_account_degraded_for_routing(&row, snapshot_exhausted, now) {
                     saw_degraded_candidate = true;
                 } else if is_routing_eligible_account(&row) {
-                    saw_non_rate_limited_routing_candidate = true;
+                    saw_other_non_rate_limited_routing_candidate = true;
                 } else {
                     saw_non_routing_candidate = true;
                 }
@@ -15093,34 +15214,66 @@ pub(crate) async fn resolve_pool_account_for_request(
             )
             .await?
             {
-                saw_non_rate_limited_routing_candidate = true;
+                if candidate_route_is_excluded_by_route_key {
+                    saw_excluded_route_candidate = true;
+                } else {
+                    saw_other_non_rate_limited_routing_candidate = true;
+                }
                 continue;
             }
-            if let Some(account) = prepare_pool_account(state, &row).await? {
+            let group_metadata = match resolve_pool_account_group_proxy_routing_readiness(
+                state,
+                row.group_name.as_deref(),
+            )
+            .await?
+            {
+                PoolAccountGroupProxyRoutingReadiness::Ready(group_metadata) => group_metadata,
+                PoolAccountGroupProxyRoutingReadiness::Blocked(message) => {
+                    if candidate_route_is_excluded_by_route_key {
+                        saw_excluded_route_candidate = true;
+                    } else {
+                        group_proxy_blocked_messages.push(message);
+                    }
+                    continue;
+                }
+            };
+            if let Some(account) = prepare_pool_account(state, &row, group_metadata).await? {
                 if excluded_upstream_route_keys.contains(&account.upstream_route_key()) {
-                    saw_non_rate_limited_routing_candidate = true;
+                    saw_excluded_route_candidate = true;
                     continue;
                 }
                 return Ok(PoolAccountResolution::Resolved(account));
             }
-            saw_non_rate_limited_routing_candidate = true;
+            saw_other_non_rate_limited_routing_candidate = true;
         }
     }
 
+    // Surface concrete group-proxy misconfiguration before generic pool exhaustion
+    // when every transferable fresh candidate was filtered for that reason,
+    // even if the rest of the pool is already rate-limited or degraded.
+    if !saw_other_non_rate_limited_routing_candidate
+        && let Some(message) =
+            summarize_pool_group_proxy_blocked_messages(&group_proxy_blocked_messages)
+    {
+        return Ok(PoolAccountResolution::BlockedByPolicy(message));
+    }
     if saw_rate_limited_candidate
         && !saw_degraded_candidate
-        && !saw_non_rate_limited_routing_candidate
+        && !saw_other_non_rate_limited_routing_candidate
+        && !saw_excluded_route_candidate
     {
         return Ok(PoolAccountResolution::RateLimited);
     }
     if saw_degraded_candidate
         && !saw_rate_limited_candidate
-        && !saw_non_rate_limited_routing_candidate
+        && !saw_other_non_rate_limited_routing_candidate
+        && !saw_excluded_route_candidate
         && !saw_non_routing_candidate
     {
         return Ok(PoolAccountResolution::DegradedOnly);
     }
-    if saw_non_rate_limited_routing_candidate
+    if saw_other_non_rate_limited_routing_candidate
+        || saw_excluded_route_candidate
         || saw_non_routing_candidate
         || (saw_rate_limited_candidate && saw_degraded_candidate)
     {
@@ -15701,6 +15854,7 @@ async fn query_account_sticky_key_recent_invocations(
 async fn prepare_pool_account(
     state: &AppState,
     row: &UpstreamAccountRow,
+    group_metadata: UpstreamAccountGroupMetadata,
 ) -> Result<Option<PoolResolvedAccount>> {
     let Some(crypto_key) = state.upstream_accounts.crypto_key.as_ref() else {
         return Ok(None);
@@ -15708,7 +15862,6 @@ async fn prepare_pool_account(
     let Some(encrypted_credentials) = row.encrypted_credentials.as_deref() else {
         return Ok(None);
     };
-    let group_metadata = load_group_metadata(&state.pool, row.group_name.as_deref()).await?;
     let required_proxy_scope = required_account_forward_proxy_scope(
         row.group_name.as_deref(),
         group_metadata.bound_proxy_keys.clone(),
@@ -17550,11 +17703,14 @@ mod tests {
         "test-direct-group"
     }
 
-    async fn ensure_test_group_binding(pool: &SqlitePool, group_name: &str) {
+    async fn upsert_test_group_binding(
+        pool: &SqlitePool,
+        group_name: &str,
+        bound_proxy_keys: Vec<String>,
+    ) {
         let now_iso = format_utc_iso(Utc::now());
         let bound_proxy_keys_json =
-            encode_group_bound_proxy_keys_json(&test_required_group_bound_proxy_keys())
-                .expect("encode test direct group bindings");
+            encode_group_bound_proxy_keys_json(&bound_proxy_keys).expect("encode test bindings");
         sqlx::query(
             r#"
             INSERT INTO pool_upstream_account_group_notes (
@@ -17570,7 +17726,33 @@ mod tests {
         .bind(&now_iso)
         .execute(pool)
         .await
-        .expect("ensure test group binding");
+        .expect("upsert test group binding");
+    }
+
+    async fn ensure_test_group_binding(pool: &SqlitePool, group_name: &str) {
+        upsert_test_group_binding(pool, group_name, test_required_group_bound_proxy_keys()).await;
+    }
+
+    async fn set_test_account_group_name(
+        pool: &SqlitePool,
+        account_id: i64,
+        group_name: Option<&str>,
+    ) {
+        let now_iso = format_utc_iso(Utc::now());
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET group_name = ?2,
+                updated_at = ?3
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .bind(group_name)
+        .bind(&now_iso)
+        .execute(pool)
+        .await
+        .expect("set test account group name");
     }
 
     async fn test_app_state_with_usage_base(base_url: &str) -> Arc<AppState> {
@@ -18294,6 +18476,33 @@ mod tests {
         .fetch_one(pool)
         .await
         .expect("insert syncable oauth account")
+    }
+
+    async fn insert_test_pool_api_key_account_with_options(
+        state: &Arc<AppState>,
+        display_name: &str,
+        api_key: &str,
+        group_name: Option<&str>,
+        upstream_base_url: Option<&str>,
+    ) -> i64 {
+        let normalized_group_name = group_name.unwrap_or(test_required_group_name());
+        ensure_test_group_binding(&state.pool, normalized_group_name).await;
+        let payload: CreateApiKeyAccountRequest = serde_json::from_value(serde_json::json!({
+            "displayName": display_name,
+            "apiKey": api_key,
+            "groupName": normalized_group_name,
+            "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
+            "upstreamBaseUrl": upstream_base_url,
+        }))
+        .expect("deserialize api key account request");
+        let Json(_) = create_api_key_account(State(state.clone()), HeaderMap::new(), Json(payload))
+            .await
+            .expect("insert test pool api key account");
+        sqlx::query_scalar("SELECT id FROM pool_upstream_accounts WHERE display_name = ?1")
+            .bind(display_name)
+            .fetch_one(&state.pool)
+            .await
+            .expect("load inserted test pool api key account id")
     }
 
     async fn spawn_usage_snapshot_server(
@@ -22482,6 +22691,675 @@ mod tests {
             .await
             .expect("resolve pool account");
         assert!(matches!(resolution, PoolAccountResolution::RateLimited));
+    }
+
+    #[tokio::test]
+    async fn resolver_skips_candidate_when_group_has_no_bound_proxy_keys() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let blocked = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Blocked Missing Binding",
+            "blocked-missing-binding@example.com",
+            "org_blocked_missing_binding",
+            "user_blocked_missing_binding",
+        )
+        .await;
+        let healthy = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Healthy Candidate",
+            "healthy-candidate@example.com",
+            "org_healthy_candidate",
+            "user_healthy_candidate",
+        )
+        .await;
+        set_test_account_group_name(&state.pool, blocked, Some("missing-bindings")).await;
+        let now_iso = format_utc_iso(Utc::now());
+        insert_limit_sample_with_usage(&state.pool, blocked, &now_iso, Some(1.0), Some(1.0)).await;
+        insert_limit_sample_with_usage(&state.pool, healthy, &now_iso, Some(80.0), Some(10.0))
+            .await;
+
+        let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
+            .await
+            .expect("resolve pool account");
+        let PoolAccountResolution::Resolved(account) = resolution else {
+            panic!("expected resolver to skip missing-binding group and pick healthy account");
+        };
+        assert_eq!(account.account_id, healthy);
+    }
+
+    #[tokio::test]
+    async fn resolver_skips_candidate_when_group_has_only_unselectable_bound_proxies() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let blocked = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Blocked Unselectable Binding",
+            "blocked-unselectable-binding@example.com",
+            "org_blocked_unselectable_binding",
+            "user_blocked_unselectable_binding",
+        )
+        .await;
+        let healthy = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Healthy Fallback",
+            "healthy-fallback@example.com",
+            "org_healthy_fallback",
+            "user_healthy_fallback",
+        )
+        .await;
+        set_test_account_group_name(&state.pool, blocked, Some("staging")).await;
+        upsert_test_group_binding(
+            &state.pool,
+            "staging",
+            vec!["unselectable-bound-node".to_string()],
+        )
+        .await;
+        let now_iso = format_utc_iso(Utc::now());
+        insert_limit_sample_with_usage(&state.pool, blocked, &now_iso, Some(1.0), Some(1.0)).await;
+        insert_limit_sample_with_usage(&state.pool, healthy, &now_iso, Some(70.0), Some(10.0))
+            .await;
+
+        let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
+            .await
+            .expect("resolve pool account");
+        let PoolAccountResolution::Resolved(account) = resolution else {
+            panic!("expected resolver to skip unselectable group and pick healthy account");
+        };
+        assert_eq!(account.account_id, healthy);
+    }
+
+    #[tokio::test]
+    async fn resolver_returns_specific_group_proxy_error_when_only_bad_groups_remain() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let account = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Only Missing Binding",
+            "only-missing-binding@example.com",
+            "org_only_missing_binding",
+            "user_only_missing_binding",
+        )
+        .await;
+        set_test_account_group_name(&state.pool, account, Some("missing-bindings")).await;
+
+        let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
+            .await
+            .expect("resolve pool account");
+        let PoolAccountResolution::BlockedByPolicy(message) = resolution else {
+            panic!("expected specific group proxy error");
+        };
+        assert_eq!(
+            message,
+            "upstream account group \"missing-bindings\" has no bound forward proxy nodes; bind at least one proxy node to the group"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolver_prefers_group_proxy_error_over_rate_limited_pool_when_no_healthy_candidates_remain()
+     {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let rate_limited = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Rate Limited Candidate",
+            "rate-limited-candidate@example.com",
+            "org_rate_limited_candidate",
+            "user_rate_limited_candidate",
+        )
+        .await;
+        let blocked = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Blocked Missing Binding",
+            "blocked-missing-binding-mixed@example.com",
+            "org_blocked_missing_binding_mixed",
+            "user_blocked_missing_binding_mixed",
+        )
+        .await;
+        set_test_account_group_name(&state.pool, blocked, Some("missing-bindings")).await;
+        let now_iso = format_utc_iso(Utc::now());
+        insert_limit_sample_with_usage(
+            &state.pool,
+            rate_limited,
+            &now_iso,
+            Some(100.0),
+            Some(50.0),
+        )
+        .await;
+        insert_limit_sample_with_usage(&state.pool, blocked, &now_iso, Some(1.0), Some(1.0)).await;
+
+        let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
+            .await
+            .expect("resolve pool account");
+        let PoolAccountResolution::BlockedByPolicy(message) = resolution else {
+            panic!("expected group proxy error to win over mixed rate-limited pool");
+        };
+        assert_eq!(
+            message,
+            "upstream account group \"missing-bindings\" has no bound forward proxy nodes; bind at least one proxy node to the group"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolver_prefers_real_group_proxy_error_over_excluded_route_blockers() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let excluded_blocked = insert_test_pool_api_key_account_with_options(
+            &state,
+            "Excluded Route Blocked",
+            "sk-excluded-route-blocked",
+            None,
+            Some("https://same-route.example.com/backend-api/codex"),
+        )
+        .await;
+        let alternate_blocked = insert_test_pool_api_key_account_with_options(
+            &state,
+            "Alternate Route Blocked",
+            "sk-alternate-route-blocked",
+            None,
+            Some("https://alternate-route.example.com/backend-api/codex"),
+        )
+        .await;
+        set_test_account_group_name(&state.pool, excluded_blocked, Some("same-route-missing"))
+            .await;
+        set_test_account_group_name(&state.pool, alternate_blocked, Some("alternate-missing"))
+            .await;
+        let now_iso = format_utc_iso(Utc::now());
+        insert_limit_sample_with_usage(
+            &state.pool,
+            excluded_blocked,
+            &now_iso,
+            Some(1.0),
+            Some(1.0),
+        )
+        .await;
+        insert_limit_sample_with_usage(
+            &state.pool,
+            alternate_blocked,
+            &now_iso,
+            Some(5.0),
+            Some(1.0),
+        )
+        .await;
+        let excluded_upstream_route_keys = HashSet::from([canonical_pool_upstream_route_key(
+            &Url::parse("https://same-route.example.com/backend-api/codex")
+                .expect("valid excluded route"),
+        )]);
+
+        let resolution =
+            resolve_pool_account_for_request(&state, None, &[], &excluded_upstream_route_keys)
+                .await
+                .expect("resolve pool account");
+        let PoolAccountResolution::BlockedByPolicy(message) = resolution else {
+            panic!("expected actionable group proxy error to survive excluded same-route blockers");
+        };
+        assert_eq!(
+            message,
+            "upstream account group \"alternate-missing\" has no bound forward proxy nodes; bind at least one proxy node to the group"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolver_treats_excluded_rate_limited_routes_as_unavailable() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let excluded_rate_limited = insert_test_pool_api_key_account_with_options(
+            &state,
+            "Excluded Rate Limited Route",
+            "sk-excluded-rate-limited",
+            None,
+            Some("https://same-route-rate-limited.example.com/backend-api/codex"),
+        )
+        .await;
+        let now_iso = format_utc_iso(Utc::now());
+        insert_limit_sample_with_usage(
+            &state.pool,
+            excluded_rate_limited,
+            &now_iso,
+            Some(100.0),
+            Some(50.0),
+        )
+        .await;
+        let excluded_upstream_route_keys = HashSet::from([canonical_pool_upstream_route_key(
+            &Url::parse("https://same-route-rate-limited.example.com/backend-api/codex")
+                .expect("valid excluded route"),
+        )]);
+
+        let resolution =
+            resolve_pool_account_for_request(&state, None, &[], &excluded_upstream_route_keys)
+                .await
+                .expect("resolve pool account");
+        assert!(matches!(resolution, PoolAccountResolution::Unavailable));
+    }
+
+    #[tokio::test]
+    async fn resolver_prefers_group_proxy_error_over_excluded_route_cut_in_rejects() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let sticky_source = insert_test_pool_api_key_account_with_options(
+            &state,
+            "Sticky Source Route",
+            "sk-sticky-source-route",
+            None,
+            Some("https://route-a.example.com/backend-api/codex"),
+        )
+        .await;
+        let excluded_cut_in_reject = insert_test_pool_api_key_account_with_options(
+            &state,
+            "Excluded Cut In Reject",
+            "sk-excluded-cut-in-reject",
+            None,
+            Some("https://route-a.example.com/backend-api/codex"),
+        )
+        .await;
+        let alternate_blocked = insert_test_pool_api_key_account_with_options(
+            &state,
+            "Alternate Blocked Route",
+            "sk-alternate-blocked-route",
+            None,
+            Some("https://route-b.example.com/backend-api/codex"),
+        )
+        .await;
+        set_test_account_group_name(&state.pool, alternate_blocked, Some("alternate-missing"))
+            .await;
+        let no_cut_in_tag = insert_tag(
+            &state.pool,
+            "excluded-route-no-cut-in",
+            &TagRoutingRule {
+                guard_enabled: false,
+                lookback_hours: None,
+                max_conversations: None,
+                allow_cut_out: true,
+                allow_cut_in: false,
+            },
+        )
+        .await
+        .expect("insert no-cut-in tag");
+        sync_account_tag_links(
+            &state.pool,
+            excluded_cut_in_reject,
+            &[no_cut_in_tag.summary.id],
+        )
+        .await
+        .expect("attach no-cut-in tag");
+        let now_iso = format_utc_iso(Utc::now());
+        upsert_sticky_route(
+            &state.pool,
+            "sticky-excluded-cut-in-reject",
+            sticky_source,
+            &now_iso,
+        )
+        .await
+        .expect("upsert sticky route");
+        insert_limit_sample_with_usage(&state.pool, sticky_source, &now_iso, Some(1.0), Some(1.0))
+            .await;
+        insert_limit_sample_with_usage(
+            &state.pool,
+            excluded_cut_in_reject,
+            &now_iso,
+            Some(5.0),
+            Some(1.0),
+        )
+        .await;
+        insert_limit_sample_with_usage(
+            &state.pool,
+            alternate_blocked,
+            &now_iso,
+            Some(10.0),
+            Some(1.0),
+        )
+        .await;
+        let excluded_upstream_route_keys = HashSet::from([canonical_pool_upstream_route_key(
+            &Url::parse("https://route-a.example.com/backend-api/codex")
+                .expect("valid excluded route"),
+        )]);
+
+        let resolution = resolve_pool_account_for_request(
+            &state,
+            Some("sticky-excluded-cut-in-reject"),
+            &[],
+            &excluded_upstream_route_keys,
+        )
+        .await
+        .expect("resolve pool account");
+        let PoolAccountResolution::BlockedByPolicy(message) = resolution else {
+            panic!("expected alternate group proxy error to survive excluded cut-in reject");
+        };
+        assert_eq!(
+            message,
+            "upstream account group \"alternate-missing\" has no bound forward proxy nodes; bind at least one proxy node to the group"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolver_prefers_group_proxy_error_over_degraded_pool_when_no_healthy_candidates_remain()
+     {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let degraded = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Degraded Candidate",
+            "degraded-candidate@example.com",
+            "org_degraded_candidate",
+            "user_degraded_candidate",
+        )
+        .await;
+        let blocked = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Blocked Missing Binding",
+            "blocked-missing-binding-degraded@example.com",
+            "org_blocked_missing_binding_degraded",
+            "user_blocked_missing_binding_degraded",
+        )
+        .await;
+        set_test_account_group_name(&state.pool, blocked, Some("missing-bindings")).await;
+        let now_iso = format_utc_iso(Utc::now());
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET status = ?1,
+                last_error = ?2,
+                last_error_at = ?3,
+                last_route_failure_at = ?3,
+                last_route_failure_kind = ?4,
+                cooldown_until = NULL,
+                consecutive_route_failures = 1,
+                temporary_route_failure_streak_started_at = ?3,
+                updated_at = ?3
+            WHERE id = ?5
+            "#,
+        )
+        .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+        .bind("test degraded plain 429")
+        .bind(&now_iso)
+        .bind(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
+        .bind(degraded)
+        .execute(&state.pool)
+        .await
+        .expect("set degraded pool account state");
+        insert_limit_sample_with_usage(&state.pool, blocked, &now_iso, Some(1.0), Some(1.0)).await;
+
+        let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
+            .await
+            .expect("resolve pool account");
+        let PoolAccountResolution::BlockedByPolicy(message) = resolution else {
+            panic!("expected group proxy error to win over degraded pool");
+        };
+        assert_eq!(
+            message,
+            "upstream account group \"missing-bindings\" has no bound forward proxy nodes; bind at least one proxy node to the group"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolver_summarizes_multiple_group_proxy_errors_when_only_bad_groups_remain() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let missing_binding = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Missing Binding Group",
+            "missing-binding-group@example.com",
+            "org_missing_binding_group",
+            "user_missing_binding_group",
+        )
+        .await;
+        let unselectable = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Unselectable Binding Group",
+            "unselectable-binding-group@example.com",
+            "org_unselectable_binding_group",
+            "user_unselectable_binding_group",
+        )
+        .await;
+        set_test_account_group_name(&state.pool, missing_binding, Some("group-a")).await;
+        set_test_account_group_name(&state.pool, unselectable, Some("group-b")).await;
+        upsert_test_group_binding(
+            &state.pool,
+            "group-b",
+            vec!["unselectable-bound-node".to_string()],
+        )
+        .await;
+        let now_iso = format_utc_iso(Utc::now());
+        insert_limit_sample_with_usage(
+            &state.pool,
+            missing_binding,
+            &now_iso,
+            Some(1.0),
+            Some(1.0),
+        )
+        .await;
+        insert_limit_sample_with_usage(&state.pool, unselectable, &now_iso, Some(5.0), Some(1.0))
+            .await;
+
+        let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
+            .await
+            .expect("resolve pool account");
+        let PoolAccountResolution::BlockedByPolicy(message) = resolution else {
+            panic!("expected summarized group proxy error");
+        };
+        assert!(message.contains(
+            "upstream account group \"group-a\" has no bound forward proxy nodes; bind at least one proxy node to the group"
+        ));
+        assert!(
+            message.contains(
+                "plus 1 additional upstream account group routing configuration issue(s)"
+            )
+        );
+    }
+
+    #[tokio::test]
+    async fn resolver_can_cut_out_from_group_proxy_blocked_sticky_account_when_allowed() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let sticky_account = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Sticky Invalid Group",
+            "sticky-invalid-group@example.com",
+            "org_sticky_invalid_group",
+            "user_sticky_invalid_group",
+        )
+        .await;
+        let fallback_account = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Fallback Healthy Group",
+            "fallback-healthy-group@example.com",
+            "org_fallback_healthy_group",
+            "user_fallback_healthy_group",
+        )
+        .await;
+        set_test_account_group_name(&state.pool, sticky_account, Some("sticky-missing")).await;
+        upsert_sticky_route(
+            &state.pool,
+            "sticky-group-proxy-blocked",
+            sticky_account,
+            &format_utc_iso(Utc::now()),
+        )
+        .await
+        .expect("upsert sticky route");
+
+        let resolution = resolve_pool_account_for_request(
+            &state,
+            Some("sticky-group-proxy-blocked"),
+            &[],
+            &HashSet::new(),
+        )
+        .await
+        .expect("resolve pool account");
+        let PoolAccountResolution::Resolved(account) = resolution else {
+            panic!("expected resolver to cut out from blocked sticky account");
+        };
+        assert_eq!(account.account_id, fallback_account);
+    }
+
+    #[tokio::test]
+    async fn resolver_returns_group_proxy_error_for_sticky_account_when_cut_out_is_forbidden() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let sticky_account = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Sticky Invalid Locked Group",
+            "sticky-invalid-locked-group@example.com",
+            "org_sticky_invalid_locked_group",
+            "user_sticky_invalid_locked_group",
+        )
+        .await;
+        let _fallback_account = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Ignored Healthy Group",
+            "ignored-healthy-group@example.com",
+            "org_ignored_healthy_group",
+            "user_ignored_healthy_group",
+        )
+        .await;
+        set_test_account_group_name(&state.pool, sticky_account, Some("sticky-missing")).await;
+        let lock_tag = insert_tag(
+            &state.pool,
+            "sticky-lock",
+            &TagRoutingRule {
+                guard_enabled: false,
+                lookback_hours: None,
+                max_conversations: None,
+                allow_cut_out: false,
+                allow_cut_in: true,
+            },
+        )
+        .await
+        .expect("insert lock tag");
+        sync_account_tag_links(&state.pool, sticky_account, &[lock_tag.summary.id])
+            .await
+            .expect("attach lock tag");
+        upsert_sticky_route(
+            &state.pool,
+            "sticky-group-proxy-locked",
+            sticky_account,
+            &format_utc_iso(Utc::now()),
+        )
+        .await
+        .expect("upsert sticky route");
+
+        let resolution = resolve_pool_account_for_request(
+            &state,
+            Some("sticky-group-proxy-locked"),
+            &[],
+            &HashSet::new(),
+        )
+        .await
+        .expect("resolve pool account");
+        let PoolAccountResolution::BlockedByPolicy(message) = resolution else {
+            panic!("expected sticky group proxy error when cut-out is forbidden");
+        };
+        assert_eq!(
+            message,
+            "upstream account group \"sticky-missing\" has no bound forward proxy nodes; bind at least one proxy node to the group"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolver_prefers_sticky_cut_in_policy_over_group_proxy_error() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let sticky_source = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Sticky Source",
+            "sticky-source@example.com",
+            "org_sticky_source",
+            "user_sticky_source",
+        )
+        .await;
+        let blocked_target = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Sticky Cut In Blocked",
+            "sticky-cut-in-blocked@example.com",
+            "org_sticky_cut_in_blocked",
+            "user_sticky_cut_in_blocked",
+        )
+        .await;
+        set_test_account_group_name(&state.pool, blocked_target, Some("sticky-cut-in-missing"))
+            .await;
+        let no_cut_in_tag = insert_tag(
+            &state.pool,
+            "sticky-no-cut-in",
+            &TagRoutingRule {
+                guard_enabled: false,
+                lookback_hours: None,
+                max_conversations: None,
+                allow_cut_out: true,
+                allow_cut_in: false,
+            },
+        )
+        .await
+        .expect("insert no cut-in tag");
+        sync_account_tag_links(&state.pool, blocked_target, &[no_cut_in_tag.summary.id])
+            .await
+            .expect("attach no cut-in tag");
+        upsert_sticky_route(
+            &state.pool,
+            "sticky-cut-in-policy-first",
+            sticky_source,
+            &format_utc_iso(Utc::now()),
+        )
+        .await
+        .expect("upsert sticky route");
+
+        let resolution = resolve_pool_account_for_request(
+            &state,
+            Some("sticky-cut-in-policy-first"),
+            &[sticky_source],
+            &HashSet::new(),
+        )
+        .await
+        .expect("resolve pool account");
+        assert!(matches!(resolution, PoolAccountResolution::Unavailable));
     }
 
     #[tokio::test]
