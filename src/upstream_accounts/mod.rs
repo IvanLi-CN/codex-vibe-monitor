@@ -15064,10 +15064,9 @@ pub(crate) async fn resolve_pool_account_for_request(
     }
 
     // Surface concrete group-proxy misconfiguration before generic pool exhaustion
-    // when every non-degraded, non-transferable fresh candidate was filtered for
-    // that reason, even if the rest of the pool is already rate-limited.
+    // when every transferable fresh candidate was filtered for that reason,
+    // even if the rest of the pool is already rate-limited or degraded.
     if !saw_other_non_rate_limited_routing_candidate
-        && !saw_degraded_candidate
         && let Some(message) =
             summarize_pool_group_proxy_blocked_messages(&group_proxy_blocked_messages)
     {
@@ -22464,6 +22463,72 @@ mod tests {
             .expect("resolve pool account");
         let PoolAccountResolution::BlockedByPolicy(message) = resolution else {
             panic!("expected group proxy error to win over mixed rate-limited pool");
+        };
+        assert_eq!(
+            message,
+            "upstream account group \"missing-bindings\" has no bound forward proxy nodes; bind at least one proxy node to the group"
+        );
+    }
+
+    #[tokio::test]
+    async fn resolver_prefers_group_proxy_error_over_degraded_pool_when_no_healthy_candidates_remain()
+     {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let degraded = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Degraded Candidate",
+            "degraded-candidate@example.com",
+            "org_degraded_candidate",
+            "user_degraded_candidate",
+        )
+        .await;
+        let blocked = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Blocked Missing Binding",
+            "blocked-missing-binding-degraded@example.com",
+            "org_blocked_missing_binding_degraded",
+            "user_blocked_missing_binding_degraded",
+        )
+        .await;
+        set_test_account_group_name(&state.pool, blocked, Some("missing-bindings")).await;
+        let now_iso = format_utc_iso(Utc::now());
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET status = ?1,
+                last_error = ?2,
+                last_error_at = ?3,
+                last_route_failure_at = ?3,
+                last_route_failure_kind = ?4,
+                cooldown_until = NULL,
+                consecutive_route_failures = 1,
+                temporary_route_failure_streak_started_at = ?3,
+                updated_at = ?3
+            WHERE id = ?5
+            "#,
+        )
+        .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+        .bind("test degraded plain 429")
+        .bind(&now_iso)
+        .bind(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
+        .bind(degraded)
+        .execute(&state.pool)
+        .await
+        .expect("set degraded pool account state");
+        insert_limit_sample_with_usage(&state.pool, blocked, &now_iso, Some(1.0), Some(1.0)).await;
+
+        let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
+            .await
+            .expect("resolve pool account");
+        let PoolAccountResolution::BlockedByPolicy(message) = resolution else {
+            panic!("expected group proxy error to win over degraded pool");
         };
         assert_eq!(
             message,
