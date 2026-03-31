@@ -85,8 +85,13 @@ import {
   buildGroupNameSuggestions,
   isExistingGroup,
   normalizeGroupName,
+  resolveGroupConcurrencyLimit,
   resolveGroupNote,
 } from "../../lib/upstreamAccountGroups";
+import {
+  apiConcurrencyLimitToSliderValue,
+  sliderConcurrencyLimitToApiValue,
+} from "../../lib/concurrencyLimit";
 import { validateUpstreamBaseUrl } from "../../lib/upstreamBaseUrl";
 import {
   applyMotherUpdateToItems,
@@ -116,6 +121,7 @@ type GroupNoteEditorState = {
   groupName: string;
   note: string;
   existing: boolean;
+  concurrencyLimit: number;
   boundProxyKeys: string[];
   upstream429RetryEnabled: boolean;
   upstream429MaxRetries: number;
@@ -874,6 +880,7 @@ function buildOauthLoginSessionUpdatePayload({
   groupBoundProxyKeys,
   note,
   groupNote,
+  groupConcurrencyLimit,
   includeGroupNote,
   tagIds,
   isMother,
@@ -884,6 +891,7 @@ function buildOauthLoginSessionUpdatePayload({
   groupBoundProxyKeys: string[];
   note: string;
   groupNote: string;
+  groupConcurrencyLimit: number;
   includeGroupNote: boolean;
   tagIds: number[];
   isMother: boolean;
@@ -898,6 +906,7 @@ function buildOauthLoginSessionUpdatePayload({
     ...(normalizedGroupName && includeGroupNote
       ? { groupNote: groupNote.trim() }
       : {}),
+    ...(normalizedGroupName ? { concurrencyLimit: groupConcurrencyLimit } : {}),
     tagIds,
     isMother,
     mailboxSessionId: mailboxSession?.sessionId ?? "",
@@ -1563,6 +1572,8 @@ export default function UpstreamAccountCreatePage() {
   const [groupDraftBoundProxyKeys, setGroupDraftBoundProxyKeys] = useState<
     Record<string, string[]>
   >({});
+  const [groupDraftConcurrencyLimits, setGroupDraftConcurrencyLimits] =
+    useState<Record<string, number>>({});
   const [groupDraftUpstream429RetryEnabled, setGroupDraftUpstream429RetryEnabled] =
     useState<Record<string, boolean>>({});
   const [groupDraftUpstream429MaxRetries, setGroupDraftUpstream429MaxRetries] =
@@ -1572,6 +1583,7 @@ export default function UpstreamAccountCreatePage() {
     groupName: "",
     note: "",
     existing: false,
+    concurrencyLimit: apiConcurrencyLimitToSliderValue(0),
     boundProxyKeys: [],
     upstream429RetryEnabled: false,
     upstream429MaxRetries: 0,
@@ -1729,6 +1741,12 @@ export default function UpstreamAccountCreatePage() {
             ]),
           ),
           ...Object.fromEntries(
+            Object.keys(groupDraftConcurrencyLimits).map((groupName) => [
+              groupName,
+              "",
+            ]),
+          ),
+          ...Object.fromEntries(
             Object.keys(groupDraftUpstream429RetryEnabled).map((groupName) => [
               groupName,
               "",
@@ -1745,6 +1763,7 @@ export default function UpstreamAccountCreatePage() {
       ),
     [
       groupDraftBoundProxyKeys,
+      groupDraftConcurrencyLimits,
       groupDraftNotes,
       groupDraftUpstream429MaxRetries,
       groupDraftUpstream429RetryEnabled,
@@ -1843,6 +1862,8 @@ export default function UpstreamAccountCreatePage() {
         ),
         note: oauthNote,
         groupNote: resolvePendingGroupNoteForName(oauthGroupName),
+        groupConcurrencyLimit:
+          resolvePendingGroupConcurrencyLimitForName(oauthGroupName),
         includeGroupNote: Boolean(
           normalizedGroupName && !isExistingGroup(groups, normalizedGroupName),
         ),
@@ -1862,6 +1883,7 @@ export default function UpstreamAccountCreatePage() {
     isRelinking,
     groups,
     resolvePendingGroupBoundProxyKeysForName,
+    resolvePendingGroupConcurrencyLimitForName,
     resolvePendingGroupNoteForName,
     session?.loginId,
     session?.status,
@@ -1882,6 +1904,8 @@ export default function UpstreamAccountCreatePage() {
           ),
           note: row.note,
           groupNote: resolvePendingGroupNoteForName(row.groupName),
+          groupConcurrencyLimit:
+            resolvePendingGroupConcurrencyLimitForName(row.groupName),
           includeGroupNote: Boolean(
             normalizedGroupName && !isExistingGroup(groups, normalizedGroupName),
           ),
@@ -1898,6 +1922,7 @@ export default function UpstreamAccountCreatePage() {
     batchTagIds,
     groups,
     resolvePendingGroupBoundProxyKeysForName,
+    resolvePendingGroupConcurrencyLimitForName,
     resolvePendingGroupNoteForName,
   ]);
   singleOauthSessionSnapshotRef.current = singleOauthSessionSnapshot;
@@ -2742,6 +2767,17 @@ export default function UpstreamAccountCreatePage() {
       return Object.fromEntries(nextEntries);
     });
   }, [groups]);
+  useEffect(() => {
+    setGroupDraftConcurrencyLimits((current) => {
+      const nextEntries = Object.entries(current).filter(
+        ([groupName]) => !isExistingGroup(groups, groupName),
+      );
+      if (nextEntries.length === Object.keys(current).length) {
+        return current;
+      }
+      return Object.fromEntries(nextEntries);
+    });
+  }, [groups]);
 
   function resolveGroupSummaryForName(groupName: string) {
     const normalized = normalizeGroupName(groupName);
@@ -2755,8 +2791,19 @@ export default function UpstreamAccountCreatePage() {
   function resolveGroupNoteForName(groupName: string) {
     return resolveGroupNote(groups, groupDraftNotes, groupName);
   }
+  function resolveGroupConcurrencyLimitForName(groupName: string) {
+    return resolveGroupConcurrencyLimit(
+      groups,
+      groupDraftConcurrencyLimits,
+      groupName,
+    );
+  }
   function resolveGroupBoundProxyKeysForName(groupName: string) {
-    return resolveGroupSummaryForName(groupName)?.boundProxyKeys ?? [];
+    return (
+      resolveGroupSummaryForName(groupName)?.boundProxyKeys ??
+      groupDraftBoundProxyKeys[normalizeGroupName(groupName)] ??
+      []
+    );
   }
   function resolveGroupUpstream429RetryEnabledForName(groupName: string) {
     const normalized = normalizeGroupName(groupName);
@@ -2786,6 +2833,14 @@ export default function UpstreamAccountCreatePage() {
     if (!normalized || isExistingGroup(groups, normalized)) return "";
     return groupDraftNotes[normalized]?.trim() ?? "";
   }
+  function resolvePendingGroupConcurrencyLimitForName(groupName: string) {
+    const normalized = normalizeGroupName(groupName);
+    if (!normalized) return 0;
+    if (isExistingGroup(groups, normalized)) {
+      return resolveGroupConcurrencyLimitForName(normalized);
+    }
+    return groupDraftConcurrencyLimits[normalized] ?? 0;
+  }
   function resolvePendingGroupBoundProxyKeysForName(groupName: string) {
     const normalized = normalizeGroupName(groupName);
     if (!normalized) return [];
@@ -2798,6 +2853,7 @@ export default function UpstreamAccountCreatePage() {
     return (
       resolveGroupNoteForName(groupName).trim().length > 0 ||
       resolvePendingGroupBoundProxyKeysForName(groupName).length > 0 ||
+      resolveGroupConcurrencyLimitForName(groupName) > 0 ||
       resolveGroupUpstream429RetryEnabledForName(groupName) ||
       resolveGroupUpstream429MaxRetriesForName(groupName) > 0
     );
@@ -2896,6 +2952,12 @@ export default function UpstreamAccountCreatePage() {
       delete next[normalized];
       return next;
     });
+    setGroupDraftConcurrencyLimits((current) => {
+      if (!(normalized in current)) return current;
+      const next = { ...current };
+      delete next[normalized];
+      return next;
+    });
     setGroupDraftUpstream429RetryEnabled((current) => {
       if (!(normalized in current)) return current;
       const next = { ...current };
@@ -2917,6 +2979,8 @@ export default function UpstreamAccountCreatePage() {
       const hasDraftNote = normalizedGroupName in groupDraftNotes;
       const hasDraftBoundProxyKeys =
         normalizedGroupName in groupDraftBoundProxyKeys;
+      const hasDraftConcurrencyLimit =
+        normalizedGroupName in groupDraftConcurrencyLimits;
       const hasDraftUpstream429RetryEnabled =
         normalizedGroupName in groupDraftUpstream429RetryEnabled;
       const hasDraftUpstream429MaxRetries =
@@ -2924,6 +2988,7 @@ export default function UpstreamAccountCreatePage() {
       if (
         !hasDraftNote &&
         !hasDraftBoundProxyKeys &&
+        !hasDraftConcurrencyLimit &&
         !hasDraftUpstream429RetryEnabled &&
         !hasDraftUpstream429MaxRetries
       ) {
@@ -2935,6 +3000,9 @@ export default function UpstreamAccountCreatePage() {
       const normalizedBoundProxyKeys = hasDraftBoundProxyKeys
         ? normalizeBoundProxyKeys(groupDraftBoundProxyKeys[normalizedGroupName])
         : [];
+      const normalizedConcurrencyLimit = hasDraftConcurrencyLimit
+        ? groupDraftConcurrencyLimits[normalizedGroupName] ?? 0
+        : 0;
       const normalizedUpstream429RetryEnabled = hasDraftUpstream429RetryEnabled
         ? groupDraftUpstream429RetryEnabled[normalizedGroupName] === true
         : false;
@@ -2948,6 +3016,7 @@ export default function UpstreamAccountCreatePage() {
       await saveGroupNote(normalizedGroupName, {
         note: normalizedNote || undefined,
         boundProxyKeys: normalizedBoundProxyKeys,
+        concurrencyLimit: normalizedConcurrencyLimit,
         upstream429RetryEnabled: normalizedUpstream429RetryEnabled,
         upstream429MaxRetries: normalizedUpstream429MaxRetries,
       });
@@ -2956,6 +3025,7 @@ export default function UpstreamAccountCreatePage() {
     [
       clearDraftGroupSettings,
       groupDraftBoundProxyKeys,
+      groupDraftConcurrencyLimits,
       groupDraftNotes,
       groupDraftUpstream429MaxRetries,
       groupDraftUpstream429RetryEnabled,
@@ -2974,6 +3044,9 @@ export default function UpstreamAccountCreatePage() {
       groupName: normalized,
       note: existingGroup?.note ?? resolveGroupNoteForName(normalized),
       existing: existingGroup != null,
+      concurrencyLimit: apiConcurrencyLimitToSliderValue(
+        resolveGroupConcurrencyLimitForName(normalized),
+      ),
       boundProxyKeys:
         existingGroup?.boundProxyKeys ??
         resolvePendingGroupBoundProxyKeysForName(normalized),
@@ -3000,6 +3073,9 @@ export default function UpstreamAccountCreatePage() {
     const normalizedGroupName = normalizeGroupName(groupNoteEditor.groupName);
     if (!normalizedGroupName) return;
     const normalizedNote = groupNoteEditor.note.trim();
+    const normalizedConcurrencyLimit = sliderConcurrencyLimitToApiValue(
+      groupNoteEditor.concurrencyLimit,
+    );
     const normalizedBoundProxyKeys = normalizeBoundProxyKeys(
       groupNoteEditor.boundProxyKeys,
     );
@@ -3014,7 +3090,10 @@ export default function UpstreamAccountCreatePage() {
         );
     const shouldInvalidateSingleOauthSessionForDraftGroup =
       normalizeGroupName(oauthGroupName) === normalizedGroupName &&
-      resolvePendingGroupNoteForName(oauthGroupName).trim() !== normalizedNote;
+      (
+        resolvePendingGroupNoteForName(oauthGroupName).trim() !== normalizedNote ||
+        resolvePendingGroupConcurrencyLimitForName(oauthGroupName) !== normalizedConcurrencyLimit
+      );
     setGroupNoteError(null);
     if (!groupNoteEditor.existing) {
       setGroupDraftNotes((current) => {
@@ -3030,6 +3109,15 @@ export default function UpstreamAccountCreatePage() {
         const next = { ...current };
         if (normalizedBoundProxyKeys.length > 0) {
           next[normalizedGroupName] = normalizedBoundProxyKeys;
+        } else {
+          delete next[normalizedGroupName];
+        }
+        return next;
+      });
+      setGroupDraftConcurrencyLimits((current) => {
+        const next = { ...current };
+        if (normalizedConcurrencyLimit > 0) {
+          next[normalizedGroupName] = normalizedConcurrencyLimit;
         } else {
           delete next[normalizedGroupName];
         }
@@ -3071,6 +3159,7 @@ export default function UpstreamAccountCreatePage() {
       await saveGroupNote(normalizedGroupName, {
         note: normalizedNote || undefined,
         boundProxyKeys: normalizedBoundProxyKeys,
+        concurrencyLimit: normalizedConcurrencyLimit,
         upstream429RetryEnabled: normalizedUpstream429RetryEnabled,
         upstream429MaxRetries: normalizedUpstream429MaxRetries,
       });
@@ -3251,6 +3340,9 @@ export default function UpstreamAccountCreatePage() {
         }
         payload.groupName = groupProxyState.normalizedGroupName;
         payload.groupBoundProxyKeys = groupProxyState.boundProxyKeys;
+        payload.concurrencyLimit = resolvePendingGroupConcurrencyLimitForName(
+          nextMetadata.groupName,
+        );
         payload.groupNote =
           resolvePendingGroupNoteForName(nextMetadata.groupName) || undefined;
       }
@@ -4084,6 +4176,11 @@ export default function UpstreamAccountCreatePage() {
       !isExistingGroup(groups, normalizedImportGroupName)
         ? groupDraftNotes[normalizedImportGroupName]?.trim() || undefined
         : undefined;
+    const importGroupConcurrencyLimit =
+      normalizedImportGroupName &&
+      !isExistingGroup(groups, normalizedImportGroupName)
+        ? groupDraftConcurrencyLimits[normalizedImportGroupName] ?? 0
+        : 0;
     const validationJobId = importValidationJobIdRef.current ?? undefined;
     let workingItems = [...importFiles];
     let workingRows = [...currentRows];
@@ -4109,6 +4206,7 @@ export default function UpstreamAccountCreatePage() {
           groupName: importGroupProxyState.normalizedGroupName || undefined,
           groupBoundProxyKeys: importGroupProxyState.boundProxyKeys,
           groupNote: importGroupNote,
+          concurrencyLimit: importGroupConcurrencyLimit,
           tagIds: importTagIds,
         });
         const importedSourceIds = new Set(
@@ -4203,6 +4301,7 @@ export default function UpstreamAccountCreatePage() {
     }
   }, [
     groupDraftNotes,
+    groupDraftConcurrencyLimits,
     groups,
     importFiles,
     importGroupName,
@@ -4377,6 +4476,8 @@ export default function UpstreamAccountCreatePage() {
         groupBoundProxyKeys: oauthGroupProxyState.boundProxyKeys,
         note: oauthNote,
         groupNote: resolvePendingGroupNoteForName(oauthGroupName),
+        groupConcurrencyLimit:
+          resolvePendingGroupConcurrencyLimitForName(oauthGroupName),
         includeGroupNote: Boolean(
           normalizedGroupName && !isExistingGroup(groups, normalizedGroupName),
         ),
@@ -4390,6 +4491,8 @@ export default function UpstreamAccountCreatePage() {
         groupBoundProxyKeys: oauthGroupProxyState.boundProxyKeys,
         note: oauthNote.trim() || undefined,
         groupNote: resolvePendingGroupNoteForName(oauthGroupName) || undefined,
+        concurrencyLimit:
+          resolvePendingGroupConcurrencyLimitForName(oauthGroupName),
         accountId: relinkAccountId ?? undefined,
         tagIds: oauthTagIds,
         isMother: oauthIsMother,
@@ -4817,6 +4920,8 @@ export default function UpstreamAccountCreatePage() {
         groupBoundProxyKeys: groupProxyState.boundProxyKeys,
         note: row.note,
         groupNote: resolvePendingGroupNoteForName(row.groupName),
+        groupConcurrencyLimit:
+          resolvePendingGroupConcurrencyLimitForName(row.groupName),
         includeGroupNote: Boolean(
           groupProxyState.normalizedGroupName &&
             !isExistingGroup(groups, groupProxyState.normalizedGroupName),
@@ -4832,6 +4937,8 @@ export default function UpstreamAccountCreatePage() {
         note: row.note.trim() || undefined,
         tagIds: batchTagIds,
         groupNote: resolvePendingGroupNoteForName(row.groupName) || undefined,
+        concurrencyLimit:
+          resolvePendingGroupConcurrencyLimitForName(row.groupName),
         isMother: row.isMother,
         mailboxSessionId: row.mailboxSession?.sessionId,
         mailboxAddress: row.mailboxSession?.emailAddress,
@@ -5146,6 +5253,8 @@ export default function UpstreamAccountCreatePage() {
         groupBoundProxyKeys: apiKeyGroupProxyState.boundProxyKeys,
         note: apiKeyNote.trim() || undefined,
         groupNote: resolvePendingGroupNoteForName(apiKeyGroupName) || undefined,
+        concurrencyLimit:
+          resolvePendingGroupConcurrencyLimitForName(apiKeyGroupName),
         apiKey: apiKeyValue.trim(),
         upstreamBaseUrl: apiKeyUpstreamBaseUrl.trim() || undefined,
         isMother: apiKeyIsMother,
@@ -5217,6 +5326,10 @@ export default function UpstreamAccountCreatePage() {
     maxConversations: t("accountPool.tags.dialog.maxConversations"),
     allowCutOut: t("accountPool.tags.dialog.allowCutOut"),
     allowCutIn: t("accountPool.tags.dialog.allowCutIn"),
+    concurrencyLimit: t("accountPool.tags.dialog.concurrencyLimit"),
+    concurrencyHint: t("accountPool.tags.dialog.concurrencyHint"),
+    currentValue: t("accountPool.tags.dialog.currentValue"),
+    unlimited: t("accountPool.tags.dialog.unlimited"),
     cancel: t("accountPool.tags.dialog.cancel"),
     save: t("accountPool.tags.dialog.save"),
     createAction: t("accountPool.tags.dialog.createAction"),
@@ -7506,6 +7619,7 @@ export default function UpstreamAccountCreatePage() {
         open={groupNoteEditor.open}
         groupName={groupNoteEditor.groupName}
         note={groupNoteEditor.note}
+        concurrencyLimit={groupNoteEditor.concurrencyLimit}
         boundProxyKeys={groupNoteEditor.boundProxyKeys}
         availableProxyNodes={forwardProxyNodes}
         busy={groupNoteBusy}
@@ -7514,6 +7628,13 @@ export default function UpstreamAccountCreatePage() {
         onNoteChange={(value) => {
           setGroupNoteError(null);
           setGroupNoteEditor((current) => ({ ...current, note: value }));
+        }}
+        onConcurrencyLimitChange={(value) => {
+          setGroupNoteError(null);
+          setGroupNoteEditor((current) => ({
+            ...current,
+            concurrencyLimit: value,
+          }));
         }}
         onBoundProxyKeysChange={(value) => {
           setGroupNoteError(null);
@@ -7559,6 +7680,18 @@ export default function UpstreamAccountCreatePage() {
         noteLabel={t("accountPool.upstreamAccounts.fields.note")}
         notePlaceholder={t(
           "accountPool.upstreamAccounts.groupNotes.notePlaceholder",
+        )}
+        concurrencyLimitLabel={t(
+          "accountPool.upstreamAccounts.groupNotes.concurrency.label",
+        )}
+        concurrencyLimitHint={t(
+          "accountPool.upstreamAccounts.groupNotes.concurrency.hint",
+        )}
+        concurrencyLimitCurrentLabel={t(
+          "accountPool.upstreamAccounts.groupNotes.concurrency.current",
+        )}
+        concurrencyLimitUnlimitedLabel={t(
+          "accountPool.upstreamAccounts.groupNotes.concurrency.unlimited",
         )}
         cancelLabel={t("accountPool.upstreamAccounts.actions.cancel")}
         saveLabel={t("accountPool.upstreamAccounts.actions.save")}

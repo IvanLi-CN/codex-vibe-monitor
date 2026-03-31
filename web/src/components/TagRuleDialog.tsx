@@ -3,7 +3,9 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Button } from './ui/button'
 import { Input } from './ui/input'
 import { Switch } from './ui/switch'
+import { ConcurrencyLimitSlider } from './ConcurrencyLimitSlider'
 import type { CreateTagPayload, TagSummary, UpdateTagPayload } from '../lib/api'
+import { apiConcurrencyLimitToSliderValue, sliderConcurrencyLimitToApiValue } from '../lib/concurrencyLimit'
 
 export type TagRuleDialogMode = 'create' | 'edit'
 
@@ -14,6 +16,7 @@ type TagRuleDraft = {
   maxConversations: string
   allowCutOut: boolean
   allowCutIn: boolean
+  concurrencyLimit: number
 }
 
 function buildDraft(tag?: TagSummary | null, draftName = ''): TagRuleDraft {
@@ -24,6 +27,7 @@ function buildDraft(tag?: TagSummary | null, draftName = ''): TagRuleDraft {
     maxConversations: tag?.routingRule.maxConversations == null ? '' : String(tag.routingRule.maxConversations),
     allowCutOut: tag?.routingRule.allowCutOut ?? true,
     allowCutIn: tag?.routingRule.allowCutIn ?? true,
+    concurrencyLimit: apiConcurrencyLimitToSliderValue(tag?.routingRule.concurrencyLimit),
   }
 }
 
@@ -46,6 +50,7 @@ function buildPayload(draft: TagRuleDraft): CreateTagPayload | UpdateTagPayload 
     maxConversations: draft.guardEnabled ? maxConversations : undefined,
     allowCutOut: draft.allowCutOut,
     allowCutIn: draft.allowCutIn,
+    concurrencyLimit: sliderConcurrencyLimitToApiValue(draft.concurrencyLimit),
   }
 }
 
@@ -69,6 +74,10 @@ interface TagRuleDialogProps {
     maxConversations: string
     allowCutOut: string
     allowCutIn: string
+    concurrencyLimit?: string
+    concurrencyHint?: string
+    currentValue?: string
+    unlimited?: string
     cancel: string
     save: string
     create: string
@@ -151,6 +160,16 @@ export function TagRuleDialog({ open, mode, tag, draftName, busy = false, error,
               </div>
             </div>
           </div>
+
+          <ConcurrencyLimitSlider
+            value={draft.concurrencyLimit}
+            disabled={busy}
+            title={labels.concurrencyLimit ?? 'Concurrency limit'}
+            description={labels.concurrencyHint ?? 'Use 1-30 to cap fresh assignments. The last step means unlimited.'}
+            currentLabel={labels.currentValue ?? 'Current'}
+            unlimitedLabel={labels.unlimited ?? 'Unlimited'}
+            onChange={(value) => setDraft((current) => ({ ...current, concurrencyLimit: value }))}
+          />
 
           {error ? <p className="text-sm text-error">{error}</p> : null}
           {!payload && draft.guardEnabled ? <p className="text-sm text-warning">{labels.validation}</p> : null}

@@ -248,6 +248,14 @@ export default function TagsPage() {
                               label={t('accountPool.tags.rule.cutInOff')}
                             />
                           ) : null}
+                          {(tag.routingRule.concurrencyLimit ?? 0) > 0 ? (
+                            <RuleBadge
+                              variant="info"
+                              label={t('accountPool.tags.rule.concurrency', {
+                                count: tag.routingRule.concurrencyLimit ?? 0,
+                              })}
+                            />
+                          ) : null}
                         </div>
                       </td>
                       <td className="px-4 py-4 text-sm text-base-content/70">{tag.accountCount}</td>
@@ -302,6 +310,10 @@ export default function TagsPage() {
           maxConversations: t('accountPool.tags.dialog.maxConversations'),
           allowCutOut: t('accountPool.tags.dialog.allowCutOut'),
           allowCutIn: t('accountPool.tags.dialog.allowCutIn'),
+          concurrencyLimit: t('accountPool.tags.dialog.concurrencyLimit'),
+          concurrencyHint: t('accountPool.tags.dialog.concurrencyHint'),
+          currentValue: t('accountPool.tags.dialog.currentValue'),
+          unlimited: t('accountPool.tags.dialog.unlimited'),
           cancel: t('accountPool.tags.dialog.cancel'),
           save: t('accountPool.tags.dialog.save'),
           create: t('accountPool.tags.dialog.createAction'),
