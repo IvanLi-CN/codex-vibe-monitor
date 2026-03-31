@@ -4,7 +4,7 @@
 
 - Status: 已完成
 - Created: 2026-03-26
-- Last: 2026-03-30
+- Last: 2026-04-01
 
 ## 背景
 
@@ -157,10 +157,10 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
-  submission_gate: approved
+  submission_gate: pending-owner-approval
   story_id_or_title: Account Pool/Components/Upstream Account Group Settings Dialog/Automatic Routing
   state: existing-group-auto-routing
-  evidence_note: 验证已存在分组在未绑定代理节点时保持自动路由文案，同时候选节点展示稳定身份键而不是原始 share-link 文本。
+  evidence_note: 验证已存在分组在未绑定代理节点时保持自动路由文案，同时共享设置弹窗继续在同一栈内展示并发/429/绑定节点控件，候选节点仍使用稳定身份键而不是原始 share-link 文本。
   image:
   ![Automatic routing group settings](./assets/group-settings-automatic-routing.png)
 
@@ -263,3 +263,4 @@
 - 2026-03-28: 补充稳定节点身份键、非 ASCII 展示恢复与“历史旧 key 不自动迁移”的接口契约，并为分组设置弹窗追加对应测试与 Storybook 场景。
 - 2026-03-29: 补充 stable-key 语义修正后的 runtime/history alias 兼容要求，并明确删除分组时 `404` 必须优先于绑定校验错误。
 - 2026-03-28: 补充 `vless/trojan` 稳定键回归的 follow-up：保存时拒绝“当前绑定集合零可选节点”的坏状态，并新增 Storybook 证据覆盖 warning + 保存按钮禁用场景。
+- 2026-04-01: 刷新 `Automatic Routing` owner-facing 视觉证据，使其与当前共享分组设置弹窗的并发/429/绑定节点复合布局保持一致。
