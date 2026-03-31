@@ -208,10 +208,20 @@ const TEST_GROUP_SUMMARIES = [
   boundProxyKeys: [...TEST_REQUIRED_BOUND_PROXY_KEYS],
 }));
 
-function expectedGroupSelection(groupName = TEST_REQUIRED_GROUP_NAME) {
-  return {
+function expectedGroupSelection(
+  groupName = TEST_REQUIRED_GROUP_NAME,
+  options?: { includeConcurrencyLimit?: boolean },
+) {
+  const selection = {
     groupName,
     groupBoundProxyKeys: [...TEST_REQUIRED_BOUND_PROXY_KEYS],
+  };
+  if (options?.includeConcurrencyLimit === false) {
+    return selection;
+  }
+  return {
+    ...selection,
+    concurrencyLimit: 0,
   };
 }
 
@@ -6450,6 +6460,7 @@ describe("UpstreamAccountCreatePage api key", () => {
     expect(saveGroupNote).toHaveBeenCalledWith("latam-draft", {
       note: "LATAM draft note",
       boundProxyKeys: ["jp-edge-01"],
+      concurrencyLimit: 0,
       upstream429RetryEnabled: false,
       upstream429MaxRetries: 0,
     });
@@ -6733,7 +6744,9 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     await flushAsync();
 
     expect(startImportedOauthValidationJob).toHaveBeenCalledWith({
-      ...expectedGroupSelection(),
+      ...expectedGroupSelection(TEST_REQUIRED_GROUP_NAME, {
+        includeConcurrencyLimit: false,
+      }),
       items: [
         expect.objectContaining({
           fileName: fixture.fileName,
