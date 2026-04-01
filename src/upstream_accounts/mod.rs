@@ -139,7 +139,7 @@ const DEFAULT_STICKY_KEY_LIMIT: i64 = 50;
 const STICKY_KEY_ACTIVITY_MODE_LIMIT: i64 = 50;
 const DEFAULT_UPSTREAM_ACCOUNT_LIST_PAGE_SIZE: usize = 20;
 const UPSTREAM_ACCOUNT_LIST_PAGE_SIZE_OPTIONS: [usize; 3] = [20, 50, 100];
-const POOL_ROUTE_ACTIVE_STICKY_WINDOW_MINUTES: i64 = 30;
+const POOL_ROUTE_ACTIVE_STICKY_WINDOW_MINUTES: i64 = 5;
 const POOL_ROUTE_TEMPORARY_FAILURE_STREAK_THRESHOLD: i64 = 5;
 const POOL_ROUTE_TEMPORARY_FAILURE_DEGRADED_WINDOW_SECS: i64 = 30;
 pub(crate) const COMPACT_SUPPORT_STATUS_UNKNOWN: &str = "unknown";
@@ -20037,6 +20037,55 @@ mod tests {
     }
 
     #[test]
+    fn derive_work_status_only_counts_last_selected_within_five_minute_window() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 4, 1, 12, 0, 0)
+            .single()
+            .expect("valid now");
+        let recent_selected =
+            format_utc_iso(now - ChronoDuration::minutes(4) - ChronoDuration::seconds(59));
+        let stale_selected =
+            format_utc_iso(now - ChronoDuration::minutes(5) - ChronoDuration::seconds(1));
+
+        assert_eq!(
+            derive_upstream_account_work_status(
+                true,
+                UPSTREAM_ACCOUNT_STATUS_ACTIVE,
+                UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL,
+                UPSTREAM_ACCOUNT_SYNC_STATE_IDLE,
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(&recent_selected),
+                now,
+            ),
+            UPSTREAM_ACCOUNT_WORK_STATUS_WORKING
+        );
+        assert_eq!(
+            derive_upstream_account_work_status(
+                true,
+                UPSTREAM_ACCOUNT_STATUS_ACTIVE,
+                UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL,
+                UPSTREAM_ACCOUNT_SYNC_STATE_IDLE,
+                false,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                Some(&stale_selected),
+                now,
+            ),
+            UPSTREAM_ACCOUNT_WORK_STATUS_IDLE
+        );
+    }
+
+    #[test]
     fn normalize_concurrency_limit_rejects_values_outside_supported_range() {
         assert_eq!(
             normalize_concurrency_limit(Some(-1), "concurrencyLimit"),
@@ -20230,6 +20279,83 @@ mod tests {
             panic!("expected fallback account to be selected");
         };
         assert_eq!(account.account_id, fallback_account_id);
+        assert_eq!(
+            account.routing_source,
+            PoolRoutingSelectionSource::FreshAssignment
+        );
+    }
+
+    #[tokio::test]
+    async fn resolver_ignores_stale_sticky_routes_when_applying_concurrency_limit() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let limited_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Limited Account",
+            "limited-stale@example.com",
+            "org_limited_stale",
+            "user_limited_stale",
+        )
+        .await;
+        let fallback_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Fallback Account",
+            "fallback-stale@example.com",
+            "org_fallback_stale",
+            "user_fallback_stale",
+        )
+        .await;
+
+        sqlx::query("UPDATE pool_upstream_accounts SET group_name = ?2 WHERE id = ?1")
+            .bind(limited_account_id)
+            .bind("limited-stale")
+            .execute(&state.pool)
+            .await
+            .expect("assign limited stale group");
+
+        let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+        save_group_metadata_record_conn(
+            &mut conn,
+            "limited-stale",
+            UpstreamAccountGroupMetadata {
+                note: None,
+                bound_proxy_keys: test_required_group_bound_proxy_keys(),
+                upstream_429_retry_enabled: false,
+                upstream_429_max_retries: 0,
+                concurrency_limit: 1,
+            },
+        )
+        .await
+        .expect("save limited stale group metadata");
+        drop(conn);
+
+        let stale_seen_at =
+            format_utc_iso(Utc::now() - ChronoDuration::minutes(5) - ChronoDuration::seconds(1));
+        upsert_sticky_route(
+            &state.pool,
+            "load-seed-stale",
+            limited_account_id,
+            &stale_seen_at,
+        )
+        .await
+        .expect("seed stale sticky route");
+
+        let resolution =
+            resolve_pool_account_for_request(&state, None, &[], &std::collections::HashSet::new())
+                .await
+                .expect("resolve pool account");
+
+        let PoolAccountResolution::Resolved(account) = resolution else {
+            panic!("expected limited account to remain selectable");
+        };
+        assert_eq!(account.account_id, limited_account_id);
+        assert_ne!(account.account_id, fallback_account_id);
         assert_eq!(
             account.routing_source,
             PoolRoutingSelectionSource::FreshAssignment

@@ -4501,6 +4501,14 @@ async fn upsert_test_sticky_route_at(
     .expect("upsert test sticky route");
 }
 
+fn format_test_recent_active_timestamp(now: DateTime<Utc>) -> String {
+    format_utc_iso(now - ChronoDuration::minutes(4) - ChronoDuration::seconds(59))
+}
+
+fn format_test_stale_active_timestamp(now: DateTime<Utc>) -> String {
+    format_utc_iso(now - ChronoDuration::minutes(5) - ChronoDuration::seconds(1))
+}
+
 async fn insert_test_pool_oauth_account(
     state: &Arc<AppState>,
     display_name: &str,
@@ -4826,7 +4834,7 @@ async fn list_upstream_accounts_filters_by_display_status_and_paginate_server_si
         "UPDATE pool_upstream_accounts SET last_selected_at = ?2, cooldown_until = ?3 WHERE id = ?1",
     )
     .bind(alpha_id)
-    .bind(format_utc_iso(now - ChronoDuration::minutes(5)))
+    .bind(format_test_recent_active_timestamp(now))
     .bind::<Option<String>>(None)
     .execute(&state.pool)
     .await
@@ -4999,7 +5007,7 @@ async fn list_upstream_accounts_clamps_work_status_for_abnormal_or_syncing_accou
     let now = Utc::now();
     let now_iso = format_utc_iso(now);
     let cooldown_until = format_utc_iso(now + ChronoDuration::minutes(10));
-    let recently_selected = format_utc_iso(now - ChronoDuration::minutes(5));
+    let recently_selected = format_test_recent_active_timestamp(now);
 
     sqlx::query(
         r#"
@@ -5111,6 +5119,61 @@ async fn list_upstream_accounts_clamps_work_status_for_abnormal_or_syncing_accou
 }
 
 #[tokio::test]
+async fn list_upstream_accounts_work_status_uses_five_minute_activity_window() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let recent_id =
+        insert_test_pool_api_key_account(&state, "Recent Working", "upstream-recent-working").await;
+    let stale_id =
+        insert_test_pool_api_key_account(&state, "Stale Working", "upstream-stale-working").await;
+
+    let now = Utc::now();
+    sqlx::query("UPDATE pool_upstream_accounts SET last_selected_at = ?2 WHERE id = ?1")
+        .bind(recent_id)
+        .bind(format_test_recent_active_timestamp(now))
+        .execute(&state.pool)
+        .await
+        .expect("mark recent working account");
+    sqlx::query("UPDATE pool_upstream_accounts SET last_selected_at = ?2 WHERE id = ?1")
+        .bind(stale_id)
+        .bind(format_test_stale_active_timestamp(now))
+        .execute(&state.pool)
+        .await
+        .expect("mark stale working account");
+
+    let Json(response) =
+        list_upstream_accounts(State(state), Query(ListUpstreamAccountsQuery::default()))
+            .await
+            .expect("list upstream accounts");
+    let payload = serde_json::to_value(response).expect("serialize upstream accounts");
+    let items = payload["items"].as_array().expect("items array");
+
+    let recent_item = items
+        .iter()
+        .find(|item| item.get("id").and_then(serde_json::Value::as_i64) == Some(recent_id))
+        .expect("recent item present");
+    assert_eq!(
+        recent_item
+            .get("workStatus")
+            .and_then(serde_json::Value::as_str),
+        Some("working")
+    );
+
+    let stale_item = items
+        .iter()
+        .find(|item| item.get("id").and_then(serde_json::Value::as_i64) == Some(stale_id))
+        .expect("stale item present");
+    assert_eq!(
+        stale_item
+            .get("workStatus")
+            .and_then(serde_json::Value::as_str),
+        Some("idle")
+    );
+}
+
+#[tokio::test]
 async fn upstream_account_summary_and_detail_include_active_conversation_count() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -5121,12 +5184,12 @@ async fn upstream_account_summary_and_detail_include_active_conversation_count()
 
     let now = Utc::now();
     let created_at = format_utc_iso(now - ChronoDuration::minutes(20));
-    let recent_seen_at = format_utc_iso(now - ChronoDuration::minutes(5));
-    let second_recent_seen_at = format_utc_iso(now - ChronoDuration::minutes(12));
-    let stale_seen_at = format_utc_iso(now - ChronoDuration::minutes(45));
+    let first_recent_seen_at = format_utc_iso(now - ChronoDuration::minutes(2));
+    let second_recent_seen_at = format_test_recent_active_timestamp(now);
+    let stale_seen_at = format_test_stale_active_timestamp(now);
 
     for (sticky_key, last_seen_at) in [
-        ("sticky-recent-1", recent_seen_at.as_str()),
+        ("sticky-recent-1", first_recent_seen_at.as_str()),
         ("sticky-recent-2", second_recent_seen_at.as_str()),
         ("sticky-stale", stale_seen_at.as_str()),
     ] {
@@ -14662,7 +14725,7 @@ async fn resolve_pool_account_for_request_keeps_existing_sticky_binding_when_sou
     let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
     let secondary_id =
         insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
-    let recent_seen_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(5));
+    let recent_seen_at = format_test_recent_active_timestamp(Utc::now());
 
     set_test_account_local_limits(&state.pool, primary_id, Some(100.0), Some(100.0)).await;
     set_test_account_local_limits(&state.pool, secondary_id, Some(100.0), Some(100.0)).await;
@@ -14828,7 +14891,7 @@ async fn resolve_pool_account_for_request_prefers_candidates_within_soft_sticky_
         insert_test_pool_api_key_account(&state, "Overloaded", "upstream-overloaded").await;
     let available_id =
         insert_test_pool_api_key_account(&state, "Available", "upstream-available").await;
-    let recent_seen_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(5));
+    let recent_seen_at = format_test_recent_active_timestamp(Utc::now());
 
     set_test_account_local_limits(&state.pool, overloaded_id, Some(100.0), Some(100.0)).await;
     set_test_account_local_limits(&state.pool, available_id, Some(100.0), Some(100.0)).await;
@@ -14869,7 +14932,7 @@ async fn resolve_pool_account_for_request_falls_back_to_over_soft_limit_bucket_w
         insert_test_pool_api_key_account(&state, "Preferred", "upstream-preferred").await;
     let fallback_id =
         insert_test_pool_api_key_account(&state, "Fallback", "upstream-fallback").await;
-    let recent_seen_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(5));
+    let recent_seen_at = format_test_recent_active_timestamp(Utc::now());
 
     set_test_account_local_limits(&state.pool, preferred_id, Some(100.0), Some(100.0)).await;
     set_test_account_local_limits(&state.pool, fallback_id, Some(100.0), Some(100.0)).await;
@@ -14917,7 +14980,7 @@ async fn resolve_pool_account_for_request_falls_back_after_soft_bucket_candidate
     let guarded_id = insert_test_pool_api_key_account(&state, "Guarded", "upstream-guarded").await;
     let overloaded_id =
         insert_test_pool_api_key_account(&state, "Overloaded", "upstream-overloaded").await;
-    let recent_seen_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(5));
+    let recent_seen_at = format_test_recent_active_timestamp(Utc::now());
     let now_iso = format_utc_iso(Utc::now());
 
     upsert_test_sticky_route_at(&state.pool, "sticky-transfer", source_id, &recent_seen_at).await;
@@ -15003,7 +15066,7 @@ async fn resolve_pool_account_for_request_allows_timeout_failover_past_cut_out_r
         Some("https://route-b.example.com/backend-api/"),
     )
     .await;
-    let recent_seen_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(5));
+    let recent_seen_at = format_test_recent_active_timestamp(Utc::now());
     let now_iso = format_utc_iso(Utc::now());
 
     upsert_test_sticky_route_at(
@@ -15091,7 +15154,7 @@ async fn resolve_pool_account_for_request_allows_timeout_failover_past_cut_out_r
         Some("https://route-b.example.com/backend-api/"),
     )
     .await;
-    let recent_seen_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(5));
+    let recent_seen_at = format_test_recent_active_timestamp(Utc::now());
     let now_iso = format_utc_iso(Utc::now());
 
     upsert_test_sticky_route_at(
@@ -15171,7 +15234,7 @@ async fn resolve_pool_account_for_request_soft_deprioritizes_accounts_with_only_
     .await;
     let exempt_id = insert_test_pool_api_key_account(&state, "Exempt", "upstream-exempt").await;
     let limited_id = insert_test_pool_api_key_account(&state, "Limited", "upstream-limited").await;
-    let recent_seen_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(5));
+    let recent_seen_at = format_test_recent_active_timestamp(Utc::now());
 
     set_test_account_local_limits(&state.pool, limited_id, Some(100.0), Some(100.0)).await;
     insert_test_pool_limit_sample(&state, exempt_id, Some(5.0), Some(5.0)).await;
@@ -15199,6 +15262,46 @@ async fn resolve_pool_account_for_request_soft_deprioritizes_accounts_with_only_
 
     assert_eq!(account.account_id, limited_id);
     assert_ne!(account.account_id, exempt_id);
+}
+
+#[tokio::test]
+async fn resolve_pool_account_for_request_does_not_soft_deprioritize_stale_sticky_routes() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let exempt_id =
+        insert_test_pool_api_key_account(&state, "Exempt", "upstream-exempt-stale").await;
+    let limited_id =
+        insert_test_pool_api_key_account(&state, "Limited", "upstream-limited-stale").await;
+    let stale_seen_at = format_test_stale_active_timestamp(Utc::now());
+
+    set_test_account_local_limits(&state.pool, limited_id, Some(100.0), Some(100.0)).await;
+    insert_test_pool_limit_sample(&state, exempt_id, Some(5.0), Some(5.0)).await;
+    insert_test_pool_limit_sample(&state, limited_id, Some(80.0), Some(80.0)).await;
+    for sticky_key in [
+        "sticky-stale-exempt-001",
+        "sticky-stale-exempt-002",
+        "sticky-stale-exempt-003",
+    ] {
+        upsert_test_sticky_route_at(&state.pool, sticky_key, exempt_id, &stale_seen_at).await;
+    }
+
+    let account = match resolve_pool_account_for_request(
+        state.as_ref(),
+        Some("sticky-stale-exempt-target"),
+        &[],
+        &HashSet::new(),
+    )
+    .await
+    .expect("resolve pool account")
+    {
+        PoolAccountResolution::Resolved(account) => account,
+        other => panic!("pool account should resolve, got {other:?}"),
+    };
+
+    assert_eq!(account.account_id, exempt_id);
+    assert_ne!(account.account_id, limited_id);
 }
 
 #[tokio::test]
@@ -15256,7 +15359,7 @@ async fn resolve_pool_account_for_request_applies_tighter_long_only_hard_cap() {
     .await;
     let free_id = insert_test_pool_api_key_account(&state, "Free", "upstream-free").await;
     let team_id = insert_test_pool_api_key_account(&state, "Team", "upstream-team").await;
-    let recent_seen_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(5));
+    let recent_seen_at = format_test_recent_active_timestamp(Utc::now());
     let now = Utc::now();
 
     insert_test_pool_limit_sample_with_windows(
@@ -15309,7 +15412,7 @@ async fn resolve_pool_account_for_request_counts_in_flight_reservations_toward_e
         insert_test_pool_api_key_account(&state, "Preferred", "upstream-preferred").await;
     let fallback_id =
         insert_test_pool_api_key_account(&state, "Fallback", "upstream-fallback").await;
-    let recent_seen_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(5));
+    let recent_seen_at = format_test_recent_active_timestamp(Utc::now());
     let now = Utc::now();
 
     insert_test_pool_limit_sample_with_windows(
@@ -15363,7 +15466,7 @@ async fn resolve_pool_account_for_request_keeps_old_in_flight_reservations_count
         insert_test_pool_api_key_account(&state, "Preferred", "upstream-preferred").await;
     let fallback_id =
         insert_test_pool_api_key_account(&state, "Fallback", "upstream-fallback").await;
-    let recent_seen_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(5));
+    let recent_seen_at = format_test_recent_active_timestamp(Utc::now());
     let now = Utc::now();
 
     insert_test_pool_limit_sample_with_windows(
@@ -15426,7 +15529,7 @@ async fn resolve_pool_account_for_request_preserves_long_only_cap_without_window
     let legacy_long_only_id =
         insert_test_pool_api_key_account(&state, "Legacy Long Only", "upstream-legacy").await;
     let team_id = insert_test_pool_api_key_account(&state, "Team", "upstream-team").await;
-    let recent_seen_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(5));
+    let recent_seen_at = format_test_recent_active_timestamp(Utc::now());
     let now = Utc::now();
 
     insert_test_pool_limit_sample_with_windows(
@@ -15484,7 +15587,7 @@ async fn resolve_pool_account_for_request_preserves_local_long_limit_without_sam
     let locally_limited_id =
         insert_test_pool_api_key_account(&state, "Locally Limited", "upstream-local").await;
     let team_id = insert_test_pool_api_key_account(&state, "Team", "upstream-team").await;
-    let recent_seen_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(5));
+    let recent_seen_at = format_test_recent_active_timestamp(Utc::now());
     let now = Utc::now();
 
     set_test_account_local_limits(&state.pool, locally_limited_id, None, Some(100.0)).await;
