@@ -122,7 +122,7 @@ const defaultForwardProxyNodes: ForwardProxyBindingNode[] = [
 
 const unicodeForwardProxyNodes: ForwardProxyBindingNode[] = [
   {
-    key: 'fpn_13579bdf2468ace0',
+    key: 'fpb_13579bdf2468ace0',
     source: 'subscription',
     displayName: '东京专线 A',
     protocolLabel: 'VLESS',
@@ -143,7 +143,8 @@ const unicodeForwardProxyNodes: ForwardProxyBindingNode[] = [
 
 const refreshedDisplayNameNodes: ForwardProxyBindingNode[] = [
   {
-    key: 'fpn_13579bdf2468ace0',
+    key: 'fpb_13579bdf2468ace0',
+    aliasKeys: ['fpn_13579bdf2468ace0'],
     source: 'subscription',
     displayName: 'Tokyo Edge A (Refreshed Label)',
     protocolLabel: 'VLESS',
@@ -164,7 +165,7 @@ const refreshedDisplayNameNodes: ForwardProxyBindingNode[] = [
 
 const legacyAliasBindingNodes: ForwardProxyBindingNode[] = [
   {
-    key: 'fpn_canonical_vless_key',
+    key: 'fpb_canonical_vless_key',
     aliasKeys: ['fpn_legacy_vless_alias'],
     source: 'subscription',
     displayName: 'Tokyo Edge A',
@@ -393,7 +394,7 @@ export const RefreshedDisplayNameStableBinding: Story = {
   args: {
     groupName: 'refresh-proof',
     note: 'The stable binding key remains selected after the subscription remark changes.',
-    boundProxyKeys: ['fpn_13579bdf2468ace0'],
+    boundProxyKeys: ['fpb_13579bdf2468ace0'],
     availableProxyNodes: refreshedDisplayNameNodes,
   },
 }

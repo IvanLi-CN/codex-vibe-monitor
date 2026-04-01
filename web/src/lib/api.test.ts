@@ -592,7 +592,7 @@ describe("settings normalization", () => {
               subscriptionUpdateIntervalSecs: 900,
               nodes: [
                 {
-                  key: "jp-edge-01",
+                  key: "fpb_jp_edge_01",
                   source: "manual",
                   displayName: "JP Edge 01",
                   endpointUrl: "socks5://127.0.0.1:1080",
@@ -636,14 +636,15 @@ describe("settings normalization", () => {
               {
                 groupName: "production",
                 note: "Premium traffic",
-                boundProxyKeys: ["jp-edge-01", "sg-edge-02", "jp-edge-01"],
+                boundProxyKeys: ["fpb_jp_edge_01", "fpb_sg_edge_02", "fpb_jp_edge_01"],
                 upstream429RetryEnabled: true,
                 upstream429MaxRetries: 3,
               },
             ],
             forwardProxyNodes: [
               {
-                key: "jp-edge-01",
+                key: "fpb_jp_edge_01",
+                aliasKeys: ["fpn_jp_edge_runtime"],
                 source: "manual",
                 displayName: "JP Edge 01",
                 protocolLabel: "HTTP",
@@ -680,14 +681,15 @@ describe("settings normalization", () => {
 
     const response = await fetchUpstreamAccounts();
     expect(response.groups[0].boundProxyKeys).toEqual([
-      "jp-edge-01",
-      "sg-edge-02",
-      "jp-edge-01",
+      "fpb_jp_edge_01",
+      "fpb_sg_edge_02",
+      "fpb_jp_edge_01",
     ]);
     expect(response.groups[0].upstream429RetryEnabled).toBe(true);
     expect(response.groups[0].upstream429MaxRetries).toBe(3);
     expect(response.forwardProxyNodes ?? []).toHaveLength(2);
     expect(response.forwardProxyNodes?.[0]?.protocolLabel).toBe("HTTP");
+    expect(response.forwardProxyNodes?.[0]?.aliasKeys).toEqual(["fpn_jp_edge_runtime"]);
     expect(response.forwardProxyNodes?.[1]?.selectable).toBe(false);
     expect(response.forwardProxyNodes?.[1]?.protocolLabel).toBe("UNKNOWN");
     expect(response.forwardProxyNodes?.[1]?.displayName).toBe("历史东京中继");

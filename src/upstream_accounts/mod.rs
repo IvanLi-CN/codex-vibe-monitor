@@ -3338,9 +3338,15 @@ async fn list_upstream_accounts_from_params(
     enrich_window_actual_usage_for_summaries(state.as_ref(), &mut items)
         .await
         .map_err(internal_error_tuple)?;
-    let groups = load_upstream_account_groups(&state.pool)
+    let mut groups = load_upstream_account_groups(&state.pool)
         .await
         .map_err(internal_error_tuple)?;
+    for group in &mut groups {
+        group.bound_proxy_keys =
+            canonicalize_forward_proxy_bound_keys(state.as_ref(), &group.bound_proxy_keys)
+                .await
+                .map_err(internal_error_tuple)?;
+    }
     let bound_proxy_keys = groups
         .iter()
         .flat_map(|group| group.bound_proxy_keys.iter().cloned())
@@ -3521,7 +3527,7 @@ pub(crate) async fn update_upstream_account_group(
     })?;
     let note = normalize_optional_text(payload.note);
     let bound_proxy_keys_was_updated = payload.bound_proxy_keys.is_some();
-    let bound_proxy_keys = payload
+    let mut bound_proxy_keys = payload
         .bound_proxy_keys
         .map(normalize_bound_proxy_keys)
         .unwrap_or_else(Vec::new);
@@ -3549,6 +3555,11 @@ pub(crate) async fn update_upstream_account_group(
         .await
         .map_err(internal_error_tuple)?
         .unwrap_or_default();
+    if bound_proxy_keys_was_updated {
+        bound_proxy_keys = canonicalize_forward_proxy_bound_keys(state.as_ref(), &bound_proxy_keys)
+            .await
+            .map_err(internal_error_tuple)?;
+    }
     if bound_proxy_keys_was_updated && !bound_proxy_keys.is_empty() {
         let has_selectable_bound_proxy_keys = {
             let manager = state.forward_proxy.lock().await;
@@ -7631,7 +7642,7 @@ async fn sync_oauth_account(
         })
         .unwrap_or(true);
     let refresh_scope = match load_required_account_forward_proxy_scope_from_group_metadata(
-        &state.pool,
+        state,
         row.group_name.as_deref(),
     )
     .await
@@ -7732,7 +7743,7 @@ async fn sync_oauth_account(
     };
 
     let usage_scope = match load_required_account_forward_proxy_scope_from_group_metadata(
-        &state.pool,
+        state,
         latest_row.group_name.as_deref(),
     )
     .await
@@ -10191,6 +10202,9 @@ async fn resolve_required_group_proxy_binding_for_write(
             .map_err(internal_error_tuple)?
             .bound_proxy_keys
     };
+    let bound_proxy_keys = canonicalize_forward_proxy_bound_keys(state, &bound_proxy_keys)
+        .await
+        .map_err(internal_error_tuple)?;
     let scope = required_account_forward_proxy_scope(Some(&group_name), bound_proxy_keys.clone())
         .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
     ensure_required_group_proxy_scope_selectable(state, &scope)
@@ -10265,13 +10279,18 @@ async fn load_group_metadata(
 }
 
 pub(crate) async fn load_required_account_forward_proxy_scope_from_group_metadata(
-    pool: &Pool<Sqlite>,
+    state: &AppState,
     group_name: Option<&str>,
 ) -> Result<ForwardProxyRouteScope> {
-    let bound_proxy_keys = load_group_metadata(pool, group_name)
+    let normalized_group_name = group_name.map(str::trim).filter(|value| !value.is_empty());
+    let Some(group_name) = normalized_group_name else {
+        return Ok(ForwardProxyRouteScope::Automatic);
+    };
+    let bound_proxy_keys = load_group_metadata(&state.pool, Some(group_name))
         .await?
         .bound_proxy_keys;
-    required_account_forward_proxy_scope(group_name, bound_proxy_keys)
+    let bound_proxy_keys = canonicalize_forward_proxy_bound_keys(state, &bound_proxy_keys).await?;
+    required_account_forward_proxy_scope(Some(group_name), bound_proxy_keys)
 }
 
 async fn save_group_metadata_record_conn(
@@ -15183,10 +15202,11 @@ async fn resolve_pool_account_group_proxy_routing_readiness(
     group_name: Option<&str>,
 ) -> Result<PoolAccountGroupProxyRoutingReadiness> {
     let group_metadata = load_group_metadata(&state.pool, group_name).await?;
-    let scope = match required_account_forward_proxy_scope(
-        group_name,
-        group_metadata.bound_proxy_keys.clone(),
-    ) {
+    let scope = match load_required_account_forward_proxy_scope_from_group_metadata(
+        state, group_name,
+    )
+    .await
+    {
         Ok(scope) => scope,
         Err(err) => {
             return Ok(PoolAccountGroupProxyRoutingReadiness::Blocked(

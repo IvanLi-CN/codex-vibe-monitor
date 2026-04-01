@@ -583,7 +583,7 @@ async fn forward_proxy_binding_nodes_reuse_legacy_hourly_stats_for_stable_keys()
     persist_forward_proxy_runtime_state(
         &state.pool,
         &ForwardProxyRuntimeState {
-            proxy_key: normalized_proxy.clone(),
+            proxy_key: stable_proxy_key.clone(),
             display_name: "东京专线".to_string(),
             source: FORWARD_PROXY_SOURCE_SUBSCRIPTION.to_string(),
             endpoint_url: Some(normalized_proxy.clone()),
@@ -614,7 +614,7 @@ async fn forward_proxy_binding_nodes_reuse_legacy_hourly_stats_for_stable_keys()
         VALUES (?1, ?2, 5, 4, 1, 4, 480.0, 180.0, datetime('now'))
         "#,
     )
-    .bind(&normalized_proxy)
+    .bind(&stable_proxy_key)
     .bind(bucket_start_epoch)
     .execute(&state.pool)
     .await
@@ -699,6 +699,12 @@ async fn forward_proxy_binding_nodes_reuse_legacy_hashed_hourly_stats_from_curre
     {
         let mut manager = state.forward_proxy.lock().await;
         manager.apply_settings(settings);
+        for endpoint in &mut manager.endpoints {
+            endpoint.endpoint_url = Some(
+                Url::parse("socks5://127.0.0.1:11082")
+                    .expect("parse synthesized binding endpoint url"),
+            );
+        }
     }
 
     let normalized_proxy =
@@ -707,7 +713,11 @@ async fn forward_proxy_binding_nodes_reuse_legacy_hashed_hourly_stats_from_curre
         let parsed = Url::parse(&normalized_proxy).expect("parse normalized vless url");
         stable_forward_proxy_key(&canonical_share_link_identity(&parsed))
     };
-    let stable_proxy_key = normalize_single_proxy_key(&proxy_url).expect("normalize proxy key");
+    let binding_key = forward_proxy_binding_key_candidates(
+        &forward_proxy_binding_parts_from_raw(&proxy_url, None)
+            .expect("binding parts from current proxy url"),
+    )[0]
+    .clone();
 
     let now_epoch = Utc::now().timestamp();
     let bucket_start_epoch = align_bucket_epoch(now_epoch, 3600, 0);
@@ -738,8 +748,9 @@ async fn forward_proxy_binding_nodes_reuse_legacy_hashed_hourly_stats_from_curre
         .expect("build binding nodes response");
     let node = nodes
         .into_iter()
-        .find(|item| item.key == stable_proxy_key)
-        .expect("stable node should be returned");
+        .find(|item| item.key == binding_key)
+        .expect("logical binding node should be returned");
+    assert!(node.alias_keys.contains(&legacy_proxy_key));
     let bucket = node
         .last24h
         .into_iter()
@@ -747,6 +758,77 @@ async fn forward_proxy_binding_nodes_reuse_legacy_hashed_hourly_stats_from_curre
         .expect("matching bucket should exist");
     assert_eq!(bucket.success_count, 4);
     assert_eq!(bucket.failure_count, 1);
+}
+
+#[tokio::test]
+async fn forward_proxy_binding_nodes_map_historical_runtime_keys_to_current_logical_nodes() {
+    let state = test_state_with_openai_base(
+        Url::parse("http://probe-target.example/").expect("valid probe target"),
+    )
+    .await;
+    let current_proxy_url = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=ws&host=cdn.example.com&path=%2Fcurrent&sni=current.example.com#东京专线".to_string();
+    let legacy_proxy_url = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=ws&host=cdn.example.com&path=%2Flegacy&sni=legacy.example.com#东京专线".to_string();
+    let settings = ForwardProxySettings {
+        proxy_urls: vec![current_proxy_url.clone()],
+        subscription_urls: Vec::new(),
+        subscription_update_interval_secs: 3600,
+        insert_direct: false,
+    };
+    save_forward_proxy_settings(&state.pool, settings.clone())
+        .await
+        .expect("persist current forward proxy settings");
+    {
+        let mut manager = state.forward_proxy.lock().await;
+        manager.apply_settings(settings);
+        for endpoint in &mut manager.endpoints {
+            endpoint.endpoint_url = Some(
+                Url::parse("socks5://127.0.0.1:11081")
+                    .expect("parse synthesized binding endpoint url"),
+            );
+        }
+    }
+
+    let legacy_proxy_key =
+        normalize_single_proxy_key(&legacy_proxy_url).expect("normalize legacy runtime proxy key");
+    persist_forward_proxy_runtime_state(
+        &state.pool,
+        &ForwardProxyRuntimeState {
+            proxy_key: legacy_proxy_key.clone(),
+            display_name: "东京专线".to_string(),
+            source: FORWARD_PROXY_SOURCE_SUBSCRIPTION.to_string(),
+            endpoint_url: Some(
+                normalize_share_link_scheme(&legacy_proxy_url, "vless")
+                    .expect("normalize legacy share link"),
+            ),
+            weight: 0.55,
+            success_ema: 0.78,
+            latency_ema_ms: Some(180.0),
+            consecutive_failures: 0,
+        },
+    )
+    .await
+    .expect("persist legacy runtime state for metadata history");
+
+    let binding_key = forward_proxy_binding_key_candidates(
+        &forward_proxy_binding_parts_from_raw(&current_proxy_url, None)
+            .expect("binding parts from current proxy url"),
+    )[0]
+    .clone();
+    let nodes =
+        build_forward_proxy_binding_nodes_response(state.as_ref(), &[legacy_proxy_key.clone()])
+            .await
+            .expect("build binding nodes response");
+    let current_node = nodes
+        .iter()
+        .find(|item| item.key == binding_key)
+        .expect("current logical node should be returned");
+    assert!(current_node.alias_keys.contains(&legacy_proxy_key));
+    assert!(
+        !nodes
+            .iter()
+            .any(|item| item.key == legacy_proxy_key && item.source == "missing"),
+        "historical runtime key should fold into the current logical node instead of rendering as missing"
+    );
 }
 
 #[test]
@@ -5604,6 +5686,107 @@ async fn update_upstream_account_group_rejects_bindings_without_selectable_nodes
     assert_eq!(
         err.1,
         "select at least one available proxy node or clear bindings before saving"
+    );
+}
+
+#[tokio::test]
+async fn update_upstream_account_group_canonicalizes_historical_runtime_keys_to_logical_binding_keys()
+ {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "LATAM Key",
+        "sk-latam",
+        Some("latam"),
+        None,
+        None,
+    )
+    .await;
+
+    let current_proxy_url = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=ws&host=cdn.example.com&path=%2Fcurrent&sni=current.example.com#东京专线".to_string();
+    let legacy_proxy_url = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=ws&host=cdn.example.com&path=%2Flegacy&sni=legacy.example.com#东京专线".to_string();
+    let settings = ForwardProxySettings {
+        proxy_urls: vec![current_proxy_url.clone()],
+        subscription_urls: Vec::new(),
+        subscription_update_interval_secs: 3600,
+        insert_direct: false,
+    };
+    save_forward_proxy_settings(&state.pool, settings.clone())
+        .await
+        .expect("persist current forward proxy settings");
+    {
+        let mut manager = state.forward_proxy.lock().await;
+        manager.apply_settings(settings);
+        for endpoint in &mut manager.endpoints {
+            endpoint.endpoint_url = Some(
+                Url::parse("socks5://127.0.0.1:11083")
+                    .expect("parse synthesized binding endpoint url"),
+            );
+        }
+    }
+
+    let legacy_proxy_key =
+        normalize_single_proxy_key(&legacy_proxy_url).expect("normalize legacy runtime proxy key");
+    persist_forward_proxy_runtime_state(
+        &state.pool,
+        &ForwardProxyRuntimeState {
+            proxy_key: legacy_proxy_key.clone(),
+            display_name: "东京专线".to_string(),
+            source: FORWARD_PROXY_SOURCE_SUBSCRIPTION.to_string(),
+            endpoint_url: Some(
+                normalize_share_link_scheme(&legacy_proxy_url, "vless")
+                    .expect("normalize legacy share link"),
+            ),
+            weight: 0.61,
+            success_ema: 0.81,
+            latency_ema_ms: Some(140.0),
+            consecutive_failures: 0,
+        },
+    )
+    .await
+    .expect("persist legacy runtime state for metadata history");
+
+    let payload: UpdateUpstreamAccountGroupRequest = serde_json::from_value(json!({
+        "boundProxyKeys": [legacy_proxy_key]
+    }))
+    .expect("deserialize update upstream account group request");
+    let Json(updated) = update_upstream_account_group(
+        State(state.clone()),
+        HeaderMap::new(),
+        axum::extract::Path("latam".to_string()),
+        Json(payload),
+    )
+    .await
+    .expect("legacy runtime key should canonicalize during save");
+
+    let binding_key = forward_proxy_binding_key_candidates(
+        &forward_proxy_binding_parts_from_raw(&current_proxy_url, None)
+            .expect("binding parts from current proxy url"),
+    )[0]
+    .clone();
+    let updated_value = serde_json::to_value(&updated).expect("serialize updated group summary");
+    assert_eq!(
+        updated_value
+            .get("boundProxyKeys")
+            .and_then(Value::as_array)
+            .cloned()
+            .unwrap_or_default(),
+        vec![Value::String(binding_key.clone())]
+    );
+    let stored_json: String = sqlx::query_scalar(
+        "SELECT bound_proxy_keys_json FROM pool_upstream_account_group_notes WHERE group_name = ?1",
+    )
+    .bind("latam")
+    .fetch_one(&state.pool)
+    .await
+    .expect("load stored group metadata after update");
+    assert_eq!(
+        serde_json::from_str::<Vec<String>>(&stored_json)
+            .expect("decode stored bound proxy keys json"),
+        vec![binding_key]
     );
 }
 

@@ -22860,8 +22860,23 @@ fn normalize_single_proxy_key(raw: &str) -> Option<String> {
     parse_forward_proxy_entry(raw).map(|entry| entry.stable_key)
 }
 
+fn stable_forward_proxy_binding_key(identity: &str) -> String {
+    let digest = Sha256::digest(identity.as_bytes());
+    let mut stable = String::from("fpb_");
+    for byte in digest.iter().take(16) {
+        stable.push_str(&format!("{byte:02x}"));
+    }
+    stable
+}
+
 fn is_stable_forward_proxy_key(raw: &str) -> bool {
     raw.strip_prefix("fpn_").is_some_and(|suffix| {
+        suffix.len() == 32 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
+    })
+}
+
+fn is_stable_forward_proxy_binding_key(raw: &str) -> bool {
+    raw.strip_prefix("fpb_").is_some_and(|suffix| {
         suffix.len() == 32 && suffix.bytes().all(|byte| byte.is_ascii_hexdigit())
     })
 }
@@ -22871,7 +22886,10 @@ fn normalize_bound_proxy_key(raw: &str) -> Option<String> {
     if normalized.is_empty() {
         return None;
     }
-    if normalized == FORWARD_PROXY_DIRECT_KEY || is_stable_forward_proxy_key(normalized) {
+    if normalized == FORWARD_PROXY_DIRECT_KEY
+        || is_stable_forward_proxy_key(normalized)
+        || is_stable_forward_proxy_binding_key(normalized)
+    {
         return Some(normalized.to_string());
     }
     normalize_single_proxy_key(normalized)
@@ -23024,7 +23042,16 @@ struct ParsedForwardProxyEntry {
     stable_key: String,
     display_name: String,
     protocol: ForwardProxyProtocol,
+    host: String,
+    port: u16,
     endpoint_url: Option<Url>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ForwardProxyBindingParts {
+    pub(crate) display_name: String,
+    pub(crate) protocol_key: String,
+    pub(crate) host_port: String,
 }
 
 fn parse_forward_proxy_entry(raw: &str) -> Option<ParsedForwardProxyEntry> {
@@ -23089,6 +23116,8 @@ fn parse_native_forward_proxy(candidate: &str) -> Option<ParsedForwardProxyEntry
         normalized,
         display_name: format!("{host}:{port}"),
         protocol,
+        host: host.to_ascii_lowercase(),
+        port,
         endpoint_url: Some(endpoint_url),
     })
 }
@@ -23101,6 +23130,8 @@ fn parse_vmess_forward_proxy(candidate: &str) -> Option<ParsedForwardProxyEntry>
         normalized,
         display_name: parsed.display_name,
         protocol: ForwardProxyProtocol::Vmess,
+        host: parsed.address.to_ascii_lowercase(),
+        port: parsed.port,
         endpoint_url: None,
     })
 }
@@ -23117,6 +23148,8 @@ fn parse_vless_forward_proxy(candidate: &str) -> Option<ParsedForwardProxyEntry>
         normalized,
         display_name,
         protocol: ForwardProxyProtocol::Vless,
+        host: host.to_ascii_lowercase(),
+        port,
         endpoint_url: None,
     })
 }
@@ -23133,6 +23166,8 @@ fn parse_trojan_forward_proxy(candidate: &str) -> Option<ParsedForwardProxyEntry
         normalized,
         display_name,
         protocol: ForwardProxyProtocol::Trojan,
+        host: host.to_ascii_lowercase(),
+        port,
         endpoint_url: None,
     })
 }
@@ -23148,8 +23183,56 @@ fn parse_shadowsocks_forward_proxy(candidate: &str) -> Option<ParsedForwardProxy
         normalized,
         display_name: parsed.display_name,
         protocol: ForwardProxyProtocol::Shadowsocks,
+        host: parsed.host.to_ascii_lowercase(),
+        port: parsed.port,
         endpoint_url: None,
     })
+}
+
+fn canonical_host_port_string(host: &str, port: u16) -> String {
+    let normalized_host = host.trim().to_ascii_lowercase();
+    if normalized_host.contains(':') {
+        format!("[{normalized_host}]:{port}")
+    } else {
+        format!("{normalized_host}:{port}")
+    }
+}
+
+pub(crate) fn forward_proxy_binding_parts_from_raw(
+    raw: &str,
+    display_name_override: Option<&str>,
+) -> Option<ForwardProxyBindingParts> {
+    let parsed = parse_forward_proxy_entry(raw)?;
+    let display_name = display_name_override
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(parsed.display_name.as_str())
+        .trim()
+        .to_string();
+    if display_name.is_empty() {
+        return None;
+    }
+    Some(ForwardProxyBindingParts {
+        display_name,
+        protocol_key: parsed.protocol.label().to_string(),
+        host_port: canonical_host_port_string(&parsed.host, parsed.port),
+    })
+}
+
+pub(crate) fn forward_proxy_binding_key_candidates(
+    parts: &ForwardProxyBindingParts,
+) -> [String; 3] {
+    [
+        stable_forward_proxy_binding_key(&format!("name:{}", parts.display_name)),
+        stable_forward_proxy_binding_key(&format!(
+            "name:{}|protocol:{}",
+            parts.display_name, parts.protocol_key
+        )),
+        stable_forward_proxy_binding_key(&format!(
+            "name:{}|protocol:{}|server:{}",
+            parts.display_name, parts.protocol_key, parts.host_port
+        )),
+    ]
 }
 
 fn proxy_display_name_from_url(url: &Url) -> Option<String> {

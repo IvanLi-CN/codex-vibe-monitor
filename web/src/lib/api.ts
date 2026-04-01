@@ -1187,6 +1187,7 @@ function normalizeForwardProxyBindingNode(
   const bucketsRaw = Array.isArray(payload.last24h) ? payload.last24h : [];
   return {
     key,
+    aliasKeys: normalizeStringArray(payload.aliasKeys),
     source: typeof payload.source === "string" ? payload.source : "manual",
     displayName:
       typeof payload.displayName === "string" && payload.displayName.trim()
