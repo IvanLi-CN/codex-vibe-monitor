@@ -11,6 +11,9 @@ import type {
   CompleteOauthLoginSessionPayload,
   EffectiveRoutingRule,
   ForwardProxyBindingNode,
+  ImportOauthCredentialFilePayload,
+  ImportedOauthValidationResponse,
+  ImportedOauthValidationRow,
   LoginSessionStatusResponse,
   OauthMailboxStatus,
   PoolRoutingMaintenanceSettings,
@@ -2514,6 +2517,120 @@ function parseBody<T>(raw: BodyInit | null | undefined, fallback: T): T {
   }
 }
 
+function buildStoryImportedOauthValidationRow(
+  item: ImportOauthCredentialFilePayload,
+): ImportedOauthValidationRow {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(item.content)
+  } catch {
+    return {
+      sourceId: item.sourceId,
+      fileName: item.fileName,
+      email: null,
+      chatgptAccountId: null,
+      displayName: null,
+      tokenExpiresAt: null,
+      matchedAccount: null,
+      status: 'invalid',
+      detail: 'Mock validation requires valid JSON.',
+      attempts: 1,
+    }
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return {
+      sourceId: item.sourceId,
+      fileName: item.fileName,
+      email: null,
+      chatgptAccountId: null,
+      displayName: null,
+      tokenExpiresAt: null,
+      matchedAccount: null,
+      status: 'invalid',
+      detail: 'Mock validation expects exactly one JSON object.',
+      attempts: 1,
+    }
+  }
+
+  const candidate = parsed as Record<string, unknown>
+  const email = typeof candidate.email === 'string' ? candidate.email.trim() : ''
+  const chatgptAccountId =
+    typeof candidate.account_id === 'string' ? candidate.account_id.trim() : ''
+  const forcedStatus =
+    typeof candidate._storybookStatus === 'string' ? candidate._storybookStatus : null
+  const detail =
+    typeof candidate._storybookDetail === 'string' ? candidate._storybookDetail : null
+
+  if (!email || !chatgptAccountId) {
+    return {
+      sourceId: item.sourceId,
+      fileName: item.fileName,
+      email: email || null,
+      chatgptAccountId: chatgptAccountId || null,
+      displayName: email || null,
+      tokenExpiresAt: null,
+      matchedAccount: null,
+      status: 'invalid',
+      detail: detail ?? 'Mock validation requires both email and account_id.',
+      attempts: 1,
+    }
+  }
+
+  return {
+    sourceId: item.sourceId,
+    fileName: item.fileName,
+    email,
+    chatgptAccountId,
+    displayName: email,
+    tokenExpiresAt:
+      typeof candidate.expired === 'string' && candidate.expired.trim()
+        ? candidate.expired.trim()
+        : storyFutureExpiresAt,
+    matchedAccount: null,
+    status:
+      forcedStatus ??
+      (item.fileName.toLowerCase().includes('exhausted') ? 'ok_exhausted' : 'ok'),
+    detail,
+    attempts: 1,
+  }
+}
+
+function buildStoryImportedOauthValidationResponse(
+  items: ImportOauthCredentialFilePayload[],
+): ImportedOauthValidationResponse {
+  const rows = items.map((item) => buildStoryImportedOauthValidationRow(item))
+  const seenKeys = new Set<string>()
+  const dedupedRows = rows.map((row) => {
+    if (row.status === 'pending') return row
+    const normalizedAccountId = row.chatgptAccountId?.trim().toLowerCase()
+    const normalizedEmail = row.email?.trim().toLowerCase()
+    const matchKey = normalizedAccountId
+      ? `account:${normalizedAccountId}`
+      : normalizedEmail
+        ? `email:${normalizedEmail}`
+        : null
+    if (!matchKey) return row
+    if (seenKeys.has(matchKey)) {
+      return {
+        ...row,
+        matchedAccount: null,
+        status: 'duplicate_in_input',
+        detail: 'duplicate credential in current import selection',
+      }
+    }
+    seenKeys.add(matchKey)
+    return row
+  })
+  const duplicateInInput = dedupedRows.filter((row) => row.status === 'duplicate_in_input').length
+  return {
+    inputFiles: items.length,
+    uniqueInInput: Math.max(0, dedupedRows.length - duplicateInInput),
+    duplicateInInput,
+    rows: dedupedRows,
+  }
+}
+
 class MockStoryBulkSyncEventSource implements EventTarget {
   private listeners = new Map<string, Set<EventListener>>()
   private timers: number[] = []
@@ -2755,6 +2872,18 @@ export function StorybookUpstreamAccountsMock({
           writesEnabled: store.writesEnabled,
           items: listTagSummaries(store),
         })
+      }
+
+      if (
+        path === '/api/pool/upstream-accounts/oauth/imports/validate' &&
+        method === 'POST'
+      ) {
+        const body = parseBody<{ items?: ImportOauthCredentialFilePayload[] }>(
+          init?.body,
+          {},
+        )
+        const items = Array.isArray(body.items) ? body.items : []
+        return jsonResponse(buildStoryImportedOauthValidationResponse(items))
       }
 
       if (path === '/api/pool/upstream-accounts/bulk-sync-jobs' && method === 'POST') {
