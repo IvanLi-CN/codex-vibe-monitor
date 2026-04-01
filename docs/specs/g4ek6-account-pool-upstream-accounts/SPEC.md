@@ -4,7 +4,7 @@
 
 - Status: 已实现
 - Created: 2026-03-11
-- Last: 2026-03-26
+- Last: 2026-04-01
 
 ## 背景 / 问题陈述
 
@@ -149,7 +149,7 @@
 - Given 批量 OAuth 顶部共享标签发生变化，When 页面中已存在完成态账号，Then 所有已完成账号的标签集合最终与当前共享标签一致，未完成行后续创建也复用同一集合。
 - Given 某完成态批量 OAuth 行保存失败，When 用户继续编辑其它已完成行，Then 错误只留在失败行，其他行仍可继续保存。
 - Given 账号启用、`healthStatus=normal`、`syncState=idle` 且 `cooldown_until > now`，When 列表返回该账号，Then `workStatus=rate_limited`。
-- Given 账号启用且 `last_selected_at` 在最近 30 分钟内、且不在 cooldown，When 列表返回该账号，Then `workStatus=working`。
+- Given 账号启用且 `last_selected_at` 在最近 5 分钟内、且不在 cooldown，When 列表返回该账号，Then `workStatus=working`。
 - Given 账号禁用，When 列表与筛选渲染，Then `enableStatus=disabled`，且不会再通过旧混合状态把主状态显示成“已停用”。
 - Given 账号原始 `status=syncing`，When 列表与详情渲染，Then 仅出现 `syncState=syncing` 的次级徽章，不进入三组主筛选。
 - Given 账号进入 `needs_reauth`、上游异常或 `syncing`，When 列表返回该账号且它仍残留 `cooldown_until`，Then `workStatus` 仍必须回收为 `idle`，不得和异常状态同时显示。
@@ -225,6 +225,7 @@
 
 - 2026-03-16：补充账号详情抽屉的异步一致性约束，明确账号级 busy state 与 action error 都要按账号隔离、同一账号任一写操作进行中时其它写入口必须锁住、账号切换要在同一交互拍内使旧 detail 请求失效、保存/同步成功要先失效旧 detail reload、refresh 必须用列表数据纯计算最终选中账号后再刷新 detail 且列表失败时不得清空当前 detail、hook 级 list/detail 错误必须按来源隔离、同类动作跨账号并发时不得互相覆盖 busy/error 态、晚到 detail 成功/失败响应与 sync 响应都要按当前选中账号过滤，以及同步按钮 idle 态改用 outline 图标。
 - 2026-03-20：补充账号级 actor 串行与后台维护去重约束，明确维护只允许阻塞同一账号、无关账号启停在维护竞争下需以 `1 秒内完成服务端提交` 为目标，并新增对应的 Rust 并发回归测试要求。
+- 2026-04-01：将号池活跃 sticky 共享窗口从 30 分钟统一收敛为 5 分钟，`workStatus=working` 与 `activeConversationCount` 继续共用同一时间口径，且不引入新的 API、schema 或配置项。
 - 2026-03-23：把上游账号列表的混合 `displayStatus` 读模型拆成 `workStatus` / `enableStatus` / `healthStatus` / `syncState` 四个维度，列表筛选同步拆成 `工作状态`、`启用状态`、`账号状态` 三组服务端交集筛选，并锁定“不新增持久化状态列”的实现边界。
 
 ## Visual Evidence
