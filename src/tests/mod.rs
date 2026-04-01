@@ -4403,6 +4403,10 @@ async fn reserve_test_pool_routing_account(
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
         group_name: Some(test_required_group_name().to_string()),
         bound_proxy_keys: test_required_group_bound_proxy_keys(),
+        forward_proxy_scope: ForwardProxyRouteScope::from_group_binding(
+            Some(test_required_group_name()),
+            test_required_group_bound_proxy_keys(),
+        ),
         group_upstream_429_retry_enabled: false,
         group_upstream_429_max_retries: 0,
     };
@@ -20398,6 +20402,10 @@ async fn pool_route_oauth_passthrough_replays_large_file_backed_body() {
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
         group_name: Some(test_required_group_name().to_string()),
         bound_proxy_keys: test_required_group_bound_proxy_keys(),
+        forward_proxy_scope: ForwardProxyRouteScope::from_group_binding(
+            Some(test_required_group_name()),
+            test_required_group_bound_proxy_keys(),
+        ),
         group_upstream_429_retry_enabled: false,
         group_upstream_429_max_retries: 0,
     };
@@ -21657,6 +21665,10 @@ async fn pool_route_oauth_responses_rejects_large_file_backed_rewrite_body() {
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
         group_name: Some(test_required_group_name().to_string()),
         bound_proxy_keys: test_required_group_bound_proxy_keys(),
+        forward_proxy_scope: ForwardProxyRouteScope::from_group_binding(
+            Some(test_required_group_name()),
+            test_required_group_bound_proxy_keys(),
+        ),
         group_upstream_429_retry_enabled: false,
         group_upstream_429_max_retries: 0,
     };
@@ -21926,6 +21938,10 @@ fn capture_target_pool_route_prefers_account_upstream_base_for_redirect_rewrite(
         routing_source: PoolRoutingSelectionSource::FreshAssignment,
         group_name: Some(test_required_group_name().to_string()),
         bound_proxy_keys: test_required_group_bound_proxy_keys(),
+        forward_proxy_scope: ForwardProxyRouteScope::from_group_binding(
+            Some(test_required_group_name()),
+            test_required_group_bound_proxy_keys(),
+        ),
         group_upstream_429_retry_enabled: false,
         group_upstream_429_max_retries: 0,
     };
@@ -39326,11 +39342,12 @@ fn parse_sse_frame(frame: &str) -> Option<(String, String)> {
     }
 }
 
-async fn collect_sse_events(
+async fn collect_sse_events_until(
     client: &reqwest::Client,
     addr: SocketAddr,
     path: &str,
-    expected_count: usize,
+    terminal_event_names: &[&str],
+    max_events: usize,
 ) -> Vec<(String, String)> {
     let response = client
         .get(format!("http://{addr}{path}"))
@@ -39350,7 +39367,7 @@ async fn collect_sse_events(
     let mut stream = response.bytes_stream();
     let mut buffer = String::new();
     let mut events = Vec::new();
-    while events.len() < expected_count {
+    while events.len() < max_events {
         let next_chunk = tokio::time::timeout(Duration::from_secs(5), stream.next())
             .await
             .expect("sse stream should produce data before timeout");
@@ -39366,9 +39383,12 @@ async fn collect_sse_events(
             let frame = buffer[..split_index].to_string();
             buffer = buffer[(split_index + 2)..].to_string();
             if let Some(event) = parse_sse_frame(&frame) {
+                let is_terminal = terminal_event_names
+                    .iter()
+                    .any(|candidate| *candidate == event.0);
                 events.push(event);
-                if events.len() >= expected_count {
-                    break;
+                if is_terminal || events.len() >= max_events {
+                    return events;
                 }
             }
         }
@@ -39498,17 +39518,24 @@ async fn imported_oauth_validation_job_stream_replays_snapshot_and_completed_ter
         Some("pending")
     );
 
-    let events = collect_sse_events(
+    let events = collect_sse_events_until(
         &client,
         addr,
         &format!("/api/pool/upstream-accounts/oauth/imports/validation-jobs/{job_id}/events"),
-        2,
+        &["completed", "failed", "cancelled"],
+        4,
     )
     .await;
-    assert_eq!(events[0].0, "snapshot");
-    assert_eq!(events[1].0, "completed");
-    let completed_payload: Value =
-        serde_json::from_str(&events[1].1).expect("completed event should be valid json");
+    assert_eq!(
+        events.first().map(|event| event.0.as_str()),
+        Some("snapshot")
+    );
+    assert_eq!(
+        events.last().map(|event| event.0.as_str()),
+        Some("completed")
+    );
+    let completed_payload: Value = serde_json::from_str(&events.last().expect("completed event").1)
+        .expect("completed event should be valid json");
     assert_eq!(
         completed_payload
             .get("snapshot")
@@ -39557,6 +39584,23 @@ async fn imported_oauth_validation_job_delete_removes_completed_job() {
         .await
         .expect("read create job payload");
     let job_id = created.get("jobId").and_then(Value::as_str).expect("jobId");
+
+    let events = collect_sse_events_until(
+        &client,
+        addr,
+        &format!("/api/pool/upstream-accounts/oauth/imports/validation-jobs/{job_id}/events"),
+        &["completed", "failed", "cancelled"],
+        4,
+    )
+    .await;
+    assert_eq!(
+        events.first().map(|event| event.0.as_str()),
+        Some("snapshot")
+    );
+    assert_eq!(
+        events.last().map(|event| event.0.as_str()),
+        Some("completed")
+    );
 
     let delete_response = delete_same_origin(
         &client,

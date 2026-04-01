@@ -13,6 +13,7 @@ type DialogHarnessProps = {
   busy?: boolean
   error?: string | null
   boundProxyKeys?: string[]
+  nodeShuntEnabled?: boolean
   upstream429RetryEnabled?: boolean
   upstream429MaxRetries?: number
   availableProxyNodes?: ForwardProxyBindingNode[]
@@ -188,6 +189,7 @@ const legacyAliasBindingNodes: ForwardProxyBindingNode[] = [
 function DialogHarness({
   note: initialNote,
   boundProxyKeys: initialBoundProxyKeys = [],
+  nodeShuntEnabled: initialNodeShuntEnabled = false,
   upstream429RetryEnabled: initialUpstream429RetryEnabled = false,
   upstream429MaxRetries: initialUpstream429MaxRetries = 0,
   availableProxyNodes = defaultForwardProxyNodes,
@@ -198,6 +200,7 @@ function DialogHarness({
     apiConcurrencyLimitToSliderValue(args.concurrencyLimit ?? 0),
   )
   const [boundProxyKeys, setBoundProxyKeys] = useState(initialBoundProxyKeys)
+  const [nodeShuntEnabled, setNodeShuntEnabled] = useState(initialNodeShuntEnabled)
   const [upstream429RetryEnabled, setUpstream429RetryEnabled] = useState(initialUpstream429RetryEnabled)
   const [upstream429MaxRetries, setUpstream429MaxRetries] = useState(initialUpstream429MaxRetries)
 
@@ -219,12 +222,14 @@ function DialogHarness({
           note={note}
           concurrencyLimit={concurrencyLimit}
           boundProxyKeys={boundProxyKeys}
+          nodeShuntEnabled={nodeShuntEnabled}
           upstream429RetryEnabled={upstream429RetryEnabled}
           upstream429MaxRetries={upstream429MaxRetries}
           availableProxyNodes={availableProxyNodes}
           onNoteChange={setNote}
           onConcurrencyLimitChange={setConcurrencyLimit}
           onBoundProxyKeysChange={setBoundProxyKeys}
+          onNodeShuntEnabledChange={setNodeShuntEnabled}
           onUpstream429RetryEnabledChange={(value) => {
             setUpstream429RetryEnabled(value)
             if (value && upstream429MaxRetries <= 0) {
@@ -248,6 +253,10 @@ function DialogHarness({
           closeLabel="Close dialog"
           existingBadgeLabel="Persisted group"
           draftBadgeLabel="Draft group"
+          nodeShuntLabel="Node shunt strategy"
+          nodeShuntHint="Each selected node becomes an exclusive slot. Selecting 3 nodes means the group can provide 3 upstream accounts at the same time."
+          nodeShuntToggleLabel="Enable exclusive node slots"
+          nodeShuntWarning="Enable this strategy only after binding at least one selectable node (including Direct)."
           upstream429RetryLabel="Upstream 429 retry"
           upstream429RetryHint="When enabled, this group keeps the same account and retries after upstream 429 with a random 1-10 second delay."
           upstream429RetryToggleLabel="Retry the same account after upstream 429"
@@ -295,6 +304,7 @@ const meta = {
     busy: false,
     error: null,
     boundProxyKeys: [],
+    nodeShuntEnabled: false,
     upstream429RetryEnabled: false,
     upstream429MaxRetries: 0,
     availableProxyNodes: defaultForwardProxyNodes,
@@ -317,6 +327,18 @@ export const Upstream429RetryEnabled: Story = {
     await expect(canvas.getByText(/Upstream 429 retry/i)).toBeInTheDocument()
     await expect(canvas.getByRole('switch', { name: /Retry the same account after upstream 429/i })).toHaveAttribute('aria-checked', 'true')
     await expect(canvas.getByText(/3 retries/i)).toBeInTheDocument()
+  },
+}
+
+export const NodeShuntEnabled: Story = {
+  args: {
+    boundProxyKeys: [directBindingKey, 'fpn_5a7b0c1d2e3f4a10'],
+    nodeShuntEnabled: true,
+  },
+  play: async () => {
+    const screen = within(document.body)
+    await expect(screen.getByText(/Node shunt strategy/i)).toBeInTheDocument()
+    await expect(screen.getByRole('switch', { name: /Enable exclusive node slots/i })).toHaveAttribute('aria-checked', 'true')
   },
 }
 

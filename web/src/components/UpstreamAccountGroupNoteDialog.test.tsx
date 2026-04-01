@@ -442,4 +442,33 @@ describe('UpstreamAccountGroupNoteDialog', () => {
     expect(retryCount?.getAttribute('aria-disabled')).not.toBe('true')
     expect(bodyText()).toContain('3 retries')
   })
+
+  it('blocks saving when node shunt is enabled without a selectable bound node', () => {
+    renderDialog({
+      boundProxyKeys: [],
+      nodeShuntEnabled: true,
+      nodeShuntLabel: 'Node shunt strategy',
+      nodeShuntHint: 'Each selected node becomes an exclusive slot.',
+      nodeShuntToggleLabel: 'Enable node shunt strategy',
+      nodeShuntWarning:
+        'Enable this strategy only after binding at least one selectable node (including Direct).',
+    })
+
+    const text = bodyText()
+    expect(text).toContain('Node shunt strategy')
+    expect(text).toContain(
+      'Enable this strategy only after binding at least one selectable node (including Direct).',
+    )
+
+    const toggle = document.querySelector(
+      '[role="switch"][aria-label="Enable node shunt strategy"]',
+    ) as HTMLElement | null
+    expect(toggle?.getAttribute('aria-checked')).toBe('true')
+
+    const saveButton = Array.from(document.querySelectorAll('button')).find((candidate) =>
+      /save/i.test(candidate.textContent ?? ''),
+    ) as HTMLButtonElement | undefined
+    expect(saveButton).toBeDefined()
+    expect(saveButton?.disabled).toBe(true)
+  })
 })

@@ -16637,11 +16637,7 @@ fn pool_failure_is_timeout_shaped(failure_kind: &str, message: &str) -> bool {
 fn pool_account_forward_proxy_scope(
     account: &PoolResolvedAccount,
 ) -> std::result::Result<ForwardProxyRouteScope, String> {
-    crate::upstream_accounts::required_account_forward_proxy_scope(
-        account.group_name.as_deref(),
-        account.bound_proxy_keys.clone(),
-    )
-    .map_err(|err| err.to_string())
+    Ok(account.forward_proxy_scope.clone())
 }
 
 async fn select_pool_account_forward_proxy_client(

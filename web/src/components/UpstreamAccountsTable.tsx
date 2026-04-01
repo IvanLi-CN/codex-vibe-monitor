@@ -37,6 +37,7 @@ interface UpstreamAccountsTableProps {
     sync: string
     lastSuccess: string
     lastCall: string
+    routingBlock: string
     latestAction: string
     never: string
     windows: string
@@ -816,6 +817,7 @@ export function UpstreamAccountsTable({
             const healthStatus = accountHealthStatus(item)
             const syncState = accountSyncState(item)
             const availabilityBadge = resolveAvailabilityBadge(item, labels)
+            const routingBlockMessage = item.routingBlockReasonMessage?.trim() || null
             const latestActionTitle = buildLatestActionTitle(item, labels)
             const healthBadgeTitle =
               healthStatus !== 'normal'
@@ -919,6 +921,13 @@ export function UpstreamAccountsTable({
                       label={labels.lastCall}
                       value={formatDateTime(item.lastActivityAt, labels.never)}
                     />
+                    {routingBlockMessage ? (
+                      <CompactTimestampLine
+                        label={labels.routingBlock}
+                        value={routingBlockMessage}
+                        title={routingBlockMessage}
+                      />
+                    ) : null}
                     <CompactTimestampLine
                       label={labels.latestAction}
                       value={buildLatestActionSummary(item, labels)}

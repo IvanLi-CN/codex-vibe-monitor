@@ -452,7 +452,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.groupNotes.actions.edit":
       "Edit group settings",
     "accountPool.upstreamAccounts.groupNotes.tooltip.body":
-      "Edit the shared note and bound forward proxy nodes for this group.",
+      "Edit the shared note, bound forward proxy nodes, and node shunt strategy for this group.",
     "accountPool.upstreamAccounts.groupNotes.dialogTitle": "Group settings",
     "accountPool.upstreamAccounts.groupNotes.existingDescription":
       "This group already exists. Saving here updates the shared note and proxy bindings immediately.",
@@ -469,6 +469,14 @@ const baseTranslations = {
       "Unlimited",
     "accountPool.upstreamAccounts.groupNotes.badges.existing": "Saved group",
     "accountPool.upstreamAccounts.groupNotes.badges.draft": "Draft group",
+    "accountPool.upstreamAccounts.groupNotes.nodeShunt.label":
+      "Node shunt strategy",
+    "accountPool.upstreamAccounts.groupNotes.nodeShunt.hint":
+      "Each selected node becomes an exclusive slot. If this group selects N nodes, the group can provide N upstream accounts at the same time.",
+    "accountPool.upstreamAccounts.groupNotes.nodeShunt.toggle":
+      "Enable exclusive node slots",
+    "accountPool.upstreamAccounts.groupNotes.nodeShunt.warning":
+      "Enable this strategy only after binding at least one selectable node (including Direct).",
     "accountPool.upstreamAccounts.groupNotes.upstream429.label":
       "Upstream 429 retry",
     "accountPool.upstreamAccounts.groupNotes.upstream429.hint":
@@ -483,7 +491,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.label":
       "Bound proxy nodes",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.hint":
-      "Leave empty to keep automatic routing. When multiple nodes are selected, the group will stay on the current node until repeated network failures force a switch.",
+      "Leave empty to keep automatic routing. With node shunt disabled, selected nodes stay as a shared hard-bound pool; with node shunt enabled, each selected node becomes one exclusive account slot.",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.automatic":
       "No nodes bound. This group uses automatic routing.",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.empty":
@@ -500,6 +508,8 @@ const baseTranslations = {
       "fail",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartEmpty":
       "No 24h data",
+    "accountPool.upstreamAccounts.table.routingBlockShort": "Blocked",
+    "accountPool.upstreamAccounts.routingBlock.title": "Routing blocked",
     "accountPool.upstreamAccounts.batchOauth.tooltip.completeTitle":
       "Submit callback",
     "accountPool.upstreamAccounts.batchOauth.tooltip.completeBody":
@@ -2030,7 +2040,7 @@ const baseTranslations = {
       "只用于记录这行账号的附加说明，不影响 OAuth 流程；默认收起，避免占用表格空间。",
     "accountPool.upstreamAccounts.groupNotes.actions.edit": "编辑分组设置",
     "accountPool.upstreamAccounts.groupNotes.tooltip.body":
-      "编辑这个分组的共享备注和绑定的正向代理节点。",
+      "编辑这个分组的共享备注、绑定的正向代理节点，以及节点分流策略。",
     "accountPool.upstreamAccounts.groupNotes.dialogTitle": "分组设置",
     "accountPool.upstreamAccounts.groupNotes.existingDescription":
       "这个分组已经存在，保存后会立即更新共享备注和代理绑定。",
@@ -2046,6 +2056,14 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.groupNotes.concurrency.unlimited": "无限",
     "accountPool.upstreamAccounts.groupNotes.badges.existing": "已存在分组",
     "accountPool.upstreamAccounts.groupNotes.badges.draft": "草稿分组",
+    "accountPool.upstreamAccounts.groupNotes.nodeShunt.label":
+      "节点分流策略",
+    "accountPool.upstreamAccounts.groupNotes.nodeShunt.hint":
+      "每个选中的节点都会成为独占槽位；勾选 N 个节点，就代表这个分组同时能提供 N 个上游账号。",
+    "accountPool.upstreamAccounts.groupNotes.nodeShunt.toggle":
+      "开启独占节点槽位",
+    "accountPool.upstreamAccounts.groupNotes.nodeShunt.warning":
+      "开启前请至少绑定一个当前可用的节点（含 Direct）。",
     "accountPool.upstreamAccounts.groupNotes.upstream429.label":
       "上游 429 重试",
     "accountPool.upstreamAccounts.groupNotes.upstream429.hint":
@@ -2060,7 +2078,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.label":
       "绑定代理节点",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.hint":
-      "留空时继续走自动路由。选择多个节点后，只有连续网络失败达到阈值才会切到下一个节点。",
+      "留空时继续走自动路由。关闭节点分流策略时，所选节点会作为共享硬绑定池；开启后，每个选中节点都会变成一个独占账号槽位。",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.automatic":
       "当前没有绑定节点，这个分组会继续使用自动路由。",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.empty":
@@ -2077,6 +2095,8 @@ const baseTranslations = {
       "失败",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartEmpty":
       "暂无 24 小时数据",
+    "accountPool.upstreamAccounts.table.routingBlockShort": "受限",
+    "accountPool.upstreamAccounts.routingBlock.title": "路由受限",
     "accountPool.upstreamAccounts.batchOauth.tooltip.completeTitle": "提交回调",
     "accountPool.upstreamAccounts.batchOauth.tooltip.completeBody":
       "浏览器登录成功后，把上方回调链接粘贴完整，再点击这里完成这一行账号的入池。",

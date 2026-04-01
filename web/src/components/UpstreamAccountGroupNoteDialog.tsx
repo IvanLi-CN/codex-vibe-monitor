@@ -33,12 +33,14 @@ interface UpstreamAccountGroupNoteDialogProps {
   error?: string | null
   existing: boolean
   boundProxyKeys?: string[]
+  nodeShuntEnabled?: boolean
   upstream429RetryEnabled?: boolean
   upstream429MaxRetries?: number
   availableProxyNodes?: ForwardProxyBindingNode[]
   onNoteChange: (value: string) => void
   onConcurrencyLimitChange?: (value: number) => void
   onBoundProxyKeysChange?: (value: string[]) => void
+  onNodeShuntEnabledChange?: (value: boolean) => void
   onUpstream429RetryEnabledChange?: (value: boolean) => void
   onUpstream429MaxRetriesChange?: (value: number) => void
   onClose: () => void
@@ -57,6 +59,10 @@ interface UpstreamAccountGroupNoteDialogProps {
   closeLabel: string
   existingBadgeLabel: string
   draftBadgeLabel: string
+  nodeShuntLabel?: string
+  nodeShuntHint?: string
+  nodeShuntToggleLabel?: string
+  nodeShuntWarning?: string
   upstream429RetryLabel?: string
   upstream429RetryHint?: string
   upstream429RetryToggleLabel?: string
@@ -253,12 +259,14 @@ export function UpstreamAccountGroupNoteDialog({
   error,
   existing,
   boundProxyKeys,
+  nodeShuntEnabled = false,
   upstream429RetryEnabled = false,
   upstream429MaxRetries = 0,
   availableProxyNodes,
   onNoteChange,
   onConcurrencyLimitChange = () => undefined,
   onBoundProxyKeysChange,
+  onNodeShuntEnabledChange,
   onUpstream429RetryEnabledChange,
   onUpstream429MaxRetriesChange,
   onClose,
@@ -277,6 +285,10 @@ export function UpstreamAccountGroupNoteDialog({
   closeLabel,
   existingBadgeLabel,
   draftBadgeLabel,
+  nodeShuntLabel,
+  nodeShuntHint,
+  nodeShuntToggleLabel,
+  nodeShuntWarning,
   upstream429RetryLabel,
   upstream429RetryHint,
   upstream429RetryToggleLabel,
@@ -298,6 +310,7 @@ export function UpstreamAccountGroupNoteDialog({
   proxyBindingsChartLocaleTag,
 }: UpstreamAccountGroupNoteDialogProps) {
   const normalizedBoundProxyKeys = normalizeBoundProxyKeys(boundProxyKeys)
+  const normalizedNodeShuntEnabled = nodeShuntEnabled === true
   const normalizedUpstream429RetryEnabled = upstream429RetryEnabled === true
   const normalizedUpstream429MaxRetries = normalizeUpstream429MaxRetries(upstream429MaxRetries)
   const retryCountOptions = useMemo(() => {
@@ -389,6 +402,13 @@ export function UpstreamAccountGroupNoteDialog({
     showProxyBindings &&
     canonicalBoundProxyKeys.length > 0 &&
     !hasSelectableBoundProxySelection
+  const blockingNodeShuntSelection =
+    normalizedNodeShuntEnabled &&
+    (canonicalBoundProxyKeys.length === 0 || !hasSelectableBoundProxySelection)
+  const showNodeShuntSection =
+    Boolean(onNodeShuntEnabledChange) ||
+    Boolean(nodeShuntLabel) ||
+    Boolean(nodeShuntHint)
   const showUpstream429RetrySection =
     Boolean(onUpstream429RetryEnabledChange) ||
     Boolean(onUpstream429MaxRetriesChange) ||
@@ -606,6 +626,41 @@ export function UpstreamAccountGroupNoteDialog({
                 )}
               </section>
             ) : null}
+
+            {showNodeShuntSection ? (
+              <section className="flex flex-col gap-3 rounded-2xl border border-base-300/80 bg-base-200/25 px-4 py-4">
+                <div className="space-y-1">
+                  <h3 className="text-sm font-semibold text-base-content">
+                    {nodeShuntLabel ?? 'Node shunt strategy'}
+                  </h3>
+                  <p className="text-xs leading-5 text-base-content/68">
+                    {nodeShuntHint ??
+                      'Each selected node becomes an exclusive slot. If a group selects 3 nodes, the group can provide 3 upstream accounts at the same time.'}
+                  </p>
+                </div>
+
+                <div className="flex items-center justify-between gap-3 rounded-xl border border-base-300/80 bg-base-100/75 px-3 py-3">
+                  <div className="min-w-0">
+                    <p className="text-sm font-medium text-base-content">
+                      {nodeShuntToggleLabel ?? 'Enable node shunt strategy'}
+                    </p>
+                  </div>
+                  <Switch
+                    checked={normalizedNodeShuntEnabled}
+                    onCheckedChange={(checked) => onNodeShuntEnabledChange?.(checked)}
+                    disabled={busy || !onNodeShuntEnabledChange}
+                    aria-label={nodeShuntToggleLabel ?? 'Enable node shunt strategy'}
+                  />
+                </div>
+
+                {blockingNodeShuntSelection ? (
+                  <div className="rounded-xl border border-warning/35 bg-warning/10 px-3 py-2 text-xs text-warning">
+                    {nodeShuntWarning ??
+                      'Enable this strategy only after binding at least one selectable node (including Direct).'}
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
           </div>
         </div>
 
@@ -613,7 +668,11 @@ export function UpstreamAccountGroupNoteDialog({
           <Button type="button" variant="ghost" onClick={onClose} disabled={busy}>
             {cancelLabel}
           </Button>
-          <Button type="button" onClick={onSave} disabled={busy || blockingBindingSelection}>
+          <Button
+            type="button"
+            onClick={onSave}
+            disabled={busy || blockingBindingSelection || blockingNodeShuntSelection}
+          >
             {busy ? <AppIcon name="loading" className="mr-2 h-4 w-4 animate-spin" aria-hidden /> : null}
             {saveLabel}
           </Button>

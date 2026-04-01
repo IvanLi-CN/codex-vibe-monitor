@@ -101,6 +101,10 @@ const UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE: &str = "transport_failur
 const UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_SERVER_OVERLOADED: &str =
     "upstream_server_overloaded";
 const UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED: &str = "reauth_required";
+const UPSTREAM_ACCOUNT_ROUTING_BLOCK_REASON_GROUP_NODE_SHUNT_UNASSIGNED: &str =
+    "group_node_shunt_unassigned";
+const UPSTREAM_ACCOUNT_ROUTING_BLOCK_REASON_GROUP_NODE_SHUNT_UNASSIGNED_MESSAGE: &str =
+    "分组节点分流策略控制，未排节点";
 const BULK_UPSTREAM_ACCOUNT_ACTION_ENABLE: &str = "enable";
 const BULK_UPSTREAM_ACCOUNT_ACTION_DISABLE: &str = "disable";
 const BULK_UPSTREAM_ACCOUNT_ACTION_DELETE: &str = "delete";
@@ -923,6 +927,7 @@ pub(crate) struct UpstreamAccountGroupSummary {
     group_name: String,
     note: Option<String>,
     bound_proxy_keys: Vec<String>,
+    node_shunt_enabled: bool,
     upstream_429_retry_enabled: bool,
     upstream_429_max_retries: u8,
     concurrency_limit: i64,
@@ -932,6 +937,7 @@ pub(crate) struct UpstreamAccountGroupSummary {
 struct UpstreamAccountGroupMetadata {
     note: Option<String>,
     bound_proxy_keys: Vec<String>,
+    node_shunt_enabled: bool,
     upstream_429_retry_enabled: bool,
     upstream_429_max_retries: u8,
     concurrency_limit: i64,
@@ -945,6 +951,8 @@ struct RequestedGroupMetadataChanges {
     bound_proxy_keys_was_requested: bool,
     concurrency_limit: i64,
     concurrency_limit_was_requested: bool,
+    node_shunt_enabled: bool,
+    node_shunt_enabled_was_requested: bool,
 }
 
 impl RequestedGroupMetadataChanges {
@@ -952,6 +960,7 @@ impl RequestedGroupMetadataChanges {
         self.note_was_requested
             || self.bound_proxy_keys_was_requested
             || self.concurrency_limit_was_requested
+            || self.node_shunt_enabled_was_requested
     }
 }
 
@@ -959,6 +968,7 @@ impl RequestedGroupMetadataChanges {
 pub(crate) struct ResolvedRequiredGroupProxyBinding {
     pub(crate) group_name: String,
     pub(crate) bound_proxy_keys: Vec<String>,
+    pub(crate) node_shunt_enabled: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -994,6 +1004,8 @@ pub(crate) struct UpstreamAccountSummary {
     last_action_http_status: Option<u16>,
     last_action_invoke_id: Option<String>,
     last_action_at: Option<String>,
+    routing_block_reason_code: Option<String>,
+    routing_block_reason_message: Option<String>,
     token_expires_at: Option<String>,
     primary_window: Option<RateWindowSnapshot>,
     secondary_window: Option<RateWindowSnapshot>,
@@ -1365,6 +1377,8 @@ pub(crate) struct CreateOauthLoginSessionRequest {
     group_name: Option<String>,
     #[serde(default)]
     group_bound_proxy_keys: Option<Vec<String>>,
+    #[serde(default)]
+    group_node_shunt_enabled: Option<bool>,
     note: Option<String>,
     group_note: Option<String>,
     concurrency_limit: Option<i64>,
@@ -1395,6 +1409,8 @@ pub(crate) struct UpdateOauthLoginSessionRequest {
     group_name: OptionalField<String>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     group_bound_proxy_keys: OptionalField<Vec<String>>,
+    #[serde(default, deserialize_with = "deserialize_optional_field")]
+    group_node_shunt_enabled: OptionalField<bool>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
     note: OptionalField<String>,
     #[serde(default, deserialize_with = "deserialize_optional_field")]
@@ -1435,6 +1451,8 @@ pub(crate) struct CreateApiKeyAccountRequest {
     group_name: Option<String>,
     #[serde(default)]
     group_bound_proxy_keys: Option<Vec<String>>,
+    #[serde(default)]
+    group_node_shunt_enabled: Option<bool>,
     note: Option<String>,
     group_note: Option<String>,
     concurrency_limit: Option<i64>,
@@ -1463,6 +1481,8 @@ pub(crate) struct ValidateImportedOauthAccountsRequest {
     #[serde(default)]
     group_bound_proxy_keys: Option<Vec<String>>,
     #[serde(default)]
+    group_node_shunt_enabled: Option<bool>,
+    #[serde(default)]
     items: Vec<ImportOauthCredentialFileRequest>,
 }
 
@@ -1478,6 +1498,8 @@ pub(crate) struct ImportValidatedOauthAccountsRequest {
     group_name: Option<String>,
     #[serde(default)]
     group_bound_proxy_keys: Option<Vec<String>>,
+    #[serde(default)]
+    group_node_shunt_enabled: Option<bool>,
     group_note: Option<String>,
     concurrency_limit: Option<i64>,
     #[serde(default)]
@@ -1577,6 +1599,7 @@ enum ImportedOauthValidationJobEvent {
 struct ImportedOauthValidationJob {
     target_group_name: String,
     target_bound_proxy_keys: Vec<String>,
+    target_node_shunt_enabled: bool,
     snapshot: Mutex<ImportedOauthValidationResponse>,
     validated_imports: Mutex<HashMap<String, ImportedOauthValidatedImportData>>,
     broadcaster: broadcast::Sender<ImportedOauthValidationJobEvent>,
@@ -1593,6 +1616,7 @@ impl ImportedOauthValidationJob {
         Self {
             target_group_name: binding.group_name.clone(),
             target_bound_proxy_keys: binding.bound_proxy_keys.clone(),
+            target_node_shunt_enabled: binding.node_shunt_enabled,
             snapshot: Mutex::new(snapshot),
             validated_imports: Mutex::new(HashMap::new()),
             broadcaster,
@@ -1767,6 +1791,8 @@ pub(crate) struct UpdateUpstreamAccountRequest {
     group_name: Option<String>,
     #[serde(default)]
     group_bound_proxy_keys: Option<Vec<String>>,
+    #[serde(default)]
+    group_node_shunt_enabled: Option<bool>,
     note: Option<String>,
     group_note: Option<String>,
     concurrency_limit: Option<i64>,
@@ -1828,6 +1854,8 @@ pub(crate) struct UpdateUpstreamAccountGroupRequest {
     note: Option<String>,
     #[serde(default)]
     bound_proxy_keys: Option<Vec<String>>,
+    #[serde(default)]
+    node_shunt_enabled: Option<bool>,
     #[serde(default)]
     upstream_429_retry_enabled: Option<bool>,
     #[serde(default)]
@@ -2556,6 +2584,7 @@ struct OauthLoginSessionRow {
     display_name: Option<String>,
     group_name: Option<String>,
     group_bound_proxy_keys_json: Option<String>,
+    group_node_shunt_enabled: i64,
     is_mother: i64,
     note: Option<String>,
     tag_ids_json: Option<String>,
@@ -2824,6 +2853,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             display_name TEXT,
             group_name TEXT,
             group_bound_proxy_keys_json TEXT NOT NULL DEFAULT '[]',
+            group_node_shunt_enabled INTEGER NOT NULL DEFAULT 0,
             is_mother INTEGER NOT NULL DEFAULT 0,
             note TEXT,
             tag_ids_json TEXT,
@@ -2863,6 +2893,17 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
         .execute(pool)
         .await
         .context("failed to add pool_oauth_login_sessions.group_bound_proxy_keys_json")?;
+    }
+    if !existing_oauth_login_session_columns.contains("group_node_shunt_enabled") {
+        sqlx::query(
+            r#"
+            ALTER TABLE pool_oauth_login_sessions
+            ADD COLUMN group_node_shunt_enabled INTEGER NOT NULL DEFAULT 0
+            "#,
+        )
+        .execute(pool)
+        .await
+        .context("failed to add pool_oauth_login_sessions.group_node_shunt_enabled")?;
     }
     ensure_nullable_text_column(pool, "pool_oauth_login_sessions", "group_note")
         .await
@@ -2986,6 +3027,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             group_name TEXT PRIMARY KEY,
             note TEXT NOT NULL,
             bound_proxy_keys_json TEXT NOT NULL DEFAULT '[]',
+            node_shunt_enabled INTEGER NOT NULL DEFAULT 0,
             upstream_429_retry_enabled INTEGER NOT NULL DEFAULT 0,
             upstream_429_max_retries INTEGER NOT NULL DEFAULT 0,
             concurrency_limit INTEGER NOT NULL DEFAULT 0,
@@ -3009,6 +3051,17 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
         .execute(pool)
         .await
         .context("failed to add pool_upstream_account_group_notes.bound_proxy_keys_json")?;
+    }
+    if !existing_group_note_columns.contains("node_shunt_enabled") {
+        sqlx::query(
+            r#"
+            ALTER TABLE pool_upstream_account_group_notes
+            ADD COLUMN node_shunt_enabled INTEGER NOT NULL DEFAULT 0
+            "#,
+        )
+        .execute(pool)
+        .await
+        .context("failed to add pool_upstream_account_group_notes.node_shunt_enabled")?;
     }
     if !existing_group_note_columns.contains("upstream_429_retry_enabled") {
         sqlx::query(
@@ -3338,6 +3391,9 @@ async fn list_upstream_accounts_from_params(
     enrich_window_actual_usage_for_summaries(state.as_ref(), &mut items)
         .await
         .map_err(internal_error_tuple)?;
+    enrich_node_shunt_routing_block_reasons(state.as_ref(), &mut items)
+        .await
+        .map_err(internal_error_tuple)?;
     let mut groups = load_upstream_account_groups(&state.pool)
         .await
         .map_err(internal_error_tuple)?;
@@ -3531,6 +3587,7 @@ pub(crate) async fn update_upstream_account_group(
         .bound_proxy_keys
         .map(normalize_bound_proxy_keys)
         .unwrap_or_else(Vec::new);
+    let node_shunt_enabled_was_updated = payload.node_shunt_enabled.is_some();
     let upstream_429_retry_enabled_was_updated = payload.upstream_429_retry_enabled.is_some();
     let upstream_429_max_retries_was_updated = payload.upstream_429_max_retries.is_some();
     let normalized_upstream_429_max_retries = payload
@@ -3583,6 +3640,11 @@ pub(crate) async fn update_upstream_account_group(
             } else {
                 existing_metadata.bound_proxy_keys
             },
+            node_shunt_enabled: if node_shunt_enabled_was_updated {
+                payload.node_shunt_enabled.unwrap_or(false)
+            } else {
+                existing_metadata.node_shunt_enabled
+            },
             upstream_429_retry_enabled: if upstream_429_retry_enabled_was_updated {
                 payload.upstream_429_retry_enabled.unwrap_or(false)
             } else {
@@ -3610,6 +3672,7 @@ pub(crate) async fn update_upstream_account_group(
         group_name,
         note: saved.note,
         bound_proxy_keys: saved.bound_proxy_keys,
+        node_shunt_enabled: saved.node_shunt_enabled,
         upstream_429_retry_enabled: saved.upstream_429_retry_enabled,
         upstream_429_max_retries: saved.upstream_429_max_retries,
         concurrency_limit: saved.concurrency_limit,
@@ -3633,7 +3696,16 @@ async fn build_imported_oauth_validation_response(
     binding: &ResolvedRequiredGroupProxyBinding,
 ) -> ImportedOauthValidationResponse {
     let mut seen_keys = HashSet::new();
+    let mut consumed_proxy_keys = HashSet::new();
     let mut rows = Vec::with_capacity(items.len());
+    let assignments = build_upstream_account_node_shunt_assignments(state)
+        .await
+        .ok();
+    let refresh_scope = required_account_forward_proxy_scope(
+        Some(&binding.group_name),
+        binding.bound_proxy_keys.clone(),
+    )
+    .expect("validated group binding should always resolve refresh scope");
 
     for item in items {
         let normalized = match normalize_imported_oauth_credentials(item) {
@@ -3671,11 +3743,40 @@ async fn build_imported_oauth_validation_response(
             });
             continue;
         }
-        rows.push(
-            build_imported_oauth_validation_result(state, normalized, binding)
-                .await
-                .0,
-        );
+        let usage_scope = match resolve_group_forward_proxy_scope_for_provisioning(
+            state,
+            binding,
+            assignments.as_ref(),
+            &consumed_proxy_keys,
+        )
+        .await
+        {
+            Ok(scope) => scope,
+            Err(err) => {
+                rows.push(ImportedOauthValidationRow {
+                    source_id: normalized.source_id,
+                    file_name: normalized.file_name,
+                    email: Some(normalized.email),
+                    chatgpt_account_id: Some(normalized.chatgpt_account_id),
+                    display_name: Some(normalized.display_name),
+                    token_expires_at: Some(normalized.token_expires_at),
+                    matched_account: None,
+                    status: IMPORT_VALIDATION_STATUS_ERROR.to_string(),
+                    detail: Some(err.to_string()),
+                    attempts: 0,
+                });
+                continue;
+            }
+        };
+        let (row, validated_import) =
+            build_imported_oauth_validation_result(state, normalized, &refresh_scope, &usage_scope)
+                .await;
+        if let ForwardProxyRouteScope::PinnedProxyKey(proxy_key) = &usage_scope {
+            if validated_import.is_some() {
+                consumed_proxy_keys.insert(proxy_key.clone());
+            }
+        }
+        rows.push(row);
     }
 
     build_imported_oauth_validation_response_from_rows(items.len(), rows)
@@ -3858,7 +3959,8 @@ fn bulk_upstream_account_sync_terminal_event_to_sse(
 async fn build_imported_oauth_validation_result(
     state: &AppState,
     normalized: NormalizedImportedOauthCredentials,
-    binding: &ResolvedRequiredGroupProxyBinding,
+    refresh_scope: &ForwardProxyRouteScope,
+    usage_scope: &ForwardProxyRouteScope,
 ) -> (
     ImportedOauthValidationRow,
     Option<ImportedOauthValidatedImportData>,
@@ -3890,7 +3992,7 @@ async fn build_imported_oauth_validation_result(
         }
     };
 
-    match probe_imported_oauth_credentials(state, &normalized, binding).await {
+    match probe_imported_oauth_credentials(state, &normalized, refresh_scope, usage_scope).await {
         Ok(outcome) => (
             ImportedOauthValidationRow {
                 source_id: normalized.source_id.clone(),
@@ -4189,6 +4291,15 @@ fn spawn_imported_oauth_validation_job(
         let run_result: Result<(), String> = async {
             let mut prepared = Vec::new();
             let mut seen_keys = HashSet::new();
+            let mut consumed_proxy_keys = HashSet::new();
+            let assignments = build_upstream_account_node_shunt_assignments(state.as_ref())
+                .await
+                .map_err(|err| err.to_string())?;
+            let refresh_scope = required_account_forward_proxy_scope(
+                Some(&binding.group_name),
+                binding.bound_proxy_keys.clone(),
+            )
+            .map_err(|err| err.to_string())?;
 
             for (row_index, item) in items.iter().enumerate() {
                 if job.cancel.is_cancelled() {
@@ -4247,24 +4358,62 @@ fn spawn_imported_oauth_validation_job(
                     continue;
                 }
 
-                prepared.push((row_index, normalized));
+                let usage_scope = match resolve_group_forward_proxy_scope_for_provisioning(
+                    state.as_ref(),
+                    &binding,
+                    Some(&assignments),
+                    &consumed_proxy_keys,
+                )
+                .await
+                {
+                    Ok(scope) => scope,
+                    Err(err) => {
+                        update_imported_oauth_validation_job_row(
+                            &job,
+                            row_index,
+                            ImportedOauthValidationRow {
+                                source_id: normalized.source_id,
+                                file_name: normalized.file_name,
+                                email: Some(normalized.email),
+                                chatgpt_account_id: Some(normalized.chatgpt_account_id),
+                                display_name: Some(normalized.display_name),
+                                token_expires_at: Some(normalized.token_expires_at),
+                                matched_account: None,
+                                status: IMPORT_VALIDATION_STATUS_ERROR.to_string(),
+                                detail: Some(err.to_string()),
+                                attempts: 0,
+                            },
+                            None,
+                        )
+                        .await;
+                        continue;
+                    }
+                };
+                if let ForwardProxyRouteScope::PinnedProxyKey(proxy_key) = &usage_scope {
+                    consumed_proxy_keys.insert(proxy_key.clone());
+                }
+
+                prepared.push((row_index, normalized, usage_scope));
             }
 
-            let validations = stream::iter(prepared.into_iter().map(|(row_index, normalized)| {
-                let state = state.clone();
-                let binding = binding.clone();
-                async move {
-                    (
-                        row_index,
-                        build_imported_oauth_validation_result(
-                            state.as_ref(),
-                            normalized,
-                            &binding,
+            let validations = stream::iter(prepared.into_iter().map(
+                |(row_index, normalized, usage_scope)| {
+                    let state = state.clone();
+                    let refresh_scope = refresh_scope.clone();
+                    async move {
+                        (
+                            row_index,
+                            build_imported_oauth_validation_result(
+                                state.as_ref(),
+                                normalized,
+                                &refresh_scope,
+                                &usage_scope,
+                            )
+                            .await,
                         )
-                        .await,
-                    )
-                }
-            }))
+                    }
+                },
+            ))
             .buffer_unordered(4);
             tokio::pin!(validations);
 
@@ -4433,6 +4582,7 @@ pub(crate) async fn create_imported_oauth_validation_job(
         state.as_ref(),
         payload.group_name.clone(),
         payload.group_bound_proxy_keys.clone(),
+        payload.group_node_shunt_enabled,
     )
     .await?;
     let snapshot = build_imported_oauth_pending_response(&payload.items);
@@ -4780,6 +4930,7 @@ pub(crate) async fn validate_imported_oauth_accounts(
         state.as_ref(),
         payload.group_name,
         payload.group_bound_proxy_keys,
+        payload.group_node_shunt_enabled,
     )
     .await?;
     Ok(Json(
@@ -4804,6 +4955,7 @@ pub(crate) async fn import_validated_oauth_accounts(
         validation_job_id,
         group_name,
         group_bound_proxy_keys,
+        group_node_shunt_enabled,
         group_note,
         concurrency_limit,
         tag_ids,
@@ -4831,11 +4983,14 @@ pub(crate) async fn import_validated_oauth_accounts(
         group_bound_proxy_keys.is_some(),
         group_concurrency_limit,
         concurrency_limit.is_some(),
+        group_node_shunt_enabled,
+        group_node_shunt_enabled.is_some(),
     );
     let resolved_group_binding = resolve_required_group_proxy_binding_for_write(
         state.as_ref(),
         group_name.clone(),
         group_bound_proxy_keys.clone(),
+        group_node_shunt_enabled,
     )
     .await?;
     let group_name = Some(resolved_group_binding.group_name.clone());
@@ -4845,6 +5000,7 @@ pub(crate) async fn import_validated_oauth_accounts(
         if let Some(job) = state.upstream_accounts.get_validation_job(&job_id).await {
             if job.target_group_name == resolved_group_binding.group_name
                 && job.target_bound_proxy_keys == resolved_group_binding.bound_proxy_keys
+                && job.target_node_shunt_enabled == resolved_group_binding.node_shunt_enabled
             {
                 job.validated_imports.lock().await.clone()
             } else {
@@ -4858,11 +5014,20 @@ pub(crate) async fn import_validated_oauth_accounts(
     };
     let input_files = items.len();
     let selected_files = selected_source_ids.len();
+    let assignments = build_upstream_account_node_shunt_assignments(state.as_ref())
+        .await
+        .map_err(internal_error_tuple)?;
+    let refresh_scope = required_account_forward_proxy_scope(
+        Some(&resolved_group_binding.group_name),
+        resolved_group_binding.bound_proxy_keys.clone(),
+    )
+    .map_err(internal_error_tuple)?;
 
     let mut created = 0usize;
     let mut updated_existing = 0usize;
     let mut failed = 0usize;
     let mut seen_keys = HashSet::new();
+    let mut consumed_proxy_keys = HashSet::new();
     let mut results = Vec::new();
 
     for item in items {
@@ -4932,12 +5097,37 @@ pub(crate) async fn import_validated_oauth_accounts(
             }
         };
         let matched_account = existing_match.as_ref().map(import_match_summary_from_row);
+        let usage_scope = match resolve_group_forward_proxy_scope_for_provisioning(
+            state.as_ref(),
+            &resolved_group_binding,
+            Some(&assignments),
+            &consumed_proxy_keys,
+        )
+        .await
+        {
+            Ok(scope) => scope,
+            Err(err) => {
+                failed += 1;
+                results.push(ImportedOauthImportResult {
+                    source_id: normalized.source_id,
+                    file_name: normalized.file_name,
+                    email: Some(normalized.email),
+                    chatgpt_account_id: Some(normalized.chatgpt_account_id),
+                    account_id: existing_match.as_ref().map(|row| row.id),
+                    status: IMPORT_RESULT_STATUS_FAILED.to_string(),
+                    detail: Some(err.to_string()),
+                    matched_account,
+                });
+                continue;
+            }
+        };
         let probe = match cached_validation {
             Some(cached) => cached.probe,
             None => match probe_imported_oauth_credentials(
                 state.as_ref(),
                 &normalized,
-                &resolved_group_binding,
+                &refresh_scope,
+                &usage_scope,
             )
             .await
             {
@@ -5014,6 +5204,9 @@ pub(crate) async fn import_validated_oauth_accounts(
             updated_existing += 1;
         } else {
             created += 1;
+        }
+        if let ForwardProxyRouteScope::PinnedProxyKey(proxy_key) = &usage_scope {
+            consumed_proxy_keys.insert(proxy_key.clone());
         }
         results.push(ImportedOauthImportResult {
             source_id: normalized.source_id,
@@ -5526,6 +5719,7 @@ pub(crate) async fn create_oauth_login_session(
         state.as_ref(),
         group_name.clone(),
         payload.group_bound_proxy_keys.clone(),
+        payload.group_node_shunt_enabled,
     )
     .await?;
 
@@ -5574,10 +5768,10 @@ pub(crate) async fn create_oauth_login_session(
     sqlx::query(
         r#"
         INSERT INTO pool_oauth_login_sessions (
-            login_id, account_id, display_name, group_name, group_bound_proxy_keys_json, is_mother, note, tag_ids_json, group_note,
+            login_id, account_id, display_name, group_name, group_bound_proxy_keys_json, group_node_shunt_enabled, is_mother, note, tag_ids_json, group_note,
             group_concurrency_limit, mailbox_session_id, generated_mailbox_address, state, pkce_verifier, redirect_uri, status, auth_url,
             error_message, expires_at, consumed_at, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, NULL, ?18, NULL, ?19, ?19)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, NULL, ?19, NULL, ?20, ?20)
         "#,
     )
     .bind(&login_id)
@@ -5588,6 +5782,11 @@ pub(crate) async fn create_oauth_login_session(
         encode_group_bound_proxy_keys_json(&resolved_group_binding.bound_proxy_keys)
             .map_err(internal_error_tuple)?,
     )
+    .bind(if resolved_group_binding.node_shunt_enabled {
+        1_i64
+    } else {
+        0_i64
+    })
     .bind(if is_mother { 1 } else { 0 })
     .bind(note)
     .bind(tag_ids_json)
@@ -5717,6 +5916,9 @@ pub(crate) async fn update_oauth_login_session(
             && decode_group_bound_proxy_keys_json(session.group_bound_proxy_keys_json.as_deref())
                 == current_group_metadata.bound_proxy_keys
             && session.group_concurrency_limit == current_group_metadata.concurrency_limit
+            && decode_group_node_shunt_enabled(session.group_node_shunt_enabled)
+                == current_group_metadata.node_shunt_enabled
+            && session.group_concurrency_limit == current_group_metadata.concurrency_limit
             && (session.is_mother != 0) == (account.is_mother != 0)
             && parse_tag_ids_json(session.tag_ids_json.as_deref()) == current_tag_ids
     } else {
@@ -5753,6 +5955,7 @@ pub(crate) async fn update_oauth_login_session(
         display_name: requested_display_name,
         group_name: requested_group_name,
         group_bound_proxy_keys: requested_group_bound_proxy_keys,
+        group_node_shunt_enabled: requested_group_node_shunt_enabled,
         note: requested_note,
         group_note: requested_group_note,
         concurrency_limit: requested_concurrency_limit,
@@ -5764,6 +5967,8 @@ pub(crate) async fn update_oauth_login_session(
     let requested_group_name_was_updated = !matches!(requested_group_name, OptionalField::Missing);
     let requested_group_bound_proxy_keys_was_updated =
         !matches!(requested_group_bound_proxy_keys, OptionalField::Missing);
+    let requested_group_node_shunt_enabled_was_updated =
+        !matches!(requested_group_node_shunt_enabled, OptionalField::Missing);
     let requested_group_note_was_updated = !matches!(requested_group_note, OptionalField::Missing);
     let requested_group_concurrency_limit_was_updated =
         !matches!(requested_concurrency_limit, OptionalField::Missing);
@@ -5785,6 +5990,8 @@ pub(crate) async fn update_oauth_login_session(
     };
     let session_group_bound_proxy_keys =
         decode_group_bound_proxy_keys_json(session.group_bound_proxy_keys_json.as_deref());
+    let session_group_node_shunt_enabled =
+        decode_group_node_shunt_enabled(session.group_node_shunt_enabled);
     let requested_group_note_missing = matches!(requested_group_note, OptionalField::Missing);
     let mut normalized_group_note = match requested_group_note {
         OptionalField::Missing => session.group_note.clone(),
@@ -5806,6 +6013,12 @@ pub(crate) async fn update_oauth_login_session(
         OptionalField::Missing => Some(session_group_bound_proxy_keys.clone()),
         OptionalField::Null => Some(Vec::new()),
         OptionalField::Value(value) => Some(normalize_bound_proxy_keys(value)),
+    };
+    let requested_group_node_shunt_enabled = match requested_group_node_shunt_enabled {
+        OptionalField::Missing if group_name_changed => None,
+        OptionalField::Missing => Some(session_group_node_shunt_enabled),
+        OptionalField::Null => Some(false),
+        OptionalField::Value(value) => Some(value),
     };
     if requested_group_name_was_updated
         && (group_name.is_none() || (requested_group_note_missing && group_name_changed))
@@ -5850,6 +6063,7 @@ pub(crate) async fn update_oauth_login_session(
         state.as_ref(),
         group_name.clone(),
         requested_group_bound_proxy_keys,
+        requested_group_node_shunt_enabled,
     )
     .await?;
     let tag_ids_json = encode_tag_ids_json(&tag_ids).map_err(internal_error_tuple)?;
@@ -5860,6 +6074,8 @@ pub(crate) async fn update_oauth_login_session(
         requested_group_bound_proxy_keys_was_updated,
         normalized_group_concurrency_limit,
         requested_group_concurrency_limit_was_updated,
+        Some(resolved_group_binding.node_shunt_enabled),
+        requested_group_node_shunt_enabled_was_updated,
     );
 
     if display_name.as_deref() != session.display_name.as_deref() {
@@ -5914,14 +6130,15 @@ pub(crate) async fn update_oauth_login_session(
             SET display_name = ?2,
                 group_name = ?3,
                 group_bound_proxy_keys_json = ?4,
-                is_mother = ?5,
-                note = ?6,
-                tag_ids_json = ?7,
-                group_note = ?8,
-                group_concurrency_limit = ?9,
-                mailbox_session_id = ?10,
-                generated_mailbox_address = ?11,
-                updated_at = ?12
+                group_node_shunt_enabled = ?5,
+                is_mother = ?6,
+                note = ?7,
+                tag_ids_json = ?8,
+                group_note = ?9,
+                group_concurrency_limit = ?10,
+                mailbox_session_id = ?11,
+                generated_mailbox_address = ?12,
+                updated_at = ?13
             WHERE login_id = ?1
             "#,
         )
@@ -5932,6 +6149,11 @@ pub(crate) async fn update_oauth_login_session(
             encode_group_bound_proxy_keys_json(&resolved_group_binding.bound_proxy_keys)
                 .map_err(internal_error_tuple)?,
         )
+        .bind(if resolved_group_binding.node_shunt_enabled {
+            1_i64
+        } else {
+            0_i64
+        })
         .bind(if is_mother { 1 } else { 0 })
         .bind(note)
         .bind(&tag_ids_json)
@@ -5959,16 +6181,17 @@ pub(crate) async fn update_oauth_login_session(
         SET display_name = ?2,
             group_name = ?3,
             group_bound_proxy_keys_json = ?4,
-            is_mother = ?5,
-            note = ?6,
-            tag_ids_json = ?7,
-            group_note = ?8,
-            group_concurrency_limit = ?9,
-            mailbox_session_id = ?10,
-            generated_mailbox_address = ?11,
-            updated_at = ?12
+            group_node_shunt_enabled = ?5,
+            is_mother = ?6,
+            note = ?7,
+            tag_ids_json = ?8,
+            group_note = ?9,
+            group_concurrency_limit = ?10,
+            mailbox_session_id = ?11,
+            generated_mailbox_address = ?12,
+            updated_at = ?13
         WHERE login_id = ?1
-          AND (?13 IS NULL OR updated_at = ?13)
+          AND (?14 IS NULL OR updated_at = ?14)
         "#,
     )
     .bind(&login_id)
@@ -5978,6 +6201,11 @@ pub(crate) async fn update_oauth_login_session(
         encode_group_bound_proxy_keys_json(&resolved_group_binding.bound_proxy_keys)
             .map_err(internal_error_tuple)?,
     )
+    .bind(if resolved_group_binding.node_shunt_enabled {
+        1_i64
+    } else {
+        0_i64
+    })
     .bind(if is_mother { 1 } else { 0 })
     .bind(note)
     .bind(tag_ids_json)
@@ -6090,6 +6318,7 @@ pub(crate) async fn relogin_upstream_account(
         display_name: None,
         group_name: None,
         group_bound_proxy_keys: None,
+        group_node_shunt_enabled: None,
         note: None,
         group_note: None,
         concurrency_limit: None,
@@ -6176,12 +6405,15 @@ async fn create_api_key_account_inner(
         payload.group_bound_proxy_keys.is_some(),
         group_concurrency_limit,
         payload.concurrency_limit.is_some(),
+        payload.group_node_shunt_enabled,
+        payload.group_node_shunt_enabled.is_some(),
     );
     validate_group_note_target(group_name.as_deref(), has_group_note)?;
     let resolved_group_binding = resolve_required_group_proxy_binding_for_write(
         state.as_ref(),
         group_name.clone(),
         payload.group_bound_proxy_keys,
+        payload.group_node_shunt_enabled,
     )
     .await?;
     let target_group_name = Some(resolved_group_binding.group_name.clone());
@@ -6316,6 +6548,8 @@ async fn update_upstream_account_inner(
         payload.group_bound_proxy_keys.is_some(),
         normalized_group_concurrency_limit,
         payload.concurrency_limit.is_some(),
+        payload.group_node_shunt_enabled,
+        payload.group_node_shunt_enabled.is_some(),
     );
 
     if let Some(display_name) = payload.display_name {
@@ -6369,19 +6603,22 @@ async fn update_upstream_account_inner(
         validate_local_limits(row.local_primary_limit, row.local_secondary_limit)?;
     }
     validate_group_note_target(row.group_name.as_deref(), requested_group_note.is_some())?;
-    let resolved_group_binding =
-        if payload.group_name.is_some() || payload.group_bound_proxy_keys.is_some() {
-            Some(
-                resolve_required_group_proxy_binding_for_write(
-                    state,
-                    row.group_name.clone(),
-                    payload.group_bound_proxy_keys.clone(),
-                )
-                .await?,
+    let resolved_group_binding = if payload.group_name.is_some()
+        || payload.group_bound_proxy_keys.is_some()
+        || payload.group_node_shunt_enabled.is_some()
+    {
+        Some(
+            resolve_required_group_proxy_binding_for_write(
+                state,
+                row.group_name.clone(),
+                payload.group_bound_proxy_keys.clone(),
+                payload.group_node_shunt_enabled,
             )
-        } else {
-            None
-        };
+            .await?,
+        )
+    } else {
+        None
+    };
     if let Some(resolved_group_binding) = resolved_group_binding.as_ref() {
         row.group_name = Some(resolved_group_binding.group_name.clone());
     }
@@ -6912,6 +7149,10 @@ async fn persist_oauth_callback_inner(
                 true,
                 session.group_concurrency_limit,
                 true,
+                Some(decode_group_node_shunt_enabled(
+                    session.group_node_shunt_enabled,
+                )),
+                true,
             ),
             claims: &input.claims,
             encrypted_credentials: input.encrypted_credentials,
@@ -7410,12 +7651,9 @@ async fn find_existing_import_match(
 async fn probe_imported_oauth_credentials(
     state: &AppState,
     imported: &NormalizedImportedOauthCredentials,
-    binding: &ResolvedRequiredGroupProxyBinding,
+    refresh_scope: &ForwardProxyRouteScope,
+    usage_scope: &ForwardProxyRouteScope,
 ) -> Result<ImportedOauthProbeOutcome, anyhow::Error> {
-    let scope = required_account_forward_proxy_scope(
-        Some(&binding.group_name),
-        binding.bound_proxy_keys.clone(),
-    )?;
     let mut credentials = imported.credentials.clone();
     let mut claims = imported.claims.clone();
     let mut token_expires_at = imported.token_expires_at.clone();
@@ -7431,9 +7669,12 @@ async fn probe_imported_oauth_credentials(
         .unwrap_or(true);
 
     if refresh_due {
-        let response =
-            refresh_oauth_tokens_for_required_scope(state, &scope, &credentials.refresh_token)
-                .await?;
+        let response = refresh_oauth_tokens_for_required_scope(
+            state,
+            refresh_scope,
+            &credentials.refresh_token,
+        )
+        .await?;
         credentials.access_token = response.access_token;
         if let Some(refresh_token) = response.refresh_token {
             credentials.refresh_token = refresh_token;
@@ -7453,7 +7694,7 @@ async fn probe_imported_oauth_credentials(
 
     let usage_result = fetch_usage_snapshot_via_forward_proxy(
         state,
-        &scope,
+        usage_scope,
         &state.config,
         &credentials.access_token,
         claims
@@ -7466,9 +7707,12 @@ async fn probe_imported_oauth_credentials(
         Ok(snapshot) => (Some(snapshot), None),
         Err(err) if is_import_invalid_error_message(&err.to_string()) => return Err(err),
         Err(err) if err.to_string().contains("401") || err.to_string().contains("403") => {
-            let response =
-                refresh_oauth_tokens_for_required_scope(state, &scope, &credentials.refresh_token)
-                    .await?;
+            let response = refresh_oauth_tokens_for_required_scope(
+                state,
+                refresh_scope,
+                &credentials.refresh_token,
+            )
+            .await?;
             credentials.access_token = response.access_token;
             if let Some(refresh_token) = response.refresh_token {
                 credentials.refresh_token = refresh_token;
@@ -7486,7 +7730,7 @@ async fn probe_imported_oauth_credentials(
                 format_utc_iso(Utc::now() + ChronoDuration::seconds(response.expires_in.max(0)));
             match fetch_usage_snapshot_via_forward_proxy(
                 state,
-                &scope,
+                usage_scope,
                 &state.config,
                 &credentials.access_token,
                 claims
@@ -7614,7 +7858,6 @@ async fn sync_oauth_account(
     cause: SyncCause,
 ) -> Result<()> {
     let sync_source = sync_cause_action_source(cause);
-    set_account_status(&state.pool, row.id, UPSTREAM_ACCOUNT_STATUS_SYNCING, None).await?;
     let now = Utc::now();
     let crypto_key = state
         .upstream_accounts
@@ -7641,24 +7884,47 @@ async fn sync_oauth_account(
                     )
         })
         .unwrap_or(true);
-    let refresh_scope = match load_required_account_forward_proxy_scope_from_group_metadata(
-        state,
-        row.group_name.as_deref(),
-    )
-    .await
-    {
+    let usage_scope = match resolve_account_forward_proxy_scope(state, row, None).await {
         Ok(scope) => scope,
+        Err(err) if is_group_node_shunt_unassigned_message(&err.to_string()) => {
+            return Err(err);
+        }
         Err(err) => {
             record_classified_account_sync_failure(&state.pool, row, sync_source, &err.to_string())
                 .await?;
             return Ok(());
         }
     };
+    let refresh_scope = if refresh_due {
+        match load_required_account_forward_proxy_scope_from_group_metadata(
+            state,
+            row.group_name.as_deref(),
+        )
+        .await
+        {
+            Ok(scope) => Some(scope),
+            Err(err) => {
+                record_classified_account_sync_failure(
+                    &state.pool,
+                    row,
+                    sync_source,
+                    &err.to_string(),
+                )
+                .await?;
+                return Ok(());
+            }
+        }
+    } else {
+        None
+    };
+    set_account_status(&state.pool, row.id, UPSTREAM_ACCOUNT_STATUS_SYNCING, None).await?;
 
     if refresh_due {
         match refresh_oauth_tokens_for_required_scope(
             state,
-            &refresh_scope,
+            refresh_scope
+                .as_ref()
+                .expect("refresh scope should exist when refresh is due"),
             &credentials.refresh_token,
         )
         .await
@@ -7742,24 +8008,6 @@ async fn sync_oauth_account(
         bail!("unexpected credential kind for OAuth account")
     };
 
-    let usage_scope = match load_required_account_forward_proxy_scope_from_group_metadata(
-        state,
-        latest_row.group_name.as_deref(),
-    )
-    .await
-    {
-        Ok(scope) => scope,
-        Err(err) => {
-            record_classified_account_sync_failure(
-                &state.pool,
-                &latest_row,
-                sync_source,
-                &err.to_string(),
-            )
-            .await?;
-            return Ok(());
-        }
-    };
     let usage_result = fetch_usage_snapshot_via_forward_proxy(
         state,
         &usage_scope,
@@ -7772,9 +8020,19 @@ async fn sync_oauth_account(
     let snapshot = match usage_result {
         Ok(snapshot) => snapshot,
         Err(err) if err.to_string().contains("401") || err.to_string().contains("403") => {
+            let refresh_scope = match refresh_scope {
+                Some(scope) => scope,
+                None => {
+                    load_required_account_forward_proxy_scope_from_group_metadata(
+                        state,
+                        latest_row.group_name.as_deref(),
+                    )
+                    .await?
+                }
+            };
             match refresh_oauth_tokens_for_required_scope(
                 state,
-                &usage_scope,
+                &refresh_scope,
                 &credentials.refresh_token,
             )
             .await
@@ -8894,6 +9152,7 @@ async fn load_upstream_account_groups(
             Option<i64>,
             Option<i64>,
             Option<i64>,
+            Option<i64>,
         ),
     >(
         r#"
@@ -8901,6 +9160,7 @@ async fn load_upstream_account_groups(
             groups.group_name,
             notes.note,
             notes.bound_proxy_keys_json,
+            notes.node_shunt_enabled,
             notes.upstream_429_retry_enabled,
             notes.upstream_429_max_retries,
             notes.concurrency_limit
@@ -8924,10 +9184,13 @@ async fn load_upstream_account_groups(
                 group_name,
                 note,
                 bound_proxy_keys_json,
+                node_shunt_enabled,
                 upstream_429_retry_enabled,
                 upstream_429_max_retries,
                 concurrency_limit,
             )| {
+                let node_shunt_enabled =
+                    decode_group_node_shunt_enabled(node_shunt_enabled.unwrap_or_default());
                 let upstream_429_retry_enabled = decode_group_upstream_429_retry_enabled(
                     upstream_429_retry_enabled.unwrap_or_default(),
                 );
@@ -8943,6 +9206,7 @@ async fn load_upstream_account_groups(
                     bound_proxy_keys: decode_group_bound_proxy_keys_json(
                         bound_proxy_keys_json.as_deref(),
                     ),
+                    node_shunt_enabled,
                     upstream_429_retry_enabled,
                     upstream_429_max_retries,
                     concurrency_limit: concurrency_limit.unwrap_or_default(),
@@ -9108,6 +9372,7 @@ async fn apply_bulk_upstream_account_action(
             display_name: None,
             group_name: None,
             group_bound_proxy_keys: None,
+            group_node_shunt_enabled: None,
             note: None,
             group_note: None,
             concurrency_limit: None,
@@ -9124,6 +9389,7 @@ async fn apply_bulk_upstream_account_action(
             display_name: None,
             group_name: None,
             group_bound_proxy_keys: None,
+            group_node_shunt_enabled: None,
             note: None,
             group_note: None,
             concurrency_limit: None,
@@ -9140,6 +9406,7 @@ async fn apply_bulk_upstream_account_action(
             display_name: None,
             group_name,
             group_bound_proxy_keys: None,
+            group_node_shunt_enabled: None,
             note: None,
             group_note: None,
             concurrency_limit: None,
@@ -9177,6 +9444,7 @@ async fn apply_bulk_upstream_account_action(
                 display_name: None,
                 group_name: None,
                 group_bound_proxy_keys: None,
+                group_node_shunt_enabled: None,
                 note: None,
                 group_note: None,
                 concurrency_limit: None,
@@ -9319,6 +9587,8 @@ async fn load_upstream_account_detail_with_actual_usage(
         None => return Ok(None),
     };
     enrich_window_actual_usage_for_summaries(state, std::slice::from_mut(&mut detail.summary))
+        .await?;
+    enrich_node_shunt_routing_block_reasons(state, std::slice::from_mut(&mut detail.summary))
         .await?;
     Ok(Some(detail))
 }
@@ -9555,6 +9825,8 @@ fn build_summary_from_row(
             .and_then(|value| u16::try_from(value).ok()),
         last_action_invoke_id: row.last_action_invoke_id.clone(),
         last_action_at: row.last_action_at.clone(),
+        routing_block_reason_code: None,
+        routing_block_reason_message: None,
         token_expires_at: row.token_expires_at.clone(),
         primary_window,
         secondary_window,
@@ -9565,6 +9837,46 @@ fn build_summary_from_row(
         tags,
         effective_routing_rule,
     }
+}
+
+fn apply_node_shunt_routing_block_reasons_to_summaries(
+    items: &mut [UpstreamAccountSummary],
+    assignments: &UpstreamAccountNodeShuntAssignments,
+) {
+    for item in items {
+        item.routing_block_reason_code = None;
+        item.routing_block_reason_message = None;
+        let Some(group_name) = normalize_optional_text(item.group_name.clone()) else {
+            continue;
+        };
+        if !assignments.group_slots.contains_key(&group_name) {
+            continue;
+        }
+        if !assignments.eligible_account_ids.contains(&item.id) {
+            continue;
+        }
+        if assignments.account_proxy_keys.contains_key(&item.id) {
+            continue;
+        }
+        item.work_status = UPSTREAM_ACCOUNT_WORK_STATUS_IDLE.to_string();
+        item.health_status = UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL.to_string();
+        item.routing_block_reason_code =
+            Some(UPSTREAM_ACCOUNT_ROUTING_BLOCK_REASON_GROUP_NODE_SHUNT_UNASSIGNED.to_string());
+        item.routing_block_reason_message =
+            Some(group_node_shunt_unassigned_error_message().to_string());
+    }
+}
+
+async fn enrich_node_shunt_routing_block_reasons(
+    state: &AppState,
+    items: &mut [UpstreamAccountSummary],
+) -> Result<()> {
+    if items.is_empty() {
+        return Ok(());
+    }
+    let assignments = build_upstream_account_node_shunt_assignments(state).await?;
+    apply_node_shunt_routing_block_reasons_to_summaries(items, &assignments);
+    Ok(())
 }
 
 async fn enrich_window_actual_usage_for_summaries(
@@ -10063,6 +10375,10 @@ fn decode_group_bound_proxy_keys_json(raw: Option<&str>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+fn decode_group_node_shunt_enabled(raw: i64) -> bool {
+    raw != 0
+}
+
 fn decode_group_upstream_429_retry_enabled(raw: i64) -> bool {
     raw != 0
 }
@@ -10094,6 +10410,20 @@ fn encode_group_bound_proxy_keys_json(bound_proxy_keys: &[String]) -> Result<Str
     serde_json::to_string(bound_proxy_keys).context("failed to encode group bound proxy keys")
 }
 
+fn group_node_shunt_unassigned_error_message() -> &'static str {
+    UPSTREAM_ACCOUNT_ROUTING_BLOCK_REASON_GROUP_NODE_SHUNT_UNASSIGNED_MESSAGE
+}
+
+fn group_node_shunt_unassigned_error() -> anyhow::Error {
+    anyhow!(group_node_shunt_unassigned_error_message())
+}
+
+fn is_group_node_shunt_unassigned_message(message: &str) -> bool {
+    message
+        .trim()
+        .contains(UPSTREAM_ACCOUNT_ROUTING_BLOCK_REASON_GROUP_NODE_SHUNT_UNASSIGNED_MESSAGE)
+}
+
 fn missing_request_group_error_message() -> String {
     "groupName is required for upstream accounts".to_string()
 }
@@ -10119,6 +10449,8 @@ fn build_requested_group_metadata_changes(
     bound_proxy_keys_was_requested: bool,
     concurrency_limit: i64,
     concurrency_limit_was_requested: bool,
+    node_shunt_enabled: Option<bool>,
+    node_shunt_enabled_was_requested: bool,
 ) -> RequestedGroupMetadataChanges {
     RequestedGroupMetadataChanges {
         note: normalize_optional_text(note),
@@ -10131,6 +10463,8 @@ fn build_requested_group_metadata_changes(
         bound_proxy_keys_was_requested,
         concurrency_limit,
         concurrency_limit_was_requested,
+        node_shunt_enabled: node_shunt_enabled.unwrap_or(false),
+        node_shunt_enabled_was_requested,
     }
 }
 
@@ -10187,6 +10521,7 @@ async fn resolve_required_group_proxy_binding_for_write(
     state: &AppState,
     group_name: Option<String>,
     requested_bound_proxy_keys: Option<Vec<String>>,
+    requested_node_shunt_enabled: Option<bool>,
 ) -> Result<ResolvedRequiredGroupProxyBinding, (StatusCode, String)> {
     let group_name = normalize_optional_text(group_name).ok_or_else(|| {
         (
@@ -10194,25 +10529,42 @@ async fn resolve_required_group_proxy_binding_for_write(
             missing_request_group_error_message(),
         )
     })?;
+    let existing_metadata = load_group_metadata(&state.pool, Some(&group_name))
+        .await
+        .map_err(internal_error_tuple)?;
     let bound_proxy_keys = if let Some(requested_bound_proxy_keys) = requested_bound_proxy_keys {
         normalize_bound_proxy_keys(requested_bound_proxy_keys)
     } else {
-        load_group_metadata(&state.pool, Some(&group_name))
-            .await
-            .map_err(internal_error_tuple)?
-            .bound_proxy_keys
+        existing_metadata.bound_proxy_keys.clone()
     };
     let bound_proxy_keys = canonicalize_forward_proxy_bound_keys(state, &bound_proxy_keys)
         .await
         .map_err(internal_error_tuple)?;
-    let scope = required_account_forward_proxy_scope(Some(&group_name), bound_proxy_keys.clone())
-        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
-    ensure_required_group_proxy_scope_selectable(state, &scope)
-        .await
-        .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    let node_shunt_enabled =
+        requested_node_shunt_enabled.unwrap_or(existing_metadata.node_shunt_enabled);
+    if node_shunt_enabled {
+        let selectable_bound_proxy_keys = {
+            let manager = state.forward_proxy.lock().await;
+            manager.selectable_bound_proxy_keys_in_order(&bound_proxy_keys)
+        };
+        if selectable_bound_proxy_keys.is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                group_node_shunt_unassigned_error_message().to_string(),
+            ));
+        }
+    } else {
+        let scope =
+            required_account_forward_proxy_scope(Some(&group_name), bound_proxy_keys.clone())
+                .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+        ensure_required_group_proxy_scope_selectable(state, &scope)
+            .await
+            .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
+    }
     Ok(ResolvedRequiredGroupProxyBinding {
         group_name,
         bound_proxy_keys,
+        node_shunt_enabled,
     })
 }
 
@@ -10220,11 +10572,12 @@ async fn load_group_metadata_conn(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     group_name: &str,
 ) -> Result<Option<UpstreamAccountGroupMetadata>> {
-    sqlx::query_as::<_, (String, Option<String>, i64, i64, i64)>(
+    sqlx::query_as::<_, (String, Option<String>, i64, i64, i64, i64)>(
         r#"
         SELECT
             note,
             bound_proxy_keys_json,
+            node_shunt_enabled,
             upstream_429_retry_enabled,
             upstream_429_max_retries,
             concurrency_limit
@@ -10240,10 +10593,12 @@ async fn load_group_metadata_conn(
             |(
                 note,
                 bound_proxy_keys_json,
+                node_shunt_enabled,
                 upstream_429_retry_enabled,
                 upstream_429_max_retries,
                 concurrency_limit,
             )| {
+                let node_shunt_enabled = decode_group_node_shunt_enabled(node_shunt_enabled);
                 let upstream_429_retry_enabled =
                     decode_group_upstream_429_retry_enabled(upstream_429_retry_enabled);
                 let upstream_429_max_retries = normalize_group_upstream_429_retry_metadata(
@@ -10255,6 +10610,7 @@ async fn load_group_metadata_conn(
                     bound_proxy_keys: decode_group_bound_proxy_keys_json(
                         bound_proxy_keys_json.as_deref(),
                     ),
+                    node_shunt_enabled,
                     upstream_429_retry_enabled,
                     upstream_429_max_retries,
                     concurrency_limit,
@@ -10300,6 +10656,7 @@ async fn save_group_metadata_record_conn(
 ) -> Result<()> {
     let normalized_note = normalize_optional_text(metadata.note);
     let normalized_bound_proxy_keys = normalize_bound_proxy_keys(metadata.bound_proxy_keys);
+    let normalized_node_shunt_enabled = metadata.node_shunt_enabled;
     let normalized_upstream_429_retry_enabled = metadata.upstream_429_retry_enabled;
     let normalized_upstream_429_max_retries = normalize_group_upstream_429_retry_metadata(
         normalized_upstream_429_retry_enabled,
@@ -10310,6 +10667,7 @@ async fn save_group_metadata_record_conn(
             .map_err(|(status, message)| anyhow!("{status}: {message}"))?;
     if normalized_note.is_none()
         && normalized_bound_proxy_keys.is_empty()
+        && !normalized_node_shunt_enabled
         && !normalized_upstream_429_retry_enabled
         && normalized_upstream_429_max_retries == 0
         && normalized_concurrency_limit == 0
@@ -10334,16 +10692,18 @@ async fn save_group_metadata_record_conn(
             group_name,
             note,
             bound_proxy_keys_json,
+            node_shunt_enabled,
             upstream_429_retry_enabled,
             upstream_429_max_retries,
             concurrency_limit,
             created_at,
             updated_at
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
         ON CONFLICT(group_name) DO UPDATE SET
             note = excluded.note,
             bound_proxy_keys_json = excluded.bound_proxy_keys_json,
+            node_shunt_enabled = excluded.node_shunt_enabled,
             upstream_429_retry_enabled = excluded.upstream_429_retry_enabled,
             upstream_429_max_retries = excluded.upstream_429_max_retries,
             concurrency_limit = excluded.concurrency_limit,
@@ -10353,6 +10713,11 @@ async fn save_group_metadata_record_conn(
     .bind(group_name)
     .bind(normalized_note.unwrap_or_default())
     .bind(bound_proxy_keys_json)
+    .bind(if normalized_node_shunt_enabled {
+        1_i64
+    } else {
+        0_i64
+    })
     .bind(if normalized_upstream_429_retry_enabled {
         1_i64
     } else {
@@ -10414,6 +10779,9 @@ async fn save_group_metadata_for_single_account_group(
     if changes.concurrency_limit_was_requested {
         metadata.concurrency_limit = changes.concurrency_limit;
     }
+    if changes.node_shunt_enabled_was_requested {
+        metadata.node_shunt_enabled = changes.node_shunt_enabled;
+    }
     save_group_metadata_record_conn(conn, group_name, metadata).await
 }
 
@@ -10451,6 +10819,316 @@ async fn cleanup_orphaned_group_metadata(
     Ok(())
 }
 
+#[derive(Debug, Clone, Default)]
+struct GroupNodeShuntSlots {
+    valid_proxy_keys: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct UpstreamAccountNodeShuntAssignments {
+    account_proxy_keys: HashMap<i64, String>,
+    group_slots: HashMap<String, GroupNodeShuntSlots>,
+    group_assigned_proxy_keys: HashMap<String, HashSet<String>>,
+    eligible_account_ids: HashSet<i64>,
+}
+
+async fn load_node_shunt_enabled_group_metadata_map(
+    pool: &Pool<Sqlite>,
+) -> Result<HashMap<String, UpstreamAccountGroupMetadata>> {
+    let rows = sqlx::query_as::<_, (String, String, Option<String>, i64, i64, i64, i64)>(
+        r#"
+        SELECT
+            group_name,
+            note,
+            bound_proxy_keys_json,
+            node_shunt_enabled,
+            upstream_429_retry_enabled,
+            upstream_429_max_retries,
+            concurrency_limit
+        FROM pool_upstream_account_group_notes
+        WHERE node_shunt_enabled != 0
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let mut groups = HashMap::with_capacity(rows.len());
+    for (
+        group_name,
+        note,
+        bound_proxy_keys_json,
+        node_shunt_enabled,
+        upstream_429_retry_enabled,
+        upstream_429_max_retries,
+        concurrency_limit,
+    ) in rows
+    {
+        let node_shunt_enabled = decode_group_node_shunt_enabled(node_shunt_enabled);
+        let upstream_429_retry_enabled =
+            decode_group_upstream_429_retry_enabled(upstream_429_retry_enabled);
+        let upstream_429_max_retries = normalize_group_upstream_429_retry_metadata(
+            upstream_429_retry_enabled,
+            decode_group_upstream_429_max_retries(upstream_429_max_retries),
+        );
+        groups.insert(
+            group_name,
+            UpstreamAccountGroupMetadata {
+                note: normalize_optional_text(Some(note)),
+                bound_proxy_keys: decode_group_bound_proxy_keys_json(
+                    bound_proxy_keys_json.as_deref(),
+                ),
+                node_shunt_enabled,
+                upstream_429_retry_enabled,
+                upstream_429_max_retries,
+                concurrency_limit,
+            },
+        );
+    }
+    Ok(groups)
+}
+
+async fn load_upstream_account_rows_for_groups(
+    pool: &Pool<Sqlite>,
+    group_names: &[String],
+) -> Result<Vec<UpstreamAccountRow>> {
+    if group_names.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            id, kind, provider, display_name, group_name, is_mother, note, status, enabled, email,
+            chatgpt_account_id, chatgpt_user_id, plan_type, plan_type_observed_at, masked_api_key,
+            encrypted_credentials, token_expires_at, last_refreshed_at,
+            last_synced_at, last_successful_sync_at, last_activity_at, last_error, last_error_at,
+            last_action, last_action_source, last_action_reason_code, last_action_reason_message,
+            last_action_http_status, last_action_invoke_id, last_action_at,
+            last_selected_at, last_route_failure_at, last_route_failure_kind, cooldown_until,
+            consecutive_route_failures, temporary_route_failure_streak_started_at,
+            compact_support_status, compact_support_observed_at,
+            compact_support_reason, local_primary_limit, local_secondary_limit,
+            local_limit_unit, upstream_base_url, created_at, updated_at
+        FROM pool_upstream_accounts
+        WHERE group_name IN (
+        "#,
+    );
+    {
+        let mut separated = query.separated(", ");
+        for group_name in group_names {
+            separated.push_bind(group_name);
+        }
+    }
+    query.push(") ORDER BY id ASC");
+
+    query
+        .build_query_as::<UpstreamAccountRow>()
+        .fetch_all(pool)
+        .await
+        .map_err(Into::into)
+}
+
+fn account_is_node_shunt_slot_eligible(
+    row: &UpstreamAccountRow,
+    snapshot_exhausted: bool,
+    now: DateTime<Utc>,
+) -> bool {
+    if !is_routing_eligible_account(row) {
+        return false;
+    }
+    let health_status = derive_upstream_account_health_status(
+        &row.kind,
+        row.enabled != 0,
+        &row.status,
+        row.last_error.as_deref(),
+        row.last_error_at.as_deref(),
+        row.last_route_failure_at.as_deref(),
+        row.last_route_failure_kind.as_deref(),
+        row.last_action_reason_code.as_deref(),
+    );
+    if health_status != UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL {
+        return false;
+    }
+    let sync_state = derive_upstream_account_sync_state(row.enabled != 0, &row.status);
+    if sync_state != UPSTREAM_ACCOUNT_SYNC_STATE_IDLE {
+        return false;
+    }
+    let work_status = derive_upstream_account_work_status(
+        row.enabled != 0,
+        &row.status,
+        health_status,
+        sync_state,
+        snapshot_exhausted,
+        row.cooldown_until.as_deref(),
+        row.last_error_at.as_deref(),
+        row.last_route_failure_at.as_deref(),
+        row.last_route_failure_kind.as_deref(),
+        row.last_action_reason_code.as_deref(),
+        row.temporary_route_failure_streak_started_at.as_deref(),
+        row.last_selected_at.as_deref(),
+        now,
+    );
+    matches!(
+        work_status,
+        UPSTREAM_ACCOUNT_WORK_STATUS_WORKING
+            | UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED
+            | UPSTREAM_ACCOUNT_WORK_STATUS_IDLE
+    )
+}
+
+async fn build_upstream_account_node_shunt_assignments(
+    state: &AppState,
+) -> Result<UpstreamAccountNodeShuntAssignments> {
+    let group_metadata_map = load_node_shunt_enabled_group_metadata_map(&state.pool).await?;
+    if group_metadata_map.is_empty() {
+        return Ok(UpstreamAccountNodeShuntAssignments::default());
+    }
+
+    let group_names = group_metadata_map.keys().cloned().collect::<Vec<_>>();
+    let rows = load_upstream_account_rows_for_groups(&state.pool, &group_names).await?;
+    let rows_by_id = rows
+        .into_iter()
+        .map(|row| (row.id, row))
+        .collect::<HashMap<_, _>>();
+
+    let mut assignments = UpstreamAccountNodeShuntAssignments::default();
+    {
+        let manager = state.forward_proxy.lock().await;
+        for (group_name, metadata) in &group_metadata_map {
+            assignments.group_slots.insert(
+                group_name.clone(),
+                GroupNodeShuntSlots {
+                    valid_proxy_keys: manager
+                        .selectable_bound_proxy_keys_in_order(&metadata.bound_proxy_keys),
+                },
+            );
+        }
+    }
+
+    let now = Utc::now();
+    let mut next_slot_by_group = HashMap::<String, usize>::new();
+    let mut candidates = load_account_routing_candidates(&state.pool, &HashSet::new()).await?;
+    candidates.sort_by(compare_routing_candidates);
+    for candidate in candidates {
+        let Some(row) = rows_by_id.get(&candidate.id) else {
+            continue;
+        };
+        let Some(group_name) = normalize_optional_text(row.group_name.clone()) else {
+            continue;
+        };
+        if !group_metadata_map
+            .get(&group_name)
+            .is_some_and(|metadata| metadata.node_shunt_enabled)
+        {
+            continue;
+        }
+        let snapshot_exhausted = routing_candidate_snapshot_is_exhausted(&candidate);
+        if !account_is_node_shunt_slot_eligible(row, snapshot_exhausted, now) {
+            continue;
+        }
+        assignments.eligible_account_ids.insert(row.id);
+        let Some(group_slots) = assignments.group_slots.get(&group_name) else {
+            continue;
+        };
+        let next_slot_index = next_slot_by_group.entry(group_name.clone()).or_insert(0);
+        let Some(proxy_key) = group_slots.valid_proxy_keys.get(*next_slot_index).cloned() else {
+            continue;
+        };
+        assignments
+            .account_proxy_keys
+            .insert(row.id, proxy_key.clone());
+        assignments
+            .group_assigned_proxy_keys
+            .entry(group_name)
+            .or_default()
+            .insert(proxy_key);
+        *next_slot_index += 1;
+    }
+
+    Ok(assignments)
+}
+
+fn resolve_account_forward_proxy_scope_from_assignments(
+    account_id: i64,
+    group_name: Option<&str>,
+    group_metadata: &UpstreamAccountGroupMetadata,
+    assignments: &UpstreamAccountNodeShuntAssignments,
+) -> Result<ForwardProxyRouteScope> {
+    if !group_metadata.node_shunt_enabled {
+        return required_account_forward_proxy_scope(
+            group_name,
+            group_metadata.bound_proxy_keys.clone(),
+        );
+    }
+
+    let normalized_group_name = group_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!(missing_account_group_error_message()))?;
+    let Some(proxy_key) = assignments.account_proxy_keys.get(&account_id) else {
+        bail!(group_node_shunt_unassigned_error_message());
+    };
+    if !assignments.group_slots.contains_key(normalized_group_name) {
+        return Err(group_node_shunt_unassigned_error());
+    }
+    Ok(ForwardProxyRouteScope::pinned(proxy_key.clone()))
+}
+
+async fn resolve_account_forward_proxy_scope(
+    state: &AppState,
+    row: &UpstreamAccountRow,
+    group_metadata: Option<UpstreamAccountGroupMetadata>,
+) -> Result<ForwardProxyRouteScope> {
+    let group_metadata = match group_metadata {
+        Some(metadata) => metadata,
+        None => load_group_metadata(&state.pool, row.group_name.as_deref()).await?,
+    };
+    if !group_metadata.node_shunt_enabled {
+        return required_account_forward_proxy_scope(
+            row.group_name.as_deref(),
+            group_metadata.bound_proxy_keys,
+        );
+    }
+    let assignments = build_upstream_account_node_shunt_assignments(state).await?;
+    resolve_account_forward_proxy_scope_from_assignments(
+        row.id,
+        row.group_name.as_deref(),
+        &group_metadata,
+        &assignments,
+    )
+}
+
+async fn resolve_group_forward_proxy_scope_for_provisioning(
+    state: &AppState,
+    binding: &ResolvedRequiredGroupProxyBinding,
+    assignments: Option<&UpstreamAccountNodeShuntAssignments>,
+    consumed_proxy_keys: &HashSet<String>,
+) -> Result<ForwardProxyRouteScope> {
+    if !binding.node_shunt_enabled {
+        return required_account_forward_proxy_scope(
+            Some(&binding.group_name),
+            binding.bound_proxy_keys.clone(),
+        );
+    }
+
+    let occupied_proxy_keys = assignments
+        .and_then(|value| value.group_assigned_proxy_keys.get(&binding.group_name))
+        .cloned()
+        .unwrap_or_default();
+    let valid_proxy_keys = {
+        let manager = state.forward_proxy.lock().await;
+        manager.selectable_bound_proxy_keys_in_order(&binding.bound_proxy_keys)
+    };
+    for proxy_key in valid_proxy_keys {
+        if occupied_proxy_keys.contains(&proxy_key) || consumed_proxy_keys.contains(&proxy_key) {
+            continue;
+        }
+        return Ok(ForwardProxyRouteScope::pinned(proxy_key));
+    }
+
+    Err(group_node_shunt_unassigned_error())
+}
+
 async fn load_login_session_by_login_id_with_executor(
     executor: impl sqlx::Executor<'_, Database = Sqlite>,
     login_id: &str,
@@ -10458,7 +11136,7 @@ async fn load_login_session_by_login_id_with_executor(
     sqlx::query_as::<_, OauthLoginSessionRow>(
         r#"
         SELECT
-            login_id, account_id, display_name, group_name, group_bound_proxy_keys_json, is_mother, note, tag_ids_json, group_note,
+            login_id, account_id, display_name, group_name, group_bound_proxy_keys_json, group_node_shunt_enabled, is_mother, note, tag_ids_json, group_note,
             group_concurrency_limit,
             mailbox_session_id, generated_mailbox_address AS mailbox_address, state, pkce_verifier, redirect_uri, status, auth_url,
             error_message, expires_at, consumed_at, created_at, updated_at
@@ -10487,7 +11165,7 @@ async fn load_login_session_by_state(
     sqlx::query_as::<_, OauthLoginSessionRow>(
         r#"
         SELECT
-            login_id, account_id, display_name, group_name, group_bound_proxy_keys_json, is_mother, note, tag_ids_json, group_note,
+            login_id, account_id, display_name, group_name, group_bound_proxy_keys_json, group_node_shunt_enabled, is_mother, note, tag_ids_json, group_note,
             group_concurrency_limit,
             mailbox_session_id, generated_mailbox_address AS mailbox_address, state, pkce_verifier, redirect_uri, status, auth_url,
             error_message, expires_at, consumed_at, created_at, updated_at
@@ -10686,6 +11364,7 @@ async fn load_group_metadata_snapshot_conn_with_limit(
         return Ok(UpstreamAccountGroupMetadata {
             note: fallback_note.map(str::to_string),
             bound_proxy_keys: Vec::new(),
+            node_shunt_enabled: false,
             upstream_429_retry_enabled: false,
             upstream_429_max_retries: 0,
             concurrency_limit: normalized_fallback_concurrency_limit,
@@ -10699,6 +11378,7 @@ async fn load_group_metadata_snapshot_conn_with_limit(
             .note
             .or_else(|| normalize_optional_text(fallback_note.map(str::to_string))),
         bound_proxy_keys: metadata.bound_proxy_keys,
+        node_shunt_enabled: metadata.node_shunt_enabled,
         upstream_429_retry_enabled: metadata.upstream_429_retry_enabled,
         upstream_429_max_retries: metadata.upstream_429_max_retries,
         concurrency_limit: metadata.concurrency_limit,
@@ -15107,6 +15787,7 @@ pub(crate) struct PoolResolvedAccount {
     pub(crate) auth: PoolResolvedAuth,
     pub(crate) group_name: Option<String>,
     pub(crate) bound_proxy_keys: Vec<String>,
+    pub(crate) forward_proxy_scope: ForwardProxyRouteScope,
     pub(crate) group_upstream_429_retry_enabled: bool,
     pub(crate) group_upstream_429_max_retries: u8,
     pub(crate) upstream_base_url: Url,
@@ -15209,18 +15890,24 @@ async fn resolve_pool_account_group_proxy_routing_readiness(
     group_name: Option<&str>,
 ) -> Result<PoolAccountGroupProxyRoutingReadiness> {
     let normalized_group_name = group_name.map(str::trim).filter(|value| !value.is_empty());
+    let group_metadata = load_group_metadata(&state.pool, normalized_group_name).await?;
+    if group_metadata.node_shunt_enabled {
+        if normalized_group_name.is_none() {
+            return Ok(PoolAccountGroupProxyRoutingReadiness::Blocked(
+                missing_account_group_error_message(),
+            ));
+        }
+        return Ok(PoolAccountGroupProxyRoutingReadiness::Ready(group_metadata));
+    }
     let Some(group_name) = normalized_group_name else {
         return Ok(PoolAccountGroupProxyRoutingReadiness::Blocked(
             missing_account_group_error_message(),
         ));
     };
-    let group_metadata = load_group_metadata(&state.pool, Some(group_name)).await?;
-    let scope = match load_required_account_forward_proxy_scope_from_group_metadata(
-        state,
-        Some(group_name),
-    )
-    .await
-    {
+    let scope =
+        match load_required_account_forward_proxy_scope_from_group_metadata(state, Some(group_name))
+            .await
+        {
         Ok(scope) => scope,
         Err(err) => {
             return Ok(PoolAccountGroupProxyRoutingReadiness::Blocked(
@@ -15228,19 +15915,18 @@ async fn resolve_pool_account_group_proxy_routing_readiness(
             ));
         }
     };
-    let has_selectable_bound_proxy_keys = match &scope {
-        ForwardProxyRouteScope::BoundGroup {
-            bound_proxy_keys, ..
-        } => {
-            let manager = state.forward_proxy.lock().await;
-            manager.has_selectable_bound_proxy_keys(bound_proxy_keys)
-        }
-        ForwardProxyRouteScope::Automatic => true,
+    let ForwardProxyRouteScope::BoundGroup {
+        group_name,
+        bound_proxy_keys,
+    } = &scope
+    else {
+        unreachable!("strict pool account routing should never fall back to automatic");
+    };
+    let has_selectable_bound_proxy_keys = {
+        let manager = state.forward_proxy.lock().await;
+        manager.has_selectable_bound_proxy_keys(bound_proxy_keys)
     };
     if !has_selectable_bound_proxy_keys {
-        let ForwardProxyRouteScope::BoundGroup { group_name, .. } = &scope else {
-            unreachable!("strict pool account routing should never fall back to automatic");
-        };
         return Ok(PoolAccountGroupProxyRoutingReadiness::Blocked(
             missing_selectable_group_bound_proxy_error_message(group_name),
         ));
@@ -15287,6 +15973,7 @@ pub(crate) async fn resolve_pool_account_for_request(
     let mut sticky_route_still_reusable = false;
     let mut sticky_route_group_proxy_blocked_message = None;
     let mut group_proxy_blocked_messages = Vec::new();
+    let node_shunt_assignments = build_upstream_account_node_shunt_assignments(state).await?;
 
     let sticky_route = if let Some(sticky_key) = sticky_key {
         load_sticky_route(&state.pool, sticky_key).await?
@@ -15327,9 +16014,25 @@ pub(crate) async fn resolve_pool_account_for_request(
                 .await?
                 {
                     PoolAccountGroupProxyRoutingReadiness::Ready(group_metadata) => {
-                        if let Some(account) =
-                            prepare_pool_account(state, &row, group_metadata).await?
-                        {
+                        let prepared_account = prepare_pool_account(
+                            state,
+                            &row,
+                            group_metadata,
+                            &node_shunt_assignments,
+                        )
+                        .await;
+                        let account = match prepared_account {
+                            Ok(account) => account,
+                            Err(err)
+                                if is_group_node_shunt_unassigned_message(&err.to_string()) =>
+                            {
+                                sticky_route_group_proxy_blocked_message = Some(err.to_string());
+                                group_proxy_blocked_messages.push(err.to_string());
+                                None
+                            }
+                            Err(err) => return Err(err),
+                        };
+                        if let Some(account) = account {
                             let mut account = account;
                             account.routing_source = PoolRoutingSelectionSource::StickyReuse;
                             if !excluded_upstream_route_keys.contains(&account.upstream_route_key())
@@ -15494,7 +16197,21 @@ pub(crate) async fn resolve_pool_account_for_request(
                     continue;
                 }
             };
-            if let Some(account) = prepare_pool_account(state, &row, group_metadata).await? {
+            let prepared_account =
+                prepare_pool_account(state, &row, group_metadata, &node_shunt_assignments).await;
+            let account = match prepared_account {
+                Ok(account) => account,
+                Err(err) if is_group_node_shunt_unassigned_message(&err.to_string()) => {
+                    if candidate_route_is_excluded_by_route_key {
+                        saw_excluded_route_candidate = true;
+                    } else {
+                        group_proxy_blocked_messages.push(err.to_string());
+                    }
+                    continue;
+                }
+                Err(err) => return Err(err),
+            };
+            if let Some(account) = account {
                 if excluded_upstream_route_keys.contains(&account.upstream_route_key()) {
                     saw_excluded_route_candidate = true;
                     continue;
@@ -16112,6 +16829,7 @@ async fn prepare_pool_account(
     state: &AppState,
     row: &UpstreamAccountRow,
     group_metadata: UpstreamAccountGroupMetadata,
+    node_shunt_assignments: &UpstreamAccountNodeShuntAssignments,
 ) -> Result<Option<PoolResolvedAccount>> {
     let Some(crypto_key) = state.upstream_accounts.crypto_key.as_ref() else {
         return Ok(None);
@@ -16119,9 +16837,15 @@ async fn prepare_pool_account(
     let Some(encrypted_credentials) = row.encrypted_credentials.as_deref() else {
         return Ok(None);
     };
-    let required_proxy_scope = required_account_forward_proxy_scope(
+    let refresh_proxy_scope = required_account_forward_proxy_scope(
         row.group_name.as_deref(),
         group_metadata.bound_proxy_keys.clone(),
+    )?;
+    let forward_proxy_scope = resolve_account_forward_proxy_scope_from_assignments(
+        row.id,
+        row.group_name.as_deref(),
+        &group_metadata,
+        node_shunt_assignments,
     )?;
     let upstream_base_url =
         resolve_pool_account_upstream_base_url(row, &state.config.openai_upstream_base_url)?;
@@ -16136,6 +16860,7 @@ async fn prepare_pool_account(
             },
             group_name: row.group_name.clone(),
             bound_proxy_keys: group_metadata.bound_proxy_keys.clone(),
+            forward_proxy_scope,
             group_upstream_429_retry_enabled: group_metadata.upstream_429_retry_enabled,
             group_upstream_429_max_retries: group_metadata.upstream_429_max_retries,
             upstream_base_url,
@@ -16155,7 +16880,7 @@ async fn prepare_pool_account(
             if refresh_due {
                 match refresh_oauth_tokens_for_required_scope(
                     state,
-                    &required_proxy_scope,
+                    &refresh_proxy_scope,
                     &value.refresh_token,
                 )
                 .await
@@ -16301,6 +17026,7 @@ async fn prepare_pool_account(
                 },
                 group_name: row.group_name.clone(),
                 bound_proxy_keys: group_metadata.bound_proxy_keys,
+                forward_proxy_scope,
                 group_upstream_429_retry_enabled: group_metadata.upstream_429_retry_enabled,
                 group_upstream_429_max_retries: group_metadata.upstream_429_max_retries,
                 upstream_base_url,
@@ -16898,6 +17624,8 @@ mod tests {
             enable_status: enable_status.to_string(),
             health_status: health_status.to_string(),
             sync_state: sync_state.to_string(),
+            routing_block_reason_code: None,
+            routing_block_reason_message: None,
             email: Some("tester@example.com".to_string()),
             chatgpt_account_id: Some("acct_test".to_string()),
             plan_type: Some("pro".to_string()),
@@ -17311,6 +18039,7 @@ mod tests {
         let binding = ResolvedRequiredGroupProxyBinding {
             group_name: "import-group".to_string(),
             bound_proxy_keys: test_required_group_bound_proxy_keys(),
+            node_shunt_enabled: false,
         };
         let job = Arc::new(ImportedOauthValidationJob::new(
             ImportedOauthValidationResponse {
@@ -19221,6 +19950,7 @@ mod tests {
                     display_name: None,
                     group_name: None,
                     group_bound_proxy_keys: None,
+                    group_node_shunt_enabled: None,
                     note: Some("updated while maintenance runs".to_string()),
                     group_note: None,
                     concurrency_limit: None,
@@ -19396,6 +20126,7 @@ mod tests {
                             display_name: None,
                             group_name: None,
                             group_bound_proxy_keys: None,
+                            group_node_shunt_enabled: None,
                             note: Some("queued note".to_string()),
                             group_note: None,
                             concurrency_limit: None,
@@ -20261,6 +20992,7 @@ mod tests {
             UpstreamAccountGroupMetadata {
                 note: None,
                 bound_proxy_keys: vec![],
+                node_shunt_enabled: false,
                 upstream_429_retry_enabled: false,
                 upstream_429_max_retries: 0,
                 concurrency_limit: 4,
@@ -20322,6 +21054,7 @@ mod tests {
             UpstreamAccountGroupMetadata {
                 note: None,
                 bound_proxy_keys: test_required_group_bound_proxy_keys(),
+                node_shunt_enabled: false,
                 upstream_429_retry_enabled: false,
                 upstream_429_max_retries: 0,
                 concurrency_limit: 1,
@@ -20460,6 +21193,7 @@ mod tests {
             UpstreamAccountGroupMetadata {
                 note: None,
                 bound_proxy_keys: test_required_group_bound_proxy_keys(),
+                node_shunt_enabled: false,
                 upstream_429_retry_enabled: false,
                 upstream_429_max_retries: 0,
                 concurrency_limit: 1,
@@ -20635,6 +21369,7 @@ mod tests {
                     display_name: None,
                     group_name: None,
                     group_bound_proxy_keys: None,
+                    group_node_shunt_enabled: None,
                     note: Some("released".to_string()),
                     group_note: None,
                     concurrency_limit: None,
@@ -22132,6 +22867,7 @@ mod tests {
                     display_name: None,
                     group_name: None,
                     group_bound_proxy_keys: None,
+                    group_node_shunt_enabled: None,
                     note: None,
                     group_note: None,
                     concurrency_limit: None,
@@ -24285,6 +25021,7 @@ mod tests {
                 display_name: Some("Original Pending".to_string()),
                 group_name: Some("alpha".to_string()),
                 group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
+                group_node_shunt_enabled: None,
                 note: Some("before".to_string()),
                 group_note: Some("alpha note".to_string()),
                 concurrency_limit: None,
@@ -24310,6 +25047,7 @@ mod tests {
                     group_bound_proxy_keys: OptionalField::Value(
                         test_required_group_bound_proxy_keys(),
                     ),
+                    group_node_shunt_enabled: OptionalField::Missing,
                     note: OptionalField::Value("after".to_string()),
                     group_note: OptionalField::Value("beta shared".to_string()),
                     concurrency_limit: OptionalField::Missing,
@@ -24363,6 +25101,7 @@ mod tests {
                 display_name: Some("Ordered Pending".to_string()),
                 group_name: Some("alpha".to_string()),
                 group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
+                group_node_shunt_enabled: None,
                 note: Some("before".to_string()),
                 group_note: Some("alpha note".to_string()),
                 concurrency_limit: None,
@@ -24393,6 +25132,7 @@ mod tests {
                     group_bound_proxy_keys: OptionalField::Value(
                         test_required_group_bound_proxy_keys(),
                     ),
+                    group_node_shunt_enabled: OptionalField::Missing,
                     note: OptionalField::Value("newest note".to_string()),
                     group_note: OptionalField::Value("beta note".to_string()),
                     concurrency_limit: OptionalField::Missing,
@@ -24424,6 +25164,7 @@ mod tests {
                     group_bound_proxy_keys: OptionalField::Value(
                         test_required_group_bound_proxy_keys(),
                     ),
+                    group_node_shunt_enabled: OptionalField::Missing,
                     note: OptionalField::Value("stale note".to_string()),
                     group_note: OptionalField::Value("gamma note".to_string()),
                     concurrency_limit: OptionalField::Missing,
@@ -24475,6 +25216,7 @@ mod tests {
                 display_name: Some("Keep Me".to_string()),
                 group_name: Some("partial-group".to_string()),
                 group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
+                group_node_shunt_enabled: None,
                 note: Some("before partial patch".to_string()),
                 group_note: Some("partial draft note".to_string()),
                 concurrency_limit: None,
@@ -24497,6 +25239,7 @@ mod tests {
                 display_name: OptionalField::Missing,
                 group_name: OptionalField::Missing,
                 group_bound_proxy_keys: OptionalField::Missing,
+                group_node_shunt_enabled: OptionalField::Missing,
                 note: OptionalField::Value("after partial patch".to_string()),
                 group_note: OptionalField::Missing,
                 concurrency_limit: OptionalField::Missing,
@@ -24548,6 +25291,7 @@ mod tests {
                 display_name: Some("Move Draft Group".to_string()),
                 group_name: Some("before-group".to_string()),
                 group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
+                group_node_shunt_enabled: None,
                 note: Some("before note".to_string()),
                 group_note: Some("before draft note".to_string()),
                 concurrency_limit: None,
@@ -24573,6 +25317,7 @@ mod tests {
                     group_bound_proxy_keys: OptionalField::Value(
                         test_required_group_bound_proxy_keys(),
                     ),
+                    group_node_shunt_enabled: OptionalField::Missing,
                     note: OptionalField::Missing,
                     group_note: OptionalField::Missing,
                     concurrency_limit: OptionalField::Missing,
@@ -24610,6 +25355,7 @@ mod tests {
                 display_name: Some("Clear Group Note".to_string()),
                 group_name: Some("draft-group".to_string()),
                 group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
+                group_node_shunt_enabled: None,
                 note: Some("before clearing group".to_string()),
                 group_note: Some("draft group note".to_string()),
                 concurrency_limit: None,
@@ -24632,6 +25378,7 @@ mod tests {
                 display_name: OptionalField::Missing,
                 group_name: OptionalField::Value(String::new()),
                 group_bound_proxy_keys: OptionalField::Value(vec![]),
+                group_node_shunt_enabled: OptionalField::Missing,
                 note: OptionalField::Missing,
                 group_note: OptionalField::Missing,
                 concurrency_limit: OptionalField::Missing,
@@ -24678,6 +25425,7 @@ mod tests {
                 display_name: Some("Before Patch".to_string()),
                 group_name: Some("old-group".to_string()),
                 group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
+                group_node_shunt_enabled: None,
                 note: Some("before note".to_string()),
                 group_note: Some("old group note".to_string()),
                 concurrency_limit: None,
@@ -24703,6 +25451,7 @@ mod tests {
                     group_bound_proxy_keys: OptionalField::Value(
                         test_required_group_bound_proxy_keys(),
                     ),
+                    group_node_shunt_enabled: OptionalField::Missing,
                     note: OptionalField::Value("after note".to_string()),
                     group_note: OptionalField::Value("draft group note".to_string()),
                     concurrency_limit: OptionalField::Missing,
@@ -24821,6 +25570,7 @@ mod tests {
                 display_name: Some("Race Before".to_string()),
                 group_name: Some("race-group".to_string()),
                 group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
+                group_node_shunt_enabled: None,
                 note: Some("before note".to_string()),
                 group_note: Some("before group note".to_string()),
                 concurrency_limit: None,
@@ -24891,6 +25641,7 @@ mod tests {
                     group_bound_proxy_keys: OptionalField::Value(
                         test_required_group_bound_proxy_keys(),
                     ),
+                    group_node_shunt_enabled: OptionalField::Missing,
                     note: OptionalField::Value("after note".to_string()),
                     group_note: OptionalField::Value("after group note".to_string()),
                     concurrency_limit: OptionalField::Missing,
@@ -24966,6 +25717,7 @@ mod tests {
                 display_name: OptionalField::Value("Race Final".to_string()),
                 group_name: OptionalField::Missing,
                 group_bound_proxy_keys: OptionalField::Missing,
+                group_node_shunt_enabled: OptionalField::Missing,
                 note: OptionalField::Missing,
                 group_note: OptionalField::Missing,
                 concurrency_limit: OptionalField::Missing,
@@ -25039,6 +25791,7 @@ mod tests {
                 display_name: Some("Race Before".to_string()),
                 group_name: Some("race-group".to_string()),
                 group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
+                group_node_shunt_enabled: None,
                 note: Some("before note".to_string()),
                 group_note: Some("before group note".to_string()),
                 concurrency_limit: None,
@@ -25116,6 +25869,7 @@ mod tests {
                     group_bound_proxy_keys: OptionalField::Value(
                         test_required_group_bound_proxy_keys(),
                     ),
+                    group_node_shunt_enabled: OptionalField::Missing,
                     note: OptionalField::Value("latest note".to_string()),
                     group_note: OptionalField::Value("latest group note".to_string()),
                     concurrency_limit: OptionalField::Missing,
@@ -25148,6 +25902,7 @@ mod tests {
                     group_bound_proxy_keys: OptionalField::Value(
                         test_required_group_bound_proxy_keys(),
                     ),
+                    group_node_shunt_enabled: OptionalField::Missing,
                     note: OptionalField::Value("stale note".to_string()),
                     group_note: OptionalField::Value("stale group note".to_string()),
                     concurrency_limit: OptionalField::Missing,
@@ -25185,6 +25940,7 @@ mod tests {
                 display_name: Some("Race Before".to_string()),
                 group_name: Some("race-group".to_string()),
                 group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
+                group_node_shunt_enabled: None,
                 note: Some("before note".to_string()),
                 group_note: Some("before group note".to_string()),
                 concurrency_limit: None,
@@ -25271,6 +26027,7 @@ mod tests {
                     group_bound_proxy_keys: OptionalField::Value(
                         test_required_group_bound_proxy_keys(),
                     ),
+                    group_node_shunt_enabled: OptionalField::Missing,
                     note: OptionalField::Value("latest note".to_string()),
                     group_note: OptionalField::Value("latest group note".to_string()),
                     concurrency_limit: OptionalField::Missing,
@@ -25320,6 +26077,7 @@ mod tests {
                 display_name: Some("Race Before".to_string()),
                 group_name: Some("race-group".to_string()),
                 group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
+                group_node_shunt_enabled: None,
                 note: Some("before note".to_string()),
                 group_note: Some("before group note".to_string()),
                 concurrency_limit: None,
@@ -25416,6 +26174,7 @@ mod tests {
                     group_bound_proxy_keys: OptionalField::Value(
                         test_required_group_bound_proxy_keys(),
                     ),
+                    group_node_shunt_enabled: OptionalField::Missing,
                     note: OptionalField::Value("stale note".to_string()),
                     group_note: OptionalField::Value("stale group note".to_string()),
                     concurrency_limit: OptionalField::Missing,
@@ -25450,6 +26209,7 @@ mod tests {
             display_name: OptionalField::Value("Edited Session".to_string()),
             group_name: OptionalField::Value("edited-group".to_string()),
             group_bound_proxy_keys: OptionalField::Value(test_required_group_bound_proxy_keys()),
+            group_node_shunt_enabled: OptionalField::Missing,
             note: OptionalField::Value("edited note".to_string()),
             group_note: OptionalField::Value("edited group note".to_string()),
             concurrency_limit: OptionalField::Missing,
@@ -25466,6 +26226,7 @@ mod tests {
                 display_name: Some("Completed Session".to_string()),
                 group_name: Some("completed-group".to_string()),
                 group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
+                group_node_shunt_enabled: None,
                 note: None,
                 group_note: None,
                 concurrency_limit: None,
@@ -25506,6 +26267,7 @@ mod tests {
                 display_name: Some("Failed Session".to_string()),
                 group_name: Some("failed-group".to_string()),
                 group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
+                group_node_shunt_enabled: None,
                 note: None,
                 group_note: None,
                 concurrency_limit: None,
@@ -25543,6 +26305,7 @@ mod tests {
                 display_name: Some("Expired Session".to_string()),
                 group_name: Some("expired-group".to_string()),
                 group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
+                group_node_shunt_enabled: None,
                 note: None,
                 group_note: None,
                 concurrency_limit: None,
@@ -25594,6 +26357,7 @@ mod tests {
                 display_name: None,
                 group_name: None,
                 group_bound_proxy_keys: None,
+                group_node_shunt_enabled: None,
                 note: None,
                 group_note: None,
                 concurrency_limit: None,
@@ -25616,6 +26380,7 @@ mod tests {
                 display_name: OptionalField::Value("Edited Relogin".to_string()),
                 group_name: OptionalField::Missing,
                 group_bound_proxy_keys: OptionalField::Missing,
+                group_node_shunt_enabled: OptionalField::Missing,
                 note: OptionalField::Missing,
                 group_note: OptionalField::Missing,
                 concurrency_limit: OptionalField::Missing,
@@ -25645,6 +26410,7 @@ mod tests {
                 display_name: None,
                 group_name: None,
                 group_bound_proxy_keys: None,
+                group_node_shunt_enabled: None,
                 note: None,
                 group_note: None,
                 concurrency_limit: None,
@@ -25727,6 +26493,7 @@ mod tests {
                     group_bound_proxy_keys: OptionalField::Value(
                         test_required_group_bound_proxy_keys(),
                     ),
+                    group_node_shunt_enabled: OptionalField::Missing,
                     note: OptionalField::Value("edited note".to_string()),
                     group_note: OptionalField::Value("edited group note".to_string()),
                     concurrency_limit: OptionalField::Missing,

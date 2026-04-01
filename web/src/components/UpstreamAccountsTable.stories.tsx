@@ -130,6 +130,8 @@ const items: UpstreamAccountSummary[] = [
     lastSyncedAt: '2026-03-11T08:10:00.000Z',
     lastSuccessfulSyncAt: '2026-03-11T07:48:00.000Z',
     lastActivityAt: '2026-03-11T08:16:00.000Z',
+    routingBlockReasonCode: 'group_node_shunt_unassigned',
+    routingBlockReasonMessage: '分组节点分流策略控制，未排节点',
     lastError: null,
     primaryWindow: {
       usedPercent: 0,
@@ -175,6 +177,7 @@ const labels = {
   sync: 'Sync / Call',
   lastSuccess: 'Sync',
   lastCall: 'Call',
+  routingBlock: 'Blocked',
   latestAction: 'Latest',
   windows: 'Windows',
   never: 'Never',
@@ -258,6 +261,7 @@ const chineseLabels = {
   sync: '同步 / 调用',
   lastSuccess: '最近成功同步',
   lastCall: '最近调用',
+  routingBlock: '受限',
   latestAction: '最近动作',
   windows: '窗口',
   never: '从未',
@@ -498,6 +502,31 @@ export const AvailabilityBadges: Story = {
       },
     ],
     selectedId: 11,
+  },
+}
+
+export const NodeShuntBlockedIdle: Story = {
+  args: {
+    items: [
+      {
+        ...items[1],
+        id: 21,
+        displayName: 'Overflow slot waiting account',
+        workStatus: 'idle',
+        healthStatus: 'normal',
+        syncState: 'idle',
+        routingBlockReasonCode: 'group_node_shunt_unassigned',
+        routingBlockReasonMessage: '分组节点分流策略控制，未排节点',
+        lastAction: null,
+        lastActionSource: null,
+        lastActionReasonCode: null,
+        lastActionReasonMessage: null,
+        lastActionAt: null,
+        lastActivityAt: null,
+      },
+    ],
+    selectedId: 21,
+    labels: chineseLabels,
   },
 }
 

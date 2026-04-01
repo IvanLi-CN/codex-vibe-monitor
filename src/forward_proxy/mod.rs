@@ -2829,6 +2829,7 @@ pub(crate) struct ForwardProxyBindingNodeDescriptor {
 #[derive(Debug, Clone)]
 pub(crate) enum ForwardProxyRouteScope {
     Automatic,
+    PinnedProxyKey(String),
     BoundGroup {
         group_name: String,
         bound_proxy_keys: Vec<String>,
@@ -2860,6 +2861,10 @@ impl ForwardProxyRouteScope {
             },
             _ => Self::Automatic,
         }
+    }
+
+    pub(crate) fn pinned(proxy_key: impl Into<String>) -> Self {
+        Self::PinnedProxyKey(proxy_key.into())
     }
 }
 
@@ -3227,6 +3232,17 @@ impl ForwardProxyManager {
             .collect::<HashSet<_>>()
     }
 
+    pub(crate) fn selectable_proxy_keys(&self) -> HashSet<String> {
+        let mut keys = self
+            .endpoints
+            .iter()
+            .filter(|endpoint| endpoint.is_bound_selectable())
+            .map(|endpoint| endpoint.key.clone())
+            .collect::<HashSet<_>>();
+        keys.insert(FORWARD_PROXY_DIRECT_KEY.to_string());
+        keys
+    }
+
     pub(crate) fn ensure_min_positive_candidates(&mut self, minimum: usize, recovery_weight: f64) {
         if minimum == 0 {
             return;
@@ -3293,18 +3309,7 @@ impl ForwardProxyManager {
     }
 
     fn selectable_bound_proxy_keys(&self, bound_proxy_keys: &[String]) -> Vec<String> {
-        let mut selectable = self
-            .bound_node_descriptors
-            .iter()
-            .filter_map(|descriptor| {
-                self.endpoints
-                    .iter()
-                    .find(|endpoint| endpoint.key == descriptor.endpoint_key)
-                    .filter(|endpoint| endpoint.is_bound_selectable())
-                    .map(|_| descriptor.key.as_str())
-            })
-            .collect::<HashSet<_>>();
-        selectable.insert(FORWARD_PROXY_DIRECT_KEY);
+        let selectable = self.selectable_proxy_keys();
         let mut seen = HashSet::new();
         let mut available = Vec::new();
         for key in bound_proxy_keys {
@@ -3315,12 +3320,35 @@ impl ForwardProxyManager {
             let canonical = self
                 .resolve_current_bound_proxy_key(normalized)
                 .unwrap_or_else(|| normalized.to_string());
-            if !selectable.contains(canonical.as_str()) || !seen.insert(canonical.clone()) {
+            if !selectable.contains(&canonical) || !seen.insert(canonical.clone()) {
                 continue;
             }
             available.push(canonical);
         }
         available.sort();
+        available
+    }
+
+    pub(crate) fn selectable_bound_proxy_keys_in_order(
+        &self,
+        bound_proxy_keys: &[String],
+    ) -> Vec<String> {
+        let selectable = self.selectable_proxy_keys();
+        let mut seen = HashSet::new();
+        let mut available = Vec::new();
+        for key in bound_proxy_keys {
+            let normalized = key.trim();
+            if normalized.is_empty() {
+                continue;
+            }
+            let canonical = normalize_bound_proxy_key(normalized)
+                .map(|value| self.bound_key_aliases.get(&value).cloned().unwrap_or(value))
+                .unwrap_or_else(|| normalized.to_string());
+            if !selectable.contains(&canonical) || !seen.insert(canonical.clone()) {
+                continue;
+            }
+            available.push(canonical);
+        }
         available
     }
 
@@ -3437,6 +3465,24 @@ impl ForwardProxyManager {
         Ok(SelectedForwardProxy::from_endpoint(endpoint))
     }
 
+    fn select_pinned_proxy_key(&self, proxy_key: &str) -> Result<SelectedForwardProxy> {
+        let normalized_proxy_key = proxy_key.trim();
+        if normalized_proxy_key.is_empty() {
+            bail!("pinned forward proxy key is empty");
+        }
+        if normalized_proxy_key == FORWARD_PROXY_DIRECT_KEY {
+            return Ok(SelectedForwardProxy::from_endpoint(
+                &ForwardProxyEndpoint::direct(),
+            ));
+        }
+        let endpoint = self
+            .endpoints
+            .iter()
+            .find(|endpoint| endpoint.key == normalized_proxy_key)
+            .ok_or_else(|| anyhow!("pinned forward proxy key is no longer available"))?;
+        Ok(SelectedForwardProxy::from_endpoint(endpoint))
+    }
+
     pub(crate) fn select_proxy_for_scope(
         &mut self,
         scope: &ForwardProxyRouteScope,
@@ -3457,6 +3503,9 @@ impl ForwardProxyManager {
                         Err(anyhow!("no selectable forward proxy nodes configured"))
                     }
                 }
+            }
+            ForwardProxyRouteScope::PinnedProxyKey(proxy_key) => {
+                self.select_pinned_proxy_key(proxy_key)
             }
             ForwardProxyRouteScope::BoundGroup {
                 group_name,
