@@ -1634,6 +1634,10 @@ export default function UpstreamAccountCreatePage() {
     useState<ImportedOauthValidationDialogState | null>(null);
   const [importInputKey, setImportInputKey] = useState(0);
   const importPasteSequenceRef = useRef(0);
+  const importPasteValidationTokenRef = useRef(0);
+  const importPasteDraftRef = useRef("");
+  const importFilesRevisionRef = useRef(0);
+  const importFileSourceSequenceRef = useRef(0);
   const importValidationEventSourceRef = useRef<EventSource | null>(null);
   const importValidationEventCleanupRef = useRef<(() => void) | null>(null);
   const importValidationJobIdRef = useRef<string | null>(null);
@@ -4156,6 +4160,9 @@ export default function UpstreamAccountCreatePage() {
               importPasteSequenceRef.current += 1;
               return importPasteSequenceRef.current;
             })();
+      const validationToken = importPasteValidationTokenRef.current + 1;
+      importPasteValidationTokenRef.current = validationToken;
+      const importFilesRevision = importFilesRevisionRef.current;
       setImportPasteDraftSerial(serial);
       setImportPasteBusy(true);
       setImportPasteError(null);
@@ -4173,6 +4180,13 @@ export default function UpstreamAccountCreatePage() {
           groupName: importGroupProxyState.normalizedGroupName || undefined,
           groupBoundProxyKeys: importGroupProxyState.boundProxyKeys,
         });
+        if (
+          validationToken !== importPasteValidationTokenRef.current ||
+          importFilesRevision !== importFilesRevisionRef.current ||
+          importPasteDraftRef.current.trim() !== parsedDraft.normalizedContent
+        ) {
+          return;
+        }
         const row = response.rows[0];
         if (!row || response.rows.length !== 1) {
           setImportPasteError(
@@ -4182,7 +4196,16 @@ export default function UpstreamAccountCreatePage() {
         }
         if (row.status === "ok" || row.status === "ok_exhausted") {
           await resetImportValidationForSelectionChange();
+          if (
+            validationToken !== importPasteValidationTokenRef.current ||
+            importFilesRevision !== importFilesRevisionRef.current ||
+            importPasteDraftRef.current.trim() !== parsedDraft.normalizedContent
+          ) {
+            return;
+          }
+          importFilesRevisionRef.current += 1;
           setImportFiles((current) => [...current, item]);
+          importPasteDraftRef.current = "";
           setImportPasteDraft("");
           setImportPasteDraftSerial(null);
           setImportPasteError(null);
@@ -4190,9 +4213,13 @@ export default function UpstreamAccountCreatePage() {
         }
         setImportPasteError(getImportedOauthPasteValidationError(row, t));
       } catch (err) {
-        setImportPasteError(err instanceof Error ? err.message : String(err));
+        if (validationToken === importPasteValidationTokenRef.current) {
+          setImportPasteError(err instanceof Error ? err.message : String(err));
+        }
       } finally {
-        setImportPasteBusy(false);
+        if (validationToken === importPasteValidationTokenRef.current) {
+          setImportPasteBusy(false);
+        }
       }
     },
     [
@@ -4207,7 +4234,10 @@ export default function UpstreamAccountCreatePage() {
 
   const handleImportedOauthPasteDraftChange = useCallback(
     (event: ChangeEvent<HTMLTextAreaElement>) => {
+      importPasteValidationTokenRef.current += 1;
+      importPasteDraftRef.current = event.target.value;
       setImportPasteDraft(event.target.value);
+      setImportPasteBusy(false);
       setImportPasteError(null);
       setActionError(null);
     },
@@ -4220,10 +4250,13 @@ export default function UpstreamAccountCreatePage() {
       const nextDraft =
         event.clipboardData.getData("text/plain") ||
         event.clipboardData.getData("text");
+      importPasteValidationTokenRef.current += 1;
       importPasteSequenceRef.current += 1;
       const serial = importPasteSequenceRef.current;
+      importPasteDraftRef.current = nextDraft;
       setImportPasteDraft(nextDraft);
       setImportPasteDraftSerial(serial);
+      setImportPasteBusy(false);
       setImportPasteError(null);
       setActionError(null);
       void validateAndQueueImportedOauthPaste(nextDraft, {
@@ -4253,8 +4286,11 @@ export default function UpstreamAccountCreatePage() {
         return;
       }
       try {
+        importPasteValidationTokenRef.current += 1;
+        setImportPasteBusy(false);
         await resetImportValidationForSelectionChange();
-        const sourceIdOffset = importFiles.length;
+        const sourceIdOffset = importFileSourceSequenceRef.current;
+        importFileSourceSequenceRef.current += selectedFiles.length;
         const items = await Promise.all(
           selectedFiles.map(async (file, index) => ({
             sourceId: createImportedOauthSourceId(
@@ -4265,18 +4301,22 @@ export default function UpstreamAccountCreatePage() {
             content: await file.text(),
           })),
         );
+        importFilesRevisionRef.current += 1;
         setImportFiles((current) => [...current, ...items]);
         setImportInputKey((current) => current + 1);
       } catch (err) {
         setActionError(err instanceof Error ? err.message : String(err));
       }
     },
-    [importFiles.length, resetImportValidationForSelectionChange],
+    [resetImportValidationForSelectionChange],
   );
 
   const handleClearImportSelection = useCallback(() => {
     void (async () => {
+      importPasteValidationTokenRef.current += 1;
+      setImportPasteBusy(false);
       await resetImportValidationForSelectionChange();
+      importFilesRevisionRef.current += 1;
       setImportFiles([]);
       setImportInputKey((current) => current + 1);
     })();
@@ -4327,6 +4367,10 @@ export default function UpstreamAccountCreatePage() {
     importValidationState?.checking,
     importValidationState?.importing,
   ]);
+
+  useEffect(() => {
+    importPasteDraftRef.current = importPasteDraft;
+  }, [importPasteDraft]);
 
   useEffect(() => {
     return () => {
@@ -4436,6 +4480,7 @@ export default function UpstreamAccountCreatePage() {
             };
           });
 
+        importFilesRevisionRef.current += 1;
         setImportFiles(workingItems);
         setImportValidationState(() => {
           if (workingRows.length === 0) {
