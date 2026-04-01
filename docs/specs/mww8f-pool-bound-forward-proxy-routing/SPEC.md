@@ -19,7 +19,7 @@
 - 保留 `/v1/*` 入口，但移除非号池直连执行路径；未命中号池路由 key 时统一返回 `401` JSON 错误。
 - 所有账号上下文上游请求都必须经过真实 forward proxy，默认使用全局自动路由。
 - 为已存在账号分组增加 `boundProxyKeys` 元数据，并在分组设置中支持多选绑定代理节点。
-- 冻结 `forwardProxyNodes[].key` / `groups[].boundProxyKeys` 的新语义：key 是稳定节点身份键，不受 share-link 备注名、fragment、`ps` 或非 ASCII 编码差异影响。
+- 冻结 `forwardProxyNodes[].key` / `groups[].boundProxyKeys` 的新语义：key 是名称驱动的逻辑绑定键；传输 identity 继续用于运行时探活/统计，但不再直接作为分组绑定身份。
 - 当已绑定节点当前 inventory 不可选或缺失时，接口仍应尽量返回可读 `displayName` 供前端展示，而不是直接回退到原始 key。
 - 分组绑定多个节点时，组内共享“当前节点 + 连续网络失败计数”；连续 `3` 次网络失败后随机切到另一个已绑定节点，不使用权重。
 - 删除 legacy reverse-proxy 设置面与 `/api/settings` 中的 `proxy` 配置块，同时移除 `insertDirect` 前后端契约。
@@ -92,15 +92,15 @@
   - `source`
   - `penalized`
   - `selectable`
-- 新保存的 `boundProxyKeys` 必须写入稳定节点身份键；稳定键默认忽略纯展示字段，如 share-link fragment、`ps`、仅用于命名的 label，但保留协议、主机、端口、账号/UUID/密码与传输配置等真实连接身份字段。
-- 若当前 inventory 中仍能定位到同一真实节点，`forwardProxyNodes[].aliasKeys` 必须返回可映射到当前稳定键的历史 legacy key，供前端在编辑弹窗中自动规范化旧绑定并继续保存。
-- `forwardProxyNodes[].aliasKeys` 对 `vless/trojan` 必须同时覆盖“显式写出默认参数”、“省略默认参数”以及 `type/net`、`sni/serverName`、`fp/fingerprint`、`serviceName/service_name` 这类同义 query key 命名差异导致的旧式 share-link 哈希，只要真实连接身份不变，都应映射回同一当前稳定键。
-- `forwardProxyNodes[].displayName` 只负责展示，不参与绑定匹配；非 ASCII 名称必须按人类可读文本返回。
+- 新保存的 `boundProxyKeys` 必须写入逻辑绑定键（`fpb_*`）。逻辑键按 `displayName -> protocol -> host:port` 的碰撞梯度生成；若仍完全重复，则按确定性顺序折叠为同一逻辑节点。
+- 若当前 inventory 中仍能定位到同一逻辑节点，`forwardProxyNodes[].aliasKeys` 必须返回所有可映射到当前逻辑键的兼容 key，包括当前运行时 `fpn_*`、legacy raw/normalized key，以及 metadata history 中还能识别的历史旧 key，供前端在编辑弹窗中自动规范化旧绑定并继续保存。
+- `forwardProxyNodes[].displayName` 是绑定匹配的第一优先输入；若发生重名，才按 `protocol` 和 `host:port` 继续区分；非 ASCII 名称必须按人类可读文本返回。
+- 历史 `fpn_*`、raw/normalized share-link key 与 metadata history 中的旧键都不做后台迁移；读取、校验、路由和返回节点列表时必须先 canonicalize 到当前逻辑绑定键。
 - `PUT /api/pool/upstream-account-groups/:groupName` 支持更新 `note` 与 `boundProxyKeys`；若分组不存在实际账号，返回 `404`。
 - 当 `boundProxyKeys` 非空但当前选中集合里没有任何 `selectable=true` 的节点时，`PUT /api/pool/upstream-account-groups/:groupName` 必须返回 `400`，拒绝把“零可选节点”状态再次写回 metadata。
 - 已保存但当前 inventory 已不存在的 `boundProxyKeys` 会继续保留在分组 metadata 中；前端需标记为失效，运行时只使用仍然 `selectable=true` 的 key。
 - 历史旧 key 不做自动迁移；若当前 inventory 中找不到它们，接口应优先从 metadata history 恢复 `displayName` 并返回不可用节点，只有在完全没有展示元数据时才允许回退到原始 key。
-- `forward_proxy_runtime`、attempt/hourly 统计与 metadata history 中的历史旧 key 也不做 DB migration；只要当前 settings 或 metadata 仍能提供同一真实节点的 raw identity，运行时和统计查询都必须把旧 raw URL key、旧式 `vless/trojan` 哈希、默认参数显式/省略变体，以及同义 query key 命名差异产生的 legacy key 归并回当前稳定键。
+- `forward_proxy_runtime`、attempt/hourly 统计与 metadata history 中的历史旧 key 也不做 DB migration；只要当前 settings 或 metadata 仍能定位到同一逻辑节点，运行时和统计查询都必须把旧 `fpn_*`、旧 raw URL key、legacy 哈希及当前运行时 key 归并回当前逻辑绑定键。
 
 ### 分组绑定弹窗
 
@@ -128,11 +128,11 @@
 - Given 分组绑定了多个代理节点，When 当前节点连续发生 `3` 次 send/connect/handshake/stream-before-success 网络失败，Then 组内当前节点随机切换到另一个已绑定节点。
 - Given 分组绑定节点返回 `429/4xx/5xx`，When 请求完成，Then 组内当前节点不切换，连续网络失败计数被清零。
 - Given 分组保存了不存在或不可选的节点 key，When 运行时解析绑定集合，Then 仅使用仍然 `selectable=true` 的 key；若一个也没有，则本次账号尝试立即失败。
-- Given 用户已保存分组绑定，When 订阅刷新或节点备注名变化但真实连接身份不变，Then 刷新后 `boundProxyKeys` 仍稳定回显到同一节点。
+- Given 用户已保存分组绑定，When 订阅刷新仅改变节点的传输 identity（如 `sni/fp/pbk/sid/spx/path/host`）但名称未变，Then 刷新后 `boundProxyKeys` 仍稳定回显到同一逻辑节点。
 - Given 节点名称包含非 ASCII 字符，When 打开号池分组设置，Then 可选、不可选与历史失效三种状态都显示人类可读名称，且只在没有任何展示元数据时才回退到 key。
 - Given 打开号池分组设置且当前选中的绑定节点全部不可用，When 用户尝试保存，Then UI 禁用保存按钮并显示 warning，后端接口也返回 `400` 拒绝该提交。
-- Given 分组 metadata 中仍保存着旧版 VLESS/Trojan legacy key，When 当前 inventory 里还能匹配到同一真实节点，即使订阅把 `type/net`、`sni/serverName`、`fp/fingerprint`、`serviceName/service_name` 改成了另一套同义命名，Then 弹窗也会自动将其规范到当前稳定键、保持该节点可选可保存，且不会误显示为 Missing / Unavailable。
-- Given 历史 runtime 或 hourly 统计仍使用旧版 VLESS/Trojan legacy key，When 当前 settings 或 metadata 里还能定位到同一真实节点，即使当前 share-link 只剩同义 query key 命名差异，Then 权重、惩罚态和 24 小时趋势都会继续归并到当前稳定键，不因 stable-key 语义修正而断档。
+- Given 分组 metadata 中仍保存着旧版运行时 `fpn_*` / legacy key，When 当前 inventory 里还能按名称驱动规则匹配到同一逻辑节点，即使订阅把 `type/net`、`sni/serverName`、`fp/fingerprint`、`serviceName/service_name` 甚至其他传输 identity 都刷新成了新值，Then 弹窗也会自动将其规范到当前逻辑绑定键、保持该节点可选可保存，且不会误显示为 Missing / Unavailable。
+- Given 历史 runtime 或 hourly 统计仍使用旧版运行时 `fpn_*` / legacy key，When 当前 settings 或 metadata 里还能定位到同一逻辑节点，Then 权重、惩罚态和 24 小时趋势都会继续归并到当前逻辑绑定键，不因订阅刷新而断档。
 - Given 用户在已被删除的分组设置弹窗里发起保存，When 请求同时带着无效 `boundProxyKeys`，Then API 仍优先返回 `404 group not found`，而不是把它误判成绑定校验失败。
 - Given 打开号池分组设置，When 用户查看绑定节点列表，Then 页面不显示任何 `ss://`、`vless://`、`vmess://`、`trojan://`、`http://`、`https://` 原始订阅地址，只显示截断标题和协议类型。
 - Given 打开号池分组设置且存在 `9+` 个节点，When 用户浏览节点列表，Then footer 仍然可见，节点区内部可滚动，页面本身不需要额外滚动。
@@ -160,7 +160,7 @@
   submission_gate: pending-owner-approval
   story_id_or_title: Account Pool/Components/Upstream Account Group Settings Dialog/Automatic Routing
   state: existing-group-auto-routing
-  evidence_note: 验证已存在分组在未绑定代理节点时保持自动路由文案，同时共享设置弹窗继续在同一栈内展示并发/429/绑定节点控件，候选节点仍使用稳定身份键而不是原始 share-link 文本。
+  evidence_note: 验证已存在分组在未绑定代理节点时保持自动路由文案，同时共享设置弹窗继续在同一栈内展示并发/429/绑定节点控件，候选节点使用逻辑绑定键而不是运行时 identity 或原始 share-link 文本。
   image:
   ![Automatic routing group settings](./assets/group-settings-automatic-routing.png)
 
@@ -171,7 +171,7 @@
   submission_gate: approved
   story_id_or_title: Account Pool/Components/Upstream Account Group Settings Dialog/Hard Bound Multiple Nodes
   state: bound-multiple-nodes
-  evidence_note: 验证分组设置支持多选绑定代理节点，保存后的绑定项使用稳定键回显，同时展示 `Direct`、协议标签与 24 小时请求趋势对比。
+  evidence_note: 验证分组设置支持多选绑定代理节点，保存后的绑定项使用逻辑绑定键回显，同时展示 `Direct`、协议标签与 24 小时请求趋势对比。
   PR: include
   image:
   ![Bound multiple proxy nodes](./assets/group-settings-hard-bound-multiple-nodes.png)
@@ -216,7 +216,7 @@
   submission_gate: approved
   story_id_or_title: Account Pool/Components/Upstream Account Group Settings Dialog/RefreshedDisplayNameStableBinding
   state: refreshed-display-name-stable-binding
-  evidence_note: 验证订阅备注名刷新后，分组仍通过稳定键回显到同一节点，只更新展示名称。
+  evidence_note: 验证订阅刷新后，即使运行时 identity 变化，只要逻辑绑定键不变，分组仍回显到同一节点。
   image:
   ![Stable binding after refreshed display name](./assets/group-settings-refreshed-stable-binding.png)
 
@@ -227,7 +227,7 @@
   submission_gate: approved
   story_id_or_title: Account Pool/Components/Upstream Account Group Settings Dialog/LegacyAliasBindingsRemainSaveable
   state: legacy-alias-bindings-remain-saveable
-  evidence_note: 验证历史 VLESS legacy key 仍能映射到当前稳定键，弹窗不会误判为不可用，并允许直接重新保存为当前 canonical key。
+  evidence_note: 验证历史运行时/legacy key 仍能映射到当前逻辑绑定键，弹窗不会误判为不可用，并允许直接重新保存为当前 canonical key。
   image:
   ![Legacy alias bindings remain saveable](./assets/group-settings-legacy-alias-bindings-saveable.png)
 
@@ -262,5 +262,6 @@
 - 2026-03-27: 增补线上 follow-up：分组绑定弹窗改为协议标签展示 + 独立滚动布局，并在分组绑定路径恢复显式 `Direct` 选项；补齐桌面宽度约束与高密度卡片布局后，重新生成并批准复用 Storybook 证据。
 - 2026-03-28: 补充稳定节点身份键、非 ASCII 展示恢复与“历史旧 key 不自动迁移”的接口契约，并为分组设置弹窗追加对应测试与 Storybook 场景。
 - 2026-03-29: 补充 stable-key 语义修正后的 runtime/history alias 兼容要求，并明确删除分组时 `404` 必须优先于绑定校验错误。
+- 2026-04-01: 绑定键语义从运行时稳定 identity 调整为名称驱动的逻辑键（`fpb_*`），旧 `fpn_*` / legacy key 改为通过 metadata history 与当前 inventory canonicalize 到逻辑绑定键，避免订阅刷新后同名节点因 transport identity 漂移而失效。
 - 2026-03-28: 补充 `vless/trojan` 稳定键回归的 follow-up：保存时拒绝“当前绑定集合零可选节点”的坏状态，并新增 Storybook 证据覆盖 warning + 保存按钮禁用场景。
 - 2026-04-01: 刷新 `Automatic Routing` owner-facing 视觉证据，使其与当前共享分组设置弹窗的并发/429/绑定节点复合布局保持一致。

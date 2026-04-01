@@ -251,15 +251,31 @@ pub(crate) async fn load_forward_proxy_metadata_history(
     }
     query.push(")");
 
-    let rows = query
+    let rows = match query
         .build_query_as::<ForwardProxyMetadataHistoryRow>()
         .fetch_all(pool)
         .await
-        .context("failed to load forward_proxy metadata history rows")?;
+    {
+        Ok(rows) => rows,
+        Err(err) if is_missing_forward_proxy_metadata_history_table(&err) => {
+            return Ok(HashMap::new());
+        }
+        Err(err) => {
+            return Err(err).context("failed to load forward_proxy metadata history rows");
+        }
+    };
     Ok(rows
         .into_iter()
         .map(|row| (row.proxy_key.clone(), row))
         .collect())
+}
+
+fn is_missing_forward_proxy_metadata_history_table(err: &sqlx::Error) -> bool {
+    let sqlx::Error::Database(db_err) = err else {
+        return false;
+    };
+    let message = db_err.message().to_ascii_lowercase();
+    message.contains("no such table") && message.contains("forward_proxy_metadata_history")
 }
 
 fn register_forward_proxy_storage_aliases(alias_map: &mut HashMap<String, String>, raw: &str) {
@@ -778,28 +794,42 @@ pub(crate) async fn build_forward_proxy_binding_nodes_response(
         .map(ToOwned::to_owned)
         .filter(|key| seen.insert(key.clone()))
         .collect::<Vec<_>>();
-    let mut metadata_keys = nodes
-        .iter()
-        .map(|node| node.key.clone())
-        .collect::<Vec<_>>();
-    metadata_keys.extend(extra_keys.iter().cloned());
-    let metadata_map = load_forward_proxy_metadata_history(&state.pool, &metadata_keys).await?;
+    let metadata_map = load_forward_proxy_metadata_history(&state.pool, &extra_keys).await?;
 
-    for proxy_key in extra_keys {
-        let metadata = metadata_map.get(&proxy_key);
-        nodes.push(ForwardProxyBindingNodeResponse {
-            key: proxy_key.clone(),
-            alias_keys: Vec::new(),
-            source: "missing".to_string(),
-            display_name: metadata
-                .map(|item| item.display_name.clone())
-                .filter(|value| !value.trim().is_empty())
-                .unwrap_or_else(|| proxy_key.clone()),
-            protocol_label: "UNKNOWN".to_string(),
-            penalized: false,
-            selectable: false,
-            last24h: Vec::new(),
-        });
+    {
+        let manager = state.forward_proxy.lock().await;
+        for proxy_key in extra_keys {
+            let maybe_current_key = manager
+                .resolve_current_or_historical_bound_proxy_key(
+                    &proxy_key,
+                    metadata_map.get(&proxy_key),
+                )
+                .filter(|candidate| current_node_keys.contains(candidate));
+            if let Some(current_key) = maybe_current_key {
+                if let Some(node) = nodes.iter_mut().find(|node| node.key == current_key) {
+                    if node.key != proxy_key {
+                        node.alias_keys.push(proxy_key.clone());
+                        node.alias_keys.sort();
+                        node.alias_keys.dedup();
+                    }
+                }
+                continue;
+            }
+            let metadata = metadata_map.get(&proxy_key);
+            nodes.push(ForwardProxyBindingNodeResponse {
+                key: proxy_key.clone(),
+                alias_keys: Vec::new(),
+                source: "missing".to_string(),
+                display_name: metadata
+                    .map(|item| item.display_name.clone())
+                    .filter(|value| !value.trim().is_empty())
+                    .unwrap_or_else(|| proxy_key.clone()),
+                protocol_label: "UNKNOWN".to_string(),
+                penalized: false,
+                selectable: false,
+                last24h: Vec::new(),
+            });
+        }
     }
 
     if nodes.is_empty() {
@@ -809,11 +839,22 @@ pub(crate) async fn build_forward_proxy_binding_nodes_response(
     let now_epoch = Utc::now().timestamp();
     let range_end_epoch = align_bucket_epoch(now_epoch, BUCKET_SECONDS, 0) + BUCKET_SECONDS;
     let range_start_epoch = range_end_epoch - BUCKET_COUNT * BUCKET_SECONDS;
-    let hourly_map =
-        query_forward_proxy_hourly_stats(&state.pool, range_start_epoch, range_end_epoch).await?;
+    let final_node_keys = nodes
+        .iter()
+        .map(|node| node.key.clone())
+        .collect::<HashSet<_>>();
+    let hourly_map = query_forward_proxy_binding_hourly_stats(
+        state,
+        &final_node_keys,
+        range_start_epoch,
+        range_end_epoch,
+    )
+    .await?;
 
     for node in &mut nodes {
         let hourly = hourly_map.get(&node.key);
+        node.alias_keys.sort();
+        node.alias_keys.dedup();
         node.last24h = if current_node_keys.contains(&node.key) || hourly.is_some() {
             build_forward_proxy_hourly_buckets(
                 hourly,
@@ -828,6 +869,73 @@ pub(crate) async fn build_forward_proxy_binding_nodes_response(
     nodes.sort_by(|lhs, rhs| lhs.display_name.cmp(&rhs.display_name));
 
     Ok(nodes)
+}
+
+async fn query_forward_proxy_binding_hourly_stats(
+    state: &AppState,
+    node_keys: &HashSet<String>,
+    range_start_epoch: i64,
+    range_end_epoch: i64,
+) -> Result<HashMap<String, HashMap<i64, ForwardProxyHourlyStatsPoint>>> {
+    if node_keys.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let rows = sqlx::query_as::<_, ForwardProxyHourlyStatsRow>(
+        r#"
+        SELECT
+            proxy_key,
+            bucket_start_epoch,
+            success_count,
+            failure_count
+        FROM forward_proxy_attempt_hourly
+        WHERE bucket_start_epoch >= ?1
+          AND bucket_start_epoch < ?2
+        "#,
+    )
+    .bind(range_start_epoch)
+    .bind(range_end_epoch)
+    .fetch_all(&state.pool)
+    .await
+    .with_context(|| {
+        format!(
+            "failed to query forward proxy binding hourly stats within [{range_start_epoch}, {range_end_epoch})"
+        )
+    })?;
+
+    let metadata_keys = rows
+        .iter()
+        .map(|row| row.proxy_key.clone())
+        .collect::<Vec<_>>();
+    let metadata_map = load_forward_proxy_metadata_history(&state.pool, &metadata_keys).await?;
+    let manager = state.forward_proxy.lock().await;
+    let mut grouped: HashMap<String, HashMap<i64, ForwardProxyHourlyStatsPoint>> = HashMap::new();
+
+    for row in rows {
+        let target_key = manager
+            .resolve_current_or_historical_bound_proxy_key(
+                &row.proxy_key,
+                metadata_map.get(&row.proxy_key),
+            )
+            .filter(|candidate| node_keys.contains(candidate))
+            .or_else(|| {
+                node_keys
+                    .contains(&row.proxy_key)
+                    .then(|| row.proxy_key.clone())
+            });
+        let Some(target_key) = target_key else {
+            continue;
+        };
+        let point = grouped
+            .entry(target_key)
+            .or_default()
+            .entry(row.bucket_start_epoch)
+            .or_default();
+        point.success_count += row.success_count;
+        point.failure_count += row.failure_count;
+    }
+
+    Ok(grouped)
 }
 
 fn build_forward_proxy_hourly_buckets(
@@ -1947,12 +2055,58 @@ pub(crate) async fn select_forward_proxy_for_request(
     manager.select_proxy_for_scope(&ForwardProxyRouteScope::Automatic)
 }
 
+pub(crate) async fn canonicalize_forward_proxy_bound_keys(
+    state: &AppState,
+    bound_proxy_keys: &[String],
+) -> Result<Vec<String>> {
+    let normalized = bound_proxy_keys
+        .iter()
+        .map(|key| key.trim())
+        .filter(|key| !key.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    if normalized.is_empty() {
+        return Ok(Vec::new());
+    }
+    let metadata_map = load_forward_proxy_metadata_history(&state.pool, &normalized).await?;
+    let manager = state.forward_proxy.lock().await;
+    let mut seen = HashSet::new();
+    let mut canonical = Vec::new();
+    for key in normalized {
+        let next = manager
+            .canonicalize_bound_proxy_key(&key, metadata_map.get(&key))
+            .unwrap_or(key);
+        if seen.insert(next.clone()) {
+            canonical.push(next);
+        }
+    }
+    Ok(canonical)
+}
+
+async fn canonicalize_forward_proxy_route_scope(
+    state: &AppState,
+    scope: &ForwardProxyRouteScope,
+) -> Result<ForwardProxyRouteScope> {
+    match scope {
+        ForwardProxyRouteScope::Automatic => Ok(ForwardProxyRouteScope::Automatic),
+        ForwardProxyRouteScope::BoundGroup {
+            group_name,
+            bound_proxy_keys,
+        } => Ok(ForwardProxyRouteScope::BoundGroup {
+            group_name: group_name.clone(),
+            bound_proxy_keys: canonicalize_forward_proxy_bound_keys(state, bound_proxy_keys)
+                .await?,
+        }),
+    }
+}
+
 pub(crate) async fn select_forward_proxy_for_scope(
     state: &AppState,
     scope: &ForwardProxyRouteScope,
 ) -> Result<SelectedForwardProxy> {
+    let canonical_scope = canonicalize_forward_proxy_route_scope(state, scope).await?;
     let mut manager = state.forward_proxy.lock().await;
-    manager.select_proxy_for_scope(scope)
+    manager.select_proxy_for_scope(&canonical_scope)
 }
 
 pub(crate) async fn record_forward_proxy_scope_result(
@@ -1961,8 +2115,11 @@ pub(crate) async fn record_forward_proxy_scope_result(
     selected_proxy_key: &str,
     result: ForwardProxyRouteResultKind,
 ) {
+    let canonical_scope = canonicalize_forward_proxy_route_scope(state, scope)
+        .await
+        .unwrap_or_else(|_| scope.clone());
     let mut manager = state.forward_proxy.lock().await;
-    manager.record_scope_result(scope, selected_proxy_key, result);
+    manager.record_scope_result(&canonical_scope, selected_proxy_key, result);
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -2640,6 +2797,9 @@ pub(crate) struct ForwardProxyManager {
     pub(crate) endpoints: Vec<ForwardProxyEndpoint>,
     pub(crate) runtime: HashMap<String, ForwardProxyRuntimeState>,
     pub(crate) bound_key_aliases: HashMap<String, String>,
+    pub(crate) bound_key_endpoint_keys: HashMap<String, String>,
+    pub(crate) bound_key_by_endpoint_key: HashMap<String, String>,
+    pub(crate) bound_node_descriptors: Vec<ForwardProxyBindingNodeDescriptor>,
     pub(crate) bound_group_runtime: HashMap<String, BoundForwardProxyGroupState>,
     pub(crate) selection_counter: u64,
     pub(crate) requests_since_probe: u64,
@@ -2652,8 +2812,18 @@ const BOUND_FORWARD_PROXY_SWITCH_FAILURE_THRESHOLD: u32 = 3;
 
 #[derive(Debug, Clone, Default)]
 pub(crate) struct BoundForwardProxyGroupState {
-    pub(crate) current_proxy_key: Option<String>,
+    pub(crate) current_binding_key: Option<String>,
     pub(crate) consecutive_network_failures: u32,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ForwardProxyBindingNodeDescriptor {
+    pub(crate) key: String,
+    pub(crate) endpoint_key: String,
+    pub(crate) alias_keys: Vec<String>,
+    pub(crate) source: String,
+    pub(crate) display_name: String,
+    pub(crate) protocol_label: String,
 }
 
 #[derive(Debug, Clone)]
@@ -2726,6 +2896,9 @@ impl ForwardProxyManager {
             endpoints: Vec::new(),
             runtime,
             bound_key_aliases: HashMap::new(),
+            bound_key_endpoint_keys: HashMap::new(),
+            bound_key_by_endpoint_key: HashMap::new(),
+            bound_node_descriptors: Vec::new(),
             bound_group_runtime: HashMap::new(),
             selection_counter: 0,
             requests_since_probe: 0,
@@ -2789,18 +2962,7 @@ impl ForwardProxyManager {
             }
         }
         self.endpoints = merged;
-        let mut bound_key_aliases = HashMap::new();
-        for endpoint in &self.endpoints {
-            let Some(raw_url) = endpoint.raw_url.as_deref() else {
-                continue;
-            };
-            for alias in legacy_bound_proxy_key_aliases(raw_url, endpoint.protocol) {
-                if alias != endpoint.key {
-                    bound_key_aliases.insert(alias, endpoint.key.clone());
-                }
-            }
-        }
-        self.bound_key_aliases = bound_key_aliases;
+        self.rebuild_bound_key_registry();
 
         let endpoint_snapshots = self.endpoints.clone();
         for endpoint in &endpoint_snapshots {
@@ -2824,6 +2986,194 @@ impl ForwardProxyManager {
             }
         }
         self.ensure_non_zero_weight();
+    }
+
+    fn binding_parts_for_endpoint(
+        endpoint: &ForwardProxyEndpoint,
+    ) -> Option<ForwardProxyBindingParts> {
+        endpoint.raw_url.as_deref().and_then(|raw_url| {
+            forward_proxy_binding_parts_from_raw(raw_url, Some(&endpoint.display_name))
+        })
+    }
+
+    fn rebuild_bound_key_registry(&mut self) {
+        let mut name_counts = HashMap::<String, usize>::new();
+        let mut name_protocol_counts = HashMap::<(String, String), usize>::new();
+        let mut endpoint_parts = self
+            .endpoints
+            .iter()
+            .filter_map(|endpoint| {
+                Self::binding_parts_for_endpoint(endpoint).map(|parts| (endpoint.clone(), parts))
+            })
+            .collect::<Vec<_>>();
+        endpoint_parts.sort_by(|lhs, rhs| lhs.0.key.cmp(&rhs.0.key));
+
+        for (_, parts) in &endpoint_parts {
+            *name_counts.entry(parts.display_name.clone()).or_default() += 1;
+            *name_protocol_counts
+                .entry((parts.display_name.clone(), parts.protocol_key.clone()))
+                .or_default() += 1;
+        }
+
+        let mut bound_key_aliases = HashMap::new();
+        let mut bound_key_endpoint_keys = HashMap::new();
+        let mut bound_key_by_endpoint_key = HashMap::new();
+        let mut descriptor_aliases = HashMap::<String, HashSet<String>>::new();
+        let mut bound_node_descriptors = Vec::new();
+
+        for (endpoint, parts) in endpoint_parts {
+            let candidate_keys = forward_proxy_binding_key_candidates(&parts);
+            let binding_key = if name_counts
+                .get(&parts.display_name)
+                .copied()
+                .unwrap_or_default()
+                <= 1
+            {
+                candidate_keys[0].clone()
+            } else if name_protocol_counts
+                .get(&(parts.display_name.clone(), parts.protocol_key.clone()))
+                .copied()
+                .unwrap_or_default()
+                <= 1
+            {
+                candidate_keys[1].clone()
+            } else {
+                candidate_keys[2].clone()
+            };
+
+            let primary_endpoint = bound_key_endpoint_keys
+                .entry(binding_key.clone())
+                .or_insert_with(|| endpoint.key.clone())
+                .clone();
+            bound_key_by_endpoint_key.insert(endpoint.key.clone(), binding_key.clone());
+
+            let aliases = descriptor_aliases.entry(binding_key.clone()).or_default();
+            for candidate_key in candidate_keys {
+                if candidate_key != binding_key {
+                    bound_key_aliases
+                        .entry(candidate_key.clone())
+                        .or_insert_with(|| binding_key.clone());
+                    aliases.insert(candidate_key);
+                }
+            }
+            bound_key_aliases
+                .entry(endpoint.key.clone())
+                .or_insert_with(|| binding_key.clone());
+            aliases.insert(endpoint.key.clone());
+
+            if let Some(raw_url) = endpoint.raw_url.as_deref() {
+                if let Some((canonical_key, storage_aliases)) =
+                    forward_proxy_storage_aliases(raw_url)
+                {
+                    if canonical_key != binding_key {
+                        bound_key_aliases
+                            .entry(canonical_key.clone())
+                            .or_insert_with(|| binding_key.clone());
+                        aliases.insert(canonical_key);
+                    }
+                    for alias in storage_aliases {
+                        if alias != binding_key {
+                            bound_key_aliases
+                                .entry(alias.clone())
+                                .or_insert_with(|| binding_key.clone());
+                            aliases.insert(alias);
+                        }
+                    }
+                }
+                for alias in legacy_bound_proxy_key_aliases(raw_url, endpoint.protocol) {
+                    if alias != binding_key {
+                        bound_key_aliases
+                            .entry(alias.clone())
+                            .or_insert_with(|| binding_key.clone());
+                        aliases.insert(alias);
+                    }
+                }
+            }
+
+            if primary_endpoint == endpoint.key {
+                bound_node_descriptors.push(ForwardProxyBindingNodeDescriptor {
+                    key: binding_key,
+                    endpoint_key: endpoint.key.clone(),
+                    alias_keys: Vec::new(),
+                    source: endpoint.source.clone(),
+                    display_name: endpoint.display_name.clone(),
+                    protocol_label: endpoint.protocol.label().to_string(),
+                });
+            }
+        }
+
+        for descriptor in &mut bound_node_descriptors {
+            let mut alias_keys = descriptor_aliases
+                .remove(&descriptor.key)
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|alias| alias != &descriptor.key)
+                .collect::<Vec<_>>();
+            alias_keys.sort();
+            alias_keys.dedup();
+            descriptor.alias_keys = alias_keys;
+        }
+        bound_node_descriptors.sort_by(|lhs, rhs| lhs.display_name.cmp(&rhs.display_name));
+
+        self.bound_key_aliases = bound_key_aliases;
+        self.bound_key_endpoint_keys = bound_key_endpoint_keys;
+        self.bound_key_by_endpoint_key = bound_key_by_endpoint_key;
+        self.bound_node_descriptors = bound_node_descriptors;
+    }
+
+    fn resolve_current_bound_proxy_key_from_parts(
+        &self,
+        parts: &ForwardProxyBindingParts,
+    ) -> Option<String> {
+        for candidate in forward_proxy_binding_key_candidates(parts) {
+            if self.bound_key_endpoint_keys.contains_key(&candidate) {
+                return Some(candidate);
+            }
+            if let Some(canonical) = self.bound_key_aliases.get(&candidate) {
+                return Some(canonical.clone());
+            }
+        }
+        None
+    }
+
+    fn resolve_current_bound_proxy_key(&self, proxy_key: &str) -> Option<String> {
+        let normalized = normalize_bound_proxy_key(proxy_key)?;
+        if normalized == FORWARD_PROXY_DIRECT_KEY {
+            return Some(normalized);
+        }
+        if self.bound_key_endpoint_keys.contains_key(&normalized) {
+            return Some(normalized);
+        }
+        self.bound_key_aliases.get(&normalized).cloned()
+    }
+
+    fn resolve_bound_proxy_key_from_history_row(
+        &self,
+        row: &ForwardProxyMetadataHistoryRow,
+    ) -> Option<String> {
+        let raw = row.endpoint_url.as_deref()?;
+        let parts = forward_proxy_binding_parts_from_raw(raw, Some(&row.display_name))?;
+        self.resolve_current_bound_proxy_key_from_parts(&parts)
+    }
+
+    pub(crate) fn resolve_current_or_historical_bound_proxy_key(
+        &self,
+        proxy_key: &str,
+        history_row: Option<&ForwardProxyMetadataHistoryRow>,
+    ) -> Option<String> {
+        self.resolve_current_bound_proxy_key(proxy_key).or_else(|| {
+            history_row.and_then(|row| self.resolve_bound_proxy_key_from_history_row(row))
+        })
+    }
+
+    pub(crate) fn canonicalize_bound_proxy_key(
+        &self,
+        proxy_key: &str,
+        history_row: Option<&ForwardProxyMetadataHistoryRow>,
+    ) -> Option<String> {
+        let normalized = normalize_bound_proxy_key(proxy_key)?;
+        self.resolve_current_or_historical_bound_proxy_key(&normalized, history_row)
+            .or(Some(normalized))
     }
 
     fn migrate_runtime_aliases_to_endpoint(&mut self, endpoint: &ForwardProxyEndpoint) {
@@ -2944,10 +3294,15 @@ impl ForwardProxyManager {
 
     fn selectable_bound_proxy_keys(&self, bound_proxy_keys: &[String]) -> Vec<String> {
         let mut selectable = self
-            .endpoints
+            .bound_node_descriptors
             .iter()
-            .filter(|endpoint| endpoint.is_bound_selectable())
-            .map(|endpoint| endpoint.key.as_str())
+            .filter_map(|descriptor| {
+                self.endpoints
+                    .iter()
+                    .find(|endpoint| endpoint.key == descriptor.endpoint_key)
+                    .filter(|endpoint| endpoint.is_bound_selectable())
+                    .map(|_| descriptor.key.as_str())
+            })
             .collect::<HashSet<_>>();
         selectable.insert(FORWARD_PROXY_DIRECT_KEY);
         let mut seen = HashSet::new();
@@ -2957,8 +3312,8 @@ impl ForwardProxyManager {
             if normalized.is_empty() {
                 continue;
             }
-            let canonical = normalize_bound_proxy_key(normalized)
-                .map(|value| self.bound_key_aliases.get(&value).cloned().unwrap_or(value))
+            let canonical = self
+                .resolve_current_bound_proxy_key(normalized)
                 .unwrap_or_else(|| normalized.to_string());
             if !selectable.contains(canonical.as_str()) || !seen.insert(canonical.clone()) {
                 continue;
@@ -3054,9 +3409,9 @@ impl ForwardProxyManager {
         let existing_current = self
             .bound_group_runtime
             .get(group_name)
-            .and_then(|state| state.current_proxy_key.clone())
+            .and_then(|state| state.current_binding_key.clone())
             .filter(|key| available_keys.contains(key));
-        let selected_key = existing_current.unwrap_or_else(|| {
+        let selected_binding_key = existing_current.unwrap_or_else(|| {
             self.choose_random_bound_proxy_key(&available_keys, None)
                 .expect("available bound proxy keys should not be empty")
         });
@@ -3064,16 +3419,20 @@ impl ForwardProxyManager {
             .bound_group_runtime
             .entry(group_name.to_string())
             .or_default();
-        state.current_proxy_key = Some(selected_key.clone());
-        if selected_key == FORWARD_PROXY_DIRECT_KEY {
+        state.current_binding_key = Some(selected_binding_key.clone());
+        if selected_binding_key == FORWARD_PROXY_DIRECT_KEY {
             return Ok(SelectedForwardProxy::from_endpoint(
                 &ForwardProxyEndpoint::direct(),
             ));
         }
+        let endpoint_key = self
+            .bound_key_endpoint_keys
+            .get(&selected_binding_key)
+            .ok_or_else(|| anyhow!("selected bound proxy disappeared from runtime"))?;
         let endpoint = self
             .endpoints
             .iter()
-            .find(|endpoint| endpoint.key == selected_key)
+            .find(|endpoint| endpoint.key == *endpoint_key)
             .ok_or_else(|| anyhow!("selected bound proxy disappeared from runtime"))?;
         Ok(SelectedForwardProxy::from_endpoint(endpoint))
     }
@@ -3125,13 +3484,16 @@ impl ForwardProxyManager {
             return;
         }
 
+        let selected_binding_key = self
+            .resolve_current_bound_proxy_key(selected_proxy_key)
+            .unwrap_or_else(|| selected_proxy_key.to_string());
         let mut should_switch = false;
         {
             let state = self
                 .bound_group_runtime
                 .entry(group_name.clone())
                 .or_default();
-            state.current_proxy_key = Some(selected_proxy_key.to_string());
+            state.current_binding_key = Some(selected_binding_key.clone());
             match result {
                 ForwardProxyRouteResultKind::CompletedRequest => {
                     state.consecutive_network_failures = 0;
@@ -3146,46 +3508,39 @@ impl ForwardProxyManager {
         }
 
         if should_switch
-            && let Some(next_proxy_key) =
-                self.choose_random_bound_proxy_key(&available_keys, Some(selected_proxy_key))
+            && let Some(next_binding_key) = self
+                .choose_random_bound_proxy_key(&available_keys, Some(selected_binding_key.as_str()))
         {
             let state = self
                 .bound_group_runtime
                 .entry(group_name.clone())
                 .or_default();
-            state.current_proxy_key = Some(next_proxy_key);
+            state.current_binding_key = Some(next_binding_key);
             state.consecutive_network_failures = 0;
         }
     }
 
     pub(crate) fn binding_nodes(&self) -> Vec<ForwardProxyBindingNodeResponse> {
-        let mut alias_keys_by_key: HashMap<&str, Vec<String>> = HashMap::new();
-        for (alias, canonical) in &self.bound_key_aliases {
-            alias_keys_by_key
-                .entry(canonical.as_str())
-                .or_default()
-                .push(alias.clone());
-        }
         let mut nodes = self
-            .endpoints
+            .bound_node_descriptors
             .iter()
-            .map(|endpoint| {
+            .map(|descriptor| {
                 let penalized = self
                     .runtime
-                    .get(&endpoint.key)
+                    .get(&descriptor.endpoint_key)
                     .is_some_and(ForwardProxyRuntimeState::is_penalized);
-                let mut alias_keys = alias_keys_by_key
-                    .remove(endpoint.key.as_str())
-                    .unwrap_or_default();
-                alias_keys.sort();
                 ForwardProxyBindingNodeResponse {
-                    key: endpoint.key.clone(),
-                    alias_keys,
-                    source: endpoint.source.clone(),
-                    display_name: endpoint.display_name.clone(),
-                    protocol_label: endpoint.protocol.label().to_string(),
+                    key: descriptor.key.clone(),
+                    alias_keys: descriptor.alias_keys.clone(),
+                    source: descriptor.source.clone(),
+                    display_name: descriptor.display_name.clone(),
+                    protocol_label: descriptor.protocol_label.clone(),
                     penalized,
-                    selectable: endpoint.is_bound_selectable(),
+                    selectable: self
+                        .endpoints
+                        .iter()
+                        .find(|endpoint| endpoint.key == descriptor.endpoint_key)
+                        .is_some_and(ForwardProxyEndpoint::is_bound_selectable),
                     last24h: Vec::new(),
                 }
             })
@@ -4424,6 +4779,14 @@ mod tests {
         )
     }
 
+    fn current_binding_node(manager: &ForwardProxyManager) -> ForwardProxyBindingNodeResponse {
+        manager
+            .binding_nodes()
+            .into_iter()
+            .find(|node| node.key != FORWARD_PROXY_DIRECT_KEY)
+            .expect("missing non-direct binding node")
+    }
+
     #[test]
     fn binding_nodes_include_selectable_direct_with_protocol_label() {
         let manager = manager_with_manual_proxy();
@@ -4443,7 +4806,7 @@ mod tests {
     }
 
     #[test]
-    fn binding_nodes_include_legacy_vless_aliases() {
+    fn binding_nodes_use_name_driven_binding_keys_and_keep_runtime_aliases() {
         let proxy_url = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=tcp#东京节点";
         let normalized_proxy_url =
             normalize_share_link_scheme(proxy_url, "vless").expect("normalize vless url");
@@ -4451,8 +4814,13 @@ mod tests {
             let parsed = Url::parse(&normalized_proxy_url).expect("parse normalized vless url");
             stable_forward_proxy_key(&canonical_share_link_identity(&parsed))
         };
-        let canonical_key = normalize_single_proxy_key(proxy_url).expect("canonical vless key");
-        assert_ne!(legacy_alias, canonical_key);
+        let runtime_key = normalize_single_proxy_key(proxy_url).expect("canonical vless key");
+        let binding_key = forward_proxy_binding_key_candidates(
+            &forward_proxy_binding_parts_from_raw(proxy_url, None)
+                .expect("binding parts from vless url"),
+        )[0]
+        .clone();
+        assert_ne!(binding_key, runtime_key);
 
         let manager = ForwardProxyManager::new(
             ForwardProxySettings {
@@ -4465,10 +4833,137 @@ mod tests {
         let node = manager
             .binding_nodes()
             .into_iter()
-            .find(|candidate| candidate.key == canonical_key)
+            .find(|candidate| candidate.key == binding_key)
             .expect("vless binding node should be present");
 
+        assert!(node.alias_keys.contains(&runtime_key));
         assert!(node.alias_keys.contains(&legacy_alias));
+    }
+
+    #[test]
+    fn binding_keys_ignore_transport_identity_changes_when_name_is_unique() {
+        let proxy_a = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=ws&host=cdn.example.com&path=%2Falpha&sni=alpha.example.com#Tokyo%20Edge";
+        let proxy_b = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=ws&host=cdn.example.com&path=%2Fbeta&sni=beta.example.com#Tokyo%20Edge";
+        assert_ne!(
+            normalize_single_proxy_key(proxy_a),
+            normalize_single_proxy_key(proxy_b),
+            "runtime keys should still reflect transport identity"
+        );
+
+        let manager_a = ForwardProxyManager::new(
+            ForwardProxySettings {
+                proxy_urls: vec![proxy_a.to_string()],
+                ..ForwardProxySettings::default()
+            },
+            Vec::new(),
+        );
+        let manager_b = ForwardProxyManager::new(
+            ForwardProxySettings {
+                proxy_urls: vec![proxy_b.to_string()],
+                ..ForwardProxySettings::default()
+            },
+            Vec::new(),
+        );
+
+        assert_eq!(
+            current_binding_node(&manager_a).key,
+            current_binding_node(&manager_b).key
+        );
+    }
+
+    #[test]
+    fn binding_keys_change_when_display_name_changes() {
+        let proxy_a = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=ws&host=cdn.example.com&path=%2Falpha&sni=edge.example.com#Tokyo%20Edge";
+        let proxy_b = "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=ws&host=cdn.example.com&path=%2Falpha&sni=edge.example.com#Tokyo%20Edge%20Renamed";
+        assert_eq!(
+            normalize_single_proxy_key(proxy_a),
+            normalize_single_proxy_key(proxy_b),
+            "runtime keys should ignore display name changes"
+        );
+
+        let manager_a = ForwardProxyManager::new(
+            ForwardProxySettings {
+                proxy_urls: vec![proxy_a.to_string()],
+                ..ForwardProxySettings::default()
+            },
+            Vec::new(),
+        );
+        let manager_b = ForwardProxyManager::new(
+            ForwardProxySettings {
+                proxy_urls: vec![proxy_b.to_string()],
+                ..ForwardProxySettings::default()
+            },
+            Vec::new(),
+        );
+
+        assert_ne!(
+            current_binding_node(&manager_a).key,
+            current_binding_node(&manager_b).key
+        );
+    }
+
+    #[test]
+    fn binding_keys_escalate_from_name_to_protocol_to_host_port() {
+        let protocol_split_manager = ForwardProxyManager::new(
+            ForwardProxySettings {
+                proxy_urls: vec![
+                    "vless://11111111-1111-1111-1111-111111111111@vless.example.com:443?security=tls&type=tcp#Shared%20Node".to_string(),
+                    "ss://2022-blake3-aes-128-gcm:secret@ss.example.com:8388#Shared%20Node".to_string(),
+                ],
+                ..ForwardProxySettings::default()
+            },
+            Vec::new(),
+        );
+        let protocol_nodes = protocol_split_manager
+            .binding_nodes()
+            .into_iter()
+            .filter(|node| node.key != FORWARD_PROXY_DIRECT_KEY)
+            .collect::<Vec<_>>();
+        assert_eq!(protocol_nodes.len(), 2);
+        assert_ne!(protocol_nodes[0].key, protocol_nodes[1].key);
+
+        let host_split_manager = ForwardProxyManager::new(
+            ForwardProxySettings {
+                proxy_urls: vec![
+                    "ss://2022-blake3-aes-128-gcm:secret@jp-a.example.com:8388#Shared%20Node"
+                        .to_string(),
+                    "ss://2022-blake3-aes-128-gcm:secret@jp-b.example.com:8388#Shared%20Node"
+                        .to_string(),
+                ],
+                ..ForwardProxySettings::default()
+            },
+            Vec::new(),
+        );
+        let host_nodes = host_split_manager
+            .binding_nodes()
+            .into_iter()
+            .filter(|node| node.key != FORWARD_PROXY_DIRECT_KEY)
+            .collect::<Vec<_>>();
+        assert_eq!(host_nodes.len(), 2);
+        assert_ne!(host_nodes[0].key, host_nodes[1].key);
+
+        let collapsed_manager = ForwardProxyManager::new(
+            ForwardProxySettings {
+                proxy_urls: vec![
+                    "vless://11111111-1111-1111-1111-111111111111@shared.example.com:443?security=tls&type=ws&path=%2Falpha&sni=alpha.example.com#Shared%20Node".to_string(),
+                    "vless://11111111-1111-1111-1111-111111111111@shared.example.com:443?security=tls&type=ws&path=%2Fbeta&sni=beta.example.com#Shared%20Node".to_string(),
+                ],
+                ..ForwardProxySettings::default()
+            },
+            Vec::new(),
+        );
+        let collapsed_nodes = collapsed_manager
+            .binding_nodes()
+            .into_iter()
+            .filter(|node| node.key != FORWARD_PROXY_DIRECT_KEY)
+            .collect::<Vec<_>>();
+        assert_eq!(collapsed_nodes.len(), 1);
+        assert!(
+            collapsed_nodes[0]
+                .alias_keys
+                .iter()
+                .any(|key| key.starts_with("fpn_"))
+        );
     }
 
     #[test]
@@ -4481,20 +4976,20 @@ mod tests {
     #[test]
     fn bound_group_network_failures_can_switch_from_direct_to_proxy() {
         let mut manager = manager_with_manual_proxy();
-        let proxy_key = manager
-            .endpoints
-            .iter()
-            .find(|endpoint| endpoint.key != FORWARD_PROXY_DIRECT_KEY)
-            .map(|endpoint| endpoint.key.clone())
-            .expect("missing non-direct endpoint");
+        let binding_key = manager
+            .binding_nodes()
+            .into_iter()
+            .find(|node| node.key != FORWARD_PROXY_DIRECT_KEY)
+            .map(|node| node.key)
+            .expect("missing non-direct binding node");
         let scope = ForwardProxyRouteScope::BoundGroup {
             group_name: "latam".to_string(),
-            bound_proxy_keys: vec![FORWARD_PROXY_DIRECT_KEY.to_string(), proxy_key.clone()],
+            bound_proxy_keys: vec![FORWARD_PROXY_DIRECT_KEY.to_string(), binding_key.clone()],
         };
         manager.bound_group_runtime.insert(
             "latam".to_string(),
             BoundForwardProxyGroupState {
-                current_proxy_key: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
+                current_binding_key: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
                 consecutive_network_failures: 0,
             },
         );
@@ -4520,8 +5015,8 @@ mod tests {
             .get("latam")
             .expect("missing bound group state after failures");
         assert_eq!(
-            group_state.current_proxy_key.as_deref(),
-            Some(proxy_key.as_str())
+            group_state.current_binding_key.as_deref(),
+            Some(binding_key.as_str())
         );
         assert_eq!(group_state.consecutive_network_failures, 0);
     }

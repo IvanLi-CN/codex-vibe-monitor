@@ -346,7 +346,7 @@ describe('UpstreamAccountGroupNoteDialog', () => {
       onBoundProxyKeysChange,
       availableProxyNodes: [
         {
-          key: 'fpn_canonical_vless_key',
+          key: 'fpb_canonical_vless_key',
           aliasKeys: ['fpn_legacy_vless_alias'],
           source: 'subscription',
           displayName: '东京专线 A',
@@ -369,7 +369,7 @@ describe('UpstreamAccountGroupNoteDialog', () => {
 
     expect(saveButton).toBeDefined()
     expect(saveButton?.disabled).toBe(false)
-    expect(onBoundProxyKeysChange).toHaveBeenCalledWith(['fpn_canonical_vless_key'])
+    expect(onBoundProxyKeysChange).toHaveBeenCalledWith(['fpb_canonical_vless_key'])
   })
 
   it('hides unrelated stale missing nodes from other groups', () => {
