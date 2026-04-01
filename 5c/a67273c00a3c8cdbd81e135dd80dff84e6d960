@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.35.2",
+  "base_stable_version": "1.35.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-01T11:49:59Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.35.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "1cb1e59ab303369c2146d30885bd7a9a2ae0a3f5",
+  "pr_number": 279,
+  "pr_title": "fix: use logical keys for forward proxy bindings",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.35.2",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.35.2",
+  "target_sha": "5ca67273c00a3c8cdbd81e135dd80dff84e6d960",
+  "type_label": "type:patch"
+}
