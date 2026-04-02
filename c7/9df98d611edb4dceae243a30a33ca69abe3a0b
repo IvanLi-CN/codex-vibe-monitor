@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.35.5",
+  "base_stable_version": "1.35.4",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-02T19:53:20Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.35.5",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "46a24b84ff7af2f53c0748155a6836cb87e57111",
+  "pr_number": 282,
+  "pr_title": "fix(pool): skip ungrouped routing candidates",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.35.5",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.35.5",
+  "target_sha": "c79df98d611edb4dceae243a30a33ca69abe3a0b",
+  "type_label": "type:patch"
+}
