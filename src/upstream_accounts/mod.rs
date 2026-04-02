@@ -15208,9 +15208,16 @@ async fn resolve_pool_account_group_proxy_routing_readiness(
     state: &AppState,
     group_name: Option<&str>,
 ) -> Result<PoolAccountGroupProxyRoutingReadiness> {
-    let group_metadata = load_group_metadata(&state.pool, group_name).await?;
+    let normalized_group_name = group_name.map(str::trim).filter(|value| !value.is_empty());
+    let Some(group_name) = normalized_group_name else {
+        return Ok(PoolAccountGroupProxyRoutingReadiness::Blocked(
+            missing_account_group_error_message(),
+        ));
+    };
+    let group_metadata = load_group_metadata(&state.pool, Some(group_name)).await?;
     let scope = match load_required_account_forward_proxy_scope_from_group_metadata(
-        state, group_name,
+        state,
+        Some(group_name),
     )
     .await
     {
@@ -23485,6 +23492,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resolver_skips_ungrouped_candidate_when_healthy_grouped_account_exists() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let ungrouped = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Ungrouped Candidate",
+            "ungrouped-candidate@example.com",
+            "org_ungrouped_candidate",
+            "user_ungrouped_candidate",
+        )
+        .await;
+        let healthy = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Healthy Grouped Candidate",
+            "healthy-grouped-candidate@example.com",
+            "org_healthy_grouped_candidate",
+            "user_healthy_grouped_candidate",
+        )
+        .await;
+        set_test_account_group_name(&state.pool, ungrouped, None).await;
+        let now_iso = format_utc_iso(Utc::now());
+        insert_limit_sample_with_usage(&state.pool, ungrouped, &now_iso, Some(1.0), Some(1.0))
+            .await;
+        insert_limit_sample_with_usage(&state.pool, healthy, &now_iso, Some(80.0), Some(10.0))
+            .await;
+
+        let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
+            .await
+            .expect("resolve pool account");
+        let PoolAccountResolution::Resolved(account) = resolution else {
+            panic!("expected resolver to skip ungrouped account and pick healthy grouped account");
+        };
+        assert_eq!(account.account_id, healthy);
+    }
+
+    #[tokio::test]
     async fn resolver_returns_specific_group_proxy_error_when_only_bad_groups_remain() {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
         let crypto_key = state
@@ -23513,6 +23562,34 @@ mod tests {
             message,
             "upstream account group \"missing-bindings\" has no bound forward proxy nodes; bind at least one proxy node to the group"
         );
+    }
+
+    #[tokio::test]
+    async fn resolver_returns_specific_group_proxy_error_when_only_ungrouped_accounts_remain() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let account = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Only Ungrouped Candidate",
+            "only-ungrouped-candidate@example.com",
+            "org_only_ungrouped_candidate",
+            "user_only_ungrouped_candidate",
+        )
+        .await;
+        set_test_account_group_name(&state.pool, account, None).await;
+
+        let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
+            .await
+            .expect("resolve pool account");
+        let PoolAccountResolution::BlockedByPolicy(message) = resolution else {
+            panic!("expected ungrouped account to surface a specific routing error");
+        };
+        assert_eq!(message, missing_account_group_error_message());
     }
 
     #[tokio::test]
@@ -23934,6 +24011,56 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resolver_can_cut_out_from_ungrouped_sticky_account_when_allowed() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let sticky_account = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Sticky Ungrouped Account",
+            "sticky-ungrouped-account@example.com",
+            "org_sticky_ungrouped_account",
+            "user_sticky_ungrouped_account",
+        )
+        .await;
+        let fallback_account = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Fallback Healthy Grouped Account",
+            "fallback-healthy-grouped-account@example.com",
+            "org_fallback_healthy_grouped_account",
+            "user_fallback_healthy_grouped_account",
+        )
+        .await;
+        set_test_account_group_name(&state.pool, sticky_account, None).await;
+        upsert_sticky_route(
+            &state.pool,
+            "sticky-ungrouped-account",
+            sticky_account,
+            &format_utc_iso(Utc::now()),
+        )
+        .await
+        .expect("upsert sticky route");
+
+        let resolution = resolve_pool_account_for_request(
+            &state,
+            Some("sticky-ungrouped-account"),
+            &[],
+            &HashSet::new(),
+        )
+        .await
+        .expect("resolve pool account");
+        let PoolAccountResolution::Resolved(account) = resolution else {
+            panic!("expected resolver to cut out from ungrouped sticky account");
+        };
+        assert_eq!(account.account_id, fallback_account);
+    }
+
+    #[tokio::test]
     async fn resolver_returns_group_proxy_error_for_sticky_account_when_cut_out_is_forbidden() {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
         let crypto_key = state
@@ -24001,6 +24128,73 @@ mod tests {
             message,
             "upstream account group \"sticky-missing\" has no bound forward proxy nodes; bind at least one proxy node to the group"
         );
+    }
+
+    #[tokio::test]
+    async fn resolver_returns_ungrouped_error_for_sticky_account_when_cut_out_is_forbidden() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let sticky_account = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Sticky Ungrouped Locked Account",
+            "sticky-ungrouped-locked-account@example.com",
+            "org_sticky_ungrouped_locked_account",
+            "user_sticky_ungrouped_locked_account",
+        )
+        .await;
+        let _fallback_account = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Ignored Healthy Grouped Account",
+            "ignored-healthy-grouped-account@example.com",
+            "org_ignored_healthy_grouped_account",
+            "user_ignored_healthy_grouped_account",
+        )
+        .await;
+        set_test_account_group_name(&state.pool, sticky_account, None).await;
+        let lock_tag = insert_tag(
+            &state.pool,
+            "sticky-ungrouped-lock",
+            &TagRoutingRule {
+                guard_enabled: false,
+                lookback_hours: None,
+                max_conversations: None,
+                allow_cut_out: false,
+                allow_cut_in: true,
+                concurrency_limit: 0,
+            },
+        )
+        .await
+        .expect("insert lock tag");
+        sync_account_tag_links(&state.pool, sticky_account, &[lock_tag.summary.id])
+            .await
+            .expect("attach lock tag");
+        upsert_sticky_route(
+            &state.pool,
+            "sticky-ungrouped-locked",
+            sticky_account,
+            &format_utc_iso(Utc::now()),
+        )
+        .await
+        .expect("upsert sticky route");
+
+        let resolution = resolve_pool_account_for_request(
+            &state,
+            Some("sticky-ungrouped-locked"),
+            &[],
+            &HashSet::new(),
+        )
+        .await
+        .expect("resolve pool account");
+        let PoolAccountResolution::BlockedByPolicy(message) = resolution else {
+            panic!("expected sticky ungrouped error when cut-out is forbidden");
+        };
+        assert_eq!(message, missing_account_group_error_message());
     }
 
     #[tokio::test]
