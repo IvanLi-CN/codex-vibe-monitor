@@ -3756,15 +3756,14 @@ async fn build_imported_oauth_validation_response(
             });
             continue;
         }
-        let usage_scope = match resolve_group_forward_proxy_scope_for_provisioning(
-            state,
-            binding,
-            assignments.as_ref(),
-            &consumed_proxy_keys,
+        let existing_match = match find_existing_import_match(
+            &state.pool,
+            &normalized.chatgpt_account_id,
+            &normalized.email,
         )
         .await
         {
-            Ok(scope) => scope,
+            Ok(value) => value,
             Err(err) => {
                 rows.push(ImportedOauthValidationRow {
                     source_id: normalized.source_id,
@@ -3781,9 +3780,41 @@ async fn build_imported_oauth_validation_response(
                 continue;
             }
         };
-        let (row, validated_import) =
-            build_imported_oauth_validation_result(state, normalized, &refresh_scope, &usage_scope)
-                .await;
+        let matched_account = existing_match.as_ref().map(import_match_summary_from_row);
+        let usage_scope = match resolve_group_forward_proxy_scope_for_provisioning(
+            state,
+            binding,
+            assignments.as_ref(),
+            existing_match.as_ref(),
+            &consumed_proxy_keys,
+        )
+        .await
+        {
+            Ok(scope) => scope,
+            Err(err) => {
+                rows.push(ImportedOauthValidationRow {
+                    source_id: normalized.source_id,
+                    file_name: normalized.file_name,
+                    email: Some(normalized.email),
+                    chatgpt_account_id: Some(normalized.chatgpt_account_id),
+                    display_name: Some(normalized.display_name),
+                    token_expires_at: Some(normalized.token_expires_at),
+                    matched_account: matched_account.clone(),
+                    status: IMPORT_VALIDATION_STATUS_ERROR.to_string(),
+                    detail: Some(err.to_string()),
+                    attempts: 0,
+                });
+                continue;
+            }
+        };
+        let (row, validated_import) = build_imported_oauth_validation_result(
+            state,
+            normalized,
+            matched_account,
+            &refresh_scope,
+            &usage_scope,
+        )
+        .await;
         if let ForwardProxyRouteScope::PinnedProxyKey(proxy_key) = &usage_scope {
             if validated_import.is_some() {
                 consumed_proxy_keys.insert(proxy_key.clone());
@@ -3972,39 +4003,13 @@ fn bulk_upstream_account_sync_terminal_event_to_sse(
 async fn build_imported_oauth_validation_result(
     state: &AppState,
     normalized: NormalizedImportedOauthCredentials,
+    matched_account: Option<ImportedOauthMatchSummary>,
     refresh_scope: &ForwardProxyRouteScope,
     usage_scope: &ForwardProxyRouteScope,
 ) -> (
     ImportedOauthValidationRow,
     Option<ImportedOauthValidatedImportData>,
 ) {
-    let matched_account = match find_existing_import_match(
-        &state.pool,
-        &normalized.chatgpt_account_id,
-        &normalized.email,
-    )
-    .await
-    {
-        Ok(value) => value.map(|row| import_match_summary_from_row(&row)),
-        Err(err) => {
-            return (
-                ImportedOauthValidationRow {
-                    source_id: normalized.source_id,
-                    file_name: normalized.file_name,
-                    email: Some(normalized.email),
-                    chatgpt_account_id: Some(normalized.chatgpt_account_id),
-                    display_name: Some(normalized.display_name),
-                    token_expires_at: Some(normalized.token_expires_at),
-                    matched_account: None,
-                    status: IMPORT_VALIDATION_STATUS_ERROR.to_string(),
-                    detail: Some(err.to_string()),
-                    attempts: 0,
-                },
-                None,
-            );
-        }
-    };
-
     match probe_imported_oauth_credentials(state, &normalized, refresh_scope, usage_scope).await {
         Ok(outcome) => (
             ImportedOauthValidationRow {
@@ -4369,16 +4374,14 @@ fn spawn_imported_oauth_validation_job(
                     .await;
                     continue;
                 }
-
-                let usage_scope = match resolve_group_forward_proxy_scope_for_provisioning(
-                    state.as_ref(),
-                    &binding,
-                    Some(&assignments),
-                    &consumed_proxy_keys,
+                let existing_match = match find_existing_import_match(
+                    &state.pool,
+                    &normalized.chatgpt_account_id,
+                    &normalized.email,
                 )
                 .await
                 {
-                    Ok(scope) => scope,
+                    Ok(value) => value,
                     Err(err) => {
                         update_imported_oauth_validation_job_row(
                             &job,
@@ -4401,9 +4404,44 @@ fn spawn_imported_oauth_validation_job(
                         continue;
                     }
                 };
+                let matched_account = existing_match.as_ref().map(import_match_summary_from_row);
+
+                let usage_scope = match resolve_group_forward_proxy_scope_for_provisioning(
+                    state.as_ref(),
+                    &binding,
+                    Some(&assignments),
+                    existing_match.as_ref(),
+                    &consumed_proxy_keys,
+                )
+                .await
+                {
+                    Ok(scope) => scope,
+                    Err(err) => {
+                        update_imported_oauth_validation_job_row(
+                            &job,
+                            row_index,
+                            ImportedOauthValidationRow {
+                                source_id: normalized.source_id,
+                                file_name: normalized.file_name,
+                                email: Some(normalized.email),
+                                chatgpt_account_id: Some(normalized.chatgpt_account_id),
+                                display_name: Some(normalized.display_name),
+                                token_expires_at: Some(normalized.token_expires_at),
+                                matched_account: matched_account.clone(),
+                                status: IMPORT_VALIDATION_STATUS_ERROR.to_string(),
+                                detail: Some(err.to_string()),
+                                attempts: 0,
+                            },
+                            None,
+                        )
+                        .await;
+                        continue;
+                    }
+                };
                 let (row, validated_import) = build_imported_oauth_validation_result(
                     state.as_ref(),
                     normalized,
+                    matched_account,
                     &refresh_scope,
                     &usage_scope,
                 )
@@ -5078,6 +5116,7 @@ pub(crate) async fn import_validated_oauth_accounts(
             state.as_ref(),
             &resolved_group_binding,
             Some(&assignments),
+            existing_match.as_ref(),
             &consumed_proxy_keys,
         )
         .await
@@ -11124,6 +11163,7 @@ async fn resolve_group_forward_proxy_scope_for_provisioning(
     state: &AppState,
     binding: &ResolvedRequiredGroupProxyBinding,
     assignments: Option<&UpstreamAccountNodeShuntAssignments>,
+    provisioning_account: Option<&UpstreamAccountRow>,
     consumed_proxy_keys: &HashSet<String>,
 ) -> Result<ForwardProxyRouteScope> {
     if !binding.node_shunt_enabled {
@@ -11131,6 +11171,16 @@ async fn resolve_group_forward_proxy_scope_for_provisioning(
             Some(&binding.group_name),
             binding.bound_proxy_keys.clone(),
         );
+    }
+
+    if let (Some(value), Some(account)) = (assignments, provisioning_account) {
+        if normalize_optional_text(account.group_name.clone()).as_deref()
+            == Some(binding.group_name.as_str())
+        {
+            if let Some(proxy_key) = value.account_proxy_keys.get(&account.id) {
+                return Ok(ForwardProxyRouteScope::pinned(proxy_key.clone()));
+            }
+        }
     }
 
     let occupied_proxy_keys = assignments
@@ -21553,6 +21603,71 @@ mod tests {
             account.routing_source,
             PoolRoutingSelectionSource::StickyReuse
         );
+    }
+
+    #[tokio::test]
+    async fn provisioning_scope_reuses_existing_account_node_shunt_slot_when_group_is_full() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Provisioned Existing Account",
+            "provision-existing@example.com",
+            "org_provision_existing",
+            "user_provision_existing",
+        )
+        .await;
+
+        set_test_account_group_name(&state.pool, account_id, Some("node-shunt-provisioning")).await;
+
+        let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+        save_group_metadata_record_conn(
+            &mut conn,
+            "node-shunt-provisioning",
+            UpstreamAccountGroupMetadata {
+                note: None,
+                bound_proxy_keys: test_required_group_bound_proxy_keys(),
+                node_shunt_enabled: true,
+                upstream_429_retry_enabled: false,
+                upstream_429_max_retries: 0,
+                concurrency_limit: 0,
+            },
+        )
+        .await
+        .expect("save node shunt provisioning metadata");
+        drop(conn);
+
+        let assignments = build_upstream_account_node_shunt_assignments(state.as_ref())
+            .await
+            .expect("build node shunt assignments");
+        let existing_account = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load existing account")
+            .expect("existing account row");
+
+        let scope = resolve_group_forward_proxy_scope_for_provisioning(
+            state.as_ref(),
+            &ResolvedRequiredGroupProxyBinding {
+                group_name: "node-shunt-provisioning".to_string(),
+                bound_proxy_keys: test_required_group_bound_proxy_keys(),
+                node_shunt_enabled: true,
+            },
+            Some(&assignments),
+            Some(&existing_account),
+            &HashSet::new(),
+        )
+        .await
+        .expect("reuse existing node shunt slot");
+
+        let ForwardProxyRouteScope::PinnedProxyKey(proxy_key) = scope else {
+            panic!("expected provisioning scope to pin the existing node shunt slot");
+        };
+        assert_eq!(proxy_key, FORWARD_PROXY_DIRECT_KEY);
     }
 
     #[tokio::test]

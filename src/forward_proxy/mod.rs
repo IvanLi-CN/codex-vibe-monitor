@@ -3496,6 +3496,9 @@ impl ForwardProxyManager {
             .iter()
             .find(|endpoint| endpoint.key == endpoint_key)
             .ok_or_else(|| anyhow!("pinned forward proxy key is no longer available"))?;
+        if !endpoint.is_bound_selectable() {
+            bail!("pinned forward proxy key is no longer available");
+        }
         Ok(SelectedForwardProxy::from_endpoint(endpoint))
     }
 
@@ -5036,6 +5039,32 @@ mod tests {
         let mut manager = ForwardProxyManager::new(ForwardProxySettings::default(), Vec::new());
 
         assert!(manager.select_auto_proxy().is_none());
+    }
+
+    #[test]
+    fn pinned_selection_rejects_nodes_that_are_no_longer_bound_selectable() {
+        let mut manager = manager_with_manual_proxy();
+        let binding_key = current_binding_node(&manager).key;
+        let endpoint_key = manager
+            .bound_key_endpoint_keys
+            .get(&binding_key)
+            .cloned()
+            .expect("binding key should resolve to an endpoint");
+        let endpoint = manager
+            .endpoints
+            .iter_mut()
+            .find(|endpoint| endpoint.key == endpoint_key)
+            .expect("endpoint should exist");
+        endpoint.endpoint_url = None;
+
+        let err = manager
+            .select_proxy_for_scope(&ForwardProxyRouteScope::pinned(binding_key))
+            .expect_err("stale pinned node should be rejected");
+
+        assert!(
+            err.to_string()
+                .contains("pinned forward proxy key is no longer available")
+        );
     }
 
     #[test]
