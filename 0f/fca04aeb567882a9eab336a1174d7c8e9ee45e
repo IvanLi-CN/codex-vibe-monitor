@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.35.4",
+  "base_stable_version": "1.35.3",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-02T17:16:13Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.35.4",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "be46455cf483b95117ed3312b1d1436c29b808f1",
+  "pr_number": 281,
+  "pr_title": "fix(web): refine upstream account roster freshness loading",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.35.4",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.35.4",
+  "target_sha": "0ffca04aeb567882a9eab336a1174d7c8e9ee45e",
+  "type_label": "type:patch"
+}
