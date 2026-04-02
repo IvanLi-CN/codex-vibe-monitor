@@ -10985,6 +10985,9 @@ async fn build_upstream_account_node_shunt_assignments(
     let now = Utc::now();
     let mut next_slot_by_group = HashMap::<String, usize>::new();
     let mut candidates = load_account_routing_candidates(&state.pool, &HashSet::new()).await?;
+    for candidate in &mut candidates {
+        candidate.in_flight_reservations = pool_routing_reservation_count(state, candidate.id);
+    }
     candidates.sort_by(compare_routing_candidates);
     for candidate in candidates {
         let Some(row) = rows_by_id.get(&candidate.id) else {
@@ -21320,6 +21323,103 @@ mod tests {
         assert_eq!(
             account.routing_source,
             PoolRoutingSelectionSource::FreshAssignment
+        );
+    }
+
+    #[tokio::test]
+    async fn node_shunt_assignments_follow_routing_priority_with_in_flight_reservations() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let reserved_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Reserved Slot Account",
+            "reserved-slot@example.com",
+            "org_reserved_slot",
+            "user_reserved_slot",
+        )
+        .await;
+        let available_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Available Slot Account",
+            "available-slot@example.com",
+            "org_available_slot",
+            "user_available_slot",
+        )
+        .await;
+
+        set_test_account_group_name(
+            &state.pool,
+            reserved_account_id,
+            Some("node-shunt-priority"),
+        )
+        .await;
+        set_test_account_group_name(
+            &state.pool,
+            available_account_id,
+            Some("node-shunt-priority"),
+        )
+        .await;
+
+        let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+        save_group_metadata_record_conn(
+            &mut conn,
+            "node-shunt-priority",
+            UpstreamAccountGroupMetadata {
+                note: None,
+                bound_proxy_keys: test_required_group_bound_proxy_keys(),
+                node_shunt_enabled: true,
+                upstream_429_retry_enabled: false,
+                upstream_429_max_retries: 0,
+                concurrency_limit: 0,
+            },
+        )
+        .await
+        .expect("save node shunt metadata");
+        drop(conn);
+
+        state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned")
+            .insert(
+                "test-node-shunt-reservation".to_string(),
+                PoolRoutingReservation {
+                    account_id: reserved_account_id,
+                    created_at: Instant::now(),
+                },
+            );
+
+        let assignments = build_upstream_account_node_shunt_assignments(state.as_ref())
+            .await
+            .expect("build node shunt assignments");
+
+        assert_eq!(
+            assignments
+                .account_proxy_keys
+                .get(&available_account_id)
+                .map(String::as_str),
+            Some(FORWARD_PROXY_DIRECT_KEY)
+        );
+        assert!(
+            !assignments
+                .account_proxy_keys
+                .contains_key(&reserved_account_id)
+        );
+        assert!(
+            assignments
+                .eligible_account_ids
+                .contains(&reserved_account_id)
+        );
+        assert!(
+            assignments
+                .eligible_account_ids
+                .contains(&available_account_id)
         );
     }
 
