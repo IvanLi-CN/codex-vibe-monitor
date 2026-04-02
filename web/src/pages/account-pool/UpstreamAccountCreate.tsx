@@ -4219,6 +4219,7 @@ export default function UpstreamAccountCreatePage() {
       importFiles,
       importGroupProxyState.boundProxyKeys,
       importGroupProxyState.error,
+      importGroupProxyState.nodeShuntEnabled,
       importGroupProxyState.normalizedGroupName,
       startImportedOauthValidationJob,
     ],

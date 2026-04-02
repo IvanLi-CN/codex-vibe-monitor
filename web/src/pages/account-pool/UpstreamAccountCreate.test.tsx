@@ -7238,9 +7238,8 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
       startImportedOauthValidationJob,
     });
     render("/account-pool/upstream-accounts/new?mode=import");
-
-    const pasteField = host?.querySelector('textarea[name="importOauthPasteDraft"]');
     const fileInput = host?.querySelector('input[name="importOauthFiles"]');
+    const pasteField = host?.querySelector('textarea[name="importOauthPasteDraft"]');
     if (!(pasteField instanceof HTMLTextAreaElement)) {
       throw new Error("missing import paste textarea");
     }
@@ -7277,6 +7276,82 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
           sourceId: fileSourceId,
           fileName: fileFixture.fileName,
           content: fileFixture.content,
+        }),
+      ],
+    });
+  });
+
+  it("uses the latest node shunt setting when starting imported oauth validation", async () => {
+    const fixture = createImportedOauthFixture(1);
+    const sourceId = getImportedOauthSourceId(fixture);
+    const groups = TEST_GROUP_SUMMARIES.map((group) => ({
+      ...group,
+      boundProxyKeys: [...group.boundProxyKeys],
+    }));
+    const { startImportedOauthValidationJob } =
+      installImportedOauthValidationJobFlow({
+        rowsBySourceId: {
+          [sourceId]: buildImportedOauthRow(
+            sourceId,
+            fixture.fileName,
+            fixture.email,
+            fixture.chatgptAccountId,
+          ),
+        },
+      });
+    mockUpstreamAccounts({
+      startImportedOauthValidationJob,
+      groups,
+    });
+    render("/account-pool/upstream-accounts/new?mode=import");
+
+    setComboboxValue('input[name="importGroupName"]', TEST_REQUIRED_GROUP_NAME);
+    await flushAsync();
+
+    const fileInput = host?.querySelector('input[name="importOauthFiles"]');
+    if (!(fileInput instanceof HTMLInputElement)) {
+      throw new Error("missing import file input");
+    }
+
+    await setFileInputFiles(fileInput, [fixture.file]);
+    await flushAsync();
+
+    const importGroup = groups.find(
+      (group) => group.groupName === TEST_REQUIRED_GROUP_NAME,
+    );
+    if (!importGroup) {
+      throw new Error("missing import group summary");
+    }
+    importGroup.nodeShuntEnabled = true;
+
+    clickButton(/Add tag/i);
+    await flushAsync();
+    const vipOption = Array.from(document.body.querySelectorAll("[cmdk-item]")).find(
+      (candidate) => (candidate.textContent || "").includes("vip"),
+    );
+    if (!(vipOption instanceof HTMLElement)) {
+      throw new Error("missing vip tag option");
+    }
+    act(() => {
+      vipOption.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+
+    clickButton(/validate and review/i);
+    await flushAsync();
+    await flushTimers();
+    await flushAsync();
+
+    expect(startImportedOauthValidationJob).toHaveBeenCalledWith({
+      ...expectedGroupSelection(TEST_REQUIRED_GROUP_NAME, {
+        includeConcurrencyLimit: false,
+      }),
+      groupNodeShuntEnabled: true,
+      items: [
+        expect.objectContaining({
+          fileName: fixture.fileName,
+          sourceId,
+          content: fixture.content,
         }),
       ],
     });

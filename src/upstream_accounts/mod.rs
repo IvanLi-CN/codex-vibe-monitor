@@ -3617,10 +3617,31 @@ pub(crate) async fn update_upstream_account_group(
             .await
             .map_err(internal_error_tuple)?;
     }
-    if bound_proxy_keys_was_updated && !bound_proxy_keys.is_empty() {
+    let next_bound_proxy_keys = if bound_proxy_keys_was_updated {
+        bound_proxy_keys
+    } else {
+        existing_metadata.bound_proxy_keys.clone()
+    };
+    let next_node_shunt_enabled = if node_shunt_enabled_was_updated {
+        payload.node_shunt_enabled.unwrap_or(false)
+    } else {
+        existing_metadata.node_shunt_enabled
+    };
+    if next_node_shunt_enabled {
+        let selectable_bound_proxy_keys = {
+            let manager = state.forward_proxy.lock().await;
+            manager.selectable_bound_proxy_keys_in_order(&next_bound_proxy_keys)
+        };
+        if selectable_bound_proxy_keys.is_empty() {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                group_node_shunt_unassigned_error_message().to_string(),
+            ));
+        }
+    } else if bound_proxy_keys_was_updated && !next_bound_proxy_keys.is_empty() {
         let has_selectable_bound_proxy_keys = {
             let manager = state.forward_proxy.lock().await;
-            manager.has_selectable_bound_proxy_keys(&bound_proxy_keys)
+            manager.has_selectable_bound_proxy_keys(&next_bound_proxy_keys)
         };
         if !has_selectable_bound_proxy_keys {
             return Err((
@@ -3635,16 +3656,8 @@ pub(crate) async fn update_upstream_account_group(
         &group_name,
         UpstreamAccountGroupMetadata {
             note,
-            bound_proxy_keys: if bound_proxy_keys_was_updated {
-                bound_proxy_keys
-            } else {
-                existing_metadata.bound_proxy_keys
-            },
-            node_shunt_enabled: if node_shunt_enabled_was_updated {
-                payload.node_shunt_enabled.unwrap_or(false)
-            } else {
-                existing_metadata.node_shunt_enabled
-            },
+            bound_proxy_keys: next_bound_proxy_keys,
+            node_shunt_enabled: next_node_shunt_enabled,
             upstream_429_retry_enabled: if upstream_429_retry_enabled_was_updated {
                 payload.upstream_429_retry_enabled.unwrap_or(false)
             } else {
@@ -4289,7 +4302,6 @@ fn spawn_imported_oauth_validation_job(
 ) {
     tokio::spawn(async move {
         let run_result: Result<(), String> = async {
-            let mut prepared = Vec::new();
             let mut seen_keys = HashSet::new();
             let mut consumed_proxy_keys = HashSet::new();
             let assignments = build_upstream_account_node_shunt_assignments(state.as_ref())
@@ -4389,55 +4401,20 @@ fn spawn_imported_oauth_validation_job(
                         continue;
                     }
                 };
+                let (row, validated_import) = build_imported_oauth_validation_result(
+                    state.as_ref(),
+                    normalized,
+                    &refresh_scope,
+                    &usage_scope,
+                )
+                .await;
                 if let ForwardProxyRouteScope::PinnedProxyKey(proxy_key) = &usage_scope {
-                    consumed_proxy_keys.insert(proxy_key.clone());
-                }
-
-                prepared.push((row_index, normalized, usage_scope));
-            }
-
-            let validations = stream::iter(prepared.into_iter().map(
-                |(row_index, normalized, usage_scope)| {
-                    let state = state.clone();
-                    let refresh_scope = refresh_scope.clone();
-                    async move {
-                        (
-                            row_index,
-                            build_imported_oauth_validation_result(
-                                state.as_ref(),
-                                normalized,
-                                &refresh_scope,
-                                &usage_scope,
-                            )
-                            .await,
-                        )
-                    }
-                },
-            ))
-            .buffer_unordered(4);
-            tokio::pin!(validations);
-
-            loop {
-                tokio::select! {
-                    _ = job.cancel.cancelled() => {
-                        finish_imported_oauth_validation_job_cancelled(&job).await;
-                        return Ok(());
-                    }
-                    next = validations.next() => {
-                        match next {
-                            Some((row_index, (row, validated_import))) => {
-                                update_imported_oauth_validation_job_row(
-                                    &job,
-                                    row_index,
-                                    row,
-                                    validated_import,
-                                )
-                                .await;
-                            }
-                            None => break,
-                        }
+                    if validated_import.is_some() {
+                        consumed_proxy_keys.insert(proxy_key.clone());
                     }
                 }
+                update_imported_oauth_validation_job_row(&job, row_index, row, validated_import)
+                    .await;
             }
 
             if job.cancel.is_cancelled() {
@@ -18121,6 +18098,268 @@ mod tests {
         assert_eq!(cached.normalized.email, "alpha@duckmail.sbs");
         assert_eq!(cached.normalized.chatgpt_account_id, "acct_alpha");
         assert_eq!(cached.probe.credentials.refresh_token, "refresh-token");
+    }
+
+    #[tokio::test]
+    async fn imported_oauth_validation_job_only_consumes_node_shunt_slots_after_success() {
+        #[derive(Clone)]
+        struct ImportedOauthValidationServerState {
+            usage_requests: Arc<AtomicUsize>,
+            token_requests: Arc<AtomicUsize>,
+        }
+
+        async fn usage_handler(
+            State(state): State<ImportedOauthValidationServerState>,
+        ) -> (StatusCode, String) {
+            state.usage_requests.fetch_add(1, Ordering::SeqCst);
+            (
+                StatusCode::OK,
+                json!({
+                    "planType": "team",
+                    "rateLimit": {
+                        "primaryWindow": {
+                            "usedPercent": 8,
+                            "windowDurationMins": 300,
+                            "resetsAt": 1771322400
+                        }
+                    }
+                })
+                .to_string(),
+            )
+        }
+
+        async fn token_handler(
+            State(state): State<ImportedOauthValidationServerState>,
+            axum::extract::Form(form): axum::extract::Form<
+                std::collections::HashMap<String, String>,
+            >,
+        ) -> (StatusCode, String) {
+            state.token_requests.fetch_add(1, Ordering::SeqCst);
+            let refresh_token = form.get("refresh_token").cloned().unwrap_or_default();
+            if refresh_token == "bad-refresh" {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    json!({
+                        "error": "invalid_grant",
+                        "error_description": "refresh token rejected"
+                    })
+                    .to_string(),
+                );
+            }
+
+            (
+                StatusCode::OK,
+                json!({
+                    "access_token": "refreshed-access",
+                    "refresh_token": "refreshed-refresh",
+                    "id_token": test_id_token(
+                        "fallback@duckmail.sbs",
+                        Some("acct_fallback"),
+                        Some("user_fallback"),
+                        Some("team"),
+                    ),
+                    "token_type": "Bearer",
+                    "expires_in": 3600,
+                })
+                .to_string(),
+            )
+        }
+
+        fn imported_item(
+            source_id: &str,
+            file_name: &str,
+            email: &str,
+            account_id: &str,
+            expires_at: &str,
+            refresh_token: &str,
+        ) -> ImportOauthCredentialFileRequest {
+            ImportOauthCredentialFileRequest {
+                source_id: source_id.to_string(),
+                file_name: file_name.to_string(),
+                content: json!({
+                    "type": "codex",
+                    "email": email,
+                    "account_id": account_id,
+                    "expired": expires_at,
+                    "access_token": format!("access-{source_id}"),
+                    "refresh_token": refresh_token,
+                    "id_token": test_id_token(
+                        email,
+                        Some(account_id),
+                        Some(format!("user_{source_id}").as_str()),
+                        Some("team"),
+                    ),
+                })
+                .to_string(),
+            }
+        }
+
+        let usage_requests = Arc::new(AtomicUsize::new(0));
+        let token_requests = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .route("/backend-api/wham/usage", get(usage_handler))
+            .route("/oauth/token", post(token_handler))
+            .with_state(ImportedOauthValidationServerState {
+                usage_requests: usage_requests.clone(),
+                token_requests: token_requests.clone(),
+            });
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind imported validation server");
+        let addr = listener
+            .local_addr()
+            .expect("imported validation server addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve imported validation server");
+        });
+        let origin = format!("http://{addr}");
+
+        let state =
+            test_app_state_with_usage_and_oauth_base(&format!("{origin}/backend-api"), &origin)
+                .await;
+        let Json(response) = create_imported_oauth_validation_job(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(ValidateImportedOauthAccountsRequest {
+                group_name: Some("import-group".to_string()),
+                group_bound_proxy_keys: Some(test_required_group_bound_proxy_keys()),
+                group_node_shunt_enabled: Some(true),
+                items: vec![
+                    imported_item(
+                        "source-bad",
+                        "bad.json",
+                        "bad@duckmail.sbs",
+                        "acct_bad",
+                        "2026-03-20T00:00:00Z",
+                        "bad-refresh",
+                    ),
+                    imported_item(
+                        "source-good",
+                        "good.json",
+                        "good@duckmail.sbs",
+                        "acct_good",
+                        "2026-04-20T00:00:00Z",
+                        "good-refresh",
+                    ),
+                ],
+            }),
+        )
+        .await
+        .expect("start imported oauth validation job");
+        let job = state
+            .upstream_accounts
+            .get_validation_job(&response.job_id)
+            .await
+            .expect("validation job should exist");
+        timeout(Duration::from_secs(1), async {
+            loop {
+                if job.terminal_event.lock().await.is_some() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("validation job should finish");
+
+        let rows = job.snapshot.lock().await.rows.clone();
+        let bad_row = rows
+            .iter()
+            .find(|row| row.source_id == "source-bad")
+            .expect("bad row");
+        let good_row = rows
+            .iter()
+            .find(|row| row.source_id == "source-good")
+            .expect("good row");
+
+        assert_eq!(bad_row.status, IMPORT_VALIDATION_STATUS_INVALID);
+        assert!(
+            bad_row
+                .detail
+                .as_deref()
+                .unwrap_or_default()
+                .contains("refresh token rejected")
+        );
+        assert_eq!(good_row.status, IMPORT_VALIDATION_STATUS_OK);
+        assert_ne!(
+            good_row.detail.as_deref(),
+            Some(group_node_shunt_unassigned_error_message())
+        );
+        assert_eq!(token_requests.load(Ordering::SeqCst), 1);
+        assert_eq!(usage_requests.load(Ordering::SeqCst), 1);
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn update_upstream_account_group_rejects_enabling_node_shunt_without_usable_binding() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let account_id = insert_api_key_account(&state.pool, "Node Shunt Guard").await;
+        set_test_account_group_name(&state.pool, account_id, Some("empty-node-shunt")).await;
+
+        let error = update_upstream_account_group(
+            State(state),
+            HeaderMap::new(),
+            AxumPath("empty-node-shunt".to_string()),
+            Json(UpdateUpstreamAccountGroupRequest {
+                note: None,
+                bound_proxy_keys: None,
+                node_shunt_enabled: Some(true),
+                upstream_429_retry_enabled: None,
+                upstream_429_max_retries: None,
+                concurrency_limit: None,
+            }),
+        )
+        .await
+        .expect_err("node shunt should require a usable binding");
+
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert_eq!(error.1, group_node_shunt_unassigned_error_message());
+    }
+
+    #[tokio::test]
+    async fn update_upstream_account_group_rejects_clearing_bindings_while_node_shunt_stays_enabled()
+     {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let account_id = insert_api_key_account(&state.pool, "Node Shunt Bound").await;
+        set_test_account_group_name(&state.pool, account_id, Some("bound-node-shunt")).await;
+        let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+        save_group_metadata_record_conn(
+            &mut conn,
+            "bound-node-shunt",
+            UpstreamAccountGroupMetadata {
+                note: None,
+                bound_proxy_keys: test_required_group_bound_proxy_keys(),
+                node_shunt_enabled: true,
+                upstream_429_retry_enabled: false,
+                upstream_429_max_retries: 0,
+                concurrency_limit: 0,
+            },
+        )
+        .await
+        .expect("save group metadata");
+        drop(conn);
+
+        let error = update_upstream_account_group(
+            State(state),
+            HeaderMap::new(),
+            AxumPath("bound-node-shunt".to_string()),
+            Json(UpdateUpstreamAccountGroupRequest {
+                note: None,
+                bound_proxy_keys: Some(vec![]),
+                node_shunt_enabled: None,
+                upstream_429_retry_enabled: None,
+                upstream_429_max_retries: None,
+                concurrency_limit: None,
+            }),
+        )
+        .await
+        .expect_err("node shunt should reject empty bindings");
+
+        assert_eq!(error.0, StatusCode::BAD_REQUEST);
+        assert_eq!(error.1, group_node_shunt_unassigned_error_message());
     }
 
     #[tokio::test]
