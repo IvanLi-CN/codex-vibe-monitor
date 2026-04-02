@@ -5,6 +5,7 @@ import {
   useRef,
   useState,
   type ChangeEvent,
+  type ClipboardEvent,
   type KeyboardEvent,
 } from "react";
 import { AppIcon } from "../../components/AppIcon";
@@ -607,6 +608,81 @@ function hydrateBatchOauthRow(
 
 function createImportedOauthSourceId(file: File, index: number) {
   return `${file.name}:${file.size}:${file.lastModified}:${index}`;
+}
+
+function createImportedOauthPastedSourceId(serial: number) {
+  return `pasted:${serial}`;
+}
+
+function createImportedOauthPastedFileName(serial: number) {
+  return `Pasted credential #${serial}.json`;
+}
+
+function getImportedOauthValidationStatusLabel(
+  status: ImportedOauthValidationRow["status"],
+  t: (key: string, values?: Record<string, string | number>) => string,
+) {
+  switch (status) {
+    case "pending":
+      return t("accountPool.upstreamAccounts.import.validation.status.pending");
+    case "duplicate_in_input":
+      return t(
+        "accountPool.upstreamAccounts.import.validation.status.duplicate",
+      );
+    case "ok":
+      return t("accountPool.upstreamAccounts.import.validation.status.ok");
+    case "ok_exhausted":
+      return t(
+        "accountPool.upstreamAccounts.import.validation.status.exhausted",
+      );
+    case "invalid":
+      return t("accountPool.upstreamAccounts.import.validation.status.invalid");
+    case "error":
+      return t("accountPool.upstreamAccounts.import.validation.status.error");
+    default:
+      return status;
+  }
+}
+
+function parseImportedOauthPasteDraft(
+  content: string,
+  t: (key: string, values?: Record<string, string | number>) => string,
+) {
+  const normalizedContent = content.trim();
+  if (!normalizedContent) {
+    return {
+      ok: false as const,
+      error: t("accountPool.upstreamAccounts.import.paste.emptyError"),
+    };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(normalizedContent);
+  } catch {
+    return {
+      ok: false as const,
+      error: t("accountPool.upstreamAccounts.import.paste.invalidJsonError"),
+    };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return {
+      ok: false as const,
+      error: t("accountPool.upstreamAccounts.import.paste.singleObjectError"),
+    };
+  }
+  return {
+    ok: true as const,
+    normalizedContent,
+  };
+}
+
+function getImportedOauthPasteValidationError(
+  row: ImportedOauthValidationRow,
+  t: (key: string, values?: Record<string, string | number>) => string,
+) {
+  const detail = row.detail?.trim();
+  if (detail) return detail;
+  return getImportedOauthValidationStatusLabel(row.status, t);
 }
 
 function buildImportedOauthPendingState(
@@ -1390,6 +1466,7 @@ export default function UpstreamAccountCreatePage() {
     removeOauthMailboxSession,
     completeOauthLogin,
     createApiKeyAccount,
+    runImportedOauthValidation,
     startImportedOauthValidationJob,
     stopImportedOauthValidationJob,
     importOauthAccounts,
@@ -1542,17 +1619,25 @@ export default function UpstreamAccountCreatePage() {
   const [importTagIds, setImportTagIds] = useState<number[]>(
     () => draft?.import?.tagIds ?? [],
   );
+  const [importPasteDraft, setImportPasteDraft] = useState("");
+  const [importPasteError, setImportPasteError] = useState<string | null>(null);
+  const [importPasteBusy, setImportPasteBusy] = useState(false);
+  const [importPasteDraftSerial, setImportPasteDraftSerial] = useState<
+    number | null
+  >(null);
   const [importFiles, setImportFiles] = useState<
     ImportOauthCredentialFilePayload[]
   >([]);
-  const [importSelectionLabel, setImportSelectionLabel] = useState<
-    string | null
-  >(null);
   const [importValidationDialogOpen, setImportValidationDialogOpen] =
     useState(false);
   const [importValidationState, setImportValidationState] =
     useState<ImportedOauthValidationDialogState | null>(null);
   const [importInputKey, setImportInputKey] = useState(0);
+  const importPasteSequenceRef = useRef(0);
+  const importPasteValidationTokenRef = useRef(0);
+  const importPasteDraftRef = useRef("");
+  const importFilesRevisionRef = useRef(0);
+  const importFileSourceSequenceRef = useRef(0);
   const importValidationEventSourceRef = useRef<EventSource | null>(null);
   const importValidationEventCleanupRef = useRef<(() => void) | null>(null);
   const importValidationJobIdRef = useRef<string | null>(null);
@@ -2932,6 +3017,10 @@ export default function UpstreamAccountCreatePage() {
     () => resolveRequiredGroupProxyState(importGroupName),
     [importGroupName, resolveRequiredGroupProxyState],
   );
+  const importSelectionLabel = useMemo(
+    () => formatImportedOauthSelectionLabel(importFiles, t),
+    [importFiles, t],
+  );
   const apiKeyGroupProxyState = useMemo(
     () => resolveRequiredGroupProxyState(apiKeyGroupName),
     [apiKeyGroupName, resolveRequiredGroupProxyState],
@@ -3705,6 +3794,16 @@ export default function UpstreamAccountCreatePage() {
     [closeImportValidationEventSource, stopImportedOauthValidationJob],
   );
 
+  const resetImportValidationForSelectionChange = useCallback(async () => {
+    if (importValidationJobIdRef.current) {
+      await cancelActiveImportedOauthValidation({ closeDialog: true });
+      return;
+    }
+    closeImportValidationEventSource();
+    setImportValidationDialogOpen(false);
+    setImportValidationState(null);
+  }, [cancelActiveImportedOauthValidation, closeImportValidationEventSource]);
+
   const attachImportedOauthValidationJob = useCallback(
     ({
       jobId,
@@ -4038,55 +4137,190 @@ export default function UpstreamAccountCreatePage() {
     ],
   );
 
+  const validateAndQueueImportedOauthPaste = useCallback(
+    async (
+      draftContent: string,
+      options?: {
+        serial?: number | null;
+      },
+    ) => {
+      const parsedDraft = parseImportedOauthPasteDraft(draftContent, t);
+      if (!parsedDraft.ok) {
+        setImportPasteError(parsedDraft.error);
+        return;
+      }
+      if (importGroupProxyState.error) {
+        setImportPasteError(importGroupProxyState.error);
+        return;
+      }
+      const serial =
+        options?.serial && options.serial > 0
+          ? options.serial
+          : (() => {
+              importPasteSequenceRef.current += 1;
+              return importPasteSequenceRef.current;
+            })();
+      const validationToken = importPasteValidationTokenRef.current + 1;
+      importPasteValidationTokenRef.current = validationToken;
+      const importFilesRevision = importFilesRevisionRef.current;
+      setImportPasteDraftSerial(serial);
+      setImportPasteBusy(true);
+      setImportPasteError(null);
+      setActionError(null);
+
+      const item: ImportOauthCredentialFilePayload = {
+        sourceId: createImportedOauthPastedSourceId(serial),
+        fileName: createImportedOauthPastedFileName(serial),
+        content: parsedDraft.normalizedContent,
+      };
+
+      try {
+        const response = await runImportedOauthValidation({
+          items: [item],
+          groupName: importGroupProxyState.normalizedGroupName || undefined,
+          groupBoundProxyKeys: importGroupProxyState.boundProxyKeys,
+        });
+        if (
+          validationToken !== importPasteValidationTokenRef.current ||
+          importFilesRevision !== importFilesRevisionRef.current ||
+          importPasteDraftRef.current.trim() !== parsedDraft.normalizedContent
+        ) {
+          return;
+        }
+        const row = response.rows[0];
+        if (!row || response.rows.length !== 1) {
+          setImportPasteError(
+            t("accountPool.upstreamAccounts.import.paste.unexpectedResponse"),
+          );
+          return;
+        }
+        if (row.status === "ok" || row.status === "ok_exhausted") {
+          await resetImportValidationForSelectionChange();
+          if (
+            validationToken !== importPasteValidationTokenRef.current ||
+            importFilesRevision !== importFilesRevisionRef.current ||
+            importPasteDraftRef.current.trim() !== parsedDraft.normalizedContent
+          ) {
+            return;
+          }
+          importFilesRevisionRef.current += 1;
+          setImportFiles((current) => [...current, item]);
+          importPasteDraftRef.current = "";
+          setImportPasteDraft("");
+          setImportPasteDraftSerial(null);
+          setImportPasteError(null);
+          return;
+        }
+        setImportPasteError(getImportedOauthPasteValidationError(row, t));
+      } catch (err) {
+        if (validationToken === importPasteValidationTokenRef.current) {
+          setImportPasteError(err instanceof Error ? err.message : String(err));
+        }
+      } finally {
+        if (validationToken === importPasteValidationTokenRef.current) {
+          setImportPasteBusy(false);
+        }
+      }
+    },
+    [
+      importGroupProxyState.boundProxyKeys,
+      importGroupProxyState.error,
+      importGroupProxyState.normalizedGroupName,
+      resetImportValidationForSelectionChange,
+      runImportedOauthValidation,
+      t,
+    ],
+  );
+
+  const handleImportedOauthPasteDraftChange = useCallback(
+    (event: ChangeEvent<HTMLTextAreaElement>) => {
+      importPasteValidationTokenRef.current += 1;
+      importPasteDraftRef.current = event.target.value;
+      setImportPasteDraft(event.target.value);
+      setImportPasteBusy(false);
+      setImportPasteError(null);
+      setActionError(null);
+    },
+    [],
+  );
+
+  const handleImportedOauthPaste = useCallback(
+    (event: ClipboardEvent<HTMLTextAreaElement>) => {
+      event.preventDefault();
+      const nextDraft =
+        event.clipboardData.getData("text/plain") ||
+        event.clipboardData.getData("text");
+      importPasteValidationTokenRef.current += 1;
+      importPasteSequenceRef.current += 1;
+      const serial = importPasteSequenceRef.current;
+      importPasteDraftRef.current = nextDraft;
+      setImportPasteDraft(nextDraft);
+      setImportPasteDraftSerial(serial);
+      setImportPasteBusy(false);
+      setImportPasteError(null);
+      setActionError(null);
+      void validateAndQueueImportedOauthPaste(nextDraft, {
+        serial,
+      });
+    },
+    [validateAndQueueImportedOauthPaste],
+  );
+
+  const handleValidateImportedOauthPasteDraft = useCallback(async () => {
+    if (!writesEnabled) return;
+    await validateAndQueueImportedOauthPaste(importPasteDraft, {
+      serial: importPasteDraftSerial,
+    });
+  }, [
+    importPasteDraft,
+    importPasteDraftSerial,
+    validateAndQueueImportedOauthPaste,
+    writesEnabled,
+  ]);
+
   const handleImportFilesChange = useCallback(
     async (event: ChangeEvent<HTMLInputElement>) => {
       const selectedFiles = Array.from(event.target.files ?? []);
       setActionError(null);
-      if (importValidationJobIdRef.current) {
-        await cancelActiveImportedOauthValidation({ closeDialog: true });
-      } else {
-        setImportValidationDialogOpen(false);
-        setImportValidationState(null);
-        closeImportValidationEventSource();
-      }
       if (selectedFiles.length === 0) {
-        setImportFiles([]);
-        setImportSelectionLabel(null);
         return;
       }
       try {
+        importPasteValidationTokenRef.current += 1;
+        setImportPasteBusy(false);
+        await resetImportValidationForSelectionChange();
+        const sourceIdOffset = importFileSourceSequenceRef.current;
+        importFileSourceSequenceRef.current += selectedFiles.length;
         const items = await Promise.all(
           selectedFiles.map(async (file, index) => ({
-            sourceId: createImportedOauthSourceId(file, index),
+            sourceId: createImportedOauthSourceId(
+              file,
+              sourceIdOffset + index,
+            ),
             fileName: file.name,
             content: await file.text(),
           })),
         );
-        setImportFiles(items);
-        setImportSelectionLabel(formatImportedOauthSelectionLabel(items, t));
+        importFilesRevisionRef.current += 1;
+        setImportFiles((current) => [...current, ...items]);
+        setImportInputKey((current) => current + 1);
       } catch (err) {
-        setImportFiles([]);
-        setImportSelectionLabel(null);
         setActionError(err instanceof Error ? err.message : String(err));
       }
     },
-    [cancelActiveImportedOauthValidation, closeImportValidationEventSource, t],
+    [resetImportValidationForSelectionChange],
   );
 
   const handleClearImportSelection = useCallback(() => {
     void (async () => {
-      if (importValidationJobIdRef.current) {
-        await cancelActiveImportedOauthValidation({ closeDialog: true });
-      } else {
-        closeImportValidationEventSource();
-        setImportValidationDialogOpen(false);
-        setImportValidationState(null);
-      }
+      importPasteValidationTokenRef.current += 1;
+      setImportPasteBusy(false);
+      await resetImportValidationForSelectionChange();
+      importFilesRevisionRef.current += 1;
       setImportFiles([]);
-      setImportSelectionLabel(null);
       setImportInputKey((current) => current + 1);
     })();
-  }, [cancelActiveImportedOauthValidation, closeImportValidationEventSource]);
+  }, [resetImportValidationForSelectionChange]);
 
   const handleValidateImportedOauth = useCallback(async () => {
     if (!writesEnabled || importFiles.length === 0) return;
@@ -4133,6 +4367,10 @@ export default function UpstreamAccountCreatePage() {
     importValidationState?.checking,
     importValidationState?.importing,
   ]);
+
+  useEffect(() => {
+    importPasteDraftRef.current = importPasteDraft;
+  }, [importPasteDraft]);
 
   useEffect(() => {
     return () => {
@@ -4242,10 +4480,8 @@ export default function UpstreamAccountCreatePage() {
             };
           });
 
+        importFilesRevisionRef.current += 1;
         setImportFiles(workingItems);
-        setImportSelectionLabel(
-          formatImportedOauthSelectionLabel(workingItems, t),
-        );
         setImportValidationState(() => {
           if (workingRows.length === 0) {
             return null;
@@ -7225,6 +7461,78 @@ export default function UpstreamAccountCreatePage() {
                       onChange={(event) => void handleImportFilesChange(event)}
                       disabled={!writesEnabled}
                     />
+                  </label>
+                  <label className="field md:col-span-2">
+                    <span className="field-label">
+                      {t("accountPool.upstreamAccounts.import.paste.label")}
+                    </span>
+                    <textarea
+                      className={cn(
+                        "min-h-36 rounded-xl border border-base-300 bg-base-100 px-3 py-2 font-mono text-sm text-base-content shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-base-100",
+                        importPasteError
+                          ? "border-error/70 focus-visible:ring-error"
+                          : "",
+                      )}
+                      name="importOauthPasteDraft"
+                      value={importPasteDraft}
+                      onChange={handleImportedOauthPasteDraftChange}
+                      onPaste={handleImportedOauthPaste}
+                      placeholder={t(
+                        "accountPool.upstreamAccounts.import.paste.placeholder",
+                      )}
+                      autoCapitalize="none"
+                      spellCheck={false}
+                      aria-invalid={importPasteError ? "true" : "false"}
+                      disabled={!writesEnabled || importPasteBusy}
+                    />
+                    {importPasteError ? (
+                      <p className="mt-2 text-sm text-error">
+                        {importPasteError}
+                      </p>
+                    ) : importPasteBusy ? (
+                      <p className="mt-2 inline-flex items-center gap-2 text-sm text-base-content/65">
+                        <Spinner className="size-4" />
+                        {t(
+                          "accountPool.upstreamAccounts.import.paste.validating",
+                        )}
+                      </p>
+                    ) : (
+                      <p className="mt-2 text-sm text-base-content/65">
+                        {t("accountPool.upstreamAccounts.import.paste.hint")}
+                      </p>
+                    )}
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        onClick={() =>
+                          void handleValidateImportedOauthPasteDraft()
+                        }
+                        disabled={
+                          !writesEnabled ||
+                          importPasteBusy ||
+                          importPasteDraft.trim().length === 0
+                        }
+                      >
+                        {t("accountPool.upstreamAccounts.import.paste.action")}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        onClick={() => {
+                          setImportPasteDraft("");
+                          setImportPasteDraftSerial(null);
+                          setImportPasteError(null);
+                        }}
+                        disabled={
+                          importPasteBusy || importPasteDraft.length === 0
+                        }
+                      >
+                        {t(
+                          "accountPool.upstreamAccounts.import.paste.clearDraft",
+                        )}
+                      </Button>
+                    </div>
                   </label>
                   <div className="md:col-span-2 rounded-2xl border border-base-300/80 bg-base-200/35 p-4">
                     <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">

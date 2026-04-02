@@ -283,14 +283,34 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.import.createTitle":
       "Import Codex OAuth JSON",
     "accountPool.upstreamAccounts.import.createDescription":
-      "Select one or more exported Codex OAuth credential JSON files, validate them in batch, then import the usable accounts.",
+      "Select exported credential files or paste one credential JSON at a time, pre-validate each item, then batch-import the usable accounts.",
     "accountPool.upstreamAccounts.import.fileInputLabel":
       "Credential JSON files",
-    "accountPool.upstreamAccounts.import.selectedFilesTitle": "Selected files",
+    "accountPool.upstreamAccounts.import.paste.label":
+      "Paste one credential JSON",
+    "accountPool.upstreamAccounts.import.paste.placeholder":
+      "{\n  \"type\": \"codex\",\n  \"email\": \"owner@example.com\",\n  ...\n}",
+    "accountPool.upstreamAccounts.import.paste.hint":
+      "Paste exactly one credential JSON object. A successful paste is added to the queue automatically; if validation fails, you can edit and retry here.",
+    "accountPool.upstreamAccounts.import.paste.validating":
+      "Pre-validating pasted credential…",
+    "accountPool.upstreamAccounts.import.paste.action":
+      "Validate and add to queue",
+    "accountPool.upstreamAccounts.import.paste.clearDraft": "Clear editor",
+    "accountPool.upstreamAccounts.import.paste.emptyError":
+      "Paste one credential JSON object before validating.",
+    "accountPool.upstreamAccounts.import.paste.invalidJsonError":
+      "The pasted content must be valid JSON.",
+    "accountPool.upstreamAccounts.import.paste.singleObjectError":
+      "Paste exactly one credential JSON object.",
+    "accountPool.upstreamAccounts.import.paste.unexpectedResponse":
+      "The pasted credential returned an unexpected validation response.",
+    "accountPool.upstreamAccounts.import.selectedFilesTitle":
+      "Queued credentials",
     "accountPool.upstreamAccounts.import.selectedFilesEmpty":
-      "No JSON file selected yet.",
+      "No credential has been added yet.",
     "accountPool.upstreamAccounts.import.filesSelected":
-      "{{count}} files selected",
+      "{{count}} credentials queued",
     "accountPool.upstreamAccounts.import.clearSelection": "Clear selection",
     "accountPool.upstreamAccounts.import.defaultGroupPlaceholder":
       "Apply a default group to newly created imports",
@@ -1851,13 +1871,30 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.createPage.tabs.apiKey": "API Key",
     "accountPool.upstreamAccounts.import.createTitle": "导入 Codex OAuth JSON",
     "accountPool.upstreamAccounts.import.createDescription":
-      "选择一个或多个导出的 Codex OAuth 凭据 JSON 文件，先批量验活，再导入可用账号。",
+      "选择导出的凭据 JSON 文件，或一次粘贴一条凭据 JSON，先逐条预校验，再批量导入可用账号。",
     "accountPool.upstreamAccounts.import.fileInputLabel": "凭据 JSON 文件",
-    "accountPool.upstreamAccounts.import.selectedFilesTitle": "已选文件",
+    "accountPool.upstreamAccounts.import.paste.label": "粘贴单条凭据 JSON",
+    "accountPool.upstreamAccounts.import.paste.placeholder":
+      "{\n  \"type\": \"codex\",\n  \"email\": \"owner@example.com\",\n  ...\n}",
+    "accountPool.upstreamAccounts.import.paste.hint":
+      "每次只粘贴一条凭据 JSON object。粘贴后会自动预校验，成功就加入列表；失败时可在这里继续编辑后重试。",
+    "accountPool.upstreamAccounts.import.paste.validating":
+      "正在预校验粘贴的凭据…",
+    "accountPool.upstreamAccounts.import.paste.action": "校验并加入列表",
+    "accountPool.upstreamAccounts.import.paste.clearDraft": "清空编辑框",
+    "accountPool.upstreamAccounts.import.paste.emptyError":
+      "请先粘贴一条凭据 JSON object。",
+    "accountPool.upstreamAccounts.import.paste.invalidJsonError":
+      "粘贴内容必须是合法 JSON。",
+    "accountPool.upstreamAccounts.import.paste.singleObjectError":
+      "一次只能粘贴一条凭据 JSON object。",
+    "accountPool.upstreamAccounts.import.paste.unexpectedResponse":
+      "粘贴凭据返回了无法识别的校验结果。",
+    "accountPool.upstreamAccounts.import.selectedFilesTitle": "待导入凭据",
     "accountPool.upstreamAccounts.import.selectedFilesEmpty":
-      "还没有选择 JSON 文件。",
+      "还没有加入任何凭据。",
     "accountPool.upstreamAccounts.import.filesSelected":
-      "已选择 {{count}} 个文件",
+      "当前已加入 {{count}} 条凭据",
     "accountPool.upstreamAccounts.import.clearSelection": "清空选择",
     "accountPool.upstreamAccounts.import.defaultGroupPlaceholder":
       "为新建导入账号设置默认分组",

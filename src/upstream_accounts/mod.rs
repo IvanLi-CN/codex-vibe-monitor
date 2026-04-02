@@ -1922,9 +1922,9 @@ struct ImportedOauthCredentialsFile {
     id_token: String,
     #[serde(default)]
     #[serde(rename = "last_refresh")]
-    _last_refresh: Option<String>,
+    _last_refresh: Option<serde_json::Value>,
     #[serde(default)]
-    token_type: Option<String>,
+    token_type: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone)]
@@ -14329,11 +14329,18 @@ fn normalize_imported_oauth_credentials(
             access_token,
             refresh_token,
             id_token,
-            token_type: normalize_optional_text(parsed.token_type)
+            token_type: normalize_optional_json_text(parsed.token_type)
                 .or_else(|| Some("Bearer".to_string())),
         },
         claims,
     })
+}
+
+fn normalize_optional_json_text(value: Option<serde_json::Value>) -> Option<String> {
+    match value {
+        Some(serde_json::Value::String(value)) => normalize_optional_text(Some(value)),
+        _ => None,
+    }
 }
 
 fn parse_rfc3339_utc(raw: &str) -> Option<DateTime<Utc>> {
@@ -17113,6 +17120,38 @@ mod tests {
             normalized.claims.chatgpt_user_id.as_deref(),
             Some("user_imported")
         );
+    }
+
+    #[test]
+    fn normalize_imported_oauth_credentials_ignores_non_string_unused_fields() {
+        let item = ImportOauthCredentialFileRequest {
+            source_id: "file-non-string-unused".to_string(),
+            file_name: "non-string-unused.json".to_string(),
+            content: json!({
+                "type": "codex",
+                "email": "non-string-unused@duckmail.sbs",
+                "account_id": "acct_non_string_unused",
+                "expired": "2026-03-20T00:00:00Z",
+                "access_token": "access-token",
+                "refresh_token": "refresh-token",
+                "id_token": test_id_token(
+                    "non-string-unused@duckmail.sbs",
+                    Some("acct_non_string_unused"),
+                    Some("user_non_string_unused"),
+                    Some("team"),
+                ),
+                "last_refresh": {
+                    "at": "2026-03-18T00:00:00Z"
+                },
+                "token_type": 42
+            })
+            .to_string(),
+        };
+
+        let normalized = normalize_imported_oauth_credentials(&item)
+            .expect("normalize imported oauth credentials");
+        assert_eq!(normalized.credentials.token_type.as_deref(), Some("Bearer"));
+        assert_eq!(normalized.chatgpt_account_id, "acct_non_string_unused");
     }
 
     #[test]
