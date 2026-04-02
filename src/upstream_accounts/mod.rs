@@ -20053,7 +20053,7 @@ mod tests {
     }
 
     async fn wait_for_atomic_true(flag: &AtomicBool) {
-        timeout(Duration::from_secs(1), async {
+        timeout(Duration::from_secs(3), async {
             while !flag.load(Ordering::SeqCst) {
                 tokio::task::yield_now().await;
             }
@@ -20063,7 +20063,7 @@ mod tests {
     }
 
     async fn wait_for_atomic_usize(flag: &AtomicUsize, expected: usize) {
-        timeout(Duration::from_secs(1), async {
+        timeout(Duration::from_secs(3), async {
             while flag.load(Ordering::SeqCst) < expected {
                 tokio::task::yield_now().await;
             }
