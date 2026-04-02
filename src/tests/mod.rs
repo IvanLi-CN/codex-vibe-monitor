@@ -17078,6 +17078,111 @@ async fn pool_route_keeps_generic_no_candidate_when_other_accounts_are_unavailab
 }
 
 #[tokio::test]
+async fn pool_route_skips_ungrouped_account_when_grouped_alternate_exists() {
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let ungrouped_id =
+        insert_test_pool_api_key_account(&state, "Ungrouped", "upstream-primary").await;
+    let grouped_id =
+        insert_test_pool_api_key_account(&state, "Grouped", "upstream-secondary").await;
+    sqlx::query("UPDATE pool_upstream_accounts SET group_name = NULL WHERE id = ?1")
+        .bind(ungrouped_id)
+        .execute(&state.pool)
+        .await
+        .expect("clear ungrouped account group");
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-ungrouped-fresh"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read proxy response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode proxy response");
+    assert_eq!(payload["authorization"], "Bearer upstream-secondary");
+    assert_eq!(payload["attempt"], 1);
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), None);
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(1));
+    drop(attempts);
+
+    let route_account_id =
+        wait_for_test_sticky_route_account_id(&state.pool, "sticky-ungrouped-fresh")
+            .await
+            .expect("sticky route should bind to grouped alternate");
+    assert_eq!(route_account_id, grouped_id);
+    assert_ne!(route_account_id, ungrouped_id);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_route_returns_specific_ungrouped_error_when_all_candidates_are_ungrouped() {
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let ungrouped_id =
+        insert_test_pool_api_key_account(&state, "Ungrouped", "upstream-primary").await;
+    sqlx::query("UPDATE pool_upstream_accounts SET group_name = NULL WHERE id = ?1")
+        .bind(ungrouped_id)
+        .execute(&state.pool)
+        .await
+        .expect("clear ungrouped account group");
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-ungrouped-only"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read failure body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode failure payload");
+    assert!(
+        payload["error"]
+            .as_str()
+            .is_some_and(|value| value.contains("upstream account is not assigned to a group")),
+        "unexpected error payload: {payload:?}"
+    );
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), None);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn pool_route_returns_429_after_three_distinct_accounts_hit_upstream_429() {
     #[derive(Debug, sqlx::FromRow)]
     struct AttemptRow {
