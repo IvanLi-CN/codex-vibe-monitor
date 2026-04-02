@@ -10809,6 +10809,15 @@ struct UpstreamAccountNodeShuntAssignments {
     eligible_account_ids: HashSet<i64>,
 }
 
+fn compare_node_shunt_reserved_candidates(
+    lhs: &AccountRoutingCandidateRow,
+    rhs: &AccountRoutingCandidateRow,
+) -> std::cmp::Ordering {
+    rhs.in_flight_reservations
+        .cmp(&lhs.in_flight_reservations)
+        .then_with(|| compare_routing_candidates(lhs, rhs))
+}
+
 async fn load_node_shunt_enabled_group_metadata_map(
     pool: &Pool<Sqlite>,
 ) -> Result<HashMap<String, UpstreamAccountGroupMetadata>> {
@@ -10983,12 +10992,11 @@ async fn build_upstream_account_node_shunt_assignments(
     }
 
     let now = Utc::now();
-    let mut next_slot_by_group = HashMap::<String, usize>::new();
+    let mut group_candidates = HashMap::<String, Vec<AccountRoutingCandidateRow>>::new();
     let mut candidates = load_account_routing_candidates(&state.pool, &HashSet::new()).await?;
     for candidate in &mut candidates {
         candidate.in_flight_reservations = pool_routing_reservation_count(state, candidate.id);
     }
-    candidates.sort_by(compare_routing_candidates);
     for candidate in candidates {
         let Some(row) = rows_by_id.get(&candidate.id) else {
             continue;
@@ -11007,22 +11015,56 @@ async fn build_upstream_account_node_shunt_assignments(
             continue;
         }
         assignments.eligible_account_ids.insert(row.id);
-        let Some(group_slots) = assignments.group_slots.get(&group_name) else {
-            continue;
-        };
-        let next_slot_index = next_slot_by_group.entry(group_name.clone()).or_insert(0);
-        let Some(proxy_key) = group_slots.valid_proxy_keys.get(*next_slot_index).cloned() else {
-            continue;
-        };
-        assignments
-            .account_proxy_keys
-            .insert(row.id, proxy_key.clone());
-        assignments
-            .group_assigned_proxy_keys
+        group_candidates
             .entry(group_name)
             .or_default()
-            .insert(proxy_key);
-        *next_slot_index += 1;
+            .push(candidate);
+    }
+
+    for (group_name, mut candidates) in group_candidates {
+        let Some(valid_proxy_keys) = assignments
+            .group_slots
+            .get(&group_name)
+            .map(|slots| slots.valid_proxy_keys.clone())
+        else {
+            continue;
+        };
+        if valid_proxy_keys.is_empty() {
+            continue;
+        }
+
+        // Preserve slots already occupied by in-flight fresh assignments so
+        // sticky reuse keeps the same account callable while the request is active.
+        let mut reserved_candidates = candidates
+            .iter()
+            .filter(|candidate| candidate.in_flight_reservations > 0)
+            .cloned()
+            .collect::<Vec<_>>();
+        reserved_candidates.sort_by(compare_node_shunt_reserved_candidates);
+        candidates.sort_by(compare_routing_candidates);
+
+        let mut next_slot_index = 0usize;
+        let mut assigned_account_ids = HashSet::new();
+        for candidate in reserved_candidates.iter().chain(candidates.iter()) {
+            if next_slot_index >= valid_proxy_keys.len() {
+                break;
+            }
+            if !assigned_account_ids.insert(candidate.id) {
+                continue;
+            }
+            let Some(proxy_key) = valid_proxy_keys.get(next_slot_index).cloned() else {
+                break;
+            };
+            assignments
+                .account_proxy_keys
+                .insert(candidate.id, proxy_key.clone());
+            assignments
+                .group_assigned_proxy_keys
+                .entry(group_name.clone())
+                .or_default()
+                .insert(proxy_key);
+            next_slot_index += 1;
+        }
     }
 
     Ok(assignments)
@@ -21327,7 +21369,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn node_shunt_assignments_follow_routing_priority_with_in_flight_reservations() {
+    async fn node_shunt_assignments_preserve_slots_for_accounts_with_in_flight_reservations() {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
         let crypto_key = state
             .upstream_accounts
@@ -21402,14 +21444,14 @@ mod tests {
         assert_eq!(
             assignments
                 .account_proxy_keys
-                .get(&available_account_id)
+                .get(&reserved_account_id)
                 .map(String::as_str),
             Some(FORWARD_PROXY_DIRECT_KEY)
         );
         assert!(
             !assignments
                 .account_proxy_keys
-                .contains_key(&reserved_account_id)
+                .contains_key(&available_account_id)
         );
         assert!(
             assignments
@@ -21420,6 +21462,96 @@ mod tests {
             assignments
                 .eligible_account_ids
                 .contains(&available_account_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn node_shunt_sticky_reuse_preserves_slot_for_in_flight_account() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let reserved_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Reserved Sticky Account",
+            "reserved-sticky@example.com",
+            "org_reserved_sticky",
+            "user_reserved_sticky",
+        )
+        .await;
+        let available_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Available Sticky Account",
+            "available-sticky@example.com",
+            "org_available_sticky",
+            "user_available_sticky",
+        )
+        .await;
+
+        set_test_account_group_name(&state.pool, reserved_account_id, Some("node-shunt-sticky"))
+            .await;
+        set_test_account_group_name(&state.pool, available_account_id, Some("node-shunt-sticky"))
+            .await;
+
+        let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+        save_group_metadata_record_conn(
+            &mut conn,
+            "node-shunt-sticky",
+            UpstreamAccountGroupMetadata {
+                note: None,
+                bound_proxy_keys: test_required_group_bound_proxy_keys(),
+                node_shunt_enabled: true,
+                upstream_429_retry_enabled: false,
+                upstream_429_max_retries: 0,
+                concurrency_limit: 0,
+            },
+        )
+        .await
+        .expect("save node shunt sticky metadata");
+        drop(conn);
+
+        let now_iso = format_utc_iso(Utc::now());
+        upsert_sticky_route(
+            &state.pool,
+            "node-shunt-sticky-reuse",
+            reserved_account_id,
+            &now_iso,
+        )
+        .await
+        .expect("seed sticky route");
+
+        state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned")
+            .insert(
+                "test-node-shunt-sticky-reservation".to_string(),
+                PoolRoutingReservation {
+                    account_id: reserved_account_id,
+                    created_at: Instant::now(),
+                },
+            );
+
+        let resolution = resolve_pool_account_for_request(
+            &state,
+            Some("node-shunt-sticky-reuse"),
+            &[],
+            &std::collections::HashSet::new(),
+        )
+        .await
+        .expect("resolve node shunt sticky reuse");
+
+        let PoolAccountResolution::Resolved(account) = resolution else {
+            panic!("expected node shunt sticky reuse to resolve the reserved account");
+        };
+        assert_eq!(account.account_id, reserved_account_id);
+        assert_eq!(
+            account.routing_source,
+            PoolRoutingSelectionSource::StickyReuse
         );
     }
 
