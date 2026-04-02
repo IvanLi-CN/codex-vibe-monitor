@@ -1,6 +1,8 @@
-import { useEffect, useRef, type KeyboardEvent, type ReactNode } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
 import { AppIcon } from './AppIcon'
 import { MotherAccountBadge } from './MotherAccountToggle'
+import { Button } from './ui/button'
+import { Spinner } from './ui/spinner'
 import { Badge } from './ui/badge'
 import { Tooltip } from './ui/tooltip'
 import type { AccountTagSummary, UpstreamAccountSummary } from '../lib/api'
@@ -14,6 +16,13 @@ type ActionDetailLabelResolver =
 
 interface UpstreamAccountsTableProps {
   items: UpstreamAccountSummary[]
+  isLoading?: boolean
+  error?: string | null
+  loadingTitle?: string
+  loadingDescription?: string
+  errorTitle?: string
+  retryLabel?: string
+  onRetry?: () => void
   selectedId: number | null
   selectedAccountIds: Set<number>
   onSelect: (accountId: number) => void
@@ -597,6 +606,13 @@ function handleRowKeyDown(
 
 export function UpstreamAccountsTable({
   items,
+  isLoading = false,
+  error = null,
+  loadingTitle,
+  loadingDescription,
+  errorTitle,
+  retryLabel,
+  onRetry,
   selectedId,
   selectedAccountIds,
   onSelect,
@@ -606,6 +622,109 @@ export function UpstreamAccountsTable({
   emptyDescription,
   labels,
 }: UpstreamAccountsTableProps) {
+  const showBlockingOverlay = isLoading && items.length > 0
+  const containerRef = useRef<HTMLDivElement | null>(null)
+  const blockingIndicatorRef = useRef<HTMLDivElement | null>(null)
+  const [blockingIndicatorTop, setBlockingIndicatorTop] = useState<number | null>(null)
+
+  useLayoutEffect(() => {
+    if (!showBlockingOverlay) {
+      setBlockingIndicatorTop(null)
+      return
+    }
+
+    const updateBlockingIndicatorTop = () => {
+      const container = containerRef.current
+      const indicator = blockingIndicatorRef.current
+      if (!container || !indicator) return
+
+      const containerRect = container.getBoundingClientRect()
+      const indicatorHeight = indicator.getBoundingClientRect().height || 0
+      const viewportHeight = window.innerHeight || 0
+      const padding = 24
+      const visibleTop = Math.max(containerRect.top, 0)
+      const visibleBottom = Math.min(containerRect.bottom, viewportHeight)
+      const visibleCenter = visibleTop < visibleBottom
+        ? visibleTop + (visibleBottom - visibleTop) / 2
+        : Math.min(
+            Math.max(containerRect.top + padding + indicatorHeight / 2, viewportHeight / 2),
+            containerRect.bottom - padding - indicatorHeight / 2,
+          )
+      const minTop = padding
+      const maxTop = Math.max(minTop, containerRect.height - indicatorHeight - padding)
+      const nextTop = Math.min(
+        Math.max(visibleCenter - containerRect.top - indicatorHeight / 2, minTop),
+        maxTop,
+      )
+
+      setBlockingIndicatorTop((currentTop) =>
+        currentTop != null && Math.abs(currentTop - nextTop) < 1 ? currentTop : nextTop,
+      )
+    }
+
+    updateBlockingIndicatorTop()
+
+    const handleViewportChange = () => {
+      window.requestAnimationFrame(updateBlockingIndicatorTop)
+    }
+
+    window.addEventListener('scroll', handleViewportChange, { passive: true })
+    window.addEventListener('resize', handleViewportChange)
+
+    return () => {
+      window.removeEventListener('scroll', handleViewportChange)
+      window.removeEventListener('resize', handleViewportChange)
+    }
+  }, [showBlockingOverlay])
+
+  if (isLoading && items.length === 0) {
+    return (
+      <div
+        data-testid="upstream-accounts-table-loading"
+        className="sticky top-6 z-10 flex min-h-[16rem] flex-col items-center justify-center rounded-[1.6rem] border border-dashed border-base-300/80 bg-base-100/90 px-6 py-10 text-center shadow-sm backdrop-blur-sm"
+        aria-live="polite"
+      >
+        <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-primary/10 text-primary">
+          <Spinner className="h-6 w-6" />
+        </div>
+        <h3 className="text-lg font-semibold text-base-content">
+          {loadingTitle ?? emptyTitle}
+        </h3>
+        {loadingDescription ? (
+          <p className="mt-2 max-w-sm text-sm leading-6 text-base-content/65">
+            {loadingDescription}
+          </p>
+        ) : null}
+      </div>
+    )
+  }
+
+  if (error && items.length === 0) {
+    return (
+      <div
+        data-testid="upstream-accounts-table-error"
+        className="sticky top-6 z-10 flex min-h-[16rem] flex-col items-center justify-center rounded-[1.6rem] border border-dashed border-error/30 bg-error/10 px-6 py-10 text-center shadow-sm backdrop-blur-sm"
+        aria-live="polite"
+      >
+        <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full bg-error/10 text-error">
+          <AppIcon name="alert-circle-outline" className="h-7 w-7" aria-hidden />
+        </div>
+        <h3 className="text-lg font-semibold text-base-content">
+          {errorTitle ?? emptyTitle}
+        </h3>
+        <p className="mt-2 max-w-md text-sm leading-6 text-base-content/70">
+          {error}
+        </p>
+        {onRetry && retryLabel ? (
+          <Button type="button" variant="secondary" className="mt-4" onClick={onRetry}>
+            <AppIcon name="refresh" className="mr-2 h-4 w-4" aria-hidden />
+            {retryLabel}
+          </Button>
+        ) : null}
+      </div>
+    )
+  }
+
   if (items.length === 0) {
     return (
       <div className="flex min-h-[16rem] flex-col items-center justify-center rounded-[1.6rem] border border-dashed border-base-300/80 bg-base-100/45 px-6 py-10 text-center">
@@ -628,8 +747,17 @@ export function UpstreamAccountsTable({
     currentPageSelectedCount > 0 && currentPageSelectedCount < items.length
 
   return (
-    <div className="overflow-x-auto rounded-[1.35rem] border border-base-300/80 bg-base-100/72 md:overflow-x-visible">
-      <table className="min-w-[54rem] w-full table-auto border-collapse md:min-w-0 md:table-fixed">
+    <div
+      ref={containerRef}
+      className="relative overflow-x-auto rounded-[1.35rem] border border-base-300/80 bg-base-100/72 md:overflow-x-visible"
+      aria-busy={showBlockingOverlay ? 'true' : undefined}
+    >
+      <table
+        className={cn(
+          'min-w-[54rem] w-full table-auto border-collapse md:min-w-0 md:table-fixed',
+          showBlockingOverlay && 'pointer-events-none select-none opacity-45',
+        )}
+      >
         <colgroup>
           <col className="w-[3rem]" />
           <col className="w-[38%]" />
@@ -850,6 +978,40 @@ export function UpstreamAccountsTable({
           })}
         </tbody>
       </table>
+      {showBlockingOverlay ? (
+        <div
+          data-testid="upstream-accounts-table-loading-overlay"
+          className="pointer-events-none absolute inset-0 z-10 rounded-[1.35rem] bg-base-100/38 backdrop-blur-[3px]"
+        />
+      ) : null}
+      {showBlockingOverlay ? (
+        <div
+          className="pointer-events-none absolute inset-x-0 z-20 flex justify-center px-4"
+          style={{ top: blockingIndicatorTop != null ? `${blockingIndicatorTop}px` : '24px' }}
+        >
+          <div
+            ref={blockingIndicatorRef}
+            data-testid="upstream-accounts-table-loading-indicator"
+            role="status"
+            aria-live="polite"
+            className="flex max-w-[min(calc(100%-2rem),32rem)] items-center gap-3 rounded-[1.75rem] border border-base-100/70 bg-base-100/70 px-5 py-4 text-sm text-base-content shadow-[0_18px_60px_rgba(15,23,42,0.16)] ring-1 ring-base-100/70 backdrop-blur-xl"
+          >
+            <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-primary/12 text-primary">
+              <Spinner className="h-5 w-5" />
+            </div>
+            <div className="min-w-0">
+              <div className="font-semibold text-base-content">
+                {loadingTitle ?? emptyTitle}
+              </div>
+              {loadingDescription ? (
+                <div className="mt-1 text-sm leading-6 text-base-content/70">
+                  {loadingDescription}
+                </div>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

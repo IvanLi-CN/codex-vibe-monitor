@@ -101,6 +101,12 @@ function render(ui: React.ReactNode) {
   });
 }
 
+function rerender(ui: React.ReactNode) {
+  act(() => {
+    root?.render(ui);
+  });
+}
+
 async function flushAsync() {
   await act(async () => {
     await Promise.resolve();
@@ -200,6 +206,7 @@ function Probe({ query }: { query?: FetchUpstreamAccountsQuery | null }) {
     detail,
     isDetailLoading,
     listError,
+    listState,
     detailError,
     error,
     selectAccount,
@@ -218,6 +225,12 @@ function Probe({ query }: { query?: FetchUpstreamAccountsQuery | null }) {
       <div data-testid="detail-name">{detail?.displayName ?? ""}</div>
       <div data-testid="detail-loading">{isDetailLoading ? "true" : "false"}</div>
       <div data-testid="list-error">{listError ?? ""}</div>
+      <div data-testid="list-freshness">{listState.freshness}</div>
+      <div data-testid="list-loading-state">{listState.loadingState}</div>
+      <div data-testid="list-status">{listState.status}</div>
+      <div data-testid="list-has-current-query-data">
+        {listState.hasCurrentQueryData ? "true" : "false"}
+      </div>
       <div data-testid="detail-error">{detailError ?? ""}</div>
       <div data-testid="error">{error ?? ""}</div>
       <button data-testid="select-beta" onClick={() => selectAccount(2)}>
@@ -272,6 +285,71 @@ describe("useUpstreamAccounts", () => {
       healthStatus: ["normal"],
       tagIds: [1, 2],
     });
+  });
+
+  it("marks a query switch as stale until the new roster lands", async () => {
+    const nextPage = deferred<UpstreamAccountListResponse>();
+    apiMocks.fetchUpstreamAccounts
+      .mockResolvedValueOnce(createListResponse())
+      .mockImplementationOnce(async () => nextPage.promise);
+    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(createDetail(1, "Alpha"));
+
+    render(<Probe query={{ page: 1, pageSize: 20 }} />);
+    await flushAsync();
+
+    expect(text("list-freshness")).toBe("fresh");
+    expect(text("list-loading-state")).toBe("idle");
+    expect(text("list-status")).toBe("ready");
+    expect(text("list-has-current-query-data")).toBe("true");
+
+    rerender(<Probe query={{ page: 2, pageSize: 20 }} />);
+    await flushAsync();
+
+    expect(text("selected-name")).toBe("Alpha");
+    expect(text("list-freshness")).toBe("stale");
+    expect(text("list-loading-state")).toBe("switching");
+    expect(text("list-status")).toBe("loading");
+    expect(text("list-has-current-query-data")).toBe("false");
+
+    nextPage.resolve({
+      ...createListResponse(),
+      items: [createSummary(3, "Gamma"), createSummary(4, "Delta")],
+      total: 4,
+      page: 2,
+      pageSize: 20,
+    });
+    await flushAsync();
+
+    expect(text("selected-id")).toBe("3");
+    expect(text("selected-name")).toBe("Gamma");
+    expect(text("list-freshness")).toBe("fresh");
+    expect(text("list-loading-state")).toBe("idle");
+    expect(text("list-status")).toBe("ready");
+    expect(text("list-has-current-query-data")).toBe("true");
+  });
+
+  it("reports the current query as failed after a switched roster request rejects", async () => {
+    const nextPage = deferred<UpstreamAccountListResponse>();
+    apiMocks.fetchUpstreamAccounts
+      .mockResolvedValueOnce(createListResponse())
+      .mockImplementationOnce(async () => nextPage.promise);
+    apiMocks.fetchUpstreamAccountDetail.mockResolvedValue(createDetail(1, "Alpha"));
+
+    render(<Probe query={{ page: 1, pageSize: 20 }} />);
+    await flushAsync();
+
+    rerender(<Probe query={{ page: 2, pageSize: 20 }} />);
+    await flushAsync();
+
+    nextPage.reject(new Error("page two failed"));
+    await flushAsync();
+
+    expect(text("selected-name")).toBe("Alpha");
+    expect(text("list-error")).toBe("page two failed");
+    expect(text("list-freshness")).toBe("stale");
+    expect(text("list-loading-state")).toBe("idle");
+    expect(text("list-status")).toBe("error");
+    expect(text("list-has-current-query-data")).toBe("false");
   });
 
   it("ignores stale detail responses after account switches", async () => {

@@ -1370,7 +1370,8 @@ function createStore(): StoryStore {
     storyId?.endsWith('--dense-roster') === true ||
     storyId?.endsWith('--operational') === true ||
     storyId?.endsWith('--status-filters') === true ||
-    storyId?.endsWith('--bulk-selection') === true
+    storyId?.endsWith('--bulk-selection') === true ||
+    storyId?.endsWith('--slow-page-switch') === true
 
   const baseOauthStoryOverrides: Partial<UpstreamAccountDetail> = {
     tags: pickStoryTags('vip', 'stickyPool', 'priority'),
@@ -2504,6 +2505,42 @@ function wait(ms: number) {
   })
 }
 
+function getRosterResponseDelay(storyId: string | null, url: URL) {
+  if (storyId?.endsWith('--slow-filter-switch') === true) {
+    const workStatuses = url.searchParams.getAll('workStatus')
+    if (workStatuses.includes('rate_limited')) {
+      return 1_200
+    }
+  }
+
+  if (storyId?.endsWith('--slow-page-switch') === true) {
+    const page = Number(url.searchParams.get('page') || 1)
+    if (page === 2) {
+      return 1_200
+    }
+  }
+
+  if (storyId?.endsWith('--current-query-failure') === true) {
+    const workStatuses = url.searchParams.getAll('workStatus')
+    if (workStatuses.includes('rate_limited')) {
+      return 200
+    }
+  }
+
+  return 0
+}
+
+function getRosterResponseFailure(storyId: string | null, url: URL) {
+  if (storyId?.endsWith('--current-query-failure') === true) {
+    const workStatuses = url.searchParams.getAll('workStatus')
+    if (workStatuses.includes('rate_limited')) {
+      return 'storybook forced roster query failure'
+    }
+  }
+
+  return null
+}
+
 function noContent() {
   return Promise.resolve(new Response(null, { status: 204 }))
 }
@@ -2863,6 +2900,14 @@ export function StorybookUpstreamAccountsMock({
               )
             }).length,
           },
+        }
+        const delayMs = getRosterResponseDelay(storyId, parsedUrl)
+        const failureMessage = getRosterResponseFailure(storyId, parsedUrl)
+        if (delayMs > 0) {
+          await wait(delayMs)
+        }
+        if (failureMessage) {
+          return jsonResponse({ message: failureMessage }, 503)
         }
         return jsonResponse(payload)
       }

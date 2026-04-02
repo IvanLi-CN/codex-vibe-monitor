@@ -200,6 +200,94 @@ function renderInteractiveTable(
 }
 
 describe('UpstreamAccountsTable', () => {
+  it('renders a blocking loading shell when the current query is still pending', () => {
+    const html = renderToStaticMarkup(
+      <UpstreamAccountsTable
+        items={[]}
+        isLoading
+        loadingTitle="Loading roster"
+        loadingDescription="Waiting for the current query"
+        selectedId={null}
+        selectedAccountIds={new Set()}
+        onSelect={() => undefined}
+        onToggleSelected={() => undefined}
+        onToggleSelectAllCurrentPage={() => undefined}
+        emptyTitle="Empty"
+        emptyDescription="Nothing here"
+        labels={labels}
+      />,
+    )
+
+    expect(html).toContain('Loading roster')
+    expect(html).toContain('Waiting for the current query')
+    expect(html).not.toContain('Nothing here')
+  })
+
+  it('keeps rendered rows in place and adds a blocking overlay while loading a new query', () => {
+    const html = renderToStaticMarkup(
+      <UpstreamAccountsTable
+        items={[
+          {
+            id: 11,
+            kind: 'oauth_codex',
+            provider: 'codex',
+            displayName: 'Existing OAuth',
+            isMother: false,
+            groupName: 'prod',
+            status: 'active',
+            displayStatus: 'active',
+            enabled: true,
+            tags: [],
+            effectiveRoutingRule: defaultEffectiveRoutingRule,
+          },
+        ]}
+        isLoading
+        loadingTitle="Loading roster"
+        loadingDescription="Waiting for the current query"
+        selectedId={11}
+        selectedAccountIds={new Set()}
+        onSelect={() => undefined}
+        onToggleSelected={() => undefined}
+        onToggleSelectAllCurrentPage={() => undefined}
+        emptyTitle="Empty"
+        emptyDescription="Nothing here"
+        labels={labels}
+      />,
+    )
+
+    expect(html).toContain('Existing OAuth')
+    expect(html).toContain('data-testid="upstream-accounts-table-loading-overlay"')
+    expect(html).toContain('data-testid="upstream-accounts-table-loading-indicator"')
+    expect(html).toContain('Loading roster')
+    expect(html).toContain('Waiting for the current query')
+    expect(html).toContain('aria-busy="true"')
+  })
+
+  it('renders an inline retry state instead of the empty roster when the current query fails', () => {
+    const html = renderToStaticMarkup(
+      <UpstreamAccountsTable
+        items={[]}
+        error="Query failed"
+        errorTitle="Could not load this roster query"
+        retryLabel="Retry"
+        onRetry={() => undefined}
+        selectedId={null}
+        selectedAccountIds={new Set()}
+        onSelect={() => undefined}
+        onToggleSelected={() => undefined}
+        onToggleSelectAllCurrentPage={() => undefined}
+        emptyTitle="Empty"
+        emptyDescription="Nothing here"
+        labels={labels}
+      />,
+    )
+
+    expect(html).toContain('Could not load this roster query')
+    expect(html).toContain('Query failed')
+    expect(html).toContain('Retry')
+    expect(html).not.toContain('Nothing here')
+  })
+
   it('renders the compact roster layout with a shared windows column and folded tags', () => {
     const html = renderTable([
       {
