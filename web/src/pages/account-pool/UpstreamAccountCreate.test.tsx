@@ -6923,9 +6923,8 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     await flushAsync();
 
     expect(runImportedOauthValidation).toHaveBeenCalledWith({
-      ...expectedGroupSelection(TEST_REQUIRED_GROUP_NAME, {
-        includeConcurrencyLimit: false,
-      }),
+      groupName: TEST_REQUIRED_GROUP_NAME,
+      groupBoundProxyKeys: [...TEST_REQUIRED_BOUND_PROXY_KEYS],
       items: [
         {
           sourceId: "pasted:1",
@@ -6998,9 +6997,8 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
 
     expect(runImportedOauthValidation).toHaveBeenCalledTimes(2);
     expect(runImportedOauthValidation.mock.calls[1]?.[0]).toEqual({
-      ...expectedGroupSelection(TEST_REQUIRED_GROUP_NAME, {
-        includeConcurrencyLimit: false,
-      }),
+      groupName: TEST_REQUIRED_GROUP_NAME,
+      groupBoundProxyKeys: [...TEST_REQUIRED_BOUND_PROXY_KEYS],
       items: [
         {
           sourceId: "pasted:1",

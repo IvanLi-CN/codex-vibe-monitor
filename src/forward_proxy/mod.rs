@@ -2089,6 +2089,9 @@ async fn canonicalize_forward_proxy_route_scope(
 ) -> Result<ForwardProxyRouteScope> {
     match scope {
         ForwardProxyRouteScope::Automatic => Ok(ForwardProxyRouteScope::Automatic),
+        ForwardProxyRouteScope::PinnedProxyKey(proxy_key) => {
+            Ok(ForwardProxyRouteScope::PinnedProxyKey(proxy_key.clone()))
+        }
         ForwardProxyRouteScope::BoundGroup {
             group_name,
             bound_proxy_keys,
@@ -3234,10 +3237,15 @@ impl ForwardProxyManager {
 
     pub(crate) fn selectable_proxy_keys(&self) -> HashSet<String> {
         let mut keys = self
-            .endpoints
+            .bound_node_descriptors
             .iter()
-            .filter(|endpoint| endpoint.is_bound_selectable())
-            .map(|endpoint| endpoint.key.clone())
+            .filter_map(|descriptor| {
+                self.endpoints
+                    .iter()
+                    .find(|endpoint| endpoint.key == descriptor.endpoint_key)
+                    .filter(|endpoint| endpoint.is_bound_selectable())
+                    .map(|_| descriptor.key.clone())
+            })
             .collect::<HashSet<_>>();
         keys.insert(FORWARD_PROXY_DIRECT_KEY.to_string());
         keys
@@ -3475,10 +3483,18 @@ impl ForwardProxyManager {
                 &ForwardProxyEndpoint::direct(),
             ));
         }
+        let canonical_proxy_key = self
+            .resolve_current_bound_proxy_key(normalized_proxy_key)
+            .unwrap_or_else(|| normalized_proxy_key.to_string());
+        let endpoint_key = self
+            .bound_key_endpoint_keys
+            .get(&canonical_proxy_key)
+            .cloned()
+            .unwrap_or(canonical_proxy_key);
         let endpoint = self
             .endpoints
             .iter()
-            .find(|endpoint| endpoint.key == normalized_proxy_key)
+            .find(|endpoint| endpoint.key == endpoint_key)
             .ok_or_else(|| anyhow!("pinned forward proxy key is no longer available"))?;
         Ok(SelectedForwardProxy::from_endpoint(endpoint))
     }

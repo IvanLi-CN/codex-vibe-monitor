@@ -21364,6 +21364,7 @@ mod tests {
             UpstreamAccountGroupMetadata {
                 note: None,
                 bound_proxy_keys: test_required_group_bound_proxy_keys(),
+                node_shunt_enabled: false,
                 upstream_429_retry_enabled: false,
                 upstream_429_max_retries: 0,
                 concurrency_limit: 1,
