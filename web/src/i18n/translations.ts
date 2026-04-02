@@ -82,6 +82,12 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.emptyTitle": "No upstream account yet",
     "accountPool.upstreamAccounts.emptyDescription":
       "Create an OAuth or API key account to start building the pool.",
+    "accountPool.upstreamAccounts.loadingTitle": "Loading roster",
+    "accountPool.upstreamAccounts.loadingDescription":
+      "Waiting for the current filters, page, or page size to return.",
+    "accountPool.upstreamAccounts.listErrorTitle":
+      "Could not load this roster query",
+    "accountPool.upstreamAccounts.listRetry": "Retry",
     "accountPool.upstreamAccounts.detailEmptyTitle": "Choose an account",
     "accountPool.upstreamAccounts.detailEmptyDescription":
       "The detail panel will show login health, quota windows, and editable metadata.",
@@ -693,6 +699,10 @@ const baseTranslations = {
       "Delete {{count}} selected accounts? This cannot be undone.",
     "accountPool.upstreamAccounts.pagination.summary":
       "Page {{page}} / {{pageCount}} · {{total}} accounts",
+    "accountPool.upstreamAccounts.pagination.loading":
+      "Loading page {{page}}…",
+    "accountPool.upstreamAccounts.pagination.error":
+      "This page could not be refreshed. Change filters, page size, or retry.",
     "accountPool.upstreamAccounts.pagination.pageSize": "Page size",
     "accountPool.upstreamAccounts.pagination.previous": "Previous",
     "accountPool.upstreamAccounts.pagination.next": "Next",
@@ -1695,6 +1705,11 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.emptyTitle": "还没有上游账号",
     "accountPool.upstreamAccounts.emptyDescription":
       "先创建一个 OAuth 或 API Key 账号，把号池基础能力搭起来。",
+    "accountPool.upstreamAccounts.loadingTitle": "正在加载账号列表",
+    "accountPool.upstreamAccounts.loadingDescription":
+      "正在等待当前筛选、页码或每页条数对应的列表结果返回。",
+    "accountPool.upstreamAccounts.listErrorTitle": "当前列表查询加载失败",
+    "accountPool.upstreamAccounts.listRetry": "重试",
     "accountPool.upstreamAccounts.detailEmptyTitle": "请选择一个账号",
     "accountPool.upstreamAccounts.detailEmptyDescription":
       "右侧会展示登录健康度、额度窗口和可编辑的账号信息。",
@@ -2243,6 +2258,10 @@ const baseTranslations = {
       "确认删除这 {{count}} 个已选账号吗？此操作不可恢复。",
     "accountPool.upstreamAccounts.pagination.summary":
       "第 {{page}} / {{pageCount}} 页，共 {{total}} 个账号",
+    "accountPool.upstreamAccounts.pagination.loading":
+      "正在加载第 {{page}} 页…",
+    "accountPool.upstreamAccounts.pagination.error":
+      "当前页刷新失败，可调整筛选、每页条数，或直接重试。",
     "accountPool.upstreamAccounts.pagination.pageSize": "每页",
     "accountPool.upstreamAccounts.pagination.previous": "上一页",
     "accountPool.upstreamAccounts.pagination.next": "下一页",

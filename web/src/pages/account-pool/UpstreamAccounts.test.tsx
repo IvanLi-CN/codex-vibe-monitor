@@ -927,6 +927,290 @@ function mockAccountsPage(options?: {
   return { saveRouting, compactSupport, routingTimeouts };
 }
 
+function mockRosterFreshnessPage(options?: {
+  listState?: {
+    queryKey: string | null
+    dataQueryKey: string | null
+    freshness: "fresh" | "stale" | "missing" | "deferred"
+    loadingState: "idle" | "deferred" | "initial" | "switching" | "refreshing"
+    status: "ready" | "loading" | "error" | "deferred"
+    hasCurrentQueryData: boolean
+    isPending: boolean
+  }
+  listError?: string | null
+  refresh?: ReturnType<typeof vi.fn>
+}) {
+  const refresh = options?.refresh ?? vi.fn()
+  hookMocks.useUpstreamAccounts.mockReturnValue({
+    items: [
+      {
+        id: 5,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Existing OAuth",
+        groupName: "prod",
+        status: "active",
+        displayStatus: "active",
+        enabled: true,
+        isMother: false,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
+      {
+        id: 9,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Another OAuth",
+        groupName: "prod",
+        status: "active",
+        displayStatus: "active",
+        enabled: true,
+        isMother: false,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
+    ],
+    hasUngroupedAccounts: true,
+    writesEnabled: true,
+    total: 2,
+    page: 1,
+    pageSize: 20,
+    metrics: {
+      total: 2,
+      oauth: 2,
+      apiKey: 0,
+      attention: 0,
+    },
+    selectedId: null,
+    selectedSummary: null,
+    detail: null,
+    isLoading: false,
+    isDetailLoading: false,
+    listError: options?.listError ?? null,
+    listState: options?.listState ?? {
+      queryKey: "roster-q1",
+      dataQueryKey: "roster-q1",
+      freshness: "fresh",
+      loadingState: "idle",
+      status: "ready",
+      hasCurrentQueryData: true,
+      isPending: false,
+    },
+    detailError: null,
+    error: options?.listError ?? null,
+    selectAccount: vi.fn(),
+    refresh,
+    loadDetail: vi.fn(),
+    beginOauthLogin: vi.fn(),
+    beginRelogin: vi.fn(),
+    beginOauthMailboxSession: vi.fn(),
+    beginOauthMailboxSessionForAddress: vi.fn(),
+    getOauthMailboxStatuses: vi.fn(),
+    removeOauthMailboxSession: vi.fn(),
+    getLoginSession: vi.fn(),
+    completeOauthLogin: vi.fn(),
+    createApiKeyAccount: vi.fn(),
+    saveAccount: vi.fn(),
+    saveRouting: vi.fn(),
+    saveGroupNote: vi.fn(),
+    runBulkAction: vi.fn(),
+    startBulkSyncJob: vi.fn(),
+    getBulkSyncJob: vi.fn(),
+    stopBulkSyncJob: vi.fn(),
+    runSync: vi.fn(),
+    removeAccount: vi.fn(),
+    groups: [],
+    routing: {
+      writesEnabled: true,
+      apiKeyConfigured: false,
+      maskedApiKey: null,
+    },
+  })
+  return { refresh }
+}
+
+describe("UpstreamAccountsPage roster freshness", () => {
+  it("keeps stale rows briefly, then blocks the roster and pagination while the next query is still loading", async () => {
+    vi.useFakeTimers()
+    try {
+      mockRosterFreshnessPage({
+        listState: {
+          queryKey: "roster-q2",
+          dataQueryKey: "roster-q1",
+          freshness: "stale",
+          loadingState: "switching",
+          status: "loading",
+          hasCurrentQueryData: false,
+          isPending: true,
+        },
+      })
+
+      render("/account-pool/upstream-accounts")
+
+      expect(document.body.textContent).toContain("Existing OAuth")
+      expect(document.body.textContent).toContain("Page 1 / 1 · 2 accounts")
+
+      const rowCheckbox = document.body.querySelector(
+        'input[aria-label="Select Existing OAuth"]',
+      )
+      if (!(rowCheckbox instanceof HTMLInputElement)) {
+        throw new Error("missing roster checkbox")
+      }
+      act(() => {
+        rowCheckbox.click()
+      })
+
+      expect(document.body.textContent).toContain("1 accounts selected across pages")
+
+      act(() => {
+        vi.advanceTimersByTime(600)
+      })
+      await flushAsync()
+
+      expect(document.body.textContent).toContain("Existing OAuth")
+      expect(document.body.textContent).not.toContain("1 accounts selected across pages")
+      expect(document.body.querySelector('[data-testid="upstream-accounts-table-loading"]')).toBeNull()
+      expect(
+        document.body.querySelector('[data-testid="upstream-accounts-table-loading-overlay"]'),
+      ).not.toBeNull()
+      expect(
+        document.body.querySelector('[data-testid="upstream-accounts-table-loading-indicator"]'),
+      ).not.toBeNull()
+      expect(
+        document.body.querySelector('[data-testid="upstream-accounts-pagination-status"]'),
+      ).toBeNull()
+
+      const paginationFooter = document.body.querySelector(
+        '[data-testid="upstream-accounts-pagination-footer"]',
+      )
+      if (!(paginationFooter instanceof HTMLDivElement)) {
+        throw new Error("missing pagination footer")
+      }
+
+      const pageSizeButton = document.body.querySelector(
+        'button[aria-label="Page size"]',
+      )
+      if (!(pageSizeButton instanceof HTMLButtonElement)) {
+        throw new Error("missing page size trigger")
+      }
+      expect(pageSizeButton.disabled).toBe(true)
+
+      expect(findButton(/Previous/i)?.disabled).toBe(true)
+      expect(findButton(/Next/i)?.disabled).toBe(true)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it("keeps the roster region height frozen while the blocking loading state is visible", async () => {
+    vi.useFakeTimers()
+    const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect
+
+    Object.defineProperty(HTMLElement.prototype, "getBoundingClientRect", {
+      configurable: true,
+      value: function getBoundingClientRectMock(this: HTMLElement) {
+        if (this.getAttribute("data-testid") === "upstream-accounts-roster-region") {
+          return {
+            x: 0,
+            y: 0,
+            top: 0,
+            left: 0,
+            right: 960,
+            bottom: 480,
+            width: 960,
+            height: 480,
+            toJSON: () => ({}),
+          } satisfies DOMRect
+        }
+        return originalGetBoundingClientRect.call(this)
+      },
+    })
+
+    try {
+      mockRosterFreshnessPage({
+        listState: {
+          queryKey: "roster-q2",
+          dataQueryKey: "roster-q1",
+          freshness: "stale",
+          loadingState: "switching",
+          status: "loading",
+          hasCurrentQueryData: false,
+          isPending: true,
+        },
+      })
+
+      render("/account-pool/upstream-accounts")
+      await flushAsync()
+
+      act(() => {
+        vi.advanceTimersByTime(600)
+      })
+      await flushAsync()
+
+      const rosterRegion = document.body.querySelector(
+        '[data-testid="upstream-accounts-roster-region"]',
+      )
+      if (!(rosterRegion instanceof HTMLDivElement)) {
+        throw new Error("missing roster region")
+      }
+
+      expect(rosterRegion.style.minHeight).toBe("480px")
+      expect(
+        document.body.querySelector('[data-testid="upstream-accounts-table-loading-overlay"]'),
+      ).not.toBeNull()
+
+      mockRosterFreshnessPage({
+        listState: {
+          queryKey: "roster-q2",
+          dataQueryKey: "roster-q2",
+          freshness: "fresh",
+          loadingState: "idle",
+          status: "ready",
+          hasCurrentQueryData: true,
+          isPending: false,
+        },
+      })
+      rerender("/account-pool/upstream-accounts")
+      await flushAsync()
+
+      expect(rosterRegion.style.minHeight).toBe("")
+      expect(
+        document.body.querySelector('[data-testid="upstream-accounts-table-loading-overlay"]'),
+      ).toBeNull()
+    } finally {
+      Object.defineProperty(HTMLElement.prototype, "getBoundingClientRect", {
+        configurable: true,
+        value: originalGetBoundingClientRect,
+      })
+      vi.useRealTimers()
+    }
+  })
+
+  it("shows an inline roster error and retry for the failed current query instead of stale rows", async () => {
+    const { refresh } = mockRosterFreshnessPage({
+      listState: {
+        queryKey: "roster-q2",
+        dataQueryKey: "roster-q1",
+        freshness: "stale",
+        loadingState: "idle",
+        status: "error",
+        hasCurrentQueryData: false,
+        isPending: false,
+      },
+      listError: "page two failed",
+    })
+
+    render("/account-pool/upstream-accounts")
+
+    expect(document.body.textContent).not.toContain("Existing OAuth")
+    expect(document.body.querySelector('[data-testid="upstream-accounts-table-error"]')).not.toBeNull()
+    expect(document.body.textContent).toContain("page two failed")
+
+    clickButton(/Retry/i)
+    expect(refresh).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe("UpstreamAccountsPage duplicates", () => {
   it("renders the compact roster header and folded metadata chips", () => {
     mockAccountsPage();

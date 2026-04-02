@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { AppIcon, type AppIconName } from '../../components/AppIcon'
 import { AccountDetailDrawerShell } from '../../components/AccountDetailDrawerShell'
 import { Link, useLocation, useNavigate } from 'react-router-dom'
@@ -132,6 +132,7 @@ const STICKY_CONVERSATION_SELECTION_LOOKUP = new Map<string, StickyKeyConversati
 )
 const GROUP_UPSTREAM_429_RETRY_OPTIONS = [1, 2, 3, 4, 5] as const
 const UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY = 'codex-vibe-monitor.account-pool.upstream-accounts.filters'
+const UPSTREAM_ACCOUNTS_QUERY_STALE_GRACE_MS = 600
 const WORK_STATUS_FILTER_VALUES = ['working', 'degraded', 'idle', 'rate_limited', 'unavailable'] as const
 const ENABLE_STATUS_FILTER_VALUES = ['enabled', 'disabled'] as const
 const HEALTH_STATUS_FILTER_VALUES = [
@@ -698,7 +699,7 @@ function parseRoutingTimeoutValue(
 }
 
 
-function poolCardMetric(value: number, label: string, icon: AppIconName, accent: string) {
+function poolCardMetric(value: number | string, label: string, icon: AppIconName, accent: string) {
   return { value, label, icon, accent }
 }
 
@@ -2795,6 +2796,15 @@ export default function UpstreamAccountsPage() {
     writesEnabled,
     isLoading,
     listError = null,
+    listState = {
+      queryKey: null,
+      dataQueryKey: null,
+      freshness: 'fresh',
+      loadingState: 'idle',
+      status: 'ready',
+      hasCurrentQueryData: true,
+      isPending: false,
+    },
     refresh,
     routing,
     saveRouting,
@@ -2833,11 +2843,26 @@ export default function UpstreamAccountsPage() {
   const [bulkSyncCounts, setBulkSyncCounts] = useState<BulkUpstreamAccountSyncCounts | null>(null)
   const [bulkSyncError, setBulkSyncError] = useState<string | null>(null)
   const [isBulkSyncStarting, setIsBulkSyncStarting] = useState(false)
+  const [isStaleRosterGraceExpired, setIsStaleRosterGraceExpired] = useState(false)
   const bulkSyncEventSourceRef = useRef<EventSource | null>(null)
+  const rosterRegionRef = useRef<HTMLDivElement | null>(null)
+  const [lastStableRosterRegionHeight, setLastStableRosterRegionHeight] = useState<number | null>(null)
   const selectedAccountIdSet = useMemo(() => new Set(selectedAccountIds), [selectedAccountIds])
   const routingWritesEnabled = routing
     ? (routing.writesEnabled ?? writesEnabled)
     : false
+  const showGraceRoster =
+    listState.loadingState === 'switching' && !isStaleRosterGraceExpired
+  const showBlockingRosterLoading =
+    listState.loadingState === 'initial' ||
+    (listState.loadingState === 'switching' && isStaleRosterGraceExpired)
+  const showBlockingRosterError = listState.status === 'error'
+  const showBlockingRosterState = showBlockingRosterLoading || showBlockingRosterError
+  const visibleRosterItems =
+    showBlockingRosterLoading ? items : showBlockingRosterError && !showGraceRoster ? [] : items
+  const visibleListWarning =
+    listState.hasCurrentQueryData && listError ? listError : null
+  const hideRosterDerivedUi = showBlockingRosterState && !showGraceRoster
   const effectiveMetrics = listMetrics ?? {
     total: items.length,
     oauth: items.filter((item) => item.kind === 'oauth_codex').length,
@@ -2846,8 +2871,54 @@ export default function UpstreamAccountsPage() {
       accountHealthStatus(item) !== 'normal' || accountWorkStatus(item) === 'rate_limited',
     ).length,
   }
-  const effectiveTotal = total ?? effectiveMetrics.total
-  const pageCount = Math.max(1, Math.ceil(effectiveTotal / Math.max(pageSize, 1)))
+  const visibleMetrics = hideRosterDerivedUi ? null : effectiveMetrics
+  const effectiveTotal = hideRosterDerivedUi ? null : (total ?? effectiveMetrics.total)
+  const pageCount =
+    effectiveTotal == null
+      ? null
+      : Math.max(1, Math.ceil(effectiveTotal / Math.max(pageSize, 1)))
+  const nextPageLimit = pageCount ?? page
+  const showPaginationFooter = pageCount != null || showBlockingRosterState
+  const paginationStatusText = showBlockingRosterError
+    ? t('accountPool.upstreamAccounts.pagination.error')
+    : null
+  const rosterRegionMinHeight =
+    showBlockingRosterLoading && lastStableRosterRegionHeight != null
+      ? `${lastStableRosterRegionHeight}px`
+      : undefined
+
+  useEffect(() => {
+    if (listState.loadingState !== 'switching') {
+      setIsStaleRosterGraceExpired(false)
+      return
+    }
+
+    setIsStaleRosterGraceExpired(false)
+    const timer = window.setTimeout(() => {
+      setIsStaleRosterGraceExpired(true)
+    }, UPSTREAM_ACCOUNTS_QUERY_STALE_GRACE_MS)
+
+    return () => window.clearTimeout(timer)
+  }, [listState.dataQueryKey, listState.loadingState, listState.queryKey])
+
+  useLayoutEffect(() => {
+    if (hideRosterDerivedUi) return
+    const region = rosterRegionRef.current
+    if (!region) return
+    const nextHeight = Math.ceil(region.getBoundingClientRect().height)
+    if (!(nextHeight > 0)) return
+    setLastStableRosterRegionHeight((current) => (current === nextHeight ? current : nextHeight))
+  }, [
+    bulkActionError,
+    bulkActionMessage,
+    hideRosterDerivedUi,
+    page,
+    pageCount,
+    pageSize,
+    selectedAccountIds.length,
+    visibleListWarning,
+    visibleRosterItems,
+  ])
 
   const clearBulkSelection = useCallback(() => {
     setSelectedAccountIds([])
@@ -2994,7 +3065,7 @@ export default function UpstreamAccountsPage() {
   }, [closeBulkSyncEventSource])
 
   useEffect(() => {
-    if (effectiveTotal > 0 && page > pageCount) {
+    if (effectiveTotal != null && pageCount != null && effectiveTotal > 0 && page > pageCount) {
       setPage(pageCount)
     }
   }, [effectiveTotal, page, pageCount])
@@ -3029,25 +3100,31 @@ export default function UpstreamAccountsPage() {
   }, [duplicateWarning, upstreamAccountId])
 
   const metrics = useMemo(() => {
+    const metricValues = visibleMetrics ?? {
+      total: showBlockingRosterError ? '—' : '…',
+      oauth: showBlockingRosterError ? '—' : '…',
+      apiKey: showBlockingRosterError ? '—' : '…',
+      attention: showBlockingRosterError ? '—' : '…',
+    }
     return [
-      poolCardMetric(effectiveMetrics.total, t('accountPool.upstreamAccounts.metrics.total'), 'database-outline', 'text-primary'),
-      poolCardMetric(effectiveMetrics.oauth, t('accountPool.upstreamAccounts.metrics.oauth'), 'badge-account-horizontal-outline', 'text-success'),
-      poolCardMetric(effectiveMetrics.apiKey, t('accountPool.upstreamAccounts.metrics.apiKey'), 'key-outline', 'text-info'),
+      poolCardMetric(metricValues.total, t('accountPool.upstreamAccounts.metrics.total'), 'database-outline', 'text-primary'),
+      poolCardMetric(metricValues.oauth, t('accountPool.upstreamAccounts.metrics.oauth'), 'badge-account-horizontal-outline', 'text-success'),
+      poolCardMetric(metricValues.apiKey, t('accountPool.upstreamAccounts.metrics.apiKey'), 'key-outline', 'text-info'),
       poolCardMetric(
-        effectiveMetrics.attention,
+        metricValues.attention,
         t('accountPool.upstreamAccounts.metrics.attention'),
         'alert-decagram-outline',
         'text-warning',
       ),
     ]
-  }, [effectiveMetrics, t])
+  }, [showBlockingRosterError, t, visibleMetrics])
 
   const availableGroups = useMemo(() => {
     return {
-      names: buildGroupNameSuggestions(items.map((item) => item.groupName), groups, {}),
+      names: buildGroupNameSuggestions(visibleRosterItems.map((item) => item.groupName), groups, {}),
       hasUngrouped: hasUngroupedAccounts,
     }
-  }, [groups, hasUngroupedAccounts, items])
+  }, [groups, hasUngroupedAccounts, visibleRosterItems])
 
   const groupFilterSuggestions = useMemo(() => {
     const suggestions = [t('accountPool.upstreamAccounts.groupFilter.all'), ...availableGroups.names]
@@ -3792,118 +3869,131 @@ export default function UpstreamAccountsPage() {
               </div>
             </div>
 
-            {selectedAccountIds.length > 0 ? (
-              <div className="rounded-[1.25rem] border border-primary/25 bg-primary/8 px-4 py-3">
-                <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-                  <div className="text-sm text-base-content/80">
-                    {t('accountPool.upstreamAccounts.bulk.selectedCount', { count: selectedAccountIds.length })}
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="secondary"
-                      onClick={() => void handleBulkAction({ accountIds: selectedAccountIds, action: 'enable' })}
-                      disabled={Boolean(bulkActionBusy) || isBulkSyncBusy || !writesEnabled}
-                    >
-                      {t('accountPool.upstreamAccounts.bulk.enable')}
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="secondary"
-                      onClick={() => void handleBulkAction({ accountIds: selectedAccountIds, action: 'disable' })}
-                      disabled={Boolean(bulkActionBusy) || isBulkSyncBusy || !writesEnabled}
-                    >
-                      {t('accountPool.upstreamAccounts.bulk.disable')}
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="secondary"
-                      onClick={() => {
-                        setBulkGroupName('')
-                        setBulkGroupDialogOpen(true)
-                      }}
-                      disabled={Boolean(bulkActionBusy) || isBulkSyncBusy || !writesEnabled}
-                    >
-                      {t('accountPool.upstreamAccounts.bulk.setGroup')}
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="secondary"
-                      onClick={() => handleOpenBulkTagsDialog('add_tags')}
-                      disabled={Boolean(bulkActionBusy) || isBulkSyncBusy || !writesEnabled}
-                    >
-                      {t('accountPool.upstreamAccounts.bulk.addTags')}
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="secondary"
-                      onClick={() => handleOpenBulkTagsDialog('remove_tags')}
-                      disabled={Boolean(bulkActionBusy) || isBulkSyncBusy || !writesEnabled}
-                    >
-                      {t('accountPool.upstreamAccounts.bulk.removeTags')}
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="secondary"
-                      onClick={() => void handleStartBulkSync()}
-                      disabled={Boolean(bulkActionBusy) || isBulkSyncBusy}
-                    >
-                      {isBulkSyncStarting ? <Spinner size="sm" className="mr-2" /> : null}
-                      {t('accountPool.upstreamAccounts.bulk.sync')}
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="destructive"
-                      onClick={() => setBulkDeleteDialogOpen(true)}
-                      disabled={Boolean(bulkActionBusy) || isBulkSyncBusy || !writesEnabled}
-                    >
-                      {t('accountPool.upstreamAccounts.bulk.delete')}
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="ghost"
-                      onClick={clearBulkSelection}
-                      disabled={Boolean(bulkActionBusy)}
-                    >
-                      {t('accountPool.upstreamAccounts.bulk.clearSelection')}
-                    </Button>
+            <div
+              ref={rosterRegionRef}
+              data-testid="upstream-accounts-roster-region"
+              className="flex flex-col gap-4"
+              style={rosterRegionMinHeight ? { minHeight: rosterRegionMinHeight } : undefined}
+            >
+              {selectedAccountIds.length > 0 && !hideRosterDerivedUi ? (
+                <div className="rounded-[1.25rem] border border-primary/25 bg-primary/8 px-4 py-3">
+                  <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                    <div className="text-sm text-base-content/80">
+                      {t('accountPool.upstreamAccounts.bulk.selectedCount', { count: selectedAccountIds.length })}
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => void handleBulkAction({ accountIds: selectedAccountIds, action: 'enable' })}
+                        disabled={Boolean(bulkActionBusy) || isBulkSyncBusy || !writesEnabled}
+                      >
+                        {t('accountPool.upstreamAccounts.bulk.enable')}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => void handleBulkAction({ accountIds: selectedAccountIds, action: 'disable' })}
+                        disabled={Boolean(bulkActionBusy) || isBulkSyncBusy || !writesEnabled}
+                      >
+                        {t('accountPool.upstreamAccounts.bulk.disable')}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => {
+                          setBulkGroupName('')
+                          setBulkGroupDialogOpen(true)
+                        }}
+                        disabled={Boolean(bulkActionBusy) || isBulkSyncBusy || !writesEnabled}
+                      >
+                        {t('accountPool.upstreamAccounts.bulk.setGroup')}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => handleOpenBulkTagsDialog('add_tags')}
+                        disabled={Boolean(bulkActionBusy) || isBulkSyncBusy || !writesEnabled}
+                      >
+                        {t('accountPool.upstreamAccounts.bulk.addTags')}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => handleOpenBulkTagsDialog('remove_tags')}
+                        disabled={Boolean(bulkActionBusy) || isBulkSyncBusy || !writesEnabled}
+                      >
+                        {t('accountPool.upstreamAccounts.bulk.removeTags')}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => void handleStartBulkSync()}
+                        disabled={Boolean(bulkActionBusy) || isBulkSyncBusy}
+                      >
+                        {isBulkSyncStarting ? <Spinner size="sm" className="mr-2" /> : null}
+                        {t('accountPool.upstreamAccounts.bulk.sync')}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="destructive"
+                        onClick={() => setBulkDeleteDialogOpen(true)}
+                        disabled={Boolean(bulkActionBusy) || isBulkSyncBusy || !writesEnabled}
+                      >
+                        {t('accountPool.upstreamAccounts.bulk.delete')}
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        onClick={clearBulkSelection}
+                        disabled={Boolean(bulkActionBusy)}
+                      >
+                        {t('accountPool.upstreamAccounts.bulk.clearSelection')}
+                      </Button>
+                    </div>
                   </div>
                 </div>
-              </div>
-            ) : null}
+              ) : null}
 
-            {bulkActionMessage ? (
-              <Alert variant="success">
-                <AppIcon name="check-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-                <div>{bulkActionMessage}</div>
-              </Alert>
-            ) : null}
+              {bulkActionMessage ? (
+                <Alert variant="success">
+                  <AppIcon name="check-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                  <div>{bulkActionMessage}</div>
+                </Alert>
+              ) : null}
 
-            {bulkActionError ? (
-              <Alert variant="error">
-                <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-                <div>{bulkActionError}</div>
-              </Alert>
-            ) : null}
+              {bulkActionError ? (
+                <Alert variant="error">
+                  <AppIcon name="alert-circle-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                  <div>{bulkActionError}</div>
+                </Alert>
+              ) : null}
 
-            <UpstreamAccountsTable
-              items={items}
-              selectedId={upstreamAccountId}
-              selectedAccountIds={selectedAccountIdSet}
-              onSelect={handleSelectAccount}
-              onToggleSelected={handleToggleSelectedAccount}
-              onToggleSelectAllCurrentPage={handleToggleSelectAllCurrentPage}
-              emptyTitle={t('accountPool.upstreamAccounts.emptyTitle')}
-              emptyDescription={t('accountPool.upstreamAccounts.emptyDescription')}
-              labels={{
+              <UpstreamAccountsTable
+                items={visibleRosterItems}
+                isLoading={showBlockingRosterLoading}
+                error={showBlockingRosterError ? listError : null}
+                loadingTitle={t('accountPool.upstreamAccounts.loadingTitle')}
+                loadingDescription={t('accountPool.upstreamAccounts.loadingDescription')}
+                errorTitle={t('accountPool.upstreamAccounts.listErrorTitle')}
+                retryLabel={t('accountPool.upstreamAccounts.listRetry')}
+                onRetry={() => void refresh()}
+                selectedId={upstreamAccountId}
+                selectedAccountIds={selectedAccountIdSet}
+                onSelect={handleSelectAccount}
+                onToggleSelected={handleToggleSelectedAccount}
+                onToggleSelectAllCurrentPage={handleToggleSelectAllCurrentPage}
+                emptyTitle={t('accountPool.upstreamAccounts.emptyTitle')}
+                emptyDescription={t('accountPool.upstreamAccounts.emptyDescription')}
+                labels={{
                 selectPage: t('accountPool.upstreamAccounts.bulk.selectPage'),
                 selectRow: (name) => t('accountPool.upstreamAccounts.bulk.selectRow', { name }),
                 account: t('accountPool.upstreamAccounts.table.account'),
@@ -3955,55 +4045,98 @@ export default function UpstreamAccountsPage() {
                 latestActionFieldHttpStatus: t('accountPool.upstreamAccounts.latestAction.fields.httpStatus'),
                 latestActionFieldOccurredAt: t('accountPool.upstreamAccounts.latestAction.fields.occurredAt'),
                 latestActionFieldMessage: t('accountPool.upstreamAccounts.latestAction.fields.message'),
-              }}
-            />
+                }}
+              />
 
-            <div className="flex flex-col gap-3 border-t border-base-300/70 pt-4 sm:flex-row sm:items-center sm:justify-between">
-                <div className="text-sm text-base-content/70">
-                  {t('accountPool.upstreamAccounts.pagination.summary', {
-                  page,
-                  pageCount,
-                  total: effectiveTotal,
-                })}
-              </div>
-              <div className="flex flex-wrap items-center gap-3">
-                <div className="flex items-center gap-2 rounded-xl border border-base-300/70 bg-base-100/55 px-3 py-2">
-                  <span className="text-sm font-medium text-base-content/65">
-                    {t('accountPool.upstreamAccounts.pagination.pageSize')}
-                  </span>
-                  <SelectField
-                    className="min-w-[7rem]"
-                    value={String(pageSize)}
-                    options={pageSizeOptions}
-                    size="sm"
-                    triggerClassName="h-10 rounded-xl border-base-300/90 bg-base-100 px-3 text-sm"
-                    aria-label={t('accountPool.upstreamAccounts.pagination.pageSize')}
-                    onValueChange={(value) => handlePageSizeChange(Number(value))}
-                  />
+              {visibleListWarning ? (
+                <Alert variant="warning">
+                  <AppIcon name="information-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
+                  <div>{visibleListWarning}</div>
+                </Alert>
+              ) : null}
+
+              {showPaginationFooter ? (
+                <div
+                  data-testid="upstream-accounts-pagination-footer"
+                  className={cn(
+                    'flex flex-col gap-3 border-t border-base-300/70 pt-4 sm:flex-row sm:items-end sm:justify-between',
+                    hideRosterDerivedUi ? 'mt-auto' : null,
+                  )}
+                >
+                  <div className="space-y-2">
+                    {effectiveTotal != null && pageCount != null ? (
+                      <div className="text-sm text-base-content/70">
+                        {t('accountPool.upstreamAccounts.pagination.summary', {
+                          page,
+                          pageCount,
+                          total: effectiveTotal,
+                        })}
+                      </div>
+                    ) : null}
+                    {paginationStatusText ? (
+                      <div
+                        data-testid="upstream-accounts-pagination-status"
+                        className={cn(
+                          'inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-sm',
+                          showBlockingRosterLoading
+                            ? 'border-primary/20 bg-primary/8 text-primary'
+                            : 'border-error/20 bg-error/8 text-error',
+                        )}
+                      >
+                        {showBlockingRosterLoading ? (
+                          <Spinner size="sm" className="h-4 w-4" />
+                        ) : (
+                          <AppIcon name="alert-circle-outline" className="h-4 w-4" aria-hidden />
+                        )}
+                        <span>{paginationStatusText}</span>
+                      </div>
+                    ) : null}
+                  </div>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <div className="flex items-center gap-2 rounded-xl border border-base-300/70 bg-base-100/55 px-3 py-2">
+                      <span className="text-sm font-medium text-base-content/65">
+                        {t('accountPool.upstreamAccounts.pagination.pageSize')}
+                      </span>
+                      <SelectField
+                        className="min-w-[7rem]"
+                        value={String(pageSize)}
+                        options={pageSizeOptions}
+                        size="sm"
+                        disabled={showBlockingRosterLoading}
+                        triggerClassName="h-10 rounded-xl border-base-300/90 bg-base-100 px-3 text-sm"
+                        aria-label={t('accountPool.upstreamAccounts.pagination.pageSize')}
+                        onValueChange={(value) => handlePageSizeChange(Number(value))}
+                      />
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-10 rounded-xl px-4"
+                        onClick={() => setPage((current) => Math.max(1, current - 1))}
+                        disabled={showBlockingRosterLoading || page <= 1}
+                      >
+                        {t('accountPool.upstreamAccounts.pagination.previous')}
+                      </Button>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="h-10 rounded-xl px-4"
+                        onClick={() => setPage((current) => Math.min(nextPageLimit, current + 1))}
+                        disabled={
+                          showBlockingRosterLoading ||
+                          pageCount == null ||
+                          page >= pageCount
+                        }
+                      >
+                        {t('accountPool.upstreamAccounts.pagination.next')}
+                      </Button>
+                    </div>
+                  </div>
                 </div>
-                <div className="flex items-center gap-2">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-10 rounded-xl px-4"
-                    onClick={() => setPage((current) => Math.max(1, current - 1))}
-                    disabled={page <= 1}
-                  >
-                    {t('accountPool.upstreamAccounts.pagination.previous')}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    className="h-10 rounded-xl px-4"
-                    onClick={() => setPage((current) => Math.min(pageCount, current + 1))}
-                    disabled={page >= pageCount}
-                  >
-                    {t('accountPool.upstreamAccounts.pagination.next')}
-                  </Button>
-                </div>
-              </div>
+              ) : null}
             </div>
           </div>
         </div>
@@ -4191,13 +4324,6 @@ export default function UpstreamAccountsPage() {
         }}
         onSave={() => void handleSaveRouting()}
       />
-
-      {listError ? (
-        <Alert variant="warning">
-          <AppIcon name="information-outline" className="mt-0.5 h-4 w-4 shrink-0" aria-hidden />
-          <div>{listError}</div>
-        </Alert>
-      ) : null}
 
       <SharedUpstreamAccountDetailDrawer
         open={upstreamAccountId != null}

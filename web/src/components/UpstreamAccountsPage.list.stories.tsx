@@ -73,6 +73,88 @@ function PersistedFiltersStoryRouter() {
   return <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />
 }
 
+type AutomatedRosterAction = 'rate-limited-filter' | 'next-page'
+
+function triggerAutomatedRosterAction(
+  action: AutomatedRosterAction,
+  attempt = 0,
+): number | null {
+  const root = document.body
+  if (attempt > 40) return null
+
+  if (action === 'next-page') {
+    const nextButton = Array.from(root.querySelectorAll('button')).find((candidate) =>
+      /下一页|next/i.test(candidate.textContent || candidate.getAttribute('aria-label') || ''),
+    ) as HTMLButtonElement | undefined
+    if (nextButton == null || nextButton.disabled) {
+      return window.setTimeout(() => {
+        triggerAutomatedRosterAction(action, attempt + 1)
+      }, 100)
+    }
+    nextButton.click()
+    return null
+  }
+
+  const initialRosterReady = root.querySelectorAll('table tbody tr').length > 0
+  const filterTrigger = Array.from(root.querySelectorAll('button[role="combobox"]')).find((candidate) =>
+    /工作状态|work status/i.test(candidate.getAttribute('aria-label') || candidate.textContent || ''),
+  ) as HTMLButtonElement | undefined
+  if (!initialRosterReady || filterTrigger == null) {
+    return window.setTimeout(() => {
+      triggerAutomatedRosterAction(action, attempt + 1)
+    }, 100)
+  }
+  filterTrigger.click()
+
+  return window.setTimeout(() => {
+    const option = Array.from(root.querySelectorAll('[cmdk-item]')).find((candidate) =>
+      /限流|rate limited/i.test(candidate.textContent || ''),
+    ) as HTMLElement | undefined
+    if (option == null) {
+      triggerAutomatedRosterAction(action, attempt + 1)
+      return
+    }
+    option.click()
+  }, 50)
+}
+
+function AutomatedRosterStoryRouter({
+  action,
+}: {
+  action: AutomatedRosterAction
+}) {
+  const timerRef = useRef<number | null>(null)
+  const restoreRef = useRef<null | (() => void)>(null)
+
+  if (restoreRef.current == null && typeof window !== 'undefined') {
+    const previousValue = window.localStorage.getItem(UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY)
+    window.localStorage.removeItem(UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY)
+    restoreRef.current = () => {
+      if (previousValue == null) {
+        window.localStorage.removeItem(UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY)
+        return
+      }
+      window.localStorage.setItem(UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY, previousValue)
+    }
+  }
+
+  useEffect(() => {
+    timerRef.current = window.setTimeout(() => {
+      timerRef.current = triggerAutomatedRosterAction(action)
+    }, 100)
+    return () => {
+      if (timerRef.current != null) {
+        window.clearTimeout(timerRef.current)
+      }
+      timerRef.current = null
+      restoreRef.current?.()
+      restoreRef.current = null
+    }
+  }, [action])
+
+  return <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />
+}
+
 async function chooseSelectOption(
   canvasElement: HTMLElement,
   triggerMatcher: RegExp,
@@ -476,6 +558,57 @@ export const PersistedRosterFilters: Story = {
         name: /group/i,
       }),
     ).toHaveTextContent(/prod/i)
+  },
+}
+
+export const SlowFilterSwitch: Story = {
+  render: () => <AutomatedRosterStoryRouter action="rate-limited-filter" />,
+  play: async ({ step }) => {
+    await step('blocks the stale roster after the 600ms grace window during a filter switch', async () => {
+      await waitFor(
+        () => {
+          expect(
+            document.body.querySelector(
+              '[data-testid="upstream-accounts-table-loading-indicator"]',
+            ),
+          ).not.toBeNull()
+        },
+        { timeout: 1_200 },
+      )
+    })
+  },
+}
+
+export const SlowPageSwitch: Story = {
+  render: () => <AutomatedRosterStoryRouter action="next-page" />,
+  play: async ({ step }) => {
+    await step('blocks the stale roster after the 600ms grace window during a page switch', async () => {
+      await waitFor(
+        () => {
+          expect(
+            document.body.querySelector(
+              '[data-testid="upstream-accounts-table-loading-indicator"]',
+            ),
+          ).not.toBeNull()
+        },
+        { timeout: 1_200 },
+      )
+    })
+  },
+}
+
+export const CurrentQueryFailure: Story = {
+  render: () => <AutomatedRosterStoryRouter action="rate-limited-filter" />,
+  play: async ({ step }) => {
+    await step('shows the failed current query inline instead of keeping stale rows on screen', async () => {
+      await waitFor(
+        () => {
+          expect(document.body.textContent).toMatch(/storybook forced roster query failure/i)
+        },
+        { timeout: 1_000 },
+      )
+      expect(document.body.textContent).not.toContain('Existing OAuth')
+    })
   },
 }
 

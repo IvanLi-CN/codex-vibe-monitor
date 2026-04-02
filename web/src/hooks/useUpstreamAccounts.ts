@@ -61,6 +61,20 @@ const DEFAULT_FETCH_UPSTREAM_ACCOUNTS_QUERY: FetchUpstreamAccountsQuery = {}
 export const UPSTREAM_ACCOUNTS_SSE_REFRESH_THROTTLE_MS = 5_000
 export const UPSTREAM_ACCOUNTS_OPEN_RESYNC_COOLDOWN_MS = 3_000
 
+export type UpstreamAccountsListFreshness = 'fresh' | 'stale' | 'missing' | 'deferred'
+export type UpstreamAccountsListLoadingState = 'idle' | 'deferred' | 'initial' | 'switching' | 'refreshing'
+export type UpstreamAccountsListStatus = 'ready' | 'loading' | 'error' | 'deferred'
+
+type UpstreamAccountsListState = {
+  queryKey: string | null
+  dataQueryKey: string | null
+  freshness: UpstreamAccountsListFreshness
+  loadingState: UpstreamAccountsListLoadingState
+  status: UpstreamAccountsListStatus
+  hasCurrentQueryData: boolean
+  isPending: boolean
+}
+
 type UseUpstreamAccountsOptions = {
   allowSelectionOutsideList?: boolean
   fallbackToFirstItem?: boolean
@@ -73,6 +87,39 @@ const DEFAULT_OPTIONS: Required<UseUpstreamAccountsOptions> = {
 
 interface LoadOptions {
   silent?: boolean
+}
+
+function normalizeQueryStringArray(values?: string[]) {
+  if (!values || values.length === 0) return undefined
+  const normalized = values
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0)
+    .sort()
+  return normalized.length > 0 ? normalized : undefined
+}
+
+function normalizeQueryNumberArray(values?: number[]) {
+  if (!values || values.length === 0) return undefined
+  const normalized = values
+    .filter((value) => Number.isFinite(value) && value > 0)
+    .sort((left, right) => left - right)
+  return normalized.length > 0 ? normalized : undefined
+}
+
+export function buildUpstreamAccountsListQueryKey(query?: FetchUpstreamAccountsQuery | null) {
+  if (query == null) return null
+
+  return JSON.stringify({
+    groupSearch: query.groupSearch?.trim() || undefined,
+    groupUngrouped: query.groupUngrouped === true ? true : undefined,
+    status: query.status?.trim() || undefined,
+    workStatus: normalizeQueryStringArray(query.workStatus),
+    enableStatus: normalizeQueryStringArray(query.enableStatus),
+    healthStatus: normalizeQueryStringArray(query.healthStatus),
+    page: query.page ?? undefined,
+    pageSize: query.pageSize ?? undefined,
+    tagIds: normalizeQueryNumberArray(query.tagIds),
+  })
 }
 
 export function getUpstreamAccountsSseRefreshDelay(lastRefreshAt: number, now: number) {
@@ -89,6 +136,7 @@ export function useUpstreamAccounts(
   options?: UseUpstreamAccountsOptions,
 ) {
   const effectiveQuery = query ?? DEFAULT_FETCH_UPSTREAM_ACCOUNTS_QUERY
+  const currentListQueryKey = useMemo(() => buildUpstreamAccountsListQueryKey(query), [query])
   const resolvedOptions = {
     ...DEFAULT_OPTIONS,
     ...options,
@@ -111,11 +159,14 @@ export function useUpstreamAccounts(
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [detail, setDetail] = useState<UpstreamAccountDetail | null>(null)
   const [isLoading, setIsLoading] = useState(true)
+  const [isListPending, setIsListPending] = useState(false)
   const [isDetailLoading, setIsDetailLoading] = useState(false)
   const [listError, setListError] = useState<string | null>(null)
+  const [listDataQueryKey, setListDataQueryKey] = useState<string | null>(null)
   const [detailErrors, setDetailErrors] = useState<Record<number, string>>({})
   const [missingDetailAccountId, setMissingDetailAccountId] = useState<number | null>(null)
   const selectedIdRef = useRef<number | null>(null)
+  const currentListQueryKeyRef = useRef<string | null>(currentListQueryKey)
   const listRequestSeqRef = useRef(0)
   const detailRequestSeqRef = useRef(0)
   const detailRequestAccountIdRef = useRef<number | null>(null)
@@ -125,6 +176,10 @@ export function useUpstreamAccounts(
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastRefreshAtRef = useRef(0)
   const lastOpenResyncAtRef = useRef(0)
+
+  useEffect(() => {
+    currentListQueryKeyRef.current = currentListQueryKey
+  }, [currentListQueryKey])
 
   const setSelectedAccount = useCallback((accountId: number | null) => {
     selectedIdRef.current = accountId
@@ -157,6 +212,7 @@ export function useUpstreamAccounts(
 
   const invalidateListRequest = useCallback(() => {
     listRequestSeqRef.current += 1
+    setIsListPending(false)
     setIsLoading(false)
   }, [])
 
@@ -171,10 +227,13 @@ export function useUpstreamAccounts(
       preferredId?: number | null,
       options?: { respectCurrentSelection?: boolean; selectionAnchorId?: number | null; silent?: boolean },
     ): Promise<number | null | typeof LOAD_LIST_FAILED> => {
+      const requestQueryKey = currentListQueryKeyRef.current
       listRequestSeqRef.current += 1
       const requestSeq = listRequestSeqRef.current
       const shouldShowLoading = !(options?.silent && hasHydratedRef.current)
+      setIsListPending(true)
       if (shouldShowLoading) setIsLoading(true)
+      setListError(null)
       try {
         const response = await fetchUpstreamAccounts(effectiveQuery)
         if (requestSeq !== listRequestSeqRef.current) {
@@ -212,6 +271,7 @@ export function useUpstreamAccounts(
           apiKey: 0,
           attention: 0,
         })
+        setListDataQueryKey(requestQueryKey)
         hasHydratedRef.current = true
         setListError(null)
         setSelectedAccount(nextSelectedId)
@@ -223,8 +283,11 @@ export function useUpstreamAccounts(
         setListError(err instanceof Error ? err.message : String(err))
         return LOAD_LIST_FAILED
       } finally {
-        if (requestSeq === listRequestSeqRef.current && shouldShowLoading) {
-          setIsLoading(false)
+        if (requestSeq === listRequestSeqRef.current) {
+          setIsListPending(false)
+          if (shouldShowLoading) {
+            setIsLoading(false)
+          }
         }
       }
     },
@@ -290,6 +353,7 @@ export function useUpstreamAccounts(
   useEffect(() => {
     if (query == null) {
       setIsLoading(true)
+      setIsListPending(false)
       setListError(null)
       return
     }
@@ -647,6 +711,43 @@ export function useUpstreamAccounts(
   )
 
   const selectedDetailError = selectedId == null ? null : detailErrors[selectedId] ?? null
+  const hasCurrentQueryData =
+    currentListQueryKey != null && listDataQueryKey === currentListQueryKey
+  const listFreshness: UpstreamAccountsListFreshness =
+    query == null
+      ? 'deferred'
+      : hasCurrentQueryData
+        ? 'fresh'
+        : listDataQueryKey != null
+          ? 'stale'
+          : 'missing'
+  const listLoadingState: UpstreamAccountsListLoadingState =
+    query == null
+      ? 'deferred'
+      : isListPending
+        ? hasCurrentQueryData
+          ? 'refreshing'
+          : listDataQueryKey != null
+            ? 'switching'
+            : 'initial'
+        : 'idle'
+  const listStatus: UpstreamAccountsListStatus =
+    query == null
+      ? 'deferred'
+      : isListPending
+        ? 'loading'
+        : listError != null && !hasCurrentQueryData
+          ? 'error'
+          : 'ready'
+  const listState: UpstreamAccountsListState = {
+    queryKey: currentListQueryKey,
+    dataQueryKey: listDataQueryKey,
+    freshness: listFreshness,
+    loadingState: listLoadingState,
+    status: listStatus,
+    hasCurrentQueryData,
+    isPending: isListPending,
+  }
 
   return {
     items,
@@ -661,6 +762,7 @@ export function useUpstreamAccounts(
     isLoading,
     isDetailLoading,
     listError,
+    listState,
     detailError: selectedDetailError,
     error: selectedDetailError ?? listError,
     missingDetailAccountId,
