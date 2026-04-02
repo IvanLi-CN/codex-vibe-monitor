@@ -150,6 +150,11 @@
   ![监控页共享详情抽屉](./assets/upstream-detail-monitoring.png)
 
   - 验证点：监控页在原页内打开号池同款详情抽屉，URL 写入 `upstreamAccountId`，不跳转号池页。
+- 删除当前账号后抽屉关闭（Storybook canvas）
+
+  ![删除当前账号后抽屉关闭](./assets/upstream-detail-delete-close.png)
+
+  - 验证点：当前详情账号删除成功后，`upstreamAccountId` 被移除，抽屉关闭，不保留被删账号的空壳详情。
 
 ## 实现里程碑（Milestones / Delivery checklist）
 
@@ -174,3 +179,4 @@
 
 - 2026-03-28: 创建 follow-up spec，冻结 URL / accountId 驱动、删除 / not-found 关闭语义、监控页共享详情抽屉与视觉证据口径。
 - 2026-03-28: 完成号池与监控页共享详情抽屉改造，补齐 Storybook / Vitest 与最终视觉证据。
+- 2026-04-03: 修复删除成功后因 hook 先清空选中态导致的抽屉残留问题，补齐 Storybook 删除关闭回归与视觉证据。

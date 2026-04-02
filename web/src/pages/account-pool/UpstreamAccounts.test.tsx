@@ -4693,7 +4693,7 @@ describe("UpstreamAccountsPage delete confirmation", () => {
       selectedSummary: baseItems[1],
       detail: detailFor(9, "Backup Key"),
     };
-    rerender();
+    remount("/account-pool/upstream-accounts?upstreamAccountId=9");
     await flushAsync();
 
     removeRequest.resolve();
@@ -4826,6 +4826,115 @@ describe("UpstreamAccountsPage delete confirmation", () => {
     expect(removeAccount).toHaveBeenCalledWith(8);
     expect(document.body.querySelector('[role="dialog"]')).toBeNull();
     confirmSpy.mockRestore();
+  });
+
+  it("closes the current drawer after delete even if the hook clears selected state before resolving", async () => {
+    let state: any = {
+      items: [
+        {
+          id: 8,
+          kind: "api_key_codex" as const,
+          provider: "codex" as const,
+          displayName: "Gateway Key",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          maskedApiKey: "sk-gate••••",
+        },
+      ],
+      writesEnabled: true,
+      selectedId: 8,
+      selectedSummary: {
+        id: 8,
+        kind: "api_key_codex" as const,
+        provider: "codex" as const,
+        displayName: "Gateway Key",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        maskedApiKey: "sk-gate••••",
+      },
+      detail: {
+        id: 8,
+        kind: "api_key_codex" as const,
+        provider: "codex" as const,
+        displayName: "Gateway Key",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        history: [],
+        note: null,
+        upstreamBaseUrl: null,
+        localLimits: {
+          primaryLimit: 100,
+          secondaryLimit: 1000,
+          limitUnit: "requests",
+        },
+      },
+      isLoading: false,
+      isDetailLoading: false,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting: vi.fn(),
+      runSync: vi.fn(),
+      removeAccount: vi.fn(async () => {
+        state = {
+          ...state,
+          items: [],
+          selectedId: null,
+          selectedSummary: null,
+          detail: null,
+        };
+        rerender("/account-pool/upstream-accounts?view=compact&upstreamAccountId=8");
+      }),
+      routing: { apiKeyConfigured: true, maskedApiKey: "pool-live••••" },
+      groups: [],
+      saveGroupNote: vi.fn(),
+    };
+
+    hookMocks.useUpstreamAccounts.mockImplementation(() => state);
+    hookMocks.useUpstreamStickyConversations.mockReturnValue({
+      stats: { conversations: [], rangeStart: "", rangeEnd: "" },
+      isLoading: false,
+      error: null,
+    });
+
+    render("/account-pool/upstream-accounts?view=compact&upstreamAccountId=8");
+    await flushAsync();
+
+    const dialog = document.body.querySelector('[role="dialog"]');
+    const deleteButton = dialog
+      ? Array.from(dialog.querySelectorAll("button")).find((candidate) =>
+      /^Delete$/i.test(
+        candidate.textContent ||
+          candidate.getAttribute("aria-label") ||
+          candidate.title ||
+          "",
+        ),
+      )
+      : null;
+    if (!(deleteButton instanceof HTMLButtonElement)) {
+      throw new Error("missing detail drawer delete button");
+    }
+
+    pressButton(deleteButton);
+    await flushAsync();
+    clickButton(/Delete account/i);
+    await flushAsync();
+
+    expect(state.removeAccount).toHaveBeenCalledWith(8);
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
   });
 
   it("keeps delete failures inside the detail drawer", async () => {
