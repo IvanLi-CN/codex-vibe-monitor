@@ -3627,18 +3627,8 @@ pub(crate) async fn update_upstream_account_group(
     } else {
         existing_metadata.node_shunt_enabled
     };
-    if next_node_shunt_enabled {
-        let selectable_bound_proxy_keys = {
-            let manager = state.forward_proxy.lock().await;
-            manager.selectable_bound_proxy_keys_in_order(&next_bound_proxy_keys)
-        };
-        if selectable_bound_proxy_keys.is_empty() {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                group_node_shunt_unassigned_error_message().to_string(),
-            ));
-        }
-    } else if bound_proxy_keys_was_updated && !next_bound_proxy_keys.is_empty() {
+    if !next_node_shunt_enabled && bound_proxy_keys_was_updated && !next_bound_proxy_keys.is_empty()
+    {
         let has_selectable_bound_proxy_keys = {
             let manager = state.forward_proxy.lock().await;
             manager.has_selectable_bound_proxy_keys(&next_bound_proxy_keys)
@@ -3707,13 +3697,15 @@ async fn build_imported_oauth_validation_response(
     state: &AppState,
     items: &[ImportOauthCredentialFileRequest],
     binding: &ResolvedRequiredGroupProxyBinding,
-) -> ImportedOauthValidationResponse {
+) -> Result<ImportedOauthValidationResponse> {
     let mut seen_keys = HashSet::new();
     let mut consumed_proxy_keys = HashSet::new();
     let mut rows = Vec::with_capacity(items.len());
-    let assignments = build_upstream_account_node_shunt_assignments(state)
-        .await
-        .ok();
+    let assignments = if binding.node_shunt_enabled {
+        Some(build_upstream_account_node_shunt_assignments(state).await?)
+    } else {
+        None
+    };
     let refresh_scope = required_account_forward_proxy_scope(
         Some(&binding.group_name),
         binding.bound_proxy_keys.clone(),
@@ -3823,7 +3815,10 @@ async fn build_imported_oauth_validation_response(
         rows.push(row);
     }
 
-    build_imported_oauth_validation_response_from_rows(items.len(), rows)
+    Ok(build_imported_oauth_validation_response_from_rows(
+        items.len(),
+        rows,
+    ))
 }
 
 fn build_imported_oauth_pending_response(
@@ -4949,7 +4944,9 @@ pub(crate) async fn validate_imported_oauth_accounts(
     )
     .await?;
     Ok(Json(
-        build_imported_oauth_validation_response(state.as_ref(), &payload.items, &binding).await,
+        build_imported_oauth_validation_response(state.as_ref(), &payload.items, &binding)
+            .await
+            .map_err(internal_error_tuple)?,
     ))
 }
 
@@ -10558,18 +10555,7 @@ async fn resolve_required_group_proxy_binding_for_write(
         .map_err(internal_error_tuple)?;
     let node_shunt_enabled =
         requested_node_shunt_enabled.unwrap_or(existing_metadata.node_shunt_enabled);
-    if node_shunt_enabled {
-        let selectable_bound_proxy_keys = {
-            let manager = state.forward_proxy.lock().await;
-            manager.selectable_bound_proxy_keys_in_order(&bound_proxy_keys)
-        };
-        if selectable_bound_proxy_keys.is_empty() {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                group_node_shunt_unassigned_error_message().to_string(),
-            ));
-        }
-    } else {
+    if !node_shunt_enabled {
         let scope =
             required_account_forward_proxy_scope(Some(&group_name), bound_proxy_keys.clone())
                 .map_err(|err| (StatusCode::BAD_REQUEST, err.to_string()))?;
@@ -18418,34 +18404,55 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_upstream_account_group_rejects_enabling_node_shunt_without_usable_binding() {
+    async fn update_upstream_account_group_allows_note_only_edits_when_node_shunt_group_has_no_selectable_nodes()
+     {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
         let account_id = insert_api_key_account(&state.pool, "Node Shunt Guard").await;
-        set_test_account_group_name(&state.pool, account_id, Some("empty-node-shunt")).await;
+        let group_name = "empty-node-shunt";
+        let stale_proxy_key = "stale-node".to_string();
+        set_test_account_group_name(&state.pool, account_id, Some(group_name)).await;
+        let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+        save_group_metadata_record_conn(
+            &mut conn,
+            group_name,
+            UpstreamAccountGroupMetadata {
+                note: None,
+                bound_proxy_keys: vec![stale_proxy_key.clone()],
+                node_shunt_enabled: true,
+                upstream_429_retry_enabled: false,
+                upstream_429_max_retries: 0,
+                concurrency_limit: 0,
+            },
+        )
+        .await
+        .expect("save group metadata");
+        drop(conn);
 
-        let error = update_upstream_account_group(
+        let Json(response) = update_upstream_account_group(
             State(state),
             HeaderMap::new(),
-            AxumPath("empty-node-shunt".to_string()),
+            AxumPath(group_name.to_string()),
             Json(UpdateUpstreamAccountGroupRequest {
-                note: None,
+                note: Some("still editable".to_string()),
                 bound_proxy_keys: None,
-                node_shunt_enabled: Some(true),
+                node_shunt_enabled: None,
                 upstream_429_retry_enabled: None,
                 upstream_429_max_retries: None,
                 concurrency_limit: None,
             }),
         )
         .await
-        .expect_err("node shunt should require a usable binding");
+        .expect("note-only edit should succeed even without selectable nodes");
 
-        assert_eq!(error.0, StatusCode::BAD_REQUEST);
-        assert_eq!(error.1, group_node_shunt_unassigned_error_message());
+        assert_eq!(response.group_name, group_name);
+        assert_eq!(response.note.as_deref(), Some("still editable"));
+        assert_eq!(response.bound_proxy_keys, vec![stale_proxy_key]);
+        assert!(response.node_shunt_enabled);
     }
 
     #[tokio::test]
-    async fn update_upstream_account_group_rejects_clearing_bindings_while_node_shunt_stays_enabled()
-     {
+    async fn update_upstream_account_group_allows_clearing_bindings_while_node_shunt_stays_enabled()
+    {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
         let account_id = insert_api_key_account(&state.pool, "Node Shunt Bound").await;
         set_test_account_group_name(&state.pool, account_id, Some("bound-node-shunt")).await;
@@ -18466,7 +18473,7 @@ mod tests {
         .expect("save group metadata");
         drop(conn);
 
-        let error = update_upstream_account_group(
+        let Json(response) = update_upstream_account_group(
             State(state),
             HeaderMap::new(),
             AxumPath("bound-node-shunt".to_string()),
@@ -18480,10 +18487,73 @@ mod tests {
             }),
         )
         .await
-        .expect_err("node shunt should reject empty bindings");
+        .expect("node shunt group should allow clearing bindings");
 
-        assert_eq!(error.0, StatusCode::BAD_REQUEST);
-        assert_eq!(error.1, group_node_shunt_unassigned_error_message());
+        assert_eq!(response.group_name, "bound-node-shunt");
+        assert!(response.bound_proxy_keys.is_empty());
+        assert!(response.node_shunt_enabled);
+    }
+
+    #[tokio::test]
+    async fn resolve_required_group_proxy_binding_for_write_allows_node_shunt_without_selectable_nodes()
+     {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let requested_bound_proxy_keys = vec!["stale-node".to_string()];
+        let expected_bound_proxy_keys =
+            canonicalize_forward_proxy_bound_keys(state.as_ref(), &requested_bound_proxy_keys)
+                .await
+                .expect("canonicalize bound proxy keys");
+        let binding = resolve_required_group_proxy_binding_for_write(
+            state.as_ref(),
+            Some("write-node-shunt".to_string()),
+            Some(requested_bound_proxy_keys),
+            Some(true),
+        )
+        .await
+        .expect("node shunt writes should not require selectable nodes");
+
+        assert_eq!(binding.group_name, "write-node-shunt");
+        assert_eq!(binding.bound_proxy_keys, expected_bound_proxy_keys);
+        assert!(binding.node_shunt_enabled);
+    }
+
+    #[tokio::test]
+    async fn build_imported_oauth_validation_response_returns_assignment_errors() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let binding = ResolvedRequiredGroupProxyBinding {
+            group_name: "import-group".to_string(),
+            bound_proxy_keys: vec!["stale-node".to_string()],
+            node_shunt_enabled: true,
+        };
+        let items = vec![ImportOauthCredentialFileRequest {
+            source_id: "source-1".to_string(),
+            file_name: "alpha.json".to_string(),
+            content: json!({
+                "type": "codex",
+                "email": "alpha@duckmail.sbs",
+                "account_id": "acct_alpha",
+                "expired": "2026-03-20T00:00:00Z",
+                "access_token": "access-token",
+                "refresh_token": "refresh-token",
+                "id_token": test_id_token(
+                    "alpha@duckmail.sbs",
+                    Some("acct_alpha"),
+                    Some("user_alpha"),
+                    Some("team"),
+                ),
+            })
+            .to_string(),
+        }];
+
+        state.pool.close().await;
+
+        let error = build_imported_oauth_validation_response(state.as_ref(), &items, &binding)
+            .await
+            .expect_err("assignment build failures should not be swallowed");
+        assert!(
+            error.to_string().contains("closed") || error.to_string().contains("pool"),
+            "unexpected error: {error:#}"
+        );
     }
 
     #[tokio::test]
