@@ -11109,6 +11109,30 @@ async fn build_upstream_account_node_shunt_assignments(
     Ok(assignments)
 }
 
+async fn prepare_pool_account_with_node_shunt_refresh(
+    state: &AppState,
+    row: &UpstreamAccountRow,
+    group_metadata: &UpstreamAccountGroupMetadata,
+    node_shunt_assignments: &mut UpstreamAccountNodeShuntAssignments,
+) -> Result<Option<PoolResolvedAccount>> {
+    let mut prepared_account =
+        prepare_pool_account(state, row, group_metadata.clone(), node_shunt_assignments).await;
+    if group_metadata.node_shunt_enabled
+        && prepared_account
+            .as_ref()
+            .err()
+            .is_some_and(|err| is_group_node_shunt_unassigned_message(&err.to_string()))
+    {
+        *node_shunt_assignments = build_upstream_account_node_shunt_assignments(state).await?;
+        prepared_account =
+            prepare_pool_account(state, row, group_metadata.clone(), node_shunt_assignments).await;
+    }
+    if group_metadata.node_shunt_enabled && matches!(prepared_account, Ok(None)) {
+        *node_shunt_assignments = build_upstream_account_node_shunt_assignments(state).await?;
+    }
+    prepared_account
+}
+
 fn resolve_account_forward_proxy_scope_from_assignments(
     account_id: i64,
     group_name: Option<&str>,
@@ -16045,7 +16069,7 @@ pub(crate) async fn resolve_pool_account_for_request(
     let mut sticky_route_still_reusable = false;
     let mut sticky_route_group_proxy_blocked_message = None;
     let mut group_proxy_blocked_messages = Vec::new();
-    let node_shunt_assignments = build_upstream_account_node_shunt_assignments(state).await?;
+    let mut node_shunt_assignments = build_upstream_account_node_shunt_assignments(state).await?;
 
     let sticky_route = if let Some(sticky_key) = sticky_key {
         load_sticky_route(&state.pool, sticky_key).await?
@@ -16086,11 +16110,11 @@ pub(crate) async fn resolve_pool_account_for_request(
                 .await?
                 {
                     PoolAccountGroupProxyRoutingReadiness::Ready(group_metadata) => {
-                        let prepared_account = prepare_pool_account(
+                        let prepared_account = prepare_pool_account_with_node_shunt_refresh(
                             state,
                             &row,
-                            group_metadata,
-                            &node_shunt_assignments,
+                            &group_metadata,
+                            &mut node_shunt_assignments,
                         )
                         .await;
                         let account = match prepared_account {
@@ -16269,8 +16293,13 @@ pub(crate) async fn resolve_pool_account_for_request(
                     continue;
                 }
             };
-            let prepared_account =
-                prepare_pool_account(state, &row, group_metadata, &node_shunt_assignments).await;
+            let prepared_account = prepare_pool_account_with_node_shunt_refresh(
+                state,
+                &row,
+                &group_metadata,
+                &mut node_shunt_assignments,
+            )
+            .await;
             let account = match prepared_account {
                 Ok(account) => account,
                 Err(err) if is_group_node_shunt_unassigned_message(&err.to_string()) => {
@@ -19108,6 +19137,28 @@ mod tests {
         .expect("set test account group name");
     }
 
+    async fn set_test_account_token_expires_at(
+        pool: &SqlitePool,
+        account_id: i64,
+        token_expires_at: &str,
+    ) {
+        let now_iso = format_utc_iso(Utc::now());
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET token_expires_at = ?2,
+                updated_at = ?3
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .bind(token_expires_at)
+        .bind(&now_iso)
+        .execute(pool)
+        .await
+        .expect("set test account token expires at");
+    }
+
     async fn test_app_state_with_usage_base(base_url: &str) -> Arc<AppState> {
         test_app_state_with_usage_base_and_parallelism(
             base_url,
@@ -19984,6 +20035,66 @@ mod tests {
             format!("{origin}/backend-api"),
             origin,
             usage_requests,
+            token_requests,
+            server,
+        )
+    }
+
+    #[derive(Clone)]
+    struct TokenFailureOauthServerState {
+        token_status: StatusCode,
+        token_body: Arc<String>,
+        token_requests: Arc<AtomicUsize>,
+    }
+
+    async fn spawn_token_failure_oauth_server(
+        token_status: StatusCode,
+        token_body: serde_json::Value,
+    ) -> (String, String, Arc<AtomicUsize>, JoinHandle<()>) {
+        async fn usage_handler() -> (StatusCode, String) {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                json!({
+                    "error": {
+                        "message": "unexpected usage request during routing prepare test"
+                    }
+                })
+                .to_string(),
+            )
+        }
+
+        async fn token_handler(
+            State(state): State<TokenFailureOauthServerState>,
+        ) -> (StatusCode, String) {
+            state.token_requests.fetch_add(1, Ordering::SeqCst);
+            (state.token_status, (*state.token_body).clone())
+        }
+
+        let token_requests = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .route("/backend-api/wham/usage", get(usage_handler))
+            .route("/oauth/token", post(token_handler))
+            .with_state(TokenFailureOauthServerState {
+                token_status,
+                token_body: Arc::new(token_body.to_string()),
+                token_requests: token_requests.clone(),
+            });
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind token failure oauth server");
+        let addr = listener
+            .local_addr()
+            .expect("token failure oauth server addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve token failure oauth server");
+        });
+        let origin = format!("http://{addr}");
+
+        (
+            format!("{origin}/backend-api"),
+            origin,
             token_requests,
             server,
         )
@@ -21668,6 +21779,121 @@ mod tests {
             panic!("expected provisioning scope to pin the existing node shunt slot");
         };
         assert_eq!(proxy_key, FORWARD_PROXY_DIRECT_KEY);
+    }
+
+    #[tokio::test]
+    async fn node_shunt_refresh_failure_reassigns_slot_within_same_request() {
+        let (usage_base_url, oauth_issuer, token_requests, server) =
+            spawn_token_failure_oauth_server(
+                StatusCode::BAD_REQUEST,
+                json!({
+                    "error": "invalid_grant",
+                    "error_description": "refresh token revoked"
+                }),
+            )
+            .await;
+        let state = test_app_state_with_usage_and_oauth_base(&usage_base_url, &oauth_issuer).await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let failing_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Failing Refresh Account",
+            "failing-refresh@example.com",
+            "org_failing_refresh",
+            "user_failing_refresh",
+        )
+        .await;
+        let fallback_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Fallback Refresh Account",
+            "fallback-refresh@example.com",
+            "org_fallback_refresh",
+            "user_fallback_refresh",
+        )
+        .await;
+
+        set_test_account_group_name(
+            &state.pool,
+            failing_account_id,
+            Some("node-shunt-refresh-failover"),
+        )
+        .await;
+        set_test_account_group_name(
+            &state.pool,
+            fallback_account_id,
+            Some("node-shunt-refresh-failover"),
+        )
+        .await;
+
+        let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+        save_group_metadata_record_conn(
+            &mut conn,
+            "node-shunt-refresh-failover",
+            UpstreamAccountGroupMetadata {
+                note: None,
+                bound_proxy_keys: test_required_group_bound_proxy_keys(),
+                node_shunt_enabled: true,
+                upstream_429_retry_enabled: false,
+                upstream_429_max_retries: 0,
+                concurrency_limit: 0,
+            },
+        )
+        .await
+        .expect("save node shunt refresh failover metadata");
+        drop(conn);
+
+        set_test_account_token_expires_at(
+            &state.pool,
+            failing_account_id,
+            &format_utc_iso(Utc::now() - ChronoDuration::hours(1)),
+        )
+        .await;
+
+        let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
+            .await
+            .expect("resolve node shunt request after refresh failure");
+
+        let PoolAccountResolution::Resolved(account) = resolution else {
+            panic!("expected fallback account to be resolved after refresh failure");
+        };
+        assert_eq!(account.account_id, fallback_account_id);
+        assert_eq!(
+            account.routing_source,
+            PoolRoutingSelectionSource::FreshAssignment
+        );
+        let ForwardProxyRouteScope::PinnedProxyKey(proxy_key) = &account.forward_proxy_scope else {
+            panic!("expected fallback account to receive a pinned node shunt proxy key");
+        };
+        assert_eq!(proxy_key, FORWARD_PROXY_DIRECT_KEY);
+
+        let failing_after = load_upstream_account_row(&state.pool, failing_account_id)
+            .await
+            .expect("load failing account after routing")
+            .expect("failing account exists after routing");
+        assert_eq!(failing_after.status, UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH);
+
+        let assignments = build_upstream_account_node_shunt_assignments(state.as_ref())
+            .await
+            .expect("build refreshed node shunt assignments");
+        assert!(
+            !assignments
+                .account_proxy_keys
+                .contains_key(&failing_account_id)
+        );
+        assert_eq!(
+            assignments
+                .account_proxy_keys
+                .get(&fallback_account_id)
+                .map(String::as_str),
+            Some(FORWARD_PROXY_DIRECT_KEY)
+        );
+        assert_eq!(token_requests.load(Ordering::SeqCst), 1);
+        server.abort();
     }
 
     #[tokio::test]
