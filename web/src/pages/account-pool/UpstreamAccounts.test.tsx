@@ -19,6 +19,12 @@ import type { EffectiveRoutingRule, TagSummary } from "../../lib/api";
 type UpstreamAccountsHookValue = ReturnType<
   typeof import("../../hooks/useUpstreamAccounts").useUpstreamAccounts
 >;
+type DeleteRegressionState = Partial<UpstreamAccountsHookValue> & {
+  selectedId: number | null;
+  selectedSummary: UpstreamAccountsHookValue["selectedSummary"] | null;
+  detail: UpstreamAccountsHookValue["detail"] | null;
+  routing: UpstreamAccountsHookValue["routing"];
+};
 
 const UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY =
   "codex-vibe-monitor.account-pool.upstream-accounts.filters";
@@ -4833,7 +4839,7 @@ describe("UpstreamAccountsPage delete confirmation", () => {
   });
 
   it("closes the current drawer after delete even if the hook clears selected state before resolving", async () => {
-    let state: UpstreamAccountsHookValue = {
+    let state: DeleteRegressionState = {
       items: [
         {
           id: 8,
@@ -4845,6 +4851,8 @@ describe("UpstreamAccountsPage delete confirmation", () => {
           status: "active",
           enabled: true,
           maskedApiKey: "sk-gate••••",
+          tags: [],
+          effectiveRoutingRule: defaultEffectiveRoutingRule,
         },
       ],
       writesEnabled: true,
@@ -4859,6 +4867,8 @@ describe("UpstreamAccountsPage delete confirmation", () => {
         status: "active",
         enabled: true,
         maskedApiKey: "sk-gate••••",
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
       },
       detail: {
         id: 8,
@@ -4872,6 +4882,8 @@ describe("UpstreamAccountsPage delete confirmation", () => {
         history: [],
         note: null,
         upstreamBaseUrl: null,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
         localLimits: {
           primaryLimit: 100,
           secondaryLimit: 1000,
@@ -4902,12 +4914,14 @@ describe("UpstreamAccountsPage delete confirmation", () => {
         };
         rerender("/account-pool/upstream-accounts?view=compact&upstreamAccountId=8");
       }),
-      routing: { apiKeyConfigured: true, maskedApiKey: "pool-live••••" },
+      routing: { apiKeyConfigured: true, maskedApiKey: "pool-live••••", writesEnabled: true },
       groups: [],
       saveGroupNote: vi.fn(),
     };
 
-    hookMocks.useUpstreamAccounts.mockImplementation(() => state);
+    hookMocks.useUpstreamAccounts.mockImplementation(
+      () => state as UpstreamAccountsHookValue,
+    );
     hookMocks.useUpstreamStickyConversations.mockReturnValue({
       stats: { conversations: [], rangeStart: "", rangeEnd: "" },
       isLoading: false,
