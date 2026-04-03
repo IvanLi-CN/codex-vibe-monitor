@@ -2585,6 +2585,7 @@ struct OauthLoginSessionRow {
     group_name: Option<String>,
     group_bound_proxy_keys_json: Option<String>,
     group_node_shunt_enabled: i64,
+    group_node_shunt_enabled_requested: i64,
     is_mother: i64,
     note: Option<String>,
     tag_ids_json: Option<String>,
@@ -2854,6 +2855,7 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             group_name TEXT,
             group_bound_proxy_keys_json TEXT NOT NULL DEFAULT '[]',
             group_node_shunt_enabled INTEGER NOT NULL DEFAULT 0,
+            group_node_shunt_enabled_requested INTEGER NOT NULL DEFAULT 0,
             is_mother INTEGER NOT NULL DEFAULT 0,
             note TEXT,
             tag_ids_json TEXT,
@@ -2905,6 +2907,14 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
         .await
         .context("failed to add pool_oauth_login_sessions.group_node_shunt_enabled")?;
     }
+    ensure_integer_column_with_default(
+        pool,
+        "pool_oauth_login_sessions",
+        "group_node_shunt_enabled_requested",
+        "0",
+    )
+    .await
+    .context("failed to ensure pool_oauth_login_sessions.group_node_shunt_enabled_requested")?;
     ensure_nullable_text_column(pool, "pool_oauth_login_sessions", "group_note")
         .await
         .context("failed to ensure pool_oauth_login_sessions.group_note")?;
@@ -5819,10 +5829,11 @@ pub(crate) async fn create_oauth_login_session(
     sqlx::query(
         r#"
         INSERT INTO pool_oauth_login_sessions (
-            login_id, account_id, display_name, group_name, group_bound_proxy_keys_json, group_node_shunt_enabled, is_mother, note, tag_ids_json, group_note,
-            group_concurrency_limit, mailbox_session_id, generated_mailbox_address, state, pkce_verifier, redirect_uri, status, auth_url,
+            login_id, account_id, display_name, group_name, group_bound_proxy_keys_json, group_node_shunt_enabled,
+            group_node_shunt_enabled_requested, is_mother, note, tag_ids_json, group_note, group_concurrency_limit,
+            mailbox_session_id, generated_mailbox_address, state, pkce_verifier, redirect_uri, status, auth_url,
             error_message, expires_at, consumed_at, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, NULL, ?19, NULL, ?20, ?20)
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, NULL, ?20, NULL, ?21, ?21)
         "#,
     )
     .bind(&login_id)
@@ -5834,6 +5845,11 @@ pub(crate) async fn create_oauth_login_session(
             .map_err(internal_error_tuple)?,
     )
     .bind(if resolved_group_binding.node_shunt_enabled {
+        1_i64
+    } else {
+        0_i64
+    })
+    .bind(if payload.group_node_shunt_enabled.is_some() {
         1_i64
     } else {
         0_i64
@@ -5960,6 +5976,8 @@ pub(crate) async fn update_oauth_login_session(
         .fetch_all(tx.as_mut())
         .await
         .map_err(internal_error_tuple)?;
+        let session_group_node_shunt_enabled_requested =
+            decode_group_requested_flag(session.group_node_shunt_enabled_requested);
         session.display_name.as_deref() == Some(account.display_name.as_str())
             && session.group_name == account.group_name
             && session.note == account.note
@@ -5967,8 +5985,9 @@ pub(crate) async fn update_oauth_login_session(
             && decode_group_bound_proxy_keys_json(session.group_bound_proxy_keys_json.as_deref())
                 == current_group_metadata.bound_proxy_keys
             && session.group_concurrency_limit == current_group_metadata.concurrency_limit
-            && decode_group_node_shunt_enabled(session.group_node_shunt_enabled)
-                == current_group_metadata.node_shunt_enabled
+            && (!session_group_node_shunt_enabled_requested
+                || decode_group_node_shunt_enabled(session.group_node_shunt_enabled)
+                    == current_group_metadata.node_shunt_enabled)
             && session.group_concurrency_limit == current_group_metadata.concurrency_limit
             && (session.is_mother != 0) == (account.is_mother != 0)
             && parse_tag_ids_json(session.tag_ids_json.as_deref()) == current_tag_ids
@@ -6043,6 +6062,8 @@ pub(crate) async fn update_oauth_login_session(
         decode_group_bound_proxy_keys_json(session.group_bound_proxy_keys_json.as_deref());
     let session_group_node_shunt_enabled =
         decode_group_node_shunt_enabled(session.group_node_shunt_enabled);
+    let session_group_node_shunt_enabled_requested =
+        decode_group_requested_flag(session.group_node_shunt_enabled_requested);
     let requested_group_note_missing = matches!(requested_group_note, OptionalField::Missing);
     let mut normalized_group_note = match requested_group_note {
         OptionalField::Missing => session.group_note.clone(),
@@ -6071,6 +6092,14 @@ pub(crate) async fn update_oauth_login_session(
         OptionalField::Null => Some(false),
         OptionalField::Value(value) => Some(value),
     };
+    let stored_group_node_shunt_enabled_requested =
+        if requested_group_node_shunt_enabled_was_updated {
+            true
+        } else if group_name_changed {
+            false
+        } else {
+            session_group_node_shunt_enabled_requested
+        };
     if requested_group_name_was_updated
         && (group_name.is_none() || (requested_group_note_missing && group_name_changed))
     {
@@ -6182,14 +6211,15 @@ pub(crate) async fn update_oauth_login_session(
                 group_name = ?3,
                 group_bound_proxy_keys_json = ?4,
                 group_node_shunt_enabled = ?5,
-                is_mother = ?6,
-                note = ?7,
-                tag_ids_json = ?8,
-                group_note = ?9,
-                group_concurrency_limit = ?10,
-                mailbox_session_id = ?11,
-                generated_mailbox_address = ?12,
-                updated_at = ?13
+                group_node_shunt_enabled_requested = ?6,
+                is_mother = ?7,
+                note = ?8,
+                tag_ids_json = ?9,
+                group_note = ?10,
+                group_concurrency_limit = ?11,
+                mailbox_session_id = ?12,
+                generated_mailbox_address = ?13,
+                updated_at = ?14
             WHERE login_id = ?1
             "#,
         )
@@ -6201,6 +6231,11 @@ pub(crate) async fn update_oauth_login_session(
                 .map_err(internal_error_tuple)?,
         )
         .bind(if resolved_group_binding.node_shunt_enabled {
+            1_i64
+        } else {
+            0_i64
+        })
+        .bind(if stored_group_node_shunt_enabled_requested {
             1_i64
         } else {
             0_i64
@@ -6233,16 +6268,17 @@ pub(crate) async fn update_oauth_login_session(
             group_name = ?3,
             group_bound_proxy_keys_json = ?4,
             group_node_shunt_enabled = ?5,
-            is_mother = ?6,
-            note = ?7,
-            tag_ids_json = ?8,
-            group_note = ?9,
-            group_concurrency_limit = ?10,
-            mailbox_session_id = ?11,
-            generated_mailbox_address = ?12,
-            updated_at = ?13
+            group_node_shunt_enabled_requested = ?6,
+            is_mother = ?7,
+            note = ?8,
+            tag_ids_json = ?9,
+            group_note = ?10,
+            group_concurrency_limit = ?11,
+            mailbox_session_id = ?12,
+            generated_mailbox_address = ?13,
+            updated_at = ?14
         WHERE login_id = ?1
-          AND (?14 IS NULL OR updated_at = ?14)
+          AND (?15 IS NULL OR updated_at = ?15)
         "#,
     )
     .bind(&login_id)
@@ -6253,6 +6289,11 @@ pub(crate) async fn update_oauth_login_session(
             .map_err(internal_error_tuple)?,
     )
     .bind(if resolved_group_binding.node_shunt_enabled {
+        1_i64
+    } else {
+        0_i64
+    })
+    .bind(if stored_group_node_shunt_enabled_requested {
         1_i64
     } else {
         0_i64
@@ -7183,7 +7224,7 @@ async fn persist_oauth_callback_inner(
                 Some(decode_group_node_shunt_enabled(
                     session.group_node_shunt_enabled,
                 )),
-                true,
+                decode_group_requested_flag(session.group_node_shunt_enabled_requested),
             ),
             claims: &input.claims,
             encrypted_credentials: input.encrypted_credentials,
@@ -10393,6 +10434,10 @@ fn decode_group_node_shunt_enabled(raw: i64) -> bool {
     raw != 0
 }
 
+fn decode_group_requested_flag(raw: i64) -> bool {
+    raw != 0
+}
+
 fn decode_group_upstream_429_retry_enabled(raw: i64) -> bool {
     raw != 0
 }
@@ -11336,7 +11381,8 @@ async fn load_login_session_by_login_id_with_executor(
     sqlx::query_as::<_, OauthLoginSessionRow>(
         r#"
         SELECT
-            login_id, account_id, display_name, group_name, group_bound_proxy_keys_json, group_node_shunt_enabled, is_mother, note, tag_ids_json, group_note,
+            login_id, account_id, display_name, group_name, group_bound_proxy_keys_json, group_node_shunt_enabled,
+            group_node_shunt_enabled_requested, is_mother, note, tag_ids_json, group_note,
             group_concurrency_limit,
             mailbox_session_id, generated_mailbox_address AS mailbox_address, state, pkce_verifier, redirect_uri, status, auth_url,
             error_message, expires_at, consumed_at, created_at, updated_at
@@ -11365,7 +11411,8 @@ async fn load_login_session_by_state(
     sqlx::query_as::<_, OauthLoginSessionRow>(
         r#"
         SELECT
-            login_id, account_id, display_name, group_name, group_bound_proxy_keys_json, group_node_shunt_enabled, is_mother, note, tag_ids_json, group_note,
+            login_id, account_id, display_name, group_name, group_bound_proxy_keys_json, group_node_shunt_enabled,
+            group_node_shunt_enabled_requested, is_mother, note, tag_ids_json, group_note,
             group_concurrency_limit,
             mailbox_session_id, generated_mailbox_address AS mailbox_address, state, pkce_verifier, redirect_uri, status, auth_url,
             error_message, expires_at, consumed_at, created_at, updated_at
@@ -27992,6 +28039,127 @@ mod tests {
         .await
         .expect("load group note");
         assert_eq!(group_note.as_deref(), Some("draft group note"));
+
+        let completed_session = load_login_session_by_login_id(&state.pool, &created.login_id)
+            .await
+            .expect("load completed session")
+            .expect("completed session should exist");
+        assert_eq!(completed_session.status, LOGIN_SESSION_STATUS_COMPLETED);
+        assert_eq!(completed_session.account_id, Some(account_id));
+    }
+
+    #[tokio::test]
+    async fn persist_oauth_callback_preserves_group_node_shunt_for_legacy_pending_session() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let bound_proxy_keys = test_required_group_bound_proxy_keys();
+        let mut conn = state
+            .pool
+            .acquire()
+            .await
+            .expect("acquire group metadata conn");
+        save_group_metadata_record_conn(
+            &mut conn,
+            "legacy-group",
+            UpstreamAccountGroupMetadata {
+                bound_proxy_keys: bound_proxy_keys.clone(),
+                node_shunt_enabled: true,
+                ..UpstreamAccountGroupMetadata::default()
+            },
+        )
+        .await
+        .expect("seed legacy group metadata");
+        drop(conn);
+
+        let created = create_oauth_login_session(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(CreateOauthLoginSessionRequest {
+                display_name: Some("Legacy Pending".to_string()),
+                group_name: Some("legacy-group".to_string()),
+                group_bound_proxy_keys: Some(bound_proxy_keys.clone()),
+                group_node_shunt_enabled: None,
+                note: Some("legacy note".to_string()),
+                group_note: None,
+                concurrency_limit: None,
+                account_id: None,
+                tag_ids: vec![],
+                is_mother: Some(false),
+                mailbox_session_id: None,
+                mailbox_address: None,
+            }),
+        )
+        .await
+        .expect("create oauth login session")
+        .0;
+
+        sqlx::query(
+            r#"
+            UPDATE pool_oauth_login_sessions
+            SET group_node_shunt_enabled = 0,
+                group_node_shunt_enabled_requested = 0
+            WHERE login_id = ?1
+            "#,
+        )
+        .bind(&created.login_id)
+        .execute(&state.pool)
+        .await
+        .expect("downgrade pending session to legacy node shunt fields");
+
+        let pending_session = load_login_session_by_login_id(&state.pool, &created.login_id)
+            .await
+            .expect("load pending session")
+            .expect("pending session should exist");
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let encrypted_credentials = encrypt_credentials(
+            crypto_key,
+            &StoredCredentials::Oauth(StoredOauthCredentials {
+                access_token: "legacy-access".to_string(),
+                refresh_token: "legacy-refresh".to_string(),
+                id_token: test_id_token(
+                    "legacy@example.com",
+                    Some("org_legacy"),
+                    Some("user_legacy"),
+                    Some("team"),
+                ),
+                token_type: Some("Bearer".to_string()),
+            }),
+        )
+        .expect("encrypt oauth credentials");
+        let account_id = persist_oauth_callback_inner(
+            state.as_ref(),
+            PersistOauthCallbackInput {
+                display_name: pending_session
+                    .display_name
+                    .clone()
+                    .expect("display name should be stored"),
+                session: pending_session,
+                claims: test_claims(
+                    "legacy@example.com",
+                    Some("org_legacy"),
+                    Some("user_legacy"),
+                ),
+                encrypted_credentials,
+                token_expires_at: "2026-04-01T00:00:00Z".to_string(),
+            },
+        )
+        .await
+        .expect("persist oauth callback");
+
+        let metadata = load_group_metadata(&state.pool, Some("legacy-group"))
+            .await
+            .expect("load group metadata");
+        assert!(metadata.node_shunt_enabled);
+        assert_eq!(metadata.bound_proxy_keys, bound_proxy_keys);
+
+        let account = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load oauth account row")
+            .expect("oauth account should exist");
+        assert_eq!(account.group_name.as_deref(), Some("legacy-group"));
 
         let completed_session = load_login_session_by_login_id(&state.pool, &created.login_id)
             .await
