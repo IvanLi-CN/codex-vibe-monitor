@@ -11103,7 +11103,88 @@ async fn build_upstream_account_node_shunt_assignments(
             .push(candidate);
     }
 
-    for (group_name, mut candidates) in group_candidates {
+    let mut reserved_candidates = group_candidates
+        .iter()
+        .flat_map(|(group_name, candidates)| {
+            candidates
+                .iter()
+                .filter(|candidate| candidate.in_flight_reservations > 0)
+                .cloned()
+                .map(|candidate| (group_name.clone(), candidate))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    reserved_candidates.sort_by(|(lhs_group, lhs), (rhs_group, rhs)| {
+        compare_node_shunt_reserved_candidates(lhs, rhs)
+            .then_with(|| lhs_group.cmp(rhs_group))
+            .then_with(|| lhs.id.cmp(&rhs.id))
+    });
+
+    let mut fresh_candidates = group_candidates
+        .iter()
+        .flat_map(|(group_name, candidates)| {
+            candidates
+                .iter()
+                .cloned()
+                .map(|candidate| (group_name.clone(), candidate))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    fresh_candidates.sort_by(|(lhs_group, lhs), (rhs_group, rhs)| {
+        compare_routing_candidates(lhs, rhs)
+            .then_with(|| lhs_group.cmp(rhs_group))
+            .then_with(|| lhs.id.cmp(&rhs.id))
+    });
+
+    let mut globally_occupied_proxy_keys = HashSet::new();
+    let mut assigned_account_ids = HashSet::new();
+    for (group_name, candidate) in &reserved_candidates {
+        let Some(valid_proxy_keys) = assignments
+            .group_slots
+            .get(group_name)
+            .map(|slots| slots.valid_proxy_keys.clone())
+        else {
+            continue;
+        };
+        let reserved_proxy_keys = reservation_snapshot.pinned_proxy_keys_for_account(
+            candidate.id,
+            &valid_proxy_keys,
+            &globally_occupied_proxy_keys,
+        );
+        let Some(proxy_key) = reserved_proxy_keys.first().cloned() else {
+            continue;
+        };
+        if !assigned_account_ids.insert(candidate.id) {
+            continue;
+        }
+        assignments
+            .account_proxy_keys
+            .insert(candidate.id, proxy_key.clone());
+        for reserved_proxy_key in reserved_proxy_keys {
+            globally_occupied_proxy_keys.insert(reserved_proxy_key.clone());
+            assignments
+                .group_assigned_proxy_keys
+                .entry(group_name.clone())
+                .or_default()
+                .insert(reserved_proxy_key);
+        }
+    }
+    for (group_name, slots) in &assignments.group_slots {
+        let globally_reserved_proxy_keys =
+            reservation_snapshot.reserved_proxy_keys_for_group(&slots.valid_proxy_keys);
+        for proxy_key in globally_reserved_proxy_keys {
+            globally_occupied_proxy_keys.insert(proxy_key.clone());
+            assignments
+                .group_assigned_proxy_keys
+                .entry(group_name.clone())
+                .or_default()
+                .insert(proxy_key);
+        }
+    }
+    for (group_name, candidate) in fresh_candidates {
+        if !assigned_account_ids.insert(candidate.id) {
+            continue;
+        }
         let Some(valid_proxy_keys) = assignments
             .group_slots
             .get(&group_name)
@@ -11111,83 +11192,21 @@ async fn build_upstream_account_node_shunt_assignments(
         else {
             continue;
         };
-        if valid_proxy_keys.is_empty() {
+        let Some(proxy_key) = valid_proxy_keys
+            .into_iter()
+            .find(|proxy_key| !globally_occupied_proxy_keys.contains(proxy_key.as_str()))
+        else {
             continue;
-        }
-
-        // Preserve slots already occupied by in-flight fresh assignments so
-        // sticky reuse keeps the same account callable while the request is active.
-        let mut reserved_candidates = candidates
-            .iter()
-            .filter(|candidate| candidate.in_flight_reservations > 0)
-            .cloned()
-            .collect::<Vec<_>>();
-        reserved_candidates.sort_by(compare_node_shunt_reserved_candidates);
-        candidates.sort_by(compare_routing_candidates);
-
-        let mut occupied_proxy_keys = HashSet::new();
-        let mut next_slot_index = 0usize;
-        let mut assigned_account_ids = HashSet::new();
-        for candidate in &reserved_candidates {
-            let reserved_proxy_keys = reservation_snapshot.pinned_proxy_keys_for_account(
-                candidate.id,
-                &valid_proxy_keys,
-                &occupied_proxy_keys,
-            );
-            let Some(proxy_key) = reserved_proxy_keys.first().cloned() else {
-                continue;
-            };
-            if !assigned_account_ids.insert(candidate.id) {
-                continue;
-            }
-            assignments
-                .account_proxy_keys
-                .insert(candidate.id, proxy_key.clone());
-            for reserved_proxy_key in reserved_proxy_keys {
-                occupied_proxy_keys.insert(reserved_proxy_key.clone());
-                assignments
-                    .group_assigned_proxy_keys
-                    .entry(group_name.clone())
-                    .or_default()
-                    .insert(reserved_proxy_key);
-            }
-        }
-        let globally_reserved_proxy_keys =
-            reservation_snapshot.reserved_proxy_keys_for_group(&valid_proxy_keys);
-        for proxy_key in globally_reserved_proxy_keys {
-            occupied_proxy_keys.insert(proxy_key.clone());
-            assignments
-                .group_assigned_proxy_keys
-                .entry(group_name.clone())
-                .or_default()
-                .insert(proxy_key);
-        }
-        for candidate in reserved_candidates.iter().chain(candidates.iter()) {
-            if !assigned_account_ids.insert(candidate.id) {
-                continue;
-            }
-            while next_slot_index < valid_proxy_keys.len()
-                && occupied_proxy_keys.contains(valid_proxy_keys[next_slot_index].as_str())
-            {
-                next_slot_index += 1;
-            }
-            if next_slot_index >= valid_proxy_keys.len() {
-                break;
-            }
-            let Some(proxy_key) = valid_proxy_keys.get(next_slot_index).cloned() else {
-                break;
-            };
-            occupied_proxy_keys.insert(proxy_key.clone());
-            assignments
-                .account_proxy_keys
-                .insert(candidate.id, proxy_key.clone());
-            assignments
-                .group_assigned_proxy_keys
-                .entry(group_name.clone())
-                .or_default()
-                .insert(proxy_key);
-            next_slot_index += 1;
-        }
+        };
+        globally_occupied_proxy_keys.insert(proxy_key.clone());
+        assignments
+            .account_proxy_keys
+            .insert(candidate.id, proxy_key.clone());
+        assignments
+            .group_assigned_proxy_keys
+            .entry(group_name)
+            .or_default()
+            .insert(proxy_key);
     }
 
     Ok(assignments)
@@ -22180,6 +22199,76 @@ mod tests {
                     proxy_keys.contains(FORWARD_PROXY_DIRECT_KEY)
                         && proxy_keys.contains(&secondary_proxy_key)
                 })
+        );
+    }
+
+    #[tokio::test]
+    async fn node_shunt_assignments_keep_shared_proxy_keys_exclusive_across_groups() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let group_a_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Group A Shared Node Account",
+            "group-a-shared@example.com",
+            "org_group_a_shared",
+            "user_group_a_shared",
+        )
+        .await;
+        let group_b_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Group B Shared Node Account",
+            "group-b-shared@example.com",
+            "org_group_b_shared",
+            "user_group_b_shared",
+        )
+        .await;
+
+        set_test_account_group_name(&state.pool, group_a_account_id, Some("shared-node-group-a"))
+            .await;
+        set_test_account_group_name(&state.pool, group_b_account_id, Some("shared-node-group-b"))
+            .await;
+
+        let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+        for group_name in ["shared-node-group-a", "shared-node-group-b"] {
+            save_group_metadata_record_conn(
+                &mut conn,
+                group_name,
+                UpstreamAccountGroupMetadata {
+                    note: None,
+                    bound_proxy_keys: vec![FORWARD_PROXY_DIRECT_KEY.to_string()],
+                    node_shunt_enabled: true,
+                    upstream_429_retry_enabled: false,
+                    upstream_429_max_retries: 0,
+                    concurrency_limit: 0,
+                },
+            )
+            .await
+            .expect("save shared node shunt metadata");
+        }
+        drop(conn);
+
+        let assignments = build_upstream_account_node_shunt_assignments(state.as_ref())
+            .await
+            .expect("build node shunt assignments");
+
+        let assigned_account_ids = assignments
+            .account_proxy_keys
+            .iter()
+            .filter_map(|(account_id, proxy_key)| {
+                (proxy_key == FORWARD_PROXY_DIRECT_KEY).then_some(*account_id)
+            })
+            .collect::<HashSet<_>>();
+
+        assert_eq!(assigned_account_ids.len(), 1);
+        assert!(
+            assigned_account_ids.contains(&group_a_account_id)
+                || assigned_account_ids.contains(&group_b_account_id)
         );
     }
 
