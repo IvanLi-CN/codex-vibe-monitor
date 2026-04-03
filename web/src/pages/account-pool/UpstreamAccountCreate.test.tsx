@@ -299,6 +299,15 @@ afterEach(() => {
 function render(
   initialEntry: RenderEntry = "/account-pool/upstream-accounts/new",
 ) {
+  host = document.createElement("div");
+  document.body.appendChild(host);
+  root = createRoot(host);
+  rerender(initialEntry);
+}
+
+function rerender(
+  initialEntry: RenderEntry = "/account-pool/upstream-accounts/new",
+) {
   const normalizedEntry =
     typeof initialEntry === "string"
       ? (() => {
@@ -372,9 +381,6 @@ function render(
       },
     },
   } satisfies RenderEntry;
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  root = createRoot(host);
   act(() => {
     root?.render(
       <I18nProvider>
@@ -719,7 +725,7 @@ function mockUpstreamAccounts(
           : [...TEST_REQUIRED_BOUND_PROXY_KEYS],
       }))
     : TEST_GROUP_SUMMARIES;
-  hookMocks.useUpstreamAccounts.mockReturnValue({
+  const hookState = {
     items: [
       {
         id: 5,
@@ -836,7 +842,9 @@ function mockUpstreamAccounts(
           }),
       ),
     ...overrides,
-  });
+  };
+  hookMocks.useUpstreamAccounts.mockReturnValue(hookState);
+  return hookState;
 }
 
 function blurField(selector: string) {
@@ -5379,9 +5387,10 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       displayName: "Fresh OAuth",
       duplicateInfo: null,
     });
-    const saveGroupNote = vi
-      .fn()
-      .mockResolvedValue({ groupName: TEST_REQUIRED_GROUP_NAME, note: "Saved" });
+    const saveGroupNote = vi.fn().mockResolvedValue({
+      groupName: TEST_REQUIRED_GROUP_NAME,
+      note: "Saved",
+    });
     mockUpstreamAccounts({
       completeOauthLogin,
       saveGroupNote,

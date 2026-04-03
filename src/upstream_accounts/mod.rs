@@ -7838,12 +7838,19 @@ async fn sync_upstream_account_by_id(
         return Ok(Some(detail));
     }
 
-    match row.kind.as_str() {
-        UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX => sync_oauth_account(state, &row, cause).await?,
-        UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX => {
-            sync_api_key_account(&state.pool, &row, cause).await?
-        }
+    let sync_result = match row.kind.as_str() {
+        UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX => sync_oauth_account(state, &row, cause).await,
+        UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX => sync_api_key_account(&state.pool, &row, cause).await,
         _ => bail!("unsupported account kind: {}", row.kind),
+    };
+    if let Err(err) = sync_result {
+        if is_group_node_shunt_unassigned_message(&err.to_string()) {
+            let detail = load_upstream_account_detail_with_actual_usage(state, id)
+                .await?
+                .ok_or_else(|| anyhow!("account not found after sync"))?;
+            return Ok(Some(detail));
+        }
+        return Err(err);
     }
 
     let detail = load_upstream_account_detail_with_actual_usage(state, id)
@@ -24932,6 +24939,88 @@ mod tests {
         assert_eq!(
             after.last_route_failure_kind.as_deref(),
             Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+        );
+    }
+
+    #[tokio::test]
+    async fn manual_sync_returns_detail_for_node_shunt_queued_account() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let occupying_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Occupying OAuth",
+            "occupying@example.com",
+            "org_occupying",
+            "user_occupying",
+        )
+        .await;
+        let queued_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Queued OAuth",
+            "queued@example.com",
+            "org_queued",
+            "user_queued",
+        )
+        .await;
+
+        set_test_account_group_name(&state.pool, occupying_account_id, Some("node-shunt-sync"))
+            .await;
+        set_test_account_group_name(&state.pool, queued_account_id, Some("node-shunt-sync")).await;
+
+        let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+        save_group_metadata_record_conn(
+            &mut conn,
+            "node-shunt-sync",
+            UpstreamAccountGroupMetadata {
+                note: None,
+                bound_proxy_keys: test_required_group_bound_proxy_keys(),
+                node_shunt_enabled: true,
+                upstream_429_retry_enabled: false,
+                upstream_429_max_retries: 0,
+                concurrency_limit: 0,
+            },
+        )
+        .await
+        .expect("save node shunt sync metadata");
+        drop(conn);
+
+        let assignments = build_upstream_account_node_shunt_assignments(state.as_ref())
+            .await
+            .expect("build node shunt assignments");
+        assert_eq!(
+            assignments
+                .account_proxy_keys
+                .get(&occupying_account_id)
+                .map(String::as_str),
+            Some(FORWARD_PROXY_DIRECT_KEY),
+        );
+        assert!(
+            !assignments
+                .account_proxy_keys
+                .contains_key(&queued_account_id),
+            "queued account should remain unassigned when the only slot is occupied",
+        );
+
+        let detail = state
+            .upstream_accounts
+            .account_ops
+            .run_manual_sync(state.clone(), queued_account_id)
+            .await
+            .expect("queued account manual sync should return detail");
+        assert_eq!(detail.summary.id, queued_account_id);
+        assert_eq!(
+            detail.summary.routing_block_reason_code.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ROUTING_BLOCK_REASON_GROUP_NODE_SHUNT_UNASSIGNED),
+        );
+        assert_eq!(
+            detail.summary.routing_block_reason_message.as_deref(),
+            Some(group_node_shunt_unassigned_error_message()),
         );
     }
 

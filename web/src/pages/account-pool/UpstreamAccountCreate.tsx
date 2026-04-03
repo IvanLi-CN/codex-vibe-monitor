@@ -93,6 +93,7 @@ import {
   apiConcurrencyLimitToSliderValue,
   sliderConcurrencyLimitToApiValue,
 } from "../../lib/concurrencyLimit";
+import { resolvePersistedGroupNodeShuntEnabled } from "../../lib/upstreamAccountGroupDrafts";
 import { validateUpstreamBaseUrl } from "../../lib/upstreamBaseUrl";
 import {
   applyMotherUpdateToItems,
@@ -3168,9 +3169,11 @@ export default function UpstreamAccountCreatePage() {
       const normalizedConcurrencyLimit = hasDraftConcurrencyLimit
         ? (groupDraftConcurrencyLimits[normalizedGroupName] ?? 0)
         : 0;
-      const normalizedNodeShuntEnabled = hasDraftNodeShuntEnabled
-        ? groupDraftNodeShuntEnabled[normalizedGroupName] === true
-        : false;
+      const normalizedNodeShuntEnabled = resolvePersistedGroupNodeShuntEnabled(
+        hasDraftNodeShuntEnabled,
+        groupDraftNodeShuntEnabled[normalizedGroupName],
+        resolveGroupNodeShuntEnabledForName(normalizedGroupName),
+      );
       const normalizedUpstream429RetryEnabled = hasDraftUpstream429RetryEnabled
         ? groupDraftUpstream429RetryEnabled[normalizedGroupName] === true
         : false;
@@ -3199,6 +3202,7 @@ export default function UpstreamAccountCreatePage() {
       groupDraftNotes,
       groupDraftUpstream429MaxRetries,
       groupDraftUpstream429RetryEnabled,
+      resolveGroupNodeShuntEnabledForName,
       saveGroupNote,
     ],
   );

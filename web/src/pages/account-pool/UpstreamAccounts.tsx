@@ -99,6 +99,7 @@ import {
   apiConcurrencyLimitToSliderValue,
   sliderConcurrencyLimitToApiValue,
 } from "../../lib/concurrencyLimit";
+import { resolvePersistedGroupNodeShuntEnabled } from "../../lib/upstreamAccountGroupDrafts";
 import { validateUpstreamBaseUrl } from "../../lib/upstreamBaseUrl";
 import { generatePoolRoutingKey } from "../../lib/poolRouting";
 import { applyMotherUpdateToItems } from "../../lib/upstreamMother";
@@ -1600,9 +1601,11 @@ export function SharedUpstreamAccountDetailDrawer({
       const normalizedConcurrencyLimit = hasDraftConcurrency
         ? (groupDraftConcurrencyLimits[normalizedGroupName] ?? 0)
         : 0;
-      const normalizedNodeShuntEnabled = hasDraftNodeShuntEnabled
-        ? groupDraftNodeShuntEnabled[normalizedGroupName] === true
-        : false;
+      const normalizedNodeShuntEnabled = resolvePersistedGroupNodeShuntEnabled(
+        hasDraftNodeShuntEnabled,
+        groupDraftNodeShuntEnabled[normalizedGroupName],
+        resolveGroupNodeShuntEnabledForName(normalizedGroupName),
+      );
       const normalizedUpstream429RetryEnabled = hasDraftUpstream429RetryEnabled
         ? groupDraftUpstream429RetryEnabled[normalizedGroupName] === true
         : false;
@@ -1632,6 +1635,7 @@ export function SharedUpstreamAccountDetailDrawer({
       groupDraftNotes,
       groupDraftUpstream429MaxRetries,
       groupDraftUpstream429RetryEnabled,
+      resolveGroupNodeShuntEnabledForName,
       saveGroupNote,
     ],
   );
@@ -3957,9 +3961,9 @@ export default function UpstreamAccountsPage() {
     listState = {
       queryKey: null,
       dataQueryKey: null,
-      freshness: 'fresh',
-      loadingState: 'idle',
-      status: 'ready',
+      freshness: "fresh",
+      loadingState: "idle",
+      status: "ready",
       hasCurrentQueryData: true,
       isPending: false,
     },
@@ -4034,12 +4038,11 @@ export default function UpstreamAccountsPage() {
   const showBlockingRosterError = listState.status === "error";
   const showBlockingRosterState =
     showBlockingRosterLoading || showBlockingRosterError;
-  const visibleRosterItems =
-    showBlockingRosterLoading
-      ? items
-      : showBlockingRosterError && !showGraceRoster
-        ? []
-        : items;
+  const visibleRosterItems = showBlockingRosterLoading
+    ? items
+    : showBlockingRosterError && !showGraceRoster
+      ? []
+      : items;
   const visibleListWarning =
     listState.hasCurrentQueryData && listError ? listError : null;
   const hideRosterDerivedUi = showBlockingRosterState && !showGraceRoster;

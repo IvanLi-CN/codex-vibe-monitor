@@ -961,18 +961,18 @@ function mockAccountsPage(options?: {
 
 function mockRosterFreshnessPage(options?: {
   listState?: {
-    queryKey: string | null
-    dataQueryKey: string | null
-    freshness: "fresh" | "stale" | "missing" | "deferred"
-    loadingState: "idle" | "deferred" | "initial" | "switching" | "refreshing"
-    status: "ready" | "loading" | "error" | "deferred"
-    hasCurrentQueryData: boolean
-    isPending: boolean
-  }
-  listError?: string | null
-  refresh?: ReturnType<typeof vi.fn>
+    queryKey: string | null;
+    dataQueryKey: string | null;
+    freshness: "fresh" | "stale" | "missing" | "deferred";
+    loadingState: "idle" | "deferred" | "initial" | "switching" | "refreshing";
+    status: "ready" | "loading" | "error" | "deferred";
+    hasCurrentQueryData: boolean;
+    isPending: boolean;
+  };
+  listError?: string | null;
+  refresh?: ReturnType<typeof vi.fn>;
 }) {
-  const refresh = options?.refresh ?? vi.fn()
+  const refresh = options?.refresh ?? vi.fn();
   hookMocks.useUpstreamAccounts.mockReturnValue({
     items: [
       {
@@ -1057,13 +1057,13 @@ function mockRosterFreshnessPage(options?: {
       apiKeyConfigured: false,
       maskedApiKey: null,
     },
-  })
-  return { refresh }
+  });
+  return { refresh };
 }
 
 describe("UpstreamAccountsPage roster freshness", () => {
   it("keeps stale rows briefly, then blocks the roster and pagination while the next query is still loading", async () => {
-    vi.useFakeTimers()
+    vi.useFakeTimers();
     try {
       mockRosterFreshnessPage({
         listState: {
@@ -1075,73 +1075,90 @@ describe("UpstreamAccountsPage roster freshness", () => {
           hasCurrentQueryData: false,
           isPending: true,
         },
-      })
+      });
 
-      render("/account-pool/upstream-accounts")
+      render("/account-pool/upstream-accounts");
 
-      expect(document.body.textContent).toContain("Existing OAuth")
-      expect(document.body.textContent).toContain("Page 1 / 1 · 2 accounts")
+      expect(document.body.textContent).toContain("Existing OAuth");
+      expect(document.body.textContent).toContain("Page 1 / 1 · 2 accounts");
 
       const rowCheckbox = document.body.querySelector(
         'input[aria-label="Select Existing OAuth"]',
-      )
+      );
       if (!(rowCheckbox instanceof HTMLInputElement)) {
-        throw new Error("missing roster checkbox")
+        throw new Error("missing roster checkbox");
       }
       act(() => {
-        rowCheckbox.click()
-      })
+        rowCheckbox.click();
+      });
 
-      expect(document.body.textContent).toContain("1 accounts selected across pages")
+      expect(document.body.textContent).toContain(
+        "1 accounts selected across pages",
+      );
 
       act(() => {
-        vi.advanceTimersByTime(600)
-      })
-      await flushAsync()
+        vi.advanceTimersByTime(600);
+      });
+      await flushAsync();
 
-      expect(document.body.textContent).toContain("Existing OAuth")
-      expect(document.body.textContent).not.toContain("1 accounts selected across pages")
-      expect(document.body.querySelector('[data-testid="upstream-accounts-table-loading"]')).toBeNull()
+      expect(document.body.textContent).toContain("Existing OAuth");
+      expect(document.body.textContent).not.toContain(
+        "1 accounts selected across pages",
+      );
       expect(
-        document.body.querySelector('[data-testid="upstream-accounts-table-loading-overlay"]'),
-      ).not.toBeNull()
+        document.body.querySelector(
+          '[data-testid="upstream-accounts-table-loading"]',
+        ),
+      ).toBeNull();
       expect(
-        document.body.querySelector('[data-testid="upstream-accounts-table-loading-indicator"]'),
-      ).not.toBeNull()
+        document.body.querySelector(
+          '[data-testid="upstream-accounts-table-loading-overlay"]',
+        ),
+      ).not.toBeNull();
       expect(
-        document.body.querySelector('[data-testid="upstream-accounts-pagination-status"]'),
-      ).toBeNull()
+        document.body.querySelector(
+          '[data-testid="upstream-accounts-table-loading-indicator"]',
+        ),
+      ).not.toBeNull();
+      expect(
+        document.body.querySelector(
+          '[data-testid="upstream-accounts-pagination-status"]',
+        ),
+      ).toBeNull();
 
       const paginationFooter = document.body.querySelector(
         '[data-testid="upstream-accounts-pagination-footer"]',
-      )
+      );
       if (!(paginationFooter instanceof HTMLDivElement)) {
-        throw new Error("missing pagination footer")
+        throw new Error("missing pagination footer");
       }
 
       const pageSizeButton = document.body.querySelector(
         'button[aria-label="Page size"]',
-      )
+      );
       if (!(pageSizeButton instanceof HTMLButtonElement)) {
-        throw new Error("missing page size trigger")
+        throw new Error("missing page size trigger");
       }
-      expect(pageSizeButton.disabled).toBe(true)
+      expect(pageSizeButton.disabled).toBe(true);
 
-      expect(findButton(/Previous/i)?.disabled).toBe(true)
-      expect(findButton(/Next/i)?.disabled).toBe(true)
+      expect(findButton(/Previous/i)?.disabled).toBe(true);
+      expect(findButton(/Next/i)?.disabled).toBe(true);
     } finally {
-      vi.useRealTimers()
+      vi.useRealTimers();
     }
-  })
+  });
 
   it("keeps the roster region height frozen while the blocking loading state is visible", async () => {
-    vi.useFakeTimers()
-    const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect
+    vi.useFakeTimers();
+    const originalGetBoundingClientRect =
+      HTMLElement.prototype.getBoundingClientRect;
 
     Object.defineProperty(HTMLElement.prototype, "getBoundingClientRect", {
       configurable: true,
       value: function getBoundingClientRectMock(this: HTMLElement) {
-        if (this.getAttribute("data-testid") === "upstream-accounts-roster-region") {
+        if (
+          this.getAttribute("data-testid") === "upstream-accounts-roster-region"
+        ) {
           return {
             x: 0,
             y: 0,
@@ -1152,11 +1169,11 @@ describe("UpstreamAccountsPage roster freshness", () => {
             width: 960,
             height: 480,
             toJSON: () => ({}),
-          } satisfies DOMRect
+          } satisfies DOMRect;
         }
-        return originalGetBoundingClientRect.call(this)
+        return originalGetBoundingClientRect.call(this);
       },
-    })
+    });
 
     try {
       mockRosterFreshnessPage({
@@ -1169,27 +1186,29 @@ describe("UpstreamAccountsPage roster freshness", () => {
           hasCurrentQueryData: false,
           isPending: true,
         },
-      })
+      });
 
-      render("/account-pool/upstream-accounts")
-      await flushAsync()
+      render("/account-pool/upstream-accounts");
+      await flushAsync();
 
       act(() => {
-        vi.advanceTimersByTime(600)
-      })
-      await flushAsync()
+        vi.advanceTimersByTime(600);
+      });
+      await flushAsync();
 
       const rosterRegion = document.body.querySelector(
         '[data-testid="upstream-accounts-roster-region"]',
-      )
+      );
       if (!(rosterRegion instanceof HTMLDivElement)) {
-        throw new Error("missing roster region")
+        throw new Error("missing roster region");
       }
 
-      expect(rosterRegion.style.minHeight).toBe("480px")
+      expect(rosterRegion.style.minHeight).toBe("480px");
       expect(
-        document.body.querySelector('[data-testid="upstream-accounts-table-loading-overlay"]'),
-      ).not.toBeNull()
+        document.body.querySelector(
+          '[data-testid="upstream-accounts-table-loading-overlay"]',
+        ),
+      ).not.toBeNull();
 
       mockRosterFreshnessPage({
         listState: {
@@ -1201,22 +1220,24 @@ describe("UpstreamAccountsPage roster freshness", () => {
           hasCurrentQueryData: true,
           isPending: false,
         },
-      })
-      rerender("/account-pool/upstream-accounts")
-      await flushAsync()
+      });
+      rerender("/account-pool/upstream-accounts");
+      await flushAsync();
 
-      expect(rosterRegion.style.minHeight).toBe("")
+      expect(rosterRegion.style.minHeight).toBe("");
       expect(
-        document.body.querySelector('[data-testid="upstream-accounts-table-loading-overlay"]'),
-      ).toBeNull()
+        document.body.querySelector(
+          '[data-testid="upstream-accounts-table-loading-overlay"]',
+        ),
+      ).toBeNull();
     } finally {
       Object.defineProperty(HTMLElement.prototype, "getBoundingClientRect", {
         configurable: true,
         value: originalGetBoundingClientRect,
-      })
-      vi.useRealTimers()
+      });
+      vi.useRealTimers();
     }
-  })
+  });
 
   it("shows an inline roster error and retry for the failed current query instead of stale rows", async () => {
     const { refresh } = mockRosterFreshnessPage({
@@ -1230,18 +1251,22 @@ describe("UpstreamAccountsPage roster freshness", () => {
         isPending: false,
       },
       listError: "page two failed",
-    })
+    });
 
-    render("/account-pool/upstream-accounts")
+    render("/account-pool/upstream-accounts");
 
-    expect(document.body.textContent).not.toContain("Existing OAuth")
-    expect(document.body.querySelector('[data-testid="upstream-accounts-table-error"]')).not.toBeNull()
-    expect(document.body.textContent).toContain("page two failed")
+    expect(document.body.textContent).not.toContain("Existing OAuth");
+    expect(
+      document.body.querySelector(
+        '[data-testid="upstream-accounts-table-error"]',
+      ),
+    ).not.toBeNull();
+    expect(document.body.textContent).toContain("page two failed");
 
-    clickButton(/Retry/i)
-    expect(refresh).toHaveBeenCalledTimes(1)
-  })
-})
+    clickButton(/Retry/i);
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe("UpstreamAccountsPage duplicates", () => {
   it("renders the compact roster header and folded metadata chips", () => {
@@ -5014,9 +5039,15 @@ describe("UpstreamAccountsPage delete confirmation", () => {
           selectedSummary: null,
           detail: null,
         };
-        rerender("/account-pool/upstream-accounts?view=compact&upstreamAccountId=8");
+        rerender(
+          "/account-pool/upstream-accounts?view=compact&upstreamAccountId=8",
+        );
       }),
-      routing: { apiKeyConfigured: true, maskedApiKey: "pool-live••••", writesEnabled: true },
+      routing: {
+        apiKeyConfigured: true,
+        maskedApiKey: "pool-live••••",
+        writesEnabled: true,
+      },
       groups: [],
       saveGroupNote: vi.fn(),
     };
@@ -5036,13 +5067,13 @@ describe("UpstreamAccountsPage delete confirmation", () => {
     const dialog = document.body.querySelector('[role="dialog"]');
     const deleteButton = dialog
       ? Array.from(dialog.querySelectorAll("button")).find((candidate) =>
-      /^Delete$/i.test(
-        candidate.textContent ||
-          candidate.getAttribute("aria-label") ||
-          candidate.title ||
-          "",
-        ),
-      )
+          /^Delete$/i.test(
+            candidate.textContent ||
+              candidate.getAttribute("aria-label") ||
+              candidate.title ||
+              "",
+          ),
+        )
       : null;
     if (!(deleteButton instanceof HTMLButtonElement)) {
       throw new Error("missing detail drawer delete button");
