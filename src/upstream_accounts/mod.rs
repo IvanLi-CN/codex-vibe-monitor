@@ -3373,25 +3373,27 @@ async fn list_upstream_accounts_from_params(
         .map_err(internal_error_tuple)?;
     let page = normalize_upstream_account_list_page(params.page);
     let page_size = normalize_upstream_account_list_page_size(params.page_size);
-    let all_items = load_upstream_account_summaries_filtered(&state.pool, &params)
+    let filters = normalize_upstream_account_list_filters(&params);
+    let mut all_items = load_upstream_account_summaries_for_query(&state.pool, &params)
         .await
         .map_err(internal_error_tuple)?;
-    let total = all_items.len();
-    let metrics = build_upstream_account_list_metrics(&all_items);
+    enrich_node_shunt_routing_block_reasons(state.as_ref(), &mut all_items)
+        .await
+        .map_err(internal_error_tuple)?;
+    let filtered_items = filter_upstream_account_summaries(all_items, &filters);
+    let total = filtered_items.len();
+    let metrics = build_upstream_account_list_metrics(&filtered_items);
     let offset = page.saturating_sub(1).saturating_mul(page_size);
     let mut items = if offset >= total {
         Vec::new()
     } else {
-        all_items
+        filtered_items
             .into_iter()
             .skip(offset)
             .take(page_size)
             .collect::<Vec<_>>()
     };
     enrich_window_actual_usage_for_summaries(state.as_ref(), &mut items)
-        .await
-        .map_err(internal_error_tuple)?;
-    enrich_node_shunt_routing_block_reasons(state.as_ref(), &mut items)
         .await
         .map_err(internal_error_tuple)?;
     let mut groups = load_upstream_account_groups(&state.pool)
@@ -9268,31 +9270,13 @@ async fn load_upstream_account_groups(
 async fn load_upstream_account_summaries(
     pool: &Pool<Sqlite>,
 ) -> Result<Vec<UpstreamAccountSummary>> {
-    load_upstream_account_summaries_filtered(pool, &ListUpstreamAccountsQuery::default()).await
+    load_upstream_account_summaries_for_query(pool, &ListUpstreamAccountsQuery::default()).await
 }
 
-async fn load_upstream_account_summaries_filtered(
+async fn load_upstream_account_summaries_for_query(
     pool: &Pool<Sqlite>,
     params: &ListUpstreamAccountsQuery,
 ) -> Result<Vec<UpstreamAccountSummary>> {
-    let legacy_status_filter =
-        normalize_legacy_upstream_account_status_filter(params.status.as_deref());
-    let work_status_filters = collect_normalized_upstream_account_filters(
-        &params.work_status,
-        legacy_status_filter.work_status,
-        normalize_upstream_account_work_status_filter,
-    );
-    let enable_status_filters = collect_normalized_upstream_account_filters(
-        &params.enable_status,
-        legacy_status_filter.enable_status,
-        normalize_upstream_account_enable_status_filter,
-    );
-    let health_status_filters = collect_normalized_upstream_account_filters(
-        &params.health_status,
-        legacy_status_filter.health_status,
-        normalize_upstream_account_health_status_filter,
-    );
-    let sync_state_filter = legacy_status_filter.sync_state;
     let duplicate_info_map = load_duplicate_info_map(pool).await?;
     let mut normalized_tag_ids = params
         .tag_ids
@@ -9376,18 +9360,7 @@ async fn load_upstream_account_summaries_filtered(
             now.clone(),
         ));
     }
-    Ok(items
-        .into_iter()
-        .filter(|item| {
-            matches_upstream_account_filters(
-                item,
-                &work_status_filters,
-                &enable_status_filters,
-                &health_status_filters,
-                sync_state_filter,
-            )
-        })
-        .collect())
+    Ok(items)
 }
 
 async fn build_bulk_upstream_account_sync_pending_rows(
@@ -13467,6 +13440,56 @@ fn matches_upstream_account_filters(
         && (health_status_filters.is_empty()
             || health_status_filters.contains(&item.health_status.as_str()))
         && sync_state_filter.is_none_or(|value| item.sync_state == value)
+}
+
+struct NormalizedUpstreamAccountListFilters {
+    work_status_filters: Vec<&'static str>,
+    enable_status_filters: Vec<&'static str>,
+    health_status_filters: Vec<&'static str>,
+    sync_state_filter: Option<&'static str>,
+}
+
+fn normalize_upstream_account_list_filters(
+    params: &ListUpstreamAccountsQuery,
+) -> NormalizedUpstreamAccountListFilters {
+    let legacy_status_filter =
+        normalize_legacy_upstream_account_status_filter(params.status.as_deref());
+    NormalizedUpstreamAccountListFilters {
+        work_status_filters: collect_normalized_upstream_account_filters(
+            &params.work_status,
+            legacy_status_filter.work_status,
+            normalize_upstream_account_work_status_filter,
+        ),
+        enable_status_filters: collect_normalized_upstream_account_filters(
+            &params.enable_status,
+            legacy_status_filter.enable_status,
+            normalize_upstream_account_enable_status_filter,
+        ),
+        health_status_filters: collect_normalized_upstream_account_filters(
+            &params.health_status,
+            legacy_status_filter.health_status,
+            normalize_upstream_account_health_status_filter,
+        ),
+        sync_state_filter: legacy_status_filter.sync_state,
+    }
+}
+
+fn filter_upstream_account_summaries(
+    items: Vec<UpstreamAccountSummary>,
+    filters: &NormalizedUpstreamAccountListFilters,
+) -> Vec<UpstreamAccountSummary> {
+    items
+        .into_iter()
+        .filter(|item| {
+            matches_upstream_account_filters(
+                item,
+                &filters.work_status_filters,
+                &filters.enable_status_filters,
+                &filters.health_status_filters,
+                filters.sync_state_filter,
+            )
+        })
+        .collect()
 }
 
 fn build_upstream_account_list_metrics(
@@ -25022,6 +25045,134 @@ mod tests {
             detail.summary.routing_block_reason_message.as_deref(),
             Some(group_node_shunt_unassigned_error_message()),
         );
+    }
+
+    #[tokio::test]
+    async fn list_upstream_accounts_applies_node_shunt_idle_rewrite_before_filters() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let occupying_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Occupying Filtered OAuth",
+            "occupying-filtered@example.com",
+            "org_occupying_filtered",
+            "user_occupying_filtered",
+        )
+        .await;
+        let queued_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Queued Filtered OAuth",
+            "queued-filtered@example.com",
+            "org_queued_filtered",
+            "user_queued_filtered",
+        )
+        .await;
+
+        set_test_account_group_name(&state.pool, occupying_account_id, Some("node-shunt-filter"))
+            .await;
+        set_test_account_group_name(&state.pool, queued_account_id, Some("node-shunt-filter"))
+            .await;
+
+        let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+        save_group_metadata_record_conn(
+            &mut conn,
+            "node-shunt-filter",
+            UpstreamAccountGroupMetadata {
+                note: None,
+                bound_proxy_keys: test_required_group_bound_proxy_keys(),
+                node_shunt_enabled: true,
+                upstream_429_retry_enabled: false,
+                upstream_429_max_retries: 0,
+                concurrency_limit: 0,
+            },
+        )
+        .await
+        .expect("save node shunt filter metadata");
+        drop(conn);
+
+        let occupying_selected_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(3));
+        let queued_selected_at = format_utc_iso(Utc::now() - ChronoDuration::minutes(1));
+        for (account_id, selected_at) in [
+            (occupying_account_id, occupying_selected_at),
+            (queued_account_id, queued_selected_at),
+        ] {
+            sqlx::query(
+                r#"
+                UPDATE pool_upstream_accounts
+                SET last_selected_at = ?2,
+                    updated_at = ?2
+                WHERE id = ?1
+                "#,
+            )
+            .bind(account_id)
+            .bind(selected_at)
+            .execute(&state.pool)
+            .await
+            .expect("seed last_selected_at");
+        }
+
+        let assignments = build_upstream_account_node_shunt_assignments(state.as_ref())
+            .await
+            .expect("build node shunt assignments");
+        assert_eq!(
+            assignments
+                .account_proxy_keys
+                .get(&occupying_account_id)
+                .map(String::as_str),
+            Some(FORWARD_PROXY_DIRECT_KEY),
+        );
+        assert!(
+            !assignments
+                .account_proxy_keys
+                .contains_key(&queued_account_id),
+            "queued account should be unassigned before list filtering",
+        );
+
+        let mut all_items = load_upstream_account_summaries_for_query(
+            &state.pool,
+            &ListUpstreamAccountsQuery::default(),
+        )
+        .await
+        .expect("load upstream account summaries");
+        enrich_node_shunt_routing_block_reasons(state.as_ref(), &mut all_items)
+            .await
+            .expect("enrich node shunt routing block reasons");
+
+        let idle_filters = normalize_upstream_account_list_filters(&ListUpstreamAccountsQuery {
+            work_status: vec![UPSTREAM_ACCOUNT_WORK_STATUS_IDLE.to_string()],
+            ..ListUpstreamAccountsQuery::default()
+        });
+        let idle_items = filter_upstream_account_summaries(all_items.clone(), &idle_filters);
+        let idle_metrics = build_upstream_account_list_metrics(&idle_items);
+
+        assert_eq!(idle_items.len(), 1);
+        assert_eq!(idle_metrics.total, 1);
+        assert_eq!(idle_items[0].id, queued_account_id);
+        assert_eq!(idle_items[0].work_status, UPSTREAM_ACCOUNT_WORK_STATUS_IDLE);
+        assert_eq!(
+            idle_items[0].routing_block_reason_code.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ROUTING_BLOCK_REASON_GROUP_NODE_SHUNT_UNASSIGNED),
+        );
+
+        let working_filters = normalize_upstream_account_list_filters(&ListUpstreamAccountsQuery {
+            work_status: vec![UPSTREAM_ACCOUNT_WORK_STATUS_WORKING.to_string()],
+            ..ListUpstreamAccountsQuery::default()
+        });
+        let working_items = filter_upstream_account_summaries(all_items, &working_filters);
+        assert_eq!(working_items.len(), 1);
+        assert_eq!(working_items[0].id, occupying_account_id);
+        assert!(
+            working_items
+                .iter()
+                .all(|item| item.id != queued_account_id),
+            "queued account should not remain in working results after node shunt rewrite",
+        )
     }
 
     #[tokio::test]
