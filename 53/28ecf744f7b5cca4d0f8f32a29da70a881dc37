@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.35.6",
+  "base_stable_version": "1.35.5",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-03T10:58:17Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.35.6",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "b7f28cfc404a69310d50a3a5b4bd9a8b7d6c4a86",
+  "pr_number": 283,
+  "pr_title": "fix(web): close upstream drawer after delete",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.35.6",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.35.6",
+  "target_sha": "5328ecf744f7b5cca4d0f8f32a29da70a881dc37",
+  "type_label": "type:patch"
+}
