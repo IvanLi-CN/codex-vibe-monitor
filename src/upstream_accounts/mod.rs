@@ -6536,26 +6536,12 @@ async fn create_api_key_account_inner(
     sync_account_tag_links(&state.pool, inserted_id, &tag_ids)
         .await
         .map_err(internal_error_tuple)?;
-    let detail = match state
+    let detail = state
         .upstream_accounts
         .account_ops
         .run_post_create_sync(state.clone(), inserted_id)
         .await
-    {
-        Ok(detail) => detail,
-        Err(err) if is_group_node_shunt_unassigned_message(&err.to_string()) => {
-            load_upstream_account_detail_with_actual_usage(state.as_ref(), inserted_id)
-                .await
-                .map_err(internal_error_tuple)?
-                .ok_or_else(|| {
-                    (
-                        StatusCode::NOT_FOUND,
-                        "account not found after create".to_string(),
-                    )
-                })?
-        }
-        Err(err) => return Err(internal_error_tuple(err)),
-    };
+        .map_err(request_runtime_error_tuple)?;
     Ok(detail)
 }
 
@@ -6912,7 +6898,7 @@ pub(crate) async fn sync_upstream_account(
         .account_ops
         .run_manual_sync(state.clone(), id)
         .await
-        .map_err(internal_error_tuple)?;
+        .map_err(request_runtime_error_tuple)?;
     Ok(Json(detail))
 }
 
@@ -7840,18 +7826,23 @@ async fn sync_upstream_account_by_id(
         return Ok(Some(detail));
     }
 
+    let group_metadata =
+        match resolve_pool_account_group_proxy_routing_readiness(state, row.group_name.as_deref())
+            .await?
+        {
+            PoolAccountGroupProxyRoutingReadiness::Ready(group_metadata) => group_metadata,
+            PoolAccountGroupProxyRoutingReadiness::Blocked(message) => bail!(message),
+        };
+    if group_metadata.node_shunt_enabled {
+        resolve_account_forward_proxy_scope(state, &row, Some(group_metadata)).await?;
+    }
+
     let sync_result = match row.kind.as_str() {
         UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX => sync_oauth_account(state, &row, cause).await,
         UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX => sync_api_key_account(&state.pool, &row, cause).await,
         _ => bail!("unsupported account kind: {}", row.kind),
     };
     if let Err(err) = sync_result {
-        if is_group_node_shunt_unassigned_message(&err.to_string()) {
-            let detail = load_upstream_account_detail_with_actual_usage(state, id)
-                .await?
-                .ok_or_else(|| anyhow!("account not found after sync"))?;
-            return Ok(Some(detail));
-        }
         return Err(err);
     }
 
@@ -15614,6 +15605,14 @@ fn internal_error_tuple(err: impl ToString) -> (StatusCode, String) {
     (StatusCode::INTERNAL_SERVER_ERROR, err.to_string())
 }
 
+fn request_runtime_error_tuple(err: impl ToString) -> (StatusCode, String) {
+    let message = err.to_string();
+    if is_group_node_shunt_unassigned_message(&message) {
+        return (StatusCode::CONFLICT, message);
+    }
+    internal_error_tuple(message)
+}
+
 fn internal_error_html(err: impl ToString) -> (StatusCode, String) {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -18738,6 +18737,18 @@ mod tests {
         )
         .await;
         let state = test_app_state_with_usage_base(&base_url).await;
+        let secondary_proxy_key = {
+            let mut manager = state.forward_proxy.lock().await;
+            let mut settings = ForwardProxySettings::default();
+            settings.proxy_urls = vec!["http://127.0.0.1:18080".to_string()];
+            manager.apply_settings(settings);
+            manager
+                .binding_nodes()
+                .into_iter()
+                .find(|node| node.key != FORWARD_PROXY_DIRECT_KEY)
+                .map(|node| node.key)
+                .expect("secondary proxy binding key")
+        };
         let existing_account_id =
             insert_api_key_account(&state.pool, "Existing Shared Group").await;
         set_test_account_group_name(&state.pool, existing_account_id, Some("shared-write-group"))
@@ -18749,7 +18760,10 @@ mod tests {
             "shared-write-group",
             UpstreamAccountGroupMetadata {
                 note: None,
-                bound_proxy_keys: test_required_group_bound_proxy_keys(),
+                bound_proxy_keys: vec![
+                    FORWARD_PROXY_DIRECT_KEY.to_string(),
+                    secondary_proxy_key.clone(),
+                ],
                 node_shunt_enabled: false,
                 upstream_429_retry_enabled: false,
                 upstream_429_max_retries: 0,
@@ -18764,7 +18778,10 @@ mod tests {
             "displayName": "Created Shared Group Account",
             "apiKey": "sk-created-shared-group",
             "groupName": "shared-write-group",
-            "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
+            "groupBoundProxyKeys": [
+                FORWARD_PROXY_DIRECT_KEY,
+                secondary_proxy_key
+            ],
             "groupNodeShuntEnabled": true
         }))
         .expect("deserialize api key create request");
@@ -18783,6 +18800,49 @@ mod tests {
         assert!(metadata.node_shunt_enabled);
 
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn create_api_key_account_reports_conflict_when_post_create_sync_lacks_node_shunt_slot() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let occupying_account_id =
+            insert_api_key_account(&state.pool, "Existing Node Shunt Occupant").await;
+        set_test_account_group_name(
+            &state.pool,
+            occupying_account_id,
+            Some("node-shunt-create-blocked"),
+        )
+        .await;
+
+        let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+        save_group_metadata_record_conn(
+            &mut conn,
+            "node-shunt-create-blocked",
+            UpstreamAccountGroupMetadata {
+                note: None,
+                bound_proxy_keys: test_required_group_bound_proxy_keys(),
+                node_shunt_enabled: true,
+                upstream_429_retry_enabled: false,
+                upstream_429_max_retries: 0,
+                concurrency_limit: 0,
+            },
+        )
+        .await
+        .expect("save node shunt create metadata");
+        drop(conn);
+
+        let payload: CreateApiKeyAccountRequest = serde_json::from_value(json!({
+            "displayName": "Blocked Node Shunt Create",
+            "apiKey": "sk-blocked-node-shunt-create",
+            "groupName": "node-shunt-create-blocked"
+        }))
+        .expect("deserialize blocked api key create request");
+        let err = create_api_key_account_inner(state, payload)
+            .await
+            .expect_err("create api key account should fail without a node slot");
+
+        assert_eq!(err.0, StatusCode::CONFLICT);
+        assert_eq!(err.1, group_node_shunt_unassigned_error_message());
     }
 
     #[tokio::test]
@@ -24966,7 +25026,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn manual_sync_returns_detail_for_node_shunt_queued_account() {
+    async fn manual_sync_returns_group_node_shunt_unassigned_error_for_queued_account() {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
         let crypto_key = state
             .upstream_accounts
@@ -25030,12 +25090,19 @@ mod tests {
             "queued account should remain unassigned when the only slot is occupied",
         );
 
-        let detail = state
+        let err = state
             .upstream_accounts
             .account_ops
             .run_manual_sync(state.clone(), queued_account_id)
             .await
-            .expect("queued account manual sync should return detail");
+            .expect_err("queued account manual sync should fail without a node slot");
+        assert_eq!(err.to_string(), group_node_shunt_unassigned_error_message());
+
+        let detail =
+            load_upstream_account_detail_with_actual_usage(state.as_ref(), queued_account_id)
+                .await
+                .expect("load queued account detail")
+                .expect("queued account detail exists");
         assert_eq!(detail.summary.id, queued_account_id);
         assert_eq!(
             detail.summary.routing_block_reason_code.as_deref(),
