@@ -136,6 +136,28 @@ export const DeleteFailure: Story = {
   },
 }
 
+export const DeleteSuccessClosesDrawer: Story = {
+  render: () => (
+    <AccountPoolStoryRouter
+      initialEntry={detailRouteEntry(101, {
+        selectedAccountId: 101,
+        openDeleteConfirm: true,
+      })}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    await documentScope.findByRole('dialog', { name: /Codex Pro - Tokyo/i })
+    const confirmDialog = await documentScope.findByRole('alertdialog')
+    await userEvent.click(within(confirmDialog).getByRole('button', { name: /确认删除|delete account/i }))
+    await waitFor(() => {
+      expect(documentScope.queryByRole('dialog', { name: /Codex Pro - Tokyo/i })).toBeNull()
+    })
+    await expect(documentScope.queryByRole('alertdialog')).toBeNull()
+    await expect(documentScope.getByRole('heading', { name: /upstream accounts|上游账号/i })).toBeInTheDocument()
+  },
+}
+
 export const RoutingDialog: Story = {
   render: () => <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />,
   play: async ({ canvasElement }) => {

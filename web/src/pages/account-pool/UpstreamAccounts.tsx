@@ -1038,11 +1038,18 @@ export function SharedUpstreamAccountDetailDrawer({
   const detailDrawerTabsBaseId = useId()
   const deleteConfirmTitleId = useId()
   const selectedIdRef = useRef<number | null>(selectedId)
+  const routeAccountIdRef = useRef<number | null>(accountId)
+  const drawerOpenRef = useRef(open)
   const accountRecordsRequestSeqRef = useRef(0)
 
   useEffect(() => {
     selectedIdRef.current = selectedId
   }, [selectedId])
+
+  useEffect(() => {
+    routeAccountIdRef.current = accountId
+    drawerOpenRef.current = open
+  }, [accountId, open])
 
   useEffect(() => {
     if (open && accountId != null) {
@@ -1770,7 +1777,7 @@ export function SharedUpstreamAccountDetailDrawer({
     })
     try {
       await removeAccount(source.id)
-      if (selectedIdRef.current === source.id) {
+      if (drawerOpenRef.current && routeAccountIdRef.current === source.id) {
         onClose({ replace: true })
       }
     } catch (err) {
