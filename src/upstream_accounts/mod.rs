@@ -11307,7 +11307,6 @@ async fn resolve_group_forward_proxy_scope_for_provisioning(
             if let Some(proxy_key) = value.account_proxy_keys.get(&account.id) {
                 return Ok(ForwardProxyRouteScope::pinned(proxy_key.clone()));
             }
-            return Err(group_node_shunt_unassigned_error());
         }
     }
 
@@ -22429,7 +22428,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn provisioning_scope_rejects_existing_account_without_node_shunt_slot() {
+    async fn provisioning_scope_claims_free_node_for_existing_account_without_assigned_slot() {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
         let crypto_key = state
             .upstream_accounts
@@ -22492,6 +22491,114 @@ mod tests {
             .expect("load existing account")
             .expect("existing account row");
 
+        let scope = resolve_group_forward_proxy_scope_for_provisioning(
+            state.as_ref(),
+            &ResolvedRequiredGroupProxyBinding {
+                group_name: "node-shunt-provisioning".to_string(),
+                bound_proxy_keys: test_required_group_bound_proxy_keys(),
+                node_shunt_enabled: true,
+            },
+            Some(&assignments),
+            Some(&existing_account),
+            &HashSet::new(),
+        )
+        .await
+        .expect("existing account should be able to claim a free node shunt slot");
+
+        let ForwardProxyRouteScope::PinnedProxyKey(proxy_key) = scope else {
+            panic!("expected provisioning scope to pin a free node shunt slot");
+        };
+        assert_eq!(proxy_key, FORWARD_PROXY_DIRECT_KEY);
+    }
+
+    #[tokio::test]
+    async fn provisioning_scope_rejects_existing_account_without_node_shunt_slot_when_group_is_full()
+     {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Provisioned Disabled Account",
+            "provision-disabled@example.com",
+            "org_provision_disabled",
+            "user_provision_disabled",
+        )
+        .await;
+        let occupying_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Provisioned Occupying Account",
+            "provision-occupying@example.com",
+            "org_provision_occupying",
+            "user_provision_occupying",
+        )
+        .await;
+
+        set_test_account_group_name(&state.pool, account_id, Some("node-shunt-provisioning")).await;
+        set_test_account_group_name(
+            &state.pool,
+            occupying_account_id,
+            Some("node-shunt-provisioning"),
+        )
+        .await;
+
+        let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+        save_group_metadata_record_conn(
+            &mut conn,
+            "node-shunt-provisioning",
+            UpstreamAccountGroupMetadata {
+                note: None,
+                bound_proxy_keys: test_required_group_bound_proxy_keys(),
+                node_shunt_enabled: true,
+                upstream_429_retry_enabled: false,
+                upstream_429_max_retries: 0,
+                concurrency_limit: 0,
+            },
+        )
+        .await
+        .expect("save node shunt provisioning metadata");
+        drop(conn);
+
+        let now_iso = format_utc_iso(Utc::now());
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET enabled = 0,
+                updated_at = ?2
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .bind(&now_iso)
+        .execute(&state.pool)
+        .await
+        .expect("disable provisioned account");
+
+        let assignments = build_upstream_account_node_shunt_assignments(state.as_ref())
+            .await
+            .expect("build node shunt assignments");
+        assert!(
+            !assignments.account_proxy_keys.contains_key(&account_id),
+            "disabled account should not occupy a node shunt slot",
+        );
+        assert_eq!(
+            assignments
+                .account_proxy_keys
+                .get(&occupying_account_id)
+                .map(String::as_str),
+            Some(FORWARD_PROXY_DIRECT_KEY),
+            "eligible peer should occupy the only available node shunt slot",
+        );
+        let existing_account = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load existing account")
+            .expect("existing account row");
+
         let err = resolve_group_forward_proxy_scope_for_provisioning(
             state.as_ref(),
             &ResolvedRequiredGroupProxyBinding {
@@ -22504,7 +22611,7 @@ mod tests {
             &HashSet::new(),
         )
         .await
-        .expect_err("existing account without a slot should be blocked");
+        .expect_err("existing account without a slot should be blocked when the group is full");
 
         assert!(is_group_node_shunt_unassigned_message(&err.to_string()));
     }
