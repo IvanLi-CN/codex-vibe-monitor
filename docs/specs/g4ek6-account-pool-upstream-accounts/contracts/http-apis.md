@@ -16,6 +16,13 @@
 
 列表与详情共享 `activeConversationCount` 字段：表示最近 `30` 分钟内仍活跃的 sticky route 数量；缺省返回 `0`。
 
+当账号因分组节点分流策略暂时未排到有效节点时，列表与详情额外返回：
+
+- `routingBlockReasonCode = group_node_shunt_unassigned`
+- `routingBlockReasonMessage = 分组节点分流策略控制，未排节点`
+
+此时账号仍保持 `workStatus=idle`、`healthStatus=normal`，但账号上下文请求必须直接阻断。
+
 返回账号列表：
 
 ```json
@@ -45,6 +52,8 @@
       "lastSyncedAt": "2026-03-11T12:00:00Z",
       "lastSuccessfulSyncAt": "2026-03-11T12:00:00Z",
       "activeConversationCount": 3,
+      "routingBlockReasonCode": null,
+      "routingBlockReasonMessage": null,
       "lastError": null,
       "primaryWindow": {
         "usedPercent": 42,
@@ -77,6 +86,7 @@
 
 - 保留 `workStatus`、`enableStatus`、`healthStatus`、`syncState` 四个读模型状态字段
 - `activeConversationCount`（最近 `30` 分钟活跃 sticky route 数量，缺省为 `0`）
+- `routingBlockReasonCode` / `routingBlockReasonMessage`（仅当账号被分组节点分流策略阻断时返回）
 - `note`
 - `chatgptUserId`
 - `tokenExpiresAt`
@@ -97,6 +107,8 @@
   "note": "optional",
   "accountId": 1,
   "groupName": "production",
+  "groupBoundProxyKeys": ["__direct__"],
+  "groupNodeShuntEnabled": true,
   "isMother": true
 }
 ```
@@ -140,6 +152,8 @@ Query:
 {
   "displayName": "Fallback Key",
   "groupName": "production",
+  "groupBoundProxyKeys": ["__direct__"],
+  "groupNodeShuntEnabled": false,
   "note": "optional",
   "isMother": true,
   "apiKey": "sk-...",
@@ -159,6 +173,8 @@ Query:
 
 - `displayName`
 - `groupName`
+- `groupBoundProxyKeys`
+- `groupNodeShuntEnabled`
 - `note`
 - `enabled`
 - `isMother`
@@ -191,6 +207,19 @@ Query:
 - API Key：刷新本地状态时间戳。
 - 成功返回同步后的 `UpstreamAccountDetail`。
 - 同账号存在运行中或排队中的后台维护时，该同步请求必须排队执行；后台维护不得阻塞无关账号的 `PATCH enabled` / `PATCH disabled`。
+- 若账号因分组 `nodeShuntEnabled` 未排到有效节点，则该请求直接失败，错误消息为 `分组节点分流策略控制，未排节点`。
+
+## `PUT /api/pool/upstream-account-groups/:groupName`
+
+请求体支持：
+
+- `note`
+- `boundProxyKeys`
+- `nodeShuntEnabled`
+- `upstream429RetryEnabled`
+- `upstream429MaxRetries`
+
+响应中的 group summary 同样返回 `nodeShuntEnabled`。
 
 ## 后台维护并发保证
 

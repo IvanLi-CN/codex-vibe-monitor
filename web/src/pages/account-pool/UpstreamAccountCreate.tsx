@@ -93,6 +93,7 @@ import {
   apiConcurrencyLimitToSliderValue,
   sliderConcurrencyLimitToApiValue,
 } from "../../lib/concurrencyLimit";
+import { resolvePersistedGroupNodeShuntEnabled } from "../../lib/upstreamAccountGroupDrafts";
 import { validateUpstreamBaseUrl } from "../../lib/upstreamBaseUrl";
 import {
   applyMotherUpdateToItems,
@@ -124,6 +125,7 @@ type GroupNoteEditorState = {
   existing: boolean;
   concurrencyLimit: number;
   boundProxyKeys: string[];
+  nodeShuntEnabled: boolean;
   upstream429RetryEnabled: boolean;
   upstream429MaxRetries: number;
 };
@@ -290,10 +292,7 @@ function formatRelativeRefreshCountdown(
 }
 
 function formatCountdownClock(targetTimestamp: number, now: number) {
-  const totalSeconds = Math.max(
-    0,
-    Math.ceil((targetTimestamp - now) / 1000),
-  );
+  const totalSeconds = Math.max(0, Math.ceil((targetTimestamp - now) / 1000));
   const hours = Math.floor(totalSeconds / 3600);
   const minutes = Math.floor((totalSeconds % 3600) / 60);
   const seconds = totalSeconds % 60;
@@ -310,9 +309,9 @@ function isActivePendingOauthSession(
 ) {
   return Boolean(
     session &&
-      session.status === "pending" &&
-      session.authUrl &&
-      !isExpiredIso(session.expiresAt),
+    session.status === "pending" &&
+    session.authUrl &&
+    !isExpiredIso(session.expiresAt),
   );
 }
 
@@ -405,7 +404,9 @@ function batchTagIdsEqual(
     Array.isArray(right) ? right : [],
   );
   if (normalizedLeft.length !== normalizedRight.length) return false;
-  return normalizedLeft.every((value, index) => value === normalizedRight[index]);
+  return normalizedLeft.every(
+    (value, index) => value === normalizedRight[index],
+  );
 }
 
 function normalizeBatchOauthPersistedMetadata(
@@ -415,10 +416,13 @@ function normalizeBatchOauthPersistedMetadata(
   return {
     displayName:
       typeof value.displayName === "string" ? value.displayName.trim() : "",
-    groupName: typeof value.groupName === "string" ? value.groupName.trim() : "",
+    groupName:
+      typeof value.groupName === "string" ? value.groupName.trim() : "",
     note: typeof value.note === "string" ? value.note.trim() : "",
     isMother: value.isMother === true,
-    tagIds: normalizeBatchTagIds(Array.isArray(value.tagIds) ? value.tagIds : []),
+    tagIds: normalizeBatchTagIds(
+      Array.isArray(value.tagIds) ? value.tagIds : [],
+    ),
   };
 }
 
@@ -540,10 +544,7 @@ function hydrateBatchOauthRow(
 ): BatchOauthRow {
   const hydratedGroupName = seed.groupName ?? fallbackGroupName;
   return {
-    ...createBatchOauthRow(
-      seed.id ?? fallbackId,
-      hydratedGroupName,
-    ),
+    ...createBatchOauthRow(seed.id ?? fallbackId, hydratedGroupName),
     ...seed,
     id: seed.id ?? fallbackId,
     groupName: hydratedGroupName,
@@ -938,7 +939,8 @@ function invalidatePendingSingleOauthSession(
 ) {
   if (
     !currentSession ||
-    (currentSession.status !== "pending" && currentSession.status !== "completed")
+    (currentSession.status !== "pending" &&
+      currentSession.status !== "completed")
   ) {
     return;
   }
@@ -954,6 +956,7 @@ function buildOauthLoginSessionUpdatePayload({
   displayName,
   groupName,
   groupBoundProxyKeys,
+  groupNodeShuntEnabled,
   note,
   groupNote,
   groupConcurrencyLimit,
@@ -965,6 +968,7 @@ function buildOauthLoginSessionUpdatePayload({
   displayName: string;
   groupName: string;
   groupBoundProxyKeys: string[];
+  groupNodeShuntEnabled: boolean;
   note: string;
   groupNote: string;
   groupConcurrencyLimit: number;
@@ -978,6 +982,7 @@ function buildOauthLoginSessionUpdatePayload({
     displayName: displayName.trim(),
     groupName: normalizedGroupName,
     groupBoundProxyKeys,
+    groupNodeShuntEnabled,
     note: note.trim(),
     ...(normalizedGroupName && includeGroupNote
       ? { groupNote: groupNote.trim() }
@@ -1089,7 +1094,7 @@ function canEditCompletedBatchOauthRowMetadata(row: BatchOauthRow) {
   const status = batchRowStatus(row);
   return Boolean(
     row.session?.accountId != null &&
-      (status === "completed" || status === "completedNeedsRefresh"),
+    (status === "completed" || status === "completedNeedsRefresh"),
   );
 }
 
@@ -1659,8 +1664,13 @@ export default function UpstreamAccountCreatePage() {
   >({});
   const [groupDraftConcurrencyLimits, setGroupDraftConcurrencyLimits] =
     useState<Record<string, number>>({});
-  const [groupDraftUpstream429RetryEnabled, setGroupDraftUpstream429RetryEnabled] =
-    useState<Record<string, boolean>>({});
+  const [groupDraftNodeShuntEnabled, setGroupDraftNodeShuntEnabled] = useState<
+    Record<string, boolean>
+  >({});
+  const [
+    groupDraftUpstream429RetryEnabled,
+    setGroupDraftUpstream429RetryEnabled,
+  ] = useState<Record<string, boolean>>({});
   const [groupDraftUpstream429MaxRetries, setGroupDraftUpstream429MaxRetries] =
     useState<Record<string, number>>({});
   const [groupNoteEditor, setGroupNoteEditor] = useState<GroupNoteEditorState>({
@@ -1670,6 +1680,7 @@ export default function UpstreamAccountCreatePage() {
     existing: false,
     concurrencyLimit: apiConcurrencyLimitToSliderValue(0),
     boundProxyKeys: [],
+    nodeShuntEnabled: false,
     upstream429RetryEnabled: false,
     upstream429MaxRetries: 0,
   });
@@ -1716,9 +1727,9 @@ export default function UpstreamAccountCreatePage() {
       ...(draft?.oauth?.session?.status === "pending"
         ? [draft.oauth.session.loginId]
         : []),
-      ...((draft?.batchOauth?.rows ?? []).flatMap((row) =>
+      ...(draft?.batchOauth?.rows ?? []).flatMap((row) =>
         row.session?.status === "pending" ? [row.session.loginId] : [],
-      )),
+      ),
     ]),
   );
   const activeOauthMailboxSession = useMemo(
@@ -1832,6 +1843,12 @@ export default function UpstreamAccountCreatePage() {
             ]),
           ),
           ...Object.fromEntries(
+            Object.keys(groupDraftNodeShuntEnabled).map((groupName) => [
+              groupName,
+              "",
+            ]),
+          ),
+          ...Object.fromEntries(
             Object.keys(groupDraftUpstream429RetryEnabled).map((groupName) => [
               groupName,
               "",
@@ -1849,6 +1866,7 @@ export default function UpstreamAccountCreatePage() {
     [
       groupDraftBoundProxyKeys,
       groupDraftConcurrencyLimits,
+      groupDraftNodeShuntEnabled,
       groupDraftNotes,
       groupDraftUpstream429MaxRetries,
       groupDraftUpstream429RetryEnabled,
@@ -1942,9 +1960,10 @@ export default function UpstreamAccountCreatePage() {
       buildOauthLoginSessionUpdatePayload({
         displayName: oauthDisplayName,
         groupName: oauthGroupName,
-        groupBoundProxyKeys: resolvePendingGroupBoundProxyKeysForName(
-          oauthGroupName,
-        ),
+        groupBoundProxyKeys:
+          resolvePendingGroupBoundProxyKeysForName(oauthGroupName),
+        groupNodeShuntEnabled:
+          resolveGroupNodeShuntEnabledForName(oauthGroupName),
         note: oauthNote,
         groupNote: resolvePendingGroupNoteForName(oauthGroupName),
         groupConcurrencyLimit:
@@ -1967,6 +1986,7 @@ export default function UpstreamAccountCreatePage() {
     oauthTagIds,
     isRelinking,
     groups,
+    resolveGroupNodeShuntEnabledForName,
     resolvePendingGroupBoundProxyKeysForName,
     resolvePendingGroupConcurrencyLimitForName,
     resolvePendingGroupNoteForName,
@@ -1987,12 +2007,17 @@ export default function UpstreamAccountCreatePage() {
           groupBoundProxyKeys: resolvePendingGroupBoundProxyKeysForName(
             row.groupName,
           ),
+          groupNodeShuntEnabled: resolveGroupNodeShuntEnabledForName(
+            row.groupName,
+          ),
           note: row.note,
           groupNote: resolvePendingGroupNoteForName(row.groupName),
-          groupConcurrencyLimit:
-            resolvePendingGroupConcurrencyLimitForName(row.groupName),
+          groupConcurrencyLimit: resolvePendingGroupConcurrencyLimitForName(
+            row.groupName,
+          ),
           includeGroupNote: Boolean(
-            normalizedGroupName && !isExistingGroup(groups, normalizedGroupName),
+            normalizedGroupName &&
+            !isExistingGroup(groups, normalizedGroupName),
           ),
           tagIds: batchTagIds,
           isMother: row.isMother,
@@ -2006,6 +2031,7 @@ export default function UpstreamAccountCreatePage() {
     batchRows,
     batchTagIds,
     groups,
+    resolveGroupNodeShuntEnabledForName,
     resolvePendingGroupBoundProxyKeysForName,
     resolvePendingGroupConcurrencyLimitForName,
     resolvePendingGroupNoteForName,
@@ -2036,22 +2062,25 @@ export default function UpstreamAccountCreatePage() {
     },
     [session?.loginId],
   );
-  const setPendingOauthSessionSyncError = useCallback((loginId: string, message: string) => {
-    if (singleOauthSessionSnapshotRef.current?.loginId === loginId) {
-      setActionError(message);
-      return;
-    }
-    setBatchRows((current) =>
-      current.map((row) =>
-        row.session?.loginId === loginId
-          ? {
-              ...row,
-              actionError: message,
-            }
-          : row,
-      ),
-    );
-  }, []);
+  const setPendingOauthSessionSyncError = useCallback(
+    (loginId: string, message: string) => {
+      if (singleOauthSessionSnapshotRef.current?.loginId === loginId) {
+        setActionError(message);
+        return;
+      }
+      setBatchRows((current) =>
+        current.map((row) =>
+          row.session?.loginId === loginId
+            ? {
+                ...row,
+                actionError: message,
+              }
+            : row,
+        ),
+      );
+    },
+    [],
+  );
   const clearPendingOauthSessionSyncError = useCallback((loginId: string) => {
     if (singleOauthSessionSnapshotRef.current?.loginId === loginId) {
       setActionError(null);
@@ -2187,7 +2216,8 @@ export default function UpstreamAccountCreatePage() {
               const latestRecord = pendingOauthSessionSyncRef.current[loginId];
               if (latestRecord?.failedSignature === signature) {
                 latestRecord.timerId = window.setTimeout(() => {
-                  const retryRecord = pendingOauthSessionSyncRef.current[loginId];
+                  const retryRecord =
+                    pendingOauthSessionSyncRef.current[loginId];
                   if (!retryRecord) return;
                   retryRecord.timerId = null;
                   void runPendingOauthSessionSync(loginId, {
@@ -2376,7 +2406,9 @@ export default function UpstreamAccountCreatePage() {
       ...(singleOauthSessionSnapshot ? [singleOauthSessionSnapshot] : []),
       ...Object.values(batchOauthSessionSnapshots),
     ];
-    const activeLoginIds = new Set(activeSnapshots.map((snapshot) => snapshot.loginId));
+    const activeLoginIds = new Set(
+      activeSnapshots.map((snapshot) => snapshot.loginId),
+    );
 
     for (const snapshot of activeSnapshots) {
       let existing = pendingOauthSessionSyncRef.current[snapshot.loginId];
@@ -2386,7 +2418,9 @@ export default function UpstreamAccountCreatePage() {
         const createdSyncedSignature =
           createdPendingOauthSessionSignaturesRef.current[snapshot.loginId] ??
           null;
-        delete createdPendingOauthSessionSignaturesRef.current[snapshot.loginId];
+        delete createdPendingOauthSessionSignaturesRef.current[
+          snapshot.loginId
+        ];
         existing = pendingOauthSessionSyncRef.current[snapshot.loginId] = {
           syncedSignature: shouldStartUnsynced
             ? null
@@ -2415,14 +2449,19 @@ export default function UpstreamAccountCreatePage() {
         existing.timerId = null;
       }
       existing.timerId = window.setTimeout(() => {
-        const currentRecord = pendingOauthSessionSyncRef.current[snapshot.loginId];
+        const currentRecord =
+          pendingOauthSessionSyncRef.current[snapshot.loginId];
         if (!currentRecord) return;
         currentRecord.timerId = null;
-        void runPendingOauthSessionSync(snapshot.loginId).catch(() => undefined);
+        void runPendingOauthSessionSync(snapshot.loginId).catch(
+          () => undefined,
+        );
       }, OAUTH_SESSION_SYNC_DEBOUNCE_MS);
     }
 
-    for (const [loginId, record] of Object.entries(pendingOauthSessionSyncRef.current)) {
+    for (const [loginId, record] of Object.entries(
+      pendingOauthSessionSyncRef.current,
+    )) {
       if (activeLoginIds.has(loginId)) continue;
       if (record.timerId != null) {
         window.clearTimeout(record.timerId);
@@ -2831,6 +2870,17 @@ export default function UpstreamAccountCreatePage() {
     });
   }, [groups]);
   useEffect(() => {
+    setGroupDraftNodeShuntEnabled((current) => {
+      const nextEntries = Object.entries(current).filter(
+        ([groupName]) => !isExistingGroup(groups, groupName),
+      );
+      if (nextEntries.length === Object.keys(current).length) {
+        return current;
+      }
+      return Object.fromEntries(nextEntries);
+    });
+  }, [groups]);
+  useEffect(() => {
     setGroupDraftUpstream429RetryEnabled((current) => {
       const nextEntries = Object.entries(current).filter(
         ([groupName]) => !isExistingGroup(groups, groupName),
@@ -2890,6 +2940,15 @@ export default function UpstreamAccountCreatePage() {
       []
     );
   }
+  function resolveGroupNodeShuntEnabledForName(groupName: string) {
+    const normalized = normalizeGroupName(groupName);
+    if (!normalized) return false;
+    const existingGroup = resolveGroupSummaryForName(normalized);
+    if (existingGroup) {
+      return existingGroup.nodeShuntEnabled === true;
+    }
+    return groupDraftNodeShuntEnabled[normalized] === true;
+  }
   function resolveGroupUpstream429RetryEnabledForName(groupName: string) {
     const normalized = normalizeGroupName(groupName);
     if (!normalized) return false;
@@ -2939,6 +2998,7 @@ export default function UpstreamAccountCreatePage() {
       resolveGroupNoteForName(groupName).trim().length > 0 ||
       resolvePendingGroupBoundProxyKeysForName(groupName).length > 0 ||
       resolveGroupConcurrencyLimitForName(groupName) > 0 ||
+      resolveGroupNodeShuntEnabledForName(groupName) ||
       resolveGroupUpstream429RetryEnabledForName(groupName) ||
       resolveGroupUpstream429MaxRetriesForName(groupName) > 0
     );
@@ -2965,6 +3025,7 @@ export default function UpstreamAccountCreatePage() {
         return {
           normalizedGroupName: "",
           boundProxyKeys: [] as string[],
+          nodeShuntEnabled: false,
           error: isChinese
             ? "必须先选择一个分组。"
             : "Select a group before continuing.",
@@ -2972,10 +3033,13 @@ export default function UpstreamAccountCreatePage() {
       }
       const boundProxyKeys =
         resolvePendingGroupBoundProxyKeysForName(normalizedGroupName);
+      const nodeShuntEnabled =
+        resolveGroupNodeShuntEnabledForName(normalizedGroupName);
       if (boundProxyKeys.length === 0) {
         return {
           normalizedGroupName,
           boundProxyKeys,
+          nodeShuntEnabled,
           error: isChinese
             ? `分组“${normalizedGroupName}”还没有绑定代理节点。`
             : `Group "${normalizedGroupName}" does not have any bound proxy nodes.`,
@@ -2983,6 +3047,7 @@ export default function UpstreamAccountCreatePage() {
       }
       if (
         hasLoadedForwardProxyCatalog &&
+        !nodeShuntEnabled &&
         !boundProxyKeys.some((proxyKey) =>
           selectableForwardProxyKeys.has(proxyKey),
         )
@@ -2990,6 +3055,7 @@ export default function UpstreamAccountCreatePage() {
         return {
           normalizedGroupName,
           boundProxyKeys,
+          nodeShuntEnabled,
           error: isChinese
             ? `分组“${normalizedGroupName}”绑定的代理节点当前都不可用。`
             : `Group "${normalizedGroupName}" does not have any selectable bound proxy nodes.`,
@@ -2998,12 +3064,14 @@ export default function UpstreamAccountCreatePage() {
       return {
         normalizedGroupName,
         boundProxyKeys,
+        nodeShuntEnabled,
         error: null,
       };
     },
     [
       hasLoadedForwardProxyCatalog,
       locale,
+      resolveGroupNodeShuntEnabledForName,
       resolvePendingGroupBoundProxyKeysForName,
       selectableForwardProxyKeys,
     ],
@@ -3041,6 +3109,12 @@ export default function UpstreamAccountCreatePage() {
       delete next[normalized];
       return next;
     });
+    setGroupDraftNodeShuntEnabled((current) => {
+      if (!(normalized in current)) return current;
+      const next = { ...current };
+      delete next[normalized];
+      return next;
+    });
     setGroupDraftConcurrencyLimits((current) => {
       if (!(normalized in current)) return current;
       const next = { ...current };
@@ -3070,6 +3144,8 @@ export default function UpstreamAccountCreatePage() {
         normalizedGroupName in groupDraftBoundProxyKeys;
       const hasDraftConcurrencyLimit =
         normalizedGroupName in groupDraftConcurrencyLimits;
+      const hasDraftNodeShuntEnabled =
+        normalizedGroupName in groupDraftNodeShuntEnabled;
       const hasDraftUpstream429RetryEnabled =
         normalizedGroupName in groupDraftUpstream429RetryEnabled;
       const hasDraftUpstream429MaxRetries =
@@ -3078,20 +3154,26 @@ export default function UpstreamAccountCreatePage() {
         !hasDraftNote &&
         !hasDraftBoundProxyKeys &&
         !hasDraftConcurrencyLimit &&
+        !hasDraftNodeShuntEnabled &&
         !hasDraftUpstream429RetryEnabled &&
         !hasDraftUpstream429MaxRetries
       ) {
         return;
       }
       const normalizedNote = hasDraftNote
-        ? groupDraftNotes[normalizedGroupName]?.trim() ?? ""
+        ? (groupDraftNotes[normalizedGroupName]?.trim() ?? "")
         : "";
       const normalizedBoundProxyKeys = hasDraftBoundProxyKeys
         ? normalizeBoundProxyKeys(groupDraftBoundProxyKeys[normalizedGroupName])
         : [];
       const normalizedConcurrencyLimit = hasDraftConcurrencyLimit
-        ? groupDraftConcurrencyLimits[normalizedGroupName] ?? 0
+        ? (groupDraftConcurrencyLimits[normalizedGroupName] ?? 0)
         : 0;
+      const normalizedNodeShuntEnabled = resolvePersistedGroupNodeShuntEnabled(
+        hasDraftNodeShuntEnabled,
+        groupDraftNodeShuntEnabled[normalizedGroupName],
+        resolveGroupNodeShuntEnabledForName(normalizedGroupName),
+      );
       const normalizedUpstream429RetryEnabled = hasDraftUpstream429RetryEnabled
         ? groupDraftUpstream429RetryEnabled[normalizedGroupName] === true
         : false;
@@ -3106,6 +3188,7 @@ export default function UpstreamAccountCreatePage() {
         note: normalizedNote || undefined,
         boundProxyKeys: normalizedBoundProxyKeys,
         concurrencyLimit: normalizedConcurrencyLimit,
+        nodeShuntEnabled: normalizedNodeShuntEnabled,
         upstream429RetryEnabled: normalizedUpstream429RetryEnabled,
         upstream429MaxRetries: normalizedUpstream429MaxRetries,
       });
@@ -3115,9 +3198,11 @@ export default function UpstreamAccountCreatePage() {
       clearDraftGroupSettings,
       groupDraftBoundProxyKeys,
       groupDraftConcurrencyLimits,
+      groupDraftNodeShuntEnabled,
       groupDraftNotes,
       groupDraftUpstream429MaxRetries,
       groupDraftUpstream429RetryEnabled,
+      resolveGroupNodeShuntEnabledForName,
       saveGroupNote,
     ],
   );
@@ -3139,6 +3224,7 @@ export default function UpstreamAccountCreatePage() {
       boundProxyKeys:
         existingGroup?.boundProxyKeys ??
         resolvePendingGroupBoundProxyKeysForName(normalized),
+      nodeShuntEnabled: resolveGroupNodeShuntEnabledForName(normalized),
       upstream429RetryEnabled:
         existingGroup?.upstream429RetryEnabled ??
         resolveGroupUpstream429RetryEnabledForName(normalized),
@@ -3168,6 +3254,8 @@ export default function UpstreamAccountCreatePage() {
     const normalizedBoundProxyKeys = normalizeBoundProxyKeys(
       groupNoteEditor.boundProxyKeys,
     );
+    const normalizedNodeShuntEnabled =
+      groupNoteEditor.nodeShuntEnabled === true;
     const normalizedUpstream429RetryEnabled =
       groupNoteEditor.upstream429RetryEnabled === true;
     const normalizedUpstream429MaxRetries = normalizedUpstream429RetryEnabled
@@ -3177,12 +3265,25 @@ export default function UpstreamAccountCreatePage() {
       : normalizeGroupUpstream429MaxRetries(
           groupNoteEditor.upstream429MaxRetries,
         );
-    const shouldInvalidateSingleOauthSessionForDraftGroup =
-      normalizeGroupName(oauthGroupName) === normalizedGroupName &&
-      (
-        resolvePendingGroupNoteForName(oauthGroupName).trim() !== normalizedNote ||
-        resolvePendingGroupConcurrencyLimitForName(oauthGroupName) !== normalizedConcurrencyLimit
-      );
+    const currentOauthGroupName = normalizeGroupName(oauthGroupName);
+    const currentOauthGroupNote =
+      resolvePendingGroupNoteForName(oauthGroupName).trim();
+    const currentOauthGroupConcurrencyLimit =
+      resolvePendingGroupConcurrencyLimitForName(oauthGroupName);
+    const currentOauthGroupBoundProxyKeys =
+      resolvePendingGroupBoundProxyKeysForName(oauthGroupName);
+    const currentOauthGroupNodeShuntEnabled =
+      resolveGroupNodeShuntEnabledForName(oauthGroupName);
+    const shouldInvalidateSingleOauthSessionForGroupMetadataChange =
+      currentOauthGroupName === normalizedGroupName &&
+      (currentOauthGroupNote !== normalizedNote ||
+        currentOauthGroupConcurrencyLimit !== normalizedConcurrencyLimit ||
+        currentOauthGroupNodeShuntEnabled !== normalizedNodeShuntEnabled ||
+        currentOauthGroupBoundProxyKeys.length !==
+          normalizedBoundProxyKeys.length ||
+        currentOauthGroupBoundProxyKeys.some(
+          (value, index) => value !== normalizedBoundProxyKeys[index],
+        ));
     setGroupNoteError(null);
     if (!groupNoteEditor.existing) {
       setGroupDraftNotes((current) => {
@@ -3198,6 +3299,15 @@ export default function UpstreamAccountCreatePage() {
         const next = { ...current };
         if (normalizedBoundProxyKeys.length > 0) {
           next[normalizedGroupName] = normalizedBoundProxyKeys;
+        } else {
+          delete next[normalizedGroupName];
+        }
+        return next;
+      });
+      setGroupDraftNodeShuntEnabled((current) => {
+        const next = { ...current };
+        if (normalizedNodeShuntEnabled) {
+          next[normalizedGroupName] = true;
         } else {
           delete next[normalizedGroupName];
         }
@@ -3236,7 +3346,7 @@ export default function UpstreamAccountCreatePage() {
         }
         return next;
       });
-      if (shouldInvalidateSingleOauthSessionForDraftGroup) {
+      if (shouldInvalidateSingleOauthSessionForGroupMetadataChange) {
         invalidateSingleOauthSessionForMetadataEdit();
       }
       setGroupNoteEditor((current) => ({ ...current, open: false }));
@@ -3249,9 +3359,13 @@ export default function UpstreamAccountCreatePage() {
         note: normalizedNote || undefined,
         boundProxyKeys: normalizedBoundProxyKeys,
         concurrencyLimit: normalizedConcurrencyLimit,
+        nodeShuntEnabled: normalizedNodeShuntEnabled,
         upstream429RetryEnabled: normalizedUpstream429RetryEnabled,
         upstream429MaxRetries: normalizedUpstream429MaxRetries,
       });
+      if (shouldInvalidateSingleOauthSessionForGroupMetadataChange) {
+        invalidateSingleOauthSessionForMetadataEdit();
+      }
       clearDraftGroupSettings(normalizedGroupName);
       setGroupNoteEditor((current) => ({ ...current, open: false }));
     } catch (err) {
@@ -3411,8 +3525,8 @@ export default function UpstreamAccountCreatePage() {
       metadataError: null,
       sharedTagSyncAttempts:
         committedFields.includes("tagIds") && isPendingSharedTagSyncAttempt
-        ? current.sharedTagSyncAttempts + 1
-        : current.sharedTagSyncAttempts,
+          ? current.sharedTagSyncAttempts + 1
+          : current.sharedTagSyncAttempts,
     }));
 
     try {
@@ -3432,6 +3546,7 @@ export default function UpstreamAccountCreatePage() {
         payload.concurrencyLimit = resolvePendingGroupConcurrencyLimitForName(
           nextMetadata.groupName,
         );
+        payload.groupNodeShuntEnabled = groupProxyState.nodeShuntEnabled;
         payload.groupNote =
           resolvePendingGroupNoteForName(nextMetadata.groupName) || undefined;
       }
@@ -3562,11 +3677,9 @@ export default function UpstreamAccountCreatePage() {
       );
       return;
     }
-    void persistCompletedBatchRowMetadata(
-      rowId,
-      { note: row.note.trim() },
-      ["note"],
-    );
+    void persistCompletedBatchRowMetadata(rowId, { note: row.note.trim() }, [
+      "note",
+    ]);
   };
 
   const handleBatchCompletedTextFieldKeyDown = (
@@ -3583,7 +3696,11 @@ export default function UpstreamAccountCreatePage() {
     const normalizedValue = value.trim();
     const nextGroupName = normalizedValue || batchDefaultGroupName.trim();
     updateBatchRow(rowId, (current) => {
-      if (current.busyAction || current.mailboxBusyAction || current.metadataBusy) {
+      if (
+        current.busyAction ||
+        current.mailboxBusyAction ||
+        current.metadataBusy
+      ) {
         return current;
       }
       return {
@@ -3597,11 +3714,9 @@ export default function UpstreamAccountCreatePage() {
       };
     });
     if (!canEditCompletedBatchOauthRowMetadata(row)) return;
-    void persistCompletedBatchRowMetadata(
-      rowId,
-      { groupName: nextGroupName },
-      ["groupName"],
-    );
+    void persistCompletedBatchRowMetadata(rowId, { groupName: nextGroupName }, [
+      "groupName",
+    ]);
   };
 
   const handleBatchMotherToggle = (rowId: string) => {
@@ -3617,11 +3732,9 @@ export default function UpstreamAccountCreatePage() {
       }));
       return;
     }
-    void persistCompletedBatchRowMetadata(
-      rowId,
-      { isMother: nextIsMother },
-      ["isMother"],
-    );
+    void persistCompletedBatchRowMetadata(rowId, { isMother: nextIsMother }, [
+      "isMother",
+    ]);
   };
 
   const handleBatchDefaultGroupChange = (value: string) => {
@@ -3661,21 +3774,17 @@ export default function UpstreamAccountCreatePage() {
     setBatchDefaultGroupName(value);
     setBatchRows(nextRows);
     completedRowIdsToPersist.forEach((rowId) => {
-      void persistCompletedBatchRowMetadata(
-        rowId,
-        { groupName: nextTrimmed },
-        ["groupName"],
-      );
+      void persistCompletedBatchRowMetadata(rowId, { groupName: nextTrimmed }, [
+        "groupName",
+      ]);
     });
   };
 
   useEffect(() => {
     const normalizedBatchTagIds = normalizeBatchTagIds(batchTagIds);
     const previousBatchTagIds = previousBatchTagIdsRef.current;
-    const baselineSignature = buildCompletedBatchOauthSharedTagBaselineSignature(
-      batchRows,
-      items,
-    );
+    const baselineSignature =
+      buildCompletedBatchOauthSharedTagBaselineSignature(batchRows, items);
     if (!batchSharedTagSyncEnabledRef.current) {
       previousBatchTagIdsRef.current = normalizedBatchTagIds;
       previousCompletedSharedTagBaselineRef.current = baselineSignature;
@@ -3829,7 +3938,8 @@ export default function UpstreamAccountCreatePage() {
         },
       ) => {
         setImportValidationState((current) => {
-          const baselineRows = current?.rows ?? buildImportedOauthPendingState(allItems).rows;
+          const baselineRows =
+            current?.rows ?? buildImportedOauthPendingState(allItems).rows;
           const mergedRows = merge
             ? nextRows.length === 1
               ? mergeImportedOauthValidationRow(
@@ -4038,9 +4148,7 @@ export default function UpstreamAccountCreatePage() {
         );
       };
     },
-    [
-      closeImportValidationEventSource,
-    ],
+    [closeImportValidationEventSource],
   );
 
   const runImportValidation = useCallback(
@@ -4067,6 +4175,7 @@ export default function UpstreamAccountCreatePage() {
           items,
           groupName: importGroupProxyState.normalizedGroupName || undefined,
           groupBoundProxyKeys: importGroupProxyState.boundProxyKeys,
+          groupNodeShuntEnabled: importGroupProxyState.nodeShuntEnabled,
         });
         setImportValidationState((current) => {
           if (merge && current) {
@@ -4107,8 +4216,7 @@ export default function UpstreamAccountCreatePage() {
         });
       } catch (err) {
         setImportValidationState((current) => {
-          const baseline =
-            current ?? buildImportedOauthPendingState(allItems);
+          const baseline = current ?? buildImportedOauthPendingState(allItems);
           const nextRows = merge
             ? markImportedOauthRowsAsError(
                 baseline.rows,
@@ -4132,6 +4240,7 @@ export default function UpstreamAccountCreatePage() {
       importFiles,
       importGroupProxyState.boundProxyKeys,
       importGroupProxyState.error,
+      importGroupProxyState.nodeShuntEnabled,
       importGroupProxyState.normalizedGroupName,
       startImportedOauthValidationJob,
     ],
@@ -4293,10 +4402,7 @@ export default function UpstreamAccountCreatePage() {
         importFileSourceSequenceRef.current += selectedFiles.length;
         const items = await Promise.all(
           selectedFiles.map(async (file, index) => ({
-            sourceId: createImportedOauthSourceId(
-              file,
-              sourceIdOffset + index,
-            ),
+            sourceId: createImportedOauthSourceId(file, sourceIdOffset + index),
             fileName: file.name,
             content: await file.text(),
           })),
@@ -4417,7 +4523,7 @@ export default function UpstreamAccountCreatePage() {
     const importGroupConcurrencyLimit =
       normalizedImportGroupName &&
       !isExistingGroup(groups, normalizedImportGroupName)
-        ? groupDraftConcurrencyLimits[normalizedImportGroupName] ?? 0
+        ? (groupDraftConcurrencyLimits[normalizedImportGroupName] ?? 0)
         : 0;
     const validationJobId = importValidationJobIdRef.current ?? undefined;
     let workingItems = [...importFiles];
@@ -4443,6 +4549,7 @@ export default function UpstreamAccountCreatePage() {
           validationJobId,
           groupName: importGroupProxyState.normalizedGroupName || undefined,
           groupBoundProxyKeys: importGroupProxyState.boundProxyKeys,
+          groupNodeShuntEnabled: importGroupProxyState.nodeShuntEnabled,
           groupNote: importGroupNote,
           concurrencyLimit: importGroupConcurrencyLimit,
           tagIds: importTagIds,
@@ -4710,6 +4817,7 @@ export default function UpstreamAccountCreatePage() {
         displayName: oauthDisplayName,
         groupName: oauthGroupName,
         groupBoundProxyKeys: oauthGroupProxyState.boundProxyKeys,
+        groupNodeShuntEnabled: oauthGroupProxyState.nodeShuntEnabled,
         note: oauthNote,
         groupNote: resolvePendingGroupNoteForName(oauthGroupName),
         groupConcurrencyLimit:
@@ -4725,6 +4833,7 @@ export default function UpstreamAccountCreatePage() {
         displayName: oauthDisplayName.trim() || undefined,
         groupName: oauthGroupProxyState.normalizedGroupName || undefined,
         groupBoundProxyKeys: oauthGroupProxyState.boundProxyKeys,
+        groupNodeShuntEnabled: oauthGroupProxyState.nodeShuntEnabled,
         note: oauthNote.trim() || undefined,
         groupNote: resolvePendingGroupNoteForName(oauthGroupName) || undefined,
         concurrencyLimit:
@@ -5154,13 +5263,15 @@ export default function UpstreamAccountCreatePage() {
         displayName: row.displayName,
         groupName: groupProxyState.normalizedGroupName,
         groupBoundProxyKeys: groupProxyState.boundProxyKeys,
+        groupNodeShuntEnabled: groupProxyState.nodeShuntEnabled,
         note: row.note,
         groupNote: resolvePendingGroupNoteForName(row.groupName),
-        groupConcurrencyLimit:
-          resolvePendingGroupConcurrencyLimitForName(row.groupName),
+        groupConcurrencyLimit: resolvePendingGroupConcurrencyLimitForName(
+          row.groupName,
+        ),
         includeGroupNote: Boolean(
           groupProxyState.normalizedGroupName &&
-            !isExistingGroup(groups, groupProxyState.normalizedGroupName),
+          !isExistingGroup(groups, groupProxyState.normalizedGroupName),
         ),
         tagIds: batchTagIds,
         isMother: row.isMother,
@@ -5170,11 +5281,13 @@ export default function UpstreamAccountCreatePage() {
         displayName: row.displayName.trim() || undefined,
         groupName: groupProxyState.normalizedGroupName || undefined,
         groupBoundProxyKeys: groupProxyState.boundProxyKeys,
+        groupNodeShuntEnabled: groupProxyState.nodeShuntEnabled,
         note: row.note.trim() || undefined,
         tagIds: batchTagIds,
         groupNote: resolvePendingGroupNoteForName(row.groupName) || undefined,
-        concurrencyLimit:
-          resolvePendingGroupConcurrencyLimitForName(row.groupName),
+        concurrencyLimit: resolvePendingGroupConcurrencyLimitForName(
+          row.groupName,
+        ),
         isMother: row.isMother,
         mailboxSessionId: row.mailboxSession?.sessionId,
         mailboxAddress: row.mailboxSession?.emailAddress,
@@ -5228,7 +5341,9 @@ export default function UpstreamAccountCreatePage() {
         batchSessionFeedbackStateByRowRef.current[rowId]?.loginId ===
         response.loginId
       ) {
-        setBatchManualCopyRowId((current) => (current === rowId ? null : current));
+        setBatchManualCopyRowId((current) =>
+          current === rowId ? null : current,
+        );
       }
     } catch (err) {
       updateBatchRow(rowId, (current) => ({
@@ -5257,7 +5372,9 @@ export default function UpstreamAccountCreatePage() {
       const latestSession = await getLoginSession(row.session.loginId);
       applyPendingOauthSessionStatus(row.session.loginId, latestSession);
       if (latestSession.status !== "pending" || !latestSession.authUrl) {
-        setBatchManualCopyRowId((current) => (current === rowId ? null : current));
+        setBatchManualCopyRowId((current) =>
+          current === rowId ? null : current,
+        );
         return;
       }
       authUrlToCopy = latestSession.authUrl;
@@ -5487,6 +5604,7 @@ export default function UpstreamAccountCreatePage() {
         displayName: apiKeyDisplayName.trim(),
         groupName: apiKeyGroupProxyState.normalizedGroupName || undefined,
         groupBoundProxyKeys: apiKeyGroupProxyState.boundProxyKeys,
+        groupNodeShuntEnabled: apiKeyGroupProxyState.nodeShuntEnabled,
         note: apiKeyNote.trim() || undefined,
         groupNote: resolvePendingGroupNoteForName(apiKeyGroupName) || undefined,
         concurrencyLimit:
@@ -5819,9 +5937,7 @@ export default function UpstreamAccountCreatePage() {
                       <AccountTagField
                         tags={tagItems}
                         selectedTagIds={batchTagIds}
-                        writesEnabled={
-                          writesEnabled && !hasBatchMetadataBusy
-                        }
+                        writesEnabled={writesEnabled && !hasBatchMetadataBusy}
                         pageCreatedTagIds={pageCreatedTagIds}
                         labels={tagFieldLabels}
                         onChange={(nextTagIds) => {
@@ -6146,8 +6262,7 @@ export default function UpstreamAccountCreatePage() {
                         )}
                         onClick={() => openGroupNoteEditor(oauthGroupName)}
                         disabled={
-                          !writesEnabled ||
-                          !normalizeGroupName(oauthGroupName)
+                          !writesEnabled || !normalizeGroupName(oauthGroupName)
                         }
                       >
                         <AppIcon
@@ -6387,13 +6502,13 @@ export default function UpstreamAccountCreatePage() {
                           type="button"
                           variant="secondary"
                           onClick={() => void handleGenerateOauthUrl()}
-                        disabled={
-                          busyAction === "oauth-generate" ||
-                          !writesEnabled ||
-                          oauthDisplayNameConflict != null ||
-                          Boolean(oauthGroupProxyState.error) ||
-                          session?.status === "completed"
-                        }
+                          disabled={
+                            busyAction === "oauth-generate" ||
+                            !writesEnabled ||
+                            oauthDisplayNameConflict != null ||
+                            Boolean(oauthGroupProxyState.error) ||
+                            session?.status === "completed"
+                          }
                         >
                           {busyAction === "oauth-generate" ? (
                             <AppIcon
@@ -6633,8 +6748,9 @@ export default function UpstreamAccountCreatePage() {
                         <tbody>
                           {batchRows.map((row, index) => {
                             const rowGroupProxyError =
-                              resolveRequiredGroupProxyState(row.groupName)
-                                .error;
+                              resolveRequiredGroupProxyState(
+                                row.groupName,
+                              ).error;
                             const status = batchRowStatus(row);
                             const statusDetail = batchRowStatusDetail(row);
                             const duplicateNameError =
@@ -6799,8 +6915,7 @@ export default function UpstreamAccountCreatePage() {
                                                 row.mailboxEditorError != null,
                                               inputError:
                                                 row.mailboxEditorError,
-                                              disabled:
-                                                oauthLocked,
+                                              disabled: oauthLocked,
                                               submitDisabled:
                                                 !row.mailboxEditorValue.trim() ||
                                                 row.mailboxEditorError != null,
@@ -7929,6 +8044,7 @@ export default function UpstreamAccountCreatePage() {
         note={groupNoteEditor.note}
         concurrencyLimit={groupNoteEditor.concurrencyLimit}
         boundProxyKeys={groupNoteEditor.boundProxyKeys}
+        nodeShuntEnabled={groupNoteEditor.nodeShuntEnabled}
         availableProxyNodes={forwardProxyNodes}
         busy={groupNoteBusy}
         error={groupNoteError}
@@ -7949,6 +8065,13 @@ export default function UpstreamAccountCreatePage() {
           setGroupNoteEditor((current) => ({
             ...current,
             boundProxyKeys: value,
+          }));
+        }}
+        onNodeShuntEnabledChange={(value) => {
+          setGroupNoteError(null);
+          setGroupNoteEditor((current) => ({
+            ...current,
+            nodeShuntEnabled: value,
           }));
         }}
         upstream429RetryEnabled={groupNoteEditor.upstream429RetryEnabled}
@@ -8010,6 +8133,18 @@ export default function UpstreamAccountCreatePage() {
         draftBadgeLabel={t(
           "accountPool.upstreamAccounts.groupNotes.badges.draft",
         )}
+        nodeShuntLabel={t(
+          "accountPool.upstreamAccounts.groupNotes.nodeShunt.label",
+        )}
+        nodeShuntHint={t(
+          "accountPool.upstreamAccounts.groupNotes.nodeShunt.hint",
+        )}
+        nodeShuntToggleLabel={t(
+          "accountPool.upstreamAccounts.groupNotes.nodeShunt.toggle",
+        )}
+        nodeShuntWarning={t(
+          "accountPool.upstreamAccounts.groupNotes.nodeShunt.warning",
+        )}
         upstream429RetryLabel={t(
           "accountPool.upstreamAccounts.groupNotes.upstream429.label",
         )}
@@ -8066,7 +8201,9 @@ export default function UpstreamAccountCreatePage() {
         proxyBindingsChartEmptyLabel={t(
           "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartEmpty",
         )}
-        proxyBindingsChartTotalLabel={t("live.proxy.table.requestTooltip.total")}
+        proxyBindingsChartTotalLabel={t(
+          "live.proxy.table.requestTooltip.total",
+        )}
         proxyBindingsChartAriaLabel={t("live.proxy.table.requestTrendAria")}
         proxyBindingsChartInteractionHint={t("live.chart.tooltip.instructions")}
         proxyBindingsChartLocaleTag={locale === "zh" ? "zh-CN" : "en-US"}

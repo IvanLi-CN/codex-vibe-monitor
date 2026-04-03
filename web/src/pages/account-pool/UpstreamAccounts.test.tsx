@@ -10,7 +10,12 @@ import {
   it,
   vi,
 } from "vitest";
-import { MemoryRouter, Route, Routes, type InitialEntry } from "react-router-dom";
+import {
+  MemoryRouter,
+  Route,
+  Routes,
+  type InitialEntry,
+} from "react-router-dom";
 import { SystemNotificationProvider } from "../../components/ui/system-notifications";
 import { I18nProvider } from "../../i18n";
 import UpstreamAccountsPage from "./UpstreamAccounts";
@@ -89,7 +94,7 @@ class MockBulkSyncEventSource implements EventTarget {
     const handler =
       typeof listener === "function"
         ? listener
-        : ((event: Event) => listener.handleEvent(event)) as EventListener;
+        : (((event: Event) => listener.handleEvent(event)) as EventListener);
     const current = this.listeners.get(type) ?? new Set<EventListener>();
     current.add(handler);
     this.listeners.set(type, current);
@@ -105,7 +110,7 @@ class MockBulkSyncEventSource implements EventTarget {
     const handler =
       typeof listener === "function"
         ? listener
-        : ((event: Event) => listener.handleEvent(event)) as EventListener;
+        : (((event: Event) => listener.handleEvent(event)) as EventListener);
     current.delete(handler);
     if (current.size === 0) {
       this.listeners.delete(type);
@@ -204,13 +209,17 @@ beforeEach(() => {
       storage.set(key, value);
     },
   );
-  vi.mocked(window.localStorage.removeItem).mockImplementation((key: string) => {
-    storage.delete(key);
-  });
+  vi.mocked(window.localStorage.removeItem).mockImplementation(
+    (key: string) => {
+      storage.delete(key);
+    },
+  );
   apiMocks.createBulkUpstreamAccountSyncJobEventSource.mockReset();
-  apiMocks.createBulkUpstreamAccountSyncJobEventSource.mockImplementation(() => {
-    throw new Error("unexpected bulk sync event source");
-  });
+  apiMocks.createBulkUpstreamAccountSyncJobEventSource.mockImplementation(
+    () => {
+      throw new Error("unexpected bulk sync event source");
+    },
+  );
   hookMocks.useUpstreamStickyConversations.mockReturnValue({
     stats: null,
     isLoading: false,
@@ -241,14 +250,18 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-function render(initialEntry: InitialEntry = "/account-pool/upstream-accounts") {
+function render(
+  initialEntry: InitialEntry = "/account-pool/upstream-accounts",
+) {
   host = document.createElement("div");
   document.body.appendChild(host);
   root = createRoot(host);
   rerender(initialEntry);
 }
 
-function rerender(initialEntry: InitialEntry = "/account-pool/upstream-accounts") {
+function rerender(
+  initialEntry: InitialEntry = "/account-pool/upstream-accounts",
+) {
   act(() => {
     root?.render(
       <I18nProvider>
@@ -299,24 +312,27 @@ function expectRosterHookQuery(expected: Record<string, unknown> | null) {
 }
 
 function findButton(pattern: RegExp) {
-  return Array.from(document.body.querySelectorAll('button')).find((candidate) =>
-    pattern.test(candidate.textContent || candidate.getAttribute('aria-label') || ''),
-  ) as HTMLButtonElement | undefined
+  return Array.from(document.body.querySelectorAll("button")).find(
+    (candidate) =>
+      pattern.test(
+        candidate.textContent || candidate.getAttribute("aria-label") || "",
+      ),
+  ) as HTMLButtonElement | undefined;
 }
 
 function findExactTextElements(text: string, root: ParentNode = document.body) {
-  return Array.from(root.querySelectorAll('*')).filter(
+  return Array.from(root.querySelectorAll("*")).filter(
     (candidate) =>
       candidate instanceof HTMLElement &&
       candidate.children.length === 0 &&
       candidate.textContent?.trim() === text,
-  ) as HTMLElement[]
+  ) as HTMLElement[];
 }
 
 function findFixedContainerByText(pattern: RegExp) {
-  return Array.from(document.body.querySelectorAll('.fixed')).find((candidate) =>
-    pattern.test(candidate.textContent || ''),
-  ) as HTMLElement | undefined
+  return Array.from(document.body.querySelectorAll(".fixed")).find(
+    (candidate) => pattern.test(candidate.textContent || ""),
+  ) as HTMLElement | undefined;
 }
 
 async function flushAsync() {
@@ -419,78 +435,84 @@ function clickTab(matcher: RegExp) {
   const tab = Array.from(document.body.querySelectorAll('[role="tab"]')).find(
     (candidate) =>
       candidate instanceof HTMLButtonElement &&
-      matcher.test(candidate.textContent || candidate.getAttribute('aria-label') || ''),
-  )
+      matcher.test(
+        candidate.textContent || candidate.getAttribute("aria-label") || "",
+      ),
+  );
   if (!(tab instanceof HTMLButtonElement)) {
-    throw new Error(`missing tab: ${matcher}`)
+    throw new Error(`missing tab: ${matcher}`);
   }
-  pressButton(tab)
-  return tab
+  pressButton(tab);
+  return tab;
 }
 
 function clickDrawerBackdrop() {
-  const overlay = document.body.querySelector('.drawer-shell')?.parentElement?.previousElementSibling
+  const overlay =
+    document.body.querySelector(".drawer-shell")?.parentElement
+      ?.previousElementSibling;
   if (!(overlay instanceof HTMLElement)) {
-    throw new Error('missing drawer backdrop')
+    throw new Error("missing drawer backdrop");
   }
   act(() => {
-    overlay.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-  })
-  return overlay
+    overlay.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  return overlay;
 }
 
 function clickDrawerGutter() {
-  const gutter = document.body.querySelector('.drawer-shell')?.parentElement
+  const gutter = document.body.querySelector(".drawer-shell")?.parentElement;
   if (!(gutter instanceof HTMLElement)) {
-    throw new Error('missing drawer gutter')
+    throw new Error("missing drawer gutter");
   }
   act(() => {
-    gutter.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-  })
-  return gutter
+    gutter.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  return gutter;
 }
 
 function clickFirstRosterRow() {
-  const row = document.body.querySelector('tbody tr[role="button"]')
+  const row = document.body.querySelector('tbody tr[role="button"]');
   if (!(row instanceof HTMLTableRowElement)) {
-    throw new Error("missing roster row")
+    throw new Error("missing roster row");
   }
   act(() => {
-    row.dispatchEvent(new MouseEvent("click", { bubbles: true }))
-  })
-  return row
+    row.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  return row;
 }
 
 function clickCheckboxByLabel(matcher: RegExp) {
-  const checkbox = Array.from(document.body.querySelectorAll('input[type="checkbox"]')).find(
+  const checkbox = Array.from(
+    document.body.querySelectorAll('input[type="checkbox"]'),
+  ).find(
     (candidate) =>
       candidate instanceof HTMLInputElement &&
-      matcher.test(candidate.getAttribute('aria-label') || ''),
-  )
+      matcher.test(candidate.getAttribute("aria-label") || ""),
+  );
   if (!(checkbox instanceof HTMLInputElement)) {
-    throw new Error(`missing checkbox: ${matcher}`)
+    throw new Error(`missing checkbox: ${matcher}`);
   }
   act(() => {
-    checkbox.click()
-  })
-  return checkbox
+    checkbox.click();
+  });
+  return checkbox;
 }
 
 function clickCombobox(matcher: RegExp) {
-  const trigger = Array.from(document.body.querySelectorAll('button[role="combobox"]')).find(
+  const trigger = Array.from(
+    document.body.querySelectorAll('button[role="combobox"]'),
+  ).find(
     (candidate) =>
       candidate instanceof HTMLButtonElement &&
       matcher.test(
-        candidate.getAttribute("aria-label") ||
-          candidate.textContent ||
-          "",
+        candidate.getAttribute("aria-label") || candidate.textContent || "",
       ),
-  )
+  );
   if (!(trigger instanceof HTMLButtonElement)) {
-    throw new Error(`missing combobox: ${matcher}`)
+    throw new Error(`missing combobox: ${matcher}`);
   }
-  pressButton(trigger)
-  return trigger
+  pressButton(trigger);
+  return trigger;
 }
 
 function clickCommandItem(matcher: RegExp) {
@@ -498,14 +520,14 @@ function clickCommandItem(matcher: RegExp) {
     (candidate) =>
       candidate instanceof HTMLElement &&
       matcher.test(candidate.textContent || ""),
-  )
+  );
   if (!(item instanceof HTMLElement)) {
-    throw new Error(`missing command item: ${matcher}`)
+    throw new Error(`missing command item: ${matcher}`);
   }
   act(() => {
-    item.dispatchEvent(new MouseEvent("click", { bubbles: true }))
-  })
-  return item
+    item.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
+  return item;
 }
 
 function pressButton(button: HTMLButtonElement) {
@@ -529,7 +551,7 @@ const defaultEffectiveRoutingRule: EffectiveRoutingRule = {
   sourceTagIds: [],
   sourceTagNames: [],
   guardRules: [],
-}
+};
 
 const defaultPoolTags: TagSummary[] = [
   {
@@ -564,7 +586,7 @@ const defaultPoolTags: TagSummary[] = [
     groupCount: 1,
     updatedAt: "2026-03-16T00:00:00.000Z",
   },
-]
+];
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
@@ -573,7 +595,7 @@ function deferred<T>() {
     resolve = res;
     reject = rej;
   });
-  return { promise, resolve, reject }
+  return { promise, resolve, reject };
 }
 
 function buildBulkSyncCounts(rows: Array<{ status: string }>) {
@@ -752,21 +774,21 @@ function mockBulkSyncPage(options?: {
 }
 
 function mockAccountsPage(options?: {
-  saveRouting?: ReturnType<typeof vi.fn>
+  saveRouting?: ReturnType<typeof vi.fn>;
   routing?: {
-    writesEnabled: boolean
-    apiKeyConfigured: boolean
-    maskedApiKey: string | null
+    writesEnabled: boolean;
+    apiKeyConfigured: boolean;
+    maskedApiKey: string | null;
     timeouts: {
-      responsesFirstByteTimeoutSecs: number
-      compactFirstByteTimeoutSecs: number
-      responsesStreamTimeoutSecs: number
-      compactStreamTimeoutSecs: number
-    }
-  } | null
-  item?: Record<string, unknown>
-  selectedSummary?: Record<string, unknown>
-  detail?: Record<string, unknown>
+      responsesFirstByteTimeoutSecs: number;
+      compactFirstByteTimeoutSecs: number;
+      responsesStreamTimeoutSecs: number;
+      compactStreamTimeoutSecs: number;
+    };
+  } | null;
+  item?: Record<string, unknown>;
+  selectedSummary?: Record<string, unknown>;
+  detail?: Record<string, unknown>;
 }) {
   const saveRouting = options?.saveRouting ?? vi.fn();
   const compactSupport = {
@@ -925,7 +947,7 @@ function mockAccountsPage(options?: {
     removeAccount: vi.fn(),
     groups: [],
     routing:
-      options && 'routing' in options
+      options && "routing" in options
         ? options.routing
         : {
             writesEnabled: true,
@@ -939,18 +961,18 @@ function mockAccountsPage(options?: {
 
 function mockRosterFreshnessPage(options?: {
   listState?: {
-    queryKey: string | null
-    dataQueryKey: string | null
-    freshness: "fresh" | "stale" | "missing" | "deferred"
-    loadingState: "idle" | "deferred" | "initial" | "switching" | "refreshing"
-    status: "ready" | "loading" | "error" | "deferred"
-    hasCurrentQueryData: boolean
-    isPending: boolean
-  }
-  listError?: string | null
-  refresh?: ReturnType<typeof vi.fn>
+    queryKey: string | null;
+    dataQueryKey: string | null;
+    freshness: "fresh" | "stale" | "missing" | "deferred";
+    loadingState: "idle" | "deferred" | "initial" | "switching" | "refreshing";
+    status: "ready" | "loading" | "error" | "deferred";
+    hasCurrentQueryData: boolean;
+    isPending: boolean;
+  };
+  listError?: string | null;
+  refresh?: ReturnType<typeof vi.fn>;
 }) {
-  const refresh = options?.refresh ?? vi.fn()
+  const refresh = options?.refresh ?? vi.fn();
   hookMocks.useUpstreamAccounts.mockReturnValue({
     items: [
       {
@@ -1035,13 +1057,13 @@ function mockRosterFreshnessPage(options?: {
       apiKeyConfigured: false,
       maskedApiKey: null,
     },
-  })
-  return { refresh }
+  });
+  return { refresh };
 }
 
 describe("UpstreamAccountsPage roster freshness", () => {
   it("keeps stale rows briefly, then blocks the roster and pagination while the next query is still loading", async () => {
-    vi.useFakeTimers()
+    vi.useFakeTimers();
     try {
       mockRosterFreshnessPage({
         listState: {
@@ -1053,73 +1075,90 @@ describe("UpstreamAccountsPage roster freshness", () => {
           hasCurrentQueryData: false,
           isPending: true,
         },
-      })
+      });
 
-      render("/account-pool/upstream-accounts")
+      render("/account-pool/upstream-accounts");
 
-      expect(document.body.textContent).toContain("Existing OAuth")
-      expect(document.body.textContent).toContain("Page 1 / 1 · 2 accounts")
+      expect(document.body.textContent).toContain("Existing OAuth");
+      expect(document.body.textContent).toContain("Page 1 / 1 · 2 accounts");
 
       const rowCheckbox = document.body.querySelector(
         'input[aria-label="Select Existing OAuth"]',
-      )
+      );
       if (!(rowCheckbox instanceof HTMLInputElement)) {
-        throw new Error("missing roster checkbox")
+        throw new Error("missing roster checkbox");
       }
       act(() => {
-        rowCheckbox.click()
-      })
+        rowCheckbox.click();
+      });
 
-      expect(document.body.textContent).toContain("1 accounts selected across pages")
+      expect(document.body.textContent).toContain(
+        "1 accounts selected across pages",
+      );
 
       act(() => {
-        vi.advanceTimersByTime(600)
-      })
-      await flushAsync()
+        vi.advanceTimersByTime(600);
+      });
+      await flushAsync();
 
-      expect(document.body.textContent).toContain("Existing OAuth")
-      expect(document.body.textContent).not.toContain("1 accounts selected across pages")
-      expect(document.body.querySelector('[data-testid="upstream-accounts-table-loading"]')).toBeNull()
+      expect(document.body.textContent).toContain("Existing OAuth");
+      expect(document.body.textContent).not.toContain(
+        "1 accounts selected across pages",
+      );
       expect(
-        document.body.querySelector('[data-testid="upstream-accounts-table-loading-overlay"]'),
-      ).not.toBeNull()
+        document.body.querySelector(
+          '[data-testid="upstream-accounts-table-loading"]',
+        ),
+      ).toBeNull();
       expect(
-        document.body.querySelector('[data-testid="upstream-accounts-table-loading-indicator"]'),
-      ).not.toBeNull()
+        document.body.querySelector(
+          '[data-testid="upstream-accounts-table-loading-overlay"]',
+        ),
+      ).not.toBeNull();
       expect(
-        document.body.querySelector('[data-testid="upstream-accounts-pagination-status"]'),
-      ).toBeNull()
+        document.body.querySelector(
+          '[data-testid="upstream-accounts-table-loading-indicator"]',
+        ),
+      ).not.toBeNull();
+      expect(
+        document.body.querySelector(
+          '[data-testid="upstream-accounts-pagination-status"]',
+        ),
+      ).toBeNull();
 
       const paginationFooter = document.body.querySelector(
         '[data-testid="upstream-accounts-pagination-footer"]',
-      )
+      );
       if (!(paginationFooter instanceof HTMLDivElement)) {
-        throw new Error("missing pagination footer")
+        throw new Error("missing pagination footer");
       }
 
       const pageSizeButton = document.body.querySelector(
         'button[aria-label="Page size"]',
-      )
+      );
       if (!(pageSizeButton instanceof HTMLButtonElement)) {
-        throw new Error("missing page size trigger")
+        throw new Error("missing page size trigger");
       }
-      expect(pageSizeButton.disabled).toBe(true)
+      expect(pageSizeButton.disabled).toBe(true);
 
-      expect(findButton(/Previous/i)?.disabled).toBe(true)
-      expect(findButton(/Next/i)?.disabled).toBe(true)
+      expect(findButton(/Previous/i)?.disabled).toBe(true);
+      expect(findButton(/Next/i)?.disabled).toBe(true);
     } finally {
-      vi.useRealTimers()
+      vi.useRealTimers();
     }
-  })
+  });
 
   it("keeps the roster region height frozen while the blocking loading state is visible", async () => {
-    vi.useFakeTimers()
-    const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect
+    vi.useFakeTimers();
+    const originalGetBoundingClientRect =
+      HTMLElement.prototype.getBoundingClientRect;
 
     Object.defineProperty(HTMLElement.prototype, "getBoundingClientRect", {
       configurable: true,
       value: function getBoundingClientRectMock(this: HTMLElement) {
-        if (this.getAttribute("data-testid") === "upstream-accounts-roster-region") {
+        if (
+          this.getAttribute("data-testid") === "upstream-accounts-roster-region"
+        ) {
           return {
             x: 0,
             y: 0,
@@ -1130,11 +1169,11 @@ describe("UpstreamAccountsPage roster freshness", () => {
             width: 960,
             height: 480,
             toJSON: () => ({}),
-          } satisfies DOMRect
+          } satisfies DOMRect;
         }
-        return originalGetBoundingClientRect.call(this)
+        return originalGetBoundingClientRect.call(this);
       },
-    })
+    });
 
     try {
       mockRosterFreshnessPage({
@@ -1147,27 +1186,29 @@ describe("UpstreamAccountsPage roster freshness", () => {
           hasCurrentQueryData: false,
           isPending: true,
         },
-      })
+      });
 
-      render("/account-pool/upstream-accounts")
-      await flushAsync()
+      render("/account-pool/upstream-accounts");
+      await flushAsync();
 
       act(() => {
-        vi.advanceTimersByTime(600)
-      })
-      await flushAsync()
+        vi.advanceTimersByTime(600);
+      });
+      await flushAsync();
 
       const rosterRegion = document.body.querySelector(
         '[data-testid="upstream-accounts-roster-region"]',
-      )
+      );
       if (!(rosterRegion instanceof HTMLDivElement)) {
-        throw new Error("missing roster region")
+        throw new Error("missing roster region");
       }
 
-      expect(rosterRegion.style.minHeight).toBe("480px")
+      expect(rosterRegion.style.minHeight).toBe("480px");
       expect(
-        document.body.querySelector('[data-testid="upstream-accounts-table-loading-overlay"]'),
-      ).not.toBeNull()
+        document.body.querySelector(
+          '[data-testid="upstream-accounts-table-loading-overlay"]',
+        ),
+      ).not.toBeNull();
 
       mockRosterFreshnessPage({
         listState: {
@@ -1179,22 +1220,24 @@ describe("UpstreamAccountsPage roster freshness", () => {
           hasCurrentQueryData: true,
           isPending: false,
         },
-      })
-      rerender("/account-pool/upstream-accounts")
-      await flushAsync()
+      });
+      rerender("/account-pool/upstream-accounts");
+      await flushAsync();
 
-      expect(rosterRegion.style.minHeight).toBe("")
+      expect(rosterRegion.style.minHeight).toBe("");
       expect(
-        document.body.querySelector('[data-testid="upstream-accounts-table-loading-overlay"]'),
-      ).toBeNull()
+        document.body.querySelector(
+          '[data-testid="upstream-accounts-table-loading-overlay"]',
+        ),
+      ).toBeNull();
     } finally {
       Object.defineProperty(HTMLElement.prototype, "getBoundingClientRect", {
         configurable: true,
         value: originalGetBoundingClientRect,
-      })
-      vi.useRealTimers()
+      });
+      vi.useRealTimers();
     }
-  })
+  });
 
   it("shows an inline roster error and retry for the failed current query instead of stale rows", async () => {
     const { refresh } = mockRosterFreshnessPage({
@@ -1208,27 +1251,31 @@ describe("UpstreamAccountsPage roster freshness", () => {
         isPending: false,
       },
       listError: "page two failed",
-    })
+    });
 
-    render("/account-pool/upstream-accounts")
+    render("/account-pool/upstream-accounts");
 
-    expect(document.body.textContent).not.toContain("Existing OAuth")
-    expect(document.body.querySelector('[data-testid="upstream-accounts-table-error"]')).not.toBeNull()
-    expect(document.body.textContent).toContain("page two failed")
+    expect(document.body.textContent).not.toContain("Existing OAuth");
+    expect(
+      document.body.querySelector(
+        '[data-testid="upstream-accounts-table-error"]',
+      ),
+    ).not.toBeNull();
+    expect(document.body.textContent).toContain("page two failed");
 
-    clickButton(/Retry/i)
-    expect(refresh).toHaveBeenCalledTimes(1)
-  })
-})
+    clickButton(/Retry/i);
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe("UpstreamAccountsPage duplicates", () => {
   it("renders the compact roster header and folded metadata chips", () => {
     mockAccountsPage();
     render("/account-pool/upstream-accounts");
 
-    const headerCells = Array.from(document.body.querySelectorAll("thead th")).map((cell) =>
-      cell.textContent?.trim() || "",
-    );
+    const headerCells = Array.from(
+      document.body.querySelectorAll("thead th"),
+    ).map((cell) => cell.textContent?.trim() || "");
     expect(headerCells).toEqual(["", "Account", "Sync / Call", "Windows", ""]);
     expect(document.body.textContent).toContain("vip");
     expect(document.body.textContent).toContain("+1");
@@ -1245,9 +1292,15 @@ describe("UpstreamAccountsPage duplicates", () => {
     }
 
     expect(firstRow.textContent).toContain("Hard unavailable");
-    expect(firstRow.textContent).toContain("Upstream quota or weekly cap was exhausted");
+    expect(firstRow.textContent).toContain(
+      "Upstream quota or weekly cap was exhausted",
+    );
     expect(firstRow.textContent).toContain("HTTP 429");
-    expect(document.body.querySelector('[title*="Weekly cap exhausted for this account"]')).not.toBeNull();
+    expect(
+      document.body.querySelector(
+        '[title*="Weekly cap exhausted for this account"]',
+      ),
+    ).not.toBeNull();
   });
 
   it("shows latest account action details and recent events in the drawer", async () => {
@@ -1261,7 +1314,9 @@ describe("UpstreamAccountsPage duplicates", () => {
 
     expect(document.body.textContent).toContain("Latest account action");
     expect(document.body.textContent).toContain("Hard unavailable");
-    expect(document.body.textContent).toContain("Weekly cap exhausted for this account");
+    expect(document.body.textContent).toContain(
+      "Weekly cap exhausted for this account",
+    );
     expect(document.body.textContent).toContain("Recent account events");
     expect(document.body.textContent).toContain("invk_action_001");
   });
@@ -1317,7 +1372,9 @@ describe("UpstreamAccountsPage duplicates", () => {
     await flushAsync();
 
     expect(document.body.textContent).toContain("Temporary upstream failure");
-    expect(document.body.textContent).toContain("Upstream is temporarily overloaded");
+    expect(document.body.textContent).toContain(
+      "Upstream is temporarily overloaded",
+    );
     expect(document.body.textContent).toContain("HTTP 200");
     expect(document.body.textContent).not.toContain("Route cooldown");
   });
@@ -1436,7 +1493,9 @@ describe("UpstreamAccountsPage duplicates", () => {
 
   it("shows compact support state and saves routing timeouts", async () => {
     const saveRouting = vi.fn().mockResolvedValue(undefined);
-    const { compactSupport, routingTimeouts } = mockAccountsPage({ saveRouting });
+    const { compactSupport, routingTimeouts } = mockAccountsPage({
+      saveRouting,
+    });
     render("/account-pool/upstream-accounts");
 
     expect(document.body.textContent).toContain("Compact unsupported");
@@ -1490,22 +1549,42 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect(document.body.textContent).toContain("pool-live••••");
     expect(document.body.textContent).not.toContain("Priority sync interval");
     expect(document.body.textContent).not.toContain("Secondary sync interval");
-    expect(document.body.textContent).not.toContain("Priority available account cap");
-    expect(document.body.textContent).not.toContain("Standard response first byte timeout");
-    expect(document.body.textContent).not.toContain("Compact response first byte timeout");
-    expect(document.body.textContent).not.toContain("Standard stream completion timeout");
-    expect(document.body.textContent).not.toContain("Compact stream completion timeout");
+    expect(document.body.textContent).not.toContain(
+      "Priority available account cap",
+    );
+    expect(document.body.textContent).not.toContain(
+      "Standard response first byte timeout",
+    );
+    expect(document.body.textContent).not.toContain(
+      "Compact response first byte timeout",
+    );
+    expect(document.body.textContent).not.toContain(
+      "Standard stream completion timeout",
+    );
+    expect(document.body.textContent).not.toContain(
+      "Compact stream completion timeout",
+    );
 
     clickButton(/Edit routing settings/i);
     await flushAsync();
 
     expect(document.body.textContent).toContain("Priority sync interval");
     expect(document.body.textContent).toContain("Secondary sync interval");
-    expect(document.body.textContent).toContain("Priority available account cap");
-    expect(document.body.textContent).toContain("Standard response first byte timeout");
-    expect(document.body.textContent).toContain("Compact response first byte timeout");
-    expect(document.body.textContent).toContain("Standard stream completion timeout");
-    expect(document.body.textContent).toContain("Compact stream completion timeout");
+    expect(document.body.textContent).toContain(
+      "Priority available account cap",
+    );
+    expect(document.body.textContent).toContain(
+      "Standard response first byte timeout",
+    );
+    expect(document.body.textContent).toContain(
+      "Compact response first byte timeout",
+    );
+    expect(document.body.textContent).toContain(
+      "Standard stream completion timeout",
+    );
+    expect(document.body.textContent).toContain(
+      "Compact stream completion timeout",
+    );
   });
 
   it("rejects non-integer routing timeout edits before saving", async () => {
@@ -1526,9 +1605,9 @@ describe("UpstreamAccountsPage duplicates", () => {
     mockAccountsPage({ routing: null });
     render("/account-pool/upstream-accounts");
 
-    const editButton = Array.from(document.body.querySelectorAll("button")).find((button) =>
-      /edit routing settings/i.test(button.textContent || ""),
-    );
+    const editButton = Array.from(
+      document.body.querySelectorAll("button"),
+    ).find((button) => /edit routing settings/i.test(button.textContent || ""));
     expect(editButton).toBeInstanceOf(HTMLButtonElement);
     expect((editButton as HTMLButtonElement).disabled).toBe(true);
   });
@@ -1560,7 +1639,9 @@ describe("UpstreamAccountsPage duplicates", () => {
     expect(compactInput).toBeInstanceOf(HTMLInputElement);
     expect((compactInput as HTMLInputElement).disabled).toBe(true);
 
-    const apiKeyInput = document.body.querySelector('input[name="poolRoutingSecret"]');
+    const apiKeyInput = document.body.querySelector(
+      'input[name="poolRoutingSecret"]',
+    );
     expect(apiKeyInput).toBeInstanceOf(HTMLInputElement);
     expect((apiKeyInput as HTMLInputElement).disabled).toBe(true);
 
@@ -1840,7 +1921,8 @@ describe("UpstreamAccountsPage duplicates", () => {
         lastAction: "route_retryable_failure",
         lastActionSource: "call",
         lastActionReasonCode: "upstream_http_429_rate_limit",
-        lastActionReasonMessage: "pool upstream responded with 429: too many requests",
+        lastActionReasonMessage:
+          "pool upstream responded with 429: too many requests",
         lastActionHttpStatus: 429,
       },
       detail: {
@@ -1851,7 +1933,8 @@ describe("UpstreamAccountsPage duplicates", () => {
         lastAction: "route_retryable_failure",
         lastActionSource: "call",
         lastActionReasonCode: "upstream_http_429_rate_limit",
-        lastActionReasonMessage: "pool upstream responded with 429: too many requests",
+        lastActionReasonMessage:
+          "pool upstream responded with 429: too many requests",
         lastActionHttpStatus: 429,
       },
     });
@@ -2283,10 +2366,18 @@ describe("UpstreamAccountsPage duplicates", () => {
     act(() => {
       eventSource.emit(
         "completed",
-        buildBulkSyncSnapshotEvent("job-1", [
-          { accountId: 5, displayName: "Existing OAuth", status: "succeeded" },
-          { accountId: 9, displayName: "Another OAuth", status: "succeeded" },
-        ], "completed"),
+        buildBulkSyncSnapshotEvent(
+          "job-1",
+          [
+            {
+              accountId: 5,
+              displayName: "Existing OAuth",
+              status: "succeeded",
+            },
+            { accountId: 9, displayName: "Another OAuth", status: "succeeded" },
+          ],
+          "completed",
+        ),
       );
     });
     await flushAsync();
@@ -2314,25 +2405,31 @@ describe("UpstreamAccountsPage duplicates", () => {
     act(() => {
       eventSource.emit(
         "completed",
-        buildBulkSyncSnapshotEvent("job-1", [
-          {
-            accountId: 5,
-            displayName: "Existing OAuth",
-            status: "failed",
-            detail: "refresh token already rotated",
-          },
-          {
-            accountId: 9,
-            displayName: "Another OAuth",
-            status: "succeeded",
-          },
-        ], "completed"),
+        buildBulkSyncSnapshotEvent(
+          "job-1",
+          [
+            {
+              accountId: 5,
+              displayName: "Existing OAuth",
+              status: "failed",
+              detail: "refresh token already rotated",
+            },
+            {
+              accountId: 9,
+              displayName: "Another OAuth",
+              status: "succeeded",
+            },
+          ],
+          "completed",
+        ),
       );
     });
     await flushAsync();
 
     expect(document.body.textContent).toContain("Bulk sync progress");
-    expect(document.body.textContent).toContain("refresh token already rotated");
+    expect(document.body.textContent).toContain(
+      "refresh token already rotated",
+    );
     expect(findFixedContainerByText(/bulk sync progress/i)).toBeDefined();
 
     clickButton(/dismiss/i);
@@ -2362,7 +2459,9 @@ describe("UpstreamAccountsPage duplicates", () => {
           secondaryWindow: null,
           credits: null,
           localLimits: null,
-          tags: [{ id: 1, name: "vip", routingRule: defaultEffectiveRoutingRule }],
+          tags: [
+            { id: 1, name: "vip", routingRule: defaultEffectiveRoutingRule },
+          ],
           effectiveRoutingRule: defaultEffectiveRoutingRule,
         },
         {
@@ -2380,7 +2479,13 @@ describe("UpstreamAccountsPage duplicates", () => {
           secondaryWindow: null,
           credits: null,
           localLimits: null,
-          tags: [{ id: 2, name: "burst-safe", routingRule: defaultEffectiveRoutingRule }],
+          tags: [
+            {
+              id: 2,
+              name: "burst-safe",
+              routingRule: defaultEffectiveRoutingRule,
+            },
+          ],
           effectiveRoutingRule: defaultEffectiveRoutingRule,
         },
       ],
@@ -2411,7 +2516,9 @@ describe("UpstreamAccountsPage duplicates", () => {
         secondaryWindow: null,
         credits: null,
         localLimits: null,
-        tags: [{ id: 1, name: "vip", routingRule: defaultEffectiveRoutingRule }],
+        tags: [
+          { id: 1, name: "vip", routingRule: defaultEffectiveRoutingRule },
+        ],
         effectiveRoutingRule: defaultEffectiveRoutingRule,
       },
       detail: null,
@@ -2462,7 +2569,9 @@ describe("UpstreamAccountsPage duplicates", () => {
     }
     pressButton(combobox);
 
-    const options = Array.from(document.body.querySelectorAll('[cmdk-item]')) as HTMLElement[];
+    const options = Array.from(
+      document.body.querySelectorAll("[cmdk-item]"),
+    ) as HTMLElement[];
     expect(options.map((option) => option.textContent?.trim())).toEqual([
       "burst-safe",
       "vip",
@@ -2484,9 +2593,9 @@ describe("UpstreamAccountsPage duplicates", () => {
     setInputValue('input[name="detailDisplayName"]', " another oauth ");
 
     expect(document.body.textContent).toContain("Display name must be unique.");
-    const saveButton = Array.from(document.body.querySelectorAll("button")).find((candidate) =>
-      /Save changes/i.test(candidate.textContent || ""),
-    );
+    const saveButton = Array.from(
+      document.body.querySelectorAll("button"),
+    ).find((candidate) => /Save changes/i.test(candidate.textContent || ""));
     expect(saveButton).toBeInstanceOf(HTMLButtonElement);
     expect((saveButton as HTMLButtonElement).disabled).toBe(true);
   });
@@ -2835,9 +2944,7 @@ describe("UpstreamAccountsPage duplicates", () => {
 
 describe("UpstreamAccountsPage sync state isolation", () => {
   it("keeps another account's sync button idle while the previous account sync is still pending", async () => {
-    const runSync = vi.fn().mockImplementation(
-      () => new Promise(() => {}),
-    );
+    const runSync = vi.fn().mockImplementation(() => new Promise(() => {}));
     const selectAccount = vi.fn();
     const effectiveRoutingRule = {
       guardEnabled: false,
@@ -3070,10 +3177,10 @@ describe("UpstreamAccountsPage sync state isolation", () => {
     clickFirstRosterRow();
     await flushAsync();
 
-    const overviewTab = Array.from(document.body.querySelectorAll('[role="tab"]')).find((candidate) =>
-      /Overview/i.test(candidate.textContent || ''),
-    );
-    expect(overviewTab?.getAttribute('aria-selected')).toBe('true');
+    const overviewTab = Array.from(
+      document.body.querySelectorAll('[role="tab"]'),
+    ).find((candidate) => /Overview/i.test(candidate.textContent || ""));
+    expect(overviewTab?.getAttribute("aria-selected")).toBe("true");
     expect(document.body.textContent).toContain("Last successful sync");
     expect(document.body.textContent).toContain("5h window");
     expect(document.body.textContent).not.toContain("Latest account action");
@@ -3151,7 +3258,9 @@ describe("UpstreamAccountsPage sync state isolation", () => {
     expect(dialog).not.toBeNull();
     expect(document.body.textContent).toContain("18 requests");
     expect(document.body.textContent).not.toContain("No quota history yet");
-    expect(findExactTextElements("-", dialog ?? document.body).length).toBeGreaterThanOrEqual(4);
+    expect(
+      findExactTextElements("-", dialog ?? document.body).length,
+    ).toBeGreaterThanOrEqual(4);
   });
 
   it("keeps refresh enabled while an account action is pending", () => {
@@ -3653,7 +3762,10 @@ describe("UpstreamAccountsPage sync state isolation", () => {
     };
 
     hookMocks.useUpstreamAccounts.mockReturnValue({
-      items: [staleDetail, { ...staleDetail, id: 9, displayName: "Another OAuth" }],
+      items: [
+        staleDetail,
+        { ...staleDetail, id: 9, displayName: "Another OAuth" },
+      ],
       writesEnabled: true,
       selectedId: 9,
       selectedSummary: {
@@ -3786,8 +3898,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
           status: "needs_reauth",
           displayStatus: "needs_reauth",
           enabled: true,
-          lastError:
-            "OAuth token endpoint returned 400: invalid_grant",
+          lastError: "OAuth token endpoint returned 400: invalid_grant",
         },
       ],
       writesEnabled: true,
@@ -3802,8 +3913,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
         status: "needs_reauth",
         displayStatus: "needs_reauth",
         enabled: true,
-        lastError:
-          "OAuth token endpoint returned 400: invalid_grant",
+        lastError: "OAuth token endpoint returned 400: invalid_grant",
       },
       detail: {
         id: 6,
@@ -3815,8 +3925,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
         status: "needs_reauth",
         displayStatus: "needs_reauth",
         enabled: true,
-        lastError:
-          "OAuth token endpoint returned 400: invalid_grant",
+        lastError: "OAuth token endpoint returned 400: invalid_grant",
         history: [],
       },
       isLoading: false,
@@ -3861,8 +3970,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
           status: "needs_reauth",
           displayStatus: "upstream_rejected",
           enabled: true,
-          lastError:
-            "oauth bridge upstream rejected request: 403 forbidden",
+          lastError: "oauth bridge upstream rejected request: 403 forbidden",
         },
       ],
       writesEnabled: true,
@@ -3877,8 +3985,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
         status: "needs_reauth",
         displayStatus: "upstream_rejected",
         enabled: true,
-        lastError:
-          "oauth bridge upstream rejected request: 403 forbidden",
+        lastError: "oauth bridge upstream rejected request: 403 forbidden",
       },
       detail: {
         id: 7,
@@ -3890,8 +3997,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
         status: "needs_reauth",
         displayStatus: "upstream_rejected",
         enabled: true,
-        lastError:
-          "oauth bridge upstream rejected request: 403 forbidden",
+        lastError: "oauth bridge upstream rejected request: 403 forbidden",
         history: [],
       },
       isLoading: false,
@@ -4023,7 +4129,11 @@ describe("UpstreamAccountsPage api key details", () => {
         maskedApiKey: "sk-back••••",
       },
     ];
-    const detailFor = (id: number, displayName: string, upstreamBaseUrl: string | null) => ({
+    const detailFor = (
+      id: number,
+      displayName: string,
+      upstreamBaseUrl: string | null,
+    ) => ({
       id,
       kind: "api_key_codex" as const,
       provider: "codex" as const,
@@ -4094,10 +4204,14 @@ describe("UpstreamAccountsPage api key details", () => {
 
     clickTab(/Edit/i);
     setInputValue('input[name="detailRotateApiKey"]', "sk-new-backup");
-    saveRequest.resolve(detailFor(8, "Gateway Key", "https://proxy.example.com/gateway"));
+    saveRequest.resolve(
+      detailFor(8, "Gateway Key", "https://proxy.example.com/gateway"),
+    );
     await flushAsync();
 
-    const rotateInput = document.body.querySelector('input[name="detailRotateApiKey"]');
+    const rotateInput = document.body.querySelector(
+      'input[name="detailRotateApiKey"]',
+    );
     expect(rotateInput).toBeInstanceOf(HTMLInputElement);
     expect((rotateInput as HTMLInputElement).value).toBe("sk-new-backup");
   });
@@ -4539,13 +4653,19 @@ describe("UpstreamAccountsPage api key details", () => {
     clickButton(/Edit group settings|Edit group note/i);
     await flushAsync();
 
-    const dialogStack = Array.from(document.body.querySelectorAll('[role="dialog"]'));
+    const dialogStack = Array.from(
+      document.body.querySelectorAll('[role="dialog"]'),
+    );
     const groupSettingsDialog = dialogStack[dialogStack.length - 1];
     if (!(groupSettingsDialog instanceof HTMLElement)) {
       throw new Error("missing group settings dialog");
     }
-    expect(groupSettingsDialog.textContent || "").toContain("Bound proxy nodes");
-    expect(groupSettingsDialog.textContent || "").toContain("Upstream 429 retry");
+    expect(groupSettingsDialog.textContent || "").toContain(
+      "Bound proxy nodes",
+    );
+    expect(groupSettingsDialog.textContent || "").toContain(
+      "Upstream 429 retry",
+    );
     expect(groupSettingsDialog.textContent || "").toContain("Direct");
     expect(groupSettingsDialog.textContent || "").toContain("DIRECT");
     expect(groupSettingsDialog.textContent || "").toContain("VLESS");
@@ -4557,17 +4677,17 @@ describe("UpstreamAccountsPage api key details", () => {
     }
     setFieldValue(groupNoteField, "LATAM draft note");
 
-    const proxyOption = Array.from(groupSettingsDialog.querySelectorAll("button")).find(
-      (candidate) => /JP Edge 01/i.test(candidate.textContent || ""),
-    );
+    const proxyOption = Array.from(
+      groupSettingsDialog.querySelectorAll("button"),
+    ).find((candidate) => /JP Edge 01/i.test(candidate.textContent || ""));
     if (!(proxyOption instanceof HTMLButtonElement)) {
       throw new Error("missing proxy binding option");
     }
     pressButton(proxyOption);
 
-    const saveDialogButton = Array.from(groupSettingsDialog.querySelectorAll("button")).find(
-      (candidate) => /Save changes/i.test(candidate.textContent || ""),
-    );
+    const saveDialogButton = Array.from(
+      groupSettingsDialog.querySelectorAll("button"),
+    ).find((candidate) => /Save changes/i.test(candidate.textContent || ""));
     if (!(saveDialogButton instanceof HTMLButtonElement)) {
       throw new Error("missing group settings save button");
     }
@@ -4576,15 +4696,17 @@ describe("UpstreamAccountsPage api key details", () => {
 
     expect(saveGroupNote).not.toHaveBeenCalled();
 
-    const remainingDialogs = Array.from(document.body.querySelectorAll('[role="dialog"]'));
+    const remainingDialogs = Array.from(
+      document.body.querySelectorAll('[role="dialog"]'),
+    );
     const detailDialog = remainingDialogs[remainingDialogs.length - 1];
     if (!(detailDialog instanceof HTMLElement)) {
       throw new Error("missing detail drawer dialog");
     }
 
-    const saveDetailButton = Array.from(detailDialog.querySelectorAll("button")).find(
-      (candidate) => /Save changes/i.test(candidate.textContent || ""),
-    );
+    const saveDetailButton = Array.from(
+      detailDialog.querySelectorAll("button"),
+    ).find((candidate) => /Save changes/i.test(candidate.textContent || ""));
     if (!(saveDetailButton instanceof HTMLButtonElement)) {
       throw new Error("missing detail save button");
     }
@@ -4602,6 +4724,7 @@ describe("UpstreamAccountsPage api key details", () => {
       note: "LATAM draft note",
       boundProxyKeys: ["jp-edge-01"],
       concurrencyLimit: 0,
+      nodeShuntEnabled: false,
       upstream429RetryEnabled: false,
       upstream429MaxRetries: 0,
     });
@@ -4611,7 +4734,9 @@ describe("UpstreamAccountsPage api key details", () => {
 describe("UpstreamAccountsPage delete confirmation", () => {
   it("does not close the current drawer when an earlier account delete resolves after switching accounts", async () => {
     const removeRequest = deferred<void>();
-    const removeAccount = vi.fn().mockImplementation(() => removeRequest.promise);
+    const removeAccount = vi
+      .fn()
+      .mockImplementation(() => removeRequest.promise);
     const baseItems = [
       {
         id: 8,
@@ -4709,7 +4834,9 @@ describe("UpstreamAccountsPage delete confirmation", () => {
     removeRequest.resolve();
     await flushAsync();
 
-    const dialogTitle = document.body.querySelector("#upstream-account-detail-title");
+    const dialogTitle = document.body.querySelector(
+      "#upstream-account-detail-title",
+    );
     expect(dialogTitle?.textContent).toBe("Backup Key");
     expect(document.body.querySelector('[role="dialog"]')).not.toBeNull();
   });
@@ -4814,17 +4941,17 @@ describe("UpstreamAccountsPage delete confirmation", () => {
     const confirmDialog = document.body.querySelector('[role="alertdialog"]');
     expect(confirmDialog).not.toBeNull();
     expect(confirmDialog?.closest('[role="dialog"]')).not.toBeNull();
-    expect(confirmDialog?.closest('.drawer-body')).toBeNull();
+    expect(confirmDialog?.closest(".drawer-body")).toBeNull();
     const cancelButton = findButton(/Cancel/i);
     expect(cancelButton).toBeInstanceOf(HTMLButtonElement);
     expect(document.activeElement).toBe(cancelButton);
     const confirmDeleteButton = confirmDialog
-      ? Array.from(confirmDialog.querySelectorAll('button')).find((candidate) =>
+      ? Array.from(confirmDialog.querySelectorAll("button")).find((candidate) =>
           /Delete account/i.test(
             candidate.textContent ||
-              candidate.getAttribute('aria-label') ||
+              candidate.getAttribute("aria-label") ||
               candidate.title ||
-              '',
+              "",
           ),
         )
       : null;
@@ -4912,9 +5039,15 @@ describe("UpstreamAccountsPage delete confirmation", () => {
           selectedSummary: null,
           detail: null,
         };
-        rerender("/account-pool/upstream-accounts?view=compact&upstreamAccountId=8");
+        rerender(
+          "/account-pool/upstream-accounts?view=compact&upstreamAccountId=8",
+        );
       }),
-      routing: { apiKeyConfigured: true, maskedApiKey: "pool-live••••", writesEnabled: true },
+      routing: {
+        apiKeyConfigured: true,
+        maskedApiKey: "pool-live••••",
+        writesEnabled: true,
+      },
       groups: [],
       saveGroupNote: vi.fn(),
     };
@@ -4934,13 +5067,13 @@ describe("UpstreamAccountsPage delete confirmation", () => {
     const dialog = document.body.querySelector('[role="dialog"]');
     const deleteButton = dialog
       ? Array.from(dialog.querySelectorAll("button")).find((candidate) =>
-      /^Delete$/i.test(
-        candidate.textContent ||
-          candidate.getAttribute("aria-label") ||
-          candidate.title ||
-          "",
-        ),
-      )
+          /^Delete$/i.test(
+            candidate.textContent ||
+              candidate.getAttribute("aria-label") ||
+              candidate.title ||
+              "",
+          ),
+        )
       : null;
     if (!(deleteButton instanceof HTMLButtonElement)) {
       throw new Error("missing detail drawer delete button");
@@ -5052,7 +5185,9 @@ describe("UpstreamAccountsPage delete confirmation", () => {
     await flushAsync();
 
     const detailDialog = document.body.querySelector('[role="dialog"]');
-    expect(detailDialog?.textContent).toContain("Request failed: 500 database is locked");
+    expect(detailDialog?.textContent).toContain(
+      "Request failed: 500 database is locked",
+    );
   });
 
   it("keeps delete failures visible when the detail payload is unavailable", async () => {
@@ -5136,7 +5271,9 @@ describe("UpstreamAccountsPage delete confirmation", () => {
     await flushAsync();
 
     const detailDialog = document.body.querySelector('[role="dialog"]');
-    expect(detailDialog?.textContent).toContain("Request failed: 500 database is locked");
+    expect(detailDialog?.textContent).toContain(
+      "Request failed: 500 database is locked",
+    );
   });
 
   it("closes only the delete confirmation on escape", async () => {
@@ -5315,7 +5452,7 @@ describe("UpstreamAccountsPage delete confirmation", () => {
     const confirmDialog = document.body.querySelector('[role="alertdialog"]');
     expect(confirmDialog).not.toBeNull();
     expect(confirmDialog?.closest('[role="dialog"]')).not.toBeNull();
-    expect(confirmDialog?.closest('.drawer-body')).toBeNull();
+    expect(confirmDialog?.closest(".drawer-body")).toBeNull();
   });
 
   it("keeps the tag picker popover inside the detail drawer dialog subtree", async () => {
@@ -5462,7 +5599,9 @@ describe("UpstreamAccountsPage delete confirmation", () => {
     const matchingStatuses = Array.from(
       document.body.querySelectorAll('[role="status"]'),
     ).filter((node) =>
-      (node.textContent || "").includes("Request failed: 500 database is locked"),
+      (node.textContent || "").includes(
+        "Request failed: 500 database is locked",
+      ),
     );
     expect(matchingStatuses).toHaveLength(1);
     expect(matchingStatuses[0]?.closest('[role="dialog"]')).not.toBeNull();

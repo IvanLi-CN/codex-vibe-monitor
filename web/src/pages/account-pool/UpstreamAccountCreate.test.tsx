@@ -83,7 +83,7 @@ class MockValidationEventSource implements EventTarget {
     const handler =
       typeof listener === "function"
         ? listener
-        : ((event: Event) => listener.handleEvent(event)) as EventListener;
+        : (((event: Event) => listener.handleEvent(event)) as EventListener);
     const current = this.listeners.get(type) ?? new Set<EventListener>();
     current.add(handler);
     this.listeners.set(type, current);
@@ -99,7 +99,7 @@ class MockValidationEventSource implements EventTarget {
     const handler =
       typeof listener === "function"
         ? listener
-        : ((event: Event) => listener.handleEvent(event)) as EventListener;
+        : (((event: Event) => listener.handleEvent(event)) as EventListener);
     current.delete(handler);
     if (current.size === 0) {
       this.listeners.delete(type);
@@ -127,9 +127,7 @@ class MockValidationEventSource implements EventTarget {
   }
 }
 
-function buildImportedOauthValidationCounts(
-  rows: Array<{ status: string }>,
-) {
+function buildImportedOauthValidationCounts(rows: Array<{ status: string }>) {
   const counts = {
     pending: 0,
     duplicateInInput: 0,
@@ -206,6 +204,7 @@ const TEST_GROUP_SUMMARIES = [
   groupName,
   note: `${groupName} note`,
   boundProxyKeys: [...TEST_REQUIRED_BOUND_PROXY_KEYS],
+  nodeShuntEnabled: false,
 }));
 
 function expectedGroupSelection(
@@ -215,6 +214,7 @@ function expectedGroupSelection(
   const selection = {
     groupName,
     groupBoundProxyKeys: [...TEST_REQUIRED_BOUND_PROXY_KEYS],
+    groupNodeShuntEnabled: false,
   };
   if (options?.includeConcurrencyLimit === false) {
     return selection;
@@ -299,6 +299,15 @@ afterEach(() => {
 function render(
   initialEntry: RenderEntry = "/account-pool/upstream-accounts/new",
 ) {
+  host = document.createElement("div");
+  document.body.appendChild(host);
+  root = createRoot(host);
+  rerender(initialEntry);
+}
+
+function rerender(
+  initialEntry: RenderEntry = "/account-pool/upstream-accounts/new",
+) {
   const normalizedEntry =
     typeof initialEntry === "string"
       ? (() => {
@@ -372,9 +381,6 @@ function render(
       },
     },
   } satisfies RenderEntry;
-  host = document.createElement("div");
-  document.body.appendChild(host);
-  root = createRoot(host);
   act(() => {
     root?.render(
       <I18nProvider>
@@ -434,10 +440,7 @@ async function setFileInputFiles(input: HTMLInputElement, files: File[]) {
   });
 }
 
-async function pasteIntoField(
-  input: HTMLTextAreaElement,
-  text: string,
-) {
+async function pasteIntoField(input: HTMLTextAreaElement, text: string) {
   await act(async () => {
     const event = new Event("paste", {
       bubbles: true,
@@ -722,7 +725,7 @@ function mockUpstreamAccounts(
           : [...TEST_REQUIRED_BOUND_PROXY_KEYS],
       }))
     : TEST_GROUP_SUMMARIES;
-  hookMocks.useUpstreamAccounts.mockReturnValue({
+  const hookState = {
     items: [
       {
         id: 5,
@@ -817,25 +820,31 @@ function mockUpstreamAccounts(
     saveGroupNote: vi
       .fn()
       .mockResolvedValue({ groupName: "prod", note: "Saved note" }),
-    saveAccount: vi.fn().mockImplementation(
-      async (accountId: number, payload: Record<string, unknown>) =>
-        buildSavedAccountDetail({
-          id: accountId,
-          displayName:
-            typeof payload.displayName === "string"
-              ? payload.displayName
-              : "Row One",
-          groupName:
-            typeof payload.groupName === "string" ? payload.groupName : "prod",
-          note: typeof payload.note === "string" ? payload.note : null,
-          isMother: payload.isMother === true,
-          tags: Array.isArray(payload.tagIds)
-            ? payload.tagIds.map((tagId) => buildTagSummary(Number(tagId)))
-            : [],
-        }),
-    ),
+    saveAccount: vi
+      .fn()
+      .mockImplementation(
+        async (accountId: number, payload: Record<string, unknown>) =>
+          buildSavedAccountDetail({
+            id: accountId,
+            displayName:
+              typeof payload.displayName === "string"
+                ? payload.displayName
+                : "Row One",
+            groupName:
+              typeof payload.groupName === "string"
+                ? payload.groupName
+                : "prod",
+            note: typeof payload.note === "string" ? payload.note : null,
+            isMother: payload.isMother === true,
+            tags: Array.isArray(payload.tagIds)
+              ? payload.tagIds.map((tagId) => buildTagSummary(Number(tagId)))
+              : [],
+          }),
+      ),
     ...overrides,
-  });
+  };
+  hookMocks.useUpstreamAccounts.mockReturnValue(hookState);
+  return hookState;
 }
 
 function blurField(selector: string) {
@@ -1030,55 +1039,57 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
       isMother: false,
       tagIds: [1],
     };
-    const saveAccount = vi.fn().mockImplementation(
-      async (accountId: number, payload: Record<string, unknown>) => {
-        if (typeof payload.displayName === "string") {
-          savedState.displayName = payload.displayName;
-        }
-        if (typeof payload.groupName === "string") {
-          savedState.groupName = payload.groupName;
-        }
-        if (typeof payload.note === "string") {
-          savedState.note = payload.note;
-        }
-        if (typeof payload.isMother === "boolean") {
-          savedState.isMother = payload.isMother;
-        }
-        if (Array.isArray(payload.tagIds)) {
-          savedState.tagIds = payload.tagIds.map((tagId) => Number(tagId));
-        }
-        return {
-          id: accountId,
-          kind: "oauth_codex",
-          provider: "codex",
-          displayName: savedState.displayName,
-          groupName: savedState.groupName,
-          isMother: savedState.isMother,
-          status: "active",
-          enabled: true,
-          duplicateInfo: null,
-          history: [],
-          note: savedState.note,
-          tags: savedState.tagIds.map((tagId) => ({
-            id: Number(tagId),
-            name: `tag-${tagId}`,
-            routingRule: {
+    const saveAccount = vi
+      .fn()
+      .mockImplementation(
+        async (accountId: number, payload: Record<string, unknown>) => {
+          if (typeof payload.displayName === "string") {
+            savedState.displayName = payload.displayName;
+          }
+          if (typeof payload.groupName === "string") {
+            savedState.groupName = payload.groupName;
+          }
+          if (typeof payload.note === "string") {
+            savedState.note = payload.note;
+          }
+          if (typeof payload.isMother === "boolean") {
+            savedState.isMother = payload.isMother;
+          }
+          if (Array.isArray(payload.tagIds)) {
+            savedState.tagIds = payload.tagIds.map((tagId) => Number(tagId));
+          }
+          return {
+            id: accountId,
+            kind: "oauth_codex",
+            provider: "codex",
+            displayName: savedState.displayName,
+            groupName: savedState.groupName,
+            isMother: savedState.isMother,
+            status: "active",
+            enabled: true,
+            duplicateInfo: null,
+            history: [],
+            note: savedState.note,
+            tags: savedState.tagIds.map((tagId) => ({
+              id: Number(tagId),
+              name: `tag-${tagId}`,
+              routingRule: {
+                guardEnabled: false,
+                allowCutOut: true,
+                allowCutIn: true,
+              },
+            })),
+            effectiveRoutingRule: {
               guardEnabled: false,
               allowCutOut: true,
               allowCutIn: true,
+              sourceTagIds: [],
+              sourceTagNames: [],
+              guardRules: [],
             },
-          })),
-          effectiveRoutingRule: {
-            guardEnabled: false,
-            allowCutOut: true,
-            allowCutIn: true,
-            sourceTagIds: [],
-            sourceTagNames: [],
-            guardRules: [],
-          },
-        };
-      },
-    );
+          };
+        },
+      );
     mockUpstreamAccounts({
       saveAccount,
       groups: [
@@ -1140,7 +1151,10 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     expect(findButton(/Remove row/i)?.disabled).toBe(true);
     expect(pageTextContent()).toContain("Needs refresh");
 
-    setInputValue('input[name="batchOauthDisplayName-row-1"]', "Row One Renamed");
+    setInputValue(
+      'input[name="batchOauthDisplayName-row-1"]',
+      "Row One Renamed",
+    );
     blurField('input[name="batchOauthDisplayName-row-1"]');
     await flushAsync();
 
@@ -1158,10 +1172,7 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     const displayNamePayload = saveAccount.mock.calls.find(
       ([, payload]) =>
         typeof (payload as Record<string, unknown>).displayName === "string",
-    )?.[1] as Record<
-      string,
-      unknown
-    >;
+    )?.[1] as Record<string, unknown>;
     expect(displayNamePayload.displayName).toBe("Row One Renamed");
     expect("groupName" in displayNamePayload).toBe(false);
     expect("note" in displayNamePayload).toBe(false);
@@ -1172,53 +1183,48 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     expect("callbackUrl" in displayNamePayload).toBe(false);
 
     const groupPayload = saveAccount.mock.calls.find(
-      ([, payload]) =>
-        (payload as Record<string, unknown>).groupName === "ops",
-    )?.[1] as Record<
-      string,
-      unknown
-    >;
+      ([, payload]) => (payload as Record<string, unknown>).groupName === "ops",
+    )?.[1] as Record<string, unknown>;
     expect(groupPayload.groupName).toBe("ops");
     expect(groupPayload.concurrencyLimit).toBe(6);
 
     const notePayload = saveAccount.mock.calls.find(
       ([, payload]) =>
         typeof (payload as Record<string, unknown>).note === "string",
-    )?.[1] as Record<
-      string,
-      unknown
-    >;
+    )?.[1] as Record<string, unknown>;
     expect(notePayload.note).toBe("Updated note");
 
     expect(pageTextContent()).not.toContain("Needs refresh");
   }, 10_000);
 
   it("propagates the header default group to completed rows that still inherit it", async () => {
-    const saveAccount = vi.fn().mockImplementation(
-      async (accountId: number, payload: Record<string, unknown>) => ({
-        id: accountId,
-        kind: "oauth_codex",
-        provider: "codex",
-        displayName: accountId === 41 ? "Inherited Row" : "Custom Row",
-        groupName:
-          typeof payload.groupName === "string" ? payload.groupName : "alpha",
-        isMother: false,
-        status: "active",
-        enabled: true,
-        duplicateInfo: null,
-        history: [],
-        note: null,
-        tags: [],
-        effectiveRoutingRule: {
-          guardEnabled: false,
-          allowCutOut: true,
-          allowCutIn: true,
-          sourceTagIds: [],
-          sourceTagNames: [],
-          guardRules: [],
-        },
-      }),
-    );
+    const saveAccount = vi
+      .fn()
+      .mockImplementation(
+        async (accountId: number, payload: Record<string, unknown>) => ({
+          id: accountId,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: accountId === 41 ? "Inherited Row" : "Custom Row",
+          groupName:
+            typeof payload.groupName === "string" ? payload.groupName : "alpha",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          duplicateInfo: null,
+          history: [],
+          note: null,
+          tags: [],
+          effectiveRoutingRule: {
+            guardEnabled: false,
+            allowCutOut: true,
+            allowCutIn: true,
+            sourceTagIds: [],
+            sourceTagNames: [],
+            guardRules: [],
+          },
+        }),
+      );
     mockUpstreamAccounts({
       saveAccount,
       groups: [
@@ -1312,31 +1318,33 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
   }, 10_000);
 
   it("does not reapply the header default group after a completed row opts out manually", async () => {
-    const saveAccount = vi.fn().mockImplementation(
-      async (accountId: number, payload: Record<string, unknown>) => ({
-        id: accountId,
-        kind: "oauth_codex",
-        provider: "codex",
-        displayName: "Inherited Row",
-        groupName:
-          typeof payload.groupName === "string" ? payload.groupName : "alpha",
-        isMother: false,
-        status: "active",
-        enabled: true,
-        duplicateInfo: null,
-        history: [],
-        note: "Seed note",
-        tags: [],
-        effectiveRoutingRule: {
-          guardEnabled: false,
-          allowCutOut: true,
-          allowCutIn: true,
-          sourceTagIds: [],
-          sourceTagNames: [],
-          guardRules: [],
-        },
-      }),
-    );
+    const saveAccount = vi
+      .fn()
+      .mockImplementation(
+        async (accountId: number, payload: Record<string, unknown>) => ({
+          id: accountId,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Inherited Row",
+          groupName:
+            typeof payload.groupName === "string" ? payload.groupName : "alpha",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          duplicateInfo: null,
+          history: [],
+          note: "Seed note",
+          tags: [],
+          effectiveRoutingRule: {
+            guardEnabled: false,
+            allowCutOut: true,
+            allowCutIn: true,
+            sourceTagIds: [],
+            sourceTagNames: [],
+            guardRules: [],
+          },
+        }),
+      );
     mockUpstreamAccounts({ saveAccount });
     render({
       pathname: "/account-pool/upstream-accounts/new",
@@ -1388,36 +1396,40 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
 
   it("preserves the mother flag when a completed mother row changes groups", async () => {
     let savedIsMother = true;
-    const saveAccount = vi.fn().mockImplementation(
-      async (accountId: number, payload: Record<string, unknown>) => {
-        if (typeof payload.isMother === "boolean") {
-          savedIsMother = payload.isMother;
-        }
-        return {
-          id: accountId,
-          kind: "oauth_codex",
-          provider: "codex",
-          displayName: "Row One",
-          groupName:
-            typeof payload.groupName === "string" ? payload.groupName : "prod",
-          isMother: savedIsMother,
-          status: "active",
-          enabled: true,
-          duplicateInfo: null,
-          history: [],
-          note: "Seed note",
-          tags: [],
-          effectiveRoutingRule: {
-            guardEnabled: false,
-            allowCutOut: true,
-            allowCutIn: true,
-            sourceTagIds: [],
-            sourceTagNames: [],
-            guardRules: [],
-          },
-        };
-      },
-    );
+    const saveAccount = vi
+      .fn()
+      .mockImplementation(
+        async (accountId: number, payload: Record<string, unknown>) => {
+          if (typeof payload.isMother === "boolean") {
+            savedIsMother = payload.isMother;
+          }
+          return {
+            id: accountId,
+            kind: "oauth_codex",
+            provider: "codex",
+            displayName: "Row One",
+            groupName:
+              typeof payload.groupName === "string"
+                ? payload.groupName
+                : "prod",
+            isMother: savedIsMother,
+            status: "active",
+            enabled: true,
+            duplicateInfo: null,
+            history: [],
+            note: "Seed note",
+            tags: [],
+            effectiveRoutingRule: {
+              guardEnabled: false,
+              allowCutOut: true,
+              allowCutIn: true,
+              sourceTagIds: [],
+              sourceTagNames: [],
+              guardRules: [],
+            },
+          };
+        },
+      );
     mockUpstreamAccounts({ saveAccount });
     render({
       pathname: "/account-pool/upstream-accounts/new",
@@ -1443,9 +1455,9 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     });
     await flushAsync();
 
-    expect(findButton(/Toggle mother account/i)?.getAttribute("aria-pressed")).toBe(
-      "true",
-    );
+    expect(
+      findButton(/Toggle mother account/i)?.getAttribute("aria-pressed"),
+    ).toBe("true");
 
     setComboboxValue('input[name="batchOauthGroupName-row-1"]', "analytics");
     await flushAsync();
@@ -1456,11 +1468,14 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
         groupName: "analytics",
       }),
     );
-    const groupPayload = saveAccount.mock.calls[0]?.[1] as Record<string, unknown>;
+    const groupPayload = saveAccount.mock.calls[0]?.[1] as Record<
+      string,
+      unknown
+    >;
     expect("isMother" in groupPayload).toBe(false);
-    expect(findButton(/Toggle mother account/i)?.getAttribute("aria-pressed")).toBe(
-      "true",
-    );
+    expect(
+      findButton(/Toggle mother account/i)?.getAttribute("aria-pressed"),
+    ).toBe("true");
     expect(pageTextContent()).not.toContain("Mother updated");
   }, 10_000);
 
@@ -1469,49 +1484,55 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
       [41, { isMother: false, note: "Seed note" }],
       [42, { isMother: true, note: "Seed note" }],
     ]);
-    const saveAccount = vi.fn().mockImplementation(
-      async (accountId: number, payload: Record<string, unknown>) => {
-        const current =
-          savedAccounts.get(accountId) ?? { isMother: false, note: "Seed note" };
-        if (typeof payload.isMother === "boolean") {
-          current.isMother = payload.isMother;
-          if (payload.isMother) {
-            for (const [peerAccountId, peer] of savedAccounts.entries()) {
-              if (peerAccountId !== accountId) {
-                peer.isMother = false;
+    const saveAccount = vi
+      .fn()
+      .mockImplementation(
+        async (accountId: number, payload: Record<string, unknown>) => {
+          const current = savedAccounts.get(accountId) ?? {
+            isMother: false,
+            note: "Seed note",
+          };
+          if (typeof payload.isMother === "boolean") {
+            current.isMother = payload.isMother;
+            if (payload.isMother) {
+              for (const [peerAccountId, peer] of savedAccounts.entries()) {
+                if (peerAccountId !== accountId) {
+                  peer.isMother = false;
+                }
               }
             }
           }
-        }
-        if (typeof payload.note === "string") {
-          current.note = payload.note;
-        }
-        savedAccounts.set(accountId, current);
-        return {
-          id: accountId,
-          kind: "oauth_codex",
-          provider: "codex",
-          displayName: accountId === 41 ? "Row One" : "Row Two",
-          groupName:
-            typeof payload.groupName === "string" ? payload.groupName : "prod",
-          isMother: current.isMother,
-          status: "active",
-          enabled: true,
-          duplicateInfo: null,
-          history: [],
-          note: current.note,
-          tags: [],
-          effectiveRoutingRule: {
-            guardEnabled: false,
-            allowCutOut: true,
-            allowCutIn: true,
-            sourceTagIds: [],
-            sourceTagNames: [],
-            guardRules: [],
-          },
-        };
-      },
-    );
+          if (typeof payload.note === "string") {
+            current.note = payload.note;
+          }
+          savedAccounts.set(accountId, current);
+          return {
+            id: accountId,
+            kind: "oauth_codex",
+            provider: "codex",
+            displayName: accountId === 41 ? "Row One" : "Row Two",
+            groupName:
+              typeof payload.groupName === "string"
+                ? payload.groupName
+                : "prod",
+            isMother: current.isMother,
+            status: "active",
+            enabled: true,
+            duplicateInfo: null,
+            history: [],
+            note: current.note,
+            tags: [],
+            effectiveRoutingRule: {
+              guardEnabled: false,
+              allowCutOut: true,
+              allowCutIn: true,
+              sourceTagIds: [],
+              sourceTagNames: [],
+              guardRules: [],
+            },
+          };
+        },
+      );
     mockUpstreamAccounts({ saveAccount });
     render({
       pathname: "/account-pool/upstream-accounts/new",
@@ -1560,7 +1581,9 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     });
     await flushAsync();
 
-    const motherButtons = Array.from(host?.querySelectorAll("button") ?? []).filter(
+    const motherButtons = Array.from(
+      host?.querySelectorAll("button") ?? [],
+    ).filter(
       (candidate): candidate is HTMLButtonElement =>
         candidate instanceof HTMLButtonElement &&
         candidate.getAttribute("aria-label") === "Toggle mother account",
@@ -1568,7 +1591,9 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     expect(motherButtons).toHaveLength(2);
 
     act(() => {
-      motherButtons[0]?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      motherButtons[0]?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
     });
     await flushAsync();
 
@@ -1586,53 +1611,58 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
         note: "Row Two updated",
       }),
     );
-    const secondPayload = saveAccount.mock.calls[1]?.[1] as Record<string, unknown>;
+    const secondPayload = saveAccount.mock.calls[1]?.[1] as Record<
+      string,
+      unknown
+    >;
     expect("isMother" in secondPayload).toBe(false);
     expect(motherButtons[1]?.getAttribute("aria-pressed")).toBe("false");
   }, 10_000);
 
   it("uses the saved account tags as the completed-row baseline when metadata state is restored", async () => {
     let savedTagIds = [2];
-    const saveAccount = vi.fn().mockImplementation(
-      async (accountId: number, payload: Record<string, unknown>) => {
-        if (Array.isArray(payload.tagIds)) {
-          savedTagIds = payload.tagIds.map((tagId) => Number(tagId));
-        }
-        return {
-          id: accountId,
-          kind: "oauth_codex",
-          provider: "codex",
-          displayName:
-            typeof payload.displayName === "string"
-              ? payload.displayName
-              : "Row One",
-          groupName: "prod",
-          isMother: false,
-          status: "active",
-          enabled: true,
-          duplicateInfo: null,
-          history: [],
-          note: "Seed note",
-          tags: savedTagIds.map((tagId) => ({
-            id: Number(tagId),
-            name: tagId === 2 ? "burst-safe" : `tag-${tagId}`,
-            routingRule: {
+    const saveAccount = vi
+      .fn()
+      .mockImplementation(
+        async (accountId: number, payload: Record<string, unknown>) => {
+          if (Array.isArray(payload.tagIds)) {
+            savedTagIds = payload.tagIds.map((tagId) => Number(tagId));
+          }
+          return {
+            id: accountId,
+            kind: "oauth_codex",
+            provider: "codex",
+            displayName:
+              typeof payload.displayName === "string"
+                ? payload.displayName
+                : "Row One",
+            groupName: "prod",
+            isMother: false,
+            status: "active",
+            enabled: true,
+            duplicateInfo: null,
+            history: [],
+            note: "Seed note",
+            tags: savedTagIds.map((tagId) => ({
+              id: Number(tagId),
+              name: tagId === 2 ? "burst-safe" : `tag-${tagId}`,
+              routingRule: {
+                guardEnabled: false,
+                allowCutOut: true,
+                allowCutIn: true,
+              },
+            })),
+            effectiveRoutingRule: {
               guardEnabled: false,
               allowCutOut: true,
               allowCutIn: true,
+              sourceTagIds: [],
+              sourceTagNames: [],
+              guardRules: [],
             },
-          })),
-          effectiveRoutingRule: {
-            guardEnabled: false,
-            allowCutOut: true,
-            allowCutIn: true,
-            sourceTagIds: [],
-            sourceTagNames: [],
-            guardRules: [],
-          },
-        };
-      },
-    );
+          };
+        },
+      );
     mockUpstreamAccounts({
       saveAccount,
       items: [
@@ -1685,7 +1715,10 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     });
     await flushAsync();
 
-    setInputValue('input[name="batchOauthDisplayName-row-1"]', "Row One Restored");
+    setInputValue(
+      'input[name="batchOauthDisplayName-row-1"]',
+      "Row One Restored",
+    );
     blurField('input[name="batchOauthDisplayName-row-1"]');
     await flushAsync();
 
@@ -1704,33 +1737,35 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
   }, 10_000);
 
   it("persists restored completed-row draft edits when the metadata baseline is missing", async () => {
-    const saveAccount = vi.fn().mockImplementation(
-      async (accountId: number, payload: Record<string, unknown>) => ({
-        id: accountId,
-        kind: "oauth_codex",
-        provider: "codex",
-        displayName:
-          typeof payload.displayName === "string"
-            ? payload.displayName
-            : "Row One",
-        groupName: "prod",
-        isMother: false,
-        status: "active",
-        enabled: true,
-        duplicateInfo: null,
-        history: [],
-        note: "Seed note",
-        tags: [],
-        effectiveRoutingRule: {
-          guardEnabled: false,
-          allowCutOut: true,
-          allowCutIn: true,
-          sourceTagIds: [],
-          sourceTagNames: [],
-          guardRules: [],
-        },
-      }),
-    );
+    const saveAccount = vi
+      .fn()
+      .mockImplementation(
+        async (accountId: number, payload: Record<string, unknown>) => ({
+          id: accountId,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName:
+            typeof payload.displayName === "string"
+              ? payload.displayName
+              : "Row One",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          duplicateInfo: null,
+          history: [],
+          note: "Seed note",
+          tags: [],
+          effectiveRoutingRule: {
+            guardEnabled: false,
+            allowCutOut: true,
+            allowCutIn: true,
+            sourceTagIds: [],
+            sourceTagNames: [],
+            guardRules: [],
+          },
+        }),
+      );
     mockUpstreamAccounts({
       saveAccount,
       items: [
@@ -1786,40 +1821,42 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
   }, 10_000);
 
   it("syncs restored completed rows to the initial shared tag set", async () => {
-    const saveAccount = vi.fn().mockImplementation(
-      async (accountId: number, payload: Record<string, unknown>) => ({
-        id: accountId,
-        kind: "oauth_codex",
-        provider: "codex",
-        displayName: "Tagged Row",
-        groupName: "prod",
-        isMother: false,
-        status: "active",
-        enabled: true,
-        duplicateInfo: null,
-        history: [],
-        note: "Seed note",
-        tags: Array.isArray(payload.tagIds)
-          ? payload.tagIds.map((tagId) => ({
-              id: Number(tagId),
-              name: tagId === 1 ? "vip" : `tag-${tagId}`,
-              routingRule: {
-                guardEnabled: false,
-                allowCutOut: true,
-                allowCutIn: true,
-              },
-            }))
-          : [],
-        effectiveRoutingRule: {
-          guardEnabled: false,
-          allowCutOut: true,
-          allowCutIn: true,
-          sourceTagIds: [],
-          sourceTagNames: [],
-          guardRules: [],
-        },
-      }),
-    );
+    const saveAccount = vi
+      .fn()
+      .mockImplementation(
+        async (accountId: number, payload: Record<string, unknown>) => ({
+          id: accountId,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Tagged Row",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          duplicateInfo: null,
+          history: [],
+          note: "Seed note",
+          tags: Array.isArray(payload.tagIds)
+            ? payload.tagIds.map((tagId) => ({
+                id: Number(tagId),
+                name: tagId === 1 ? "vip" : `tag-${tagId}`,
+                routingRule: {
+                  guardEnabled: false,
+                  allowCutOut: true,
+                  allowCutIn: true,
+                },
+              }))
+            : [],
+          effectiveRoutingRule: {
+            guardEnabled: false,
+            allowCutOut: true,
+            allowCutIn: true,
+            sourceTagIds: [],
+            sourceTagNames: [],
+            guardRules: [],
+          },
+        }),
+      );
     mockUpstreamAccounts({ saveAccount });
     render({
       pathname: "/account-pool/upstream-accounts/new",
@@ -1848,40 +1885,42 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
   }, 10_000);
 
   it("does not clear completed-row tags when restored drafts never saved shared tags", async () => {
-    const saveAccount = vi.fn().mockImplementation(
-      async (accountId: number, payload: Record<string, unknown>) => ({
-        id: accountId,
-        kind: "oauth_codex",
-        provider: "codex",
-        displayName: "Tagged Row",
-        groupName: "prod",
-        isMother: false,
-        status: "active",
-        enabled: true,
-        duplicateInfo: null,
-        history: [],
-        note: "Seed note",
-        tags: Array.isArray(payload.tagIds)
-          ? payload.tagIds.map((tagId) => ({
-              id: Number(tagId),
-              name: tagId === 1 ? "vip" : `tag-${tagId}`,
-              routingRule: {
-                guardEnabled: false,
-                allowCutOut: true,
-                allowCutIn: true,
-              },
-            }))
-          : [],
-        effectiveRoutingRule: {
-          guardEnabled: false,
-          allowCutOut: true,
-          allowCutIn: true,
-          sourceTagIds: [],
-          sourceTagNames: [],
-          guardRules: [],
-        },
-      }),
-    );
+    const saveAccount = vi
+      .fn()
+      .mockImplementation(
+        async (accountId: number, payload: Record<string, unknown>) => ({
+          id: accountId,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Tagged Row",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          duplicateInfo: null,
+          history: [],
+          note: "Seed note",
+          tags: Array.isArray(payload.tagIds)
+            ? payload.tagIds.map((tagId) => ({
+                id: Number(tagId),
+                name: tagId === 1 ? "vip" : `tag-${tagId}`,
+                routingRule: {
+                  guardEnabled: false,
+                  allowCutOut: true,
+                  allowCutIn: true,
+                },
+              }))
+            : [],
+          effectiveRoutingRule: {
+            guardEnabled: false,
+            allowCutOut: true,
+            allowCutIn: true,
+            sourceTagIds: [],
+            sourceTagNames: [],
+            guardRules: [],
+          },
+        }),
+      );
     mockUpstreamAccounts({
       saveAccount,
       items: [
@@ -1938,202 +1977,14 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
   }, 10_000);
 
   it("syncs shared batch tags onto completed rows", async () => {
-    const saveAccount = vi.fn().mockImplementation(
-      async (accountId: number, payload: Record<string, unknown>) => ({
-        id: accountId,
-        kind: "oauth_codex",
-        provider: "codex",
-        displayName: "Tagged Row",
-        groupName: "prod",
-        isMother: false,
-        status: "active",
-        enabled: true,
-        duplicateInfo: null,
-        history: [],
-        note: null,
-        tags: Array.isArray(payload.tagIds)
-          ? payload.tagIds.map((tagId) => ({
-              id: Number(tagId),
-              name: tagId === 1 ? "vip" : `tag-${tagId}`,
-              routingRule: {
-                guardEnabled: false,
-                allowCutOut: true,
-                allowCutIn: true,
-              },
-            }))
-          : [],
-        effectiveRoutingRule: {
-          guardEnabled: false,
-          allowCutOut: true,
-          allowCutIn: true,
-          sourceTagIds: [],
-          sourceTagNames: [],
-          guardRules: [],
-        },
-      }),
-    );
-    mockUpstreamAccounts({ saveAccount });
-    render({
-      pathname: "/account-pool/upstream-accounts/new",
-      search: "?mode=batchOauth",
-      state: {
-        draft: {
-          batchOauth: {
-            rows: [
-              buildCompletedBatchOauthRow({
-                displayName: "Tagged Row",
-              }),
-            ],
-          },
-        },
-      },
-    });
-    await flushAsync();
-
-    clickButton(/Add tag/i);
-    await flushAsync();
-    const vipOption = Array.from(document.body.querySelectorAll("[cmdk-item]")).find(
-      (candidate) => (candidate.textContent || "").includes("vip"),
-    );
-    if (!(vipOption instanceof HTMLElement)) {
-      throw new Error("missing vip tag option");
-    }
-    act(() => {
-      vipOption.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushAsync();
-
-    expect(saveAccount).toHaveBeenCalledTimes(1);
-    expect(saveAccount).toHaveBeenCalledWith(
-      41,
-      expect.objectContaining({ tagIds: [1] }),
-    );
-  }, 10_000);
-
-  it("does not resend failed local metadata edits during later completed-row auto-saves", async () => {
-    let displayNameFailed = false;
-    const saveAccount = vi.fn().mockImplementation(
-      async (accountId: number, payload: Record<string, unknown>) => {
-        if (
-          !displayNameFailed &&
-          typeof payload.displayName === "string" &&
-          payload.displayName === "Row One Draft"
-        ) {
-          displayNameFailed = true;
-          throw new Error("Display save failed");
-        }
-        return {
+    const saveAccount = vi
+      .fn()
+      .mockImplementation(
+        async (accountId: number, payload: Record<string, unknown>) => ({
           id: accountId,
           kind: "oauth_codex",
           provider: "codex",
-          displayName:
-            typeof payload.displayName === "string"
-              ? payload.displayName
-              : "Row One",
-          groupName: "prod",
-          isMother: payload.isMother === true,
-          status: "active",
-          enabled: true,
-          duplicateInfo: null,
-          history: [],
-          note: "Seed note",
-          tags: Array.isArray(payload.tagIds)
-            ? payload.tagIds.map((tagId) => ({
-                id: Number(tagId),
-                name: tagId === 1 ? "vip" : `tag-${tagId}`,
-                routingRule: {
-                  guardEnabled: false,
-                  allowCutOut: true,
-                  allowCutIn: true,
-                },
-              }))
-            : [],
-          effectiveRoutingRule: {
-            guardEnabled: false,
-            allowCutOut: true,
-            allowCutIn: true,
-            sourceTagIds: [],
-            sourceTagNames: [],
-            guardRules: [],
-          },
-        };
-      },
-    );
-    mockUpstreamAccounts({ saveAccount });
-    render({
-      pathname: "/account-pool/upstream-accounts/new",
-      search: "?mode=batchOauth",
-      state: {
-        draft: {
-          batchOauth: {
-            rows: [
-              buildCompletedBatchOauthRow({
-                displayName: "Row One",
-                metadataPersisted: {
-                  displayName: "Row One",
-                  groupName: "prod",
-                  note: "Seed note",
-                  isMother: false,
-                  tagIds: [],
-                },
-              }),
-            ],
-          },
-        },
-      },
-    });
-    await flushAsync();
-
-    setInputValue(
-      'input[name="batchOauthDisplayName-row-1"]',
-      "Row One Draft",
-    );
-    blurField('input[name="batchOauthDisplayName-row-1"]');
-    await flushAsync();
-
-    clickButton(/Add tag/i);
-    await flushAsync();
-    const vipOption = Array.from(document.body.querySelectorAll("[cmdk-item]")).find(
-      (candidate) => (candidate.textContent || "").includes("vip"),
-    );
-    if (!(vipOption instanceof HTMLElement)) {
-      throw new Error("missing vip tag option");
-    }
-    act(() => {
-      vipOption.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-    });
-    await flushAsync();
-
-    expect(saveAccount).toHaveBeenNthCalledWith(
-      2,
-      41,
-      expect.objectContaining({
-        tagIds: [1],
-      }),
-    );
-    const secondPayload = saveAccount.mock.calls[1]?.[1] as Record<string, unknown>;
-    expect("displayName" in secondPayload).toBe(false);
-  }, 10_000);
-
-  it("retries completed-row shared tag sync after a transient save failure", async () => {
-    let firstRowFailures = 0;
-    const saveAccount = vi.fn().mockImplementation(
-      async (accountId: number, payload: Record<string, unknown>) => {
-        if (
-          accountId === 41 &&
-          Array.isArray(payload.tagIds) &&
-          payload.tagIds.length === 1 &&
-          payload.tagIds[0] === 1 &&
-          firstRowFailures === 0
-        ) {
-          firstRowFailures += 1;
-          throw new Error("Transient tag sync failure");
-        }
-        return {
-          id: accountId,
-          kind: "oauth_codex",
-          provider: "codex",
-          displayName: accountId === 41 ? "Row One" : "Row Two",
+          displayName: "Tagged Row",
           groupName: "prod",
           isMother: false,
           status: "active",
@@ -2160,9 +2011,203 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
             sourceTagNames: [],
             guardRules: [],
           },
-        };
+        }),
+      );
+    mockUpstreamAccounts({ saveAccount });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            rows: [
+              buildCompletedBatchOauthRow({
+                displayName: "Tagged Row",
+              }),
+            ],
+          },
+        },
       },
+    });
+    await flushAsync();
+
+    clickButton(/Add tag/i);
+    await flushAsync();
+    const vipOption = Array.from(
+      document.body.querySelectorAll("[cmdk-item]"),
+    ).find((candidate) => (candidate.textContent || "").includes("vip"));
+    if (!(vipOption instanceof HTMLElement)) {
+      throw new Error("missing vip tag option");
+    }
+    act(() => {
+      vipOption.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+
+    expect(saveAccount).toHaveBeenCalledTimes(1);
+    expect(saveAccount).toHaveBeenCalledWith(
+      41,
+      expect.objectContaining({ tagIds: [1] }),
     );
+  }, 10_000);
+
+  it("does not resend failed local metadata edits during later completed-row auto-saves", async () => {
+    let displayNameFailed = false;
+    const saveAccount = vi
+      .fn()
+      .mockImplementation(
+        async (accountId: number, payload: Record<string, unknown>) => {
+          if (
+            !displayNameFailed &&
+            typeof payload.displayName === "string" &&
+            payload.displayName === "Row One Draft"
+          ) {
+            displayNameFailed = true;
+            throw new Error("Display save failed");
+          }
+          return {
+            id: accountId,
+            kind: "oauth_codex",
+            provider: "codex",
+            displayName:
+              typeof payload.displayName === "string"
+                ? payload.displayName
+                : "Row One",
+            groupName: "prod",
+            isMother: payload.isMother === true,
+            status: "active",
+            enabled: true,
+            duplicateInfo: null,
+            history: [],
+            note: "Seed note",
+            tags: Array.isArray(payload.tagIds)
+              ? payload.tagIds.map((tagId) => ({
+                  id: Number(tagId),
+                  name: tagId === 1 ? "vip" : `tag-${tagId}`,
+                  routingRule: {
+                    guardEnabled: false,
+                    allowCutOut: true,
+                    allowCutIn: true,
+                  },
+                }))
+              : [],
+            effectiveRoutingRule: {
+              guardEnabled: false,
+              allowCutOut: true,
+              allowCutIn: true,
+              sourceTagIds: [],
+              sourceTagNames: [],
+              guardRules: [],
+            },
+          };
+        },
+      );
+    mockUpstreamAccounts({ saveAccount });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            rows: [
+              buildCompletedBatchOauthRow({
+                displayName: "Row One",
+                metadataPersisted: {
+                  displayName: "Row One",
+                  groupName: "prod",
+                  note: "Seed note",
+                  isMother: false,
+                  tagIds: [],
+                },
+              }),
+            ],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    setInputValue('input[name="batchOauthDisplayName-row-1"]', "Row One Draft");
+    blurField('input[name="batchOauthDisplayName-row-1"]');
+    await flushAsync();
+
+    clickButton(/Add tag/i);
+    await flushAsync();
+    const vipOption = Array.from(
+      document.body.querySelectorAll("[cmdk-item]"),
+    ).find((candidate) => (candidate.textContent || "").includes("vip"));
+    if (!(vipOption instanceof HTMLElement)) {
+      throw new Error("missing vip tag option");
+    }
+    act(() => {
+      vipOption.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+
+    expect(saveAccount).toHaveBeenNthCalledWith(
+      2,
+      41,
+      expect.objectContaining({
+        tagIds: [1],
+      }),
+    );
+    const secondPayload = saveAccount.mock.calls[1]?.[1] as Record<
+      string,
+      unknown
+    >;
+    expect("displayName" in secondPayload).toBe(false);
+  }, 10_000);
+
+  it("retries completed-row shared tag sync after a transient save failure", async () => {
+    let firstRowFailures = 0;
+    const saveAccount = vi
+      .fn()
+      .mockImplementation(
+        async (accountId: number, payload: Record<string, unknown>) => {
+          if (
+            accountId === 41 &&
+            Array.isArray(payload.tagIds) &&
+            payload.tagIds.length === 1 &&
+            payload.tagIds[0] === 1 &&
+            firstRowFailures === 0
+          ) {
+            firstRowFailures += 1;
+            throw new Error("Transient tag sync failure");
+          }
+          return {
+            id: accountId,
+            kind: "oauth_codex",
+            provider: "codex",
+            displayName: accountId === 41 ? "Row One" : "Row Two",
+            groupName: "prod",
+            isMother: false,
+            status: "active",
+            enabled: true,
+            duplicateInfo: null,
+            history: [],
+            note: null,
+            tags: Array.isArray(payload.tagIds)
+              ? payload.tagIds.map((tagId) => ({
+                  id: Number(tagId),
+                  name: tagId === 1 ? "vip" : `tag-${tagId}`,
+                  routingRule: {
+                    guardEnabled: false,
+                    allowCutOut: true,
+                    allowCutIn: true,
+                  },
+                }))
+              : [],
+            effectiveRoutingRule: {
+              guardEnabled: false,
+              allowCutOut: true,
+              allowCutIn: true,
+              sourceTagIds: [],
+              sourceTagNames: [],
+              guardRules: [],
+            },
+          };
+        },
+      );
     mockUpstreamAccounts({ saveAccount });
     render({
       pathname: "/account-pool/upstream-accounts/new",
@@ -2210,9 +2255,9 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
 
     clickButton(/Add tag/i);
     await flushAsync();
-    const vipOption = Array.from(document.body.querySelectorAll("[cmdk-item]")).find(
-      (candidate) => (candidate.textContent || "").includes("vip"),
-    );
+    const vipOption = Array.from(
+      document.body.querySelectorAll("[cmdk-item]"),
+    ).find((candidate) => (candidate.textContent || "").includes("vip"));
     if (!(vipOption instanceof HTMLElement)) {
       throw new Error("missing vip tag option");
     }
@@ -2232,9 +2277,9 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
   }, 10_000);
 
   it("keeps the mother toggle reverted when completed-row persistence fails", async () => {
-    const saveAccount = vi.fn().mockRejectedValue(
-      new Error("Mother save failed"),
-    );
+    const saveAccount = vi
+      .fn()
+      .mockRejectedValue(new Error("Mother save failed"));
     mockUpstreamAccounts({ saveAccount });
     render({
       pathname: "/account-pool/upstream-accounts/new",
@@ -2259,45 +2304,47 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
       41,
       expect.objectContaining({ isMother: true }),
     );
-    expect(findButton(/Toggle mother account/i)?.getAttribute("aria-pressed")).toBe(
-      "false",
-    );
+    expect(
+      findButton(/Toggle mother account/i)?.getAttribute("aria-pressed"),
+    ).toBe("false");
     expect(pageTextContent()).toContain("Mother save failed");
   }, 10_000);
 
   it("keeps completed-row save failures isolated to the failing row", async () => {
-    const saveAccount = vi.fn().mockImplementation(
-      async (accountId: number, payload: Record<string, unknown>) => {
-        if (accountId === 41) {
-          throw new Error("Save failed for row one");
-        }
-        return {
-          id: accountId,
-          kind: "oauth_codex",
-          provider: "codex",
-          displayName:
-            typeof payload.displayName === "string"
-              ? payload.displayName
-              : "Row Two",
-          groupName: "prod",
-          isMother: false,
-          status: "active",
-          enabled: true,
-          duplicateInfo: null,
-          history: [],
-          note: null,
-          tags: [],
-          effectiveRoutingRule: {
-            guardEnabled: false,
-            allowCutOut: true,
-            allowCutIn: true,
-            sourceTagIds: [],
-            sourceTagNames: [],
-            guardRules: [],
-          },
-        };
-      },
-    );
+    const saveAccount = vi
+      .fn()
+      .mockImplementation(
+        async (accountId: number, payload: Record<string, unknown>) => {
+          if (accountId === 41) {
+            throw new Error("Save failed for row one");
+          }
+          return {
+            id: accountId,
+            kind: "oauth_codex",
+            provider: "codex",
+            displayName:
+              typeof payload.displayName === "string"
+                ? payload.displayName
+                : "Row Two",
+            groupName: "prod",
+            isMother: false,
+            status: "active",
+            enabled: true,
+            duplicateInfo: null,
+            history: [],
+            note: null,
+            tags: [],
+            effectiveRoutingRule: {
+              guardEnabled: false,
+              allowCutOut: true,
+              allowCutIn: true,
+              sourceTagIds: [],
+              sourceTagNames: [],
+              guardRules: [],
+            },
+          };
+        },
+      );
     mockUpstreamAccounts({ saveAccount });
     render({
       pathname: "/account-pool/upstream-accounts/new",
@@ -2345,7 +2392,10 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     });
     await flushAsync();
 
-    setInputValue('input[name="batchOauthDisplayName-row-1"]', "Row One Broken");
+    setInputValue(
+      'input[name="batchOauthDisplayName-row-1"]',
+      "Row One Broken",
+    );
     blurField('input[name="batchOauthDisplayName-row-1"]');
     await flushAsync();
 
@@ -2629,7 +2679,8 @@ describe("UpstreamAccountCreatePage batch oauth", () => {
     const beginOauthLogin = vi.fn().mockResolvedValue({
       loginId: "login-batch-generated-mailbox",
       status: "pending",
-      authUrl: "https://auth.openai.com/authorize?login=batch-generated-mailbox",
+      authUrl:
+        "https://auth.openai.com/authorize?login=batch-generated-mailbox",
       redirectUri: "http://localhost:1455/oauth/callback",
       expiresAt: "2026-03-13T10:00:00.000Z",
       accountId: null,
@@ -3275,9 +3326,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
         writeText,
       },
     });
-    let resolveSync:
-      | ((value: LoginSessionStatusResponse) => void)
-      | undefined;
+    let resolveSync: ((value: LoginSessionStatusResponse) => void) | undefined;
     const firstSync = new Promise<LoginSessionStatusResponse>((resolve) => {
       resolveSync = resolve;
     });
@@ -3345,7 +3394,9 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     });
     const updateOauthLogin = vi
       .fn()
-      .mockRejectedValue(new Error("This login session can no longer be edited."));
+      .mockRejectedValue(
+        new Error("This login session can no longer be edited."),
+      );
     const getLoginSession = vi.fn().mockResolvedValue({
       loginId: "login-1",
       status: "completed",
@@ -3398,7 +3449,9 @@ describe("UpstreamAccountCreatePage display name validation", () => {
         writeText,
       },
     });
-    const updateOauthLogin = vi.fn().mockRejectedValue(new Error("network dropped"));
+    const updateOauthLogin = vi
+      .fn()
+      .mockRejectedValue(new Error("network dropped"));
     const getLoginSession = vi
       .fn()
       .mockRejectedValue(new Error("temporary status refresh failure"));
@@ -3447,7 +3500,9 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     });
     const updateOauthLogin = vi
       .fn()
-      .mockRejectedValue(new Error("Request failed: 409 duplicate displayName"));
+      .mockRejectedValue(
+        new Error("Request failed: 409 duplicate displayName"),
+      );
     const getLoginSession = vi.fn().mockResolvedValue({
       loginId: "login-1",
       status: "pending",
@@ -3472,7 +3527,9 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     expect(updateOauthLogin).toHaveBeenCalled();
     expect(writeText).not.toHaveBeenCalled();
-    expect(pageTextContent()).toContain("Request failed: 409 duplicate displayName");
+    expect(pageTextContent()).toContain(
+      "Request failed: 409 duplicate displayName",
+    );
 
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
@@ -3701,9 +3758,9 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     await flushSessionSyncDebounce();
 
     expect(updateOauthLogin).toHaveBeenCalled();
-    expect(upstreamAccountsEventMocks.emitUpstreamAccountsChanged).toHaveBeenCalledTimes(
-      1,
-    );
+    expect(
+      upstreamAccountsEventMocks.emitUpstreamAccountsChanged,
+    ).toHaveBeenCalledTimes(1);
   });
 
   it("does not surface a sync error when oauth completion wins the race", async () => {
@@ -3751,9 +3808,9 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(document.body.textContent).not.toContain(
       "Display name must be unique.",
     );
-    expect(upstreamAccountsEventMocks.emitUpstreamAccountsChanged).toHaveBeenCalledTimes(
-      1,
-    );
+    expect(
+      upstreamAccountsEventMocks.emitUpstreamAccountsChanged,
+    ).toHaveBeenCalledTimes(1);
   });
 
   it("uses the latest pending session updatedAt as the next oauth sync baseline", async () => {
@@ -3806,25 +3863,35 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     await flushAsync();
     await flushSessionSyncDebounce();
 
-    expect(updateOauthLogin).toHaveBeenNthCalledWith(1, "login-1", {
-      displayName: "Fresh OAuth A",
-      ...expectedGroupSelection(),
-      note: "",
-      tagIds: [],
-      isMother: false,
-      mailboxSessionId: "",
-      mailboxAddress: "",
-    }, "2026-03-13T10:00:00.000Z");
+    expect(updateOauthLogin).toHaveBeenNthCalledWith(
+      1,
+      "login-1",
+      {
+        displayName: "Fresh OAuth A",
+        ...expectedGroupSelection(),
+        note: "",
+        tagIds: [],
+        isMother: false,
+        mailboxSessionId: "",
+        mailboxAddress: "",
+      },
+      "2026-03-13T10:00:00.000Z",
+    );
     expect(updateOauthLogin.mock.calls[0]?.[1]).not.toHaveProperty("groupNote");
-    expect(updateOauthLogin).toHaveBeenNthCalledWith(2, "login-1", {
-      displayName: "Fresh OAuth B",
-      ...expectedGroupSelection(),
-      note: "",
-      tagIds: [],
-      isMother: false,
-      mailboxSessionId: "",
-      mailboxAddress: "",
-    }, "2026-03-13T10:01:00.000Z");
+    expect(updateOauthLogin).toHaveBeenNthCalledWith(
+      2,
+      "login-1",
+      {
+        displayName: "Fresh OAuth B",
+        ...expectedGroupSelection(),
+        note: "",
+        tagIds: [],
+        isMother: false,
+        mailboxSessionId: "",
+        mailboxAddress: "",
+      },
+      "2026-03-13T10:01:00.000Z",
+    );
     expect(updateOauthLogin.mock.calls[1]?.[1]).not.toHaveProperty("groupNote");
   });
 
@@ -3944,14 +4011,18 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     await flushAsync();
 
     expect(updateOauthLogin).not.toHaveBeenCalled();
-    expect(host?.textContent).not.toContain("cross-origin account writes are forbidden");
+    expect(host?.textContent).not.toContain(
+      "cross-origin account writes are forbidden",
+    );
   });
 
   it("refreshes a dead pending single oauth session after metadata sync fails", async () => {
     vi.useFakeTimers();
     const updateOauthLogin = vi
       .fn()
-      .mockRejectedValue(new Error("This login session can no longer be edited."));
+      .mockRejectedValue(
+        new Error("This login session can no longer be edited."),
+      );
     const getLoginSession = vi.fn().mockResolvedValue({
       loginId: "login-1",
       status: "expired",
@@ -3959,7 +4030,8 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       redirectUri: null,
       expiresAt: "2026-03-13T10:00:00.000Z",
       accountId: null,
-      error: "The login session has expired. Please create a new authorization link.",
+      error:
+        "The login session has expired. Please create a new authorization link.",
     });
     mockUpstreamAccounts({ updateOauthLogin, getLoginSession });
     render({
@@ -4006,7 +4078,9 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     vi.useFakeTimers();
     const updateOauthLogin = vi
       .fn()
-      .mockRejectedValue(new Error("This login session can no longer be edited."));
+      .mockRejectedValue(
+        new Error("This login session can no longer be edited."),
+      );
     const getLoginSession = vi.fn().mockResolvedValue({
       loginId: "login-1",
       status: "completed",
@@ -4334,7 +4408,9 @@ describe("UpstreamAccountCreatePage display name validation", () => {
 
     expect(updateOauthLogin).toHaveBeenCalledTimes(1);
 
-    const displayNameInput = host?.querySelector('input[name="oauthDisplayName"]');
+    const displayNameInput = host?.querySelector(
+      'input[name="oauthDisplayName"]',
+    );
     const completeButton = findButton(/Complete OAuth login/i);
     if (!(displayNameInput instanceof HTMLInputElement) || !completeButton) {
       throw new Error("missing single oauth controls");
@@ -4409,7 +4485,9 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     );
     await flushAsync();
 
-    const displayNameInput = host?.querySelector('input[name="oauthDisplayName"]');
+    const displayNameInput = host?.querySelector(
+      'input[name="oauthDisplayName"]',
+    );
     const completeButton = findButton(/Complete OAuth login/i);
     if (!(displayNameInput instanceof HTMLInputElement) || !completeButton) {
       throw new Error("missing single oauth controls");
@@ -4987,7 +5065,7 @@ describe("UpstreamAccountCreatePage display name validation", () => {
         expiresAt: "2026-03-13T10:05:00.000Z",
         accountId: null,
         error: null,
-    });
+      });
     mockUpstreamAccounts({ beginOauthLogin });
     render("/account-pool/upstream-accounts/new?mode=batchOauth");
 
@@ -5054,7 +5132,9 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     });
     const updateOauthLogin = vi
       .fn()
-      .mockRejectedValue(new Error("This login session can no longer be edited."));
+      .mockRejectedValue(
+        new Error("This login session can no longer be edited."),
+      );
     const getLoginSession = vi.fn().mockResolvedValue({
       loginId: "login-1",
       status: "completed",
@@ -5064,7 +5144,11 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       accountId: 41,
       error: null,
     });
-    mockUpstreamAccounts({ beginOauthLogin, updateOauthLogin, getLoginSession });
+    mockUpstreamAccounts({
+      beginOauthLogin,
+      updateOauthLogin,
+      getLoginSession,
+    });
     render("/account-pool/upstream-accounts/new?mode=batchOauth");
 
     setInputValue('input[name^="batchOauthDisplayName-"]', "Row One");
@@ -5118,11 +5202,17 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       accountId: null,
       error: null,
     });
-    const updateOauthLogin = vi.fn().mockRejectedValue(new Error("network dropped"));
+    const updateOauthLogin = vi
+      .fn()
+      .mockRejectedValue(new Error("network dropped"));
     const getLoginSession = vi
       .fn()
       .mockRejectedValue(new Error("temporary status refresh failure"));
-    mockUpstreamAccounts({ beginOauthLogin, updateOauthLogin, getLoginSession });
+    mockUpstreamAccounts({
+      beginOauthLogin,
+      updateOauthLogin,
+      getLoginSession,
+    });
     render("/account-pool/upstream-accounts/new?mode=batchOauth");
 
     setInputValue('input[name^="batchOauthDisplayName-"]', "Row One");
@@ -5187,7 +5277,11 @@ describe("UpstreamAccountCreatePage display name validation", () => {
       accountId: null,
       error: null,
     });
-    mockUpstreamAccounts({ beginOauthLogin, updateOauthLogin, getLoginSession });
+    mockUpstreamAccounts({
+      beginOauthLogin,
+      updateOauthLogin,
+      getLoginSession,
+    });
     render("/account-pool/upstream-accounts/new?mode=batchOauth");
 
     setInputValue('input[name^="batchOauthDisplayName-"]', "Row One");
@@ -5283,6 +5377,93 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth Retry");
     await flushAsync();
 
+    expect(findButton(/Generate OAuth URL/i)?.disabled).toBe(false);
+    expect(pageTextContent()).toContain("Generate a fresh OAuth URL");
+  });
+
+  it("clears a completed single oauth session after saving group proxy metadata changes", async () => {
+    const completeOauthLogin = vi.fn().mockResolvedValue({
+      id: 41,
+      displayName: "Fresh OAuth",
+      duplicateInfo: null,
+    });
+    const saveGroupNote = vi.fn().mockResolvedValue({
+      groupName: TEST_REQUIRED_GROUP_NAME,
+      note: "Saved",
+    });
+    mockUpstreamAccounts({
+      completeOauthLogin,
+      saveGroupNote,
+      forwardProxyNodes: [
+        ...TEST_FORWARD_PROXY_NODES,
+        {
+          key: "jp-edge-01",
+          displayName: "JP Edge 01",
+          protocolLabel: "SS",
+          source: "subscription",
+          penalized: false,
+          selectable: true,
+          last24h: [],
+        },
+      ],
+    });
+    render();
+
+    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth");
+    await flushAsync();
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+    setInputValue(
+      'textarea[name="oauthCallbackUrl"]',
+      "http://localhost:1455/oauth/callback?code=test",
+    );
+    await flushAsync();
+    clickButton(/Complete OAuth login/i);
+    await flushAsync();
+
+    expect(findButton(/Generate OAuth URL/i)?.disabled).toBe(true);
+
+    clickButton(/Edit group settings|Edit group note/i);
+    await flushAsync();
+
+    const groupSettingsDialog = Array.from(
+      document.body.querySelectorAll('[role="dialog"]'),
+    ).at(-1);
+    if (!(groupSettingsDialog instanceof HTMLElement)) {
+      throw new Error("missing group settings dialog");
+    }
+
+    const nodeShuntToggle = Array.from(
+      groupSettingsDialog.querySelectorAll('[role="switch"]'),
+    ).at(-1);
+    if (!(nodeShuntToggle instanceof HTMLElement)) {
+      throw new Error("missing node shunt toggle");
+    }
+    act(() => {
+      nodeShuntToggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const proxyOption = Array.from(
+      groupSettingsDialog.querySelectorAll("button"),
+    ).find((candidate) => /JP Edge 01/i.test(candidate.textContent || ""));
+    if (!(proxyOption instanceof HTMLButtonElement)) {
+      throw new Error("missing proxy binding option");
+    }
+    act(() => {
+      proxyOption.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    clickBodyButton(/Save changes/i);
+    await flushAsync();
+
+    expect(saveGroupNote).toHaveBeenCalledWith(TEST_REQUIRED_GROUP_NAME, {
+      note: `${TEST_REQUIRED_GROUP_NAME} note`,
+      boundProxyKeys: ["__direct__", "jp-edge-01"],
+      concurrencyLimit: 0,
+      nodeShuntEnabled: true,
+      upstream429RetryEnabled: false,
+      upstream429MaxRetries: 0,
+    });
     expect(findButton(/Generate OAuth URL/i)?.disabled).toBe(false);
     expect(pageTextContent()).toContain("Generate a fresh OAuth URL");
   });
@@ -5655,8 +5836,7 @@ describe("UpstreamAccountCreatePage oauth mailbox", () => {
             session: {
               loginId: "login-mailbox-bound",
               status: "pending",
-              authUrl:
-                "https://auth.openai.com/authorize?login=mailbox-bound",
+              authUrl: "https://auth.openai.com/authorize?login=mailbox-bound",
               redirectUri: "http://localhost:1455/oauth/callback",
               expiresAt: "2026-03-13T10:00:00.000Z",
               accountId: null,
@@ -6388,7 +6568,9 @@ describe("UpstreamAccountCreatePage api key", () => {
     });
     const saveGroupNote = vi
       .fn()
-      .mockRejectedValue(new Error("Request failed: 500 group metadata locked"));
+      .mockRejectedValue(
+        new Error("Request failed: 500 group metadata locked"),
+      );
     mockUpstreamAccounts({
       createApiKeyAccount,
       saveGroupNote,
@@ -6432,13 +6614,19 @@ describe("UpstreamAccountCreatePage api key", () => {
     clickButton(/Edit group settings|Edit group note/i);
     await flushAsync();
 
-    const dialogStack = Array.from(document.body.querySelectorAll('[role="dialog"]'));
+    const dialogStack = Array.from(
+      document.body.querySelectorAll('[role="dialog"]'),
+    );
     const groupSettingsDialog = dialogStack[dialogStack.length - 1];
     if (!(groupSettingsDialog instanceof HTMLElement)) {
       throw new Error("missing group settings dialog");
     }
-    expect(groupSettingsDialog.textContent || "").toContain("Bound proxy nodes");
-    expect(groupSettingsDialog.textContent || "").toContain("Upstream 429 retry");
+    expect(groupSettingsDialog.textContent || "").toContain(
+      "Bound proxy nodes",
+    );
+    expect(groupSettingsDialog.textContent || "").toContain(
+      "Upstream 429 retry",
+    );
     expect(groupSettingsDialog.textContent || "").toContain("Direct");
     expect(groupSettingsDialog.textContent || "").toContain("DIRECT");
     expect(groupSettingsDialog.textContent || "").toContain("SS");
@@ -6450,9 +6638,9 @@ describe("UpstreamAccountCreatePage api key", () => {
     }
     setFieldValue(groupNoteField, "LATAM draft note");
 
-    const proxyOption = Array.from(groupSettingsDialog.querySelectorAll("button")).find(
-      (candidate) => /JP Edge 01/i.test(candidate.textContent || ""),
-    );
+    const proxyOption = Array.from(
+      groupSettingsDialog.querySelectorAll("button"),
+    ).find((candidate) => /JP Edge 01/i.test(candidate.textContent || ""));
     if (!(proxyOption instanceof HTMLButtonElement)) {
       throw new Error("missing proxy binding option");
     }
@@ -6460,14 +6648,16 @@ describe("UpstreamAccountCreatePage api key", () => {
       proxyOption.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    const saveDialogButton = Array.from(groupSettingsDialog.querySelectorAll("button")).find(
-      (candidate) => /Save changes/i.test(candidate.textContent || ""),
-    );
+    const saveDialogButton = Array.from(
+      groupSettingsDialog.querySelectorAll("button"),
+    ).find((candidate) => /Save changes/i.test(candidate.textContent || ""));
     if (!(saveDialogButton instanceof HTMLButtonElement)) {
       throw new Error("missing group settings save button");
     }
     act(() => {
-      saveDialogButton.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      saveDialogButton.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
     });
     await flushAsync();
 
@@ -6487,18 +6677,22 @@ describe("UpstreamAccountCreatePage api key", () => {
       note: "LATAM draft note",
       boundProxyKeys: ["jp-edge-01"],
       concurrencyLimit: 0,
+      nodeShuntEnabled: false,
       upstream429RetryEnabled: false,
       upstream429MaxRetries: 0,
     });
-    expect(navigateMock).toHaveBeenCalledWith("/account-pool/upstream-accounts", {
-      state: expect.objectContaining({
-        selectedAccountId: 42,
-        openDetail: true,
-        postCreateWarning: expect.stringContaining(
-          "The account was created, but saving the draft group settings failed",
-        ),
-      }),
-    });
+    expect(navigateMock).toHaveBeenCalledWith(
+      "/account-pool/upstream-accounts",
+      {
+        state: expect.objectContaining({
+          selectedAccountId: 42,
+          openDetail: true,
+          postCreateWarning: expect.stringContaining(
+            "The account was created, but saving the draft group settings failed",
+          ),
+        }),
+      },
+    );
   });
 });
 
@@ -6590,13 +6784,15 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     };
   }
 
-  function installImportedOauthValidationJobFlow(options: {
-    jobId?: string;
-    rowsBySourceId?: Record<string, ReturnType<typeof buildImportedOauthRow>>;
-    finalEvent?: "completed" | "failed" | "cancelled";
-    finalError?: string;
-    stepwise?: boolean;
-  } = {}) {
+  function installImportedOauthValidationJobFlow(
+    options: {
+      jobId?: string;
+      rowsBySourceId?: Record<string, ReturnType<typeof buildImportedOauthRow>>;
+      finalEvent?: "completed" | "failed" | "cancelled";
+      finalError?: string;
+      stepwise?: boolean;
+    } = {},
+  ) {
     const {
       jobId = "job-1",
       rowsBySourceId = {},
@@ -6615,107 +6811,113 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
       cancel: () => void;
     } | null = null;
 
-    const startImportedOauthValidationJob = vi.fn().mockImplementation(
-      async ({
-        items,
-      }: {
-        items: Array<{ sourceId: string; fileName: string }>;
-      }) => {
-        const pendingSnapshot = buildPendingImportedOauthSnapshot(items);
-        const source = new MockValidationEventSource();
-        const currentRows: ImportedOauthValidationRow[] = [...pendingSnapshot.rows];
-        controller = {
-          source,
-          pendingSnapshot,
-          currentRows,
-          emitSnapshot() {
-            source.emit("snapshot", {
-              snapshot: pendingSnapshot,
-              counts: buildImportedOauthValidationCounts(currentRows),
-            });
-          },
-          emitRow(sourceId: string) {
-            const nextRow = rowsBySourceId[sourceId];
-            if (!nextRow) {
-              throw new Error(`missing validation row for ${sourceId}`);
-            }
-            const index = currentRows.findIndex((row) => row.sourceId === sourceId);
-            if (index >= 0) {
-              currentRows[index] = {
-                ...nextRow,
-              };
-            }
-            source.emit("row", {
-              row: nextRow,
-              counts: buildImportedOauthValidationCounts(currentRows),
-            });
-          },
-          complete() {
-            source.emit("completed", {
-              snapshot: {
-                inputFiles: pendingSnapshot.inputFiles,
-                uniqueInInput: currentRows.length,
-                duplicateInInput: currentRows.filter(
-                  (row) => row.status === "duplicate_in_input",
-                ).length,
-                rows: currentRows,
-              },
-              counts: buildImportedOauthValidationCounts(currentRows),
-            });
-          },
-          fail(error = finalError) {
-            source.emit("failed", {
-              snapshot: {
-                inputFiles: pendingSnapshot.inputFiles,
-                uniqueInInput: currentRows.length,
-                duplicateInInput: currentRows.filter(
-                  (row) => row.status === "duplicate_in_input",
-                ).length,
-                rows: currentRows,
-              },
-              counts: buildImportedOauthValidationCounts(currentRows),
-              error,
-            });
-          },
-          cancel() {
-            source.emit("cancelled", {
-              snapshot: {
-                inputFiles: pendingSnapshot.inputFiles,
-                uniqueInInput: currentRows.length,
-                duplicateInInput: currentRows.filter(
-                  (row) => row.status === "duplicate_in_input",
-                ).length,
-                rows: currentRows,
-              },
-              counts: buildImportedOauthValidationCounts(currentRows),
-            });
-          },
-        };
+    const startImportedOauthValidationJob = vi
+      .fn()
+      .mockImplementation(
+        async ({
+          items,
+        }: {
+          items: Array<{ sourceId: string; fileName: string }>;
+        }) => {
+          const pendingSnapshot = buildPendingImportedOauthSnapshot(items);
+          const source = new MockValidationEventSource();
+          const currentRows: ImportedOauthValidationRow[] = [
+            ...pendingSnapshot.rows,
+          ];
+          controller = {
+            source,
+            pendingSnapshot,
+            currentRows,
+            emitSnapshot() {
+              source.emit("snapshot", {
+                snapshot: pendingSnapshot,
+                counts: buildImportedOauthValidationCounts(currentRows),
+              });
+            },
+            emitRow(sourceId: string) {
+              const nextRow = rowsBySourceId[sourceId];
+              if (!nextRow) {
+                throw new Error(`missing validation row for ${sourceId}`);
+              }
+              const index = currentRows.findIndex(
+                (row) => row.sourceId === sourceId,
+              );
+              if (index >= 0) {
+                currentRows[index] = {
+                  ...nextRow,
+                };
+              }
+              source.emit("row", {
+                row: nextRow,
+                counts: buildImportedOauthValidationCounts(currentRows),
+              });
+            },
+            complete() {
+              source.emit("completed", {
+                snapshot: {
+                  inputFiles: pendingSnapshot.inputFiles,
+                  uniqueInInput: currentRows.length,
+                  duplicateInInput: currentRows.filter(
+                    (row) => row.status === "duplicate_in_input",
+                  ).length,
+                  rows: currentRows,
+                },
+                counts: buildImportedOauthValidationCounts(currentRows),
+              });
+            },
+            fail(error = finalError) {
+              source.emit("failed", {
+                snapshot: {
+                  inputFiles: pendingSnapshot.inputFiles,
+                  uniqueInInput: currentRows.length,
+                  duplicateInInput: currentRows.filter(
+                    (row) => row.status === "duplicate_in_input",
+                  ).length,
+                  rows: currentRows,
+                },
+                counts: buildImportedOauthValidationCounts(currentRows),
+                error,
+              });
+            },
+            cancel() {
+              source.emit("cancelled", {
+                snapshot: {
+                  inputFiles: pendingSnapshot.inputFiles,
+                  uniqueInInput: currentRows.length,
+                  duplicateInInput: currentRows.filter(
+                    (row) => row.status === "duplicate_in_input",
+                  ).length,
+                  rows: currentRows,
+                },
+                counts: buildImportedOauthValidationCounts(currentRows),
+              });
+            },
+          };
 
-        apiMocks.createImportedOauthValidationJobEventSource.mockReturnValue(
-          source as unknown as EventSource,
-        );
+          apiMocks.createImportedOauthValidationJobEventSource.mockReturnValue(
+            source as unknown as EventSource,
+          );
 
-        if (!stepwise) {
-          window.setTimeout(() => {
-            controller?.emitSnapshot();
-            items.forEach((item) => controller?.emitRow(item.sourceId));
-            if (finalEvent === "failed") {
-              controller?.fail();
-            } else if (finalEvent === "cancelled") {
-              controller?.cancel();
-            } else {
-              controller?.complete();
-            }
-          }, 0);
-        }
+          if (!stepwise) {
+            window.setTimeout(() => {
+              controller?.emitSnapshot();
+              items.forEach((item) => controller?.emitRow(item.sourceId));
+              if (finalEvent === "failed") {
+                controller?.fail();
+              } else if (finalEvent === "cancelled") {
+                controller?.cancel();
+              } else {
+                controller?.complete();
+              }
+            }, 0);
+          }
 
-        return {
-          jobId,
-          snapshot: pendingSnapshot,
-        };
-      },
-    );
+          return {
+            jobId,
+            snapshot: pendingSnapshot,
+          };
+        },
+      );
     const stopImportedOauthValidationJob = vi.fn().mockResolvedValue(undefined);
 
     mockUpstreamAccounts({
@@ -6803,7 +7005,9 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     mockUpstreamAccounts({ runImportedOauthValidation });
     render("/account-pool/upstream-accounts/new?mode=import");
 
-    const pasteField = host?.querySelector('textarea[name="importOauthPasteDraft"]');
+    const pasteField = host?.querySelector(
+      'textarea[name="importOauthPasteDraft"]',
+    );
     if (!(pasteField instanceof HTMLTextAreaElement)) {
       throw new Error("missing import paste textarea");
     }
@@ -6813,9 +7017,8 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     await flushAsync();
 
     expect(runImportedOauthValidation).toHaveBeenCalledWith({
-      ...expectedGroupSelection(TEST_REQUIRED_GROUP_NAME, {
-        includeConcurrencyLimit: false,
-      }),
+      groupName: TEST_REQUIRED_GROUP_NAME,
+      groupBoundProxyKeys: [...TEST_REQUIRED_BOUND_PROXY_KEYS],
       items: [
         {
           sourceId: "pasted:1",
@@ -6864,7 +7067,9 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     mockUpstreamAccounts({ runImportedOauthValidation });
     render("/account-pool/upstream-accounts/new?mode=import");
 
-    const pasteField = host?.querySelector('textarea[name="importOauthPasteDraft"]');
+    const pasteField = host?.querySelector(
+      'textarea[name="importOauthPasteDraft"]',
+    );
     if (!(pasteField instanceof HTMLTextAreaElement)) {
       throw new Error("missing import paste textarea");
     }
@@ -6888,9 +7093,8 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
 
     expect(runImportedOauthValidation).toHaveBeenCalledTimes(2);
     expect(runImportedOauthValidation.mock.calls[1]?.[0]).toEqual({
-      ...expectedGroupSelection(TEST_REQUIRED_GROUP_NAME, {
-        includeConcurrencyLimit: false,
-      }),
+      groupName: TEST_REQUIRED_GROUP_NAME,
+      groupBoundProxyKeys: [...TEST_REQUIRED_BOUND_PROXY_KEYS],
       items: [
         {
           sourceId: "pasted:1",
@@ -6908,7 +7112,9 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     mockUpstreamAccounts({ runImportedOauthValidation });
     render("/account-pool/upstream-accounts/new?mode=import");
 
-    const pasteField = host?.querySelector('textarea[name="importOauthPasteDraft"]');
+    const pasteField = host?.querySelector(
+      'textarea[name="importOauthPasteDraft"]',
+    );
     if (!(pasteField instanceof HTMLTextAreaElement)) {
       throw new Error("missing import paste textarea");
     }
@@ -6930,7 +7136,9 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     mockUpstreamAccounts({ runImportedOauthValidation: vi.fn() });
     render("/account-pool/upstream-accounts/new?mode=import");
 
-    const pasteField = host?.querySelector('textarea[name="importOauthPasteDraft"]');
+    const pasteField = host?.querySelector(
+      'textarea[name="importOauthPasteDraft"]',
+    );
     if (!(pasteField instanceof HTMLTextAreaElement)) {
       throw new Error("missing import paste textarea");
     }
@@ -6961,7 +7169,9 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     render("/account-pool/upstream-accounts/new?mode=import");
 
     const fileInput = host?.querySelector('input[name="importOauthFiles"]');
-    const pasteField = host?.querySelector('textarea[name="importOauthPasteDraft"]');
+    const pasteField = host?.querySelector(
+      'textarea[name="importOauthPasteDraft"]',
+    );
     if (!(fileInput instanceof HTMLInputElement)) {
       throw new Error("missing import file input");
     }
@@ -6981,9 +7191,8 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     if (!resolveValidation) {
       throw new Error("missing paste validation resolver");
     }
-    const completeValidation: (
-      value: ImportedOauthValidationResponse,
-    ) => void = resolveValidation;
+    const completeValidation: (value: ImportedOauthValidationResponse) => void =
+      resolveValidation;
     completeValidation({
       inputFiles: 1,
       uniqueInInput: 1,
@@ -7083,9 +7292,8 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
       ]),
     );
     expect(
-      new Set(
-        request.items.map((item: { sourceId: string }) => item.sourceId),
-      ).size,
+      new Set(request.items.map((item: { sourceId: string }) => item.sourceId))
+        .size,
     ).toBe(2);
   });
 
@@ -7128,9 +7336,10 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
       startImportedOauthValidationJob,
     });
     render("/account-pool/upstream-accounts/new?mode=import");
-
-    const pasteField = host?.querySelector('textarea[name="importOauthPasteDraft"]');
     const fileInput = host?.querySelector('input[name="importOauthFiles"]');
+    const pasteField = host?.querySelector(
+      'textarea[name="importOauthPasteDraft"]',
+    );
     if (!(pasteField instanceof HTMLTextAreaElement)) {
       throw new Error("missing import paste textarea");
     }
@@ -7170,6 +7379,147 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
         }),
       ],
     });
+  });
+
+  it("uses the latest node shunt setting when starting imported oauth validation", async () => {
+    const fixture = createImportedOauthFixture(1);
+    const sourceId = getImportedOauthSourceId(fixture);
+    const groups = TEST_GROUP_SUMMARIES.map((group) => ({
+      ...group,
+      boundProxyKeys: [...group.boundProxyKeys],
+    }));
+    const { startImportedOauthValidationJob } =
+      installImportedOauthValidationJobFlow({
+        rowsBySourceId: {
+          [sourceId]: buildImportedOauthRow(
+            sourceId,
+            fixture.fileName,
+            fixture.email,
+            fixture.chatgptAccountId,
+          ),
+        },
+      });
+    mockUpstreamAccounts({
+      startImportedOauthValidationJob,
+      groups,
+    });
+    render("/account-pool/upstream-accounts/new?mode=import");
+
+    setComboboxValue('input[name="importGroupName"]', TEST_REQUIRED_GROUP_NAME);
+    await flushAsync();
+
+    const fileInput = host?.querySelector('input[name="importOauthFiles"]');
+    if (!(fileInput instanceof HTMLInputElement)) {
+      throw new Error("missing import file input");
+    }
+
+    await setFileInputFiles(fileInput, [fixture.file]);
+    await flushAsync();
+
+    const importGroup = groups.find(
+      (group) => group.groupName === TEST_REQUIRED_GROUP_NAME,
+    );
+    if (!importGroup) {
+      throw new Error("missing import group summary");
+    }
+    importGroup.nodeShuntEnabled = true;
+
+    clickButton(/Add tag/i);
+    await flushAsync();
+    const vipOption = Array.from(
+      document.body.querySelectorAll("[cmdk-item]"),
+    ).find((candidate) => (candidate.textContent || "").includes("vip"));
+    if (!(vipOption instanceof HTMLElement)) {
+      throw new Error("missing vip tag option");
+    }
+    act(() => {
+      vipOption.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+
+    clickButton(/validate and review/i);
+    await flushAsync();
+    await flushTimers();
+    await flushAsync();
+
+    expect(startImportedOauthValidationJob).toHaveBeenCalledWith({
+      ...expectedGroupSelection(TEST_REQUIRED_GROUP_NAME, {
+        includeConcurrencyLimit: false,
+      }),
+      groupNodeShuntEnabled: true,
+      items: [
+        expect.objectContaining({
+          fileName: fixture.fileName,
+          sourceId,
+          content: fixture.content,
+        }),
+      ],
+    });
+  });
+
+  it("allows imported oauth validation for node-shunt groups with only unavailable bound nodes", async () => {
+    const fixture = createImportedOauthFixture(1);
+    const sourceId = getImportedOauthSourceId(fixture);
+    const groups = TEST_GROUP_SUMMARIES.map((group) =>
+      group.groupName === TEST_REQUIRED_GROUP_NAME
+        ? {
+            ...group,
+            boundProxyKeys: ["stale-node"],
+            nodeShuntEnabled: true,
+          }
+        : {
+            ...group,
+            boundProxyKeys: [...group.boundProxyKeys],
+          },
+    );
+    const { startImportedOauthValidationJob } =
+      installImportedOauthValidationJobFlow({
+        rowsBySourceId: {
+          [sourceId]: buildImportedOauthRow(
+            sourceId,
+            fixture.fileName,
+            fixture.email,
+            fixture.chatgptAccountId,
+          ),
+        },
+      });
+    mockUpstreamAccounts({
+      startImportedOauthValidationJob,
+      groups,
+    });
+    render("/account-pool/upstream-accounts/new?mode=import");
+
+    setComboboxValue('input[name="importGroupName"]', TEST_REQUIRED_GROUP_NAME);
+    await flushAsync();
+
+    const fileInput = host?.querySelector('input[name="importOauthFiles"]');
+    if (!(fileInput instanceof HTMLInputElement)) {
+      throw new Error("missing import file input");
+    }
+
+    await setFileInputFiles(fileInput, [fixture.file]);
+    await flushAsync();
+
+    clickButton(/validate and review/i);
+    await flushAsync();
+    await flushTimers();
+    await flushAsync();
+
+    expect(startImportedOauthValidationJob).toHaveBeenCalledWith({
+      groupName: TEST_REQUIRED_GROUP_NAME,
+      groupBoundProxyKeys: ["stale-node"],
+      groupNodeShuntEnabled: true,
+      items: [
+        expect.objectContaining({
+          fileName: fixture.fileName,
+          sourceId,
+          content: fixture.content,
+        }),
+      ],
+    });
+    expect(pageTextContent()).not.toContain(
+      `Group "${TEST_REQUIRED_GROUP_NAME}" does not have any selectable bound proxy nodes.`,
+    );
   });
 
   it("removes imported rows from the validation list without navigating away", async () => {
@@ -7302,9 +7652,9 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
 
     const pageOneRows = getImportedOauthResultRowsText().join("\n");
     expect(startImportedOauthValidationJob).toHaveBeenCalledTimes(1);
-    expect(startImportedOauthValidationJob.mock.calls[0]?.[0]?.items).toHaveLength(
-      130,
-    );
+    expect(
+      startImportedOauthValidationJob.mock.calls[0]?.[0]?.items,
+    ).toHaveLength(130);
     expect(pageOneRows).toContain("mailbox-1@duckmail.sbs.json");
     expect(pageOneRows).toContain("mailbox-100@duckmail.sbs.json");
     expect(pageOneRows).not.toContain("mailbox-101@duckmail.sbs.json");
@@ -7384,18 +7734,21 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
   it("closes the dialog and cancels the active validation job while checking", async () => {
     const fixture = createImportedOauthFixture(1);
     const sourceId = getImportedOauthSourceId(fixture);
-    const { startImportedOauthValidationJob, stopImportedOauthValidationJob, getController } =
-      installImportedOauthValidationJobFlow({
-        rowsBySourceId: {
-          [sourceId]: buildImportedOauthRow(
-            sourceId,
-            fixture.fileName,
-            fixture.email,
-            fixture.chatgptAccountId,
-          ),
-        },
-        stepwise: true,
-      });
+    const {
+      startImportedOauthValidationJob,
+      stopImportedOauthValidationJob,
+      getController,
+    } = installImportedOauthValidationJobFlow({
+      rowsBySourceId: {
+        [sourceId]: buildImportedOauthRow(
+          sourceId,
+          fixture.fileName,
+          fixture.email,
+          fixture.chatgptAccountId,
+        ),
+      },
+      stepwise: true,
+    });
     mockUpstreamAccounts({
       startImportedOauthValidationJob,
       stopImportedOauthValidationJob,
@@ -7472,7 +7825,10 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
           };
         }),
       }));
-    mockUpstreamAccounts({ startImportedOauthValidationJob, importOauthAccounts });
+    mockUpstreamAccounts({
+      startImportedOauthValidationJob,
+      importOauthAccounts,
+    });
     render("/account-pool/upstream-accounts/new?mode=import");
 
     const fileInput = host?.querySelector('input[name="importOauthFiles"]');
@@ -7500,12 +7856,16 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     expect(
       importOauthAccounts.mock.calls[0]?.[0]?.selectedSourceIds,
     ).toHaveLength(100);
-    expect(importOauthAccounts.mock.calls[0]?.[0]?.validationJobId).toBe("job-1");
+    expect(importOauthAccounts.mock.calls[0]?.[0]?.validationJobId).toBe(
+      "job-1",
+    );
     expect(importOauthAccounts.mock.calls[1]?.[0]?.items).toHaveLength(30);
     expect(
       importOauthAccounts.mock.calls[1]?.[0]?.selectedSourceIds,
     ).toHaveLength(30);
-    expect(importOauthAccounts.mock.calls[1]?.[0]?.validationJobId).toBe("job-1");
+    expect(importOauthAccounts.mock.calls[1]?.[0]?.validationJobId).toBe(
+      "job-1",
+    );
     expect(document.body.textContent).not.toContain("Import validation");
     expect(navigateMock).not.toHaveBeenCalled();
   });
@@ -7553,7 +7913,10 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
         })),
       }))
       .mockRejectedValueOnce(new Error("Import batch exploded"));
-    mockUpstreamAccounts({ startImportedOauthValidationJob, importOauthAccounts });
+    mockUpstreamAccounts({
+      startImportedOauthValidationJob,
+      importOauthAccounts,
+    });
     render("/account-pool/upstream-accounts/new?mode=import");
 
     const fileInput = host?.querySelector('input[name="importOauthFiles"]');

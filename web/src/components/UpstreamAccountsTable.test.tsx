@@ -54,6 +54,7 @@ const labels = {
   sync: 'Sync / Call',
   lastSuccess: 'Sync',
   lastCall: 'Call',
+  routingBlock: 'Routing',
   latestAction: 'Latest',
   windows: 'Windows',
   never: 'Never',
@@ -779,6 +780,43 @@ describe('UpstreamAccountsTable', () => {
     expect(html).toContain(
       'latest usage snapshot still shows an exhausted upstream usage limit window',
     )
+  })
+
+  it('renders idle routing block reasons without degrading account badges', () => {
+    const html = renderTable([
+      {
+        id: 29,
+        kind: 'oauth_codex',
+        provider: 'codex',
+        displayName: 'Queued by node shunt',
+        groupName: 'production',
+        isMother: false,
+        status: 'active',
+        displayStatus: 'active',
+        enabled: true,
+        enableStatus: 'enabled',
+        workStatus: 'idle',
+        healthStatus: 'normal',
+        syncState: 'idle',
+        lastSuccessfulSyncAt: null,
+        lastActivityAt: null,
+        routingBlockReasonCode: 'group_node_shunt_unassigned',
+        routingBlockReasonMessage: '分组节点分流策略控制，未排节点',
+        primaryWindow: null,
+        secondaryWindow: null,
+        credits: null,
+        localLimits: null,
+        duplicateInfo: null,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
+    ])
+
+    expect(html).toContain('>Idle<')
+    expect(html).toContain('Routing')
+    expect(html).toContain('分组节点分流策略控制，未排节点')
+    expect(html).not.toContain('>Needs reauth<')
+    expect(html).not.toContain('>Upstream unavailable<')
   })
 
   it('shows upstream 402 hard-unavailable rows as upstream rejected while preserving the raw context', () => {

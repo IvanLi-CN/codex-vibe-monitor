@@ -37,6 +37,9 @@
 - `login_id TEXT PRIMARY KEY`
 - `account_id INTEGER NULL`
 - `display_name TEXT NULL`
+- `group_name TEXT NULL`
+- `group_bound_proxy_keys_json TEXT NOT NULL DEFAULT '[]'`
+- `group_node_shunt_enabled INTEGER NOT NULL DEFAULT 0`
 - `note TEXT NULL`
 - `state TEXT NOT NULL UNIQUE`
 - `pkce_verifier TEXT NOT NULL`
@@ -47,6 +50,16 @@
 - `expires_at TEXT NOT NULL`
 - `consumed_at TEXT NULL`
 - `created_at TEXT NOT NULL`
+- `updated_at TEXT NOT NULL`
+
+## `pool_upstream_account_group_notes`
+
+- `group_name TEXT PRIMARY KEY`
+- `note TEXT NULL`
+- `bound_proxy_keys_json TEXT NOT NULL DEFAULT '[]'`
+- `node_shunt_enabled INTEGER NOT NULL DEFAULT 0`
+- `upstream_429_retry_enabled INTEGER NOT NULL DEFAULT 0`
+- `upstream_429_max_retries INTEGER NOT NULL DEFAULT 0`
 - `updated_at TEXT NOT NULL`
 
 ## `pool_upstream_account_limit_samples`

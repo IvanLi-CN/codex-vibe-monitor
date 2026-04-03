@@ -127,9 +127,7 @@ function getForwardProxyHistoryDateParts(
   }).formatToParts(date);
   const partMap = Object.fromEntries(
     parts
-      .filter((part) =>
-        ["weekday", "year", "month", "day"].includes(part.type),
-      )
+      .filter((part) => ["weekday", "year", "month", "day"].includes(part.type))
       .map((part) => [part.type, part.value]),
   );
   const weekdayMap: Record<string, number> = {
@@ -157,7 +155,9 @@ function getForwardProxyHistoryDateParts(
 }
 
 function addUtcDays(parts: ZonedDateParts, days: number): ZonedDateParts {
-  const shifted = new Date(Date.UTC(parts.year, parts.month - 1, parts.day + days));
+  const shifted = new Date(
+    Date.UTC(parts.year, parts.month - 1, parts.day + days),
+  );
   return {
     year: shifted.getUTCFullYear(),
     month: shifted.getUTCMonth() + 1,
@@ -170,7 +170,14 @@ function forwardProxyHistoryLocalMidnightUtcMillis(
   timeZone: string,
   parts: Pick<ZonedDateParts, "year" | "month" | "day">,
 ): number {
-  const localMidnightUtc = Date.UTC(parts.year, parts.month - 1, parts.day, 0, 0, 0);
+  const localMidnightUtc = Date.UTC(
+    parts.year,
+    parts.month - 1,
+    parts.day,
+    0,
+    0,
+    0,
+  );
   let candidate = localMidnightUtc;
   for (let index = 0; index < 4; index += 1) {
     const offsetMinutes = getForwardProxyHistoryOffsetMinutes(
@@ -1074,7 +1081,8 @@ function normalizeTimeseriesResponse(raw: unknown): TimeseriesResponse {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const pointsRaw = Array.isArray(payload.points) ? payload.points : [];
   return {
-    rangeStart: typeof payload.rangeStart === "string" ? payload.rangeStart : "",
+    rangeStart:
+      typeof payload.rangeStart === "string" ? payload.rangeStart : "",
     rangeEnd: typeof payload.rangeEnd === "string" ? payload.rangeEnd : "",
     bucketSeconds: normalizeFiniteNumber(payload.bucketSeconds) ?? 3600,
     effectiveBucket:
@@ -1194,7 +1202,9 @@ function normalizeForwardProxyBindingNode(
         ? payload.displayName.trim()
         : key,
     protocolLabel: normalizeForwardProxyProtocolLabel(
-      typeof payload.protocolLabel === "string" ? payload.protocolLabel : undefined,
+      typeof payload.protocolLabel === "string"
+        ? payload.protocolLabel
+        : undefined,
     ),
     penalized: Boolean(payload.penalized),
     selectable: payload.selectable === true,
@@ -1460,7 +1470,8 @@ function normalizePromptCacheConversationInvocationPreview(
     cacheInputTokens: normalizeFiniteNumber(payload.cacheInputTokens),
     reasoningTokens: normalizeFiniteNumber(payload.reasoningTokens),
     reasoningEffort:
-      typeof payload.reasoningEffort === "string" && payload.reasoningEffort.trim()
+      typeof payload.reasoningEffort === "string" &&
+      payload.reasoningEffort.trim()
         ? payload.reasoningEffort.trim()
         : undefined,
     errorMessage:
@@ -1534,7 +1545,8 @@ function normalizePromptCacheConversation(
     recentInvocations: recentInvocationsRaw
       .map(normalizePromptCacheConversationInvocationPreview)
       .filter(
-        (item): item is PromptCacheConversationInvocationPreview => item != null,
+        (item): item is PromptCacheConversationInvocationPreview =>
+          item != null,
       ),
     last24hRequests: requestsRaw
       .map(normalizePromptCacheConversationRequestPoint)
@@ -1922,6 +1934,8 @@ export interface UpstreamAccountSummary {
   lastActionSource?: string | null;
   lastActionReasonCode?: string | null;
   lastActionReasonMessage?: string | null;
+  routingBlockReasonCode?: string | null;
+  routingBlockReasonMessage?: string | null;
   lastActionHttpStatus?: number | null;
   lastActionInvokeId?: string | null;
   lastActionAt?: string | null;
@@ -1964,6 +1978,7 @@ export interface UpstreamAccountGroupSummary {
   note?: string | null;
   boundProxyKeys?: string[];
   concurrencyLimit?: number | null;
+  nodeShuntEnabled?: boolean;
   upstream429RetryEnabled?: boolean;
   upstream429MaxRetries?: number;
 }
@@ -2167,6 +2182,7 @@ export interface CreateOauthLoginSessionPayload {
   displayName?: string;
   groupName?: string;
   groupBoundProxyKeys?: string[];
+  groupNodeShuntEnabled?: boolean;
   note?: string;
   groupNote?: string;
   concurrencyLimit?: number;
@@ -2181,6 +2197,7 @@ export interface UpdateOauthLoginSessionPayload {
   displayName?: string;
   groupName?: string;
   groupBoundProxyKeys?: string[];
+  groupNodeShuntEnabled?: boolean;
   note?: string;
   groupNote?: string;
   concurrencyLimit?: number;
@@ -2230,6 +2247,7 @@ export interface CreateApiKeyAccountPayload {
   displayName: string;
   groupName?: string;
   groupBoundProxyKeys?: string[];
+  groupNodeShuntEnabled?: boolean;
   note?: string;
   groupNote?: string;
   concurrencyLimit?: number;
@@ -2247,6 +2265,7 @@ export interface UpdateUpstreamAccountPayload {
   groupName?: string;
   groupBoundProxyKeys?: string[];
   concurrencyLimit?: number;
+  groupNodeShuntEnabled?: boolean;
   note?: string;
   groupNote?: string;
   upstreamBaseUrl?: string | null;
@@ -2268,6 +2287,7 @@ export interface ImportOauthCredentialFilePayload {
 export interface ValidateImportedOauthAccountsPayload {
   groupName?: string;
   groupBoundProxyKeys?: string[];
+  groupNodeShuntEnabled?: boolean;
   items: ImportOauthCredentialFilePayload[];
 }
 
@@ -2342,6 +2362,7 @@ export interface ImportValidatedOauthAccountsPayload {
   validationJobId?: string;
   groupName?: string;
   groupBoundProxyKeys?: string[];
+  groupNodeShuntEnabled?: boolean;
   groupNote?: string;
   concurrencyLimit?: number;
   tagIds?: number[];
@@ -2389,6 +2410,7 @@ export interface UpdateUpstreamAccountGroupPayload {
   note?: string;
   boundProxyKeys?: string[];
   concurrencyLimit?: number;
+  nodeShuntEnabled?: boolean;
   upstream429RetryEnabled?: boolean;
   upstream429MaxRetries?: number;
 }
@@ -2668,6 +2690,14 @@ function normalizeUpstreamAccountSummary(
       typeof payload.lastActionReasonMessage === "string"
         ? payload.lastActionReasonMessage
         : null,
+    routingBlockReasonCode:
+      typeof payload.routingBlockReasonCode === "string"
+        ? payload.routingBlockReasonCode
+        : null,
+    routingBlockReasonMessage:
+      typeof payload.routingBlockReasonMessage === "string"
+        ? payload.routingBlockReasonMessage
+        : null,
     lastActionHttpStatus:
       normalizeFiniteNumber(payload.lastActionHttpStatus) ?? null,
     lastActionInvokeId:
@@ -2778,8 +2808,7 @@ function normalizeUpstreamAccountActionEvent(
     failureKind:
       typeof payload.failureKind === "string" ? payload.failureKind : null,
     invokeId: typeof payload.invokeId === "string" ? payload.invokeId : null,
-    stickyKey:
-      typeof payload.stickyKey === "string" ? payload.stickyKey : null,
+    stickyKey: typeof payload.stickyKey === "string" ? payload.stickyKey : null,
     createdAt,
   };
 }
@@ -2810,9 +2839,7 @@ function normalizeUpstreamAccountDetail(raw: unknown): UpstreamAccountDetail {
     recentActions: Array.isArray(payload.recentActions)
       ? payload.recentActions
           .map(normalizeUpstreamAccountActionEvent)
-          .filter(
-            (item): item is UpstreamAccountActionEvent => item != null,
-          )
+          .filter((item): item is UpstreamAccountActionEvent => item != null)
       : [],
   };
 }
@@ -2833,13 +2860,14 @@ function normalizeUpstreamAccountGroupSummary(
   return {
     groupName,
     note: typeof payload.note === "string" ? payload.note : null,
-    boundProxyKeys: normalizeStringArray(payload.boundProxyKeys).map((item) =>
-      item.trim(),
-    ).filter((item) => item.length > 0),
+    boundProxyKeys: normalizeStringArray(payload.boundProxyKeys)
+      .map((item) => item.trim())
+      .filter((item) => item.length > 0),
     concurrencyLimit: (() => {
       const value = normalizeFiniteNumber(payload.concurrencyLimit);
       return value != null && value >= 0 ? Math.min(value, 30) : 0;
     })(),
+    nodeShuntEnabled: payload.nodeShuntEnabled === true,
     upstream429RetryEnabled: payload.upstream429RetryEnabled === true,
     upstream429MaxRetries: normalizeUpstreamAccountGroupMaxRetries(
       payload.upstream429MaxRetries,
@@ -3155,7 +3183,9 @@ function normalizeBulkUpstreamAccountSyncSnapshot(
   const jobId = typeof payload.jobId === "string" ? payload.jobId : "";
   const status = typeof payload.status === "string" ? payload.status : "";
   if (!jobId || !status) {
-    throw new Error("Request failed: invalid bulk upstream account sync snapshot payload");
+    throw new Error(
+      "Request failed: invalid bulk upstream account sync snapshot payload",
+    );
   }
   const rows = Array.isArray(payload.rows) ? payload.rows : [];
   return {
@@ -3173,7 +3203,9 @@ function normalizeBulkUpstreamAccountActionResponse(
   const payload = (raw ?? {}) as Record<string, unknown>;
   const action = typeof payload.action === "string" ? payload.action : "";
   if (!action) {
-    throw new Error("Request failed: invalid bulk upstream account action payload");
+    throw new Error(
+      "Request failed: invalid bulk upstream account action payload",
+    );
   }
   const results = Array.isArray(payload.results) ? payload.results : [];
   return {
@@ -3194,7 +3226,9 @@ function normalizeBulkUpstreamAccountSyncJobResponse(
   const payload = (raw ?? {}) as Record<string, unknown>;
   const jobId = typeof payload.jobId === "string" ? payload.jobId : "";
   if (!jobId) {
-    throw new Error("Request failed: invalid bulk upstream account sync job payload");
+    throw new Error(
+      "Request failed: invalid bulk upstream account sync job payload",
+    );
   }
   return {
     jobId,
@@ -3219,7 +3253,9 @@ export function normalizeBulkUpstreamAccountSyncRowEventPayload(
   const payload = (raw ?? {}) as Record<string, unknown>;
   const row = normalizeBulkUpstreamAccountSyncRow(payload.row);
   if (!row) {
-    throw new Error("Request failed: invalid bulk upstream account sync row payload");
+    throw new Error(
+      "Request failed: invalid bulk upstream account sync row payload",
+    );
   }
   return {
     row,
@@ -3233,7 +3269,9 @@ export function normalizeBulkUpstreamAccountSyncFailedEventPayload(
   const payload = (raw ?? {}) as Record<string, unknown>;
   const error = typeof payload.error === "string" ? payload.error : "";
   if (!error) {
-    throw new Error("Request failed: invalid bulk upstream account sync failed payload");
+    throw new Error(
+      "Request failed: invalid bulk upstream account sync failed payload",
+    );
   }
   return {
     snapshot: normalizeBulkUpstreamAccountSyncSnapshot(payload.snapshot),
@@ -3452,7 +3490,10 @@ export async function fetchForwardProxyTimeseries(
 ) {
   const search = new URLSearchParams();
   search.set("range", range);
-  search.set("timeZone", resolveForwardProxyHistoryTimeZone(range, params?.timeZone));
+  search.set(
+    "timeZone",
+    resolveForwardProxyHistoryTimeZone(range, params?.timeZone),
+  );
   if (params?.bucket) {
     search.set("bucket", params.bucket);
   }
@@ -3827,8 +3868,8 @@ export async function createImportedOauthValidationJob(
       method: "POST",
       body: JSON.stringify(payload),
     },
-  )
-  return normalizeImportedOauthValidationJobResponse(response)
+  );
+  return normalizeImportedOauthValidationJobResponse(response);
 }
 
 export async function cancelImportedOauthValidationJob(
@@ -3839,7 +3880,7 @@ export async function cancelImportedOauthValidationJob(
     {
       method: "DELETE",
     },
-  )
+  );
 }
 
 export async function importValidatedOauthAccounts(
@@ -3968,7 +4009,7 @@ export function createEventSource(path: string) {
 export function createImportedOauthValidationJobEventSource(jobId: string) {
   return createEventSource(
     `/api/pool/upstream-accounts/oauth/imports/validation-jobs/${encodeURIComponent(jobId)}/events`,
-  )
+  );
 }
 
 export function createBulkUpstreamAccountSyncJobEventSource(jobId: string) {

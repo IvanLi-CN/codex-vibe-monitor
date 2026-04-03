@@ -16637,11 +16637,7 @@ fn pool_failure_is_timeout_shaped(failure_kind: &str, message: &str) -> bool {
 fn pool_account_forward_proxy_scope(
     account: &PoolResolvedAccount,
 ) -> std::result::Result<ForwardProxyRouteScope, String> {
-    crate::upstream_accounts::required_account_forward_proxy_scope(
-        account.group_name.as_deref(),
-        account.bound_proxy_keys.clone(),
-    )
-    .map_err(|err| err.to_string())
+    Ok(account.forward_proxy_scope.clone())
 }
 
 async fn select_pool_account_forward_proxy_client(
@@ -21633,11 +21629,59 @@ fn next_proxy_request_id() -> u64 {
     NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct PoolRoutingReservation {
     account_id: i64,
+    proxy_key: Option<String>,
     #[allow(dead_code)]
     created_at: Instant,
+}
+
+#[derive(Debug, Default, Clone)]
+struct PoolRoutingReservationSnapshot {
+    counts_by_account: HashMap<i64, i64>,
+    proxy_keys_by_account: HashMap<i64, HashSet<String>>,
+    reserved_proxy_keys: HashSet<String>,
+}
+
+impl PoolRoutingReservationSnapshot {
+    fn count_for_account(&self, account_id: i64) -> i64 {
+        self.counts_by_account
+            .get(&account_id)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    fn pinned_proxy_keys_for_account(
+        &self,
+        account_id: i64,
+        valid_proxy_keys: &[String],
+        occupied_proxy_keys: &HashSet<String>,
+    ) -> Vec<String> {
+        let Some(proxy_keys) = self.proxy_keys_by_account.get(&account_id) else {
+            return Vec::new();
+        };
+        valid_proxy_keys
+            .iter()
+            .filter(|proxy_key| {
+                proxy_keys.contains(proxy_key.as_str())
+                    && !occupied_proxy_keys.contains(proxy_key.as_str())
+            })
+            .cloned()
+            .collect()
+    }
+
+    fn reserved_proxy_keys_for_group(&self, valid_proxy_keys: &[String]) -> HashSet<String> {
+        let valid_proxy_keys = valid_proxy_keys
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        self.reserved_proxy_keys
+            .iter()
+            .filter(|proxy_key| valid_proxy_keys.contains(proxy_key.as_str()))
+            .cloned()
+            .collect()
+    }
 }
 
 #[derive(Debug)]
@@ -21684,12 +21728,39 @@ fn pool_routing_reservation_count(state: &AppState, account_id: i64) -> i64 {
         .count() as i64
 }
 
+fn pool_routing_reservation_snapshot(state: &AppState) -> PoolRoutingReservationSnapshot {
+    let reservations = state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned");
+    let mut snapshot = PoolRoutingReservationSnapshot::default();
+    for reservation in reservations.values() {
+        *snapshot
+            .counts_by_account
+            .entry(reservation.account_id)
+            .or_default() += 1;
+        if let Some(proxy_key) = reservation.proxy_key.as_deref() {
+            snapshot.reserved_proxy_keys.insert(proxy_key.to_string());
+            snapshot
+                .proxy_keys_by_account
+                .entry(reservation.account_id)
+                .or_default()
+                .insert(proxy_key.to_string());
+        }
+    }
+    snapshot
+}
+
 fn reserve_pool_routing_account(
     state: &AppState,
     reservation_key: &str,
     account: &PoolResolvedAccount,
 ) {
-    if account.routing_source == PoolRoutingSelectionSource::StickyReuse {
+    let proxy_key = match &account.forward_proxy_scope {
+        ForwardProxyRouteScope::PinnedProxyKey(proxy_key) => Some(proxy_key.clone()),
+        _ => None,
+    };
+    if account.routing_source == PoolRoutingSelectionSource::StickyReuse && proxy_key.is_none() {
         return;
     }
     let mut reservations = state
@@ -21700,6 +21771,7 @@ fn reserve_pool_routing_account(
         reservation_key.to_string(),
         PoolRoutingReservation {
             account_id: account.account_id,
+            proxy_key,
             created_at: Instant::now(),
         },
     );

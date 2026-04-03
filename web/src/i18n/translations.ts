@@ -115,8 +115,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.routing.close": "Close dialog",
     "accountPool.upstreamAccounts.routing.configured": "Configured",
     "accountPool.upstreamAccounts.routing.notConfigured": "Not configured",
-    "accountPool.upstreamAccounts.routing.apiKeySectionTitle":
-      "Pool route key",
+    "accountPool.upstreamAccounts.routing.apiKeySectionTitle": "Pool route key",
     "accountPool.upstreamAccounts.routing.apiKeySectionDescription":
       "Optional. Leave blank to keep the current downstream pool API key unchanged.",
     "accountPool.upstreamAccounts.routing.apiKeyLabel":
@@ -205,7 +204,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.actions.openDetails": "Open details",
     "accountPool.upstreamAccounts.actions.dismissDuplicateWarning":
       "Dismiss warning",
-    "accountPool.upstreamAccounts.partialSuccess.title": "Saved with follow-up warning",
+    "accountPool.upstreamAccounts.partialSuccess.title":
+      "Saved with follow-up warning",
     "accountPool.upstreamAccounts.partialSuccess.createdButGroupSettingsFailed":
       "The account was created, but saving the draft group settings failed: {error}",
     "accountPool.upstreamAccounts.partialSuccess.savedButGroupSettingsFailed":
@@ -231,7 +231,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.workStatusFilter.clear":
       "Clear work status filters",
     "accountPool.upstreamAccounts.enableStatusFilterLabel": "Enable status",
-    "accountPool.upstreamAccounts.enableStatusFilter.all": "All enable statuses",
+    "accountPool.upstreamAccounts.enableStatusFilter.all":
+      "All enable statuses",
     "accountPool.upstreamAccounts.enableStatusFilter.searchPlaceholder":
       "Search enable statuses...",
     "accountPool.upstreamAccounts.enableStatusFilter.empty":
@@ -239,7 +240,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.enableStatusFilter.clear":
       "Clear enable status filters",
     "accountPool.upstreamAccounts.healthStatusFilterLabel": "Account health",
-    "accountPool.upstreamAccounts.healthStatusFilter.all": "All account health statuses",
+    "accountPool.upstreamAccounts.healthStatusFilter.all":
+      "All account health statuses",
     "accountPool.upstreamAccounts.healthStatusFilter.searchPlaceholder":
       "Search account health statuses...",
     "accountPool.upstreamAccounts.healthStatusFilter.empty":
@@ -295,7 +297,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.import.paste.label":
       "Paste one credential JSON",
     "accountPool.upstreamAccounts.import.paste.placeholder":
-      "{\n  \"type\": \"codex\",\n  \"email\": \"owner@example.com\",\n  ...\n}",
+      '{\n  "type": "codex",\n  "email": "owner@example.com",\n  ...\n}',
     "accountPool.upstreamAccounts.import.paste.hint":
       "Paste exactly one credential JSON object. A successful paste is added to the queue automatically; if validation fails, you can edit and retry here.",
     "accountPool.upstreamAccounts.import.paste.validating":
@@ -452,7 +454,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.groupNotes.actions.edit":
       "Edit group settings",
     "accountPool.upstreamAccounts.groupNotes.tooltip.body":
-      "Edit the shared note and bound forward proxy nodes for this group.",
+      "Edit the shared note, bound forward proxy nodes, and node shunt strategy for this group.",
     "accountPool.upstreamAccounts.groupNotes.dialogTitle": "Group settings",
     "accountPool.upstreamAccounts.groupNotes.existingDescription":
       "This group already exists. Saving here updates the shared note and proxy bindings immediately.",
@@ -469,6 +471,14 @@ const baseTranslations = {
       "Unlimited",
     "accountPool.upstreamAccounts.groupNotes.badges.existing": "Saved group",
     "accountPool.upstreamAccounts.groupNotes.badges.draft": "Draft group",
+    "accountPool.upstreamAccounts.groupNotes.nodeShunt.label":
+      "Node shunt strategy",
+    "accountPool.upstreamAccounts.groupNotes.nodeShunt.hint":
+      "Each selected node becomes an exclusive slot. If this group selects N nodes, the group can provide N upstream accounts at the same time.",
+    "accountPool.upstreamAccounts.groupNotes.nodeShunt.toggle":
+      "Enable exclusive node slots",
+    "accountPool.upstreamAccounts.groupNotes.nodeShunt.warning":
+      "Enable this strategy only after binding at least one node (including Direct).",
     "accountPool.upstreamAccounts.groupNotes.upstream429.label":
       "Upstream 429 retry",
     "accountPool.upstreamAccounts.groupNotes.upstream429.hint":
@@ -483,23 +493,23 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.label":
       "Bound proxy nodes",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.hint":
-      "Leave empty to keep automatic routing. When multiple nodes are selected, the group will stay on the current node until repeated network failures force a switch.",
+      "Leave empty to keep automatic routing. With node shunt disabled, selected nodes stay as a shared hard-bound pool; with node shunt enabled, each selected node becomes one exclusive account slot.",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.automatic":
       "No nodes bound. This group uses automatic routing.",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.empty":
       "No proxy nodes available right now.",
-    "accountPool.upstreamAccounts.groupNotes.proxyBindings.missing":
-      "Missing",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.missing": "Missing",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.unavailable":
       "Unavailable",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartLabel":
       "24h request trend",
-    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartSuccess":
-      "ok",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartSuccess": "ok",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartFailure":
       "fail",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartEmpty":
       "No 24h data",
+    "accountPool.upstreamAccounts.table.routingBlockShort": "Blocked",
+    "accountPool.upstreamAccounts.routingBlock.title": "Routing blocked",
     "accountPool.upstreamAccounts.batchOauth.tooltip.completeTitle":
       "Submit callback",
     "accountPool.upstreamAccounts.batchOauth.tooltip.completeBody":
@@ -568,8 +578,7 @@ const baseTranslations = {
       "24h token cumulative chart",
     "accountPool.upstreamAccounts.stickyConversations.table.stickyKey":
       "Sticky Key",
-    "accountPool.upstreamAccounts.stickyConversations.table.actions":
-      "Actions",
+    "accountPool.upstreamAccounts.stickyConversations.table.actions": "Actions",
     "accountPool.upstreamAccounts.records.title": "Call records",
     "accountPool.upstreamAccounts.records.description":
       "Review the latest retained invocations routed to this upstream account.",
@@ -664,12 +673,10 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.bulk.actionLabel.delete": "Delete",
     "accountPool.upstreamAccounts.bulk.actionLabel.set_group": "Set group",
     "accountPool.upstreamAccounts.bulk.actionLabel.add_tags": "Add tags",
-    "accountPool.upstreamAccounts.bulk.actionLabel.remove_tags":
-      "Remove tags",
+    "accountPool.upstreamAccounts.bulk.actionLabel.remove_tags": "Remove tags",
     "accountPool.upstreamAccounts.bulk.resultSummary":
       "{{action}} finished: {{succeeded}} succeeded, {{failed}} failed.",
-    "accountPool.upstreamAccounts.bulk.syncProgressTitle":
-      "Bulk sync progress",
+    "accountPool.upstreamAccounts.bulk.syncProgressTitle": "Bulk sync progress",
     "accountPool.upstreamAccounts.bulk.syncProgressSummary":
       "{{completed}} / {{total}} done · {{succeeded}} succeeded · {{failed}} failed · {{skipped}} skipped",
     "accountPool.upstreamAccounts.bulk.cancelSync": "Cancel sync",
@@ -699,8 +706,7 @@ const baseTranslations = {
       "Delete {{count}} selected accounts? This cannot be undone.",
     "accountPool.upstreamAccounts.pagination.summary":
       "Page {{page}} / {{pageCount}} · {{total}} accounts",
-    "accountPool.upstreamAccounts.pagination.loading":
-      "Loading page {{page}}…",
+    "accountPool.upstreamAccounts.pagination.loading": "Loading page {{page}}…",
     "accountPool.upstreamAccounts.pagination.error":
       "This page could not be refreshed. Change filters, page size, or retry.",
     "accountPool.upstreamAccounts.pagination.pageSize": "Page size",
@@ -929,19 +935,15 @@ const baseTranslations = {
       "HTTP status",
     "accountPool.upstreamAccounts.latestAction.fields.occurredAt":
       "Occurred at",
-    "accountPool.upstreamAccounts.latestAction.fields.invokeId":
-      "Invoke ID",
+    "accountPool.upstreamAccounts.latestAction.fields.invokeId": "Invoke ID",
     "accountPool.upstreamAccounts.latestAction.fields.message": "Message",
-    "accountPool.upstreamAccounts.compactSupport.supportedBadge":
-      "Compact OK",
+    "accountPool.upstreamAccounts.compactSupport.supportedBadge": "Compact OK",
     "accountPool.upstreamAccounts.compactSupport.unsupportedBadge":
       "Compact unsupported",
-    "accountPool.upstreamAccounts.compactSupport.status.supported":
-      "Supported",
+    "accountPool.upstreamAccounts.compactSupport.status.supported": "Supported",
     "accountPool.upstreamAccounts.compactSupport.status.unsupported":
       "Unsupported",
-    "accountPool.upstreamAccounts.compactSupport.status.unknown":
-      "Unknown",
+    "accountPool.upstreamAccounts.compactSupport.status.unknown": "Unknown",
     "accountPool.upstreamAccounts.latestAction.actions.route_recovered":
       "Route recovered",
     "accountPool.upstreamAccounts.latestAction.actions.route_retryable_failure":
@@ -1576,7 +1578,8 @@ const baseTranslations = {
     "table.poolAttempts.title": "Pool attempts",
     "table.poolAttempts.loading": "Loading pool attempts",
     "table.poolAttempts.loadError": "Failed to load pool attempts: {{error}}",
-    "table.poolAttempts.empty": "No pool attempt records found. The detail may already be cleaned.",
+    "table.poolAttempts.empty":
+      "No pool attempt records found. The detail may already be cleaned.",
     "table.poolAttempts.notPool": "This request did not use pool routing.",
     "table.poolAttempts.retry": "Retry / account",
     "table.poolAttempts.httpStatus": "HTTP status",
@@ -1751,8 +1754,7 @@ const baseTranslations = {
       "优先队列同步间隔",
     "accountPool.upstreamAccounts.routing.secondarySyncIntervalLabel":
       "次级队列同步间隔",
-    "accountPool.upstreamAccounts.routing.priorityCapLabel":
-      "优先可用账号上限",
+    "accountPool.upstreamAccounts.routing.priorityCapLabel": "优先可用账号上限",
     "accountPool.upstreamAccounts.routing.priorityCapValue":
       "前 {{count}} 个账号",
     "accountPool.upstreamAccounts.routing.intervalHours": "{{count}} 小时",
@@ -1817,7 +1819,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.actions.enable": "启用",
     "accountPool.upstreamAccounts.actions.openDetails": "打开详情",
     "accountPool.upstreamAccounts.actions.dismissDuplicateWarning": "收起提示",
-    "accountPool.upstreamAccounts.partialSuccess.title": "保存成功，但后续步骤有警告",
+    "accountPool.upstreamAccounts.partialSuccess.title":
+      "保存成功，但后续步骤有警告",
     "accountPool.upstreamAccounts.partialSuccess.createdButGroupSettingsFailed":
       "账号已创建，但保存分组草稿设置失败：{error}",
     "accountPool.upstreamAccounts.partialSuccess.savedButGroupSettingsFailed":
@@ -1835,18 +1838,24 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.statusFilter.all": "全部状态",
     "accountPool.upstreamAccounts.workStatusFilterLabel": "工作状态",
     "accountPool.upstreamAccounts.workStatusFilter.all": "全部工作状态",
-    "accountPool.upstreamAccounts.workStatusFilter.searchPlaceholder": "搜索工作状态...",
-    "accountPool.upstreamAccounts.workStatusFilter.empty": "没有匹配的工作状态。",
+    "accountPool.upstreamAccounts.workStatusFilter.searchPlaceholder":
+      "搜索工作状态...",
+    "accountPool.upstreamAccounts.workStatusFilter.empty":
+      "没有匹配的工作状态。",
     "accountPool.upstreamAccounts.workStatusFilter.clear": "清空工作状态筛选",
     "accountPool.upstreamAccounts.enableStatusFilterLabel": "启用状态",
     "accountPool.upstreamAccounts.enableStatusFilter.all": "全部启用状态",
-    "accountPool.upstreamAccounts.enableStatusFilter.searchPlaceholder": "搜索启用状态...",
-    "accountPool.upstreamAccounts.enableStatusFilter.empty": "没有匹配的启用状态。",
+    "accountPool.upstreamAccounts.enableStatusFilter.searchPlaceholder":
+      "搜索启用状态...",
+    "accountPool.upstreamAccounts.enableStatusFilter.empty":
+      "没有匹配的启用状态。",
     "accountPool.upstreamAccounts.enableStatusFilter.clear": "清空启用状态筛选",
     "accountPool.upstreamAccounts.healthStatusFilterLabel": "账号状态",
     "accountPool.upstreamAccounts.healthStatusFilter.all": "全部账号状态",
-    "accountPool.upstreamAccounts.healthStatusFilter.searchPlaceholder": "搜索账号状态...",
-    "accountPool.upstreamAccounts.healthStatusFilter.empty": "没有匹配的账号状态。",
+    "accountPool.upstreamAccounts.healthStatusFilter.searchPlaceholder":
+      "搜索账号状态...",
+    "accountPool.upstreamAccounts.healthStatusFilter.empty":
+      "没有匹配的账号状态。",
     "accountPool.upstreamAccounts.healthStatusFilter.clear": "清空账号状态筛选",
     "accountPool.upstreamAccounts.tagFilterLabel": "账号标签",
     "accountPool.upstreamAccounts.tagFilterPlaceholder": "全部标签",
@@ -1890,7 +1899,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.import.fileInputLabel": "凭据 JSON 文件",
     "accountPool.upstreamAccounts.import.paste.label": "粘贴单条凭据 JSON",
     "accountPool.upstreamAccounts.import.paste.placeholder":
-      "{\n  \"type\": \"codex\",\n  \"email\": \"owner@example.com\",\n  ...\n}",
+      '{\n  "type": "codex",\n  "email": "owner@example.com",\n  ...\n}',
     "accountPool.upstreamAccounts.import.paste.hint":
       "每次只粘贴一条凭据 JSON object。粘贴后会自动预校验，成功就加入列表；失败时可在这里继续编辑后重试。",
     "accountPool.upstreamAccounts.import.paste.validating":
@@ -2030,7 +2039,7 @@ const baseTranslations = {
       "只用于记录这行账号的附加说明，不影响 OAuth 流程；默认收起，避免占用表格空间。",
     "accountPool.upstreamAccounts.groupNotes.actions.edit": "编辑分组设置",
     "accountPool.upstreamAccounts.groupNotes.tooltip.body":
-      "编辑这个分组的共享备注和绑定的正向代理节点。",
+      "编辑这个分组的共享备注、绑定的正向代理节点，以及节点分流策略。",
     "accountPool.upstreamAccounts.groupNotes.dialogTitle": "分组设置",
     "accountPool.upstreamAccounts.groupNotes.existingDescription":
       "这个分组已经存在，保存后会立即更新共享备注和代理绑定。",
@@ -2038,14 +2047,20 @@ const baseTranslations = {
       "这个分组还没有实际账号，现在保存会提前创建它的共享设置。",
     "accountPool.upstreamAccounts.groupNotes.notePlaceholder":
       "填写这个分组的共享备注",
-    "accountPool.upstreamAccounts.groupNotes.concurrency.label":
-      "并发限制",
+    "accountPool.upstreamAccounts.groupNotes.concurrency.label": "并发限制",
     "accountPool.upstreamAccounts.groupNotes.concurrency.hint":
       "用 1-30 限制这个分组的新分配并发，最后一档表示无限。",
     "accountPool.upstreamAccounts.groupNotes.concurrency.current": "当前",
     "accountPool.upstreamAccounts.groupNotes.concurrency.unlimited": "无限",
     "accountPool.upstreamAccounts.groupNotes.badges.existing": "已存在分组",
     "accountPool.upstreamAccounts.groupNotes.badges.draft": "草稿分组",
+    "accountPool.upstreamAccounts.groupNotes.nodeShunt.label": "节点分流策略",
+    "accountPool.upstreamAccounts.groupNotes.nodeShunt.hint":
+      "每个选中的节点都会成为独占槽位；勾选 N 个节点，就代表这个分组同时能提供 N 个上游账号。",
+    "accountPool.upstreamAccounts.groupNotes.nodeShunt.toggle":
+      "开启独占节点槽位",
+    "accountPool.upstreamAccounts.groupNotes.nodeShunt.warning":
+      "开启前请至少绑定一个节点（含 Direct）。",
     "accountPool.upstreamAccounts.groupNotes.upstream429.label":
       "上游 429 重试",
     "accountPool.upstreamAccounts.groupNotes.upstream429.hint":
@@ -2054,19 +2069,19 @@ const baseTranslations = {
       "上游 429 后继续重试当前账号",
     "accountPool.upstreamAccounts.groupNotes.upstream429.countLabel":
       "重试次数",
-    "accountPool.upstreamAccounts.groupNotes.upstream429.countOnce": "重试 1 次",
+    "accountPool.upstreamAccounts.groupNotes.upstream429.countOnce":
+      "重试 1 次",
     "accountPool.upstreamAccounts.groupNotes.upstream429.countMany":
       "重试 {{count}} 次",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.label":
       "绑定代理节点",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.hint":
-      "留空时继续走自动路由。选择多个节点后，只有连续网络失败达到阈值才会切到下一个节点。",
+      "留空时继续走自动路由。关闭节点分流策略时，所选节点会作为共享硬绑定池；开启后，每个选中节点都会变成一个独占账号槽位。",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.automatic":
       "当前没有绑定节点，这个分组会继续使用自动路由。",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.empty":
       "当前没有可用的代理节点。",
-    "accountPool.upstreamAccounts.groupNotes.proxyBindings.missing":
-      "已失效",
+    "accountPool.upstreamAccounts.groupNotes.proxyBindings.missing": "已失效",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.unavailable":
       "不可选",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartLabel":
@@ -2077,6 +2092,8 @@ const baseTranslations = {
       "失败",
     "accountPool.upstreamAccounts.groupNotes.proxyBindings.chartEmpty":
       "暂无 24 小时数据",
+    "accountPool.upstreamAccounts.table.routingBlockShort": "受限",
+    "accountPool.upstreamAccounts.routingBlock.title": "路由受限",
     "accountPool.upstreamAccounts.batchOauth.tooltip.completeTitle": "提交回调",
     "accountPool.upstreamAccounts.batchOauth.tooltip.completeBody":
       "浏览器登录成功后，把上方回调链接粘贴完整，再点击这里完成这一行账号的入池。",
@@ -2140,8 +2157,7 @@ const baseTranslations = {
       "24 小时 Token 累计图",
     "accountPool.upstreamAccounts.stickyConversations.table.stickyKey":
       "Sticky Key",
-    "accountPool.upstreamAccounts.stickyConversations.table.actions":
-      "操作",
+    "accountPool.upstreamAccounts.stickyConversations.table.actions": "操作",
     "accountPool.upstreamAccounts.records.title": "调用记录",
     "accountPool.upstreamAccounts.records.description":
       "查看这个上游账号最近保留的调用记录。",
@@ -2188,7 +2204,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.kind.oauth": "OAuth",
     "accountPool.upstreamAccounts.kind.apiKey": "API Key",
     "accountPool.upstreamAccounts.workStatus.working": "工作",
-    "accountPool.upstreamAccounts.workStatus.workingWithCount": "工作 {{count}}",
+    "accountPool.upstreamAccounts.workStatus.workingWithCount":
+      "工作 {{count}}",
     "accountPool.upstreamAccounts.workStatus.degraded": "工作降级",
     "accountPool.upstreamAccounts.workStatus.idle": "空闲",
     "accountPool.upstreamAccounts.workStatus.rate_limited": "限流",
@@ -2197,7 +2214,8 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.enableStatus.disabled": "禁用",
     "accountPool.upstreamAccounts.healthStatus.normal": "正常",
     "accountPool.upstreamAccounts.healthStatus.needs_reauth": "需要重新授权",
-    "accountPool.upstreamAccounts.healthStatus.upstream_unavailable": "上游不可达",
+    "accountPool.upstreamAccounts.healthStatus.upstream_unavailable":
+      "上游不可达",
     "accountPool.upstreamAccounts.healthStatus.upstream_rejected": "上游拒绝",
     "accountPool.upstreamAccounts.healthStatus.error_other": "其它异常",
     "accountPool.upstreamAccounts.syncState.idle": "同步空闲",
@@ -2247,8 +2265,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.bulk.groupPlaceholder":
       "输入分组名，留空则清空",
     "accountPool.upstreamAccounts.bulk.addTagsDialogTitle": "批量增加标签",
-    "accountPool.upstreamAccounts.bulk.removeTagsDialogTitle":
-      "批量移除标签",
+    "accountPool.upstreamAccounts.bulk.removeTagsDialogTitle": "批量移除标签",
     "accountPool.upstreamAccounts.bulk.tagsDialogDescription":
       "为所选账号选择一个或多个已有标签。",
     "accountPool.upstreamAccounts.bulk.tagsField": "标签",
@@ -2474,8 +2491,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.compactSupport.unsupportedBadge":
       "Compact 不支持",
     "accountPool.upstreamAccounts.compactSupport.status.supported": "支持",
-    "accountPool.upstreamAccounts.compactSupport.status.unsupported":
-      "不支持",
+    "accountPool.upstreamAccounts.compactSupport.status.unsupported": "不支持",
     "accountPool.upstreamAccounts.compactSupport.status.unknown": "未知",
     "accountPool.upstreamAccounts.latestAction.fields.action": "动作",
     "accountPool.upstreamAccounts.latestAction.fields.source": "来源",
@@ -2502,8 +2518,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.latestAction.actions.account_updated":
       "账号已更新",
     "accountPool.upstreamAccounts.latestAction.sources.call": "调用",
-    "accountPool.upstreamAccounts.latestAction.sources.sync_manual":
-      "手动同步",
+    "accountPool.upstreamAccounts.latestAction.sources.sync_manual": "手动同步",
     "accountPool.upstreamAccounts.latestAction.sources.sync_maintenance":
       "维护同步",
     "accountPool.upstreamAccounts.latestAction.sources.sync_post_create":
@@ -2515,8 +2530,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.latestAction.reasons.sync_ok": "同步完成",
     "accountPool.upstreamAccounts.latestAction.reasons.account_updated":
       "账号设置已更新",
-    "accountPool.upstreamAccounts.latestAction.reasons.sync_error":
-      "同步失败",
+    "accountPool.upstreamAccounts.latestAction.reasons.sync_error": "同步失败",
     "accountPool.upstreamAccounts.latestAction.reasons.usage_snapshot_exhausted":
       "最新额度快照已经显示限制窗口耗尽",
     "accountPool.upstreamAccounts.latestAction.reasons.quota_still_exhausted":
@@ -2544,8 +2558,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.recentActions.title": "最近账号事件",
     "accountPool.upstreamAccounts.recentActions.description":
       "展示这条账号最近的调用与同步动作。",
-    "accountPool.upstreamAccounts.recentActions.empty":
-      "暂时还没有最近事件。",
+    "accountPool.upstreamAccounts.recentActions.empty": "暂时还没有最近事件。",
     "accountPool.upstreamAccounts.duplicate.badge": "重复账号",
     "accountPool.upstreamAccounts.duplicate.warningTitle":
       "{{name}} 已保存，但检测到上游身份重复。",
@@ -2839,12 +2852,10 @@ const baseTranslations = {
       "按时间倒序展示当前仍可回放的原始调用记录。",
     "live.conversations.drawer.progress":
       "已加载 {{loaded}} / {{total}} 条保留调用记录",
-    "live.conversations.drawer.progressComplete":
-      "共 {{count}} 条保留调用记录",
+    "live.conversations.drawer.progressComplete": "共 {{count}} 条保留调用记录",
     "live.conversations.drawer.loadMore": "继续加载更多记录",
     "live.conversations.drawer.loadingMore": "继续加载调用记录中…",
-    "live.conversations.drawer.empty":
-      "当前对话暂无可回放的调用记录。",
+    "live.conversations.drawer.empty": "当前对话暂无可回放的调用记录。",
     "live.conversations.chartAria": "{{hours}} 小时 Token 累计图",
     "live.chart.tooltip.instructions":
       "悬停或点按查看详情；聚焦图表后可用方向键切换数据点。",
