@@ -16035,10 +16035,12 @@ async fn resolve_pool_account_group_proxy_routing_readiness(
             missing_account_group_error_message(),
         ));
     };
-    let scope =
-        match load_required_account_forward_proxy_scope_from_group_metadata(state, Some(group_name))
-            .await
-        {
+    let scope = match load_required_account_forward_proxy_scope_from_group_metadata(
+        state,
+        Some(group_name),
+    )
+    .await
+    {
         Ok(scope) => scope,
         Err(err) => {
             return Ok(PoolAccountGroupProxyRoutingReadiness::Blocked(
