@@ -5373,6 +5373,92 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(pageTextContent()).toContain("Generate a fresh OAuth URL");
   });
 
+  it("clears a completed single oauth session after saving group proxy metadata changes", async () => {
+    const completeOauthLogin = vi.fn().mockResolvedValue({
+      id: 41,
+      displayName: "Fresh OAuth",
+      duplicateInfo: null,
+    });
+    const saveGroupNote = vi
+      .fn()
+      .mockResolvedValue({ groupName: TEST_REQUIRED_GROUP_NAME, note: "Saved" });
+    mockUpstreamAccounts({
+      completeOauthLogin,
+      saveGroupNote,
+      forwardProxyNodes: [
+        ...TEST_FORWARD_PROXY_NODES,
+        {
+          key: "jp-edge-01",
+          displayName: "JP Edge 01",
+          protocolLabel: "SS",
+          source: "subscription",
+          penalized: false,
+          selectable: true,
+          last24h: [],
+        },
+      ],
+    });
+    render();
+
+    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth");
+    await flushAsync();
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+    setInputValue(
+      'textarea[name="oauthCallbackUrl"]',
+      "http://localhost:1455/oauth/callback?code=test",
+    );
+    await flushAsync();
+    clickButton(/Complete OAuth login/i);
+    await flushAsync();
+
+    expect(findButton(/Generate OAuth URL/i)?.disabled).toBe(true);
+
+    clickButton(/Edit group settings|Edit group note/i);
+    await flushAsync();
+
+    const groupSettingsDialog = Array.from(
+      document.body.querySelectorAll('[role="dialog"]'),
+    ).at(-1);
+    if (!(groupSettingsDialog instanceof HTMLElement)) {
+      throw new Error("missing group settings dialog");
+    }
+
+    const nodeShuntToggle = Array.from(
+      groupSettingsDialog.querySelectorAll('[role="switch"]'),
+    ).at(-1);
+    if (!(nodeShuntToggle instanceof HTMLElement)) {
+      throw new Error("missing node shunt toggle");
+    }
+    act(() => {
+      nodeShuntToggle.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const proxyOption = Array.from(
+      groupSettingsDialog.querySelectorAll("button"),
+    ).find((candidate) => /JP Edge 01/i.test(candidate.textContent || ""));
+    if (!(proxyOption instanceof HTMLButtonElement)) {
+      throw new Error("missing proxy binding option");
+    }
+    act(() => {
+      proxyOption.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    clickBodyButton(/Save changes/i);
+    await flushAsync();
+
+    expect(saveGroupNote).toHaveBeenCalledWith(TEST_REQUIRED_GROUP_NAME, {
+      note: `${TEST_REQUIRED_GROUP_NAME} note`,
+      boundProxyKeys: ["__direct__", "jp-edge-01"],
+      concurrencyLimit: 0,
+      nodeShuntEnabled: true,
+      upstream429RetryEnabled: false,
+      upstream429MaxRetries: 0,
+    });
+    expect(findButton(/Generate OAuth URL/i)?.disabled).toBe(false);
+    expect(pageTextContent()).toContain("Generate a fresh OAuth URL");
+  });
+
   it("refreshes the single oauth session after a server-side completion failure", async () => {
     const getLoginSession = vi.fn().mockResolvedValue({
       loginId: "login-1",

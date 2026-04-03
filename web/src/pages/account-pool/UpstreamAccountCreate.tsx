@@ -3261,12 +3261,25 @@ export default function UpstreamAccountCreatePage() {
       : normalizeGroupUpstream429MaxRetries(
           groupNoteEditor.upstream429MaxRetries,
         );
-    const shouldInvalidateSingleOauthSessionForDraftGroup =
-      normalizeGroupName(oauthGroupName) === normalizedGroupName &&
-      (resolvePendingGroupNoteForName(oauthGroupName).trim() !==
-        normalizedNote ||
-        resolvePendingGroupConcurrencyLimitForName(oauthGroupName) !==
-          normalizedConcurrencyLimit);
+    const currentOauthGroupName = normalizeGroupName(oauthGroupName);
+    const currentOauthGroupNote =
+      resolvePendingGroupNoteForName(oauthGroupName).trim();
+    const currentOauthGroupConcurrencyLimit =
+      resolvePendingGroupConcurrencyLimitForName(oauthGroupName);
+    const currentOauthGroupBoundProxyKeys =
+      resolvePendingGroupBoundProxyKeysForName(oauthGroupName);
+    const currentOauthGroupNodeShuntEnabled =
+      resolveGroupNodeShuntEnabledForName(oauthGroupName);
+    const shouldInvalidateSingleOauthSessionForGroupMetadataChange =
+      currentOauthGroupName === normalizedGroupName &&
+      (currentOauthGroupNote !== normalizedNote ||
+        currentOauthGroupConcurrencyLimit !== normalizedConcurrencyLimit ||
+        currentOauthGroupNodeShuntEnabled !== normalizedNodeShuntEnabled ||
+        currentOauthGroupBoundProxyKeys.length !==
+          normalizedBoundProxyKeys.length ||
+        currentOauthGroupBoundProxyKeys.some(
+          (value, index) => value !== normalizedBoundProxyKeys[index],
+        ));
     setGroupNoteError(null);
     if (!groupNoteEditor.existing) {
       setGroupDraftNotes((current) => {
@@ -3329,7 +3342,7 @@ export default function UpstreamAccountCreatePage() {
         }
         return next;
       });
-      if (shouldInvalidateSingleOauthSessionForDraftGroup) {
+      if (shouldInvalidateSingleOauthSessionForGroupMetadataChange) {
         invalidateSingleOauthSessionForMetadataEdit();
       }
       setGroupNoteEditor((current) => ({ ...current, open: false }));
@@ -3346,6 +3359,9 @@ export default function UpstreamAccountCreatePage() {
         upstream429RetryEnabled: normalizedUpstream429RetryEnabled,
         upstream429MaxRetries: normalizedUpstream429MaxRetries,
       });
+      if (shouldInvalidateSingleOauthSessionForGroupMetadataChange) {
+        invalidateSingleOauthSessionForMetadataEdit();
+      }
       clearDraftGroupSettings(normalizedGroupName);
       setGroupNoteEditor((current) => ({ ...current, open: false }));
     } catch (err) {
