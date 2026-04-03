@@ -434,10 +434,7 @@ async function setFileInputFiles(input: HTMLInputElement, files: File[]) {
   });
 }
 
-async function pasteIntoField(
-  input: HTMLTextAreaElement,
-  text: string,
-) {
+async function pasteIntoField(input: HTMLTextAreaElement, text: string) {
   await act(async () => {
     const event = new Event("paste", {
       bubbles: true,
@@ -6913,7 +6910,9 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     mockUpstreamAccounts({ runImportedOauthValidation });
     render("/account-pool/upstream-accounts/new?mode=import");
 
-    const pasteField = host?.querySelector('textarea[name="importOauthPasteDraft"]');
+    const pasteField = host?.querySelector(
+      'textarea[name="importOauthPasteDraft"]',
+    );
     if (!(pasteField instanceof HTMLTextAreaElement)) {
       throw new Error("missing import paste textarea");
     }
@@ -6973,7 +6972,9 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     mockUpstreamAccounts({ runImportedOauthValidation });
     render("/account-pool/upstream-accounts/new?mode=import");
 
-    const pasteField = host?.querySelector('textarea[name="importOauthPasteDraft"]');
+    const pasteField = host?.querySelector(
+      'textarea[name="importOauthPasteDraft"]',
+    );
     if (!(pasteField instanceof HTMLTextAreaElement)) {
       throw new Error("missing import paste textarea");
     }
@@ -7016,7 +7017,9 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     mockUpstreamAccounts({ runImportedOauthValidation });
     render("/account-pool/upstream-accounts/new?mode=import");
 
-    const pasteField = host?.querySelector('textarea[name="importOauthPasteDraft"]');
+    const pasteField = host?.querySelector(
+      'textarea[name="importOauthPasteDraft"]',
+    );
     if (!(pasteField instanceof HTMLTextAreaElement)) {
       throw new Error("missing import paste textarea");
     }
@@ -7038,7 +7041,9 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     mockUpstreamAccounts({ runImportedOauthValidation: vi.fn() });
     render("/account-pool/upstream-accounts/new?mode=import");
 
-    const pasteField = host?.querySelector('textarea[name="importOauthPasteDraft"]');
+    const pasteField = host?.querySelector(
+      'textarea[name="importOauthPasteDraft"]',
+    );
     if (!(pasteField instanceof HTMLTextAreaElement)) {
       throw new Error("missing import paste textarea");
     }
@@ -7069,7 +7074,9 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     render("/account-pool/upstream-accounts/new?mode=import");
 
     const fileInput = host?.querySelector('input[name="importOauthFiles"]');
-    const pasteField = host?.querySelector('textarea[name="importOauthPasteDraft"]');
+    const pasteField = host?.querySelector(
+      'textarea[name="importOauthPasteDraft"]',
+    );
     if (!(fileInput instanceof HTMLInputElement)) {
       throw new Error("missing import file input");
     }
@@ -7089,9 +7096,8 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     if (!resolveValidation) {
       throw new Error("missing paste validation resolver");
     }
-    const completeValidation: (
-      value: ImportedOauthValidationResponse,
-    ) => void = resolveValidation;
+    const completeValidation: (value: ImportedOauthValidationResponse) => void =
+      resolveValidation;
     completeValidation({
       inputFiles: 1,
       uniqueInInput: 1,
@@ -7191,9 +7197,8 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
       ]),
     );
     expect(
-      new Set(
-        request.items.map((item: { sourceId: string }) => item.sourceId),
-      ).size,
+      new Set(request.items.map((item: { sourceId: string }) => item.sourceId))
+        .size,
     ).toBe(2);
   });
 
@@ -7237,7 +7242,9 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
     });
     render("/account-pool/upstream-accounts/new?mode=import");
     const fileInput = host?.querySelector('input[name="importOauthFiles"]');
-    const pasteField = host?.querySelector('textarea[name="importOauthPasteDraft"]');
+    const pasteField = host?.querySelector(
+      'textarea[name="importOauthPasteDraft"]',
+    );
     if (!(pasteField instanceof HTMLTextAreaElement)) {
       throw new Error("missing import paste textarea");
     }
@@ -7324,9 +7331,9 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
 
     clickButton(/Add tag/i);
     await flushAsync();
-    const vipOption = Array.from(document.body.querySelectorAll("[cmdk-item]")).find(
-      (candidate) => (candidate.textContent || "").includes("vip"),
-    );
+    const vipOption = Array.from(
+      document.body.querySelectorAll("[cmdk-item]"),
+    ).find((candidate) => (candidate.textContent || "").includes("vip"));
     if (!(vipOption instanceof HTMLElement)) {
       throw new Error("missing vip tag option");
     }
@@ -7353,6 +7360,71 @@ describe("UpstreamAccountCreatePage imported oauth", () => {
         }),
       ],
     });
+  });
+
+  it("allows imported oauth validation for node-shunt groups with only unavailable bound nodes", async () => {
+    const fixture = createImportedOauthFixture(1);
+    const sourceId = getImportedOauthSourceId(fixture);
+    const groups = TEST_GROUP_SUMMARIES.map((group) =>
+      group.groupName === TEST_REQUIRED_GROUP_NAME
+        ? {
+            ...group,
+            boundProxyKeys: ["stale-node"],
+            nodeShuntEnabled: true,
+          }
+        : {
+            ...group,
+            boundProxyKeys: [...group.boundProxyKeys],
+          },
+    );
+    const { startImportedOauthValidationJob } =
+      installImportedOauthValidationJobFlow({
+        rowsBySourceId: {
+          [sourceId]: buildImportedOauthRow(
+            sourceId,
+            fixture.fileName,
+            fixture.email,
+            fixture.chatgptAccountId,
+          ),
+        },
+      });
+    mockUpstreamAccounts({
+      startImportedOauthValidationJob,
+      groups,
+    });
+    render("/account-pool/upstream-accounts/new?mode=import");
+
+    setComboboxValue('input[name="importGroupName"]', TEST_REQUIRED_GROUP_NAME);
+    await flushAsync();
+
+    const fileInput = host?.querySelector('input[name="importOauthFiles"]');
+    if (!(fileInput instanceof HTMLInputElement)) {
+      throw new Error("missing import file input");
+    }
+
+    await setFileInputFiles(fileInput, [fixture.file]);
+    await flushAsync();
+
+    clickButton(/validate and review/i);
+    await flushAsync();
+    await flushTimers();
+    await flushAsync();
+
+    expect(startImportedOauthValidationJob).toHaveBeenCalledWith({
+      groupName: TEST_REQUIRED_GROUP_NAME,
+      groupBoundProxyKeys: ["stale-node"],
+      groupNodeShuntEnabled: true,
+      items: [
+        expect.objectContaining({
+          fileName: fixture.fileName,
+          sourceId,
+          content: fixture.content,
+        }),
+      ],
+    });
+    expect(pageTextContent()).not.toContain(
+      `Group "${TEST_REQUIRED_GROUP_NAME}" does not have any selectable bound proxy nodes.`,
+    );
   });
 
   it("removes imported rows from the validation list without navigating away", async () => {

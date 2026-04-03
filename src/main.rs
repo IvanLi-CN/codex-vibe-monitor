@@ -21629,11 +21629,46 @@ fn next_proxy_request_id() -> u64 {
     NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed)
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct PoolRoutingReservation {
     account_id: i64,
+    proxy_key: Option<String>,
     #[allow(dead_code)]
     created_at: Instant,
+}
+
+#[derive(Debug, Default, Clone)]
+struct PoolRoutingReservationSnapshot {
+    counts_by_account: HashMap<i64, i64>,
+    proxy_keys_by_account: HashMap<i64, HashSet<String>>,
+}
+
+impl PoolRoutingReservationSnapshot {
+    fn count_for_account(&self, account_id: i64) -> i64 {
+        self.counts_by_account
+            .get(&account_id)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    fn pinned_proxy_keys_for_account(
+        &self,
+        account_id: i64,
+        valid_proxy_keys: &[String],
+        occupied_proxy_keys: &HashSet<String>,
+    ) -> Vec<String> {
+        let Some(proxy_keys) = self.proxy_keys_by_account.get(&account_id) else {
+            return Vec::new();
+        };
+        valid_proxy_keys
+            .iter()
+            .filter(|proxy_key| {
+                proxy_keys.contains(proxy_key.as_str())
+                    && !occupied_proxy_keys.contains(proxy_key.as_str())
+            })
+            .cloned()
+            .collect()
+    }
 }
 
 #[derive(Debug)]
@@ -21680,12 +21715,38 @@ fn pool_routing_reservation_count(state: &AppState, account_id: i64) -> i64 {
         .count() as i64
 }
 
+fn pool_routing_reservation_snapshot(state: &AppState) -> PoolRoutingReservationSnapshot {
+    let reservations = state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned");
+    let mut snapshot = PoolRoutingReservationSnapshot::default();
+    for reservation in reservations.values() {
+        *snapshot
+            .counts_by_account
+            .entry(reservation.account_id)
+            .or_default() += 1;
+        if let Some(proxy_key) = reservation.proxy_key.as_deref() {
+            snapshot
+                .proxy_keys_by_account
+                .entry(reservation.account_id)
+                .or_default()
+                .insert(proxy_key.to_string());
+        }
+    }
+    snapshot
+}
+
 fn reserve_pool_routing_account(
     state: &AppState,
     reservation_key: &str,
     account: &PoolResolvedAccount,
 ) {
-    if account.routing_source == PoolRoutingSelectionSource::StickyReuse {
+    let proxy_key = match &account.forward_proxy_scope {
+        ForwardProxyRouteScope::PinnedProxyKey(proxy_key) => Some(proxy_key.clone()),
+        _ => None,
+    };
+    if account.routing_source == PoolRoutingSelectionSource::StickyReuse && proxy_key.is_none() {
         return;
     }
     let mut reservations = state
@@ -21696,6 +21757,7 @@ fn reserve_pool_routing_account(
         reservation_key.to_string(),
         PoolRoutingReservation {
             account_id: account.account_id,
+            proxy_key,
             created_at: Instant::now(),
         },
     );

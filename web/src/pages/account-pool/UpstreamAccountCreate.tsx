@@ -3046,6 +3046,7 @@ export default function UpstreamAccountCreatePage() {
       }
       if (
         hasLoadedForwardProxyCatalog &&
+        !nodeShuntEnabled &&
         !boundProxyKeys.some((proxyKey) =>
           selectableForwardProxyKeys.has(proxyKey),
         )
@@ -4381,10 +4382,7 @@ export default function UpstreamAccountCreatePage() {
         importFileSourceSequenceRef.current += selectedFiles.length;
         const items = await Promise.all(
           selectedFiles.map(async (file, index) => ({
-            sourceId: createImportedOauthSourceId(
-              file,
-              sourceIdOffset + index,
-            ),
+            sourceId: createImportedOauthSourceId(file, sourceIdOffset + index),
             fileName: file.name,
             content: await file.text(),
           })),

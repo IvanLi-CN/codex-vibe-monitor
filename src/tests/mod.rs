@@ -15644,6 +15644,47 @@ async fn resolve_pool_account_for_request_counts_in_flight_reservations_toward_e
 }
 
 #[tokio::test]
+async fn reserve_pool_routing_account_tracks_pinned_sticky_reuse_slots() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(&state, "Sticky", "upstream-sticky").await;
+    let account = PoolResolvedAccount {
+        account_id,
+        display_name: "sticky-account".to_string(),
+        kind: "api_key_codex".to_string(),
+        auth: PoolResolvedAuth::ApiKey {
+            authorization: "Bearer sticky-account".to_string(),
+        },
+        upstream_base_url: Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        routing_source: PoolRoutingSelectionSource::StickyReuse,
+        group_name: Some(test_required_group_name().to_string()),
+        bound_proxy_keys: test_required_group_bound_proxy_keys(),
+        forward_proxy_scope: ForwardProxyRouteScope::PinnedProxyKey(
+            FORWARD_PROXY_DIRECT_KEY.to_string(),
+        ),
+        group_upstream_429_retry_enabled: false,
+        group_upstream_429_max_retries: 0,
+    };
+
+    reserve_pool_routing_account(state.as_ref(), "sticky-reservation", &account);
+
+    let reservations = state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned");
+    let reservation = reservations
+        .get("sticky-reservation")
+        .expect("sticky reuse reservation should be recorded");
+    assert_eq!(reservation.account_id, account_id);
+    assert_eq!(
+        reservation.proxy_key.as_deref(),
+        Some(FORWARD_PROXY_DIRECT_KEY)
+    );
+}
+
+#[tokio::test]
 async fn resolve_pool_account_for_request_keeps_old_in_flight_reservations_counted() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -15691,6 +15732,7 @@ async fn resolve_pool_account_for_request_keeps_old_in_flight_reservations_count
             "reservation-old".to_string(),
             PoolRoutingReservation {
                 account_id: preferred_id,
+                proxy_key: None,
                 created_at: std::time::Instant::now() - Duration::from_secs(5 * 60),
             },
         );

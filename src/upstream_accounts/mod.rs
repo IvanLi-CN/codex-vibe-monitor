@@ -3627,7 +3627,18 @@ pub(crate) async fn update_upstream_account_group(
     } else {
         existing_metadata.node_shunt_enabled
     };
-    if !next_node_shunt_enabled && bound_proxy_keys_was_updated && !next_bound_proxy_keys.is_empty()
+    let node_shunt_was_disabled = existing_metadata.node_shunt_enabled
+        && node_shunt_enabled_was_updated
+        && !next_node_shunt_enabled;
+    if next_node_shunt_enabled && next_bound_proxy_keys.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            missing_group_bound_proxy_error_message(group_name.trim()),
+        ));
+    }
+    if !next_node_shunt_enabled
+        && !next_bound_proxy_keys.is_empty()
+        && (bound_proxy_keys_was_updated || node_shunt_was_disabled)
     {
         let has_selectable_bound_proxy_keys = {
             let manager = state.forward_proxy.lock().await;
@@ -10555,6 +10566,12 @@ async fn resolve_required_group_proxy_binding_for_write(
         .map_err(internal_error_tuple)?;
     let node_shunt_enabled =
         requested_node_shunt_enabled.unwrap_or(existing_metadata.node_shunt_enabled);
+    if bound_proxy_keys.is_empty() {
+        return Err((
+            StatusCode::BAD_REQUEST,
+            missing_group_bound_proxy_error_message(&group_name),
+        ));
+    }
     if !node_shunt_enabled {
         let scope =
             required_account_forward_proxy_scope(Some(&group_name), bound_proxy_keys.clone())
@@ -11018,9 +11035,10 @@ async fn build_upstream_account_node_shunt_assignments(
 
     let now = Utc::now();
     let mut group_candidates = HashMap::<String, Vec<AccountRoutingCandidateRow>>::new();
+    let reservation_snapshot = pool_routing_reservation_snapshot(state);
     let mut candidates = load_account_routing_candidates(&state.pool, &HashSet::new()).await?;
     for candidate in &mut candidates {
-        candidate.in_flight_reservations = pool_routing_reservation_count(state, candidate.id);
+        candidate.in_flight_reservations = reservation_snapshot.count_for_account(candidate.id);
     }
     for candidate in candidates {
         let Some(row) = rows_by_id.get(&candidate.id) else {
@@ -11068,18 +11086,49 @@ async fn build_upstream_account_node_shunt_assignments(
         reserved_candidates.sort_by(compare_node_shunt_reserved_candidates);
         candidates.sort_by(compare_routing_candidates);
 
+        let mut occupied_proxy_keys = HashSet::new();
         let mut next_slot_index = 0usize;
         let mut assigned_account_ids = HashSet::new();
-        for candidate in reserved_candidates.iter().chain(candidates.iter()) {
-            if next_slot_index >= valid_proxy_keys.len() {
-                break;
-            }
+        for candidate in &reserved_candidates {
+            let reserved_proxy_keys = reservation_snapshot.pinned_proxy_keys_for_account(
+                candidate.id,
+                &valid_proxy_keys,
+                &occupied_proxy_keys,
+            );
+            let Some(proxy_key) = reserved_proxy_keys.first().cloned() else {
+                continue;
+            };
             if !assigned_account_ids.insert(candidate.id) {
                 continue;
+            }
+            assignments
+                .account_proxy_keys
+                .insert(candidate.id, proxy_key.clone());
+            for reserved_proxy_key in reserved_proxy_keys {
+                occupied_proxy_keys.insert(reserved_proxy_key.clone());
+                assignments
+                    .group_assigned_proxy_keys
+                    .entry(group_name.clone())
+                    .or_default()
+                    .insert(reserved_proxy_key);
+            }
+        }
+        for candidate in reserved_candidates.iter().chain(candidates.iter()) {
+            if !assigned_account_ids.insert(candidate.id) {
+                continue;
+            }
+            while next_slot_index < valid_proxy_keys.len()
+                && occupied_proxy_keys.contains(valid_proxy_keys[next_slot_index].as_str())
+            {
+                next_slot_index += 1;
+            }
+            if next_slot_index >= valid_proxy_keys.len() {
+                break;
             }
             let Some(proxy_key) = valid_proxy_keys.get(next_slot_index).cloned() else {
                 break;
             };
+            occupied_proxy_keys.insert(proxy_key.clone());
             assignments
                 .account_proxy_keys
                 .insert(candidate.id, proxy_key.clone());
@@ -18451,8 +18500,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn update_upstream_account_group_allows_clearing_bindings_while_node_shunt_stays_enabled()
-    {
+    async fn update_upstream_account_group_rejects_clearing_bindings_while_node_shunt_stays_enabled()
+     {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
         let account_id = insert_api_key_account(&state.pool, "Node Shunt Bound").await;
         set_test_account_group_name(&state.pool, account_id, Some("bound-node-shunt")).await;
@@ -18473,7 +18522,7 @@ mod tests {
         .expect("save group metadata");
         drop(conn);
 
-        let Json(response) = update_upstream_account_group(
+        let err = update_upstream_account_group(
             State(state),
             HeaderMap::new(),
             AxumPath("bound-node-shunt".to_string()),
@@ -18487,11 +18536,59 @@ mod tests {
             }),
         )
         .await
-        .expect("node shunt group should allow clearing bindings");
+        .expect_err("node shunt group should reject clearing bindings");
 
-        assert_eq!(response.group_name, "bound-node-shunt");
-        assert!(response.bound_proxy_keys.is_empty());
-        assert!(response.node_shunt_enabled);
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            err.1,
+            missing_group_bound_proxy_error_message("bound-node-shunt")
+        );
+    }
+
+    #[tokio::test]
+    async fn update_upstream_account_group_rejects_disabling_node_shunt_with_unselectable_bindings()
+    {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let account_id = insert_api_key_account(&state.pool, "Node Shunt Disable").await;
+        set_test_account_group_name(&state.pool, account_id, Some("disable-node-shunt")).await;
+        let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+        save_group_metadata_record_conn(
+            &mut conn,
+            "disable-node-shunt",
+            UpstreamAccountGroupMetadata {
+                note: None,
+                bound_proxy_keys: vec!["stale-node".to_string()],
+                node_shunt_enabled: true,
+                upstream_429_retry_enabled: false,
+                upstream_429_max_retries: 0,
+                concurrency_limit: 0,
+            },
+        )
+        .await
+        .expect("save group metadata");
+        drop(conn);
+
+        let err = update_upstream_account_group(
+            State(state),
+            HeaderMap::new(),
+            AxumPath("disable-node-shunt".to_string()),
+            Json(UpdateUpstreamAccountGroupRequest {
+                note: None,
+                bound_proxy_keys: None,
+                node_shunt_enabled: Some(false),
+                upstream_429_retry_enabled: None,
+                upstream_429_max_retries: None,
+                concurrency_limit: None,
+            }),
+        )
+        .await
+        .expect_err("disabling node shunt should revalidate unselectable bindings");
+
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            err.1,
+            "select at least one available proxy node or clear bindings before saving"
+        );
     }
 
     #[tokio::test]
@@ -18515,6 +18612,27 @@ mod tests {
         assert_eq!(binding.group_name, "write-node-shunt");
         assert_eq!(binding.bound_proxy_keys, expected_bound_proxy_keys);
         assert!(binding.node_shunt_enabled);
+    }
+
+    #[tokio::test]
+    async fn resolve_required_group_proxy_binding_for_write_rejects_empty_bindings_for_node_shunt()
+    {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+
+        let err = resolve_required_group_proxy_binding_for_write(
+            state.as_ref(),
+            Some("write-node-shunt".to_string()),
+            Some(vec![]),
+            Some(true),
+        )
+        .await
+        .expect_err("node shunt writes should reject empty bindings");
+
+        assert_eq!(err.0, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            err.1,
+            missing_group_bound_proxy_error_message("write-node-shunt")
+        );
     }
 
     #[tokio::test]
@@ -21602,20 +21720,23 @@ mod tests {
     #[tokio::test]
     async fn node_shunt_assignments_preserve_slots_for_accounts_with_in_flight_reservations() {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let secondary_proxy_key = {
+            let mut manager = state.forward_proxy.lock().await;
+            let mut settings = ForwardProxySettings::default();
+            settings.proxy_urls = vec!["http://127.0.0.1:18080".to_string()];
+            manager.apply_settings(settings);
+            manager
+                .binding_nodes()
+                .into_iter()
+                .find(|node| node.key != FORWARD_PROXY_DIRECT_KEY)
+                .map(|node| node.key)
+                .expect("secondary proxy binding key")
+        };
         let crypto_key = state
             .upstream_accounts
             .crypto_key
             .as_ref()
             .expect("test crypto key");
-        let reserved_account_id = insert_syncable_oauth_account(
-            &state.pool,
-            crypto_key,
-            "Reserved Slot Account",
-            "reserved-slot@example.com",
-            "org_reserved_slot",
-            "user_reserved_slot",
-        )
-        .await;
         let available_account_id = insert_syncable_oauth_account(
             &state.pool,
             crypto_key,
@@ -21625,7 +21746,31 @@ mod tests {
             "user_available_slot",
         )
         .await;
+        let reserved_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Reserved Slot Account",
+            "reserved-slot@example.com",
+            "org_reserved_slot",
+            "user_reserved_slot",
+        )
+        .await;
+        let overflow_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Overflow Slot Account",
+            "overflow-slot@example.com",
+            "org_overflow_slot",
+            "user_overflow_slot",
+        )
+        .await;
 
+        set_test_account_group_name(
+            &state.pool,
+            available_account_id,
+            Some("node-shunt-priority"),
+        )
+        .await;
         set_test_account_group_name(
             &state.pool,
             reserved_account_id,
@@ -21634,7 +21779,7 @@ mod tests {
         .await;
         set_test_account_group_name(
             &state.pool,
-            available_account_id,
+            overflow_account_id,
             Some("node-shunt-priority"),
         )
         .await;
@@ -21645,7 +21790,10 @@ mod tests {
             "node-shunt-priority",
             UpstreamAccountGroupMetadata {
                 note: None,
-                bound_proxy_keys: test_required_group_bound_proxy_keys(),
+                bound_proxy_keys: vec![
+                    FORWARD_PROXY_DIRECT_KEY.to_string(),
+                    secondary_proxy_key.clone(),
+                ],
                 node_shunt_enabled: true,
                 upstream_429_retry_enabled: false,
                 upstream_429_max_retries: 0,
@@ -21656,6 +21804,24 @@ mod tests {
         .expect("save node shunt metadata");
         drop(conn);
 
+        let initial_assignments = build_upstream_account_node_shunt_assignments(state.as_ref())
+            .await
+            .expect("build initial node shunt assignments");
+        assert_eq!(
+            initial_assignments
+                .account_proxy_keys
+                .get(&available_account_id)
+                .map(String::as_str),
+            Some(FORWARD_PROXY_DIRECT_KEY)
+        );
+        assert_eq!(
+            initial_assignments
+                .account_proxy_keys
+                .get(&reserved_account_id)
+                .map(String::as_str),
+            Some(secondary_proxy_key.as_str())
+        );
+
         state
             .pool_routing_reservations
             .lock()
@@ -21664,9 +21830,11 @@ mod tests {
                 "test-node-shunt-reservation".to_string(),
                 PoolRoutingReservation {
                     account_id: reserved_account_id,
+                    proxy_key: Some(secondary_proxy_key.clone()),
                     created_at: Instant::now(),
                 },
             );
+        set_test_account_group_name(&state.pool, available_account_id, None).await;
 
         let assignments = build_upstream_account_node_shunt_assignments(state.as_ref())
             .await
@@ -21677,12 +21845,13 @@ mod tests {
                 .account_proxy_keys
                 .get(&reserved_account_id)
                 .map(String::as_str),
-            Some(FORWARD_PROXY_DIRECT_KEY)
+            Some(secondary_proxy_key.as_str())
         );
         assert!(
-            !assignments
+            assignments
                 .account_proxy_keys
-                .contains_key(&available_account_id)
+                .get(&overflow_account_id)
+                .is_some_and(|proxy_key| proxy_key == FORWARD_PROXY_DIRECT_KEY)
         );
         assert!(
             assignments
@@ -21692,7 +21861,127 @@ mod tests {
         assert!(
             assignments
                 .eligible_account_ids
-                .contains(&available_account_id)
+                .contains(&overflow_account_id)
+        );
+    }
+
+    #[tokio::test]
+    async fn node_shunt_assignments_keep_all_reserved_proxy_keys_occupied_for_one_account() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let secondary_proxy_key = {
+            let mut manager = state.forward_proxy.lock().await;
+            let mut settings = ForwardProxySettings::default();
+            settings.proxy_urls = vec!["http://127.0.0.1:18080".to_string()];
+            manager.apply_settings(settings);
+            manager
+                .binding_nodes()
+                .into_iter()
+                .find(|node| node.key != FORWARD_PROXY_DIRECT_KEY)
+                .map(|node| node.key)
+                .expect("secondary proxy binding key")
+        };
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let reserved_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Reserved Multi Slot Account",
+            "reserved-multi-slot@example.com",
+            "org_reserved_multi_slot",
+            "user_reserved_multi_slot",
+        )
+        .await;
+        let overflow_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Overflow Multi Slot Account",
+            "overflow-multi-slot@example.com",
+            "org_overflow_multi_slot",
+            "user_overflow_multi_slot",
+        )
+        .await;
+
+        set_test_account_group_name(
+            &state.pool,
+            reserved_account_id,
+            Some("node-shunt-multi-reserved"),
+        )
+        .await;
+        set_test_account_group_name(
+            &state.pool,
+            overflow_account_id,
+            Some("node-shunt-multi-reserved"),
+        )
+        .await;
+
+        let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+        save_group_metadata_record_conn(
+            &mut conn,
+            "node-shunt-multi-reserved",
+            UpstreamAccountGroupMetadata {
+                note: None,
+                bound_proxy_keys: vec![
+                    FORWARD_PROXY_DIRECT_KEY.to_string(),
+                    secondary_proxy_key.clone(),
+                ],
+                node_shunt_enabled: true,
+                upstream_429_retry_enabled: false,
+                upstream_429_max_retries: 0,
+                concurrency_limit: 0,
+            },
+        )
+        .await
+        .expect("save node shunt metadata");
+        drop(conn);
+
+        let mut reservations = state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned");
+        reservations.insert(
+            "test-node-shunt-reservation-direct".to_string(),
+            PoolRoutingReservation {
+                account_id: reserved_account_id,
+                proxy_key: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
+                created_at: Instant::now(),
+            },
+        );
+        reservations.insert(
+            "test-node-shunt-reservation-secondary".to_string(),
+            PoolRoutingReservation {
+                account_id: reserved_account_id,
+                proxy_key: Some(secondary_proxy_key.clone()),
+                created_at: Instant::now(),
+            },
+        );
+        drop(reservations);
+
+        let assignments = build_upstream_account_node_shunt_assignments(state.as_ref())
+            .await
+            .expect("build node shunt assignments");
+
+        assert!(
+            assignments
+                .account_proxy_keys
+                .get(&reserved_account_id)
+                .is_some_and(|proxy_key| {
+                    proxy_key == FORWARD_PROXY_DIRECT_KEY || proxy_key == &secondary_proxy_key
+                })
+        );
+        assert!(
+            !assignments
+                .account_proxy_keys
+                .contains_key(&overflow_account_id)
+        );
+        assert_eq!(
+            assignments
+                .group_assigned_proxy_keys
+                .get("node-shunt-multi-reserved")
+                .map(|proxy_keys| proxy_keys.len()),
+            Some(2)
         );
     }
 
@@ -21763,6 +22052,7 @@ mod tests {
                 "test-node-shunt-sticky-reservation".to_string(),
                 PoolRoutingReservation {
                     account_id: reserved_account_id,
+                    proxy_key: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
                     created_at: Instant::now(),
                 },
             );
