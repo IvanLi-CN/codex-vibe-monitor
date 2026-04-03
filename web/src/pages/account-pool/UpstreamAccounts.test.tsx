@@ -16,6 +16,10 @@ import { I18nProvider } from "../../i18n";
 import UpstreamAccountsPage from "./UpstreamAccounts";
 import type { EffectiveRoutingRule, TagSummary } from "../../lib/api";
 
+type UpstreamAccountsHookValue = ReturnType<
+  typeof import("../../hooks/useUpstreamAccounts").useUpstreamAccounts
+>;
+
 const UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY =
   "codex-vibe-monitor.account-pool.upstream-accounts.filters";
 const LOCALE_STORAGE_KEY = "codex-vibe-monitor.locale";
@@ -4829,7 +4833,7 @@ describe("UpstreamAccountsPage delete confirmation", () => {
   });
 
   it("closes the current drawer after delete even if the hook clears selected state before resolving", async () => {
-    let state: any = {
+    let state: UpstreamAccountsHookValue = {
       items: [
         {
           id: 8,
