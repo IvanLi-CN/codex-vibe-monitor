@@ -21641,6 +21641,7 @@ struct PoolRoutingReservation {
 struct PoolRoutingReservationSnapshot {
     counts_by_account: HashMap<i64, i64>,
     proxy_keys_by_account: HashMap<i64, HashSet<String>>,
+    reserved_proxy_keys: HashSet<String>,
 }
 
 impl PoolRoutingReservationSnapshot {
@@ -21666,6 +21667,18 @@ impl PoolRoutingReservationSnapshot {
                 proxy_keys.contains(proxy_key.as_str())
                     && !occupied_proxy_keys.contains(proxy_key.as_str())
             })
+            .cloned()
+            .collect()
+    }
+
+    fn reserved_proxy_keys_for_group(&self, valid_proxy_keys: &[String]) -> HashSet<String> {
+        let valid_proxy_keys = valid_proxy_keys
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        self.reserved_proxy_keys
+            .iter()
+            .filter(|proxy_key| valid_proxy_keys.contains(proxy_key.as_str()))
             .cloned()
             .collect()
     }
@@ -21727,6 +21740,7 @@ fn pool_routing_reservation_snapshot(state: &AppState) -> PoolRoutingReservation
             .entry(reservation.account_id)
             .or_default() += 1;
         if let Some(proxy_key) = reservation.proxy_key.as_deref() {
+            snapshot.reserved_proxy_keys.insert(proxy_key.to_string());
             snapshot
                 .proxy_keys_by_account
                 .entry(reservation.account_id)

@@ -3810,6 +3810,12 @@ async fn build_imported_oauth_validation_response(
                 continue;
             }
         };
+        let reservation_key = reserve_imported_oauth_node_shunt_scope(
+            state,
+            &normalized.source_id,
+            existing_match.as_ref().map(|row| row.id),
+            &usage_scope,
+        )?;
         let (row, validated_import) = build_imported_oauth_validation_result(
             state,
             normalized,
@@ -3818,6 +3824,7 @@ async fn build_imported_oauth_validation_response(
             &usage_scope,
         )
         .await;
+        release_imported_oauth_node_shunt_scope(state, reservation_key);
         if let ForwardProxyRouteScope::PinnedProxyKey(proxy_key) = &usage_scope {
             if validated_import.is_some() {
                 consumed_proxy_keys.insert(proxy_key.clone());
@@ -4444,6 +4451,13 @@ fn spawn_imported_oauth_validation_job(
                         continue;
                     }
                 };
+                let reservation_key = reserve_imported_oauth_node_shunt_scope(
+                    state.as_ref(),
+                    &normalized.source_id,
+                    existing_match.as_ref().map(|row| row.id),
+                    &usage_scope,
+                )
+                .map_err(|err| err.to_string())?;
                 let (row, validated_import) = build_imported_oauth_validation_result(
                     state.as_ref(),
                     normalized,
@@ -4452,6 +4466,7 @@ fn spawn_imported_oauth_validation_job(
                     &usage_scope,
                 )
                 .await;
+                release_imported_oauth_node_shunt_scope(state.as_ref(), reservation_key);
                 if let ForwardProxyRouteScope::PinnedProxyKey(proxy_key) = &usage_scope {
                     if validated_import.is_some() {
                         consumed_proxy_keys.insert(proxy_key.clone());
@@ -5147,30 +5162,40 @@ pub(crate) async fn import_validated_oauth_accounts(
         };
         let probe = match cached_validation {
             Some(cached) => cached.probe,
-            None => match probe_imported_oauth_credentials(
-                state.as_ref(),
-                &normalized,
-                &refresh_scope,
-                &usage_scope,
-            )
-            .await
-            {
-                Ok(value) => value,
-                Err(err) => {
-                    failed += 1;
-                    results.push(ImportedOauthImportResult {
-                        source_id: normalized.source_id,
-                        file_name: normalized.file_name,
-                        email: Some(normalized.email),
-                        chatgpt_account_id: Some(normalized.chatgpt_account_id),
-                        account_id: existing_match.as_ref().map(|row| row.id),
-                        status: IMPORT_RESULT_STATUS_FAILED.to_string(),
-                        detail: Some(err.to_string()),
-                        matched_account,
-                    });
-                    continue;
+            None => {
+                let reservation_key = reserve_imported_oauth_node_shunt_scope(
+                    state.as_ref(),
+                    &normalized.source_id,
+                    existing_match.as_ref().map(|row| row.id),
+                    &usage_scope,
+                )
+                .map_err(internal_error_tuple)?;
+                let probe_result = probe_imported_oauth_credentials(
+                    state.as_ref(),
+                    &normalized,
+                    &refresh_scope,
+                    &usage_scope,
+                )
+                .await;
+                release_imported_oauth_node_shunt_scope(state.as_ref(), reservation_key);
+                match probe_result {
+                    Ok(value) => value,
+                    Err(err) => {
+                        failed += 1;
+                        results.push(ImportedOauthImportResult {
+                            source_id: normalized.source_id,
+                            file_name: normalized.file_name,
+                            email: Some(normalized.email),
+                            chatgpt_account_id: Some(normalized.chatgpt_account_id),
+                            account_id: existing_match.as_ref().map(|row| row.id),
+                            status: IMPORT_RESULT_STATUS_FAILED.to_string(),
+                            detail: Some(err.to_string()),
+                            matched_account,
+                        });
+                        continue;
+                    }
                 }
-            },
+            }
         };
 
         let encrypted_credentials = encrypt_credentials(
@@ -6509,12 +6534,26 @@ async fn create_api_key_account_inner(
     sync_account_tag_links(&state.pool, inserted_id, &tag_ids)
         .await
         .map_err(internal_error_tuple)?;
-    let detail = state
+    let detail = match state
         .upstream_accounts
         .account_ops
         .run_post_create_sync(state.clone(), inserted_id)
         .await
-        .map_err(internal_error_tuple)?;
+    {
+        Ok(detail) => detail,
+        Err(err) if is_group_node_shunt_unassigned_message(&err.to_string()) => {
+            load_upstream_account_detail_with_actual_usage(state.as_ref(), inserted_id)
+                .await
+                .map_err(internal_error_tuple)?
+                .ok_or_else(|| {
+                    (
+                        StatusCode::NOT_FOUND,
+                        "account not found after create".to_string(),
+                    )
+                })?
+        }
+        Err(err) => return Err(internal_error_tuple(err)),
+    };
     Ok(detail)
 }
 
@@ -11113,6 +11152,16 @@ async fn build_upstream_account_node_shunt_assignments(
                     .insert(reserved_proxy_key);
             }
         }
+        let globally_reserved_proxy_keys =
+            reservation_snapshot.reserved_proxy_keys_for_group(&valid_proxy_keys);
+        for proxy_key in globally_reserved_proxy_keys {
+            occupied_proxy_keys.insert(proxy_key.clone());
+            assignments
+                .group_assigned_proxy_keys
+                .entry(group_name.clone())
+                .or_default()
+                .insert(proxy_key);
+        }
         for candidate in reserved_candidates.iter().chain(candidates.iter()) {
             if !assigned_account_ids.insert(candidate.id) {
                 continue;
@@ -11259,6 +11308,40 @@ async fn resolve_group_forward_proxy_scope_for_provisioning(
     }
 
     Err(group_node_shunt_unassigned_error())
+}
+
+fn reserve_imported_oauth_node_shunt_scope(
+    state: &AppState,
+    source_id: &str,
+    account_id: Option<i64>,
+    scope: &ForwardProxyRouteScope,
+) -> Result<Option<String>> {
+    let ForwardProxyRouteScope::PinnedProxyKey(proxy_key) = scope else {
+        return Ok(None);
+    };
+    let reservation_key = format!(
+        "imported-oauth:{source_id}:{}",
+        random_hex(8).map_err(|(_, message)| anyhow!(message))?
+    );
+    state
+        .pool_routing_reservations
+        .lock()
+        .expect("pool routing reservations mutex poisoned")
+        .insert(
+            reservation_key.clone(),
+            crate::PoolRoutingReservation {
+                account_id: account_id.unwrap_or_default(),
+                proxy_key: Some(proxy_key.clone()),
+                created_at: Instant::now(),
+            },
+        );
+    Ok(Some(reservation_key))
+}
+
+fn release_imported_oauth_node_shunt_scope(state: &AppState, reservation_key: Option<String>) {
+    if let Some(reservation_key) = reservation_key {
+        crate::release_pool_routing_reservation(state, &reservation_key);
+    }
 }
 
 async fn load_login_session_by_login_id_with_executor(
@@ -21985,6 +22068,118 @@ mod tests {
                 .get("node-shunt-multi-reserved")
                 .map(|proxy_keys| proxy_keys.len()),
             Some(2)
+        );
+    }
+
+    #[tokio::test]
+    async fn node_shunt_assignments_keep_globally_reserved_proxy_keys_occupied() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let secondary_proxy_key = {
+            let mut manager = state.forward_proxy.lock().await;
+            let mut settings = ForwardProxySettings::default();
+            settings.proxy_urls = vec!["http://127.0.0.1:18080".to_string()];
+            manager.apply_settings(settings);
+            manager
+                .binding_nodes()
+                .into_iter()
+                .find(|node| node.key != FORWARD_PROXY_DIRECT_KEY)
+                .map(|node| node.key)
+                .expect("secondary proxy binding key")
+        };
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Globally Reserved Proxy Account",
+            "globally-reserved@example.com",
+            "org_globally_reserved",
+            "user_globally_reserved",
+        )
+        .await;
+        let overflow_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Overflow Globally Reserved Proxy Account",
+            "overflow-globally-reserved@example.com",
+            "org_overflow_globally_reserved",
+            "user_overflow_globally_reserved",
+        )
+        .await;
+
+        set_test_account_group_name(
+            &state.pool,
+            account_id,
+            Some("node-shunt-global-reservation"),
+        )
+        .await;
+        set_test_account_group_name(
+            &state.pool,
+            overflow_account_id,
+            Some("node-shunt-global-reservation"),
+        )
+        .await;
+
+        let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+        save_group_metadata_record_conn(
+            &mut conn,
+            "node-shunt-global-reservation",
+            UpstreamAccountGroupMetadata {
+                note: None,
+                bound_proxy_keys: vec![
+                    FORWARD_PROXY_DIRECT_KEY.to_string(),
+                    secondary_proxy_key.clone(),
+                ],
+                node_shunt_enabled: true,
+                upstream_429_retry_enabled: false,
+                upstream_429_max_retries: 0,
+                concurrency_limit: 0,
+            },
+        )
+        .await
+        .expect("save node shunt metadata");
+        drop(conn);
+
+        state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned")
+            .insert(
+                "test-node-shunt-global-reservation".to_string(),
+                PoolRoutingReservation {
+                    account_id: 0,
+                    proxy_key: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
+                    created_at: Instant::now(),
+                },
+            );
+
+        let assignments = build_upstream_account_node_shunt_assignments(state.as_ref())
+            .await
+            .expect("build node shunt assignments");
+
+        assert_eq!(
+            assignments
+                .account_proxy_keys
+                .get(&account_id)
+                .map(String::as_str),
+            Some(secondary_proxy_key.as_str())
+        );
+        assert!(
+            !assignments
+                .account_proxy_keys
+                .contains_key(&overflow_account_id)
+        );
+        assert!(
+            assignments
+                .group_assigned_proxy_keys
+                .get("node-shunt-global-reservation")
+                .is_some_and(|proxy_keys| {
+                    proxy_keys.contains(FORWARD_PROXY_DIRECT_KEY)
+                        && proxy_keys.contains(&secondary_proxy_key)
+                })
         );
     }
 
