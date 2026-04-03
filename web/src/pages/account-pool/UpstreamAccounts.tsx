@@ -2311,7 +2311,7 @@ export function SharedUpstreamAccountDetailDrawer({
       });
       try {
         await removeAccount(source.id);
-        if (selectedIdRef.current === source.id) {
+        if (drawerOpenRef.current && routeAccountIdRef.current === source.id) {
           onClose({ replace: true });
         }
       } catch (err) {
