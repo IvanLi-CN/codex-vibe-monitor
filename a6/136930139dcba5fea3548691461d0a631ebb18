@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.38.2",
+  "base_stable_version": "1.38.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-04T14:51:31Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.38.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "dfa94dd3249c1a78f466cb8e486a021f256496c4",
+  "pr_number": 289,
+  "pr_title": "feat(records): add request id filter and failure detail drawer",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.38.2",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.38.2",
+  "target_sha": "a6136930139dcba5fea3548691461d0a631ebb18",
+  "type_label": "type:patch"
+}
