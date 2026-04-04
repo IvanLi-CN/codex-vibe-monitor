@@ -1400,11 +1400,13 @@ function createStore(): StoryStore {
         }
       : mixedPlanCoexistenceStory
         ? {
-            displayName: 'StacieSpuhler919 Team',
-            email: 'team@example.com',
+            displayName: 'Fixture Billing Team',
+            email: 'team@billing-fixture.example.invalid',
+            chatgptAccountId: 'fixture_shared_billing_org',
+            chatgptUserId: 'fixture_shared_billing_user',
             planType: 'team',
             duplicateInfo: null,
-            note: 'Team-billed OAuth account sharing the same upstream identity intentionally.',
+            note: 'Synthetic team-billed OAuth fixture sharing the same upstream identity intentionally.',
           }
       : compactStory
         ? {
@@ -1482,11 +1484,17 @@ function createStore(): StoryStore {
     duplicateStory || mixedPlanCoexistenceStory
       ? createOauthAccount(103, {
           displayName: mixedPlanCoexistenceStory
-            ? 'StacieSpuhler919 Free'
+            ? 'Fixture Billing Free'
             : 'Codex Pro - Seoul',
-          email: mixedPlanCoexistenceStory ? 'free@example.com' : 'seoul@example.com',
-          chatgptAccountId: 'org_tokyo',
-          chatgptUserId: 'user_tokyo',
+          email: mixedPlanCoexistenceStory
+            ? 'free@billing-fixture.example.invalid'
+            : 'seoul@example.com',
+          chatgptAccountId: mixedPlanCoexistenceStory
+            ? 'fixture_shared_billing_org'
+            : 'org_tokyo',
+          chatgptUserId: mixedPlanCoexistenceStory
+            ? 'fixture_shared_billing_user'
+            : 'user_tokyo',
           groupName: 'production',
           planType: mixedPlanCoexistenceStory ? 'free' : 'pro',
           duplicateInfo: duplicateStory
@@ -1496,7 +1504,7 @@ function createStore(): StoryStore {
               }
             : null,
           note: mixedPlanCoexistenceStory
-            ? 'Personal-billed OAuth account sharing the same upstream identity intentionally.'
+            ? 'Synthetic personal-billed OAuth fixture sharing the same upstream identity intentionally.'
             : 'Sibling OAuth account kept for duplicate identity review.',
         })
       : null
@@ -2052,7 +2060,7 @@ function createStore(): StoryStore {
     routing: {
       writesEnabled: true,
       apiKeyConfigured: true,
-      maskedApiKey: 'pool-live••••••c0de',
+      maskedApiKey: 'fixture-pool••••••demo',
       maintenance: clone(defaultRoutingMaintenance),
       timeouts: clone(defaultRoutingTimeouts),
     },

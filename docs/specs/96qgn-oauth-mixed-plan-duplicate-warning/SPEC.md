@@ -105,7 +105,7 @@
   submission_gate: pending-owner-approval
   story_id_or_title: Account Pool/Pages/Upstream Accounts/List/Mixed Plan Coexistence
   state: roster
-  evidence_note: 验证共享上游身份但计划类型分别为 `team` 与 `free` 的两条 OAuth 账号会并列显示计划 badge，不再渲染“重复账号” badge。
+  evidence_note: 验证两条使用合成 fixture 身份的 OAuth 账号在计划类型分别为 `team` 与 `free` 时会并列显示计划 badge，不再渲染“重复账号” badge。
   image:
   ![Mixed plan 共存列表态](./assets/mixed-plan-roster-storybook.png)
 
@@ -116,7 +116,7 @@
   submission_gate: pending-owner-approval
   story_id_or_title: Account Pool/Pages/Upstream Accounts/List/Mixed Plan Coexistence
   state: detail-drawer-open
-  evidence_note: 验证 mixed-plan 场景打开 `StacieSpuhler919 Team` 详情抽屉后，仅保留计划 badge 与账号元信息，不再出现 duplicate warning 或 matched reasons。
+  evidence_note: 验证 mixed-plan 场景打开 `Fixture Billing Team` 详情抽屉后，仅保留计划 badge 与合成账号元信息，不再出现 duplicate warning 或 matched reasons。
   image:
   ![Mixed plan 共存详情态](./assets/mixed-plan-detail-storybook.png)
 
@@ -132,3 +132,4 @@
 - 2026-04-04: 后端 duplicate clustering 改为只在“同有效计划类型”或“任一侧计划未知”时保留 `sharedChatgptAccountId` / `sharedChatgptUserId` warning，mixed-plan 已知组合不再告警。
 - 2026-04-04: 补齐 Rust mixed-plan / unknown-plan 回归，新增 roster/detail/create 前端测试与 `Mixed Plan Coexistence` Storybook 场景。
 - 2026-04-04: 本地验证通过 `cargo fmt`、目标 Rust tests、`cd web && bun run test -- src/components/UpstreamAccountsTable.test.tsx src/pages/account-pool/UpstreamAccounts.test.tsx src/pages/account-pool/UpstreamAccountCreate.test.tsx` 与 `cd web && bun run build-storybook`；mock-only 视觉证据已落盘，截图提交仍待主人授权。
+- 2026-04-04: mixed-plan Storybook fixture 已移除来自主人截图的显示名、邮箱、共享身份字段与路由 key 掩码，统一替换为 `fixture` / `example.invalid` 合成值，并刷新本地视觉证据。

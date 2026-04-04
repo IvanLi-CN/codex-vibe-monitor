@@ -744,10 +744,10 @@ export const MixedPlanCoexistence: Story = {
   play: async ({ canvasElement }) => {
     const documentScope = within(canvasElement.ownerDocument.body)
     const teamRow = await documentScope.findByRole('button', {
-      name: /StacieSpuhler919 Team/i,
+      name: /Fixture Billing Team/i,
     })
     const freeRow = await documentScope.findByRole('button', {
-      name: /StacieSpuhler919 Free/i,
+      name: /Fixture Billing Free/i,
     })
 
     await expect(teamRow).toHaveTextContent(/team/i)
@@ -758,7 +758,7 @@ export const MixedPlanCoexistence: Story = {
     await userEvent.click(teamRow)
 
     const dialog = await documentScope.findByRole('dialog', {
-      name: /StacieSpuhler919 Team/i,
+      name: /Fixture Billing Team/i,
     })
     await expect(dialog).not.toHaveTextContent(/命中原因：|Matched reasons:/i)
     await expect(dialog).toHaveTextContent(/team/i)
