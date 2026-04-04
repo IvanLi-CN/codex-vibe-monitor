@@ -12934,6 +12934,21 @@ fn pool_upstream_send_timeout_keeps_handshake_budget_for_non_responses_route() {
 }
 
 #[test]
+fn pool_upstream_send_timeout_caps_non_responses_route_by_first_byte_budget() {
+    let handshake_timeout = Duration::from_millis(1200);
+    let first_byte_timeout = Duration::from_millis(200);
+
+    let timeout = pool_upstream_send_timeout(
+        &"/v1/models".parse().expect("valid uri"),
+        &Method::GET,
+        handshake_timeout,
+        first_byte_timeout,
+    );
+
+    assert_eq!(timeout, first_byte_timeout);
+}
+
+#[test]
 fn classify_compact_support_observation_is_conservative() {
     let compact_uri: Uri = "/v1/responses/compact".parse().expect("valid compact uri");
 

@@ -12812,8 +12812,9 @@ async fn send_pool_request_with_failover(
         let account = if let Some(account) = preferred_account.take() {
             account
         } else {
-            let wait_for_no_available = !(uses_timeout_route_failover
-                && timeout_route_failover_pending)
+            let wait_for_no_available = attempt_count == 0
+                && last_error.is_none()
+                && !(uses_timeout_route_failover && timeout_route_failover_pending)
                 && !(exhausted_accounts_all_rate_limited && distinct_account_count > 0);
             let total_timeout_deadline =
                 match (responses_total_timeout, responses_total_timeout_started_at) {
@@ -13354,11 +13355,12 @@ async fn send_pool_request_with_failover(
                                 None,
                                 Some(message.as_str()),
                             );
-                            let is_timeout_shaped = uses_timeout_route_failover
-                                && pool_failure_is_timeout_shaped(
-                                    PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
-                                    &message,
-                                );
+                            let timeout_shaped_failure = pool_failure_is_timeout_shaped(
+                                PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                                &message,
+                            );
+                            let should_timeout_route_failover =
+                                uses_timeout_route_failover && timeout_shaped_failure;
                             let finished_at = shanghai_now_string();
                             if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
                                 && let Err(record_err) = finalize_pool_upstream_request_attempt(
@@ -13403,7 +13405,7 @@ async fn send_pool_request_with_failover(
                             }
                             let has_retry_budget =
                                 same_account_attempt + 1 < same_account_attempt_budget;
-                            if has_retry_budget && !is_timeout_shaped {
+                            if has_retry_budget && !timeout_shaped_failure {
                                 let retry_delay = fallback_proxy_429_retry_delay(
                                     u32::from(same_account_attempt) + 1,
                                 );
@@ -13444,7 +13446,7 @@ async fn send_pool_request_with_failover(
                                     .clone(),
                             });
                             exhausted_accounts_all_rate_limited = false;
-                            if is_timeout_shaped {
+                            if should_timeout_route_failover {
                                 excluded_upstream_route_keys.insert(upstream_route_key.clone());
                                 timeout_route_failover_pending = true;
                             }
@@ -13467,7 +13469,8 @@ async fn send_pool_request_with_failover(
                                 None,
                                 Some(message.as_str()),
                             );
-                            let is_timeout_shaped = uses_timeout_route_failover;
+                            let timeout_shaped_failure = true;
+                            let should_timeout_route_failover = uses_timeout_route_failover;
                             let finished_at = shanghai_now_string();
                             if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
                                 && let Err(record_err) = finalize_pool_upstream_request_attempt(
@@ -13512,7 +13515,7 @@ async fn send_pool_request_with_failover(
                             }
                             let has_retry_budget =
                                 same_account_attempt + 1 < same_account_attempt_budget;
-                            if has_retry_budget && !is_timeout_shaped {
+                            if has_retry_budget && !timeout_shaped_failure {
                                 let retry_delay = fallback_proxy_429_retry_delay(
                                     u32::from(same_account_attempt) + 1,
                                 );
@@ -13553,7 +13556,7 @@ async fn send_pool_request_with_failover(
                                     .clone(),
                             });
                             exhausted_accounts_all_rate_limited = false;
-                            if is_timeout_shaped {
+                            if should_timeout_route_failover {
                                 excluded_upstream_route_keys.insert(upstream_route_key.clone());
                                 timeout_route_failover_pending = true;
                             }
@@ -13845,11 +13848,12 @@ async fn send_pool_request_with_failover(
                     Some(status),
                     Some(route_error_message.as_str()),
                 );
-                let is_timeout_shaped = uses_timeout_route_failover
-                    && status.is_server_error()
+                let timeout_shaped_failure = status.is_server_error()
                     && pool_failure_is_timeout_shaped(failure_kind, &message);
+                let should_timeout_route_failover =
+                    uses_timeout_route_failover && timeout_shaped_failure;
                 let retry_delay = (has_retry_budget
-                    && !is_timeout_shaped
+                    && !timeout_shaped_failure
                     && status.is_server_error()
                     && status != StatusCode::TOO_MANY_REQUESTS)
                     .then(|| {
@@ -13974,7 +13978,7 @@ async fn send_pool_request_with_failover(
                     request_body_for_capture: attempted_request_body_for_capture.clone(),
                 });
                 exhausted_accounts_all_rate_limited &= status == StatusCode::TOO_MANY_REQUESTS;
-                if is_timeout_shaped {
+                if should_timeout_route_failover {
                     excluded_upstream_route_keys.insert(upstream_route_key.clone());
                     timeout_route_failover_pending = true;
                 }
@@ -14022,11 +14026,12 @@ async fn send_pool_request_with_failover(
                         None,
                         Some(message.as_str()),
                     );
-                    let is_timeout_shaped = uses_timeout_route_failover
-                        && pool_failure_is_timeout_shaped(
-                            PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
-                            &message,
-                        );
+                    let timeout_shaped_failure = pool_failure_is_timeout_shaped(
+                        PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
+                        &message,
+                    );
+                    let should_timeout_route_failover =
+                        uses_timeout_route_failover && timeout_shaped_failure;
                     let finished_at = shanghai_now_string();
                     if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
                         && let Err(record_err) = finalize_pool_upstream_request_attempt(
@@ -14070,7 +14075,7 @@ async fn send_pool_request_with_failover(
                         );
                     }
                     let has_retry_budget = same_account_attempt + 1 < same_account_attempt_budget;
-                    if has_retry_budget && !is_timeout_shaped {
+                    if has_retry_budget && !timeout_shaped_failure {
                         let retry_delay =
                             fallback_proxy_429_retry_delay(u32::from(same_account_attempt) + 1);
                         info!(
@@ -14109,7 +14114,7 @@ async fn send_pool_request_with_failover(
                         request_body_for_capture: attempted_request_body_for_capture.clone(),
                     });
                     exhausted_accounts_all_rate_limited = false;
-                    if is_timeout_shaped {
+                    if should_timeout_route_failover {
                         excluded_upstream_route_keys.insert(upstream_route_key.clone());
                         timeout_route_failover_pending = true;
                     }
@@ -16883,7 +16888,10 @@ fn pool_upstream_send_timeout(
     if pool_uses_responses_timeout_failover_policy(original_uri, method) {
         pre_first_byte_timeout
     } else {
-        send_timeout
+        // Some upstreams do not flush headers until the first body chunk is ready.
+        // Clamp the send phase so non-responses routes still respect the default
+        // first-byte budget when that happens.
+        send_timeout.min(pre_first_byte_timeout)
     }
 }
 
