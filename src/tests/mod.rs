@@ -8,7 +8,7 @@ use axum::{
     Json, Router,
     body::{Body, Bytes, to_bytes},
     extract::{Query, State},
-    http::{HeaderValue, Method, StatusCode, Uri, header as http_header},
+    http::{HeaderName, HeaderValue, Method, StatusCode, Uri, header as http_header},
     response::{IntoResponse, Response},
     routing::{any, get, post},
 };
@@ -4041,7 +4041,39 @@ async fn test_state_with_openai_base_and_proxy_timeouts(
     test_state_from_config(config, true).await
 }
 
+async fn test_state_with_openai_base_and_pool_no_available_wait(
+    openai_base: Url,
+    timeout: Duration,
+    poll_interval: Duration,
+) -> Arc<AppState> {
+    let mut config = test_config();
+    config.openai_upstream_base_url = openai_base;
+    test_state_from_config_with_pool_no_available_wait(
+        config,
+        true,
+        PoolNoAvailableWaitSettings {
+            timeout,
+            poll_interval,
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        },
+    )
+    .await
+}
+
 async fn test_state_from_config(config: AppConfig, startup_ready: bool) -> Arc<AppState> {
+    test_state_from_config_with_pool_no_available_wait(
+        config,
+        startup_ready,
+        PoolNoAvailableWaitSettings::default(),
+    )
+    .await
+}
+
+async fn test_state_from_config_with_pool_no_available_wait(
+    config: AppConfig,
+    startup_ready: bool,
+    pool_no_available_wait: PoolNoAvailableWaitSettings,
+) -> Arc<AppState> {
     let db_id = NEXT_PROXY_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
     let db_url = format!("sqlite:file:codex-vibe-monitor-test-{db_id}?mode=memory&cache=shared");
     let pool = SqlitePool::connect(&db_url)
@@ -4091,6 +4123,7 @@ async fn test_state_from_config(config: AppConfig, startup_ready: bool) -> Arc<A
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         pool_group_429_retry_delay_override: None,
+        pool_no_available_wait,
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     })
 }
@@ -4126,6 +4159,7 @@ fn clone_state_with_upstream_accounts(
         maintenance_stats_cache: state.maintenance_stats_cache.clone(),
         pool_routing_reservations: state.pool_routing_reservations.clone(),
         pool_group_429_retry_delay_override: state.pool_group_429_retry_delay_override,
+        pool_no_available_wait: state.pool_no_available_wait,
         upstream_accounts,
     })
 }
@@ -4161,6 +4195,7 @@ fn clone_state_with_pool_group_429_retry_delay_override(
         maintenance_stats_cache: state.maintenance_stats_cache.clone(),
         pool_routing_reservations: state.pool_routing_reservations.clone(),
         pool_group_429_retry_delay_override: delay,
+        pool_no_available_wait: state.pool_no_available_wait,
         upstream_accounts: state.upstream_accounts.clone(),
     })
 }
@@ -4214,6 +4249,7 @@ async fn test_state_from_existing_pool(
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         pool_group_429_retry_delay_override: None,
+        pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     })
 }
@@ -11605,6 +11641,7 @@ async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         pool_group_429_retry_delay_override: None,
+        pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
 
@@ -13318,6 +13355,7 @@ async fn proxy_openai_v1_allows_slow_upload_with_short_timeout() {
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         pool_group_429_retry_delay_override: None,
+        pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
 
@@ -16918,14 +16956,21 @@ async fn pool_route_keeps_generic_no_candidate_when_other_accounts_are_unavailab
     )
     .await;
 
-    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        response
+            .headers()
+            .get(http_header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok()),
+        Some("10")
+    );
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read failure body");
     let payload: Value = serde_json::from_slice(&body).expect("decode failure payload");
     assert_eq!(
         payload["error"].as_str(),
-        Some("no healthy pool account is available")
+        Some(POOL_NO_AVAILABLE_ACCOUNT_MESSAGE)
     );
 
     let attempts = attempts.lock().expect("lock attempts");
@@ -16933,6 +16978,123 @@ async fn pool_route_keeps_generic_no_candidate_when_other_accounts_are_unavailab
     assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
 
     upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_route_waits_for_header_sticky_account_before_first_attempt() {
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(180),
+        Duration::from_millis(10),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let delayed_id = insert_test_pool_api_key_account(&state, "Delayed", "upstream-delayed").await;
+    set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
+
+    let request_state = state.clone();
+    let request_task = tokio::spawn(async move {
+        proxy_openai_v1(
+            State(request_state),
+            OriginalUri("/v1/responses".parse().expect("valid uri")),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    HeaderName::from_static("x-sticky-key"),
+                    HeaderValue::from_static("sticky-wait-header"),
+                ),
+            ]),
+            Body::from(r#"{"model":"gpt-5","input":"hello"}"#.as_bytes().to_vec()),
+        )
+        .await
+    });
+
+    let pool = state.pool.clone();
+    let release_task = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        set_test_account_status(&pool, delayed_id, "active").await;
+    });
+
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+
+    let response = request_task
+        .await
+        .expect("header sticky request task should join");
+    release_task
+        .await
+        .expect("delayed account release task should join");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read proxy response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode proxy response");
+    assert_eq!(payload["authorization"], "Bearer upstream-delayed");
+    assert_eq!(payload["attempt"], 1);
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-delayed").copied(), Some(1));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_route_body_sticky_returns_503_after_wait_timeout() {
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        Duration::from_millis(60),
+        Duration::from_millis(10),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
+    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+
+    let started = Instant::now();
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-wait-body-timeout"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert!(
+        started.elapsed() >= Duration::from_millis(50),
+        "request should wait roughly the bounded window before failing"
+    );
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        response
+            .headers()
+            .get(http_header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok()),
+        Some("10")
+    );
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read failure body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode failure payload");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some(POOL_NO_AVAILABLE_ACCOUNT_MESSAGE)
+    );
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
 }
 
 #[tokio::test]
@@ -17022,7 +17184,8 @@ async fn pool_route_returns_specific_ungrouped_error_when_all_candidates_are_ung
     )
     .await;
 
-    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(response.headers().get(http_header::RETRY_AFTER).is_none());
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read failure body");
@@ -17180,7 +17343,8 @@ async fn pool_route_returns_ungrouped_error_for_sticky_account_when_cut_out_is_f
     )
     .await;
 
-    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(response.headers().get(http_header::RETRY_AFTER).is_none());
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read failure body");
@@ -20768,6 +20932,80 @@ async fn pool_route_oauth_responses_sends_uuid_account_header_and_persists_obser
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_via_pool_waits_for_initial_account_resolution_before_sending() {
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(180),
+        Duration::from_millis(10),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let delayed_id = insert_test_pool_api_key_account(&state, "Delayed", "upstream-delayed").await;
+    set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let request_state = state.clone();
+    let request_task = tokio::spawn(async move {
+        proxy_openai_v1_via_pool(
+            request_state,
+            4242,
+            &"/v1/chat/completions".parse().expect("valid uri"),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-live-key"),
+                ),
+                (
+                    HeaderName::from_static("x-sticky-key"),
+                    HeaderValue::from_static("sticky-via-pool-wait"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from(r#"{"model":"gpt-5","messages":[]}"#.as_bytes().to_vec()),
+            runtime_timeouts,
+        )
+        .await
+    });
+
+    let pool = state.pool.clone();
+    let release_task = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        set_test_account_status(&pool, delayed_id, "active").await;
+    });
+
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+
+    let response = request_task
+        .await
+        .expect("via-pool request task should join")
+        .expect("via-pool request should succeed");
+    release_task
+        .await
+        .expect("delayed account release task should join");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read via-pool response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
+    assert_eq!(payload["authorization"], "Bearer upstream-delayed");
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-delayed").copied(), Some(1));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn pool_route_oauth_passthrough_streams_without_eager_prebuffering() {
     let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
         .lock()
@@ -22250,6 +22488,7 @@ async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         pool_group_429_retry_delay_override: None,
+        pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
 
@@ -23449,6 +23688,7 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout() {
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         pool_group_429_retry_delay_override: None,
+        pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
 
@@ -23526,6 +23766,7 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout_with_
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         pool_group_429_retry_delay_override: None,
+        pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });
 
@@ -31117,6 +31358,7 @@ async fn quota_latest_returns_degraded_when_empty() {
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         pool_group_429_retry_delay_override: None,
+        pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
         hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
         upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
     });

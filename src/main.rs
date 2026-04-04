@@ -910,6 +910,7 @@ async fn main() -> Result<()> {
         maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
         pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
         pool_group_429_retry_delay_override: None,
+        pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
         upstream_accounts,
     });
 
@@ -11427,9 +11428,29 @@ async fn proxy_openai_v1_common(
                             .headers_mut()
                             .insert(HeaderName::from_static(CVM_INVOKE_ID_HEADER), header_value);
                     }
+                    if let Some(retry_after_secs) = err.retry_after_secs
+                        && let Ok(header_value) =
+                            HeaderValue::from_str(&retry_after_secs.to_string())
+                    {
+                        response
+                            .headers_mut()
+                            .insert(header::RETRY_AFTER, header_value);
+                    }
                     response
                 }
-                None => (err.status, Json(json!({ "error": err.message }))).into_response(),
+                None => {
+                    let mut response =
+                        (err.status, Json(json!({ "error": err.message }))).into_response();
+                    if let Some(retry_after_secs) = err.retry_after_secs
+                        && let Ok(header_value) =
+                            HeaderValue::from_str(&retry_after_secs.to_string())
+                    {
+                        response
+                            .headers_mut()
+                            .insert(header::RETRY_AFTER, header_value);
+                    }
+                    response
+                }
             }
         }
     }
@@ -11440,6 +11461,7 @@ struct ProxyErrorResponse {
     status: StatusCode,
     message: String,
     cvm_id: Option<String>,
+    retry_after_secs: Option<u64>,
 }
 
 async fn resolve_proxy_request_timeouts(
@@ -11705,11 +11727,12 @@ fn build_pool_rate_limited_error(
 fn build_pool_no_available_account_error(
     attempt_count: usize,
     distinct_account_count: usize,
+    _retry_after_secs: u64,
 ) -> PoolUpstreamError {
     PoolUpstreamError {
         account: None,
-        status: StatusCode::BAD_GATEWAY,
-        message: "no healthy pool account is available".to_string(),
+        status: StatusCode::SERVICE_UNAVAILABLE,
+        message: POOL_NO_AVAILABLE_ACCOUNT_MESSAGE.to_string(),
         failure_kind: PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT,
         connect_latency_ms: 0.0,
         upstream_error_code: None,
@@ -11724,6 +11747,11 @@ fn build_pool_no_available_account_error(
         requested_service_tier: None,
         request_body_for_capture: None,
     }
+}
+
+fn retry_after_secs_for_proxy_error(status: StatusCode, message: &str) -> Option<u64> {
+    (status == StatusCode::SERVICE_UNAVAILABLE && message == POOL_NO_AVAILABLE_ACCOUNT_MESSAGE)
+        .then_some(DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS)
 }
 
 fn build_pool_degraded_only_error(
@@ -12103,6 +12131,40 @@ fn pool_group_upstream_429_retry_delay(state: &AppState) -> Duration {
     Duration::from_secs(rand::thread_rng().gen_range(
         MIN_POOL_GROUP_UPSTREAM_429_RETRY_DELAY_SECS..=MAX_POOL_GROUP_UPSTREAM_429_RETRY_DELAY_SECS,
     ))
+}
+
+const DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_WAIT_TIMEOUT_SECS: u64 = 10;
+const DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_WAIT_POLL_INTERVAL_MS: u64 = 250;
+const DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS: u64 = 10;
+const POOL_NO_AVAILABLE_ACCOUNT_MESSAGE: &str = "no healthy pool account is available";
+
+#[derive(Debug, Clone, Copy)]
+struct PoolNoAvailableWaitSettings {
+    timeout: Duration,
+    poll_interval: Duration,
+    retry_after_secs: u64,
+}
+
+impl Default for PoolNoAvailableWaitSettings {
+    fn default() -> Self {
+        Self {
+            timeout: Duration::from_secs(DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_WAIT_TIMEOUT_SECS),
+            poll_interval: Duration::from_millis(
+                DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_WAIT_POLL_INTERVAL_MS,
+            ),
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        }
+    }
+}
+
+impl PoolNoAvailableWaitSettings {
+    fn normalized_poll_interval(self) -> Duration {
+        if self.poll_interval.is_zero() {
+            Duration::from_millis(1)
+        } else {
+            self.poll_interval
+        }
+    }
 }
 
 const POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS: u8 = 3;
@@ -12498,6 +12560,44 @@ fn parse_retry_after_delay(value: &HeaderValue) -> Option<Duration> {
     )))
 }
 
+async fn resolve_pool_account_for_request_with_wait(
+    state: &AppState,
+    sticky_key: Option<&str>,
+    excluded_ids: &[i64],
+    excluded_upstream_route_keys: &HashSet<String>,
+    wait_for_no_available: bool,
+) -> Result<PoolAccountResolution> {
+    let wait_settings = state.pool_no_available_wait;
+    let deadline = wait_for_no_available.then(|| Instant::now() + wait_settings.timeout);
+    let poll_interval = wait_settings.normalized_poll_interval();
+
+    loop {
+        let resolution = resolve_pool_account_for_request(
+            state,
+            sticky_key,
+            excluded_ids,
+            excluded_upstream_route_keys,
+        )
+        .await?;
+        match resolution {
+            PoolAccountResolution::Unavailable | PoolAccountResolution::NoCandidate
+                if wait_for_no_available =>
+            {
+                let Some(deadline) = deadline else {
+                    return Ok(resolution);
+                };
+                let now = Instant::now();
+                if now >= deadline {
+                    return Ok(resolution);
+                }
+                tokio::time::sleep(poll_interval.min(deadline.saturating_duration_since(now)))
+                    .await;
+            }
+            _ => return Ok(resolution),
+        }
+    }
+}
+
 async fn send_pool_request_with_failover(
     state: Arc<AppState>,
     proxy_request_id: u64,
@@ -12693,11 +12793,15 @@ async fn send_pool_request_with_failover(
         let account = if let Some(account) = preferred_account.take() {
             account
         } else {
-            match resolve_pool_account_for_request(
+            let wait_for_no_available = !(uses_timeout_route_failover
+                && timeout_route_failover_pending)
+                && !(exhausted_accounts_all_rate_limited && distinct_account_count > 0);
+            match resolve_pool_account_for_request_with_wait(
                 state.as_ref(),
                 sticky_key,
                 &excluded_ids,
                 &excluded_upstream_route_keys,
+                wait_for_no_available,
             )
             .await
             {
@@ -12747,6 +12851,7 @@ async fn send_pool_request_with_failover(
                                 build_pool_no_available_account_error(
                                     attempt_count,
                                     distinct_account_count,
+                                    state.pool_no_available_wait.retry_after_secs,
                                 )
                             })
                     };
@@ -12852,6 +12957,7 @@ async fn send_pool_request_with_failover(
                                 build_pool_no_available_account_error(
                                     attempt_count,
                                     distinct_account_count,
+                                    state.pool_no_available_wait.retry_after_secs,
                                 )
                             });
                             err.attempt_summary = pool_attempt_summary(
@@ -12872,7 +12978,13 @@ async fn send_pool_request_with_failover(
                         };
                     let err = PoolUpstreamError {
                         account: None,
-                        status: StatusCode::BAD_GATEWAY,
+                        status: if terminal_failure_kind
+                            == PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT
+                        {
+                            StatusCode::BAD_GATEWAY
+                        } else {
+                            StatusCode::SERVICE_UNAVAILABLE
+                        },
                         message,
                         failure_kind: terminal_failure_kind,
                         connect_latency_ms: 0.0,
@@ -14442,11 +14554,11 @@ async fn proxy_openai_v1_via_pool(
     let capture_target = capture_target_for_request(original_uri.path(), &method);
     let handshake_timeout =
         proxy_upstream_send_timeout_for_capture_target(&runtime_timeouts, capture_target);
-    let pre_first_byte_timeout =
+    let _pre_first_byte_timeout =
         pool_upstream_first_chunk_timeout(&runtime_timeouts, original_uri, &method);
-    let responses_total_timeout =
+    let _responses_total_timeout =
         pool_upstream_responses_total_timeout(&state.config, original_uri, &method);
-    let mut responses_total_timeout_started_at = None;
+    let responses_total_timeout_started_at = None;
     let header_sticky_key = extract_sticky_key_from_headers(&headers);
     let body_size_hint_exact = body
         .size_hint()
@@ -14503,11 +14615,12 @@ async fn proxy_openai_v1_via_pool(
             )
         } else {
             let sticky_key = header_sticky_key;
-            let initial_account = match resolve_pool_account_for_request(
+            let initial_account = match resolve_pool_account_for_request_with_wait(
                 state.as_ref(),
                 sticky_key.as_deref(),
                 &[],
                 &HashSet::new(),
+                true,
             )
             .await
             {
@@ -14526,18 +14639,18 @@ async fn proxy_openai_v1_via_pool(
                 }
                 Ok(PoolAccountResolution::Unavailable) => {
                     return Err((
-                        StatusCode::BAD_GATEWAY,
-                        "no healthy pool account is available".to_string(),
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        POOL_NO_AVAILABLE_ACCOUNT_MESSAGE.to_string(),
                     ));
                 }
                 Ok(PoolAccountResolution::NoCandidate) => {
                     return Err((
-                        StatusCode::BAD_GATEWAY,
-                        "no healthy pool account is available".to_string(),
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        POOL_NO_AVAILABLE_ACCOUNT_MESSAGE.to_string(),
                     ));
                 }
                 Ok(PoolAccountResolution::BlockedByPolicy(message)) => {
-                    return Err((StatusCode::BAD_GATEWAY, message));
+                    return Err((StatusCode::SERVICE_UNAVAILABLE, message));
                 }
                 Err(err) => {
                     return Err((
@@ -14934,6 +15047,7 @@ async fn proxy_openai_v1_inner(
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: format!("failed to resolve pool routing settings: {err}"),
             cvm_id: None,
+            retry_after_secs: None,
         })?;
     let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), pool_route_active)
         .await
@@ -14941,12 +15055,14 @@ async fn proxy_openai_v1_inner(
             status: StatusCode::INTERNAL_SERVER_ERROR,
             message: format!("failed to resolve pool routing timeouts: {err}"),
             cvm_id: None,
+            retry_after_secs: None,
         })?;
     if !pool_route_active {
         return Err(ProxyErrorResponse {
             status: StatusCode::UNAUTHORIZED,
             message: "pool route key missing or invalid".to_string(),
             cvm_id: None,
+            retry_after_secs: None,
         });
     }
     let target_url =
@@ -14966,6 +15082,7 @@ async fn proxy_openai_v1_inner(
                     status,
                     message: format!("failed to build upstream url: {err}"),
                     cvm_id: None,
+                    retry_after_secs: None,
                 }
             },
         )?;
@@ -14982,6 +15099,7 @@ async fn proxy_openai_v1_inner(
         )
         .await
         .map_err(|(status, message)| ProxyErrorResponse {
+            retry_after_secs: retry_after_secs_for_proxy_error(status, &message),
             status,
             message,
             cvm_id: None,
@@ -15005,6 +15123,7 @@ async fn proxy_openai_v1_inner(
         )
         .await
         .map_err(|(status, message)| ProxyErrorResponse {
+            retry_after_secs: retry_after_secs_for_proxy_error(status, &message),
             status,
             message,
             cvm_id: Some(tracked_invoke_id),
@@ -15022,6 +15141,7 @@ async fn proxy_openai_v1_inner(
     )
     .await
     .map_err(|(status, message)| ProxyErrorResponse {
+        retry_after_secs: retry_after_secs_for_proxy_error(status, &message),
         status,
         message,
         cvm_id: None,
@@ -22768,6 +22888,7 @@ struct AppState {
     maintenance_stats_cache: Arc<Mutex<StatsMaintenanceCacheState>>,
     pool_routing_reservations: Arc<std::sync::Mutex<HashMap<String, PoolRoutingReservation>>>,
     pool_group_429_retry_delay_override: Option<Duration>,
+    pool_no_available_wait: PoolNoAvailableWaitSettings,
     upstream_accounts: Arc<UpstreamAccountsRuntime>,
 }
 
