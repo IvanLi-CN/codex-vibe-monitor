@@ -8,6 +8,8 @@ import type { ApiInvocation, ApiPoolUpstreamRequestAttempt } from '../lib/api'
 const { apiMocks } = vi.hoisted(() => ({
   apiMocks: {
     fetchInvocationPoolAttempts: vi.fn(),
+    fetchInvocationRecordDetail: vi.fn(),
+    fetchInvocationResponseBody: vi.fn(),
   },
 }))
 
@@ -16,6 +18,8 @@ vi.mock('../lib/api', async () => {
   return {
     ...actual,
     fetchInvocationPoolAttempts: apiMocks.fetchInvocationPoolAttempts,
+    fetchInvocationRecordDetail: apiMocks.fetchInvocationRecordDetail,
+    fetchInvocationResponseBody: apiMocks.fetchInvocationResponseBody,
   }
 })
 
@@ -50,6 +54,8 @@ afterEach(() => {
   root = null
   vi.useRealTimers()
   apiMocks.fetchInvocationPoolAttempts.mockReset()
+  apiMocks.fetchInvocationRecordDetail.mockReset()
+  apiMocks.fetchInvocationResponseBody.mockReset()
 })
 
 function render(ui: React.ReactNode) {
@@ -178,6 +184,86 @@ describe('InvocationRecordsTable', () => {
     expect(text).toContain('table.details.poolAttemptCount')
     expect(text).toContain('table.poolAttempts.notPool')
     expect(text).toContain('success_over_30d')
+  })
+
+  it('renders abnormal response previews for failed records', async () => {
+    apiMocks.fetchInvocationRecordDetail.mockResolvedValue({
+      id: 1,
+      abnormalResponseBody: {
+        available: true,
+        previewText: '{"error":{"message":"upstream exploded"}}',
+        hasMore: true,
+      },
+    })
+
+    render(
+      <InvocationRecordsTable
+        focus="exception"
+        isLoading={false}
+        records={[
+          createRecord({
+            status: 'failed',
+            failureClass: 'service_failure',
+            errorMessage: 'upstream exploded',
+          }),
+        ]}
+      />,
+    )
+
+    clickFirstToggle()
+
+    await waitFor(() => host?.querySelector('[data-testid="invocation-response-body-preview"]') != null)
+
+    expect(apiMocks.fetchInvocationRecordDetail).toHaveBeenCalledWith(1)
+    expect(host?.textContent ?? '').toContain('{"error":{"message":"upstream exploded"}}')
+    expect(host?.textContent ?? '').toContain('table.responseBody.previewTruncated')
+  })
+
+  it('opens the full-details drawer and loads the complete abnormal response body', async () => {
+    apiMocks.fetchInvocationRecordDetail.mockResolvedValue({
+      id: 1,
+      abnormalResponseBody: {
+        available: true,
+        previewText: '{"error":{"message":"preview only"}}',
+        hasMore: true,
+      },
+    })
+    apiMocks.fetchInvocationResponseBody.mockResolvedValue({
+      available: true,
+      bodyText: '{"error":{"message":"preview only"},"trace":"full-body"}',
+    })
+
+    render(
+      <InvocationRecordsTable
+        focus="exception"
+        isLoading={false}
+        records={[
+          createRecord({
+            status: 'failed',
+            failureClass: 'service_failure',
+            errorMessage: 'preview only',
+          }),
+        ]}
+      />,
+    )
+
+    clickFirstToggle()
+    await waitFor(() => host?.querySelector('[data-testid="invocation-response-body-preview"]') != null)
+
+    const button = Array.from(document.body.querySelectorAll('button')).find(
+      (candidate): candidate is HTMLButtonElement =>
+        candidate instanceof HTMLButtonElement && candidate.textContent === 'table.responseBody.openFullDetails',
+    )
+    expect(button).not.toBeNull()
+
+    act(() => {
+      button?.click()
+    })
+
+    await waitFor(() => document.body.textContent?.includes('records.table.fullDetails.title') ?? false)
+
+    expect(apiMocks.fetchInvocationResponseBody).toHaveBeenCalledWith(1)
+    expect(document.body.textContent ?? '').toContain('"trace":"full-body"')
   })
 
   it('lazy loads pool attempts for pool-routed records', async () => {

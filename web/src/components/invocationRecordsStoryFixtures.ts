@@ -1,5 +1,7 @@
 import type {
   ApiInvocation,
+  ApiInvocationRecordDetailResponse,
+  ApiInvocationResponseBodyResponse,
   ApiPoolUpstreamRequestAttempt,
   InvocationExceptionSummary,
   InvocationNetworkSummary,
@@ -327,6 +329,72 @@ export function createStoryPoolAttemptsByInvokeId(records: ApiInvocation[]) {
   })
 
   return attemptsByInvokeId
+}
+
+export function createStoryInvocationRecordDetailsById(records: ApiInvocation[]) {
+  const detailsById: Record<number, ApiInvocationRecordDetailResponse> = {}
+
+  for (const record of records) {
+    if (record.status !== 'failed' && !record.failureClass) continue
+
+    const basePreview =
+      record.failureClass === 'client_failure'
+        ? '{"error":{"message":"invalid input payload","type":"invalid_request_error"}}'
+        : record.failureClass === 'client_abort'
+          ? '{"error":{"message":"downstream client disconnected while streaming","type":"client_abort"}}'
+          : '{"error":{"message":"upstream request timed out after 30s","type":"server_error"},"request_id":"req_story_timeout_6102"}'
+
+    detailsById[record.id] = {
+      id: record.id,
+      abnormalResponseBody: {
+        available: true,
+        previewText: basePreview,
+        hasMore: record.failureClass !== 'client_failure',
+      },
+    }
+
+    if (record.detailLevel === 'structured_only') {
+      detailsById[record.id] = {
+        id: record.id,
+        abnormalResponseBody: {
+          available: false,
+          previewText: null,
+          hasMore: false,
+          unavailableReason: 'detail_pruned',
+        },
+      }
+    }
+  }
+
+  return detailsById
+}
+
+export function createStoryInvocationResponseBodiesById(records: ApiInvocation[]) {
+  const responseBodiesById: Record<number, ApiInvocationResponseBodyResponse> = {}
+
+  for (const record of records) {
+    if (record.status !== 'failed' && !record.failureClass) continue
+
+    if (record.detailLevel === 'structured_only') {
+      responseBodiesById[record.id] = {
+        available: false,
+        unavailableReason: 'detail_pruned',
+      }
+      continue
+    }
+
+    responseBodiesById[record.id] = {
+      available: true,
+      bodyText:
+        record.failureClass === 'client_failure'
+          ? '{"error":{"message":"invalid input payload","type":"invalid_request_error","param":"input"}}'
+          : record.failureClass === 'client_abort'
+            ? '{"error":{"message":"downstream client disconnected while streaming","type":"client_abort","request_id":"req_story_abort_6104"}}'
+            : '{\n  "error": {\n    "message": "upstream request timed out after 30s",\n    "type": "server_error",\n    "code": "upstream_timeout"\n  },\n  "request_id": "req_story_timeout_6102",\n  "trace": "edge-timeout-6102-full"\n}',
+    }
+  }
+
+  return responseBodiesById
 }
 
 export const STORYBOOK_FIRST_RESPONSE_BYTE_SEMANTICS_RECORDS: ApiInvocation[] = [

@@ -4,7 +4,6 @@ import type {
   InvocationSortBy,
   InvocationSortOrder,
   InvocationSuggestionField,
-  InvocationUpstreamScope,
 } from './api'
 
 export const RECORDS_PAGE_SIZE_OPTIONS = [20, 50, 100] as const
@@ -26,7 +25,7 @@ export interface InvocationRecordsDraftFilters {
   failureKind: string
   promptCacheKey: string
   requesterIp: string
-  upstreamScope: InvocationUpstreamScope
+  requestId: string
   keyword: string
   minTotalTokens: string
   maxTotalTokens: string
@@ -47,7 +46,7 @@ export function createDefaultInvocationRecordsDraft(): InvocationRecordsDraftFil
     failureKind: '',
     promptCacheKey: '',
     requesterIp: '',
-    upstreamScope: 'all',
+    requestId: '',
     keyword: '',
     minTotalTokens: '',
     maxTotalTokens: '',
@@ -190,11 +189,11 @@ export function buildAppliedInvocationFilters(
     model: normalizeText(draft.model),
     proxy: normalizeText(draft.proxy),
     endpoint: normalizeText(draft.endpoint),
+    requestId: normalizeText(draft.requestId),
     failureClass: normalizeText(draft.failureClass),
     failureKind: normalizeText(draft.failureKind),
     promptCacheKey: normalizeText(draft.promptCacheKey),
     requesterIp: normalizeText(draft.requesterIp),
-    upstreamScope: draft.upstreamScope,
     keyword: normalizeText(draft.keyword),
     minTotalTokens: normalizeInteger(draft.minTotalTokens, 'minTotalTokens'),
     maxTotalTokens: normalizeInteger(draft.maxTotalTokens, 'maxTotalTokens'),
@@ -237,11 +236,11 @@ export function buildInvocationSuggestionsQuery(
     model: normalizeText(draft.model),
     proxy: normalizeText(draft.proxy),
     endpoint: normalizeText(draft.endpoint),
+    requestId: normalizeText(draft.requestId),
     failureClass: normalizeText(draft.failureClass),
     failureKind: normalizeText(draft.failureKind),
     promptCacheKey: normalizeText(draft.promptCacheKey),
     requesterIp: normalizeText(draft.requesterIp),
-    upstreamScope: draft.upstreamScope,
     keyword: normalizeText(draft.keyword),
     minTotalTokens: normalizeIntegerSafely(draft.minTotalTokens, 'minTotalTokens'),
     maxTotalTokens: normalizeIntegerSafely(draft.maxTotalTokens, 'maxTotalTokens'),

@@ -1,19 +1,35 @@
 import { useEffect, useMemo, useRef, type ReactNode } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { expect, userEvent, waitFor, within } from 'storybook/test'
 import { I18nProvider } from '../i18n'
-import type { ApiPoolUpstreamRequestAttempt } from '../lib/api'
+import type {
+  ApiInvocationRecordDetailResponse,
+  ApiInvocationResponseBodyResponse,
+  ApiPoolUpstreamRequestAttempt,
+} from '../lib/api'
 import { InvocationRecordsTable } from './InvocationRecordsTable'
 import {
+  createStoryInvocationRecordDetailsById,
+  createStoryInvocationResponseBodiesById,
   createStoryPoolAttemptsByInvokeId,
   STORYBOOK_FIRST_RESPONSE_BYTE_SEMANTICS_RECORDS,
   STORYBOOK_INVOCATION_RECORDS,
 } from './invocationRecordsStoryFixtures'
 
 type PoolAttemptsByInvokeId = Record<string, ApiPoolUpstreamRequestAttempt[]>
+type InvocationRecordDetailsById = Record<number, ApiInvocationRecordDetailResponse>
+type InvocationResponseBodiesById = Record<number, ApiInvocationResponseBodyResponse>
 
 type StorybookPoolAttemptsRegistry = {
   originalFetch: typeof window.fetch
-  providers: Map<symbol, () => PoolAttemptsByInvokeId>
+  providers: Map<
+    symbol,
+    () => {
+      poolAttemptsByInvokeId: PoolAttemptsByInvokeId
+      detailsById: InvocationRecordDetailsById
+      responseBodiesById: InvocationResponseBodiesById
+    }
+  >
 }
 
 declare global {
@@ -46,25 +62,55 @@ function ensureStorybookPoolAttemptsRegistry() {
   if (existingRegistry) return existingRegistry
 
   const originalFetch = window.fetch.bind(window)
-  const providers = new Map<symbol, () => PoolAttemptsByInvokeId>()
+  const providers: StorybookPoolAttemptsRegistry['providers'] = new Map()
 
   const mockedFetch: typeof window.fetch = async (input, init) => {
     const requestUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
     const url = new URL(requestUrl, window.location.origin)
     const poolAttemptsMatch = url.pathname.match(/^\/api\/invocations\/([^/]+)\/pool-attempts$/)
+    const detailMatch = url.pathname.match(/^\/api\/invocations\/(\d+)\/detail$/)
+    const responseBodyMatch = url.pathname.match(/^\/api\/invocations\/(\d+)\/response-body$/)
 
     if (poolAttemptsMatch) {
       const invokeId = decodeURIComponent(poolAttemptsMatch[1] ?? '')
       const providerGetters = Array.from(providers.values()).reverse()
 
       for (const getAttemptsByInvokeId of providerGetters) {
-        const attempts = getAttemptsByInvokeId()[invokeId]
+        const attempts = getAttemptsByInvokeId().poolAttemptsByInvokeId[invokeId]
         if (attempts) {
           return jsonResponse(attempts)
         }
       }
 
       return jsonResponse([])
+    }
+
+    if (detailMatch) {
+      const recordId = Number(detailMatch[1] ?? '0')
+      const providerGetters = Array.from(providers.values()).reverse()
+
+      for (const getDetailsById of providerGetters) {
+        const detail = getDetailsById().detailsById[recordId]
+        if (detail) {
+          return jsonResponse(detail)
+        }
+      }
+
+      return jsonResponse({ id: recordId, abnormalResponseBody: null })
+    }
+
+    if (responseBodyMatch) {
+      const recordId = Number(responseBodyMatch[1] ?? '0')
+      const providerGetters = Array.from(providers.values()).reverse()
+
+      for (const getResponseBodiesById of providerGetters) {
+        const responseBody = getResponseBodiesById().responseBodiesById[recordId]
+        if (responseBody) {
+          return jsonResponse(responseBody)
+        }
+      }
+
+      return jsonResponse({ available: false, unavailableReason: 'missing_body' })
     }
 
     return originalFetch(input, init)
@@ -81,16 +127,26 @@ function ensureStorybookPoolAttemptsRegistry() {
 
 function StorybookPoolAttemptsMock({ children, records }: { children: ReactNode; records: typeof STORYBOOK_INVOCATION_RECORDS }) {
   const poolAttemptsByInvokeId = useMemo(() => createStoryPoolAttemptsByInvokeId(records), [records])
+  const detailsById = useMemo(() => createStoryInvocationRecordDetailsById(records), [records])
+  const responseBodiesById = useMemo(() => createStoryInvocationResponseBodiesById(records), [records])
   const poolAttemptsByInvokeIdRef = useRef(poolAttemptsByInvokeId)
+  const detailsByIdRef = useRef(detailsById)
+  const responseBodiesByIdRef = useRef(responseBodiesById)
   const providerIdRef = useRef<symbol>(Symbol('storybook-pool-attempts'))
 
   poolAttemptsByInvokeIdRef.current = poolAttemptsByInvokeId
+  detailsByIdRef.current = detailsById
+  responseBodiesByIdRef.current = responseBodiesById
 
   useEffect(() => {
     const registry = ensureStorybookPoolAttemptsRegistry()
     if (!registry) return
 
-    registry.providers.set(providerIdRef.current, () => poolAttemptsByInvokeIdRef.current)
+    registry.providers.set(providerIdRef.current, () => ({
+      poolAttemptsByInvokeId: poolAttemptsByInvokeIdRef.current,
+      detailsById: detailsByIdRef.current,
+      responseBodiesById: responseBodiesByIdRef.current,
+    }))
 
     return () => {
       const activeRegistry = window.__storybookPoolAttemptsRegistry__
@@ -182,6 +238,45 @@ export const StructuredOnlyFocus: Story = {
     records: STORYBOOK_INVOCATION_RECORDS.filter((record) => record.detailLevel === 'structured_only'),
     isLoading: false,
     error: null,
+  },
+}
+
+export const AbnormalResponseDrawer: Story = {
+  args: {
+    focus: 'exception',
+    records: STORYBOOK_INVOCATION_RECORDS.filter((record) => record.status === 'failed'),
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Failed-record state with inline abnormal response preview and the full-details drawer backed by stable Storybook mocks.',
+      },
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+
+    await userEvent.click(canvas.getByRole('button', { name: /展开详情|show details/i }))
+    await waitFor(() => {
+      expect(document.body.textContent ?? '').toContain('table.responseBody.openFullDetails')
+    })
+
+    const fullDetailsButton = Array.from(document.body.querySelectorAll('button')).find(
+      (candidate): candidate is HTMLButtonElement =>
+        candidate instanceof HTMLButtonElement && candidate.textContent === 'table.responseBody.openFullDetails',
+    )
+    if (!fullDetailsButton) {
+      throw new Error('missing full details button')
+    }
+
+    await userEvent.click(fullDetailsButton)
+
+    await waitFor(() => {
+      expect(document.body.textContent ?? '').toContain('records.table.fullDetails.title')
+    })
   },
 }
 

@@ -1,5 +1,6 @@
-import { Fragment, type ReactNode, useEffect, useMemo, useState } from 'react'
+import { Fragment, type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 import { AppIcon } from './AppIcon'
+import { AccountDetailDrawerShell } from './AccountDetailDrawerShell'
 import {
   FALLBACK_CELL,
   InvocationExpandedDetails,
@@ -9,7 +10,14 @@ import {
   renderFastIndicator,
   useInvocationPoolAttempts,
 } from './invocation-details-shared'
-import type { ApiInvocation, InvocationFocus } from '../lib/api'
+import {
+  fetchInvocationRecordDetail,
+  fetchInvocationResponseBody,
+  type ApiInvocation,
+  type ApiInvocationRecordDetailResponse,
+  type ApiInvocationResponseBodyResponse,
+  type InvocationFocus,
+} from '../lib/api'
 import { invocationStableDomKey, invocationStableKey } from '../lib/invocation'
 import { resolveInvocationDisplayStatus } from '../lib/invocationStatus'
 import { useTranslation } from '../i18n'
@@ -96,6 +104,14 @@ function resolveStatusMeta(status?: string | null): StatusMeta {
   if (lower.startsWith('http_5')) return { variant: 'error', label: formatStatusLabel(raw) ?? raw }
   if (lower.startsWith('http_')) return { variant: 'secondary', label: formatStatusLabel(raw) ?? raw }
   return { variant: 'secondary', label: raw }
+}
+
+function isAbnormalRecord(record: ApiInvocation) {
+  const failureClass = record.failureClass?.trim().toLowerCase()
+  if (failureClass === 'service_failure' || failureClass === 'client_failure' || failureClass === 'client_abort') {
+    return true
+  }
+  return (resolveInvocationDisplayStatus(record) ?? '').trim().toLowerCase() === 'failed'
 }
 
 function formatOccurredAt(occurredAt: string, formatter: Intl.DateTimeFormat) {
@@ -263,7 +279,22 @@ export function InvocationRecordsTable({
 }: InvocationRecordsTableProps) {
   const { t, locale } = useTranslation()
   const [expandedId, setExpandedId] = useState<string | null>(null)
+  const [drawerRecordId, setDrawerRecordId] = useState<number | null>(null)
   const [nowMs, setNowMs] = useState(() => Date.now())
+  const [detailByRecordId, setDetailByRecordId] = useState<Record<number, ApiInvocationRecordDetailResponse | undefined>>(
+    {},
+  )
+  const [detailLoadingByRecordId, setDetailLoadingByRecordId] = useState<Record<number, boolean | undefined>>({})
+  const [detailErrorByRecordId, setDetailErrorByRecordId] = useState<Record<number, string | null | undefined>>({})
+  const [responseBodyByRecordId, setResponseBodyByRecordId] = useState<
+    Record<number, ApiInvocationResponseBodyResponse | undefined>
+  >({})
+  const [responseBodyLoadingByRecordId, setResponseBodyLoadingByRecordId] = useState<Record<number, boolean | undefined>>(
+    {},
+  )
+  const [responseBodyErrorByRecordId, setResponseBodyErrorByRecordId] = useState<Record<number, string | null | undefined>>(
+    {},
+  )
   const localeTag = locale === 'zh' ? 'zh-CN' : 'en-US'
   const numberFormatter = useMemo(() => new Intl.NumberFormat(localeTag), [localeTag])
   const costFormatter = useMemo(
@@ -373,6 +404,13 @@ export function InvocationRecordsTable({
   }, [rows])
 
   useEffect(() => {
+    setDrawerRecordId((current) => {
+      if (current == null) return current
+      return rows.some((row) => row.record.id === current) ? current : null
+    })
+  }, [rows])
+
+  useEffect(() => {
     if (!hasInFlightRows) return
     setNowMs(Date.now())
     const id = window.setInterval(() => {
@@ -385,7 +423,65 @@ export function InvocationRecordsTable({
     () => rows.find((row) => row.rowKey === expandedId)?.record ?? null,
     [expandedId, rows],
   )
+  const drawerRow = useMemo(
+    () => rows.find((row) => row.record.id === drawerRecordId) ?? null,
+    [drawerRecordId, rows],
+  )
   const poolAttemptsState = useInvocationPoolAttempts(expandedRecord)
+  const drawerPoolAttemptsState = useInvocationPoolAttempts(drawerRow?.record ?? null)
+
+  const ensureRecordDetail = useCallback(
+    async (record: ApiInvocation) => {
+      if (!isAbnormalRecord(record)) return
+      if (detailByRecordId[record.id] !== undefined || detailLoadingByRecordId[record.id]) return
+
+      setDetailLoadingByRecordId((current) => ({ ...current, [record.id]: true }))
+      setDetailErrorByRecordId((current) => ({ ...current, [record.id]: null }))
+
+      try {
+        const detail = await fetchInvocationRecordDetail(record.id)
+        setDetailByRecordId((current) => ({ ...current, [record.id]: detail }))
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        setDetailErrorByRecordId((current) => ({ ...current, [record.id]: message }))
+      } finally {
+        setDetailLoadingByRecordId((current) => ({ ...current, [record.id]: false }))
+      }
+    },
+    [detailByRecordId, detailLoadingByRecordId],
+  )
+
+  const ensureResponseBody = useCallback(
+    async (record: ApiInvocation) => {
+      if (!isAbnormalRecord(record)) return
+      if (responseBodyByRecordId[record.id] !== undefined || responseBodyLoadingByRecordId[record.id]) return
+
+      setResponseBodyLoadingByRecordId((current) => ({ ...current, [record.id]: true }))
+      setResponseBodyErrorByRecordId((current) => ({ ...current, [record.id]: null }))
+
+      try {
+        const responseBody = await fetchInvocationResponseBody(record.id)
+        setResponseBodyByRecordId((current) => ({ ...current, [record.id]: responseBody }))
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        setResponseBodyErrorByRecordId((current) => ({ ...current, [record.id]: message }))
+      } finally {
+        setResponseBodyLoadingByRecordId((current) => ({ ...current, [record.id]: false }))
+      }
+    },
+    [responseBodyByRecordId, responseBodyLoadingByRecordId],
+  )
+
+  useEffect(() => {
+    if (!expandedRecord || !isAbnormalRecord(expandedRecord)) return
+    void ensureRecordDetail(expandedRecord)
+  }, [ensureRecordDetail, expandedRecord])
+
+  useEffect(() => {
+    if (!drawerRow || !isAbnormalRecord(drawerRow.record)) return
+    void ensureRecordDetail(drawerRow.record)
+    void ensureResponseBody(drawerRow.record)
+  }, [drawerRow, ensureRecordDetail, ensureResponseBody])
 
   const hasRecords = rows.length > 0
   const showBlockingError = Boolean(error) && !hasRecords
@@ -435,6 +531,9 @@ export function InvocationRecordsTable({
   })()
 
   const detailColSpan = headers.length + 5
+  const drawerResponseBody = drawerRow ? responseBodyByRecordId[drawerRow.record.id] : undefined
+  const drawerResponseBodyError = drawerRow ? responseBodyErrorByRecordId[drawerRow.record.id] ?? null : null
+  const drawerResponseBodyLoading = drawerRow ? Boolean(responseBodyLoadingByRecordId[drawerRow.record.id]) : false
 
   const renderFocusCells = (row: InvocationRecordsRowViewModel) => {
     switch (focus) {
@@ -564,6 +663,10 @@ export function InvocationRecordsTable({
         {rows.map((row) => {
           const detailId = `records-list-details-${invocationStableDomKey(row.rowKey)}`
           const isExpanded = expandedId === row.rowKey
+          const detail = detailByRecordId[row.record.id]
+          const detailLoading = Boolean(detailLoadingByRecordId[row.record.id])
+          const detailError = detailErrorByRecordId[row.record.id] ?? null
+          const abnormalResponseBody = detail?.abnormalResponseBody ?? null
 
           return (
             <article key={row.rowKey} className="rounded-xl border border-base-300/70 bg-base-100/45 px-4 py-4">
@@ -614,6 +717,11 @@ export function InvocationRecordsTable({
                     detailNotice={row.detailNotice}
                     size="compact"
                     poolAttemptsState={poolAttemptsState}
+                    abnormalResponseBody={abnormalResponseBody}
+                    abnormalResponseBodyLoading={detailLoading}
+                    abnormalResponseBodyError={detailError}
+                    onOpenFullDetails={isAbnormalRecord(row.record) ? () => setDrawerRecordId(row.record.id) : null}
+                    showFullDetailsAction={isAbnormalRecord(row.record)}
                     t={t}
                   />
                 </div>
@@ -645,6 +753,10 @@ export function InvocationRecordsTable({
             {rows.map((row, index) => {
               const detailId = `records-table-details-${invocationStableDomKey(row.rowKey)}`
               const isExpanded = expandedId === row.rowKey
+              const detail = detailByRecordId[row.record.id]
+              const detailLoading = Boolean(detailLoadingByRecordId[row.record.id])
+              const detailError = detailErrorByRecordId[row.record.id] ?? null
+              const abnormalResponseBody = detail?.abnormalResponseBody ?? null
 
               return (
                 <Fragment key={row.rowKey}>
@@ -690,6 +802,11 @@ export function InvocationRecordsTable({
                             detailNotice={row.detailNotice}
                             size="default"
                             poolAttemptsState={poolAttemptsState}
+                            abnormalResponseBody={abnormalResponseBody}
+                            abnormalResponseBodyLoading={detailLoading}
+                            abnormalResponseBodyError={detailError}
+                            onOpenFullDetails={isAbnormalRecord(row.record) ? () => setDrawerRecordId(row.record.id) : null}
+                            showFullDetailsAction={isAbnormalRecord(row.record)}
                             t={t}
                           />
                         </div>
@@ -702,6 +819,59 @@ export function InvocationRecordsTable({
           </tbody>
         </table>
       </div>
+
+      {drawerRow ? (
+        <AccountDetailDrawerShell
+          open
+          labelledBy={`records-full-detail-title-${drawerRow.record.id}`}
+          closeLabel={t('records.table.fullDetails.close')}
+          onClose={() => setDrawerRecordId(null)}
+          shellClassName="max-w-4xl border-l border-base-300 bg-base-100 shadow-2xl"
+          bodyClassName="space-y-4"
+          header={
+            <div className="space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant={drawerRow.statusMeta.variant}>{drawerRow.statusLabel}</Badge>
+                <span className="text-xs text-base-content/60">{drawerRow.occurredAtLabel}</span>
+              </div>
+              <div>
+                <h2 id={`records-full-detail-title-${drawerRow.record.id}`} className="text-lg font-semibold">
+                  {t('records.table.fullDetails.title')}
+                </h2>
+                <p className="mt-1 break-all font-mono text-sm text-base-content/70">{drawerRow.record.invokeId}</p>
+              </div>
+            </div>
+          }
+        >
+          {renderDetailSummaryStrip(drawerRow, focus, t, renderAccountValue)}
+
+          <div className="rounded-xl border border-base-300/70 bg-base-200/35 p-4">
+            <InvocationExpandedDetails
+              record={drawerRow.record}
+              detailId={`records-drawer-details-${drawerRow.record.id}`}
+              detailPairs={drawerRow.detailPairs}
+              timingPairs={drawerRow.timingPairs}
+              errorMessage={drawerRow.errorMessage}
+              detailNotice={drawerRow.detailNotice}
+              size="default"
+              poolAttemptsState={drawerPoolAttemptsState}
+              abnormalResponseBody={
+                drawerResponseBody
+                  ? {
+                      available: drawerResponseBody.available,
+                      previewText: drawerResponseBody.bodyText ?? null,
+                      hasMore: false,
+                      unavailableReason: drawerResponseBody.unavailableReason ?? null,
+                    }
+                  : null
+              }
+              abnormalResponseBodyLoading={drawerResponseBodyLoading}
+              abnormalResponseBodyError={drawerResponseBodyError}
+              t={t}
+            />
+          </div>
+        </AccountDetailDrawerShell>
+      ) : null}
 
     </div>
   )
