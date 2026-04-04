@@ -341,8 +341,6 @@ const MAX_PROXY_UPSTREAM_429_MAX_RETRIES: u8 = 5;
 const MIN_POOL_GROUP_UPSTREAM_429_RETRY_DELAY_SECS: u64 = 1;
 const MAX_POOL_GROUP_UPSTREAM_429_RETRY_DELAY_SECS: u64 = 10;
 const MAX_PROXY_UPSTREAM_429_RETRY_AFTER_DELAY_SECS: u64 = 30;
-const DEFAULT_PROXY_FAST_MODE_REWRITE_MODE: ProxyFastModeRewriteMode =
-    ProxyFastModeRewriteMode::Disabled;
 const DEFAULT_PROXY_USAGE_BACKFILL_ON_STARTUP: bool = true;
 const GPT_5_4_LONG_CONTEXT_THRESHOLD_TOKENS: i64 = 272_000;
 const PROMPT_CACHE_CONVERSATION_DEFAULT_LIMIT: i64 = 50;
@@ -10302,17 +10300,15 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             id,
             hijack_enabled,
             merge_upstream_enabled,
-            fast_mode_rewrite_mode,
             upstream_429_max_retries,
             enabled_preset_models_json
         )
-        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        VALUES (?1, ?2, ?3, ?4, ?5)
         "#,
     )
     .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
     .bind(DEFAULT_PROXY_MODELS_HIJACK_ENABLED as i64)
     .bind(DEFAULT_PROXY_MODELS_MERGE_UPSTREAM_ENABLED as i64)
-    .bind(DEFAULT_PROXY_FAST_MODE_REWRITE_MODE.as_str())
     .bind(i64::from(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES))
     .bind(default_enabled_models_json)
     .execute(pool)
@@ -10641,7 +10637,11 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 async fn load_proxy_model_settings(pool: &Pool<Sqlite>) -> Result<ProxyModelSettings> {
     let row = sqlx::query_as::<_, ProxyModelSettingsRow>(
         r#"
-        SELECT hijack_enabled, merge_upstream_enabled, fast_mode_rewrite_mode, upstream_429_max_retries, enabled_preset_models_json
+        SELECT
+            hijack_enabled,
+            merge_upstream_enabled,
+            upstream_429_max_retries,
+            enabled_preset_models_json
         FROM proxy_model_settings
         WHERE id = ?1
         LIMIT 1
@@ -10669,16 +10669,14 @@ async fn save_proxy_model_settings(
         UPDATE proxy_model_settings
         SET hijack_enabled = ?1,
             merge_upstream_enabled = ?2,
-            fast_mode_rewrite_mode = ?3,
-            upstream_429_max_retries = ?4,
-            enabled_preset_models_json = ?5,
+            upstream_429_max_retries = ?3,
+            enabled_preset_models_json = ?4,
             updated_at = datetime('now')
-        WHERE id = ?6
+        WHERE id = ?5
         "#,
     )
     .bind(settings.hijack_enabled as i64)
     .bind(settings.merge_upstream_enabled as i64)
-    .bind(settings.fast_mode_rewrite_mode.as_str())
     .bind(i64::from(settings.upstream_429_max_retries))
     .bind(enabled_models_json)
     .bind(PROXY_MODEL_SETTINGS_SINGLETON_ID)
@@ -11630,6 +11628,8 @@ pub(crate) struct PoolUpstreamResponse {
     pub(crate) first_chunk: Option<Bytes>,
     pub(crate) pending_attempt_record: Option<PendingPoolAttemptRecord>,
     pub(crate) attempt_summary: PoolAttemptSummary,
+    pub(crate) requested_service_tier: Option<String>,
+    pub(crate) request_body_for_capture: Option<Bytes>,
 }
 
 #[derive(Debug)]
@@ -11644,6 +11644,8 @@ pub(crate) struct PoolUpstreamError {
     pub(crate) upstream_request_id: Option<String>,
     pub(crate) oauth_responses_debug: Option<oauth_bridge::OauthResponsesDebugInfo>,
     pub(crate) attempt_summary: PoolAttemptSummary,
+    pub(crate) requested_service_tier: Option<String>,
+    pub(crate) request_body_for_capture: Option<Bytes>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -11695,6 +11697,8 @@ fn build_pool_rate_limited_error(
             distinct_account_count,
             Some(failure_kind.to_string()),
         ),
+        requested_service_tier: None,
+        request_body_for_capture: None,
     }
 }
 
@@ -11717,6 +11721,8 @@ fn build_pool_no_available_account_error(
             distinct_account_count,
             Some(PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT.to_string()),
         ),
+        requested_service_tier: None,
+        request_body_for_capture: None,
     }
 }
 
@@ -11739,6 +11745,8 @@ fn build_pool_degraded_only_error(
             distinct_account_count,
             Some(PROXY_FAILURE_POOL_ALL_ACCOUNTS_DEGRADED.to_string()),
         ),
+        requested_service_tier: None,
+        request_body_for_capture: None,
     }
 }
 
@@ -12222,6 +12230,95 @@ impl PoolReplayBodySnapshot {
     }
 }
 
+#[derive(Debug, Clone)]
+struct PreparedPoolRequestBody {
+    snapshot: PoolReplayBodySnapshot,
+    request_body_for_capture: Option<Bytes>,
+    requested_service_tier: Option<String>,
+}
+
+async fn prepare_pool_request_body_for_account(
+    body: Option<&PoolReplayBodySnapshot>,
+    original_uri: &Uri,
+    method: &Method,
+    fast_mode_rewrite_mode: TagFastModeRewriteMode,
+) -> Result<PreparedPoolRequestBody, String> {
+    let capture_target = capture_target_for_request(original_uri.path(), method);
+    let rewrite_required = capture_target.is_some_and(|target| target.allows_fast_mode_rewrite())
+        && fast_mode_rewrite_mode != TagFastModeRewriteMode::KeepOriginal;
+
+    let Some(snapshot) = body.cloned() else {
+        return Ok(PreparedPoolRequestBody {
+            snapshot: PoolReplayBodySnapshot::Empty,
+            request_body_for_capture: Some(Bytes::new()),
+            requested_service_tier: None,
+        });
+    };
+
+    if !rewrite_required {
+        let (request_body_for_capture, requested_service_tier) = match &snapshot {
+            PoolReplayBodySnapshot::Empty => (Some(Bytes::new()), None),
+            PoolReplayBodySnapshot::Memory(bytes) => {
+                let requested_service_tier = serde_json::from_slice::<Value>(bytes)
+                    .ok()
+                    .and_then(|value| extract_requested_service_tier_from_request_body(&value));
+                (Some(bytes.clone()), requested_service_tier)
+            }
+            PoolReplayBodySnapshot::File { .. } => (None, None),
+        };
+        return Ok(PreparedPoolRequestBody {
+            snapshot,
+            request_body_for_capture,
+            requested_service_tier,
+        });
+    }
+
+    let original_bytes = snapshot
+        .to_bytes()
+        .await
+        .map_err(|err| format!("failed to materialize pool request body for rewrite: {err}"))?;
+    let Some(target) = capture_target else {
+        return Ok(PreparedPoolRequestBody {
+            snapshot: PoolReplayBodySnapshot::Memory(original_bytes.clone()),
+            request_body_for_capture: Some(original_bytes),
+            requested_service_tier: None,
+        });
+    };
+    let mut value = match serde_json::from_slice::<Value>(&original_bytes) {
+        Ok(value) => value,
+        Err(_) => {
+            return Ok(PreparedPoolRequestBody {
+                snapshot: PoolReplayBodySnapshot::Memory(original_bytes.clone()),
+                request_body_for_capture: Some(original_bytes),
+                requested_service_tier: None,
+            });
+        }
+    };
+
+    let rewritten = if target.allows_fast_mode_rewrite() {
+        rewrite_request_service_tier_for_fast_mode(&mut value, fast_mode_rewrite_mode)
+    } else {
+        false
+    };
+    let requested_service_tier = extract_requested_service_tier_from_request_body(&value);
+    if !rewritten {
+        return Ok(PreparedPoolRequestBody {
+            snapshot: PoolReplayBodySnapshot::Memory(original_bytes.clone()),
+            request_body_for_capture: Some(original_bytes),
+            requested_service_tier,
+        });
+    }
+
+    let rewritten_bytes = serde_json::to_vec(&value)
+        .map(Bytes::from)
+        .map_err(|err| format!("failed to serialize rewritten pool request body: {err}"))?;
+    Ok(PreparedPoolRequestBody {
+        snapshot: PoolReplayBodySnapshot::Memory(rewritten_bytes.clone()),
+        request_body_for_capture: Some(rewritten_bytes.clone()),
+        requested_service_tier,
+    })
+}
+
 fn build_pool_replay_temp_path(proxy_request_id: u64) -> PathBuf {
     let mut path = env::temp_dir();
     path.push(format!(
@@ -12437,6 +12534,8 @@ async fn send_pool_request_with_failover(
                 failover_progress.excluded_account_ids.len(),
                 Some(PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT.to_string()),
             ),
+            requested_service_tier: None,
+            request_body_for_capture: None,
         })?;
     let pre_first_byte_timeout =
         pool_upstream_first_chunk_timeout(&runtime_timeouts, original_uri, &method);
@@ -12539,6 +12638,8 @@ async fn send_pool_request_with_failover(
                 upstream_request_id: None,
                 oauth_responses_debug: None,
                 attempt_summary: PoolAttemptSummary::default(),
+                requested_service_tier: None,
+                request_body_for_capture: None,
             });
             if exhausted_accounts_all_rate_limited && distinct_account_count > 0 {
                 final_error.status = StatusCode::TOO_MANY_REQUESTS;
@@ -12636,6 +12737,8 @@ async fn send_pool_request_with_failover(
                             upstream_request_id: None,
                             oauth_responses_debug: None,
                             attempt_summary: PoolAttemptSummary::default(),
+                            requested_service_tier: None,
+                            request_body_for_capture: None,
                         })
                     } else {
                         last_error
@@ -12699,6 +12802,8 @@ async fn send_pool_request_with_failover(
                             upstream_request_id: None,
                             oauth_responses_debug: None,
                             attempt_summary: PoolAttemptSummary::default(),
+                            requested_service_tier: None,
+                            request_body_for_capture: None,
                         });
                         err.status = StatusCode::BAD_GATEWAY;
                         err.message =
@@ -12780,6 +12885,8 @@ async fn send_pool_request_with_failover(
                             distinct_account_count,
                             Some(terminal_failure_kind.to_string()),
                         ),
+                        requested_service_tier: None,
+                        request_body_for_capture: None,
                     };
                     if terminal_failure_kind
                         == PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT
@@ -12819,6 +12926,8 @@ async fn send_pool_request_with_failover(
                             distinct_account_count,
                             Some(PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT.to_string()),
                         ),
+                        requested_service_tier: None,
+                        request_body_for_capture: None,
                     });
                 }
             }
@@ -12851,6 +12960,8 @@ async fn send_pool_request_with_failover(
                                 distinct_account_count,
                                 Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM.to_string()),
                             ),
+                            requested_service_tier: None,
+                            request_body_for_capture: None,
                         });
                     }
                 }
@@ -12939,6 +13050,38 @@ async fn send_pool_request_with_failover(
             let attempt_started_at: String;
             let attempt_index: i64;
             let pending_attempt_record: Option<PendingPoolAttemptRecord>;
+            let prepared_request_body = match prepare_pool_request_body_for_account(
+                body.as_ref(),
+                original_uri,
+                &method,
+                account.fast_mode_rewrite_mode,
+            )
+            .await
+            {
+                Ok(prepared) => prepared,
+                Err(message) => {
+                    last_error = Some(PoolUpstreamError {
+                        account: Some(account.clone()),
+                        status: StatusCode::BAD_GATEWAY,
+                        message,
+                        failure_kind: PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
+                        connect_latency_ms: 0.0,
+                        upstream_error_code: None,
+                        upstream_error_message: None,
+                        upstream_request_id: None,
+                        oauth_responses_debug: None,
+                        attempt_summary: PoolAttemptSummary::default(),
+                        requested_service_tier: None,
+                        request_body_for_capture: None,
+                    });
+                    exhausted_accounts_all_rate_limited = false;
+                    continue 'account_loop;
+                }
+            };
+            let attempted_requested_service_tier =
+                prepared_request_body.requested_service_tier.clone();
+            let attempted_request_body_for_capture =
+                prepared_request_body.request_body_for_capture.clone();
             let (response, oauth_responses_debug, forward_proxy_selection) = match &account.auth {
                 PoolResolvedAuth::ApiKey { authorization } => {
                     let (forward_proxy_scope, selected_proxy, client) =
@@ -12969,6 +13112,10 @@ async fn send_pool_request_with_failover(
                                     upstream_request_id: None,
                                     oauth_responses_debug: None,
                                     attempt_summary: PoolAttemptSummary::default(),
+                                    requested_service_tier: attempted_requested_service_tier
+                                        .clone(),
+                                    request_body_for_capture: attempted_request_body_for_capture
+                                        .clone(),
                                 });
                                 exhausted_accounts_all_rate_limited = false;
                                 continue 'account_loop;
@@ -12992,9 +13139,7 @@ async fn send_pool_request_with_failover(
                         }
                     }
                     request = request.header(header::AUTHORIZATION, authorization.clone());
-                    if let Some(body_snapshot) = body.as_ref() {
-                        request = request.body(body_snapshot.to_reqwest_body());
-                    }
+                    request = request.body(prepared_request_body.snapshot.to_reqwest_body());
                     if let Err(route_err) =
                         record_account_selected(&state.pool, account.account_id).await
                     {
@@ -13021,8 +13166,14 @@ async fn send_pool_request_with_failover(
                     } else {
                         None
                     };
+                    let attempt_runtime_snapshot = runtime_snapshot_context.as_ref().map(|ctx| {
+                        let mut ctx = ctx.clone();
+                        ctx.request_info.requested_service_tier =
+                            attempted_requested_service_tier.clone();
+                        ctx
+                    });
                     if let (Some(trace), Some(runtime_snapshot)) =
-                        (trace_context.as_ref(), runtime_snapshot_context.as_ref())
+                        (trace_context.as_ref(), attempt_runtime_snapshot.as_ref())
                     {
                         broadcast_pool_attempt_started_runtime_snapshot(
                             state.as_ref(),
@@ -13154,6 +13305,9 @@ async fn send_pool_request_with_failover(
                                 upstream_request_id: None,
                                 oauth_responses_debug: None,
                                 attempt_summary: PoolAttemptSummary::default(),
+                                requested_service_tier: attempted_requested_service_tier.clone(),
+                                request_body_for_capture: attempted_request_body_for_capture
+                                    .clone(),
                             });
                             exhausted_accounts_all_rate_limited = false;
                             if is_timeout_shaped {
@@ -13260,6 +13414,9 @@ async fn send_pool_request_with_failover(
                                 upstream_request_id: None,
                                 oauth_responses_debug: None,
                                 attempt_summary: PoolAttemptSummary::default(),
+                                requested_service_tier: attempted_requested_service_tier.clone(),
+                                request_body_for_capture: attempted_request_body_for_capture
+                                    .clone(),
                             });
                             exhausted_accounts_all_rate_limited = false;
                             if is_timeout_shaped {
@@ -13302,13 +13459,17 @@ async fn send_pool_request_with_failover(
                                     upstream_request_id: None,
                                     oauth_responses_debug: None,
                                     attempt_summary: PoolAttemptSummary::default(),
+                                    requested_service_tier: attempted_requested_service_tier
+                                        .clone(),
+                                    request_body_for_capture: attempted_request_body_for_capture
+                                        .clone(),
                                 });
                                 exhausted_accounts_all_rate_limited = false;
                                 continue 'account_loop;
                             }
                         };
-                    let oauth_body = match body.as_ref() {
-                        Some(PoolReplayBodySnapshot::File { size, .. })
+                    let oauth_body = match &prepared_request_body.snapshot {
+                        PoolReplayBodySnapshot::File { size, .. }
                             if original_uri.path() == "/v1/responses"
                                 && *size > OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES =>
                         {
@@ -13330,11 +13491,14 @@ async fn send_pool_request_with_failover(
                                     distinct_account_count,
                                     Some(PROXY_FAILURE_BODY_TOO_LARGE.to_string()),
                                 ),
+                                requested_service_tier: attempted_requested_service_tier.clone(),
+                                request_body_for_capture:
+                                    attempted_request_body_for_capture.clone(),
                             });
                             exhausted_accounts_all_rate_limited = false;
                             continue 'account_loop;
                         }
-                        Some(snapshot) if original_uri.path() == "/v1/responses" => {
+                        snapshot if original_uri.path() == "/v1/responses" => {
                             oauth_bridge::OauthUpstreamRequestBody::Bytes(
                                 snapshot.to_bytes().await.map_err(|err| PoolUpstreamError {
                                     account: Some(account.clone()),
@@ -13351,10 +13515,14 @@ async fn send_pool_request_with_failover(
                                         distinct_account_count,
                                         Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM.to_string()),
                                     ),
+                                    requested_service_tier:
+                                        attempted_requested_service_tier.clone(),
+                                    request_body_for_capture:
+                                        attempted_request_body_for_capture.clone(),
                                 })?,
                             )
                         }
-                        Some(snapshot) => oauth_bridge::OauthUpstreamRequestBody::Stream {
+                        snapshot => oauth_bridge::OauthUpstreamRequestBody::Stream {
                             debug_body_prefix: Some(
                                 snapshot
                                     .to_prefix_bytes(
@@ -13378,11 +13546,14 @@ async fn send_pool_request_with_failover(
                                             distinct_account_count,
                                             Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM.to_string()),
                                         ),
+                                        requested_service_tier:
+                                            attempted_requested_service_tier.clone(),
+                                        request_body_for_capture:
+                                            attempted_request_body_for_capture.clone(),
                                     })?,
                             ),
                             body: snapshot.to_reqwest_body(),
                         },
-                        None => oauth_bridge::OauthUpstreamRequestBody::Empty,
                     };
                     attempt_count += 1;
                     attempt_index = attempt_count as i64;
@@ -13413,8 +13584,14 @@ async fn send_pool_request_with_failover(
                     } else {
                         None
                     };
+                    let attempt_runtime_snapshot = runtime_snapshot_context.as_ref().map(|ctx| {
+                        let mut ctx = ctx.clone();
+                        ctx.request_info.requested_service_tier =
+                            attempted_requested_service_tier.clone();
+                        ctx
+                    });
                     if let (Some(trace), Some(runtime_snapshot)) =
-                        (trace_context.as_ref(), runtime_snapshot_context.as_ref())
+                        (trace_context.as_ref(), attempt_runtime_snapshot.as_ref())
                     {
                         broadcast_pool_attempt_started_runtime_snapshot(
                             state.as_ref(),
@@ -13659,6 +13836,8 @@ async fn send_pool_request_with_failover(
                     upstream_request_id,
                     oauth_responses_debug: oauth_responses_debug.clone(),
                     attempt_summary: PoolAttemptSummary::default(),
+                    requested_service_tier: attempted_requested_service_tier.clone(),
+                    request_body_for_capture: attempted_request_body_for_capture.clone(),
                 });
                 exhausted_accounts_all_rate_limited &= status == StatusCode::TOO_MANY_REQUESTS;
                 if is_timeout_shaped {
@@ -13792,6 +13971,8 @@ async fn send_pool_request_with_failover(
                         upstream_request_id: None,
                         oauth_responses_debug: oauth_responses_debug.clone(),
                         attempt_summary: PoolAttemptSummary::default(),
+                        requested_service_tier: attempted_requested_service_tier.clone(),
+                        request_body_for_capture: attempted_request_body_for_capture.clone(),
                     });
                     exhausted_accounts_all_rate_limited = false;
                     if is_timeout_shaped {
@@ -13907,6 +14088,8 @@ async fn send_pool_request_with_failover(
                             upstream_request_id,
                             oauth_responses_debug: oauth_responses_debug.clone(),
                             attempt_summary: PoolAttemptSummary::default(),
+                            requested_service_tier: attempted_requested_service_tier.clone(),
+                            request_body_for_capture: attempted_request_body_for_capture.clone(),
                         });
                         exhausted_accounts_all_rate_limited = false;
                         continue 'account_loop;
@@ -13973,6 +14156,8 @@ async fn send_pool_request_with_failover(
                             upstream_request_id: None,
                             oauth_responses_debug: oauth_responses_debug.clone(),
                             attempt_summary: PoolAttemptSummary::default(),
+                            requested_service_tier: attempted_requested_service_tier.clone(),
+                            request_body_for_capture: attempted_request_body_for_capture.clone(),
                         });
                         exhausted_accounts_all_rate_limited = false;
                         continue 'account_loop;
@@ -14045,6 +14230,8 @@ async fn send_pool_request_with_failover(
                     pending
                 }),
                 attempt_summary: pool_attempt_summary(attempt_count, distinct_account_count, None),
+                requested_service_tier: attempted_requested_service_tier,
+                request_body_for_capture: attempted_request_body_for_capture,
             });
         }
     }
@@ -14181,6 +14368,8 @@ async fn continue_or_retry_pool_live_request(
                 upstream_request_id: None,
                 oauth_responses_debug: None,
                 attempt_summary: first_error.attempt_summary.clone(),
+                requested_service_tier: first_error.requested_service_tier.clone(),
+                request_body_for_capture: first_error.request_body_for_capture.clone(),
             })
         }
         PoolReplayBodyStatus::InternalError(message) => {
@@ -14196,6 +14385,8 @@ async fn continue_or_retry_pool_live_request(
                 upstream_request_id: None,
                 oauth_responses_debug: None,
                 attempt_summary: first_error.attempt_summary.clone(),
+                requested_service_tier: first_error.requested_service_tier.clone(),
+                request_body_for_capture: first_error.request_body_for_capture.clone(),
             })
         }
         PoolReplayBodyStatus::Reading | PoolReplayBodyStatus::Incomplete => {
@@ -14994,11 +15185,10 @@ async fn proxy_openai_v1_capture_target(
 
     let proxy_settings = state.proxy_model_settings.read().await.clone();
     let req_parse_started = Instant::now();
-    let (upstream_body, request_info, body_rewritten) = prepare_target_request_body(
+    let (upstream_body, mut request_info, body_rewritten) = prepare_target_request_body(
         capture_target,
         request_body_bytes,
         state.config.proxy_enforce_stream_include_usage,
-        proxy_settings.fast_mode_rewrite_mode,
     );
     let prompt_cache_key = request_info
         .prompt_cache_key
@@ -15016,8 +15206,8 @@ async fn proxy_openai_v1_capture_target(
         requester_ip: requester_ip.clone(),
     });
     let t_req_parse_ms = elapsed_ms(req_parse_started);
-    let req_raw = store_raw_payload_file(&state.config, &invoke_id, "request", &upstream_body);
     let upstream_body_bytes = Bytes::from(upstream_body);
+    let base_request_bytes_for_capture = upstream_body_bytes.clone();
 
     let initial_running_record = build_running_proxy_capture_record(
         &invoke_id,
@@ -15080,6 +15270,8 @@ async fn proxy_openai_v1_capture_target(
         pending_pool_attempt_summary,
         upstream_attempt_started_at,
         upstream_attempt_started_at_utc,
+        final_request_body_for_capture,
+        final_requested_service_tier,
         upstream_response,
     ) = if pool_route_active {
         match send_pool_request_with_failover(
@@ -15088,7 +15280,7 @@ async fn proxy_openai_v1_capture_target(
             Method::POST,
             &original_uri,
             &upstream_headers,
-            Some(PoolReplayBodySnapshot::Memory(upstream_body_bytes)),
+            Some(PoolReplayBodySnapshot::Memory(upstream_body_bytes.clone())),
             handshake_timeout,
             pool_attempt_trace_context.clone(),
             pool_attempt_runtime_snapshot.clone(),
@@ -15112,9 +15304,25 @@ async fn proxy_openai_v1_capture_target(
                 response.attempt_summary,
                 None,
                 Some(response.attempt_started_at_utc),
+                response.request_body_for_capture,
+                response.requested_service_tier,
                 response.response,
             ),
             Err(err) => {
+                request_info.requested_service_tier = err
+                    .requested_service_tier
+                    .clone()
+                    .or(request_info.requested_service_tier);
+                let request_body_for_capture = err
+                    .request_body_for_capture
+                    .clone()
+                    .unwrap_or_else(|| base_request_bytes_for_capture.clone());
+                let req_raw = store_raw_payload_file(
+                    &state.config,
+                    &invoke_id,
+                    "request",
+                    request_body_for_capture.as_ref(),
+                );
                 let usage = ParsedUsage::default();
                 let (cost, cost_estimated, price_version) =
                     estimate_proxy_cost_from_shared_catalog(
@@ -15245,7 +15453,7 @@ async fn proxy_openai_v1_capture_target(
             Method::POST,
             target_url,
             &upstream_headers,
-            Some(upstream_body_bytes),
+            Some(upstream_body_bytes.clone()),
             handshake_timeout,
             Some(capture_target),
             proxy_settings.upstream_429_max_retries,
@@ -15265,9 +15473,17 @@ async fn proxy_openai_v1_capture_target(
                 PoolAttemptSummary::default(),
                 Some(response.attempt_started_at),
                 None,
+                Some(base_request_bytes_for_capture.clone()),
+                request_info.requested_service_tier.clone(),
                 response.response,
             ),
             Err(err) => {
+                let req_raw = store_raw_payload_file(
+                    &state.config,
+                    &invoke_id,
+                    "request",
+                    base_request_bytes_for_capture.as_ref(),
+                );
                 let proxy_attempt_update = record_forward_proxy_attempt(
                     state.clone(),
                     err.selected_proxy.clone(),
@@ -15365,6 +15581,18 @@ async fn proxy_openai_v1_capture_target(
             }
         }
     };
+    request_info.requested_service_tier = final_requested_service_tier
+        .clone()
+        .or(request_info.requested_service_tier);
+    let req_raw = store_raw_payload_file(
+        &state.config,
+        &invoke_id,
+        "request",
+        final_request_body_for_capture
+            .as_ref()
+            .unwrap_or(&base_request_bytes_for_capture)
+            .as_ref(),
+    );
 
     let upstream_status = upstream_response.status();
     let location_base_url = location_rewrite_upstream_base(
@@ -16382,7 +16610,6 @@ fn prepare_target_request_body(
     target: ProxyCaptureTarget,
     body: Vec<u8>,
     auto_include_usage: bool,
-    fast_mode_rewrite_mode: ProxyFastModeRewriteMode,
 ) -> (Vec<u8>, RequestCaptureInfo, bool) {
     let mut info = RequestCaptureInfo {
         model: None,
@@ -16418,11 +16645,7 @@ fn prepare_target_request_body(
         .and_then(|v| v.as_bool())
         .unwrap_or(false);
 
-    let mut rewritten = if target.allows_fast_mode_rewrite() {
-        rewrite_request_service_tier_for_fast_mode(&mut value, fast_mode_rewrite_mode)
-    } else {
-        false
-    };
+    let mut rewritten = false;
     if target.should_auto_include_usage()
         && info.is_stream
         && auto_include_usage
@@ -16576,6 +16799,8 @@ fn build_pool_total_timeout_exhausted_error(
         upstream_request_id: None,
         oauth_responses_debug: None,
         attempt_summary: PoolAttemptSummary::default(),
+        requested_service_tier: None,
+        request_body_for_capture: None,
     });
     final_error.status = StatusCode::GATEWAY_TIMEOUT;
     final_error.message = pool_total_timeout_exhausted_message(total_timeout);
@@ -16736,36 +16961,44 @@ fn extract_requested_service_tier_from_request_body(value: &Value) -> Option<Str
 
 fn rewrite_request_service_tier_for_fast_mode(
     value: &mut Value,
-    fast_mode_rewrite_mode: ProxyFastModeRewriteMode,
+    fast_mode_rewrite_mode: TagFastModeRewriteMode,
 ) -> bool {
-    let target_service_tier = match fast_mode_rewrite_mode {
-        ProxyFastModeRewriteMode::Disabled => return false,
-        ProxyFastModeRewriteMode::FillMissing => {
-            extract_requested_service_tier_from_request_body(value)
-                .or_else(|| Some("priority".to_string()))
-        }
-        ProxyFastModeRewriteMode::ForcePriority => Some("priority".to_string()),
-    };
-
-    let Some(target_service_tier) = target_service_tier else {
-        return false;
-    };
     let Some(object) = value.as_object_mut() else {
         return false;
     };
 
-    let mut rewritten = object.remove("serviceTier").is_some();
-    if object.get("service_tier").and_then(|entry| entry.as_str())
-        != Some(target_service_tier.as_str())
-    {
-        object.insert(
-            "service_tier".to_string(),
-            Value::String(target_service_tier),
-        );
-        rewritten = true;
+    match fast_mode_rewrite_mode {
+        TagFastModeRewriteMode::KeepOriginal => false,
+        TagFastModeRewriteMode::ForceRemove => {
+            let removed_snake = object.remove("service_tier").is_some();
+            let removed_camel = object.remove("serviceTier").is_some();
+            removed_snake || removed_camel
+        }
+        TagFastModeRewriteMode::FillMissing => {
+            let has_existing_service_tier =
+                object.contains_key("service_tier") || object.contains_key("serviceTier");
+            if has_existing_service_tier {
+                false
+            } else {
+                object.insert(
+                    "service_tier".to_string(),
+                    Value::String("priority".to_string()),
+                );
+                true
+            }
+        }
+        TagFastModeRewriteMode::ForceAdd => {
+            let mut rewritten = object.remove("serviceTier").is_some();
+            if object.get("service_tier").and_then(|entry| entry.as_str()) != Some("priority") {
+                object.insert(
+                    "service_tier".to_string(),
+                    Value::String("priority".to_string()),
+                );
+                rewritten = true;
+            }
+            rewritten
+        }
     }
-
-    rewritten
 }
 
 fn extract_reasoning_effort_from_request_body(
@@ -22686,41 +22919,8 @@ impl PricingSettingsResponse {
 struct ProxyModelSettings {
     hijack_enabled: bool,
     merge_upstream_enabled: bool,
-    fast_mode_rewrite_mode: ProxyFastModeRewriteMode,
     upstream_429_max_retries: u8,
     enabled_preset_models: Vec<String>,
-}
-
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum ProxyFastModeRewriteMode {
-    #[default]
-    Disabled,
-    FillMissing,
-    ForcePriority,
-}
-
-impl ProxyFastModeRewriteMode {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Disabled => "disabled",
-            Self::FillMissing => "fill_missing",
-            Self::ForcePriority => "force_priority",
-        }
-    }
-}
-
-fn decode_proxy_fast_mode_rewrite_mode(raw: Option<&str>) -> ProxyFastModeRewriteMode {
-    match raw
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_ascii_lowercase)
-        .as_deref()
-    {
-        Some("fill_missing") => ProxyFastModeRewriteMode::FillMissing,
-        Some("force_priority") => ProxyFastModeRewriteMode::ForcePriority,
-        _ => DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
-    }
 }
 
 fn normalize_proxy_upstream_429_max_retries(value: u8) -> u8 {
@@ -22738,7 +22938,6 @@ impl Default for ProxyModelSettings {
         Self {
             hijack_enabled: DEFAULT_PROXY_MODELS_HIJACK_ENABLED,
             merge_upstream_enabled: DEFAULT_PROXY_MODELS_MERGE_UPSTREAM_ENABLED,
-            fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
             upstream_429_max_retries: DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES,
             enabled_preset_models: default_enabled_preset_models(),
         }
@@ -22755,7 +22954,6 @@ impl ProxyModelSettings {
         Self {
             hijack_enabled: self.hijack_enabled,
             merge_upstream_enabled,
-            fast_mode_rewrite_mode: self.fast_mode_rewrite_mode,
             upstream_429_max_retries: normalize_proxy_upstream_429_max_retries(
                 self.upstream_429_max_retries,
             ),
@@ -22768,7 +22966,6 @@ impl ProxyModelSettings {
 struct ProxyModelSettingsRow {
     hijack_enabled: i64,
     merge_upstream_enabled: i64,
-    fast_mode_rewrite_mode: Option<String>,
     upstream_429_max_retries: Option<i64>,
     enabled_preset_models_json: Option<String>,
 }
@@ -22778,9 +22975,6 @@ impl From<ProxyModelSettingsRow> for ProxyModelSettings {
         Self {
             hijack_enabled: value.hijack_enabled != 0,
             merge_upstream_enabled: value.merge_upstream_enabled != 0,
-            fast_mode_rewrite_mode: decode_proxy_fast_mode_rewrite_mode(
-                value.fast_mode_rewrite_mode.as_deref(),
-            ),
             upstream_429_max_retries: decode_proxy_upstream_429_max_retries(
                 value.upstream_429_max_retries,
             ),
@@ -22798,8 +22992,6 @@ struct ProxyModelSettingsUpdateRequest {
     hijack_enabled: bool,
     merge_upstream_enabled: bool,
     #[serde(default)]
-    fast_mode_rewrite_mode: ProxyFastModeRewriteMode,
-    #[serde(default)]
     upstream_429_max_retries: Option<u8>,
     #[serde(default = "default_enabled_preset_models")]
     enabled_models: Vec<String>,
@@ -22810,7 +23002,6 @@ struct ProxyModelSettingsUpdateRequest {
 struct ProxyModelSettingsResponse {
     hijack_enabled: bool,
     merge_upstream_enabled: bool,
-    fast_mode_rewrite_mode: ProxyFastModeRewriteMode,
     upstream_429_max_retries: u8,
     default_hijack_enabled: bool,
     models: Vec<String>,
@@ -22822,7 +23013,6 @@ impl From<ProxyModelSettings> for ProxyModelSettingsResponse {
         Self {
             hijack_enabled: value.hijack_enabled,
             merge_upstream_enabled: value.merge_upstream_enabled,
-            fast_mode_rewrite_mode: value.fast_mode_rewrite_mode,
             upstream_429_max_retries: value.upstream_429_max_retries,
             default_hijack_enabled: DEFAULT_PROXY_MODELS_HIJACK_ENABLED,
             models: PROXY_PRESET_MODEL_IDS

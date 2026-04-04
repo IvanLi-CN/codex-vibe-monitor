@@ -23,13 +23,25 @@ function RuleBadge({
   variant,
 }: {
   label: string
-  variant: 'default' | 'info' | 'accent'
+  variant: 'default' | 'info' | 'accent' | 'secondary' | 'warning'
 }) {
   return (
     <Badge variant={variant} className="px-2.5 py-1 text-[11px] font-semibold">
       {label}
     </Badge>
   )
+}
+
+function priorityBadgeVariant(priorityTier: string | undefined) {
+  if (priorityTier === 'primary') return 'default' as const
+  if (priorityTier === 'fallback') return 'warning' as const
+  return 'secondary' as const
+}
+
+function priorityBadgeLabel(priorityTier: string | undefined, t: ReturnType<typeof useTranslation>['t']) {
+  if (priorityTier === 'primary') return t('accountPool.tags.rule.priorityPrimary')
+  if (priorityTier === 'fallback') return t('accountPool.tags.rule.priorityFallback')
+  return t('accountPool.tags.rule.priorityNormal')
 }
 
 export default function TagsPage() {
@@ -227,6 +239,10 @@ export default function TagsPage() {
                       <td className="px-4 py-4 font-semibold text-base-content">{tag.name}</td>
                       <td className="px-4 py-4 text-sm text-base-content/70">
                         <div className="flex flex-wrap gap-2">
+                          <RuleBadge
+                            variant={priorityBadgeVariant(tag.routingRule.priorityTier)}
+                            label={priorityBadgeLabel(tag.routingRule.priorityTier, t)}
+                          />
                           {tag.routingRule.guardEnabled ? (
                             <RuleBadge
                               variant="default"
@@ -310,6 +326,10 @@ export default function TagsPage() {
           maxConversations: t('accountPool.tags.dialog.maxConversations'),
           allowCutOut: t('accountPool.tags.dialog.allowCutOut'),
           allowCutIn: t('accountPool.tags.dialog.allowCutIn'),
+          priorityTier: t('accountPool.tags.dialog.priorityTier'),
+          priorityPrimary: t('accountPool.tags.dialog.priorityPrimary'),
+          priorityNormal: t('accountPool.tags.dialog.priorityNormal'),
+          priorityFallback: t('accountPool.tags.dialog.priorityFallback'),
           concurrencyLimit: t('accountPool.tags.dialog.concurrencyLimit'),
           concurrencyHint: t('accountPool.tags.dialog.concurrencyHint'),
           currentValue: t('accountPool.tags.dialog.currentValue'),

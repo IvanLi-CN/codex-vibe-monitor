@@ -29,6 +29,10 @@ interface AccountTagFieldLabels {
   maxConversations: string
   allowCutOut: string
   allowCutIn: string
+  priorityTier: string
+  priorityPrimary: string
+  priorityNormal: string
+  priorityFallback: string
   concurrencyLimit?: string
   concurrencyHint?: string
   currentValue?: string
@@ -278,6 +282,10 @@ export function AccountTagField({
           maxConversations: labels.maxConversations,
           allowCutOut: labels.allowCutOut,
           allowCutIn: labels.allowCutIn,
+          priorityTier: labels.priorityTier,
+          priorityPrimary: labels.priorityPrimary,
+          priorityNormal: labels.priorityNormal,
+          priorityFallback: labels.priorityFallback,
           concurrencyLimit: labels.concurrencyLimit,
           concurrencyHint: labels.concurrencyHint,
           currentValue: labels.currentValue,

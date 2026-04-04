@@ -17,6 +17,9 @@ interface EffectiveRoutingRuleCardProps {
     sourceTags: string
     guardRule: (hours: number, count: number) => string
     allGuardsApply: string
+    priorityPrimary: string
+    priorityNormal: string
+    priorityFallback: string
   }
 }
 
@@ -27,10 +30,23 @@ export function EffectiveRoutingRuleCard({ rule, labels }: EffectiveRoutingRuleC
     maxConversations: null,
     allowCutOut: true,
     allowCutIn: true,
+    priorityTier: 'normal',
     sourceTagIds: [],
     sourceTagNames: [],
     guardRules: [],
   }
+  const priorityVariant: 'default' | 'secondary' | 'warning' =
+    resolvedRule.priorityTier === 'primary'
+      ? 'default'
+      : resolvedRule.priorityTier === 'fallback'
+        ? 'warning'
+        : 'secondary'
+  const priorityLabel =
+    resolvedRule.priorityTier === 'primary'
+      ? labels.priorityPrimary
+      : resolvedRule.priorityTier === 'fallback'
+        ? labels.priorityFallback
+        : labels.priorityNormal
 
   return (
     <Card className="border-base-300/80 bg-base-100/72">
@@ -40,6 +56,9 @@ export function EffectiveRoutingRuleCard({ rule, labels }: EffectiveRoutingRuleC
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex flex-wrap gap-2">
+          <Badge variant={priorityVariant}>
+            {priorityLabel}
+          </Badge>
           <Badge variant={resolvedRule.guardEnabled ? 'default' : 'secondary'}>
             {resolvedRule.guardEnabled ? labels.guardEnabled : labels.guardDisabled}
           </Badge>

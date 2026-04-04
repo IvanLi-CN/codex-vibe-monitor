@@ -847,6 +847,68 @@ pub(crate) enum DuplicateReason {
     SharedChatgptUserId,
 }
 
+#[derive(Debug, Clone, Copy, Serialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TagPriorityTier {
+    Fallback,
+    Normal,
+    Primary,
+}
+
+impl Default for TagPriorityTier {
+    fn default() -> Self {
+        Self::Normal
+    }
+}
+
+impl TagPriorityTier {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Fallback => "fallback",
+            Self::Normal => "normal",
+            Self::Primary => "primary",
+        }
+    }
+
+    fn routing_rank(self) -> u8 {
+        match self {
+            Self::Primary => 0,
+            Self::Normal => 1,
+            Self::Fallback => 2,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum TagFastModeRewriteMode {
+    ForceRemove,
+    #[default]
+    KeepOriginal,
+    FillMissing,
+    ForceAdd,
+}
+
+impl TagFastModeRewriteMode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::ForceRemove => "force_remove",
+            Self::KeepOriginal => "keep_original",
+            Self::FillMissing => "fill_missing",
+            Self::ForceAdd => "force_add",
+        }
+    }
+
+    fn merge_rank(self) -> u8 {
+        match self {
+            Self::ForceRemove => 0,
+            Self::ForceAdd => 1,
+            Self::FillMissing => 2,
+            Self::KeepOriginal => 3,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DuplicateInfo {
@@ -879,6 +941,8 @@ pub(crate) struct EffectiveRoutingRule {
     max_conversations: Option<i64>,
     allow_cut_out: bool,
     allow_cut_in: bool,
+    priority_tier: TagPriorityTier,
+    pub(crate) fast_mode_rewrite_mode: TagFastModeRewriteMode,
     concurrency_limit: i64,
     source_tag_ids: Vec<i64>,
     source_tag_names: Vec<String>,
@@ -893,6 +957,8 @@ pub(crate) struct TagRoutingRule {
     max_conversations: Option<i64>,
     allow_cut_out: bool,
     allow_cut_in: bool,
+    priority_tier: TagPriorityTier,
+    fast_mode_rewrite_mode: TagFastModeRewriteMode,
     concurrency_limit: i64,
 }
 
@@ -1816,6 +1882,8 @@ pub(crate) struct CreateTagRequest {
     max_conversations: Option<i64>,
     allow_cut_out: bool,
     allow_cut_in: bool,
+    priority_tier: Option<String>,
+    fast_mode_rewrite_mode: Option<String>,
     concurrency_limit: Option<i64>,
 }
 
@@ -1828,6 +1896,8 @@ pub(crate) struct UpdateTagRequest {
     max_conversations: Option<i64>,
     allow_cut_out: Option<bool>,
     allow_cut_in: Option<bool>,
+    priority_tier: Option<String>,
+    fast_mode_rewrite_mode: Option<String>,
     concurrency_limit: Option<i64>,
 }
 
@@ -2389,6 +2459,8 @@ struct TagRow {
     max_conversations: Option<i64>,
     allow_cut_out: i64,
     allow_cut_in: i64,
+    priority_tier: String,
+    fast_mode_rewrite_mode: String,
     concurrency_limit: i64,
 }
 
@@ -2402,6 +2474,8 @@ struct AccountTagRow {
     max_conversations: Option<i64>,
     allow_cut_out: i64,
     allow_cut_in: i64,
+    priority_tier: String,
+    fast_mode_rewrite_mode: String,
     concurrency_limit: i64,
 }
 
@@ -2414,6 +2488,8 @@ struct TagListRow {
     max_conversations: Option<i64>,
     allow_cut_out: i64,
     allow_cut_in: i64,
+    priority_tier: String,
+    fast_mode_rewrite_mode: String,
     concurrency_limit: i64,
     updated_at: String,
     account_count: i64,
@@ -2968,6 +3044,8 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
             max_conversations INTEGER,
             allow_cut_out INTEGER NOT NULL DEFAULT 1,
             allow_cut_in INTEGER NOT NULL DEFAULT 1,
+            priority_tier TEXT NOT NULL DEFAULT 'normal',
+            fast_mode_rewrite_mode TEXT NOT NULL DEFAULT 'keep_original',
             concurrency_limit INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL
@@ -2977,6 +3055,17 @@ pub(crate) async fn ensure_upstream_accounts_schema(pool: &Pool<Sqlite>) -> Resu
     .execute(pool)
     .await
     .context("failed to ensure pool_tags table existence")?;
+    ensure_text_column_with_default(pool, "pool_tags", "priority_tier", "'normal'")
+        .await
+        .context("failed to ensure pool_tags.priority_tier")?;
+    ensure_text_column_with_default(
+        pool,
+        "pool_tags",
+        "fast_mode_rewrite_mode",
+        "'keep_original'",
+    )
+    .await
+    .context("failed to ensure pool_tags.fast_mode_rewrite_mode")?;
     ensure_integer_column_with_default(pool, "pool_tags", "concurrency_limit", "0")
         .await
         .context("failed to ensure pool_tags.concurrency_limit")?;
@@ -3362,6 +3451,29 @@ async fn ensure_nullable_integer_column(
     Ok(())
 }
 
+async fn ensure_text_column_with_default(
+    pool: &Pool<Sqlite>,
+    table_name: &str,
+    column_name: &str,
+    default_value: &str,
+) -> Result<()> {
+    let pragma_statement = format!("PRAGMA table_info({table_name})");
+    let columns: Vec<(i64, String, String, i64, Option<String>, i64)> =
+        sqlx::query_as(&pragma_statement).fetch_all(pool).await?;
+    if columns
+        .iter()
+        .any(|(_, name, _, _, _, _)| name == column_name)
+    {
+        return Ok(());
+    }
+
+    let statement = format!(
+        "ALTER TABLE {table_name} ADD COLUMN {column_name} TEXT NOT NULL DEFAULT {default_value}"
+    );
+    sqlx::query(&statement).execute(pool).await?;
+    Ok(())
+}
+
 async fn sqlite_table_exists(pool: &Pool<Sqlite>, table_name: &str) -> Result<bool> {
     Ok(sqlx::query_scalar::<_, i64>(
         "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = ?1",
@@ -3516,6 +3628,8 @@ pub(crate) async fn create_tag(
         payload.max_conversations,
         payload.allow_cut_out,
         payload.allow_cut_in,
+        payload.priority_tier.as_deref(),
+        payload.fast_mode_rewrite_mode.as_deref(),
         payload.concurrency_limit,
     )?;
     let detail = insert_tag(&state.pool, &name, &rule)
@@ -3562,6 +3676,14 @@ pub(crate) async fn update_tag(
         payload.max_conversations.or(existing.max_conversations),
         payload.allow_cut_out.unwrap_or(existing.allow_cut_out != 0),
         payload.allow_cut_in.unwrap_or(existing.allow_cut_in != 0),
+        payload
+            .priority_tier
+            .as_deref()
+            .or(Some(existing.priority_tier.as_str())),
+        payload
+            .fast_mode_rewrite_mode
+            .as_deref()
+            .or(Some(existing.fast_mode_rewrite_mode.as_str())),
         payload
             .concurrency_limit
             .or(Some(existing.concurrency_limit)),
@@ -9296,6 +9418,8 @@ async fn load_account_tag_map(
             tag.max_conversations,
             tag.allow_cut_out,
             tag.allow_cut_in,
+            tag.priority_tier,
+            tag.fast_mode_rewrite_mode,
             tag.concurrency_limit
         FROM pool_upstream_account_tags link
         INNER JOIN pool_tags tag ON tag.id = link.tag_id
@@ -9336,6 +9460,8 @@ async fn load_tags_by_ids(pool: &Pool<Sqlite>, tag_ids: &[i64]) -> Result<Vec<Ta
             max_conversations,
             allow_cut_out,
             allow_cut_in,
+            priority_tier,
+            fast_mode_rewrite_mode,
             concurrency_limit
         FROM pool_tags
         WHERE id IN (
@@ -9365,6 +9491,8 @@ async fn load_tag_row(pool: &Pool<Sqlite>, tag_id: i64) -> Result<Option<TagRow>
             max_conversations,
             allow_cut_out,
             allow_cut_in,
+            priority_tier,
+            fast_mode_rewrite_mode,
             concurrency_limit
         FROM pool_tags
         WHERE id = ?1
@@ -9409,6 +9537,8 @@ async fn load_tag_summaries(
             tag.max_conversations,
             tag.allow_cut_out,
             tag.allow_cut_in,
+            tag.priority_tier,
+            tag.fast_mode_rewrite_mode,
             tag.concurrency_limit,
             tag.updated_at,
             COUNT(DISTINCT link.account_id) AS account_count,
@@ -9444,7 +9574,7 @@ async fn load_tag_summaries(
             .push_bind(if allow_cut_out { 1 } else { 0 });
     }
     query.push(
-        " GROUP BY tag.id, tag.name, tag.guard_enabled, tag.lookback_hours, tag.max_conversations, tag.allow_cut_out, tag.allow_cut_in, tag.concurrency_limit, tag.updated_at",
+        " GROUP BY tag.id, tag.name, tag.guard_enabled, tag.lookback_hours, tag.max_conversations, tag.allow_cut_out, tag.allow_cut_in, tag.priority_tier, tag.fast_mode_rewrite_mode, tag.concurrency_limit, tag.updated_at",
     );
     if let Some(has_accounts) = params.has_accounts {
         query.push(if has_accounts {
@@ -9469,8 +9599,8 @@ async fn insert_tag(pool: &Pool<Sqlite>, name: &str, rule: &TagRoutingRule) -> R
     let inserted_id = sqlx::query_scalar::<_, i64>(
         r#"
         INSERT INTO pool_tags (
-            name, guard_enabled, lookback_hours, max_conversations, allow_cut_out, allow_cut_in, concurrency_limit, created_at, updated_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
+            name, guard_enabled, lookback_hours, max_conversations, allow_cut_out, allow_cut_in, priority_tier, fast_mode_rewrite_mode, concurrency_limit, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)
         RETURNING id
         "#,
     )
@@ -9480,6 +9610,8 @@ async fn insert_tag(pool: &Pool<Sqlite>, name: &str, rule: &TagRoutingRule) -> R
     .bind(rule.max_conversations)
     .bind(if rule.allow_cut_out { 1 } else { 0 })
     .bind(if rule.allow_cut_in { 1 } else { 0 })
+    .bind(rule.priority_tier.as_str())
+    .bind(rule.fast_mode_rewrite_mode.as_str())
     .bind(rule.concurrency_limit)
     .bind(&now_iso)
     .fetch_one(pool)
@@ -9505,8 +9637,10 @@ async fn persist_tag_update(
             max_conversations = ?5,
             allow_cut_out = ?6,
             allow_cut_in = ?7,
-            concurrency_limit = ?8,
-            updated_at = ?9
+            priority_tier = ?8,
+            fast_mode_rewrite_mode = ?9,
+            concurrency_limit = ?10,
+            updated_at = ?11
         WHERE id = ?1
         "#,
     )
@@ -9517,6 +9651,8 @@ async fn persist_tag_update(
     .bind(rule.max_conversations)
     .bind(if rule.allow_cut_out { 1 } else { 0 })
     .bind(if rule.allow_cut_in { 1 } else { 0 })
+    .bind(rule.priority_tier.as_str())
+    .bind(rule.fast_mode_rewrite_mode.as_str())
     .bind(rule.concurrency_limit)
     .bind(&now_iso)
     .execute(pool)
@@ -11126,6 +11262,74 @@ async fn load_group_metadata(
         .unwrap_or_default())
 }
 
+async fn load_group_metadata_map(
+    pool: &Pool<Sqlite>,
+    group_names: &[String],
+) -> Result<HashMap<String, UpstreamAccountGroupMetadata>> {
+    if group_names.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let mut query = QueryBuilder::<Sqlite>::new(
+        r#"
+        SELECT
+            group_name,
+            note,
+            bound_proxy_keys_json,
+            node_shunt_enabled,
+            upstream_429_retry_enabled,
+            upstream_429_max_retries,
+            concurrency_limit
+        FROM pool_upstream_account_group_notes
+        WHERE group_name IN (
+        "#,
+    );
+    {
+        let mut separated = query.separated(", ");
+        for group_name in group_names {
+            separated.push_bind(group_name);
+        }
+    }
+    let rows = query
+        .push(")")
+        .build_query_as::<(String, String, Option<String>, i64, i64, i64, i64)>()
+        .fetch_all(pool)
+        .await?;
+    let mut metadata = HashMap::with_capacity(rows.len());
+    for (
+        group_name,
+        note,
+        bound_proxy_keys_json,
+        node_shunt_enabled,
+        upstream_429_retry_enabled,
+        upstream_429_max_retries,
+        concurrency_limit,
+    ) in rows
+    {
+        let node_shunt_enabled = decode_group_node_shunt_enabled(node_shunt_enabled);
+        let upstream_429_retry_enabled =
+            decode_group_upstream_429_retry_enabled(upstream_429_retry_enabled);
+        let upstream_429_max_retries = normalize_group_upstream_429_retry_metadata(
+            upstream_429_retry_enabled,
+            decode_group_upstream_429_max_retries(upstream_429_max_retries),
+        );
+        metadata.insert(
+            group_name,
+            UpstreamAccountGroupMetadata {
+                note: normalize_optional_text(Some(note)),
+                bound_proxy_keys: decode_group_bound_proxy_keys_json(
+                    bound_proxy_keys_json.as_deref(),
+                ),
+                node_shunt_enabled,
+                upstream_429_retry_enabled,
+                upstream_429_max_retries,
+                concurrency_limit,
+            },
+        );
+    }
+    Ok(metadata)
+}
+
 pub(crate) async fn load_required_account_forward_proxy_scope_from_group_metadata(
     state: &AppState,
     group_name: Option<&str>,
@@ -11507,6 +11711,14 @@ async fn build_upstream_account_node_shunt_assignments(
     for candidate in &mut candidates {
         candidate.in_flight_reservations = reservation_snapshot.count_for_account(candidate.id);
     }
+    let candidate_effective_rules = load_effective_routing_rules_for_accounts(
+        &state.pool,
+        &candidates
+            .iter()
+            .map(|candidate| candidate.id)
+            .collect::<Vec<_>>(),
+    )
+    .await?;
     for candidate in candidates {
         let Some(row) = rows_by_id.get(&candidate.id) else {
             continue;
@@ -11543,7 +11755,11 @@ async fn build_upstream_account_node_shunt_assignments(
         })
         .collect::<Vec<_>>();
     reserved_candidates.sort_by(|(lhs_group, lhs), (rhs_group, rhs)| {
-        compare_node_shunt_reserved_candidates(lhs, rhs)
+        routing_priority_rank(candidate_effective_rules.get(&lhs.id))
+            .cmp(&routing_priority_rank(
+                candidate_effective_rules.get(&rhs.id),
+            ))
+            .then_with(|| compare_node_shunt_reserved_candidates(lhs, rhs))
             .then_with(|| lhs_group.cmp(rhs_group))
             .then_with(|| lhs.id.cmp(&rhs.id))
     });
@@ -11559,7 +11775,11 @@ async fn build_upstream_account_node_shunt_assignments(
         })
         .collect::<Vec<_>>();
     fresh_candidates.sort_by(|(lhs_group, lhs), (rhs_group, rhs)| {
-        compare_routing_candidates(lhs, rhs)
+        routing_priority_rank(candidate_effective_rules.get(&lhs.id))
+            .cmp(&routing_priority_rank(
+                candidate_effective_rules.get(&rhs.id),
+            ))
+            .then_with(|| compare_routing_candidates(lhs, rhs))
             .then_with(|| lhs_group.cmp(rhs_group))
             .then_with(|| lhs.id.cmp(&rhs.id))
     });
@@ -11643,11 +11863,18 @@ async fn build_upstream_account_node_shunt_assignments(
 async fn prepare_pool_account_with_node_shunt_refresh(
     state: &AppState,
     row: &UpstreamAccountRow,
+    effective_rule: &EffectiveRoutingRule,
     group_metadata: &UpstreamAccountGroupMetadata,
     node_shunt_assignments: &mut UpstreamAccountNodeShuntAssignments,
 ) -> Result<Option<PoolResolvedAccount>> {
-    let mut prepared_account =
-        prepare_pool_account(state, row, group_metadata.clone(), node_shunt_assignments).await;
+    let mut prepared_account = prepare_pool_account(
+        state,
+        row,
+        effective_rule,
+        group_metadata.clone(),
+        node_shunt_assignments,
+    )
+    .await;
     if group_metadata.node_shunt_enabled
         && prepared_account
             .as_ref()
@@ -11655,8 +11882,14 @@ async fn prepare_pool_account_with_node_shunt_refresh(
             .is_some_and(|err| is_group_node_shunt_unassigned_message(&err.to_string()))
     {
         *node_shunt_assignments = build_upstream_account_node_shunt_assignments(state).await?;
-        prepared_account =
-            prepare_pool_account(state, row, group_metadata.clone(), node_shunt_assignments).await;
+        prepared_account = prepare_pool_account(
+            state,
+            row,
+            effective_rule,
+            group_metadata.clone(),
+            node_shunt_assignments,
+        )
+        .await;
     }
     if group_metadata.node_shunt_enabled && matches!(prepared_account, Ok(None)) {
         *node_shunt_assignments = build_upstream_account_node_shunt_assignments(state).await?;
@@ -13544,10 +13777,14 @@ fn normalize_tag_rule(
     max_conversations: Option<i64>,
     allow_cut_out: bool,
     allow_cut_in: bool,
+    priority_tier: Option<&str>,
+    fast_mode_rewrite_mode: Option<&str>,
     concurrency_limit: Option<i64>,
 ) -> Result<TagRoutingRule, (StatusCode, String)> {
     let lookback_hours = normalize_positive_i64(lookback_hours, "lookbackHours")?;
     let max_conversations = normalize_positive_i64(max_conversations, "maxConversations")?;
+    let priority_tier = normalize_tag_priority_tier(priority_tier)?;
+    let fast_mode_rewrite_mode = normalize_tag_fast_mode_rewrite_mode(fast_mode_rewrite_mode)?;
     let concurrency_limit = normalize_concurrency_limit(concurrency_limit, "concurrencyLimit")?;
     if guard_enabled && (lookback_hours.is_none() || max_conversations.is_none()) {
         return Err((
@@ -13565,8 +13802,65 @@ fn normalize_tag_rule(
         },
         allow_cut_out,
         allow_cut_in,
+        priority_tier,
+        fast_mode_rewrite_mode,
         concurrency_limit,
     })
+}
+
+fn normalize_tag_priority_tier(
+    value: Option<&str>,
+) -> Result<TagPriorityTier, (StatusCode, String)> {
+    let normalized = value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("normal");
+    match normalized {
+        "fallback" => Ok(TagPriorityTier::Fallback),
+        "normal" => Ok(TagPriorityTier::Normal),
+        "primary" => Ok(TagPriorityTier::Primary),
+        _ => Err((
+            StatusCode::BAD_REQUEST,
+            "priorityTier must be one of: primary, normal, fallback".to_string(),
+        )),
+    }
+}
+
+fn decode_tag_priority_tier(value: &str) -> TagPriorityTier {
+    match value.trim() {
+        "fallback" => TagPriorityTier::Fallback,
+        "primary" => TagPriorityTier::Primary,
+        _ => TagPriorityTier::Normal,
+    }
+}
+
+fn normalize_tag_fast_mode_rewrite_mode(
+    value: Option<&str>,
+) -> Result<TagFastModeRewriteMode, (StatusCode, String)> {
+    let normalized = value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("keep_original");
+    match normalized {
+        "force_remove" => Ok(TagFastModeRewriteMode::ForceRemove),
+        "keep_original" => Ok(TagFastModeRewriteMode::KeepOriginal),
+        "fill_missing" => Ok(TagFastModeRewriteMode::FillMissing),
+        "force_add" => Ok(TagFastModeRewriteMode::ForceAdd),
+        _ => Err((
+            StatusCode::BAD_REQUEST,
+            "fastModeRewriteMode must be one of: force_remove, keep_original, fill_missing, force_add"
+                .to_string(),
+        )),
+    }
+}
+
+fn decode_tag_fast_mode_rewrite_mode(value: &str) -> TagFastModeRewriteMode {
+    match value.trim() {
+        "force_remove" => TagFastModeRewriteMode::ForceRemove,
+        "fill_missing" => TagFastModeRewriteMode::FillMissing,
+        "force_add" => TagFastModeRewriteMode::ForceAdd,
+        _ => TagFastModeRewriteMode::KeepOriginal,
+    }
 }
 
 fn normalize_concurrency_limit(
@@ -13608,6 +13902,8 @@ fn account_tag_summary_from_row(row: &AccountTagRow) -> AccountTagSummary {
             max_conversations: row.max_conversations,
             allow_cut_out: row.allow_cut_out != 0,
             allow_cut_in: row.allow_cut_in != 0,
+            priority_tier: decode_tag_priority_tier(&row.priority_tier),
+            fast_mode_rewrite_mode: decode_tag_fast_mode_rewrite_mode(&row.fast_mode_rewrite_mode),
             concurrency_limit: row.concurrency_limit,
         },
     }
@@ -13623,6 +13919,8 @@ fn tag_summary_from_row(row: &TagListRow) -> TagSummary {
             max_conversations: row.max_conversations,
             allow_cut_out: row.allow_cut_out != 0,
             allow_cut_in: row.allow_cut_in != 0,
+            priority_tier: decode_tag_priority_tier(&row.priority_tier),
+            fast_mode_rewrite_mode: decode_tag_fast_mode_rewrite_mode(&row.fast_mode_rewrite_mode),
             concurrency_limit: row.concurrency_limit,
         },
         account_count: row.account_count,
@@ -13637,6 +13935,12 @@ fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingR
     let mut guard_rules = Vec::new();
     let mut allow_cut_out = true;
     let mut allow_cut_in = true;
+    let mut priority_tier = if tags.is_empty() {
+        TagPriorityTier::Normal
+    } else {
+        TagPriorityTier::Primary
+    };
+    let mut fast_mode_rewrite_mode = TagFastModeRewriteMode::KeepOriginal;
     let mut concurrency_limit = 0;
     let mut representative_guard: Option<(i64, i64)> = None;
 
@@ -13645,6 +13949,12 @@ fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingR
         source_tag_names.push(tag.name.clone());
         allow_cut_out &= tag.routing_rule.allow_cut_out;
         allow_cut_in &= tag.routing_rule.allow_cut_in;
+        priority_tier = priority_tier.min(tag.routing_rule.priority_tier);
+        if tag.routing_rule.fast_mode_rewrite_mode.merge_rank()
+            < fast_mode_rewrite_mode.merge_rank()
+        {
+            fast_mode_rewrite_mode = tag.routing_rule.fast_mode_rewrite_mode;
+        }
         concurrency_limit =
             merge_concurrency_limits(concurrency_limit, tag.routing_rule.concurrency_limit);
         if tag.routing_rule.guard_enabled
@@ -13678,6 +13988,8 @@ fn build_effective_routing_rule(tags: &[AccountTagSummary]) -> EffectiveRoutingR
         max_conversations: representative_guard.map(|(_, max)| max),
         allow_cut_out,
         allow_cut_in,
+        priority_tier,
+        fast_mode_rewrite_mode,
         concurrency_limit,
         source_tag_ids,
         source_tag_names,
@@ -16533,6 +16845,7 @@ pub(crate) struct PoolResolvedAccount {
     pub(crate) forward_proxy_scope: ForwardProxyRouteScope,
     pub(crate) group_upstream_429_retry_enabled: bool,
     pub(crate) group_upstream_429_max_retries: u8,
+    pub(crate) fast_mode_rewrite_mode: TagFastModeRewriteMode,
     pub(crate) upstream_base_url: Url,
     pub(crate) routing_source: PoolRoutingSelectionSource,
 }
@@ -16572,22 +16885,82 @@ enum PoolAccountGroupProxyRoutingReadiness {
     Blocked(String),
 }
 
+async fn load_account_group_name_map(
+    pool: &Pool<Sqlite>,
+    account_ids: &[i64],
+) -> Result<HashMap<i64, Option<String>>> {
+    if account_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let mut query = QueryBuilder::<Sqlite>::new(
+        "SELECT id, group_name FROM pool_upstream_accounts WHERE id IN (",
+    );
+    {
+        let mut separated = query.separated(", ");
+        for account_id in account_ids {
+            separated.push_bind(account_id);
+        }
+    }
+    let rows = query
+        .push(")")
+        .build_query_as::<(i64, Option<String>)>()
+        .fetch_all(pool)
+        .await?;
+    Ok(rows.into_iter().collect())
+}
+
+async fn load_effective_routing_rules_for_accounts(
+    pool: &Pool<Sqlite>,
+    account_ids: &[i64],
+) -> Result<HashMap<i64, EffectiveRoutingRule>> {
+    let account_group_map = load_account_group_name_map(pool, account_ids).await?;
+    if account_group_map.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let tags_by_account = load_account_tag_map(pool, account_ids).await?;
+    let group_names = account_group_map
+        .values()
+        .filter_map(|group_name| normalize_optional_text(group_name.clone()))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let group_metadata = load_group_metadata_map(pool, &group_names).await?;
+    let mut rules = HashMap::with_capacity(account_group_map.len());
+    for (account_id, group_name) in account_group_map {
+        let mut rule = build_effective_routing_rule(
+            tags_by_account
+                .get(&account_id)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]),
+        );
+        let group_concurrency_limit = normalize_optional_text(group_name)
+            .and_then(|name| group_metadata.get(&name))
+            .map(|metadata| metadata.concurrency_limit)
+            .unwrap_or_default();
+        rule.concurrency_limit =
+            merge_concurrency_limits(rule.concurrency_limit, group_concurrency_limit);
+        rules.insert(account_id, rule);
+    }
+    Ok(rules)
+}
+
+fn routing_priority_rank(rule: Option<&EffectiveRoutingRule>) -> u8 {
+    rule.map(|rule| rule.priority_tier)
+        .unwrap_or_default()
+        .routing_rank()
+}
+
 async fn load_effective_routing_rule_for_account(
     pool: &Pool<Sqlite>,
     account_id: i64,
 ) -> Result<EffectiveRoutingRule> {
-    let group_name = load_upstream_account_row(pool, account_id)
-        .await?
-        .and_then(|row| row.group_name);
-    let group_metadata = load_group_metadata(pool, group_name.as_deref()).await?;
-    let tags = load_account_tag_map(pool, &[account_id])
-        .await?
-        .remove(&account_id)
-        .unwrap_or_default();
-    let mut rule = build_effective_routing_rule(&tags);
-    rule.concurrency_limit =
-        merge_concurrency_limits(rule.concurrency_limit, group_metadata.concurrency_limit);
-    Ok(rule)
+    Ok(
+        load_effective_routing_rules_for_accounts(pool, &[account_id])
+            .await?
+            .remove(&account_id)
+            .unwrap_or_else(|| build_effective_routing_rule(&[])),
+    )
 }
 
 fn account_accepts_concurrency_limit(
@@ -16762,6 +17135,9 @@ pub(crate) async fn resolve_pool_account_for_request(
                         let prepared_account = prepare_pool_account_with_node_shunt_refresh(
                             state,
                             &row,
+                            sticky_source_rule
+                                .as_ref()
+                                .expect("sticky source rule should be loaded"),
                             &group_metadata,
                             &mut node_shunt_assignments,
                         )
@@ -16852,23 +17228,40 @@ pub(crate) async fn resolve_pool_account_for_request(
     for candidate in &mut candidates {
         candidate.in_flight_reservations = pool_routing_reservation_count(state, candidate.id);
     }
+    let candidate_effective_rules = load_effective_routing_rules_for_accounts(
+        &state.pool,
+        &candidates
+            .iter()
+            .map(|candidate| candidate.id)
+            .collect::<Vec<_>>(),
+    )
+    .await?;
     candidates.sort_by(compare_routing_candidates);
-    let mut primary_candidates = Vec::new();
-    let mut overflow_candidates = Vec::new();
+    let mut primary_candidates = [Vec::new(), Vec::new(), Vec::new()];
+    let mut overflow_candidates = [Vec::new(), Vec::new(), Vec::new()];
     for candidate in candidates {
+        let priority_index = usize::from(routing_priority_rank(
+            candidate_effective_rules.get(&candidate.id),
+        ));
         if candidate.effective_load() < candidate.capacity_profile().hard_cap {
-            primary_candidates.push(candidate);
+            primary_candidates[priority_index].push(candidate);
         } else {
-            overflow_candidates.push(candidate);
+            overflow_candidates[priority_index].push(candidate);
         }
     }
-    let candidate_passes = if primary_candidates.is_empty() {
-        vec![overflow_candidates]
-    } else if overflow_candidates.is_empty() {
-        vec![primary_candidates]
-    } else {
-        vec![primary_candidates, overflow_candidates]
-    };
+    let mut candidate_passes = Vec::new();
+    for priority_index in 0..=2 {
+        if primary_candidates[priority_index].is_empty() {
+            if !overflow_candidates[priority_index].is_empty() {
+                candidate_passes.push(std::mem::take(&mut overflow_candidates[priority_index]));
+            }
+            continue;
+        }
+        candidate_passes.push(std::mem::take(&mut primary_candidates[priority_index]));
+        if !overflow_candidates[priority_index].is_empty() {
+            candidate_passes.push(std::mem::take(&mut overflow_candidates[priority_index]));
+        }
+    }
     for pass_candidates in candidate_passes {
         for candidate in pass_candidates {
             let Some(row) = load_upstream_account_row(&state.pool, candidate.id).await? else {
@@ -16900,12 +17293,13 @@ pub(crate) async fn resolve_pool_account_for_request(
                 }
                 continue;
             }
-            let effective_rule =
-                load_effective_routing_rule_for_account(&state.pool, row.id).await?;
+            let Some(effective_rule) = candidate_effective_rules.get(&row.id) else {
+                continue;
+            };
             if !account_accepts_concurrency_limit(
                 candidate.effective_load(),
                 PoolRoutingSelectionSource::FreshAssignment,
-                &effective_rule,
+                effective_rule,
             ) {
                 saw_other_non_rate_limited_routing_candidate = true;
                 continue;
@@ -16915,7 +17309,7 @@ pub(crate) async fn resolve_pool_account_for_request(
                 row.id,
                 sticky_key,
                 sticky_source_id,
-                &effective_rule,
+                effective_rule,
             )
             .await?
             {
@@ -16945,6 +17339,7 @@ pub(crate) async fn resolve_pool_account_for_request(
             let prepared_account = prepare_pool_account_with_node_shunt_refresh(
                 state,
                 &row,
+                effective_rule,
                 &group_metadata,
                 &mut node_shunt_assignments,
             )
@@ -17578,6 +17973,7 @@ async fn query_account_sticky_key_recent_invocations(
 async fn prepare_pool_account(
     state: &AppState,
     row: &UpstreamAccountRow,
+    effective_rule: &EffectiveRoutingRule,
     group_metadata: UpstreamAccountGroupMetadata,
     node_shunt_assignments: &UpstreamAccountNodeShuntAssignments,
 ) -> Result<Option<PoolResolvedAccount>> {
@@ -17613,6 +18009,7 @@ async fn prepare_pool_account(
             forward_proxy_scope,
             group_upstream_429_retry_enabled: group_metadata.upstream_429_retry_enabled,
             group_upstream_429_max_retries: group_metadata.upstream_429_max_retries,
+            fast_mode_rewrite_mode: effective_rule.fast_mode_rewrite_mode,
             upstream_base_url,
             routing_source: PoolRoutingSelectionSource::FreshAssignment,
         })),
@@ -17779,6 +18176,7 @@ async fn prepare_pool_account(
                 forward_proxy_scope,
                 group_upstream_429_retry_enabled: group_metadata.upstream_429_retry_enabled,
                 group_upstream_429_max_retries: group_metadata.upstream_429_max_retries,
+                fast_mode_rewrite_mode: effective_rule.fast_mode_rewrite_mode,
                 upstream_base_url,
                 routing_source: PoolRoutingSelectionSource::FreshAssignment,
             }))
@@ -18411,6 +18809,8 @@ mod tests {
                 max_conversations: None,
                 allow_cut_out: true,
                 allow_cut_in: true,
+                priority_tier: TagPriorityTier::Normal,
+                fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
                 concurrency_limit: 0,
                 source_tag_ids: vec![],
                 source_tag_names: vec![],
@@ -20715,6 +21115,8 @@ mod tests {
             max_conversations: None,
             allow_cut_out: true,
             allow_cut_in: true,
+            priority_tier: TagPriorityTier::Normal,
+            fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
             concurrency_limit: 0,
         }
     }
@@ -20736,6 +21138,8 @@ mod tests {
             max_conversations: None,
             allow_cut_out: true,
             allow_cut_in: true,
+            priority_tier: TagPriorityTier::Normal,
+            fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
             concurrency_limit,
             source_tag_ids: vec![],
             source_tag_names: vec![],
@@ -23019,6 +23423,82 @@ mod tests {
     }
 
     #[test]
+    fn normalize_tag_priority_tier_defaults_to_normal_and_rejects_invalid_values() {
+        assert_eq!(
+            normalize_tag_priority_tier(None),
+            Ok(TagPriorityTier::Normal)
+        );
+        assert_eq!(
+            normalize_tag_priority_tier(Some("primary")),
+            Ok(TagPriorityTier::Primary)
+        );
+        assert_eq!(
+            normalize_tag_priority_tier(Some("fallback")),
+            Ok(TagPriorityTier::Fallback)
+        );
+        assert_eq!(
+            normalize_tag_priority_tier(Some("unexpected")),
+            Err((
+                StatusCode::BAD_REQUEST,
+                "priorityTier must be one of: primary, normal, fallback".to_string(),
+            ))
+        );
+    }
+
+    #[test]
+    fn build_effective_routing_rule_uses_most_conservative_priority_tier() {
+        let mut primary = test_account_tag_summary(1, "primary", 0);
+        primary.routing_rule.priority_tier = TagPriorityTier::Primary;
+        let mut normal = test_account_tag_summary(2, "normal", 0);
+        normal.routing_rule.priority_tier = TagPriorityTier::Normal;
+        let mut fallback = test_account_tag_summary(3, "fallback", 0);
+        fallback.routing_rule.priority_tier = TagPriorityTier::Fallback;
+
+        let rule = build_effective_routing_rule(&[primary, normal, fallback]);
+
+        assert_eq!(rule.priority_tier, TagPriorityTier::Fallback);
+    }
+
+    #[test]
+    fn normalize_tag_fast_mode_rewrite_mode_defaults_to_keep_original_and_rejects_invalid_values() {
+        assert_eq!(
+            normalize_tag_fast_mode_rewrite_mode(None),
+            Ok(TagFastModeRewriteMode::KeepOriginal)
+        );
+        assert_eq!(
+            normalize_tag_fast_mode_rewrite_mode(Some("force_add")),
+            Ok(TagFastModeRewriteMode::ForceAdd)
+        );
+        assert_eq!(
+            normalize_tag_fast_mode_rewrite_mode(Some("unexpected")),
+            Err((
+                StatusCode::BAD_REQUEST,
+                "fastModeRewriteMode must be one of: force_remove, keep_original, fill_missing, force_add".to_string(),
+            ))
+        );
+    }
+
+    #[test]
+    fn build_effective_routing_rule_uses_most_conservative_fast_mode_rewrite_mode() {
+        let mut keep_original = test_account_tag_summary(1, "keep", 0);
+        keep_original.routing_rule.fast_mode_rewrite_mode = TagFastModeRewriteMode::KeepOriginal;
+        let mut fill_missing = test_account_tag_summary(2, "fill", 0);
+        fill_missing.routing_rule.fast_mode_rewrite_mode = TagFastModeRewriteMode::FillMissing;
+        let mut force_add = test_account_tag_summary(3, "add", 0);
+        force_add.routing_rule.fast_mode_rewrite_mode = TagFastModeRewriteMode::ForceAdd;
+        let mut force_remove = test_account_tag_summary(4, "remove", 0);
+        force_remove.routing_rule.fast_mode_rewrite_mode = TagFastModeRewriteMode::ForceRemove;
+
+        let rule =
+            build_effective_routing_rule(&[keep_original, fill_missing, force_add, force_remove]);
+
+        assert_eq!(
+            rule.fast_mode_rewrite_mode,
+            TagFastModeRewriteMode::ForceRemove
+        );
+    }
+
+    #[test]
     fn account_accepts_concurrency_limit_treats_zero_as_unlimited_and_allows_sticky_reuse() {
         let unlimited = test_effective_routing_rule(0);
         let limited = test_effective_routing_rule(2);
@@ -23101,6 +23581,158 @@ mod tests {
         assert_eq!(
             rule.source_tag_ids,
             vec![relaxed_tag.summary.id, strict_tag.summary.id]
+        );
+    }
+
+    #[tokio::test]
+    async fn load_effective_routing_rule_for_account_uses_most_conservative_tag_priority() {
+        let pool = test_pool().await;
+        let account_id = insert_api_key_account(&pool, "Priority Merge").await;
+
+        let mut primary_rule = test_tag_routing_rule();
+        primary_rule.priority_tier = TagPriorityTier::Primary;
+        let primary_tag = insert_tag(&pool, "priority-primary", &primary_rule)
+            .await
+            .expect("insert primary tag");
+
+        let mut fallback_rule = test_tag_routing_rule();
+        fallback_rule.priority_tier = TagPriorityTier::Fallback;
+        let fallback_tag = insert_tag(&pool, "priority-fallback", &fallback_rule)
+            .await
+            .expect("insert fallback tag");
+
+        sync_account_tag_links(
+            &pool,
+            account_id,
+            &[primary_tag.summary.id, fallback_tag.summary.id],
+        )
+        .await
+        .expect("attach priority tags");
+
+        let rule = load_effective_routing_rule_for_account(&pool, account_id)
+            .await
+            .expect("load effective routing rule");
+
+        assert_eq!(rule.priority_tier, TagPriorityTier::Fallback);
+        let mut source_tag_ids = rule.source_tag_ids.clone();
+        source_tag_ids.sort_unstable();
+        let mut expected_tag_ids = vec![primary_tag.summary.id, fallback_tag.summary.id];
+        expected_tag_ids.sort_unstable();
+        assert_eq!(source_tag_ids, expected_tag_ids);
+    }
+
+    #[tokio::test]
+    async fn load_effective_routing_rule_for_account_uses_most_conservative_tag_fast_mode() {
+        let pool = test_pool().await;
+        let account_id = insert_api_key_account(&pool, "Fast Mode Merge").await;
+
+        let mut fill_missing_rule = test_tag_routing_rule();
+        fill_missing_rule.fast_mode_rewrite_mode = TagFastModeRewriteMode::FillMissing;
+        let fill_missing_tag = insert_tag(&pool, "fast-fill", &fill_missing_rule)
+            .await
+            .expect("insert fill-missing tag");
+
+        let mut force_remove_rule = test_tag_routing_rule();
+        force_remove_rule.fast_mode_rewrite_mode = TagFastModeRewriteMode::ForceRemove;
+        let force_remove_tag = insert_tag(&pool, "fast-remove", &force_remove_rule)
+            .await
+            .expect("insert force-remove tag");
+
+        sync_account_tag_links(
+            &pool,
+            account_id,
+            &[fill_missing_tag.summary.id, force_remove_tag.summary.id],
+        )
+        .await
+        .expect("attach fast-mode tags");
+
+        let rule = load_effective_routing_rule_for_account(&pool, account_id)
+            .await
+            .expect("load effective routing rule");
+
+        assert_eq!(
+            rule.fast_mode_rewrite_mode,
+            TagFastModeRewriteMode::ForceRemove
+        );
+    }
+
+    #[tokio::test]
+    async fn tag_fast_mode_rewrite_mode_round_trips_through_create_update_get_and_list() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+
+        let Json(created) = create_tag(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(CreateTagRequest {
+                name: "fast-mode-round-trip".to_string(),
+                guard_enabled: false,
+                lookback_hours: None,
+                max_conversations: None,
+                allow_cut_out: true,
+                allow_cut_in: true,
+                priority_tier: None,
+                fast_mode_rewrite_mode: None,
+                concurrency_limit: None,
+            }),
+        )
+        .await
+        .expect("create tag");
+        assert_eq!(
+            created.summary.routing_rule.fast_mode_rewrite_mode,
+            TagFastModeRewriteMode::KeepOriginal
+        );
+
+        let Json(updated) = update_tag(
+            State(state.clone()),
+            HeaderMap::new(),
+            AxumPath(created.summary.id),
+            Json(UpdateTagRequest {
+                name: None,
+                guard_enabled: None,
+                lookback_hours: None,
+                max_conversations: None,
+                allow_cut_out: None,
+                allow_cut_in: None,
+                priority_tier: None,
+                fast_mode_rewrite_mode: Some("force_add".to_string()),
+                concurrency_limit: None,
+            }),
+        )
+        .await
+        .expect("update tag");
+        assert_eq!(
+            updated.summary.routing_rule.fast_mode_rewrite_mode,
+            TagFastModeRewriteMode::ForceAdd
+        );
+
+        let Json(loaded) = get_tag(State(state.clone()), AxumPath(created.summary.id))
+            .await
+            .expect("get tag");
+        assert_eq!(
+            loaded.summary.routing_rule.fast_mode_rewrite_mode,
+            TagFastModeRewriteMode::ForceAdd
+        );
+
+        let Json(listed) = list_tags(
+            State(state),
+            Query(ListTagsQuery {
+                search: None,
+                has_accounts: None,
+                guard_enabled: None,
+                allow_cut_in: None,
+                allow_cut_out: None,
+            }),
+        )
+        .await
+        .expect("list tags");
+        let listed_tag = listed
+            .items
+            .iter()
+            .find(|item| item.id == created.summary.id)
+            .expect("listed tag");
+        assert_eq!(
+            listed_tag.routing_rule.fast_mode_rewrite_mode,
+            TagFastModeRewriteMode::ForceAdd
         );
     }
 
@@ -23440,6 +24072,78 @@ mod tests {
                 .get("node-shunt-multi-reserved")
                 .map(|proxy_keys| proxy_keys.len()),
             Some(2)
+        );
+    }
+
+    #[tokio::test]
+    async fn node_shunt_assignments_prefer_primary_priority_before_fallback() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let fallback_account_id = insert_test_pool_api_key_account_with_options(
+            &state,
+            "Node Shunt Fallback",
+            "sk-node-shunt-fallback",
+            Some("node-shunt-priority"),
+            Some("https://node-shunt-fallback.example.com/backend-api/codex"),
+        )
+        .await;
+        let primary_account_id = insert_test_pool_api_key_account_with_options(
+            &state,
+            "Node Shunt Primary",
+            "sk-node-shunt-primary",
+            Some("node-shunt-priority"),
+            Some("https://node-shunt-primary.example.com/backend-api/codex"),
+        )
+        .await;
+
+        let mut fallback_rule = test_tag_routing_rule();
+        fallback_rule.priority_tier = TagPriorityTier::Fallback;
+        let fallback_tag = insert_tag(&state.pool, "node-shunt-fallback", &fallback_rule)
+            .await
+            .expect("insert fallback tag");
+        let mut primary_rule = test_tag_routing_rule();
+        primary_rule.priority_tier = TagPriorityTier::Primary;
+        let primary_tag = insert_tag(&state.pool, "node-shunt-primary", &primary_rule)
+            .await
+            .expect("insert primary tag");
+        sync_account_tag_links(&state.pool, fallback_account_id, &[fallback_tag.summary.id])
+            .await
+            .expect("attach fallback tag");
+        sync_account_tag_links(&state.pool, primary_account_id, &[primary_tag.summary.id])
+            .await
+            .expect("attach primary tag");
+
+        let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+        save_group_metadata_record_conn(
+            &mut conn,
+            "node-shunt-priority",
+            UpstreamAccountGroupMetadata {
+                note: None,
+                bound_proxy_keys: vec![FORWARD_PROXY_DIRECT_KEY.to_string()],
+                node_shunt_enabled: true,
+                upstream_429_retry_enabled: false,
+                upstream_429_max_retries: 0,
+                concurrency_limit: 0,
+            },
+        )
+        .await
+        .expect("save node shunt metadata");
+        drop(conn);
+
+        let assignments = build_upstream_account_node_shunt_assignments(state.as_ref())
+            .await
+            .expect("build node shunt assignments");
+
+        assert_eq!(
+            assignments
+                .account_proxy_keys
+                .get(&primary_account_id)
+                .map(String::as_str),
+            Some(FORWARD_PROXY_DIRECT_KEY)
+        );
+        assert!(
+            !assignments
+                .account_proxy_keys
+                .contains_key(&fallback_account_id)
         );
     }
 
@@ -24589,6 +25293,89 @@ mod tests {
             panic!("expected sticky reuse to resolve the existing account");
         };
         assert_eq!(account.account_id, limited_account_id);
+        assert_eq!(
+            account.routing_source,
+            PoolRoutingSelectionSource::StickyReuse
+        );
+    }
+
+    #[tokio::test]
+    async fn resolver_keeps_sticky_reuse_even_when_higher_priority_accounts_exist() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let sticky_account_id = insert_test_pool_api_key_account_with_options(
+            &state,
+            "Sticky Fallback Priority",
+            "sk-sticky-priority-fallback",
+            Some("sticky-priority"),
+            Some("https://sticky-priority-fallback.example.com/backend-api/codex"),
+        )
+        .await;
+        let primary_account_id = insert_test_pool_api_key_account_with_options(
+            &state,
+            "Primary Replacement Candidate",
+            "sk-sticky-priority-primary",
+            Some("sticky-priority"),
+            Some("https://sticky-priority-primary.example.com/backend-api/codex"),
+        )
+        .await;
+
+        let mut fallback_rule = test_tag_routing_rule();
+        fallback_rule.priority_tier = TagPriorityTier::Fallback;
+        let fallback_tag = insert_tag(&state.pool, "sticky-fallback-priority", &fallback_rule)
+            .await
+            .expect("insert sticky fallback tag");
+        let mut primary_rule = test_tag_routing_rule();
+        primary_rule.priority_tier = TagPriorityTier::Primary;
+        let primary_tag = insert_tag(&state.pool, "sticky-primary-priority", &primary_rule)
+            .await
+            .expect("insert sticky primary tag");
+        sync_account_tag_links(&state.pool, sticky_account_id, &[fallback_tag.summary.id])
+            .await
+            .expect("attach sticky fallback tag");
+        sync_account_tag_links(&state.pool, primary_account_id, &[primary_tag.summary.id])
+            .await
+            .expect("attach primary tag");
+
+        let now_iso = format_utc_iso(Utc::now());
+        upsert_sticky_route(
+            &state.pool,
+            "sticky-priority-reuse",
+            sticky_account_id,
+            &now_iso,
+        )
+        .await
+        .expect("seed sticky route");
+        insert_limit_sample_with_usage(
+            &state.pool,
+            sticky_account_id,
+            &now_iso,
+            Some(5.0),
+            Some(1.0),
+        )
+        .await;
+        insert_limit_sample_with_usage(
+            &state.pool,
+            primary_account_id,
+            &now_iso,
+            Some(1.0),
+            Some(1.0),
+        )
+        .await;
+
+        let resolution = resolve_pool_account_for_request(
+            &state,
+            Some("sticky-priority-reuse"),
+            &[],
+            &HashSet::new(),
+        )
+        .await
+        .expect("resolve sticky reuse with higher priority candidate");
+
+        let PoolAccountResolution::Resolved(account) = resolution else {
+            panic!("expected sticky reuse to keep the current account");
+        };
+        assert_eq!(account.account_id, sticky_account_id);
+        assert_ne!(account.account_id, primary_account_id);
         assert_eq!(
             account.routing_source,
             PoolRoutingSelectionSource::StickyReuse
@@ -27692,6 +28479,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn resolver_prefers_primary_priority_before_normal_and_fallback() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let fallback_account_id = insert_test_pool_api_key_account_with_options(
+            &state,
+            "Fallback Priority Candidate",
+            "sk-priority-fallback",
+            Some("routing-priority"),
+            Some("https://routing-fallback.example.com/backend-api/codex"),
+        )
+        .await;
+        let normal_account_id = insert_test_pool_api_key_account_with_options(
+            &state,
+            "Normal Priority Candidate",
+            "sk-priority-normal",
+            Some("routing-priority"),
+            Some("https://routing-normal.example.com/backend-api/codex"),
+        )
+        .await;
+        let primary_account_id = insert_test_pool_api_key_account_with_options(
+            &state,
+            "Primary Priority Candidate",
+            "sk-priority-primary",
+            Some("routing-priority"),
+            Some("https://routing-primary.example.com/backend-api/codex"),
+        )
+        .await;
+
+        let mut fallback_rule = test_tag_routing_rule();
+        fallback_rule.priority_tier = TagPriorityTier::Fallback;
+        let fallback_tag = insert_tag(&state.pool, "fallback-priority", &fallback_rule)
+            .await
+            .expect("insert fallback tag");
+        let normal_tag = insert_tag(&state.pool, "normal-priority", &test_tag_routing_rule())
+            .await
+            .expect("insert normal tag");
+        let mut primary_rule = test_tag_routing_rule();
+        primary_rule.priority_tier = TagPriorityTier::Primary;
+        let primary_tag = insert_tag(&state.pool, "primary-priority", &primary_rule)
+            .await
+            .expect("insert primary tag");
+        sync_account_tag_links(&state.pool, fallback_account_id, &[fallback_tag.summary.id])
+            .await
+            .expect("attach fallback tag");
+        sync_account_tag_links(&state.pool, normal_account_id, &[normal_tag.summary.id])
+            .await
+            .expect("attach normal tag");
+        sync_account_tag_links(&state.pool, primary_account_id, &[primary_tag.summary.id])
+            .await
+            .expect("attach primary tag");
+
+        let now_iso = format_utc_iso(Utc::now());
+        insert_limit_sample_with_usage(
+            &state.pool,
+            fallback_account_id,
+            &now_iso,
+            Some(1.0),
+            Some(1.0),
+        )
+        .await;
+        insert_limit_sample_with_usage(
+            &state.pool,
+            normal_account_id,
+            &now_iso,
+            Some(10.0),
+            Some(1.0),
+        )
+        .await;
+        insert_limit_sample_with_usage(
+            &state.pool,
+            primary_account_id,
+            &now_iso,
+            Some(35.0),
+            Some(1.0),
+        )
+        .await;
+
+        let resolution = resolve_pool_account_for_request(&state, None, &[], &HashSet::new())
+            .await
+            .expect("resolve pool account");
+        let PoolAccountResolution::Resolved(account) = resolution else {
+            panic!("expected resolver to pick a prioritized account");
+        };
+        assert_eq!(account.account_id, primary_account_id);
+        assert_eq!(
+            account.routing_source,
+            PoolRoutingSelectionSource::FreshAssignment
+        );
+    }
+
+    #[tokio::test]
     async fn resolver_keeps_quota_exhausted_accounts_in_rate_limited_terminal_state_after_sync_block()
      {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
@@ -28092,6 +28969,8 @@ mod tests {
                 max_conversations: None,
                 allow_cut_out: true,
                 allow_cut_in: false,
+                priority_tier: TagPriorityTier::Normal,
+                fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
                 concurrency_limit: 0,
             },
         )
@@ -28417,6 +29296,8 @@ mod tests {
                 max_conversations: None,
                 allow_cut_out: false,
                 allow_cut_in: true,
+                priority_tier: TagPriorityTier::Normal,
+                fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
                 concurrency_limit: 0,
             },
         )
@@ -28487,6 +29368,8 @@ mod tests {
                 max_conversations: None,
                 allow_cut_out: false,
                 allow_cut_in: true,
+                priority_tier: TagPriorityTier::Normal,
+                fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
                 concurrency_limit: 0,
             },
         )
@@ -28555,6 +29438,8 @@ mod tests {
                 max_conversations: None,
                 allow_cut_out: true,
                 allow_cut_in: false,
+                priority_tier: TagPriorityTier::Normal,
+                fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
                 concurrency_limit: 0,
             },
         )

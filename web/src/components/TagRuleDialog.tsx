@@ -2,9 +2,10 @@ import { useEffect, useMemo, useState } from 'react'
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from './ui/dialog'
 import { Button } from './ui/button'
 import { Input } from './ui/input'
+import { SelectField } from './ui/select-field'
 import { Switch } from './ui/switch'
 import { ConcurrencyLimitSlider } from './ConcurrencyLimitSlider'
-import type { CreateTagPayload, TagSummary, UpdateTagPayload } from '../lib/api'
+import type { CreateTagPayload, TagPriorityTier, TagSummary, UpdateTagPayload } from '../lib/api'
 import { apiConcurrencyLimitToSliderValue, sliderConcurrencyLimitToApiValue } from '../lib/concurrencyLimit'
 
 export type TagRuleDialogMode = 'create' | 'edit'
@@ -16,6 +17,7 @@ type TagRuleDraft = {
   maxConversations: string
   allowCutOut: boolean
   allowCutIn: boolean
+  priorityTier: TagPriorityTier
   concurrencyLimit: number
 }
 
@@ -27,6 +29,7 @@ function buildDraft(tag?: TagSummary | null, draftName = ''): TagRuleDraft {
     maxConversations: tag?.routingRule.maxConversations == null ? '' : String(tag.routingRule.maxConversations),
     allowCutOut: tag?.routingRule.allowCutOut ?? true,
     allowCutIn: tag?.routingRule.allowCutIn ?? true,
+    priorityTier: tag?.routingRule.priorityTier ?? 'normal',
     concurrencyLimit: apiConcurrencyLimitToSliderValue(tag?.routingRule.concurrencyLimit),
   }
 }
@@ -50,6 +53,7 @@ function buildPayload(draft: TagRuleDraft): CreateTagPayload | UpdateTagPayload 
     maxConversations: draft.guardEnabled ? maxConversations : undefined,
     allowCutOut: draft.allowCutOut,
     allowCutIn: draft.allowCutIn,
+    priorityTier: draft.priorityTier,
     concurrencyLimit: sliderConcurrencyLimitToApiValue(draft.concurrencyLimit),
   }
 }
@@ -74,6 +78,10 @@ interface TagRuleDialogProps {
     maxConversations: string
     allowCutOut: string
     allowCutIn: string
+    priorityTier: string
+    priorityPrimary: string
+    priorityNormal: string
+    priorityFallback: string
     concurrencyLimit?: string
     concurrencyHint?: string
     currentValue?: string
@@ -114,6 +122,20 @@ export function TagRuleDialog({ open, mode, tag, draftName, busy = false, error,
               onChange={(event) => setDraft((current) => ({ ...current, name: event.target.value }))}
             />
           </label>
+
+          <SelectField
+            className="field"
+            label={labels.priorityTier}
+            name="tagPriorityTier"
+            value={draft.priorityTier}
+            disabled={busy}
+            options={[
+              { value: 'primary', label: labels.priorityPrimary },
+              { value: 'normal', label: labels.priorityNormal },
+              { value: 'fallback', label: labels.priorityFallback },
+            ]}
+            onValueChange={(value) => setDraft((current) => ({ ...current, priorityTier: value as TagPriorityTier }))}
+          />
 
           <div className="rounded-[1.25rem] border border-base-300/80 bg-base-100/80 p-4">
             <div className="flex items-center justify-between gap-4">

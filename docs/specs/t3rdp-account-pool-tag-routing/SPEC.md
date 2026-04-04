@@ -4,7 +4,7 @@
 
 - Status: 已完成
 - Created: 2026-03-14
-- Last: 2026-04-01
+- Last: 2026-04-04
 
 ## 背景 / 问题陈述
 
@@ -47,15 +47,18 @@
 
 ### MUST
 
-- tag 需支持名称、会话上限守卫（开关 + `lookbackHours` + `maxConversations`）、`allowCutOut`、`allowCutIn` 三类规则。
+- tag 需支持名称、会话上限守卫（开关 + `lookbackHours` + `maxConversations`）、`allowCutOut`、`allowCutIn`、`priorityTier` 五类规则；`priorityTier` 取值固定为 `primary` / `normal` / `fallback`，默认 `normal`。
 - 一个账号可关联多个 tag；路由时多个 tag 规则同时生效，并按“最严格优先”合并。
+- 一个账号命中多个 tag 且 `priorityTier` 不同，最终生效优先级必须按最保守顺序折算：`fallback < normal < primary`。
 - 新增 OAuth / API Key 账号、编辑账号详情时都必须支持 tag 关联；OAuth 登录完成后不能丢失创建阶段选中的 tag。
 - 新增 OAuth / API Key 账号、编辑账号详情时的 tag 字段必须表现为单个输入式容器：已选 tag 内联展示为 chips，尾部固定添加触发器，触发后以 anchored popover 提供搜索、多选与创建。
 - 账号详情必须直接显示“最终生效规则”，包括合并后的结果以及来源 tag。
-- `Tags` 列表页必须至少展示：tag 名称、规则摘要、关联账号数量、关联账号分组数量、更新时间，并支持搜索与规则筛选。
+- `Tags` 列表页必须至少展示：tag 名称、规则摘要（包含优先级摘要）、关联账号数量、关联账号分组数量、更新时间，并支持搜索与规则筛选。
 - 若 sticky 当前绑定账号禁止 `cut-out` 且该账号无法继续服务，则请求直接失败，不迁移到其他账号。
 - 若候选目标账号禁止 `cut-in`，则它不能接收来自其他账号迁移来的 sticky 会话。
 - 会话上限守卫仅对“首次分配新 sticky 会话”或“将已有 sticky 会话迁移到新账号”生效；已在当前账号上的会话可继续留在原账号。
+- 路由候选选择与 node-shunt 槽位分配都必须先按 `priorityTier` 做外层分层调度，顺序固定为 `primary -> normal -> fallback`；同一优先级层内继续沿用现有 comparator、均衡与 overflow 语义。
+- 健康 sticky 当前账号的复用优先级高于 `priorityTier`；不能因为存在更高优先级候选就主动迁移。
 
 ### SHOULD
 
@@ -69,10 +72,12 @@
 ### Core flows
 
 - 用户在新增账号页打开 tag 选择器时，会看到同一个输入式容器内的已选 chips 与尾部添加触发器；打开 popover 后可搜索已有 tag、连续多选/反选、立即创建新 tag，并在保存账号时把 `tagIds` 一起提交。
-- 用户在账号详情页可查看已关联 tag 与最终生效规则，并可直接在内联 chips 容器里增删关联、编辑 tag 规则。
+- 用户在账号详情页可查看已关联 tag 与最终生效规则（含最终优先级），并可直接在内联 chips 容器里增删关联、编辑 tag 规则。
 - 用户进入 `号池 -> Tags` 页后，可按搜索词和规则开关过滤 tag 列表，并查看每个 tag 影响的账号与分组规模。
 - 路由收到带 stickyKey / promptCacheKey 的请求时，若已有 sticky route，优先尝试原账号；若原账号不可继续且其最终规则禁止 `cut-out`，则立即失败；否则再从候选池中筛掉不满足 `cut-in` 或会话上限守卫的账号。
-- 没有 tag 的账号仍按现有 `secondary -> primary -> last_selected -> id` 排序参与候选选择。
+- fresh assignment 与 sticky 迁移目标选择时，候选账号先按 `priorityTier=primary -> normal -> fallback` 分层；每一层内部仍按现有 `secondary -> primary -> last_selected -> id` 与软降权策略比较。
+- node-shunt 在同组可调度账号多于有效节点时，也必须先按 `priorityTier` 分层，再在同层内部沿用既有排序，避免 `fallback` 账号抢占更高优先级账号的节点槽位。
+- 没有 tag 的账号视为 `priorityTier=normal`，并继续沿用现有 `secondary -> primary -> last_selected -> id` 排序参与所属优先级层内比较。
 - 至少存在一个本地 `5 小时` / `7 天` 限额，或最新远程额度样本存在 `primary` / `secondary` 任一窗口的账号，在 sticky 新分配或迁移时会额外受“最近 5 分钟活跃 sticky 对话数是否超过 2”的软降权影响；仅当本地限额与远程窗口都不存在时，账号才继续沿用既有候选排序。
 
 ### Edge cases / errors
@@ -88,9 +93,11 @@
 - `CreateOauthLoginSessionRequest.tagIds`
 - `CreateApiKeyAccountRequest.tagIds`
 - `UpdateUpstreamAccountRequest.tagIds`
+- `TagRoutingRule.priorityTier`
 - `UpstreamAccountSummary.tags`
 - `UpstreamAccountDetail.tags`
 - `UpstreamAccountDetail.effectiveRoutingRule`
+- `EffectiveRoutingRule.priorityTier`
 
 ## 验收标准（Acceptance Criteria）
 
@@ -98,11 +105,15 @@
 - Given 账号页或新增页的 tag 字段为空或已有已选项，When 用户查看该字段，Then 已选 tag 与空态提示都位于同一个输入式容器内，添加触发器固定在容器尾部，不再拆成独立的按钮区和展示区。
 - Given 用户在 tag popover 中连续选择或取消多个 tag，When 每次点击某个 tag，Then 当前 popover 保持打开，并即时反映选中状态。
 - Given 一个账号关联多个 tag，When 打开账号详情，Then 页面会展示最终生效规则，并清楚标注由哪些 tag 共同决定。
+- Given 新建或编辑 tag 时未显式选择优先级，When 提交到现有 tag API，Then 服务端与前端都稳定落成 `priorityTier=normal`；Given 提交非法值，Then API 返回 `400`。
+- Given fresh assignment 或 sticky 迁移需要在多个候选账号之间选择，When 同时存在 `primary`、`normal`、`fallback` 三层账号，Then resolver 必须先尝试 `primary`，再尝试 `normal`，最后才允许 `fallback` 接管；同层内部的现有均衡与 overflow 行为保持不变。
+- Given 某账号同时挂了 `primary` 与 `fallback` tag，When 打开账号详情或计算 `effectiveRoutingRule`，Then 最终优先级显示为 `fallback`，且仍沿用原有“最严格优先”的其它规则合并方式。
 - Given 某 tag 禁止 `allowCutOut`，When sticky 绑定账号无法继续服务，Then 该会话不会迁移到其他账号，而是直接返回无可用账号/上游失败。
 - Given 某目标账号禁止 `allowCutIn`，When 需要接收其他账号迁移来的 sticky 会话，Then 该候选会被跳过。
+- Given sticky 当前账号仍健康可复用，When 之后出现更高 `priorityTier` 的账号，Then 会话仍优先留在原账号，不会因为优先级差异被主动迁移。
 - Given 某账号未配置本地 `5 小时` 与 `7 天` 限额，但最新远程额度样本存在 `primary` 或 `secondary` 任一窗口，When 它最近 5 分钟已有超过 2 个活跃 sticky 对话并参与新的 sticky 候选选择，Then 它仍会触发 5 分钟 sticky 软降权并被排到未超限的有限额账号之后。
 - Given 某账号本地限额为空，且最新远程额度样本的 `primary` 与 `secondary` 窗口都不存在，When 它最近 5 分钟已有超过 2 个活跃 sticky 对话并参与新的 sticky 候选选择，Then 它仍按既有 `secondary -> primary -> last_selected -> id` 排序参与比较，不会因为活跃 sticky 数单独触发软降权。
-- Given 进入 `号池 -> Tags` 页，When 搜索或筛选 tag，Then 列表会更新并显示关联账号数量、关联分组数量与规则摘要。
+- Given 进入 `号池 -> Tags` 页，When 搜索或筛选 tag，Then 列表会更新并显示关联账号数量、关联分组数量与规则摘要（含 `priorityTier` 标签）。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
 
@@ -120,6 +131,7 @@
 
 ## Change log
 
+- 2026-04-04：为 tag 与 `effectiveRoutingRule` 增加 `priorityTier`（`primary` / `normal` / `fallback`），fresh assignment、sticky 迁移目标与 node-shunt 改为“优先级外层分层 + 同层沿用现有 comparator”的双层调度；账号详情与 Tags 列表同步展示优先级结果，并回填新的 Storybook mock-only 视觉证据。
 - 2026-04-01：补充标签规则弹窗在有限值与无限值两种并发档位下的 owner-facing Storybook 视觉证据，并把本 spec 的历史 `## Visual Evidence (PR)` 迁移为标准 `## Visual Evidence`。
 - 2026-04-01：将路由候选里的活跃 sticky 共享窗口从 30 分钟统一收敛为 5 分钟；有限额账号的 sticky 软降权、并发负载统计与相关验收语义同步切到同一 5 分钟口径，不新增接口或配置项。
 - 2026-03-25：修正半小时活跃 sticky 软降权的“有限额账号”定义，改为本地限额或最新远程额度窗口任一存在即生效；远程单窗口与 `0%` 已知窗口同样视为有限额信号，并补齐端到端回归，明确只有本地与远程额度信号都缺失时才继续豁免该软降权；主干 freshness 合入后继续保持路由候选比较器回归夹具与 credits 元数据字段对齐，不改变既有规则语义。
@@ -143,23 +155,25 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
+  PR: include
   story_id_or_title: Account Pool/Pages/Tags/Default
-  state: list-and-filters
-  evidence_note: 验证号池首页已增加标签入口，标签列表页能够展示筛选器、规则摘要、账号数量与分组数量。
+  state: list-and-filters-with-priority-badges
+  evidence_note: 验证 Tags 列表页的规则摘要已加入 `主力 / 正常 / 兜底` 优先级徽标，并保持原有筛选区、账号数和分组数布局稳定。
   image:
-  ![Tags page default](./assets/tags-page-default.png)
+  ![Tags page priority tier summary](./assets/tags-page-priority-tier.png)
 
 - source_type: storybook_canvas
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
+  PR: include
   story_id_or_title: Account Pool/Components/Effective Routing Rule Card/Strict Merged Rule
-  state: strict-merged-rule
-  evidence_note: 验证账号详情页能够直接展示多 tag 合并后的最终生效规则，并标出来源 tag 与逐条守卫约束。
+  state: strict-merged-rule-with-fallback-priority
+  evidence_note: 验证账号详情页能够展示多 tag 合并后的最终优先级结果；当同一账号同时命中 `primary` 与 `fallback` 语义时，卡片会按最保守规则展示 `兜底` 结果，并保留来源 tag 与逐条守卫约束。
   image:
-  ![Effective routing rule card strict merged rule](./assets/effective-routing-rule-card-strict.png)
+  ![Effective routing rule priority tier](./assets/effective-routing-rule-priority-tier.png)
 
 - source_type: storybook_canvas
   target_program: mock-only
@@ -176,20 +190,10 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: approved
+  PR: include
   story_id_or_title: Account Pool/Components/Tag Rule Dialog/Finite Limit
-  state: finite-concurrency-limit
-  evidence_note: 验证标签规则弹窗在有限并发值场景下，会把当前值、滑块与其它路由规则控件稳定收敛到同一张 owner-facing 画面中。
+  state: finite-concurrency-limit-with-priority-tier
+  evidence_note: 验证共享 `TagRuleDialog` 已加入“优先使用”下拉框，并继续在有限并发场景下与会话守卫、切入切出规则共存；该弹窗会被 Tags 页、账号创建页与账号详情页复用。
   image:
-  ![Tag rule dialog finite concurrency limit](./assets/tag-rule-dialog-finite-limit.png)
-
-- source_type: storybook_canvas
-  target_program: mock-only
-  capture_scope: element
-  sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
-  story_id_or_title: Account Pool/Components/Tag Rule Dialog/Unlimited Limit
-  state: unlimited-concurrency-step
-  evidence_note: 验证标签规则弹窗在末档使用 `∞` 表达无限，避免把 `30` 与无限文案误读成同一个短语，同时保持当前值胶囊继续回显 `Unlimited`。
-  image:
-  ![Tag rule dialog unlimited infinity step](./assets/tag-rule-dialog-unlimited-infinity.png)
+  ![Tag rule dialog priority tier](./assets/tag-rule-dialog-priority-tier.png)

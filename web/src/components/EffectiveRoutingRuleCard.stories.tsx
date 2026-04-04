@@ -15,6 +15,9 @@ const labels = {
   sourceTags: 'Source tags',
   guardRule: (hours: number, count: number) => `${hours}h / ${count} conversations`,
   allGuardsApply: 'All guard rules apply together',
+  priorityPrimary: 'Primary',
+  priorityNormal: 'Normal',
+  priorityFallback: 'Fallback only',
 }
 
 const relaxedRule: EffectiveRoutingRule = {
@@ -23,6 +26,7 @@ const relaxedRule: EffectiveRoutingRule = {
   maxConversations: null,
   allowCutOut: true,
   allowCutIn: true,
+  priorityTier: 'normal',
   sourceTagIds: [],
   sourceTagNames: [],
   guardRules: [],
@@ -34,6 +38,7 @@ const strictRule: EffectiveRoutingRule = {
   maxConversations: 4,
   allowCutOut: false,
   allowCutIn: false,
+  priorityTier: 'fallback',
   sourceTagIds: [1, 2],
   sourceTagNames: ['vip-routing', 'handoff-blocked'],
   guardRules: [
@@ -79,5 +84,16 @@ export const Default: Story = {}
 export const StrictMergedRule: Story = {
   args: {
     rule: strictRule,
+  },
+}
+
+export const PrimaryRule: Story = {
+  args: {
+    rule: {
+      ...relaxedRule,
+      priorityTier: 'primary',
+      sourceTagIds: [9],
+      sourceTagNames: ['priority-lane'],
+    },
   },
 }
