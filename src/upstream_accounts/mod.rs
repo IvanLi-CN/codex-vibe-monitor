@@ -29258,7 +29258,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn team_oauth_accounts_with_shared_account_id_are_not_flagged_as_duplicates() {
+    async fn same_plan_type_accounts_with_shared_account_id_are_flagged_as_duplicates() {
         let pool = test_pool().await;
 
         let mut tx = pool.begin().await.expect("begin tx 1");
@@ -29320,8 +29320,18 @@ mod tests {
         let duplicate_info = load_duplicate_info_map(&pool)
             .await
             .expect("load duplicate info");
-        assert!(duplicate_info.get(&first_id).is_none());
-        assert!(duplicate_info.get(&second_id).is_none());
+        assert!(matches!(
+            duplicate_info
+                .get(&first_id)
+                .map(|info| info.reasons.as_slice()),
+            Some([DuplicateReason::SharedChatgptAccountId])
+        ));
+        assert!(matches!(
+            duplicate_info
+                .get(&second_id)
+                .map(|info| info.reasons.as_slice()),
+            Some([DuplicateReason::SharedChatgptAccountId])
+        ));
 
         let summaries = load_upstream_account_summaries(&pool)
             .await
@@ -29330,7 +29340,13 @@ mod tests {
             summaries
                 .iter()
                 .filter(|summary| summary.id == first_id || summary.id == second_id)
-                .all(|summary| summary.duplicate_info.is_none())
+                .all(|summary| matches!(
+                    summary
+                        .duplicate_info
+                        .as_ref()
+                        .map(|info| info.reasons.as_slice()),
+                    Some([DuplicateReason::SharedChatgptAccountId])
+                ))
         );
 
         let first_detail = load_upstream_account_detail(&pool, first_id)
@@ -29341,8 +29357,22 @@ mod tests {
             .await
             .expect("load second detail")
             .expect("second detail exists");
-        assert!(first_detail.summary.duplicate_info.is_none());
-        assert!(second_detail.summary.duplicate_info.is_none());
+        assert!(matches!(
+            first_detail
+                .summary
+                .duplicate_info
+                .as_ref()
+                .map(|info| info.reasons.as_slice()),
+            Some([DuplicateReason::SharedChatgptAccountId])
+        ));
+        assert!(matches!(
+            second_detail
+                .summary
+                .duplicate_info
+                .as_ref()
+                .map(|info| info.reasons.as_slice()),
+            Some([DuplicateReason::SharedChatgptAccountId])
+        ));
     }
 
     #[tokio::test]
@@ -29531,7 +29561,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn latest_usage_sample_plan_type_clears_legacy_team_duplicate_flags() {
+    async fn latest_usage_sample_plan_type_restores_same_plan_duplicate_flags() {
         let pool = test_pool().await;
 
         let mut inserted_ids = Vec::new();
@@ -29595,7 +29625,12 @@ mod tests {
         let duplicate_info = load_duplicate_info_map(&pool)
             .await
             .expect("load duplicate info");
-        assert!(duplicate_info.is_empty());
+        assert_eq!(duplicate_info.len(), 2);
+        assert!(
+            duplicate_info
+                .values()
+                .all(|info| { info.reasons == vec![DuplicateReason::SharedChatgptAccountId] })
+        );
 
         let summaries = load_upstream_account_summaries(&pool)
             .await
@@ -29606,6 +29641,18 @@ mod tests {
                 .filter(|summary| inserted_ids.contains(&summary.id))
                 .all(|summary| summary.plan_type.as_deref() == Some("team"))
         );
+        assert!(
+            summaries
+                .iter()
+                .filter(|summary| inserted_ids.contains(&summary.id))
+                .all(|summary| matches!(
+                    summary
+                        .duplicate_info
+                        .as_ref()
+                        .map(|info| info.reasons.as_slice()),
+                    Some([DuplicateReason::SharedChatgptAccountId])
+                ))
+        );
 
         for account_id in inserted_ids {
             let detail = load_upstream_account_detail(&pool, account_id)
@@ -29613,6 +29660,14 @@ mod tests {
                 .expect("load detail")
                 .expect("detail exists");
             assert_eq!(detail.summary.plan_type.as_deref(), Some("team"));
+            assert!(matches!(
+                detail
+                    .summary
+                    .duplicate_info
+                    .as_ref()
+                    .map(|info| info.reasons.as_slice()),
+                Some([DuplicateReason::SharedChatgptAccountId])
+            ));
         }
     }
 
