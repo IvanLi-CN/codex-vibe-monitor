@@ -736,3 +736,32 @@ export const UpstreamRejected402: Story = {
     ).toBeInTheDocument()
   },
 }
+
+export const MixedPlanCoexistence: Story = {
+  render: () => (
+    <AccountPoolStoryRouter initialEntry="/account-pool/upstream-accounts" />
+  ),
+  play: async ({ canvasElement }) => {
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const teamRow = await documentScope.findByRole('button', {
+      name: /StacieSpuhler919 Team/i,
+    })
+    const freeRow = await documentScope.findByRole('button', {
+      name: /StacieSpuhler919 Free/i,
+    })
+
+    await expect(teamRow).toHaveTextContent(/team/i)
+    await expect(freeRow).toHaveTextContent(/free/i)
+    await expect(teamRow).not.toHaveTextContent(/重复账号|Duplicate/i)
+    await expect(freeRow).not.toHaveTextContent(/重复账号|Duplicate/i)
+
+    await userEvent.click(teamRow)
+
+    const dialog = await documentScope.findByRole('dialog', {
+      name: /StacieSpuhler919 Team/i,
+    })
+    await expect(dialog).not.toHaveTextContent(/命中原因：|Matched reasons:/i)
+    await expect(dialog).toHaveTextContent(/team/i)
+    await expect(dialog).not.toHaveTextContent(/重复账号|Duplicate/i)
+  },
+}

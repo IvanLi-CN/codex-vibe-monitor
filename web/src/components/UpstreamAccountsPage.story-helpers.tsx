@@ -1346,6 +1346,8 @@ function createStore(): StoryStore {
   const duplicateStory =
     storyId?.endsWith('--duplicate-oauth-warning') === true ||
     storyId?.endsWith('--duplicate-oauth-detail') === true
+  const mixedPlanCoexistenceStory =
+    storyId?.endsWith('--mixed-plan-coexistence') === true
   const compactStory = storyId?.endsWith('--compact-long-labels') === true
   const tagFilterStory = storyId?.endsWith('--tag-filter-all-match') === true
   const availabilityBadgeStory =
@@ -1396,6 +1398,14 @@ function createStore(): StoryStore {
           },
           note: 'Primary team account sharing the same upstream identity.',
         }
+      : mixedPlanCoexistenceStory
+        ? {
+            displayName: 'StacieSpuhler919 Team',
+            email: 'team@example.com',
+            planType: 'team',
+            duplicateInfo: null,
+            note: 'Team-billed OAuth account sharing the same upstream identity intentionally.',
+          }
       : compactStory
         ? {
             displayName:
@@ -1468,20 +1478,28 @@ function createStore(): StoryStore {
             }
           : undefined,
   )
-  const duplicateOauth = duplicateStory
-    ? createOauthAccount(103, {
-        displayName: 'Codex Pro - Seoul',
-        email: 'seoul@example.com',
-        chatgptAccountId: 'org_tokyo',
-        chatgptUserId: 'user_tokyo',
-        groupName: 'production',
-        duplicateInfo: {
-          peerAccountIds: [101],
-          reasons: [...duplicateReasons],
-        },
-        note: 'Sibling OAuth account kept for duplicate identity review.',
-      })
-    : null
+  const duplicateOauth =
+    duplicateStory || mixedPlanCoexistenceStory
+      ? createOauthAccount(103, {
+          displayName: mixedPlanCoexistenceStory
+            ? 'StacieSpuhler919 Free'
+            : 'Codex Pro - Seoul',
+          email: mixedPlanCoexistenceStory ? 'free@example.com' : 'seoul@example.com',
+          chatgptAccountId: 'org_tokyo',
+          chatgptUserId: 'user_tokyo',
+          groupName: 'production',
+          planType: mixedPlanCoexistenceStory ? 'free' : 'pro',
+          duplicateInfo: duplicateStory
+            ? {
+                peerAccountIds: [101],
+                reasons: [...duplicateReasons],
+              }
+            : null,
+          note: mixedPlanCoexistenceStory
+            ? 'Personal-billed OAuth account sharing the same upstream identity intentionally.'
+            : 'Sibling OAuth account kept for duplicate identity review.',
+        })
+      : null
   const compactExtraAccounts = compactStory
     ? [
         createOauthAccount(104, {
