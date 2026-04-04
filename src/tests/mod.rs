@@ -17109,12 +17109,13 @@ async fn resolve_pool_account_for_request_with_wait_respects_external_deadline()
     set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
 
     let started = Instant::now();
+    let wait_deadline = Instant::now() + Duration::from_secs(2);
     let resolution = resolve_pool_account_for_request_with_wait(
         state.as_ref(),
         None,
         &[],
         &HashSet::new(),
-        true,
+        Some(wait_deadline),
         Some(Instant::now() + Duration::from_millis(40)),
     )
     .await
@@ -21189,10 +21190,14 @@ async fn proxy_openai_v1_body_only_sticky_stream_waits_only_once_before_503() {
             .await;
     });
 
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
     let started = Instant::now();
-    let response = proxy_openai_v1(
-        State(state.clone()),
-        OriginalUri("/v1/chat/completions".parse().expect("valid uri")),
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        5242,
+        &"/v1/chat/completions".parse().expect("valid uri"),
         Method::POST,
         HeaderMap::from_iter([
             (
@@ -21205,6 +21210,7 @@ async fn proxy_openai_v1_body_only_sticky_stream_waits_only_once_before_503() {
             ),
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        runtime_timeouts,
     )
     .await;
     let elapsed = started.elapsed();
@@ -21213,21 +21219,74 @@ async fn proxy_openai_v1_body_only_sticky_stream_waits_only_once_before_503() {
         elapsed < Duration::from_millis(200),
         "body-only sticky streaming request should honor a single bounded wait window, elapsed={elapsed:?}"
     );
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let (status, message) = response.expect_err("via-pool request should fail");
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(
-        response
-            .headers()
-            .get(http_header::RETRY_AFTER)
-            .and_then(|value| value.to_str().ok()),
-        Some("10")
+        message, POOL_NO_AVAILABLE_ACCOUNT_MESSAGE,
+        "unexpected via-pool failure: {message}"
     );
-    let body = to_bytes(response.into_body(), usize::MAX)
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_header_sticky_stream_fails_before_body_finishes_when_pool_unavailable() {
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(20),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
+    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    tokio::spawn(async move {
+        let _ = tx
+            .send(Ok(Bytes::from_static(b"{\"model\":\"gpt-5\",")))
+            .await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let _ = tx.send(Ok(Bytes::from_static(b"\"messages\":[]}"))).await;
+    });
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
         .await
-        .expect("read failure body");
-    let payload: Value = serde_json::from_slice(&body).expect("decode failure payload");
+        .expect("resolve pool runtime timeouts");
+    let started = Instant::now();
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6242,
+        &"/v1/chat/completions".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                HeaderName::from_static("x-sticky-key"),
+                HeaderValue::from_static("known-stream-sticky"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        runtime_timeouts,
+    )
+    .await;
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < Duration::from_millis(400),
+        "known sticky requests should fail before the streaming body finishes uploading, elapsed={elapsed:?}"
+    );
+    let (status, message) = response.expect_err("via-pool request should fail");
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(
-        payload["error"].as_str(),
-        Some(POOL_NO_AVAILABLE_ACCOUNT_MESSAGE)
+        message, POOL_NO_AVAILABLE_ACCOUNT_MESSAGE,
+        "unexpected via-pool failure: {message}"
     );
     assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
 }

@@ -11806,6 +11806,7 @@ struct PoolFailoverProgress {
     last_error: Option<PoolUpstreamError>,
     timeout_route_failover_pending: bool,
     responses_total_timeout_started_at: Option<Instant>,
+    no_available_wait_deadline: Option<Instant>,
 }
 
 #[derive(Debug, Clone)]
@@ -12565,12 +12566,10 @@ async fn resolve_pool_account_for_request_with_wait(
     sticky_key: Option<&str>,
     excluded_ids: &[i64],
     excluded_upstream_route_keys: &HashSet<String>,
-    wait_for_no_available: bool,
+    wait_deadline: Option<Instant>,
     total_timeout_deadline: Option<Instant>,
 ) -> Result<PoolAccountResolution> {
-    let wait_settings = state.pool_no_available_wait;
-    let wait_deadline = wait_for_no_available.then(|| Instant::now() + wait_settings.timeout);
-    let poll_interval = wait_settings.normalized_poll_interval();
+    let poll_interval = state.pool_no_available_wait.normalized_poll_interval();
 
     loop {
         let resolution = resolve_pool_account_for_request(
@@ -12582,7 +12581,7 @@ async fn resolve_pool_account_for_request_with_wait(
         .await?;
         match resolution {
             PoolAccountResolution::Unavailable | PoolAccountResolution::NoCandidate
-                if wait_for_no_available =>
+                if wait_deadline.is_some() =>
             {
                 let Some(wait_deadline) = wait_deadline else {
                     return Ok(resolution);
@@ -12681,6 +12680,7 @@ async fn send_pool_request_with_failover(
     let mut attempt_count = failover_progress.attempt_count;
     let mut timeout_route_failover_pending = failover_progress.timeout_route_failover_pending;
     let mut exhausted_accounts_all_rate_limited = initial_errors_all_rate_limited;
+    let mut no_available_wait_deadline = failover_progress.no_available_wait_deadline;
 
     'account_loop: loop {
         let mut distinct_account_count = attempted_account_ids.len();
@@ -12802,6 +12802,14 @@ async fn send_pool_request_with_failover(
             let wait_for_no_available = !(uses_timeout_route_failover
                 && timeout_route_failover_pending)
                 && !(exhausted_accounts_all_rate_limited && distinct_account_count > 0);
+            let wait_deadline = if wait_for_no_available {
+                let deadline = no_available_wait_deadline
+                    .unwrap_or_else(|| Instant::now() + state.pool_no_available_wait.timeout);
+                no_available_wait_deadline = Some(deadline);
+                Some(deadline)
+            } else {
+                None
+            };
             let total_timeout_deadline =
                 match (responses_total_timeout, responses_total_timeout_started_at) {
                     (Some(total_timeout), Some(started_at)) => Some(started_at + total_timeout),
@@ -12812,7 +12820,7 @@ async fn send_pool_request_with_failover(
                 sticky_key,
                 &excluded_ids,
                 &excluded_upstream_route_keys,
-                wait_for_no_available,
+                wait_deadline,
                 total_timeout_deadline,
             )
             .await
@@ -14432,6 +14440,7 @@ async fn continue_or_retry_pool_live_request(
                             last_error: Some(first_error),
                             timeout_route_failover_pending: true,
                             responses_total_timeout_started_at,
+                            no_available_wait_deadline: None,
                         },
                         POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
                     )
@@ -14622,23 +14631,15 @@ async fn proxy_openai_v1_via_pool(
                 body_sticky_key,
             )
         } else {
-            let request_body_snapshot = read_request_body_snapshot_with_limit(
-                body,
-                body_limit,
-                runtime_timeouts.request_read_timeout,
-                proxy_request_id,
-            )
-            .await
-            .map_err(|err| (err.status, err.message))?;
-            let sticky_key = extract_sticky_key_from_replay_snapshot(&request_body_snapshot)
-                .await
-                .or(header_sticky_key);
+            let sticky_key = header_sticky_key;
+            let no_available_wait_deadline =
+                Some(Instant::now() + state.pool_no_available_wait.timeout);
             let initial_account = match resolve_pool_account_for_request_with_wait(
                 state.as_ref(),
                 sticky_key.as_deref(),
                 &[],
                 &HashSet::new(),
-                true,
+                no_available_wait_deadline,
                 None,
             )
             .await
@@ -14678,6 +14679,24 @@ async fn proxy_openai_v1_via_pool(
                     ));
                 }
             };
+            let request_body_snapshot = read_request_body_snapshot_with_limit(
+                body,
+                body_limit,
+                runtime_timeouts.request_read_timeout,
+                proxy_request_id,
+            )
+            .await
+            .map_err(|err| (err.status, err.message))?;
+            let body_sticky_key = extract_sticky_key_from_replay_snapshot(&request_body_snapshot)
+                .await
+                .or(sticky_key.clone());
+            let preferred_account = if body_sticky_key.as_deref() == sticky_key.as_deref() {
+                Some(initial_account)
+            } else if body_sticky_key.is_some() {
+                None
+            } else {
+                Some(initial_account)
+            };
             (
                 send_pool_request_with_failover(
                     state.clone(),
@@ -14689,17 +14708,18 @@ async fn proxy_openai_v1_via_pool(
                     handshake_timeout,
                     None,
                     None,
-                    sticky_key.as_deref(),
-                    Some(initial_account),
+                    body_sticky_key.as_deref(),
+                    preferred_account,
                     PoolFailoverProgress {
                         responses_total_timeout_started_at,
+                        no_available_wait_deadline,
                         ..PoolFailoverProgress::default()
                     },
                     POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
                 )
                 .await
                 .map_err(|err| (err.status, err.message))?,
-                sticky_key,
+                body_sticky_key,
             )
         }
     } else {
