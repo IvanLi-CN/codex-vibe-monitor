@@ -21234,11 +21234,19 @@ async fn proxy_openai_v1_body_only_sticky_stream_waits_only_once_before_503() {
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_header_sticky_stream_fails_before_body_finishes_when_pool_unavailable() {
-    let state = test_state_with_openai_base_and_pool_no_available_wait(
-        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
-        Duration::from_millis(80),
-        Duration::from_millis(20),
+async fn proxy_openai_v1_header_sticky_stream_prefers_body_timeout_before_pool_wait() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.openai_proxy_request_read_timeout = Duration::from_millis(80);
+    let state = test_state_from_config_with_pool_no_available_wait(
+        config,
+        true,
+        PoolNoAvailableWaitSettings {
+            timeout: Duration::from_millis(200),
+            poll_interval: Duration::from_millis(20),
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        },
     )
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
@@ -21250,7 +21258,7 @@ async fn proxy_openai_v1_header_sticky_stream_fails_before_body_finishes_when_po
         let _ = tx
             .send(Ok(Bytes::from_static(b"{\"model\":\"gpt-5\",")))
             .await;
-        tokio::time::sleep(Duration::from_millis(500)).await;
+        tokio::time::sleep(Duration::from_millis(200)).await;
         let _ = tx.send(Ok(Bytes::from_static(b"\"messages\":[]}"))).await;
     });
 
@@ -21284,13 +21292,75 @@ async fn proxy_openai_v1_header_sticky_stream_fails_before_body_finishes_when_po
     let elapsed = started.elapsed();
 
     assert!(
-        elapsed < Duration::from_millis(400),
-        "known sticky requests should fail before the streaming body finishes uploading, elapsed={elapsed:?}"
+        elapsed < Duration::from_millis(180),
+        "request body timeout should win before pool wait timeout, elapsed={elapsed:?}"
     );
     let (status, message) = response.expect_err("via-pool request should fail");
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(status, StatusCode::REQUEST_TIMEOUT);
     assert_eq!(
-        message, POOL_NO_AVAILABLE_ACCOUNT_MESSAGE,
+        message, "request body read timed out after 80ms",
+        "unexpected via-pool failure: {message}"
+    );
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_header_sticky_stream_prefers_body_too_large_before_pool_wait() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.openai_proxy_max_request_body_bytes = 24;
+    let state = test_state_from_config_with_pool_no_available_wait(
+        config,
+        true,
+        PoolNoAvailableWaitSettings {
+            timeout: Duration::from_millis(200),
+            poll_interval: Duration::from_millis(20),
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        },
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
+    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+
+    let body = Body::from_stream(tokio_stream::iter(vec![Ok::<Bytes, io::Error>(
+        Bytes::from_static(
+            b"{\"model\":\"gpt-5\",\"messages\":[{\"role\":\"user\",\"content\":\"too large\"}]}",
+        ),
+    )]));
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6243,
+        &"/v1/chat/completions".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                HeaderName::from_static("x-sticky-key"),
+                HeaderValue::from_static("known-stream-sticky"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        body,
+        runtime_timeouts,
+    )
+    .await;
+
+    let (status, message) = response.expect_err("via-pool request should fail");
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(
+        message, "request body exceeds 24 bytes",
         "unexpected via-pool failure: {message}"
     );
     assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
