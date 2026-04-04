@@ -126,7 +126,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.routing.maintenanceSectionTitle":
       "Tiered maintenance sync",
     "accountPool.upstreamAccounts.routing.maintenanceSectionDescription":
-      "Working or degraded OAuth accounts run on a 60-second high-frequency sync. Other accounts still follow the existing priority and secondary queues, and any account gets a catch-up sync on the next tick after either reset time passes.",
+      "Keep account quota updates fresh while they are actively serving traffic, and automatically refresh again soon after a primary or secondary limit resets to reduce stale availability.",
     "accountPool.upstreamAccounts.routing.primarySyncIntervalLabel":
       "Priority sync interval",
     "accountPool.upstreamAccounts.routing.secondarySyncIntervalLabel":
@@ -1749,7 +1749,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.routing.maintenanceSectionTitle":
       "分层维护同步",
     "accountPool.upstreamAccounts.routing.maintenanceSectionDescription":
-      "工作中或工作降级中的 OAuth 账号固定走 60 秒高频同步；其他账号继续按原有主层 / 次层队列执行，并且主限制或次限制一旦跨过重置时间，会在下个 tick 尽快补一次同步。",
+      "让正在承接流量的账号额度更新更及时；主限制或次限制重置后，也会尽快再同步一次，减少可用性显示滞后。",
     "accountPool.upstreamAccounts.routing.primarySyncIntervalLabel":
       "优先队列同步间隔",
     "accountPool.upstreamAccounts.routing.secondarySyncIntervalLabel":
