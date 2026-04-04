@@ -1346,6 +1346,8 @@ function createStore(): StoryStore {
   const duplicateStory =
     storyId?.endsWith('--duplicate-oauth-warning') === true ||
     storyId?.endsWith('--duplicate-oauth-detail') === true
+  const mixedPlanCoexistenceStory =
+    storyId?.endsWith('--mixed-plan-coexistence') === true
   const compactStory = storyId?.endsWith('--compact-long-labels') === true
   const tagFilterStory = storyId?.endsWith('--tag-filter-all-match') === true
   const availabilityBadgeStory =
@@ -1396,6 +1398,16 @@ function createStore(): StoryStore {
           },
           note: 'Primary team account sharing the same upstream identity.',
         }
+      : mixedPlanCoexistenceStory
+        ? {
+            displayName: 'Fixture Billing Team',
+            email: 'team@billing-fixture.example.invalid',
+            chatgptAccountId: 'fixture_shared_billing_org',
+            chatgptUserId: 'fixture_shared_billing_user',
+            planType: 'team',
+            duplicateInfo: null,
+            note: 'Synthetic team-billed OAuth fixture sharing the same upstream identity intentionally.',
+          }
       : compactStory
         ? {
             displayName:
@@ -1468,20 +1480,34 @@ function createStore(): StoryStore {
             }
           : undefined,
   )
-  const duplicateOauth = duplicateStory
-    ? createOauthAccount(103, {
-        displayName: 'Codex Pro - Seoul',
-        email: 'seoul@example.com',
-        chatgptAccountId: 'org_tokyo',
-        chatgptUserId: 'user_tokyo',
-        groupName: 'production',
-        duplicateInfo: {
-          peerAccountIds: [101],
-          reasons: [...duplicateReasons],
-        },
-        note: 'Sibling OAuth account kept for duplicate identity review.',
-      })
-    : null
+  const duplicateOauth =
+    duplicateStory || mixedPlanCoexistenceStory
+      ? createOauthAccount(103, {
+          displayName: mixedPlanCoexistenceStory
+            ? 'Fixture Billing Free'
+            : 'Codex Pro - Seoul',
+          email: mixedPlanCoexistenceStory
+            ? 'free@billing-fixture.example.invalid'
+            : 'seoul@example.com',
+          chatgptAccountId: mixedPlanCoexistenceStory
+            ? 'fixture_shared_billing_org'
+            : 'org_tokyo',
+          chatgptUserId: mixedPlanCoexistenceStory
+            ? 'fixture_shared_billing_user'
+            : 'user_tokyo',
+          groupName: 'production',
+          planType: mixedPlanCoexistenceStory ? 'free' : 'pro',
+          duplicateInfo: duplicateStory
+            ? {
+                peerAccountIds: [101],
+                reasons: [...duplicateReasons],
+              }
+            : null,
+          note: mixedPlanCoexistenceStory
+            ? 'Synthetic personal-billed OAuth fixture sharing the same upstream identity intentionally.'
+            : 'Sibling OAuth account kept for duplicate identity review.',
+        })
+      : null
   const compactExtraAccounts = compactStory
     ? [
         createOauthAccount(104, {
@@ -2034,7 +2060,7 @@ function createStore(): StoryStore {
     routing: {
       writesEnabled: true,
       apiKeyConfigured: true,
-      maskedApiKey: 'pool-live••••••c0de',
+      maskedApiKey: 'fixture-pool••••••demo',
       maintenance: clone(defaultRoutingMaintenance),
       timeouts: clone(defaultRoutingTimeouts),
     },
