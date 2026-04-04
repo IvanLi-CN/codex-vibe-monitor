@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.38.0",
+  "base_stable_version": "1.37.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-04T08:55:14Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.38.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "108a002b06cee62fcb5dd94eaf5db3414ca99889",
+  "pr_number": 286,
+  "pr_title": "feat(pool): extend tag routing controls",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.38.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.38.0",
+  "target_sha": "9259cedccea5229233c30027df53c98d7ac34340",
+  "type_label": "type:minor"
+}
