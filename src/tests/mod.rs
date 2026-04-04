@@ -17098,6 +17098,40 @@ async fn pool_route_body_sticky_returns_503_after_wait_timeout() {
 }
 
 #[tokio::test]
+async fn resolve_pool_account_for_request_with_wait_respects_external_deadline() {
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        Duration::from_secs(2),
+        Duration::from_secs(1),
+    )
+    .await;
+    let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
+    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+
+    let started = Instant::now();
+    let resolution = resolve_pool_account_for_request_with_wait(
+        state.as_ref(),
+        None,
+        &[],
+        &HashSet::new(),
+        true,
+        Some(Instant::now() + Duration::from_millis(40)),
+    )
+    .await
+    .expect("helper resolution should succeed");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < Duration::from_millis(700),
+        "helper should stop on the external deadline instead of sleeping for the full wait window, elapsed={elapsed:?}"
+    );
+    assert!(
+        matches!(resolution, PoolAccountResolution::Unavailable),
+        "expected blocked account to stay unavailable, got {resolution:?}"
+    );
+}
+
+#[tokio::test]
 async fn pool_route_wait_timeout_overrides_stale_upstream_failure_with_503() {
     let (upstream_base, attempts, upstream_handle) = spawn_pool_static_failure_responses_upstream(
         &[("Bearer upstream-primary", StatusCode::INTERNAL_SERVER_ERROR)],

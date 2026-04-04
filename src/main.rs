@@ -12566,9 +12566,10 @@ async fn resolve_pool_account_for_request_with_wait(
     excluded_ids: &[i64],
     excluded_upstream_route_keys: &HashSet<String>,
     wait_for_no_available: bool,
+    total_timeout_deadline: Option<Instant>,
 ) -> Result<PoolAccountResolution> {
     let wait_settings = state.pool_no_available_wait;
-    let deadline = wait_for_no_available.then(|| Instant::now() + wait_settings.timeout);
+    let wait_deadline = wait_for_no_available.then(|| Instant::now() + wait_settings.timeout);
     let poll_interval = wait_settings.normalized_poll_interval();
 
     loop {
@@ -12583,15 +12584,20 @@ async fn resolve_pool_account_for_request_with_wait(
             PoolAccountResolution::Unavailable | PoolAccountResolution::NoCandidate
                 if wait_for_no_available =>
             {
-                let Some(deadline) = deadline else {
+                let Some(wait_deadline) = wait_deadline else {
                     return Ok(resolution);
                 };
+                let effective_deadline = total_timeout_deadline
+                    .map(|deadline| std::cmp::min(wait_deadline, deadline))
+                    .unwrap_or(wait_deadline);
                 let now = Instant::now();
-                if now >= deadline {
+                if now >= effective_deadline {
                     return Ok(resolution);
                 }
-                tokio::time::sleep(poll_interval.min(deadline.saturating_duration_since(now)))
-                    .await;
+                tokio::time::sleep(
+                    poll_interval.min(effective_deadline.saturating_duration_since(now)),
+                )
+                .await;
             }
             _ => return Ok(resolution),
         }
@@ -12796,12 +12802,18 @@ async fn send_pool_request_with_failover(
             let wait_for_no_available = !(uses_timeout_route_failover
                 && timeout_route_failover_pending)
                 && !(exhausted_accounts_all_rate_limited && distinct_account_count > 0);
+            let total_timeout_deadline =
+                match (responses_total_timeout, responses_total_timeout_started_at) {
+                    (Some(total_timeout), Some(started_at)) => Some(started_at + total_timeout),
+                    _ => None,
+                };
             match resolve_pool_account_for_request_with_wait(
                 state.as_ref(),
                 sticky_key,
                 &excluded_ids,
                 &excluded_upstream_route_keys,
                 wait_for_no_available,
+                total_timeout_deadline,
             )
             .await
             {
@@ -14617,6 +14629,7 @@ async fn proxy_openai_v1_via_pool(
                 &[],
                 &HashSet::new(),
                 true,
+                None,
             )
             .await
             {
