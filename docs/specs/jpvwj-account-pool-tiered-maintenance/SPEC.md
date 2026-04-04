@@ -4,7 +4,7 @@
 
 - Status: 已完成（5/5，PR#211）
 - Created: 2026-03-23
-- Last: 2026-03-23
+- Last: 2026-04-04
 
 ## 背景 / 问题陈述
 
@@ -160,29 +160,19 @@
 - 风险：旧库没有新增列时若默认值拼装不完整，会让前端 routing 卡片出现 `maintenance` 空对象；后端读取路径已统一回退到 `300 / 1800 / 100`。
 - 假设：当前快车道终点仍是 merge-ready，不自动 merge。
 
-## Visual Evidence (PR)
+## Visual Evidence
 
+PR: include
 - source_type: storybook_canvas
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
   submission_gate: approved
-  story_id_or_title: `Account Pool/Pages/Upstream Accounts/RoutingDialogMaintenanceOnlySave`
-  state: reopened with persisted maintenance values
-  evidence_note: 验证高级路由与同步设置弹窗在仅保存 maintenance 参数后，重新打开仍回显已保存的主频、次频与主层上限。
+  story_id_or_title: `Account Pool/Pages/Upstream Accounts/Overlays/Routing Dialog Maintenance Only Save`
+  state: persisted high-frequency maintenance settings
+  evidence_note: 验证高级路由与同步设置弹窗已将 maintenance 说明与字段标题统一为“高频同步”，并在仅保存 maintenance 参数后回显新的高频、次级和主层上限数值。
   image:
-  ![Routing dialog persisted maintenance values](./assets/routing-dialog-maintenance-only-save.png)
-
-- source_type: storybook_canvas
-  target_program: mock-only
-  capture_scope: element
-  sensitive_exclusion: N/A
-  submission_gate: approved
-  story_id_or_title: `Account Pool/Pages/Upstream Accounts/Operational`
-  state: routing settings summary card without advanced parameter tiles
-  evidence_note: 验证列表页右侧 routing 卡片仅保留当前号池 API Key 与编辑入口，不再展示 maintenance 摘要字段，也不再只读展开 4 项请求路径 timeout。
-  image:
-  ![Routing settings summary card without advanced parameter tiles](./assets/routing-settings-card-summary-only.png)
+  ![High-frequency maintenance routing dialog](./assets/high-frequency-maintenance-routing-dialog.png)
 
 ## 变更记录（Change log）
 
