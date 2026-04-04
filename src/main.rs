@@ -13405,7 +13405,7 @@ async fn send_pool_request_with_failover(
                             }
                             let has_retry_budget =
                                 same_account_attempt + 1 < same_account_attempt_budget;
-                            if has_retry_budget && !timeout_shaped_failure {
+                            if has_retry_budget && !should_timeout_route_failover {
                                 let retry_delay = fallback_proxy_429_retry_delay(
                                     u32::from(same_account_attempt) + 1,
                                 );
@@ -13469,7 +13469,6 @@ async fn send_pool_request_with_failover(
                                 None,
                                 Some(message.as_str()),
                             );
-                            let timeout_shaped_failure = true;
                             let should_timeout_route_failover = uses_timeout_route_failover;
                             let finished_at = shanghai_now_string();
                             if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
@@ -13515,7 +13514,7 @@ async fn send_pool_request_with_failover(
                             }
                             let has_retry_budget =
                                 same_account_attempt + 1 < same_account_attempt_budget;
-                            if has_retry_budget && !timeout_shaped_failure {
+                            if has_retry_budget && !should_timeout_route_failover {
                                 let retry_delay = fallback_proxy_429_retry_delay(
                                     u32::from(same_account_attempt) + 1,
                                 );
@@ -13853,7 +13852,7 @@ async fn send_pool_request_with_failover(
                 let should_timeout_route_failover =
                     uses_timeout_route_failover && timeout_shaped_failure;
                 let retry_delay = (has_retry_budget
-                    && !timeout_shaped_failure
+                    && !should_timeout_route_failover
                     && status.is_server_error()
                     && status != StatusCode::TOO_MANY_REQUESTS)
                     .then(|| {
@@ -14075,7 +14074,7 @@ async fn send_pool_request_with_failover(
                         );
                     }
                     let has_retry_budget = same_account_attempt + 1 < same_account_attempt_budget;
-                    if has_retry_budget && !timeout_shaped_failure {
+                    if has_retry_budget && !should_timeout_route_failover {
                         let retry_delay =
                             fallback_proxy_429_retry_delay(u32::from(same_account_attempt) + 1);
                         info!(
@@ -14642,65 +14641,225 @@ async fn proxy_openai_v1_via_pool(
                 body_sticky_key,
             )
         } else {
-            let request_body_snapshot = read_request_body_snapshot_with_limit(
-                body,
-                body_limit,
-                runtime_timeouts.request_read_timeout,
-                proxy_request_id,
-            )
-            .await
-            .map_err(|err| (err.status, err.message))?;
-            let body_sticky_key = extract_sticky_key_from_replay_snapshot(&request_body_snapshot)
+            let unwrap_initial_pool_account = |resolution,
+                                               no_available_wait_deadline|
+             -> Result<
+                (PoolResolvedAccount, Option<Instant>),
+                (StatusCode, String),
+            > {
+                let initial_account = match resolution {
+                    Ok(PoolAccountResolution::Resolved(account)) => account,
+                    Ok(PoolAccountResolution::RateLimited) => {
+                        return Err((
+                            StatusCode::TOO_MANY_REQUESTS,
+                            POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
+                        ));
+                    }
+                    Ok(PoolAccountResolution::DegradedOnly) => {
+                        return Err((
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
+                        ));
+                    }
+                    Ok(PoolAccountResolution::Unavailable)
+                    | Ok(PoolAccountResolution::NoCandidate) => {
+                        return Err((
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            POOL_NO_AVAILABLE_ACCOUNT_MESSAGE.to_string(),
+                        ));
+                    }
+                    Ok(PoolAccountResolution::BlockedByPolicy(message)) => {
+                        return Err((StatusCode::SERVICE_UNAVAILABLE, message));
+                    }
+                    Err(err) => {
+                        return Err((
+                            StatusCode::BAD_GATEWAY,
+                            format!("failed to resolve pool account: {err}"),
+                        ));
+                    }
+                };
+                Ok((initial_account, no_available_wait_deadline))
+            };
+            let (
+                request_body_snapshot,
+                body_sticky_key,
+                initial_account,
+                no_available_wait_deadline,
+            ) = if let Some(sticky_key) = header_sticky_key.clone() {
+                let state_for_wait = state.clone();
+                let sticky_key_for_join_error = sticky_key.clone();
+                let wait_task_sticky_key = sticky_key.clone();
+                let mut header_sticky_resolution = tokio::spawn(async move {
+                    let excluded_ids = Vec::new();
+                    let excluded_upstream_route_keys = HashSet::new();
+                    let mut no_available_wait_deadline = None;
+                    let resolution = resolve_pool_account_for_request_with_wait(
+                        state_for_wait.as_ref(),
+                        Some(wait_task_sticky_key.as_str()),
+                        &excluded_ids,
+                        &excluded_upstream_route_keys,
+                        true,
+                        &mut no_available_wait_deadline,
+                        // Route-level total timeout starts at the first upstream attempt,
+                        // so pre-attempt pool admission waits must not consume that budget.
+                        None,
+                    )
+                    .await;
+                    (resolution, no_available_wait_deadline)
+                });
+                let mut request_body_snapshot_task = tokio::spawn(async move {
+                    read_request_body_snapshot_with_limit(
+                        body,
+                        body_limit,
+                        runtime_timeouts.request_read_timeout,
+                        proxy_request_id,
+                    )
+                    .await
+                });
+                let mut completed_header_sticky_resolution = None;
+                let request_body_snapshot = loop {
+                    tokio::select! {
+                        body_result = &mut request_body_snapshot_task => {
+                            match body_result {
+                                Ok(Ok(snapshot)) => break snapshot,
+                                Ok(Err(err)) => {
+                                    header_sticky_resolution.abort();
+                                    return Err((err.status, err.message));
+                                }
+                                Err(err) => {
+                                    header_sticky_resolution.abort();
+                                    return Err((
+                                        StatusCode::INTERNAL_SERVER_ERROR,
+                                        format!("failed to join request body snapshot task: {err}"),
+                                    ));
+                                }
+                            }
+                        }
+                        resolution_result = &mut header_sticky_resolution, if completed_header_sticky_resolution.is_none() => {
+                            let (resolution, no_available_wait_deadline) = resolution_result.map_err(|err| {
+                                (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    format!(
+                                        "failed to join pool wait task for sticky {sticky_key_for_join_error}: {err}"
+                                    ),
+                                )
+                            })?;
+                            match resolution {
+                                Ok(PoolAccountResolution::Resolved(account)) => {
+                                    completed_header_sticky_resolution =
+                                        Some((account, no_available_wait_deadline));
+                                }
+                                Ok(PoolAccountResolution::RateLimited) => {
+                                    request_body_snapshot_task.abort();
+                                    return Err((
+                                        StatusCode::TOO_MANY_REQUESTS,
+                                        POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
+                                    ));
+                                }
+                                Ok(PoolAccountResolution::DegradedOnly) => {
+                                    request_body_snapshot_task.abort();
+                                    return Err((
+                                        StatusCode::SERVICE_UNAVAILABLE,
+                                        POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
+                                    ));
+                                }
+                                Ok(PoolAccountResolution::Unavailable)
+                                | Ok(PoolAccountResolution::NoCandidate) => {
+                                    request_body_snapshot_task.abort();
+                                    return Err((
+                                        StatusCode::SERVICE_UNAVAILABLE,
+                                        POOL_NO_AVAILABLE_ACCOUNT_MESSAGE.to_string(),
+                                    ));
+                                }
+                                Ok(PoolAccountResolution::BlockedByPolicy(message)) => {
+                                    request_body_snapshot_task.abort();
+                                    return Err((StatusCode::SERVICE_UNAVAILABLE, message));
+                                }
+                                Err(err) => {
+                                    request_body_snapshot_task.abort();
+                                    return Err((
+                                        StatusCode::BAD_GATEWAY,
+                                        format!("failed to resolve pool account: {err}"),
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                };
+                let body_sticky_key =
+                    extract_sticky_key_from_replay_snapshot(&request_body_snapshot)
+                        .await
+                        .or(Some(sticky_key.clone()));
+                let (initial_account, no_available_wait_deadline) = if body_sticky_key.as_deref()
+                    == Some(sticky_key.as_str())
+                {
+                    if let Some(result) = completed_header_sticky_resolution {
+                        result
+                    } else {
+                        let (resolution, no_available_wait_deadline) =
+                                    header_sticky_resolution.await.map_err(|err| {
+                                        (
+                                            StatusCode::INTERNAL_SERVER_ERROR,
+                                            format!(
+                                                "failed to join pool wait task for sticky {sticky_key_for_join_error}: {err}"
+                                            ),
+                                        )
+                                    })?;
+                        unwrap_initial_pool_account(resolution, no_available_wait_deadline)?
+                    }
+                } else {
+                    if completed_header_sticky_resolution.is_none() {
+                        header_sticky_resolution.abort();
+                    }
+                    let mut no_available_wait_deadline = None;
+                    let resolution = resolve_pool_account_for_request_with_wait(
+                        state.as_ref(),
+                        body_sticky_key.as_deref(),
+                        &[],
+                        &HashSet::new(),
+                        true,
+                        &mut no_available_wait_deadline,
+                        None,
+                    )
+                    .await;
+                    unwrap_initial_pool_account(resolution, no_available_wait_deadline)?
+                };
+                (
+                    request_body_snapshot,
+                    body_sticky_key,
+                    initial_account,
+                    no_available_wait_deadline,
+                )
+            } else {
+                let request_body_snapshot = read_request_body_snapshot_with_limit(
+                    body,
+                    body_limit,
+                    runtime_timeouts.request_read_timeout,
+                    proxy_request_id,
+                )
                 .await
-                .or(header_sticky_key.clone());
-            let mut no_available_wait_deadline = None;
-            let initial_account = match resolve_pool_account_for_request_with_wait(
-                state.as_ref(),
-                body_sticky_key.as_deref(),
-                &[],
-                &HashSet::new(),
-                true,
-                &mut no_available_wait_deadline,
-                // Route-level total timeout starts at the first upstream attempt,
-                // so pre-attempt pool admission waits must not consume that budget.
-                None,
-            )
-            .await
-            {
-                Ok(PoolAccountResolution::Resolved(account)) => account,
-                Ok(PoolAccountResolution::RateLimited) => {
-                    return Err((
-                        StatusCode::TOO_MANY_REQUESTS,
-                        POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
-                    ));
-                }
-                Ok(PoolAccountResolution::DegradedOnly) => {
-                    return Err((
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
-                    ));
-                }
-                Ok(PoolAccountResolution::Unavailable) => {
-                    return Err((
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        POOL_NO_AVAILABLE_ACCOUNT_MESSAGE.to_string(),
-                    ));
-                }
-                Ok(PoolAccountResolution::NoCandidate) => {
-                    return Err((
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        POOL_NO_AVAILABLE_ACCOUNT_MESSAGE.to_string(),
-                    ));
-                }
-                Ok(PoolAccountResolution::BlockedByPolicy(message)) => {
-                    return Err((StatusCode::SERVICE_UNAVAILABLE, message));
-                }
-                Err(err) => {
-                    return Err((
-                        StatusCode::BAD_GATEWAY,
-                        format!("failed to resolve pool account: {err}"),
-                    ));
-                }
+                .map_err(|err| (err.status, err.message))?;
+                let body_sticky_key =
+                    extract_sticky_key_from_replay_snapshot(&request_body_snapshot).await;
+                let mut no_available_wait_deadline = None;
+                let resolution = resolve_pool_account_for_request_with_wait(
+                    state.as_ref(),
+                    body_sticky_key.as_deref(),
+                    &[],
+                    &HashSet::new(),
+                    true,
+                    &mut no_available_wait_deadline,
+                    None,
+                )
+                .await;
+                let (initial_account, no_available_wait_deadline) =
+                    unwrap_initial_pool_account(resolution, no_available_wait_deadline)?;
+                (
+                    request_body_snapshot,
+                    body_sticky_key,
+                    initial_account,
+                    no_available_wait_deadline,
+                )
             };
             (
                 send_pool_request_with_failover(

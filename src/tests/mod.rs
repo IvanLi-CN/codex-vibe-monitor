@@ -13505,6 +13505,13 @@ struct PoolDelayedHeadersUpstreamState {
 }
 
 #[derive(Clone)]
+struct PoolDelayedHeadersRetryUpstreamState {
+    attempts: Arc<StdMutex<HashMap<String, usize>>>,
+    fail_before_success: Arc<HashMap<String, usize>>,
+    header_delay: Duration,
+}
+
+#[derive(Clone)]
 struct PoolHttpFailureUpstreamState {
     status: StatusCode,
     error_code: Option<String>,
@@ -14030,6 +14037,86 @@ async fn spawn_pool_delayed_headers_upstream(delay: Duration) -> (String, JoinHa
             .expect("delayed headers upstream should run");
     });
     (format!("http://{addr}"), handle)
+}
+
+async fn pool_delayed_headers_retry_upstream(
+    State(state): State<PoolDelayedHeadersRetryUpstreamState>,
+    headers: HeaderMap,
+) -> Response {
+    let authorization = headers
+        .get(http_header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+
+    let attempt = {
+        let mut attempts = state
+            .attempts
+            .lock()
+            .expect("lock delayed headers retry attempts");
+        let entry = attempts.entry(authorization.clone()).or_insert(0);
+        *entry += 1;
+        *entry
+    };
+
+    if attempt
+        <= state
+            .fail_before_success
+            .get(&authorization)
+            .copied()
+            .unwrap_or(0)
+    {
+        tokio::time::sleep(state.header_delay).await;
+    }
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "ok": true,
+            "authorization": authorization,
+            "attempt": attempt,
+        })),
+    )
+        .into_response()
+}
+
+async fn spawn_pool_delayed_headers_retry_upstream(
+    delay: Duration,
+    fail_before_success: &[(&str, usize)],
+) -> (
+    String,
+    Arc<StdMutex<HashMap<String, usize>>>,
+    JoinHandle<()>,
+) {
+    let attempts = Arc::new(StdMutex::new(HashMap::new()));
+    let fail_before_success = Arc::new(
+        fail_before_success
+            .iter()
+            .map(|(authorization, failures)| ((*authorization).to_string(), *failures))
+            .collect::<HashMap<_, _>>(),
+    );
+    let app = Router::new()
+        .route(
+            "/v1/chat/completions",
+            post(pool_delayed_headers_retry_upstream),
+        )
+        .with_state(PoolDelayedHeadersRetryUpstreamState {
+            attempts: attempts.clone(),
+            fail_before_success,
+            header_delay: delay,
+        });
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind delayed headers retry upstream");
+    let addr = listener
+        .local_addr()
+        .expect("delayed headers retry upstream addr");
+    let handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("delayed headers retry upstream should run");
+    });
+    (format!("http://{addr}"), attempts, handle)
 }
 
 async fn pool_http_failure_upstream(State(state): State<PoolHttpFailureUpstreamState>) -> Response {
@@ -16370,6 +16457,141 @@ async fn pool_route_retries_first_chunk_failure_before_switching() {
         .expect("sticky route should remain on the recovered account");
     assert_eq!(route_account_id, primary_id);
     assert_ne!(route_account_id, secondary_id);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_route_non_responses_timeouts_retry_same_account_before_switching() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptRouteRow {
+        upstream_account_id: Option<i64>,
+        distinct_account_index: i64,
+        same_account_retry_index: i64,
+        status: String,
+        failure_kind: Option<String>,
+    }
+
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_delayed_headers_retry_upstream(
+        Duration::from_millis(200),
+        &[("Bearer upstream-primary", 2)],
+    )
+    .await;
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.request_timeout = Duration::from_millis(80);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Primary",
+        "upstream-primary",
+        None,
+        None,
+        Some(upstream_base.as_str()),
+    )
+    .await;
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Secondary",
+        "upstream-secondary",
+        None,
+        None,
+        Some(upstream_base.as_str()),
+    )
+    .await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/chat/completions".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(
+            r#"{"model":"gpt-5","messages":[{"role":"user","content":"hello"}],"stickyKey":"sticky-non-responses-timeout-retry-001"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read non-responses retry response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode non-responses retry body");
+    assert_eq!(payload["authorization"], "Bearer upstream-primary");
+    assert_eq!(payload["attempt"], 3);
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    wait_for_pool_attempt_row_count(&state.pool, 3).await;
+    let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
+        r#"
+        SELECT
+            upstream_account_id,
+            distinct_account_index,
+            same_account_retry_index,
+            status,
+            failure_kind
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load non-responses timeout retry rows");
+    assert_eq!(attempt_rows.len(), 3);
+    assert_eq!(attempt_rows[0].upstream_account_id, Some(primary_id));
+    assert_eq!(attempt_rows[0].distinct_account_index, 1);
+    assert_eq!(attempt_rows[0].same_account_retry_index, 1);
+    assert_eq!(
+        attempt_rows[0].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+    );
+    assert!(
+        attempt_rows[0]
+            .failure_kind
+            .as_deref()
+            .is_some_and(|kind| kind == PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT
+                || kind == PROXY_FAILURE_UPSTREAM_STREAM_ERROR)
+    );
+    assert_eq!(attempt_rows[1].upstream_account_id, Some(primary_id));
+    assert_eq!(attempt_rows[1].distinct_account_index, 1);
+    assert_eq!(attempt_rows[1].same_account_retry_index, 2);
+    assert_eq!(
+        attempt_rows[1].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+    );
+    assert!(
+        attempt_rows[1]
+            .failure_kind
+            .as_deref()
+            .is_some_and(|kind| kind == PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT
+                || kind == PROXY_FAILURE_UPSTREAM_STREAM_ERROR)
+    );
+    assert_eq!(attempt_rows[2].upstream_account_id, Some(primary_id));
+    assert_eq!(attempt_rows[2].distinct_account_index, 1);
+    assert_eq!(attempt_rows[2].same_account_retry_index, 3);
+    assert_eq!(
+        attempt_rows[2].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+    );
+
+    let attempts = attempts
+        .lock()
+        .expect("lock delayed headers retry attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
+    drop(attempts);
 
     upstream_handle.abort();
 }
@@ -21299,6 +21521,69 @@ async fn proxy_openai_v1_header_sticky_stream_prefers_body_timeout_before_pool_w
     assert_eq!(status, StatusCode::REQUEST_TIMEOUT);
     assert_eq!(
         message, "request body read timed out after 80ms",
+        "unexpected via-pool failure: {message}"
+    );
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_header_sticky_stream_starts_pool_wait_before_body_finishes() {
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(20),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
+    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    tokio::spawn(async move {
+        let _ = tx
+            .send(Ok(Bytes::from_static(b"{\"model\":\"gpt-5\",")))
+            .await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        let _ = tx.send(Ok(Bytes::from_static(b"\"messages\":[]}"))).await;
+    });
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let started = Instant::now();
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6242,
+        &"/v1/chat/completions".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                HeaderName::from_static("x-sticky-key"),
+                HeaderValue::from_static("known-stream-sticky"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        runtime_timeouts,
+    )
+    .await;
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < Duration::from_millis(400),
+        "header sticky requests should begin waiting before the body upload completes, elapsed={elapsed:?}"
+    );
+    let (status, message) = response.expect_err("via-pool request should fail");
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        message, POOL_NO_AVAILABLE_ACCOUNT_MESSAGE,
         "unexpected via-pool failure: {message}"
     );
     assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
