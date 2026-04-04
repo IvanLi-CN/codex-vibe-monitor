@@ -173,7 +173,7 @@ CRS_STATS_POLL_INTERVAL_SECS=10                  # (10，默认跟随 POLL_INTER
 ```
 
 价格配置已迁移到数据库持久化（可在 Web 设置页 `/settings` 在线编辑）；服务启动会自动写入默认模型价格模板。
-号池维护同步配置同样支持运行期在线编辑：在 Web 的 `号池 -> 上游账号 -> 高级路由与同步设置` 中，可直接调整主频、次频与主层账号上限。`UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS` 仅作为新库或旧库缺失维护字段时的主频默认值回退；次频默认 `1800` 秒、主层上限默认 `100`。
+号池维护同步配置同样支持运行期在线编辑：在 Web 的 `号池 -> 上游账号 -> 高级路由与同步设置` 中，可直接调整主频、次频与主层账号上限。`working` / `degraded` 的 OAuth 账号固定按 `60` 秒高频同步；其他账号继续按原有主频 / 次频与主层上限策略执行。若主限制或次限制的 `resetsAt` 已跨过当前时间，则该账号会在下一个 `60` 秒 maintenance tick 尽快补一次同步。`UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS` 仅作为新库或旧库缺失维护字段时的主频默认值回退；次频默认 `1800` 秒、主层上限默认 `100`。
 `OPENAI_PROXY_COMPACT_HANDSHAKE_TIMEOUT_SECS` 仍作为后端默认回退项存在：未配置时，`/v1/responses/compact` 的“响应体首字超时”默认使用 `300` 秒；其他代理路径默认继续使用 `OPENAI_PROXY_HANDSHAKE_TIMEOUT_SECS=60` 作为非 responses 类请求的上游发送等待回退。账号池页的 `Pool routing settings` 现在只在线暴露 4 项请求链路超时：一般请求响应体首字超时、压缩请求响应体首字超时、一般请求流结束超时、压缩请求流结束超时；保存后对后续请求即时生效。
 成本估算默认采用“精确模型优先 + 日期后缀模型回退”（如 `gpt-5.2-2025-12-11 -> gpt-5.2`），历史 `cost IS NULL` 的成功代理记录会在启动后由后台任务按批次增量补算（仅回填空成本，不覆盖已有值）。
 raw 请求/响应文件的生命周期不再由独立环境变量控制，而是跟随 retention 窗口：新写入文件保持热数据明文 `*.bin`，超过 `PROXY_RAW_HOT_SECS=86400` 后由 retention 自动转为 `*.bin.gz`；成功调用按 `INVOCATION_SUCCESS_FULL_DAYS` 进入结构化保留，超出 `INVOCATION_MAX_DAYS` 后再归档出主库。`requestRawPath` / `responseRawPath` 应视为 opaque path，而不是假定固定后缀。

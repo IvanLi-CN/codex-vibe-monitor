@@ -126,7 +126,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.routing.maintenanceSectionTitle":
       "Tiered maintenance sync",
     "accountPool.upstreamAccounts.routing.maintenanceSectionDescription":
-      "Healthy OAuth accounts with both windows available stay in the priority queue until the cap is reached; overflow accounts fall back to the secondary sync interval.",
+      "Keep account quota updates fresh while they are actively serving traffic, and automatically refresh again soon after a primary or secondary limit resets to reduce stale availability.",
     "accountPool.upstreamAccounts.routing.primarySyncIntervalLabel":
       "Priority sync interval",
     "accountPool.upstreamAccounts.routing.secondarySyncIntervalLabel":
@@ -1749,7 +1749,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.routing.maintenanceSectionTitle":
       "分层维护同步",
     "accountPool.upstreamAccounts.routing.maintenanceSectionDescription":
-      "双窗口都有额度的健康 OAuth 账号会先进入优先队列，超过上限的账号自动落到次级同步频率。",
+      "让正在承接流量的账号额度更新更及时；主限制或次限制重置后，也会尽快再同步一次，减少可用性显示滞后。",
     "accountPool.upstreamAccounts.routing.primarySyncIntervalLabel":
       "优先队列同步间隔",
     "accountPool.upstreamAccounts.routing.secondarySyncIntervalLabel":
