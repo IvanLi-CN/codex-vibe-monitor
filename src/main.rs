@@ -12993,21 +12993,10 @@ async fn send_pool_request_with_failover(
                     );
                 }
                 Ok(PoolAccountResolution::BlockedByPolicy(message)) => {
-                    let terminal_failure_kind =
-                        if uses_timeout_route_failover && timeout_route_failover_pending {
-                            PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT
-                        } else {
-                            PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT
-                        };
+                    let terminal_failure_kind = PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT;
                     let err = PoolUpstreamError {
                         account: None,
-                        status: if terminal_failure_kind
-                            == PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT
-                        {
-                            StatusCode::BAD_GATEWAY
-                        } else {
-                            StatusCode::SERVICE_UNAVAILABLE
-                        },
+                        status: StatusCode::SERVICE_UNAVAILABLE,
                         message,
                         failure_kind: terminal_failure_kind,
                         connect_latency_ms: 0.0,
@@ -13023,26 +13012,6 @@ async fn send_pool_request_with_failover(
                         requested_service_tier: None,
                         request_body_for_capture: None,
                     };
-                    if terminal_failure_kind
-                        == PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT
-                        && let Some(trace) = trace_context.as_ref()
-                        && let Err(record_err) =
-                            insert_and_broadcast_pool_upstream_terminal_attempt(
-                                state.as_ref(),
-                                trace,
-                                &err,
-                                (attempt_count + 1) as i64,
-                                distinct_account_count as i64,
-                                terminal_failure_kind,
-                            )
-                            .await
-                    {
-                        warn!(
-                            invoke_id = trace.invoke_id,
-                            error = %record_err,
-                            "failed to persist pool blocked-policy no-alternate attempt"
-                        );
-                    }
                     return Err(err);
                 }
                 Err(err) => {
@@ -14689,23 +14658,51 @@ async fn proxy_openai_v1_via_pool(
                 let state_for_wait = state.clone();
                 let sticky_key_for_join_error = sticky_key.clone();
                 let wait_task_sticky_key = sticky_key.clone();
+                let shared_wait_deadline = Arc::new(std::sync::Mutex::new(None));
+                let shared_wait_deadline_for_task = shared_wait_deadline.clone();
                 let mut header_sticky_resolution = tokio::spawn(async move {
                     let excluded_ids = Vec::new();
                     let excluded_upstream_route_keys = HashSet::new();
                     let mut no_available_wait_deadline = None;
-                    let resolution = resolve_pool_account_for_request_with_wait(
-                        state_for_wait.as_ref(),
-                        Some(wait_task_sticky_key.as_str()),
-                        &excluded_ids,
-                        &excluded_upstream_route_keys,
-                        true,
-                        &mut no_available_wait_deadline,
-                        // Route-level total timeout starts at the first upstream attempt,
-                        // so pre-attempt pool admission waits must not consume that budget.
-                        None,
-                    )
-                    .await;
-                    (resolution, no_available_wait_deadline)
+                    let poll_interval = state_for_wait
+                        .pool_no_available_wait
+                        .normalized_poll_interval();
+                    loop {
+                        let resolution = resolve_pool_account_for_request(
+                            state_for_wait.as_ref(),
+                            Some(wait_task_sticky_key.as_str()),
+                            &excluded_ids,
+                            &excluded_upstream_route_keys,
+                        )
+                        .await;
+                        match resolution {
+                            Ok(PoolAccountResolution::Unavailable)
+                            | Ok(PoolAccountResolution::NoCandidate) => {
+                                let wait_deadline =
+                                    if let Some(deadline) = no_available_wait_deadline {
+                                        deadline
+                                    } else {
+                                        let deadline = Instant::now()
+                                            + state_for_wait.pool_no_available_wait.timeout;
+                                        no_available_wait_deadline = Some(deadline);
+                                        *shared_wait_deadline_for_task
+                                            .lock()
+                                            .expect("lock shared header wait deadline") =
+                                            Some(deadline);
+                                        deadline
+                                    };
+                                let now = Instant::now();
+                                if now >= wait_deadline {
+                                    break (resolution, no_available_wait_deadline);
+                                }
+                                tokio::time::sleep(
+                                    poll_interval.min(wait_deadline.saturating_duration_since(now)),
+                                )
+                                .await;
+                            }
+                            _ => break (resolution, no_available_wait_deadline),
+                        }
+                    }
                 });
                 let mut request_body_snapshot_task = tokio::spawn(async move {
                     read_request_body_snapshot_with_limit(
@@ -14716,7 +14713,7 @@ async fn proxy_openai_v1_via_pool(
                     )
                     .await
                 });
-                let mut completed_header_sticky_resolution = None;
+                let mut header_sticky_resolution_finished = false;
                 let request_body_snapshot = loop {
                     tokio::select! {
                         body_result = &mut request_body_snapshot_task => {
@@ -14735,8 +14732,9 @@ async fn proxy_openai_v1_via_pool(
                                 }
                             }
                         }
-                        resolution_result = &mut header_sticky_resolution, if completed_header_sticky_resolution.is_none() => {
-                            let (resolution, no_available_wait_deadline) = resolution_result.map_err(|err| {
+                        resolution_result = &mut header_sticky_resolution, if !header_sticky_resolution_finished => {
+                            header_sticky_resolution_finished = true;
+                            let (resolution, _no_available_wait_deadline) = resolution_result.map_err(|err| {
                                 (
                                     StatusCode::INTERNAL_SERVER_ERROR,
                                     format!(
@@ -14745,10 +14743,7 @@ async fn proxy_openai_v1_via_pool(
                                 )
                             })?;
                             match resolution {
-                                Ok(PoolAccountResolution::Resolved(account)) => {
-                                    completed_header_sticky_resolution =
-                                        Some((account, no_available_wait_deadline));
-                                }
+                                Ok(PoolAccountResolution::Resolved(_account)) => {}
                                 Ok(PoolAccountResolution::RateLimited) => {
                                     request_body_snapshot_task.abort();
                                     return Err((
@@ -14786,44 +14781,28 @@ async fn proxy_openai_v1_via_pool(
                         }
                     }
                 };
+                if !header_sticky_resolution_finished {
+                    header_sticky_resolution.abort();
+                }
                 let body_sticky_key =
                     extract_sticky_key_from_replay_snapshot(&request_body_snapshot)
                         .await
-                        .or(Some(sticky_key.clone()));
-                let (initial_account, no_available_wait_deadline) = if body_sticky_key.as_deref()
-                    == Some(sticky_key.as_str())
-                {
-                    if let Some(result) = completed_header_sticky_resolution {
-                        result
-                    } else {
-                        let (resolution, no_available_wait_deadline) =
-                                    header_sticky_resolution.await.map_err(|err| {
-                                        (
-                                            StatusCode::INTERNAL_SERVER_ERROR,
-                                            format!(
-                                                "failed to join pool wait task for sticky {sticky_key_for_join_error}: {err}"
-                                            ),
-                                        )
-                                    })?;
-                        unwrap_initial_pool_account(resolution, no_available_wait_deadline)?
-                    }
-                } else {
-                    if completed_header_sticky_resolution.is_none() {
-                        header_sticky_resolution.abort();
-                    }
-                    let mut no_available_wait_deadline = None;
-                    let resolution = resolve_pool_account_for_request_with_wait(
-                        state.as_ref(),
-                        body_sticky_key.as_deref(),
-                        &[],
-                        &HashSet::new(),
-                        true,
-                        &mut no_available_wait_deadline,
-                        None,
-                    )
-                    .await;
-                    unwrap_initial_pool_account(resolution, no_available_wait_deadline)?
-                };
+                        .or(Some(sticky_key));
+                let mut no_available_wait_deadline = *shared_wait_deadline
+                    .lock()
+                    .expect("lock shared header wait deadline");
+                let resolution = resolve_pool_account_for_request_with_wait(
+                    state.as_ref(),
+                    body_sticky_key.as_deref(),
+                    &[],
+                    &HashSet::new(),
+                    true,
+                    &mut no_available_wait_deadline,
+                    None,
+                )
+                .await;
+                let (initial_account, no_available_wait_deadline) =
+                    unwrap_initial_pool_account(resolution, no_available_wait_deadline)?;
                 (
                     request_body_snapshot,
                     body_sticky_key,

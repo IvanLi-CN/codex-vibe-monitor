@@ -19408,7 +19408,8 @@ async fn capture_target_pool_route_timeout_prefers_real_alternate_group_proxy_er
         ),
     )
     .await;
-    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(response.headers().get(http_header::RETRY_AFTER).is_none());
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read timeout broken-alt response body");
@@ -19450,7 +19451,7 @@ async fn capture_target_pool_route_timeout_prefers_real_alternate_group_proxy_er
     assert_eq!(payload["poolDistinctAccountCount"].as_i64(), Some(1));
     assert_eq!(
         payload["poolAttemptTerminalReason"].as_str(),
-        Some(PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT),
+        Some(PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT),
     );
     assert!(payload["upstreamErrorMessage"].is_null());
 
@@ -21590,6 +21591,92 @@ async fn proxy_openai_v1_header_sticky_stream_starts_pool_wait_before_body_finis
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_header_sticky_stream_revalidates_pre_resolved_account_after_body() {
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(220),
+        Duration::from_millis(10),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    insert_test_pool_api_key_account(&state, "Replacement", "upstream-replacement").await;
+    let sticky_seen_at = format_utc_iso(Utc::now());
+    upsert_test_sticky_route_at(
+        &state.pool,
+        "header-stale-sticky",
+        primary_id,
+        &sticky_seen_at,
+    )
+    .await;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    tokio::spawn(async move {
+        let _ = tx
+            .send(Ok(Bytes::from_static(b"{\"model\":\"gpt-5\",")))
+            .await;
+        tokio::time::sleep(Duration::from_millis(170)).await;
+        let _ = tx.send(Ok(Bytes::from_static(b"\"messages\":[]}"))).await;
+    });
+
+    let pool = state.pool.clone();
+    let primary_block_task = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        set_test_account_status(&pool, primary_id, "needs_reauth").await;
+    });
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6342,
+        &"/v1/chat/completions".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                HeaderName::from_static("x-sticky-key"),
+                HeaderValue::from_static("header-stale-sticky"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        runtime_timeouts,
+    )
+    .await
+    .expect("via-pool request should succeed");
+
+    primary_block_task
+        .await
+        .expect("primary block task should join");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read via-pool response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
+    assert_eq!(payload["authorization"], "Bearer upstream-replacement");
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), None);
+    assert_eq!(
+        attempts.get("Bearer upstream-replacement").copied(),
+        Some(1)
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_header_sticky_stream_prefers_body_too_large_before_pool_wait() {
     let mut config = test_config();
     config.openai_upstream_base_url =
@@ -21736,6 +21823,89 @@ async fn proxy_openai_v1_header_sticky_stream_waits_after_body_reroute_needs_acc
     let attempts = attempts.lock().expect("lock attempts");
     assert_eq!(attempts.get("Bearer upstream-initial").copied(), None);
     assert_eq!(attempts.get("Bearer upstream-delayed").copied(), Some(1));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_header_sticky_stream_reroute_preserves_original_wait_window() {
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(120),
+        Duration::from_millis(10),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
+    let delayed_id = insert_test_pool_api_key_account(&state, "Delayed", "upstream-delayed").await;
+    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+    set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    tokio::spawn(async move {
+        let _ = tx
+            .send(Ok(Bytes::from_static(b"{\"model\":\"gpt-5\",")))
+            .await;
+        tokio::time::sleep(Duration::from_millis(90)).await;
+        let _ = tx
+            .send(Ok(Bytes::from_static(
+                b"\"messages\":[],\"stickyKey\":\"body-reroute-sticky\"}",
+            )))
+            .await;
+    });
+
+    let pool = state.pool.clone();
+    let delayed_release_task = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(170)).await;
+        set_test_account_status(&pool, delayed_id, "active").await;
+    });
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let started = Instant::now();
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        7342,
+        &"/v1/chat/completions".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                HeaderName::from_static("x-sticky-key"),
+                HeaderValue::from_static("header-reroute-sticky"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        runtime_timeouts,
+    )
+    .await;
+    let elapsed = started.elapsed();
+
+    delayed_release_task
+        .await
+        .expect("delayed release task should join");
+
+    assert!(
+        elapsed < Duration::from_millis(160),
+        "rerouted sticky requests should not reset the bounded wait window, elapsed={elapsed:?}"
+    );
+    let (status, message) = response.expect_err("via-pool request should fail");
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(message, POOL_NO_AVAILABLE_ACCOUNT_MESSAGE);
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-blocked").copied(), None);
+    assert_eq!(attempts.get("Bearer upstream-delayed").copied(), None);
 
     upstream_handle.abort();
 }
