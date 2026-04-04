@@ -21638,24 +21638,46 @@ async fn proxy_openai_v1_header_sticky_stream_prefers_body_timeout_before_pool_w
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_header_sticky_stream_starts_pool_wait_before_body_finishes() {
+async fn proxy_openai_v1_header_sticky_stream_waits_for_body_sticky_override_before_failing() {
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
     let state = test_state_with_openai_base_and_pool_no_available_wait(
-        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        Url::parse(&upstream_base).expect("valid upstream base url"),
         Duration::from_millis(80),
         Duration::from_millis(20),
     )
     .await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
+    let replacement_id =
+        insert_test_pool_api_key_account(&state, "Replacement", "upstream-replacement").await;
     set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+    let sticky_seen_at = format_utc_iso(Utc::now());
+    upsert_test_sticky_route_at(
+        &state.pool,
+        "header-stale-sticky",
+        blocked_id,
+        &sticky_seen_at,
+    )
+    .await;
+    upsert_test_sticky_route_at(
+        &state.pool,
+        "body-live-sticky",
+        replacement_id,
+        &sticky_seen_at,
+    )
+    .await;
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
     tokio::spawn(async move {
         let _ = tx
             .send(Ok(Bytes::from_static(b"{\"model\":\"gpt-5\",")))
             .await;
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        let _ = tx.send(Ok(Bytes::from_static(b"\"messages\":[]}"))).await;
+        tokio::time::sleep(Duration::from_millis(170)).await;
+        let _ = tx
+            .send(Ok(Bytes::from_static(
+                b"\"messages\":[],\"stickyKey\":\"body-live-sticky\"}",
+            )))
+            .await;
     });
 
     let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
@@ -21674,7 +21696,7 @@ async fn proxy_openai_v1_header_sticky_stream_starts_pool_wait_before_body_finis
             ),
             (
                 HeaderName::from_static("x-sticky-key"),
-                HeaderValue::from_static("known-stream-sticky"),
+                HeaderValue::from_static("header-stale-sticky"),
             ),
             (
                 http_header::CONTENT_TYPE,
@@ -21684,12 +21706,87 @@ async fn proxy_openai_v1_header_sticky_stream_starts_pool_wait_before_body_finis
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
     )
+    .await
+    .expect("via-pool request should succeed");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed >= Duration::from_millis(140),
+        "request should wait for the body sticky override before resolving, elapsed={elapsed:?}"
+    );
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read via-pool response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
+    assert_eq!(payload["authorization"], "Bearer upstream-replacement");
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-blocked").copied(), None);
+    assert_eq!(
+        attempts.get("Bearer upstream-replacement").copied(),
+        Some(1)
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_header_sticky_responses_wait_timeout_respects_total_timeout_after_body() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.pool_upstream_responses_total_timeout = Duration::from_millis(45);
+    let state = test_state_from_config_with_pool_no_available_wait(
+        config,
+        true,
+        PoolNoAvailableWaitSettings {
+            timeout: Duration::from_millis(220),
+            poll_interval: Duration::from_millis(10),
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        },
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
+    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let started = Instant::now();
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6243,
+        &"/v1/responses".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                HeaderName::from_static("x-sticky-key"),
+                HeaderValue::from_static("header-responses-sticky"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(r#"{"model":"gpt-5","input":"hello"}"#.as_bytes().to_vec()),
+        runtime_timeouts,
+    )
     .await;
     let elapsed = started.elapsed();
 
     assert!(
-        elapsed < Duration::from_millis(400),
-        "header sticky requests should begin waiting before the body upload completes, elapsed={elapsed:?}"
+        elapsed >= Duration::from_millis(25),
+        "request should still wait briefly before failing, elapsed={elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_millis(150),
+        "responses total timeout should cap the header-sticky no-account wait, elapsed={elapsed:?}"
     );
     let (status, message) = response.expect_err("via-pool request should fail");
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
