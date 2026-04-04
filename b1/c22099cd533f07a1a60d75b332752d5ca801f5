@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.38.3",
+  "base_stable_version": "1.38.2",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-04T19:55:42Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.38.3",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "eaefc6b2b0ae14b0d31b7e6c11a97f3f161beac8",
+  "pr_number": 290,
+  "pr_title": "fix: prevent stale content-length on pool fast rewrite",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.38.3",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.38.3",
+  "target_sha": "b1c22099cd533f07a1a60d75b332752d5ca801f5",
+  "type_label": "type:patch"
+}
