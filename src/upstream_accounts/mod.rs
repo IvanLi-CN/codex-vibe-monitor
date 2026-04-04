@@ -7684,7 +7684,7 @@ fn compare_maintenance_candidates(
         .then_with(|| lhs.id.cmp(&rhs.id))
 }
 
-fn maintenance_last_attempt_at(candidate: &MaintenanceCandidateRow) -> Option<DateTime<Utc>> {
+fn maintenance_last_sync_attempt_at(candidate: &MaintenanceCandidateRow) -> Option<DateTime<Utc>> {
     let last_synced_at = candidate
         .last_synced_at
         .as_deref()
@@ -7710,11 +7710,30 @@ fn maintenance_last_attempt_at(candidate: &MaintenanceCandidateRow) -> Option<Da
         .max()
 }
 
+fn maintenance_last_interval_anchor_at(
+    candidate: &MaintenanceCandidateRow,
+) -> Option<DateTime<Utc>> {
+    let last_sync_attempt_at = maintenance_last_sync_attempt_at(candidate);
+    let last_error_at = (candidate.status == UPSTREAM_ACCOUNT_STATUS_ERROR)
+        .then(|| {
+            candidate
+                .last_error_at
+                .as_deref()
+                .and_then(parse_rfc3339_utc)
+        })
+        .flatten();
+
+    [last_sync_attempt_at, last_error_at]
+        .into_iter()
+        .flatten()
+        .max()
+}
+
 fn maintenance_last_attempt_recorded_after_reset(
     candidate: &MaintenanceCandidateRow,
     reset_at: DateTime<Utc>,
 ) -> bool {
-    maintenance_last_attempt_at(candidate)
+    maintenance_last_sync_attempt_at(candidate)
         .is_some_and(|last_attempt_at| last_attempt_at >= reset_at)
 }
 
@@ -7723,7 +7742,7 @@ fn maintenance_interval_is_due(
     interval_secs: u64,
     now: DateTime<Utc>,
 ) -> bool {
-    maintenance_last_attempt_at(candidate)
+    maintenance_last_interval_anchor_at(candidate)
         .map(|last| now.signed_duration_since(last).num_seconds() >= interval_secs as i64)
         .unwrap_or(true)
 }
@@ -22714,6 +22733,67 @@ mod tests {
             Some(UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE.to_string());
 
         assert!(!maintenance_reset_due(&candidate, now));
+    }
+
+    #[test]
+    fn resolve_due_maintenance_dispatch_plans_preserves_primary_cadence_after_call_driven_error() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 3, 23, 12, 0, 0)
+            .single()
+            .expect("valid time");
+        let settings = PoolRoutingMaintenanceSettings {
+            primary_sync_interval_secs: 300,
+            secondary_sync_interval_secs: 1800,
+            priority_available_account_cap: 100,
+        };
+        let mut candidate = maintenance_candidates(
+            13,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            Some("2026-03-23T11:50:00Z"),
+            Some("2026-03-23T11:58:30Z"),
+            Some("2026-04-23T12:00:00Z"),
+            Some(10.0),
+            Some(10.0),
+        );
+        candidate.last_action_source = Some(UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL.to_string());
+        candidate.last_action_at = Some("2026-03-23T11:58:30Z".to_string());
+
+        let plans = resolve_due_maintenance_dispatch_plans(
+            vec![candidate],
+            settings,
+            Duration::from_secs(15 * 60),
+            now,
+        );
+
+        assert!(
+            plans.is_empty(),
+            "call-driven error transitions should still honor the configured primary cadence"
+        );
+    }
+
+    #[test]
+    fn maintenance_reset_due_ignores_call_driven_error_after_reset() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 3, 23, 12, 0, 0)
+            .single()
+            .expect("valid time");
+        let mut candidate = maintenance_candidates(
+            14,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            Some("2026-03-23T11:58:30Z"),
+            Some("2026-03-23T11:59:20Z"),
+            Some("2026-04-23T12:00:00Z"),
+            Some(10.0),
+            Some(10.0),
+        );
+        candidate.primary_resets_at = Some("2026-03-23T11:59:00Z".to_string());
+        candidate.last_action_source = Some(UPSTREAM_ACCOUNT_ACTION_SOURCE_CALL.to_string());
+        candidate.last_action_at = Some("2026-03-23T11:59:20Z".to_string());
+
+        assert!(
+            maintenance_reset_due(&candidate, now),
+            "call-driven failures should not consume the post-reset catch-up sync"
+        );
     }
 
     fn test_routing_candidate(id: i64) -> AccountRoutingCandidateRow {
