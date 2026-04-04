@@ -4409,6 +4409,7 @@ async fn reserve_test_pool_routing_account(
         ),
         group_upstream_429_retry_enabled: false,
         group_upstream_429_max_retries: 0,
+        fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
     };
     reserve_pool_routing_account(state.as_ref(), reservation_key, &account);
 }
@@ -9244,7 +9245,6 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
         Json(ProxyModelSettingsUpdateRequest {
             hijack_enabled: true,
             merge_upstream_enabled: true,
-            fast_mode_rewrite_mode: ProxyFastModeRewriteMode::FillMissing,
             upstream_429_max_retries: Some(5),
             enabled_models: vec!["gpt-5.2-codex".to_string(), "unknown-model".to_string()],
         }),
@@ -9253,10 +9253,6 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
     .expect("put settings should succeed");
     assert!(updated.hijack_enabled);
     assert!(updated.merge_upstream_enabled);
-    assert_eq!(
-        updated.fast_mode_rewrite_mode,
-        ProxyFastModeRewriteMode::FillMissing
-    );
     assert_eq!(updated.upstream_429_max_retries, 5);
     assert_eq!(updated.enabled_models, vec!["gpt-5.2-codex".to_string()]);
 
@@ -9265,10 +9261,6 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
         .expect("settings should persist");
     assert!(persisted.hijack_enabled);
     assert!(persisted.merge_upstream_enabled);
-    assert_eq!(
-        persisted.fast_mode_rewrite_mode,
-        ProxyFastModeRewriteMode::FillMissing
-    );
     assert_eq!(persisted.upstream_429_max_retries, 5);
     assert_eq!(
         persisted.enabled_preset_models,
@@ -9281,7 +9273,6 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
         Json(ProxyModelSettingsUpdateRequest {
             hijack_enabled: false,
             merge_upstream_enabled: true,
-            fast_mode_rewrite_mode: ProxyFastModeRewriteMode::ForcePriority,
             upstream_429_max_retries: Some(9),
             enabled_models: Vec::new(),
         }),
@@ -9290,10 +9281,6 @@ async fn proxy_model_settings_api_reads_and_persists_updates() {
     .expect("put settings should normalize payload");
     assert!(!normalized.hijack_enabled);
     assert!(!normalized.merge_upstream_enabled);
-    assert_eq!(
-        normalized.fast_mode_rewrite_mode,
-        ProxyFastModeRewriteMode::ForcePriority
-    );
     assert_eq!(
         normalized.upstream_429_max_retries,
         MAX_PROXY_UPSTREAM_429_MAX_RETRIES
@@ -9314,7 +9301,6 @@ async fn proxy_model_settings_api_preserves_upstream_429_max_retries_when_field_
         Json(ProxyModelSettingsUpdateRequest {
             hijack_enabled: true,
             merge_upstream_enabled: true,
-            fast_mode_rewrite_mode: ProxyFastModeRewriteMode::FillMissing,
             upstream_429_max_retries: Some(5),
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
@@ -9344,7 +9330,7 @@ async fn proxy_model_settings_api_preserves_upstream_429_max_retries_when_field_
 }
 
 #[tokio::test]
-async fn ensure_schema_adds_fast_mode_rewrite_mode_with_disabled_default() {
+async fn ensure_schema_keeps_legacy_fast_mode_rewrite_mode_column_inert() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await
         .expect("in-memory sqlite");
@@ -9397,12 +9383,21 @@ async fn ensure_schema_adds_fast_mode_rewrite_mode_with_disabled_default() {
         .await
         .expect("load proxy model settings");
     assert_eq!(
-        settings.fast_mode_rewrite_mode,
-        ProxyFastModeRewriteMode::Disabled
-    );
-    assert_eq!(
         settings.upstream_429_max_retries,
         DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES
+    );
+    let columns = sqlx::query("PRAGMA table_info('proxy_model_settings')")
+        .fetch_all(&pool)
+        .await
+        .expect("load proxy_model_settings columns")
+        .into_iter()
+        .filter_map(|row| row.try_get::<String, _>("name").ok())
+        .collect::<Vec<_>>();
+    assert!(
+        columns
+            .iter()
+            .any(|column| column == "fast_mode_rewrite_mode"),
+        "legacy fast_mode_rewrite_mode column should remain for compatibility",
     );
 }
 
@@ -9621,8 +9616,6 @@ async fn proxy_model_settings_api_rejects_cross_origin_writes() {
         Json(ProxyModelSettingsUpdateRequest {
             hijack_enabled: true,
             merge_upstream_enabled: true,
-            fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
-
             upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
@@ -9660,8 +9653,6 @@ async fn proxy_model_settings_api_rejects_cross_site_request() {
         Json(ProxyModelSettingsUpdateRequest {
             hijack_enabled: true,
             merge_upstream_enabled: false,
-            fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
-
             upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
@@ -9695,8 +9686,6 @@ async fn proxy_model_settings_api_allows_loopback_proxy_origin_mismatch() {
         Json(ProxyModelSettingsUpdateRequest {
             hijack_enabled: true,
             merge_upstream_enabled: false,
-            fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
-
             upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
@@ -9744,8 +9733,6 @@ async fn proxy_model_settings_api_allows_forwarded_host_origin_match() {
         Json(ProxyModelSettingsUpdateRequest {
             hijack_enabled: true,
             merge_upstream_enabled: false,
-            fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
-
             upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
@@ -9797,8 +9784,6 @@ async fn proxy_model_settings_api_allows_forwarded_port_non_default_origin_port(
         Json(ProxyModelSettingsUpdateRequest {
             hijack_enabled: true,
             merge_upstream_enabled: false,
-            fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
-
             upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
@@ -9834,8 +9819,6 @@ async fn proxy_model_settings_api_allows_matching_origin_without_explicit_host_p
         Json(ProxyModelSettingsUpdateRequest {
             hijack_enabled: true,
             merge_upstream_enabled: false,
-            fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
-
             upstream_429_max_retries: Some(DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES),
             enabled_models: vec!["gpt-5.2-codex".to_string()],
         }),
@@ -11207,8 +11190,6 @@ async fn proxy_openai_v1_models_returns_preset_when_hijack_enabled_without_merge
         *settings = ProxyModelSettings {
             hijack_enabled: true,
             merge_upstream_enabled: false,
-            fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
-
             upstream_429_max_retries: DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES,
             enabled_preset_models: vec!["gpt-5.3-codex".to_string(), "gpt-5.2".to_string()],
         };
@@ -11255,8 +11236,6 @@ async fn proxy_openai_v1_models_returns_gpt_5_4_models_when_enabled() {
         *settings = ProxyModelSettings {
             hijack_enabled: true,
             merge_upstream_enabled: false,
-            fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
-
             upstream_429_max_retries: DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES,
             enabled_preset_models: vec!["gpt-5.4".to_string(), "gpt-5.4-pro".to_string()],
         };
@@ -11294,8 +11273,6 @@ async fn proxy_openai_v1_models_merges_upstream_when_enabled() {
         *settings = ProxyModelSettings {
             hijack_enabled: true,
             merge_upstream_enabled: true,
-            fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
-
             upstream_429_max_retries: DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES,
             enabled_preset_models: vec![
                 "gpt-5.2-codex".to_string(),
@@ -11351,7 +11328,6 @@ async fn proxy_openai_v1_models_bypass_hijack_for_pool_route_requests() {
         *settings = ProxyModelSettings {
             hijack_enabled: true,
             merge_upstream_enabled: true,
-            fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
             upstream_429_max_retries: DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES,
             enabled_preset_models: vec!["gpt-5.1-codex-mini".to_string()],
         };
@@ -11439,7 +11415,6 @@ async fn proxy_openai_v1_models_merges_upstream_after_429_retry() {
         *settings = ProxyModelSettings {
             hijack_enabled: true,
             merge_upstream_enabled: true,
-            fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
             upstream_429_max_retries: 1,
             enabled_preset_models: vec!["gpt-5.1-codex-mini".to_string()],
         };
@@ -11492,8 +11467,6 @@ async fn proxy_openai_v1_models_falls_back_to_preset_when_merge_upstream_fails()
         *settings = ProxyModelSettings {
             hijack_enabled: true,
             merge_upstream_enabled: true,
-            fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
-
             upstream_429_max_retries: DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES,
             enabled_preset_models: vec!["gpt-5.1-codex-mini".to_string()],
         };
@@ -11536,7 +11509,6 @@ async fn proxy_openai_v1_models_retries_429_then_falls_back_once_exhausted() {
         *settings = ProxyModelSettings {
             hijack_enabled: true,
             merge_upstream_enabled: true,
-            fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
             upstream_429_max_retries: 2,
             enabled_preset_models: vec!["gpt-5.1-codex-mini".to_string()],
         };
@@ -11610,8 +11582,6 @@ async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings {
             hijack_enabled: true,
             merge_upstream_enabled: true,
-            fast_mode_rewrite_mode: DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
-
             upstream_429_max_retries: DEFAULT_PROXY_UPSTREAM_429_MAX_RETRIES,
             enabled_preset_models: vec!["gpt-5.1-codex-mini".to_string()],
         })),
@@ -12632,161 +12602,6 @@ async fn capture_target_response_failed_stream_persists_service_failure_details(
 
 #[tokio::test]
 #[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
-async fn proxy_capture_target_fill_missing_rewrites_priority_for_responses() {
-    #[derive(sqlx::FromRow)]
-    struct PersistedRow {
-        payload: Option<String>,
-    }
-
-    let (upstream_base, captured_requests, upstream_handle) =
-        spawn_capture_target_body_upstream().await;
-    let state =
-        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
-            .await;
-    {
-        let mut settings = state.proxy_model_settings.write().await;
-        settings.fast_mode_rewrite_mode = ProxyFastModeRewriteMode::FillMissing;
-    }
-
-    let request_body = serde_json::to_vec(&json!({
-        "model": "gpt-5.3-codex",
-        "stream": false,
-        "input": "hello"
-    }))
-    .expect("serialize request body");
-
-    let response = proxy_openai_v1(
-        State(state.clone()),
-        OriginalUri("/v1/responses".parse().expect("valid uri")),
-        Method::POST,
-        HeaderMap::new(),
-        Body::from(request_body),
-    )
-    .await;
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let _response_body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read proxy response body");
-    let captured = captured_requests.lock().await;
-    let captured_request = captured
-        .first()
-        .cloned()
-        .expect("upstream should receive a request body");
-    drop(captured);
-    assert_eq!(captured_request["service_tier"], "priority");
-    assert!(captured_request.get("serviceTier").is_none());
-
-    let mut row: Option<PersistedRow> = None;
-    for _ in 0..20 {
-        row = sqlx::query_as::<_, PersistedRow>(
-            r#"
-            SELECT payload
-            FROM codex_invocations
-            ORDER BY id DESC
-            LIMIT 1
-            "#,
-        )
-        .fetch_optional(&state.pool)
-        .await
-        .expect("query capture record");
-        if row.is_some() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    let row = row.expect("capture record should be persisted");
-    let payload_json: Value = serde_json::from_str(
-        row.payload
-            .as_deref()
-            .expect("capture payload should be present"),
-    )
-    .expect("decode capture payload");
-    assert_eq!(payload_json["requestedServiceTier"], "priority");
-
-    upstream_handle.abort();
-}
-
-#[tokio::test]
-#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
-async fn proxy_capture_target_force_priority_overrides_existing_chat_tier() {
-    #[derive(sqlx::FromRow)]
-    struct PersistedRow {
-        payload: Option<String>,
-    }
-
-    let (upstream_base, captured_requests, upstream_handle) =
-        spawn_capture_target_body_upstream().await;
-    let state =
-        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
-            .await;
-    {
-        let mut settings = state.proxy_model_settings.write().await;
-        settings.fast_mode_rewrite_mode = ProxyFastModeRewriteMode::ForcePriority;
-    }
-
-    let request_body = serde_json::to_vec(&json!({
-        "model": "gpt-5.3-codex",
-        "stream": false,
-        "serviceTier": "flex",
-        "messages": [{"role": "user", "content": "hello"}]
-    }))
-    .expect("serialize request body");
-
-    let response = proxy_openai_v1(
-        State(state.clone()),
-        OriginalUri("/v1/chat/completions".parse().expect("valid uri")),
-        Method::POST,
-        HeaderMap::new(),
-        Body::from(request_body),
-    )
-    .await;
-
-    assert_eq!(response.status(), StatusCode::OK);
-    let _response_body = to_bytes(response.into_body(), usize::MAX)
-        .await
-        .expect("read proxy response body");
-    let captured = captured_requests.lock().await;
-    let captured_request = captured
-        .first()
-        .cloned()
-        .expect("upstream should receive a request body");
-    drop(captured);
-    assert_eq!(captured_request["service_tier"], "priority");
-    assert!(captured_request.get("serviceTier").is_none());
-
-    let mut row: Option<PersistedRow> = None;
-    for _ in 0..20 {
-        row = sqlx::query_as::<_, PersistedRow>(
-            r#"
-            SELECT payload
-            FROM codex_invocations
-            ORDER BY id DESC
-            LIMIT 1
-            "#,
-        )
-        .fetch_optional(&state.pool)
-        .await
-        .expect("query capture record");
-        if row.is_some() {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(25)).await;
-    }
-    let row = row.expect("capture record should be persisted");
-    let payload_json: Value = serde_json::from_str(
-        row.payload
-            .as_deref()
-            .expect("capture payload should be present"),
-    )
-    .expect("decode capture payload");
-    assert_eq!(payload_json["requestedServiceTier"], "priority");
-
-    upstream_handle.abort();
-}
-
-#[tokio::test]
-#[ignore = "reverse proxy removed; /v1/* now requires a pool route key"]
 async fn proxy_capture_target_compact_estimates_cost_and_flows_into_stats_without_rewrite() {
     #[derive(sqlx::FromRow)]
     struct PersistedCompactRow {
@@ -12807,10 +12622,6 @@ async fn proxy_capture_target_compact_estimates_cost_and_flows_into_stats_withou
     let state =
         test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
             .await;
-    {
-        let mut settings = state.proxy_model_settings.write().await;
-        settings.fast_mode_rewrite_mode = ProxyFastModeRewriteMode::ForcePriority;
-    }
     {
         let mut pricing = state.pricing_catalog.write().await;
         *pricing = PricingCatalog {
@@ -15666,6 +15477,7 @@ async fn reserve_pool_routing_account_tracks_pinned_sticky_reuse_slots() {
         ),
         group_upstream_429_retry_enabled: false,
         group_upstream_429_max_retries: 0,
+        fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
     };
 
     reserve_pool_routing_account(state.as_ref(), "sticky-reservation", &account);
@@ -17812,6 +17624,178 @@ async fn capture_target_pool_route_stops_after_three_distinct_accounts() {
     );
 
     upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_openai_v1_responses_failover_reapplies_account_fast_mode_from_original_body() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct PersistedPayloadRow {
+        payload: Option<String>,
+    }
+
+    let (failing_base, _failing_attempts, failing_handle) =
+        spawn_pool_static_failure_responses_upstream(&[(
+            "Bearer route-remove",
+            StatusCode::INTERNAL_SERVER_ERROR,
+        )])
+        .await;
+    let (capture_base, captured_requests, capture_handle) =
+        spawn_capture_target_body_upstream().await;
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+
+    let force_remove_tag_payload = serde_json::from_value::<CreateTagRequest>(json!({
+        "name": "force-remove-primary",
+        "guardEnabled": false,
+        "allowCutOut": true,
+        "allowCutIn": true,
+        "priorityTier": "primary",
+        "fastModeRewriteMode": "force_remove",
+    }))
+    .expect("deserialize force-remove tag payload");
+    let Json(_force_remove_tag) = create_tag(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(force_remove_tag_payload),
+    )
+    .await
+    .expect("create force-remove tag");
+    let force_remove_tag_id: i64 = sqlx::query_scalar("SELECT id FROM pool_tags WHERE name = ?1")
+        .bind("force-remove-primary")
+        .fetch_one(&state.pool)
+        .await
+        .expect("load force-remove tag id");
+    let fill_missing_tag_payload = serde_json::from_value::<CreateTagRequest>(json!({
+        "name": "fill-missing-normal",
+        "guardEnabled": false,
+        "allowCutOut": true,
+        "allowCutIn": true,
+        "priorityTier": "normal",
+        "fastModeRewriteMode": "fill_missing",
+    }))
+    .expect("deserialize fill-missing tag payload");
+    let Json(_fill_missing_tag) = create_tag(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(fill_missing_tag_payload),
+    )
+    .await
+    .expect("create fill-missing tag");
+    let fill_missing_tag_id: i64 = sqlx::query_scalar("SELECT id FROM pool_tags WHERE name = ?1")
+        .bind("fill-missing-normal")
+        .fetch_one(&state.pool)
+        .await
+        .expect("load fill-missing tag id");
+
+    let first_account_payload = serde_json::from_value::<CreateApiKeyAccountRequest>(json!({
+        "displayName": "Route Remove",
+        "groupName": test_required_group_name(),
+        "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
+        "upstreamBaseUrl": failing_base,
+        "apiKey": "route-remove",
+        "tagIds": [force_remove_tag_id],
+    }))
+    .expect("deserialize first api-key account payload");
+    let Json(_first_account) = create_api_key_account(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(first_account_payload),
+    )
+    .await
+    .expect("create first pool account");
+    let second_account_payload = serde_json::from_value::<CreateApiKeyAccountRequest>(json!({
+        "displayName": "Route Fill",
+        "groupName": test_required_group_name(),
+        "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
+        "upstreamBaseUrl": capture_base,
+        "apiKey": "route-fill",
+        "tagIds": [fill_missing_tag_id],
+    }))
+    .expect("deserialize second api-key account payload");
+    let Json(_second_account) = create_api_key_account(
+        State(state.clone()),
+        HeaderMap::new(),
+        Json(second_account_payload),
+    )
+    .await
+    .expect("create second pool account");
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.3-codex",
+        "stream": false,
+        "serviceTier": "flex",
+        "input": "hello"
+    }))
+    .expect("serialize failover request body");
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(request_body),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let response_body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read failover response body");
+    let response_payload: Value =
+        serde_json::from_slice(&response_body).expect("decode failover response body");
+    assert_eq!(
+        response_payload["received"]["serviceTier"].as_str(),
+        Some("flex")
+    );
+    assert!(response_payload["received"].get("service_tier").is_none());
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    wait_for_pool_attempt_row_count(&state.pool, 2).await;
+
+    let captured = captured_requests.lock().await;
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0]["serviceTier"].as_str(), Some("flex"));
+    assert!(captured[0].get("service_tier").is_none());
+    drop(captured);
+
+    let row = sqlx::query_as::<_, PersistedPayloadRow>(
+        r#"
+        SELECT payload
+        FROM codex_invocations
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load persisted failover payload");
+    let payload: Value = serde_json::from_str(
+        row.payload
+            .as_deref()
+            .expect("persisted payload should exist"),
+    )
+    .expect("decode persisted failover payload");
+    assert_eq!(payload["requestedServiceTier"].as_str(), Some("flex"));
+    assert!(
+        payload["poolAttemptCount"]
+            .as_i64()
+            .is_some_and(|count| count >= 2)
+    );
+    assert_eq!(payload["poolDistinctAccountCount"].as_i64(), Some(2));
+
+    failing_handle.abort();
+    capture_handle.abort();
 }
 
 #[tokio::test]
@@ -20450,6 +20434,7 @@ async fn pool_route_oauth_passthrough_replays_large_file_backed_body() {
         ),
         group_upstream_429_retry_enabled: false,
         group_upstream_429_max_retries: 0,
+        fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
     };
 
     let upstream = send_pool_request_with_failover(
@@ -21713,6 +21698,7 @@ async fn pool_route_oauth_responses_rejects_large_file_backed_rewrite_body() {
         ),
         group_upstream_429_retry_enabled: false,
         group_upstream_429_max_retries: 0,
+        fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
     };
 
     let err = send_pool_request_with_failover(
@@ -21986,6 +21972,7 @@ fn capture_target_pool_route_prefers_account_upstream_base_for_redirect_rewrite(
         ),
         group_upstream_429_retry_enabled: false,
         group_upstream_429_max_retries: 0,
+        fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
     };
 
     assert_eq!(
@@ -23574,12 +23561,8 @@ fn prepare_target_request_body_injects_include_usage_for_chat_stream() {
         "messages": [{"role":"user","content":"hi"}]
     }))
     .expect("serialize request body");
-    let (rewritten, info, did_rewrite) = prepare_target_request_body(
-        ProxyCaptureTarget::ChatCompletions,
-        body,
-        true,
-        DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
-    );
+    let (rewritten, info, did_rewrite) =
+        prepare_target_request_body(ProxyCaptureTarget::ChatCompletions, body, true);
     assert!(did_rewrite);
     assert!(info.is_stream);
     assert_eq!(info.model.as_deref(), Some("gpt-4o-mini"));
@@ -23603,12 +23586,8 @@ fn prepare_target_request_body_extracts_prompt_cache_key_from_metadata() {
     }))
     .expect("serialize request body");
 
-    let (_rewritten, info, _did_rewrite) = prepare_target_request_body(
-        ProxyCaptureTarget::Responses,
-        body,
-        true,
-        DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
-    );
+    let (_rewritten, info, _did_rewrite) =
+        prepare_target_request_body(ProxyCaptureTarget::Responses, body, true);
 
     assert_eq!(info.prompt_cache_key.as_deref(), Some("pck-from-body"));
 }
@@ -23624,12 +23603,8 @@ fn prepare_target_request_body_extracts_sticky_key_aliases_from_metadata() {
     }))
     .expect("serialize request body");
 
-    let (_rewritten, info, _did_rewrite) = prepare_target_request_body(
-        ProxyCaptureTarget::Responses,
-        body,
-        true,
-        DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
-    );
+    let (_rewritten, info, _did_rewrite) =
+        prepare_target_request_body(ProxyCaptureTarget::Responses, body, true);
 
     assert_eq!(info.sticky_key.as_deref(), Some("sticky-from-body"));
     assert_eq!(info.prompt_cache_key, None);
@@ -23644,12 +23619,8 @@ fn prepare_target_request_body_extracts_requested_service_tier_without_rewriting
     });
     let body = serde_json::to_vec(&expected).expect("serialize request body");
 
-    let (rewritten, info, did_rewrite) = prepare_target_request_body(
-        ProxyCaptureTarget::Responses,
-        body,
-        true,
-        DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
-    );
+    let (rewritten, info, did_rewrite) =
+        prepare_target_request_body(ProxyCaptureTarget::Responses, body, true);
 
     assert!(!did_rewrite);
     assert_eq!(info.requested_service_tier.as_deref(), Some("priority"));
@@ -23658,130 +23629,78 @@ fn prepare_target_request_body_extracts_requested_service_tier_without_rewriting
 }
 
 #[test]
-fn prepare_target_request_body_fill_missing_injects_priority_for_responses() {
-    let body = serde_json::to_vec(&json!({
+fn rewrite_request_service_tier_for_fast_mode_fill_missing_injects_priority_for_responses() {
+    let mut payload = json!({
         "model": "gpt-5.3-codex",
         "stream": false,
         "input": "hi"
-    }))
-    .expect("serialize request body");
+    });
 
-    let (rewritten, info, did_rewrite) = prepare_target_request_body(
-        ProxyCaptureTarget::Responses,
-        body,
-        true,
-        ProxyFastModeRewriteMode::FillMissing,
+    let did_rewrite = rewrite_request_service_tier_for_fast_mode(
+        &mut payload,
+        TagFastModeRewriteMode::FillMissing,
     );
 
     assert!(did_rewrite);
-    assert_eq!(info.requested_service_tier.as_deref(), Some("priority"));
-    let payload: Value = serde_json::from_slice(&rewritten).expect("decode rewritten body");
     assert_eq!(payload["service_tier"].as_str(), Some("priority"));
     assert!(payload.get("serviceTier").is_none());
 }
 
 #[test]
-fn prepare_target_request_body_force_priority_overrides_existing_alias() {
-    let body = serde_json::to_vec(&json!({
-        "model": "gpt-5.3-codex",
-        "stream": true,
-        "messages": [{"role":"user","content":"hi"}],
-        "serviceTier": "default"
-    }))
-    .expect("serialize request body");
-
-    let (rewritten, info, did_rewrite) = prepare_target_request_body(
-        ProxyCaptureTarget::ChatCompletions,
-        body,
-        false,
-        ProxyFastModeRewriteMode::ForcePriority,
-    );
-
-    assert!(did_rewrite);
-    assert_eq!(info.requested_service_tier.as_deref(), Some("priority"));
-    let payload: Value = serde_json::from_slice(&rewritten).expect("decode rewritten body");
-    assert_eq!(payload["service_tier"].as_str(), Some("priority"));
-    assert!(payload.get("serviceTier").is_none());
-}
-
-#[test]
-fn prepare_target_request_body_fill_missing_preserves_existing_tier() {
-    let body = serde_json::to_vec(&json!({
-        "model": "gpt-5.3-codex",
-        "stream": false,
-        "service_tier": "flex"
-    }))
-    .expect("serialize request body");
-
-    let (rewritten, info, did_rewrite) = prepare_target_request_body(
-        ProxyCaptureTarget::Responses,
-        body,
-        true,
-        ProxyFastModeRewriteMode::FillMissing,
-    );
-
-    assert!(!did_rewrite);
-    assert_eq!(info.requested_service_tier.as_deref(), Some("flex"));
-    assert_eq!(
-        rewritten,
-        serde_json::to_vec(&json!({
-            "model": "gpt-5.3-codex",
-            "stream": false,
-            "service_tier": "flex"
-        }))
-        .expect("serialize expected body")
-    );
-}
-
-#[test]
-fn prepare_target_request_body_fill_missing_preserves_existing_alias_and_normalizes_field_name() {
-    let body = serde_json::to_vec(&json!({
+fn rewrite_request_service_tier_for_fast_mode_fill_missing_preserves_existing_alias() {
+    let mut payload = json!({
         "model": "gpt-5.3-codex",
         "stream": false,
         "serviceTier": "flex"
-    }))
-    .expect("serialize request body");
+    });
 
-    let (rewritten, info, did_rewrite) = prepare_target_request_body(
-        ProxyCaptureTarget::Responses,
-        body,
-        true,
-        ProxyFastModeRewriteMode::FillMissing,
+    let did_rewrite = rewrite_request_service_tier_for_fast_mode(
+        &mut payload,
+        TagFastModeRewriteMode::FillMissing,
     );
 
-    assert!(did_rewrite);
-    assert_eq!(info.requested_service_tier.as_deref(), Some("flex"));
-    let payload: Value = serde_json::from_slice(&rewritten).expect("decode rewritten body");
-    assert_eq!(payload["service_tier"].as_str(), Some("flex"));
-    assert!(payload.get("serviceTier").is_none());
+    assert!(!did_rewrite);
+    assert_eq!(payload["serviceTier"].as_str(), Some("flex"));
+    assert!(payload.get("service_tier").is_none());
 }
 
 #[test]
-fn prepare_target_request_body_force_priority_overrides_existing_tier() {
-    let body = serde_json::to_vec(&json!({
+fn rewrite_request_service_tier_for_fast_mode_force_add_overrides_existing_tier() {
+    let mut payload = json!({
         "model": "gpt-5.3-codex",
         "stream": false,
         "serviceTier": "flex",
         "messages": [{"role": "user", "content": "hi"}]
-    }))
-    .expect("serialize request body");
+    });
 
-    let (rewritten, info, did_rewrite) = prepare_target_request_body(
-        ProxyCaptureTarget::ChatCompletions,
-        body,
-        true,
-        ProxyFastModeRewriteMode::ForcePriority,
-    );
+    let did_rewrite =
+        rewrite_request_service_tier_for_fast_mode(&mut payload, TagFastModeRewriteMode::ForceAdd);
 
     assert!(did_rewrite);
-    assert_eq!(info.requested_service_tier.as_deref(), Some("priority"));
-    let payload: Value = serde_json::from_slice(&rewritten).expect("decode rewritten body");
     assert_eq!(payload["service_tier"], "priority");
     assert!(payload.get("serviceTier").is_none());
 }
 
 #[test]
-fn prepare_target_request_body_compact_skips_fast_mode_rewrite() {
+fn rewrite_request_service_tier_for_fast_mode_force_remove_deletes_both_aliases() {
+    let mut payload = json!({
+        "model": "gpt-5.3-codex",
+        "service_tier": "priority",
+        "serviceTier": "flex"
+    });
+
+    let did_rewrite = rewrite_request_service_tier_for_fast_mode(
+        &mut payload,
+        TagFastModeRewriteMode::ForceRemove,
+    );
+
+    assert!(did_rewrite);
+    assert!(payload.get("service_tier").is_none());
+    assert!(payload.get("serviceTier").is_none());
+}
+
+#[tokio::test]
+async fn prepare_pool_request_body_for_account_skips_fast_mode_rewrite_for_compact() {
     let expected = json!({
         "model": "gpt-5.1-codex-max",
         "serviceTier": "flex",
@@ -23791,19 +23710,22 @@ fn prepare_target_request_body_compact_skips_fast_mode_rewrite() {
             "content": "compact this thread"
         }]
     });
-    let body = serde_json::to_vec(&expected).expect("serialize request body");
+    let body = Bytes::from(serde_json::to_vec(&expected).expect("serialize compact request body"));
 
-    let (rewritten, info, did_rewrite) = prepare_target_request_body(
-        ProxyCaptureTarget::ResponsesCompact,
-        body,
-        true,
-        ProxyFastModeRewriteMode::ForcePriority,
-    );
+    let prepared = prepare_pool_request_body_for_account(
+        Some(&PoolReplayBodySnapshot::Memory(body)),
+        &"/v1/responses/compact".parse().expect("valid compact uri"),
+        &Method::POST,
+        TagFastModeRewriteMode::ForceAdd,
+    )
+    .await
+    .expect("prepare compact pool request body");
 
-    assert!(!did_rewrite);
-    assert_eq!(info.model.as_deref(), Some("gpt-5.1-codex-max"));
-    assert_eq!(info.requested_service_tier.as_deref(), Some("flex"));
-    let payload: Value = serde_json::from_slice(&rewritten).expect("decode body");
+    assert_eq!(prepared.requested_service_tier.as_deref(), Some("flex"));
+    let request_body = prepared
+        .request_body_for_capture
+        .expect("capture request body should be materialized");
+    let payload: Value = serde_json::from_slice(&request_body).expect("decode body");
     assert_eq!(payload, expected);
     assert!(payload.get("service_tier").is_none());
 }
@@ -23819,12 +23741,8 @@ fn prepare_target_request_body_extracts_reasoning_effort_for_responses() {
     }))
     .expect("serialize request body");
 
-    let (_rewritten, info, _did_rewrite) = prepare_target_request_body(
-        ProxyCaptureTarget::Responses,
-        body,
-        true,
-        DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
-    );
+    let (_rewritten, info, _did_rewrite) =
+        prepare_target_request_body(ProxyCaptureTarget::Responses, body, true);
 
     assert_eq!(info.reasoning_effort.as_deref(), Some("high"));
 }
@@ -23839,12 +23757,8 @@ fn prepare_target_request_body_extracts_reasoning_effort_for_chat_completions() 
     }))
     .expect("serialize request body");
 
-    let (_rewritten, info, _did_rewrite) = prepare_target_request_body(
-        ProxyCaptureTarget::ChatCompletions,
-        body,
-        true,
-        DEFAULT_PROXY_FAST_MODE_REWRITE_MODE,
-    );
+    let (_rewritten, info, _did_rewrite) =
+        prepare_target_request_body(ProxyCaptureTarget::ChatCompletions, body, true);
 
     assert_eq!(info.reasoning_effort.as_deref(), Some("medium"));
 }
@@ -40654,6 +40568,8 @@ async fn insert_and_broadcast_pool_upstream_terminal_attempt_emits_final_snapsho
             3,
             Some(PROXY_FAILURE_POOL_MAX_DISTINCT_ACCOUNTS_EXHAUSTED.to_string()),
         ),
+        requested_service_tier: None,
+        request_body_for_capture: None,
     };
 
     let mut rx = state.broadcaster.subscribe();

@@ -1842,12 +1842,15 @@ export interface UpstreamAccountDuplicateInfo {
   reasons: Array<"sharedChatgptAccountId" | "sharedChatgptUserId" | string>;
 }
 
+export type TagPriorityTier = "primary" | "normal" | "fallback";
+
 export interface TagRoutingRule {
   guardEnabled: boolean;
   lookbackHours?: number | null;
   maxConversations?: number | null;
   allowCutOut: boolean;
   allowCutIn: boolean;
+  priorityTier?: TagPriorityTier;
   concurrencyLimit?: number | null;
 }
 
@@ -2505,6 +2508,10 @@ function normalizeTagRoutingRule(raw: unknown): TagRoutingRule {
     maxConversations: normalizeFiniteNumber(payload.maxConversations) ?? null,
     allowCutOut: payload.allowCutOut !== false,
     allowCutIn: payload.allowCutIn !== false,
+    priorityTier:
+      payload.priorityTier === "primary" || payload.priorityTier === "fallback"
+        ? payload.priorityTier
+        : "normal",
     concurrencyLimit:
       concurrencyLimit != null && concurrencyLimit >= 0
         ? Math.min(concurrencyLimit, 30)

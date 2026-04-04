@@ -600,6 +600,12 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.denyCutOut": "Block cut out",
     "accountPool.upstreamAccounts.effectiveRule.allowCutIn": "Allow cut in",
     "accountPool.upstreamAccounts.effectiveRule.denyCutIn": "Block cut in",
+    "accountPool.upstreamAccounts.effectiveRule.priorityPrimary":
+      "Primary",
+    "accountPool.upstreamAccounts.effectiveRule.priorityNormal":
+      "Normal",
+    "accountPool.upstreamAccounts.effectiveRule.priorityFallback":
+      "Fallback only",
     "accountPool.upstreamAccounts.effectiveRule.sourceTags": "Rule source tags",
     "accountPool.upstreamAccounts.effectiveRule.guardRule":
       "Max {{count}} conversations within {{hours}} hour(s)",
@@ -789,6 +795,9 @@ const baseTranslations = {
     "accountPool.tags.rule.cutOutOff": "Cut-out blocked",
     "accountPool.tags.rule.cutInOn": "Cut-in allowed",
     "accountPool.tags.rule.cutInOff": "Cut-in blocked",
+    "accountPool.tags.rule.priorityPrimary": "Primary",
+    "accountPool.tags.rule.priorityNormal": "Normal",
+    "accountPool.tags.rule.priorityFallback": "Fallback only",
     "accountPool.tags.rule.concurrency": "Concurrency {{count}}",
     "accountPool.tags.field.label": "Tags",
     "accountPool.tags.field.add": "Add tag",
@@ -816,6 +825,10 @@ const baseTranslations = {
       "Allow moving conversations out of this account",
     "accountPool.tags.dialog.allowCutIn":
       "Allow moving conversations into this account",
+    "accountPool.tags.dialog.priorityTier": "Preferred usage",
+    "accountPool.tags.dialog.priorityPrimary": "Primary",
+    "accountPool.tags.dialog.priorityNormal": "Normal",
+    "accountPool.tags.dialog.priorityFallback": "Fallback only",
     "accountPool.tags.dialog.concurrencyLimit": "Concurrency limit",
     "accountPool.tags.dialog.concurrencyHint":
       "Use 1-30 to cap fresh assignments. The final slider step means unlimited.",
@@ -2177,6 +2190,9 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.denyCutOut": "禁止切出",
     "accountPool.upstreamAccounts.effectiveRule.allowCutIn": "允许切入",
     "accountPool.upstreamAccounts.effectiveRule.denyCutIn": "禁止切入",
+    "accountPool.upstreamAccounts.effectiveRule.priorityPrimary": "主力",
+    "accountPool.upstreamAccounts.effectiveRule.priorityNormal": "正常",
+    "accountPool.upstreamAccounts.effectiveRule.priorityFallback": "兜底",
     "accountPool.upstreamAccounts.effectiveRule.sourceTags": "规则来源 tag",
     "accountPool.upstreamAccounts.effectiveRule.guardRule":
       "{{hours}} 小时内最多 {{count}} 个对话",
@@ -2358,6 +2374,9 @@ const baseTranslations = {
     "accountPool.tags.rule.cutOutOff": "禁止切出",
     "accountPool.tags.rule.cutInOn": "允许切入",
     "accountPool.tags.rule.cutInOff": "禁止切入",
+    "accountPool.tags.rule.priorityPrimary": "主力",
+    "accountPool.tags.rule.priorityNormal": "正常",
+    "accountPool.tags.rule.priorityFallback": "兜底",
     "accountPool.tags.rule.concurrency": "并发 {{count}}",
     "accountPool.tags.field.label": "Tags",
     "accountPool.tags.field.add": "添加 tag",
@@ -2382,6 +2401,10 @@ const baseTranslations = {
     "accountPool.tags.dialog.maxConversations": "最大对话数",
     "accountPool.tags.dialog.allowCutOut": "允许把对话切出到其他账号",
     "accountPool.tags.dialog.allowCutIn": "允许把对话切入到当前账号",
+    "accountPool.tags.dialog.priorityTier": "优先使用",
+    "accountPool.tags.dialog.priorityPrimary": "主力",
+    "accountPool.tags.dialog.priorityNormal": "正常",
+    "accountPool.tags.dialog.priorityFallback": "兜底",
     "accountPool.tags.dialog.concurrencyLimit": "并发限制",
     "accountPool.tags.dialog.concurrencyHint":
       "用 1-30 限制新分配并发，最后一档表示无限。",

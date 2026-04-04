@@ -16,6 +16,7 @@ const baseTags: TagSummary[] = [
       maxConversations: 4,
       allowCutOut: true,
       allowCutIn: false,
+      priorityTier: 'primary',
     },
     accountCount: 3,
     groupCount: 2,
@@ -30,6 +31,7 @@ const baseTags: TagSummary[] = [
       maxConversations: null,
       allowCutOut: false,
       allowCutIn: false,
+      priorityTier: 'fallback',
     },
     accountCount: 2,
     groupCount: 1,
@@ -44,6 +46,7 @@ const baseTags: TagSummary[] = [
       maxConversations: 2,
       allowCutOut: true,
       allowCutIn: true,
+      priorityTier: 'normal',
     },
     accountCount: 1,
     groupCount: 1,
@@ -133,6 +136,7 @@ function StorybookTagsMock({ children }: { children: ReactNode }) {
           guardEnabled: false,
           allowCutIn: true,
           allowCutOut: true,
+          priorityTier: 'normal',
         } as CreateTagPayload)
         const next: TagSummary = {
           id: store.nextId++,
@@ -143,6 +147,7 @@ function StorybookTagsMock({ children }: { children: ReactNode }) {
             maxConversations: body.maxConversations ?? null,
             allowCutOut: body.allowCutOut,
             allowCutIn: body.allowCutIn,
+            priorityTier: body.priorityTier ?? 'normal',
           },
           accountCount: 0,
           groupCount: 0,
@@ -168,6 +173,7 @@ function StorybookTagsMock({ children }: { children: ReactNode }) {
               maxConversations: body.maxConversations ?? tag.routingRule.maxConversations ?? null,
               allowCutOut: body.allowCutOut ?? tag.routingRule.allowCutOut,
               allowCutIn: body.allowCutIn ?? tag.routingRule.allowCutIn,
+              priorityTier: body.priorityTier ?? tag.routingRule.priorityTier ?? 'normal',
             },
             updatedAt: '2026-03-14T10:20:00.000Z',
           }

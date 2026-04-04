@@ -4311,7 +4311,6 @@ pub(crate) async fn put_proxy_settings(
     let next = ProxyModelSettings {
         hijack_enabled: payload.hijack_enabled,
         merge_upstream_enabled: payload.merge_upstream_enabled,
-        fast_mode_rewrite_mode: payload.fast_mode_rewrite_mode,
         upstream_429_max_retries: payload
             .upstream_429_max_retries
             .unwrap_or(current.upstream_429_max_retries),

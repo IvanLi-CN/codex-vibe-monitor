@@ -2007,6 +2007,10 @@ export function SharedUpstreamAccountDetailDrawer({
     maxConversations: t("accountPool.tags.dialog.maxConversations"),
     allowCutOut: t("accountPool.tags.dialog.allowCutOut"),
     allowCutIn: t("accountPool.tags.dialog.allowCutIn"),
+    priorityTier: t("accountPool.tags.dialog.priorityTier"),
+    priorityPrimary: t("accountPool.tags.dialog.priorityPrimary"),
+    priorityNormal: t("accountPool.tags.dialog.priorityNormal"),
+    priorityFallback: t("accountPool.tags.dialog.priorityFallback"),
     concurrencyLimit: t("accountPool.tags.dialog.concurrencyLimit"),
     concurrencyHint: t("accountPool.tags.dialog.concurrencyHint"),
     currentValue: t("accountPool.tags.dialog.currentValue"),
@@ -3245,6 +3249,15 @@ export function SharedUpstreamAccountDetailDrawer({
                         ),
                       allGuardsApply: t(
                         "accountPool.upstreamAccounts.effectiveRule.allGuardsApply",
+                      ),
+                      priorityPrimary: t(
+                        "accountPool.upstreamAccounts.effectiveRule.priorityPrimary",
+                      ),
+                      priorityNormal: t(
+                        "accountPool.upstreamAccounts.effectiveRule.priorityNormal",
+                      ),
+                      priorityFallback: t(
+                        "accountPool.upstreamAccounts.effectiveRule.priorityFallback",
                       ),
                     }}
                   />

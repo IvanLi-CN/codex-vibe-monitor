@@ -46,6 +46,10 @@ const labels = {
   maxConversations: 'Max conversations',
   allowCutOut: 'Allow cut out',
   allowCutIn: 'Allow cut in',
+  priorityTier: 'Preferred usage',
+  priorityPrimary: 'Primary',
+  priorityNormal: 'Normal',
+  priorityFallback: 'Fallback only',
   concurrencyLimit: 'Concurrency limit',
   concurrencyHint: 'Use 1-30. The last step means unlimited.',
   currentValue: 'Current',
@@ -82,6 +86,7 @@ describe('TagRuleDialog', () => {
     expect(onSubmit).toHaveBeenCalledWith(
       expect.objectContaining({
         name: 'vip',
+        priorityTier: 'normal',
         concurrencyLimit: 0,
       }),
     )
@@ -98,6 +103,7 @@ describe('TagRuleDialog', () => {
         maxConversations: null,
         allowCutOut: true,
         allowCutIn: true,
+        priorityTier: 'primary',
         concurrencyLimit: 6,
       },
       accountCount: 0,
@@ -126,6 +132,7 @@ describe('TagRuleDialog', () => {
     expect(onSubmit).toHaveBeenCalledWith(
       expect.objectContaining({
         name: 'lane',
+        priorityTier: 'primary',
         concurrencyLimit: 6,
       }),
     )
