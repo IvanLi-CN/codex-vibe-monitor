@@ -2120,6 +2120,8 @@ struct MaintenanceCandidateRow {
     id: i64,
     status: String,
     last_synced_at: Option<String>,
+    last_action_source: Option<String>,
+    last_action_at: Option<String>,
     last_selected_at: Option<String>,
     last_error_at: Option<String>,
     last_error: Option<String>,
@@ -7408,6 +7410,8 @@ async fn load_maintenance_candidates(pool: &Pool<Sqlite>) -> Result<Vec<Maintena
             account.id,
             account.status,
             account.last_synced_at,
+            account.last_action_source,
+            account.last_action_at,
             account.last_selected_at,
             account.last_error_at,
             account.last_error,
@@ -7469,6 +7473,8 @@ async fn load_maintenance_candidate(
             account.id,
             account.status,
             account.last_synced_at,
+            account.last_action_source,
+            account.last_action_at,
             account.last_selected_at,
             account.last_error_at,
             account.last_error,
@@ -7639,16 +7645,22 @@ fn maintenance_last_attempt_at(candidate: &MaintenanceCandidateRow) -> Option<Da
         .last_synced_at
         .as_deref()
         .and_then(parse_rfc3339_utc);
-    let last_error_at = candidate
-        .last_error_at
+    let last_sync_action_at = candidate
+        .last_action_source
         .as_deref()
-        .and_then(parse_rfc3339_utc);
-    let last_route_failure_at = candidate
-        .last_route_failure_at
+        .filter(|source| {
+            matches!(
+                *source,
+                UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE
+                    | UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MANUAL
+                    | UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_POST_CREATE
+            )
+        })
+        .and(candidate.last_action_at.as_deref())
         .as_deref()
         .and_then(parse_rfc3339_utc);
 
-    [last_synced_at, last_error_at, last_route_failure_at]
+    [last_synced_at, last_sync_action_at]
         .into_iter()
         .flatten()
         .max()
@@ -7658,17 +7670,8 @@ fn maintenance_last_attempt_recorded_after_reset(
     candidate: &MaintenanceCandidateRow,
     reset_at: DateTime<Utc>,
 ) -> bool {
-    maintenance_last_attempt_at(candidate).is_some_and(|last_attempt_at| last_attempt_at >= reset_at)
-        || candidate
-            .last_error_at
-            .as_deref()
-            .and_then(parse_rfc3339_utc)
-            .is_some_and(|last_error_at| last_error_at >= reset_at)
-        || candidate
-            .last_route_failure_at
-            .as_deref()
-            .and_then(parse_rfc3339_utc)
-            .is_some_and(|last_route_failure_at| last_route_failure_at >= reset_at)
+    maintenance_last_attempt_at(candidate)
+        .is_some_and(|last_attempt_at| last_attempt_at >= reset_at)
 }
 
 fn maintenance_interval_is_due(
@@ -21762,6 +21765,8 @@ mod tests {
             id,
             status: status.to_string(),
             last_synced_at: last_synced_at.map(ToOwned::to_owned),
+            last_action_source: None,
+            last_action_at: None,
             last_selected_at: None,
             last_error_at: last_error_at.map(ToOwned::to_owned),
             last_error: None,
@@ -22044,6 +22049,10 @@ mod tests {
         candidate.primary_resets_at = Some("2026-03-23T11:59:00Z".to_string());
         assert!(maintenance_reset_due(&candidate, now));
 
+        candidate.last_synced_at = Some("2026-03-23T11:59:20Z".to_string());
+        candidate.last_action_source =
+            Some(UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE.to_string());
+        candidate.last_action_at = Some("2026-03-23T11:59:20Z".to_string());
         candidate.last_error_at = Some("2026-03-23T11:59:20Z".to_string());
         candidate.last_route_failure_at = Some("2026-03-23T11:59:20Z".to_string());
         candidate.last_route_failure_kind =
