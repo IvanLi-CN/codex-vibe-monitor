@@ -17098,6 +17098,71 @@ async fn pool_route_body_sticky_returns_503_after_wait_timeout() {
 }
 
 #[tokio::test]
+async fn pool_route_wait_timeout_overrides_stale_upstream_failure_with_503() {
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_static_failure_responses_upstream(
+        &[("Bearer upstream-primary", StatusCode::INTERNAL_SERVER_ERROR)],
+    )
+    .await;
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(60),
+        Duration::from_millis(10),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
+    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+
+    let started = Instant::now();
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-wait-stale-upstream-timeout"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert!(
+        started.elapsed() >= Duration::from_millis(50),
+        "request should wait roughly the bounded window before failing"
+    );
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        response
+            .headers()
+            .get(http_header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok()),
+        Some("10")
+    );
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read failure body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode failure payload");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some(POOL_NO_AVAILABLE_ACCOUNT_MESSAGE)
+    );
+
+    wait_for_pool_attempt_row_count(&state.pool, 3).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 3);
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
+    assert_eq!(attempts.get("Bearer upstream-blocked").copied(), None);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn pool_route_skips_ungrouped_account_when_grouped_alternate_exists() {
     let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
     let state =

@@ -12845,15 +12845,11 @@ async fn send_pool_request_with_failover(
                             request_body_for_capture: None,
                         })
                     } else {
-                        last_error
-                            .filter(|candidate| !pool_upstream_error_is_rate_limited(candidate))
-                            .unwrap_or_else(|| {
-                                build_pool_no_available_account_error(
-                                    attempt_count,
-                                    distinct_account_count,
-                                    state.pool_no_available_wait.retry_after_secs,
-                                )
-                            })
+                        build_pool_no_available_account_error(
+                            attempt_count,
+                            distinct_account_count,
+                            state.pool_no_available_wait.retry_after_secs,
+                        )
                     };
                     if terminal_failure_kind
                         == PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT
@@ -12953,13 +12949,11 @@ async fn send_pool_request_with_failover(
                                 PROXY_FAILURE_POOL_ALL_ACCOUNTS_RATE_LIMITED,
                             )
                         } else {
-                            let mut err = last_error.unwrap_or_else(|| {
-                                build_pool_no_available_account_error(
-                                    attempt_count,
-                                    distinct_account_count,
-                                    state.pool_no_available_wait.retry_after_secs,
-                                )
-                            });
+                            let mut err = build_pool_no_available_account_error(
+                                attempt_count,
+                                distinct_account_count,
+                                state.pool_no_available_wait.retry_after_secs,
+                            );
                             err.attempt_summary = pool_attempt_summary(
                                 attempt_count,
                                 distinct_account_count,
