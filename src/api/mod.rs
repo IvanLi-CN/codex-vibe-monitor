@@ -25,6 +25,7 @@ const INVOCATION_POOL_ATTEMPT_TERMINAL_REASON_SQL: &str = "CASE WHEN json_valid(
 const PROMPT_CACHE_CONVERSATION_UPSTREAM_ACCOUNT_LIMIT: usize = 3;
 const PROMPT_CACHE_CONVERSATION_INVOCATION_PREVIEW_LIMIT: usize = 5;
 const INVOCATION_STATUS_NORMALIZED_SQL: &str = "LOWER(TRIM(COALESCE(status, '')))";
+const INVOCATION_RESPONSE_BODY_PREVIEW_CHAR_LIMIT: usize = 2_000;
 
 // Legacy records can carry `failure_class=none` or NULL while still representing failures.
 // Keep classification consistent with `resolve_failure_classification` without requiring a
@@ -204,6 +205,7 @@ struct InvocationRecordsFilters {
     model: Option<String>,
     proxy: Option<String>,
     endpoint: Option<String>,
+    request_id: Option<String>,
     failure_class: Option<String>,
     failure_kind: Option<String>,
     prompt_cache_key: Option<String>,
@@ -331,6 +333,35 @@ pub(crate) struct InvocationSuggestionsResponse {
     pub(crate) requester_ip: InvocationSuggestionBucket,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InvocationAbnormalResponseBodyPreview {
+    pub(crate) available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) preview_text: Option<String>,
+    pub(crate) has_more: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) unavailable_reason: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InvocationRecordDetailResponse {
+    pub(crate) id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) abnormal_response_body: Option<InvocationAbnormalResponseBodyPreview>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct InvocationResponseBodyResponse {
+    pub(crate) available: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) body_text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) unavailable_reason: Option<String>,
+}
+
 fn normalize_query_text(raw: Option<&str>) -> Option<String> {
     raw.map(str::trim)
         .filter(|value| !value.is_empty())
@@ -408,6 +439,7 @@ fn build_invocation_filters(params: &ListQuery) -> Result<InvocationRecordsFilte
         model: normalize_query_text(params.model.as_deref()),
         proxy: normalize_query_text(params.proxy.as_deref()),
         endpoint: normalize_query_text(params.endpoint.as_deref()),
+        request_id: normalize_query_text(params.request_id.as_deref()),
         failure_class: normalize_query_text(params.failure_class.as_deref()),
         failure_kind: normalize_query_text(params.failure_kind.as_deref()),
         prompt_cache_key: normalize_query_text(params.prompt_cache_key.as_deref()),
@@ -556,6 +588,10 @@ fn apply_invocation_records_filters(
 
     if let Some(endpoint) = filters.endpoint.as_deref() {
         push_exact_text_filter(query, INVOCATION_ENDPOINT_SQL, endpoint);
+    }
+
+    if let Some(request_id) = filters.request_id.as_deref() {
+        push_exact_text_filter(query, "invoke_id", request_id);
     }
 
     if let Some(failure_class) = filters.failure_class.as_deref() {
@@ -1021,6 +1057,7 @@ fn is_legacy_invocation_stream_query(params: &ListQuery) -> bool {
         && params.to.is_none()
         && params.proxy.is_none()
         && params.endpoint.is_none()
+        && params.request_id.is_none()
         && params.failure_class.is_none()
         && params.failure_kind.is_none()
         && params.prompt_cache_key.is_none()
@@ -1162,6 +1199,205 @@ pub(crate) async fn fetch_invocation_pool_attempts(
     Ok(Json(
         query_pool_attempt_records_from_live(&state.pool, &invoke_id).await?,
     ))
+}
+
+#[derive(Debug, FromRow)]
+struct InvocationResponseBodyRow {
+    id: i64,
+    raw_response: String,
+    response_raw_path: Option<String>,
+    response_raw_size: Option<i64>,
+    response_raw_truncated: Option<i64>,
+    response_raw_truncated_reason: Option<String>,
+    detail_level: String,
+    detail_prune_reason: Option<String>,
+    response_content_encoding: Option<String>,
+    failure_class: Option<String>,
+}
+
+fn is_abnormal_invocation_failure(failure_class: Option<&str>) -> bool {
+    matches!(
+        failure_class
+            .map(str::trim)
+            .filter(|value| !value.is_empty()),
+        Some("service_failure" | "client_failure" | "client_abort")
+    )
+}
+
+fn truncate_response_preview_text(value: &str) -> (String, bool) {
+    let mut end = value.len();
+    let mut count = 0usize;
+    for (index, _) in value.char_indices() {
+        if count == INVOCATION_RESPONSE_BODY_PREVIEW_CHAR_LIMIT {
+            end = index;
+            break;
+        }
+        count += 1;
+    }
+    if count < INVOCATION_RESPONSE_BODY_PREVIEW_CHAR_LIMIT {
+        return (value.to_string(), false);
+    }
+    (value[..end].to_string(), true)
+}
+
+fn raw_response_fallback_reason(row: &InvocationResponseBodyRow) -> String {
+    if row.detail_level == DETAIL_LEVEL_STRUCTURED_ONLY {
+        "detail_pruned".to_string()
+    } else if row.response_raw_truncated.unwrap_or_default() != 0 {
+        row.response_raw_truncated_reason
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .map(|reason| format!("preview_only:{reason}"))
+            .unwrap_or_else(|| "preview_only".to_string())
+    } else {
+        "missing_body".to_string()
+    }
+}
+
+fn resolve_response_body_text_from_row(
+    row: &InvocationResponseBodyRow,
+    raw_path_fallback_root: Option<&Path>,
+) -> Result<(String, bool), String> {
+    if let Some(path) = row.response_raw_path.as_deref() {
+        match read_proxy_raw_bytes(path, raw_path_fallback_root) {
+            Ok(bytes) => {
+                let (decoded, _) = decode_response_payload_for_usage(
+                    &bytes,
+                    row.response_content_encoding.as_deref(),
+                );
+                return Ok((String::from_utf8_lossy(decoded.as_ref()).to_string(), true));
+            }
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                let raw_preview = row.raw_response.trim();
+                let preview_len = row.raw_response.as_bytes().len() as i64;
+                if !raw_preview.is_empty()
+                    && row.response_raw_size.unwrap_or(preview_len) <= preview_len
+                {
+                    return Ok((row.raw_response.clone(), false));
+                }
+                return Err("raw_file_missing".to_string());
+            }
+            Err(err) => {
+                let raw_preview = row.raw_response.trim();
+                let preview_len = row.raw_response.as_bytes().len() as i64;
+                if !raw_preview.is_empty()
+                    && row.response_raw_size.unwrap_or(preview_len) <= preview_len
+                {
+                    return Ok((row.raw_response.clone(), false));
+                }
+                return Err(format!("raw_file_unreadable:{err}"));
+            }
+        }
+    }
+
+    let raw_preview = row.raw_response.trim();
+    if raw_preview.is_empty() {
+        return Err(raw_response_fallback_reason(row));
+    }
+
+    let preview_len = row.raw_response.as_bytes().len() as i64;
+    let fits_in_preview = row.response_raw_size.unwrap_or(preview_len) <= preview_len;
+    if fits_in_preview && row.response_raw_truncated.unwrap_or_default() == 0 {
+        return Ok((row.raw_response.clone(), false));
+    }
+
+    Err(raw_response_fallback_reason(row))
+}
+
+async fn fetch_invocation_response_body_row_by_id(
+    pool: &Pool<Sqlite>,
+    id: i64,
+) -> Result<Option<InvocationResponseBodyRow>, ApiError> {
+    let sql = format!(
+        "SELECT \
+         id, \
+         raw_response, \
+         response_raw_path, \
+         response_raw_size, \
+         response_raw_truncated, \
+         response_raw_truncated_reason, \
+         detail_level, \
+         detail_prune_reason, \
+         {response_content_encoding} AS response_content_encoding, \
+         {resolved_failure} AS failure_class \
+         FROM codex_invocations \
+         WHERE id = ?1 \
+         LIMIT 1",
+        response_content_encoding = INVOCATION_RESPONSE_CONTENT_ENCODING_SQL,
+        resolved_failure = INVOCATION_RESOLVED_FAILURE_CLASS_SQL,
+    );
+
+    sqlx::query_as::<_, InvocationResponseBodyRow>(&sql)
+        .bind(id)
+        .fetch_optional(pool)
+        .await
+        .map_err(ApiError::from)
+}
+
+pub(crate) async fn fetch_invocation_record_detail(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> Result<Json<InvocationRecordDetailResponse>, ApiError> {
+    let row = fetch_invocation_response_body_row_by_id(&state.pool, id)
+        .await?
+        .ok_or_else(|| ApiError::bad_request(anyhow!("record not found")))?;
+
+    let abnormal_response_body = if is_abnormal_invocation_failure(row.failure_class.as_deref()) {
+        match resolve_response_body_text_from_row(&row, state.config.database_path.parent()) {
+            Ok((text, from_full_body)) => {
+                let (preview_text, truncated) = truncate_response_preview_text(&text);
+                Some(InvocationAbnormalResponseBodyPreview {
+                    available: true,
+                    preview_text: Some(preview_text),
+                    has_more: truncated || from_full_body,
+                    unavailable_reason: None,
+                })
+            }
+            Err(reason) => Some(InvocationAbnormalResponseBodyPreview {
+                available: false,
+                preview_text: None,
+                has_more: false,
+                unavailable_reason: Some(reason),
+            }),
+        }
+    } else {
+        None
+    };
+
+    Ok(Json(InvocationRecordDetailResponse {
+        id: row.id,
+        abnormal_response_body,
+    }))
+}
+
+pub(crate) async fn fetch_invocation_response_body(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Path(id): axum::extract::Path<i64>,
+) -> Result<Json<InvocationResponseBodyResponse>, ApiError> {
+    let row = fetch_invocation_response_body_row_by_id(&state.pool, id)
+        .await?
+        .ok_or_else(|| ApiError::bad_request(anyhow!("record not found")))?;
+
+    if !is_abnormal_invocation_failure(row.failure_class.as_deref()) {
+        return Ok(Json(InvocationResponseBodyResponse {
+            available: false,
+            body_text: None,
+            unavailable_reason: Some("not_abnormal".to_string()),
+        }));
+    }
+
+    match resolve_response_body_text_from_row(&row, state.config.database_path.parent()) {
+        Ok((body_text, _)) => Ok(Json(InvocationResponseBodyResponse {
+            available: true,
+            body_text: Some(body_text),
+            unavailable_reason: None,
+        })),
+        Err(reason) => Ok(Json(InvocationResponseBodyResponse {
+            available: false,
+            body_text: None,
+            unavailable_reason: Some(reason),
+        })),
+    }
 }
 
 pub(crate) async fn fetch_invocation_summary(
@@ -4276,6 +4512,66 @@ pub(crate) struct VersionResponse {
     pub(crate) frontend: String,
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn build_invocation_filters_normalizes_request_id() {
+        let params = ListQuery {
+            request_id: Some(" invoke-123 ".to_string()),
+            ..Default::default()
+        };
+
+        let filters = build_invocation_filters(&params).expect("filters should build");
+
+        assert_eq!(filters.request_id.as_deref(), Some("invoke-123"));
+    }
+
+    #[test]
+    fn response_body_falls_back_to_preview_when_complete() {
+        let row = InvocationResponseBodyRow {
+            id: 1,
+            raw_response: "{\"error\":\"preview\"}".to_string(),
+            response_raw_path: None,
+            response_raw_size: Some(19),
+            response_raw_truncated: Some(0),
+            response_raw_truncated_reason: None,
+            detail_level: "full".to_string(),
+            detail_prune_reason: None,
+            response_content_encoding: None,
+            failure_class: Some("service_failure".to_string()),
+        };
+
+        let (body, from_full_body) =
+            resolve_response_body_text_from_row(&row, None).expect("preview should be reusable");
+
+        assert_eq!(body, "{\"error\":\"preview\"}");
+        assert!(!from_full_body);
+    }
+
+    #[test]
+    fn response_body_reports_detail_pruned_when_structured_only_preview_missing() {
+        let row = InvocationResponseBodyRow {
+            id: 2,
+            raw_response: String::new(),
+            response_raw_path: None,
+            response_raw_size: None,
+            response_raw_truncated: Some(0),
+            response_raw_truncated_reason: None,
+            detail_level: DETAIL_LEVEL_STRUCTURED_ONLY.to_string(),
+            detail_prune_reason: Some("success_over_30d".to_string()),
+            response_content_encoding: None,
+            failure_class: Some("client_failure".to_string()),
+        };
+
+        let err = resolve_response_body_text_from_row(&row, None)
+            .expect_err("structured-only rows should not expose a full body");
+
+        assert_eq!(err, "detail_pruned");
+    }
+}
+
 pub(crate) async fn get_settings(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<SettingsResponse>, ApiError> {
@@ -5483,6 +5779,7 @@ pub(crate) struct ListQuery {
     pub(crate) status: Option<String>,
     pub(crate) proxy: Option<String>,
     pub(crate) endpoint: Option<String>,
+    pub(crate) request_id: Option<String>,
     pub(crate) failure_class: Option<String>,
     pub(crate) failure_kind: Option<String>,
     pub(crate) prompt_cache_key: Option<String>,

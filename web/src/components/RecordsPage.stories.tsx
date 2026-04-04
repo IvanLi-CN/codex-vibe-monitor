@@ -10,8 +10,10 @@ import type {
 } from '../lib/api'
 import RecordsPage from '../pages/Records'
 import {
+  createStoryInvocationRecordDetailsById,
   createStoryPoolAttemptsByInvokeId,
   createStoryInvocationRecordsResponse,
+  createStoryInvocationResponseBodiesById,
   createStoryInvocationRecordsSummary,
   STORYBOOK_INVOCATION_RECORDS,
   summarizeInvocationRecords,
@@ -75,6 +77,7 @@ function filterRecords(records: ApiInvocation[], params: URLSearchParams) {
   const from = params.get('from')
   const to = params.get('to')
   const keyword = normalizeText(params.get('keyword'))
+  const requestId = normalizeText(params.get('requestId'))
 
   return records.filter((record) => {
     const occurredAt = Date.parse(record.occurredAt)
@@ -90,6 +93,7 @@ function filterRecords(records: ApiInvocation[], params: URLSearchParams) {
     if (!matchesText(record.requesterIp, params.get('requesterIp'))) return false
     if (!matchesNumberRange(record.totalTokens, params.get('minTotalTokens'), params.get('maxTotalTokens'))) return false
     if (!matchesNumberRange(record.tTotalMs, params.get('minTotalMs'), params.get('maxTotalMs'))) return false
+    if (requestId && normalizeText(record.invokeId) !== requestId) return false
 
     if (!keyword) return true
     const haystack = [
@@ -211,15 +215,21 @@ function StorybookRecordsPageMock({
   const originalSetIntervalRef = useRef<typeof window.setInterval | null>(null)
   const invocationSearchCountRef = useRef(0)
   const poolAttemptsByInvokeId = useMemo(() => createStoryPoolAttemptsByInvokeId(records), [records])
+  const detailsById = useMemo(() => createStoryInvocationRecordDetailsById(records), [records])
+  const responseBodiesById = useMemo(() => createStoryInvocationResponseBodiesById(records), [records])
   const recordsRef = useRef(records)
   const newRecordsCountRef = useRef(newRecordsCount)
   const refreshDelayMsRef = useRef(refreshDelayMs)
   const poolAttemptsByInvokeIdRef = useRef(poolAttemptsByInvokeId)
+  const detailsByIdRef = useRef(detailsById)
+  const responseBodiesByIdRef = useRef(responseBodiesById)
 
   recordsRef.current = records
   newRecordsCountRef.current = newRecordsCount
   refreshDelayMsRef.current = refreshDelayMs
   poolAttemptsByInvokeIdRef.current = poolAttemptsByInvokeId
+  detailsByIdRef.current = detailsById
+  responseBodiesByIdRef.current = responseBodiesById
 
   const maybeDelayRefresh = async () => {
     if (refreshDelayMsRef.current <= 0) return
@@ -300,6 +310,18 @@ function StorybookRecordsPageMock({
       if (poolAttemptsMatch) {
         const invokeId = decodeURIComponent(poolAttemptsMatch[1] ?? '')
         return jsonResponse(poolAttemptsByInvokeIdRef.current[invokeId] ?? [])
+      }
+
+      const detailMatch = path.match(/^\/api\/invocations\/(\d+)\/detail$/)
+      if (detailMatch) {
+        const recordId = Number(detailMatch[1] ?? '0')
+        return jsonResponse(detailsByIdRef.current[recordId] ?? { id: recordId, abnormalResponseBody: null })
+      }
+
+      const responseBodyMatch = path.match(/^\/api\/invocations\/(\d+)\/response-body$/)
+      if (responseBodyMatch) {
+        const recordId = Number(responseBodyMatch[1] ?? '0')
+        return jsonResponse(responseBodiesByIdRef.current[recordId] ?? { available: false, unavailableReason: 'missing_body' })
       }
 
       return (originalFetchRef.current as typeof window.fetch)(input, init)

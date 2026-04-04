@@ -8412,6 +8412,14 @@ async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHand
             "/api/invocations/:invoke_id/pool-attempts",
             get(fetch_invocation_pool_attempts),
         )
+        .route(
+            "/api/invocations/:id/detail",
+            get(fetch_invocation_record_detail),
+        )
+        .route(
+            "/api/invocations/:id/response-body",
+            get(fetch_invocation_response_body),
+        )
         .route("/api/invocations/summary", get(fetch_invocation_summary))
         .route(
             "/api/invocations/suggestions",

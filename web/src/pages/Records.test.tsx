@@ -120,18 +120,6 @@ function rerender(ui: React.ReactNode) {
   })
 }
 
-function pressElement(element: HTMLElement) {
-  act(() => {
-    if (typeof PointerEvent === 'function') {
-      element.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))
-      element.dispatchEvent(new PointerEvent('pointerup', { bubbles: true }))
-    }
-    element.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }))
-    element.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
-    element.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-  })
-}
-
 function getSelectTrigger(label: string) {
   const trigger = Array.from(document.body.querySelectorAll('button[role="combobox"]')).find(
     (candidate) =>
@@ -695,31 +683,31 @@ describe('RecordsPage new data action', () => {
     expect(host?.querySelector('[data-testid="records-new-data-button"]')).toBeNull()
   })
 
-  it('updates the upstream scope draft filter from the new selector', () => {
+  it('updates the request ID draft filter from the new input', () => {
     const updateDraft = vi.fn()
     mockInvocationRecords({
       draft: {
         ...createDefaultInvocationRecordsDraft(),
         ...createDefaultCustomRange(),
-        upstreamScope: 'all',
+        requestId: '',
       },
       updateDraft,
     })
 
     render(<RecordsPage />)
 
-    const trigger = getSelectTrigger('records.filters.upstreamScope')
-    pressElement(trigger)
-    const option = Array.from(document.body.querySelectorAll('[role="option"]')).find(
-      (candidate) =>
-        candidate instanceof HTMLElement &&
-        candidate.textContent === 'records.filters.upstreamScope.internal',
-    )
-    if (!(option instanceof HTMLElement)) {
-      throw new Error('missing upstream scope option')
+    const input = host?.querySelector('input[name="requestId"]')
+    if (!(input instanceof HTMLInputElement)) {
+      throw new Error('missing request ID input')
     }
-    pressElement(option)
 
-    expect(updateDraft).toHaveBeenCalledWith('upstreamScope', 'internal')
+    act(() => {
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+      valueSetter?.call(input, 'invoke-xyz')
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+      input.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+
+    expect(updateDraft).toHaveBeenCalledWith('requestId', 'invoke-xyz')
   })
 })

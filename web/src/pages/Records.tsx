@@ -17,7 +17,6 @@ import {
   type InvocationSortOrder,
   type InvocationSuggestionField,
   type InvocationSuggestionsResponse,
-  type InvocationUpstreamScope,
 } from '../lib/api'
 import { textInputAutocompleteOffProps } from '../lib/form-autocomplete'
 import { buildInvocationSuggestionsQuery, createDefaultCustomRange, RECORDS_PAGE_SIZE_OPTIONS } from '../lib/invocationRecords'
@@ -133,15 +132,6 @@ export default function RecordsPage() {
       { value: '7d' as InvocationRangePreset, label: t('records.filters.rangePreset.last7Days') },
       { value: '30d' as InvocationRangePreset, label: t('records.filters.rangePreset.last30Days') },
       { value: 'custom' as InvocationRangePreset, label: t('records.filters.rangePreset.custom') },
-    ],
-    [t],
-  )
-
-  const upstreamScopeOptions = useMemo(
-    () => [
-      { value: 'all' as InvocationUpstreamScope, label: t('records.filters.upstreamScope.all') },
-      { value: 'external' as InvocationUpstreamScope, label: t('records.filters.upstreamScope.external') },
-      { value: 'internal' as InvocationUpstreamScope, label: t('records.filters.upstreamScope.internal') },
     ],
     [t],
   )
@@ -391,14 +381,16 @@ export default function RecordsPage() {
                 onValueChange={(value) => updateDraft('failureClass', value)}
               />
 
-              <SelectField
-                className="field"
-                label={t('records.filters.upstreamScope')}
-                name="upstreamScope"
-                value={draft.upstreamScope}
-                options={upstreamScopeOptions}
-                onValueChange={(value) => updateDraft('upstreamScope', value as InvocationUpstreamScope)}
-              />
+              <label className="field">
+                <span className="field-label">{t('records.filters.requestId')}</span>
+                <input
+                  {...textInputAutocompleteOffProps}
+                  name="requestId"
+                  className={inputClassName}
+                  value={draft.requestId}
+                  onChange={(event) => updateDraft('requestId', event.target.value)}
+                />
+              </label>
 
               <label className="field">
                 <span className="field-label">{t('records.filters.failureKind')}</span>

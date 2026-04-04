@@ -421,7 +421,6 @@ export type InvocationSuggestionField =
   | "failureKind"
   | "promptCacheKey"
   | "requesterIp";
-export type InvocationUpstreamScope = "all" | "external" | "internal";
 
 export interface InvocationRecordsQuery {
   page?: number;
@@ -436,12 +435,12 @@ export interface InvocationRecordsQuery {
   status?: string;
   proxy?: string;
   endpoint?: string;
+  requestId?: string;
   failureClass?: string;
   failureKind?: string;
   promptCacheKey?: string;
   stickyKey?: string;
   requesterIp?: string;
-  upstreamScope?: InvocationUpstreamScope;
   upstreamAccountId?: number;
   keyword?: string;
   minTotalTokens?: number;
@@ -512,6 +511,24 @@ export interface InvocationSuggestionsResponse {
   failureKind: InvocationSuggestionBucket;
   promptCacheKey: InvocationSuggestionBucket;
   requesterIp: InvocationSuggestionBucket;
+}
+
+export interface ApiInvocationAbnormalResponseBodyPreview {
+  available: boolean;
+  previewText?: string | null;
+  hasMore: boolean;
+  unavailableReason?: string | null;
+}
+
+export interface ApiInvocationRecordDetailResponse {
+  id: number;
+  abnormalResponseBody?: ApiInvocationAbnormalResponseBodyPreview | null;
+}
+
+export interface ApiInvocationResponseBodyResponse {
+  available: boolean;
+  bodyText?: string | null;
+  unavailableReason?: string | null;
 }
 
 export interface StatsResponse {
@@ -686,12 +703,11 @@ function appendInvocationRecordsQuery(
   if (query.status) search.set("status", query.status);
   if (query.proxy) search.set("proxy", query.proxy);
   if (query.endpoint) search.set("endpoint", query.endpoint);
+  if (query.requestId) search.set("requestId", query.requestId);
   if (query.failureClass) search.set("failureClass", query.failureClass);
   if (query.failureKind) search.set("failureKind", query.failureKind);
   if (query.promptCacheKey) search.set("promptCacheKey", query.promptCacheKey);
   if (query.stickyKey) search.set("stickyKey", query.stickyKey);
-  if (query.upstreamScope && query.upstreamScope !== "all")
-    search.set("upstreamScope", query.upstreamScope);
   if (query.upstreamAccountId != null)
     search.set("upstreamAccountId", String(query.upstreamAccountId));
   if (query.requesterIp) search.set("requesterIp", query.requesterIp);
@@ -761,6 +777,18 @@ export async function fetchInvocationSuggestions(
 export async function fetchInvocationPoolAttempts(invokeId: string) {
   return fetchJson<ApiPoolUpstreamRequestAttempt[]>(
     `/api/invocations/${encodeURIComponent(invokeId)}/pool-attempts`,
+  );
+}
+
+export async function fetchInvocationRecordDetail(id: number) {
+  return fetchJson<ApiInvocationRecordDetailResponse>(
+    `/api/invocations/${encodeURIComponent(String(id))}/detail`,
+  );
+}
+
+export async function fetchInvocationResponseBody(id: number) {
+  return fetchJson<ApiInvocationResponseBodyResponse>(
+    `/api/invocations/${encodeURIComponent(String(id))}/response-body`,
   );
 }
 
