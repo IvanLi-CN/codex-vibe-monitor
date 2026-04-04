@@ -2110,6 +2110,7 @@ impl PoolRoutingMaintenanceSettings {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MaintenanceTier {
+    HighFrequency,
     Priority,
     Secondary,
 }
@@ -2119,10 +2120,19 @@ struct MaintenanceCandidateRow {
     id: i64,
     status: String,
     last_synced_at: Option<String>,
+    last_selected_at: Option<String>,
     last_error_at: Option<String>,
+    last_error: Option<String>,
+    last_route_failure_at: Option<String>,
+    last_route_failure_kind: Option<String>,
+    last_action_reason_code: Option<String>,
+    cooldown_until: Option<String>,
+    temporary_route_failure_streak_started_at: Option<String>,
     token_expires_at: Option<String>,
     primary_used_percent: Option<f64>,
+    primary_resets_at: Option<String>,
     secondary_used_percent: Option<f64>,
+    secondary_resets_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -7325,10 +7335,12 @@ async fn run_upstream_account_maintenance_once(state: Arc<AppState>) -> Result<(
     let mut queued = 0usize;
     let mut deduped = 0usize;
     let mut failed = 0usize;
+    let mut high_frequency_due = 0usize;
     let mut priority_due = 0usize;
     let mut secondary_due = 0usize;
     for plan in dispatch_plans {
         match plan.tier {
+            MaintenanceTier::HighFrequency => high_frequency_due += 1,
             MaintenanceTier::Priority => priority_due += 1,
             MaintenanceTier::Secondary => secondary_due += 1,
         }
@@ -7353,6 +7365,7 @@ async fn run_upstream_account_maintenance_once(state: Arc<AppState>) -> Result<(
 
     info!(
         candidates = queued + deduped + failed,
+        high_frequency_due,
         priority_due,
         secondary_due,
         queued,
@@ -7395,7 +7408,14 @@ async fn load_maintenance_candidates(pool: &Pool<Sqlite>) -> Result<Vec<Maintena
             account.id,
             account.status,
             account.last_synced_at,
+            account.last_selected_at,
             account.last_error_at,
+            account.last_error,
+            account.last_route_failure_at,
+            account.last_route_failure_kind,
+            account.last_action_reason_code,
+            account.cooldown_until,
+            account.temporary_route_failure_streak_started_at,
             account.token_expires_at,
             (
                 SELECT sample.primary_used_percent
@@ -7405,12 +7425,26 @@ async fn load_maintenance_candidates(pool: &Pool<Sqlite>) -> Result<Vec<Maintena
                 LIMIT 1
             ) AS primary_used_percent,
             (
+                SELECT sample.primary_resets_at
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS primary_resets_at,
+            (
                 SELECT sample.secondary_used_percent
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
                 ORDER BY sample.captured_at DESC
                 LIMIT 1
-            ) AS secondary_used_percent
+            ) AS secondary_used_percent,
+            (
+                SELECT sample.secondary_resets_at
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS secondary_resets_at
         FROM pool_upstream_accounts account
         WHERE account.kind = ?1
           AND account.enabled = 1
@@ -7435,7 +7469,14 @@ async fn load_maintenance_candidate(
             account.id,
             account.status,
             account.last_synced_at,
+            account.last_selected_at,
             account.last_error_at,
+            account.last_error,
+            account.last_route_failure_at,
+            account.last_route_failure_kind,
+            account.last_action_reason_code,
+            account.cooldown_until,
+            account.temporary_route_failure_streak_started_at,
             account.token_expires_at,
             (
                 SELECT sample.primary_used_percent
@@ -7445,12 +7486,26 @@ async fn load_maintenance_candidate(
                 LIMIT 1
             ) AS primary_used_percent,
             (
+                SELECT sample.primary_resets_at
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS primary_resets_at,
+            (
                 SELECT sample.secondary_used_percent
                 FROM pool_upstream_account_limit_samples sample
                 WHERE sample.account_id = account.id
                 ORDER BY sample.captured_at DESC
                 LIMIT 1
-            ) AS secondary_used_percent
+            ) AS secondary_used_percent,
+            (
+                SELECT sample.secondary_resets_at
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS secondary_resets_at
         FROM pool_upstream_accounts account
         WHERE account.id = ?1
           AND account.kind = ?2
@@ -7481,6 +7536,64 @@ fn maintenance_refresh_due(
 
 fn maintenance_candidate_has_complete_usage(candidate: &MaintenanceCandidateRow) -> bool {
     candidate.primary_used_percent.is_some() && candidate.secondary_used_percent.is_some()
+}
+
+fn maintenance_candidate_snapshot_exhausted(candidate: &MaintenanceCandidateRow) -> bool {
+    persisted_usage_snapshot_is_exhausted(
+        candidate.primary_used_percent,
+        candidate.secondary_used_percent,
+        None,
+        None,
+        None,
+    )
+}
+
+fn maintenance_candidate_health_status(candidate: &MaintenanceCandidateRow) -> &'static str {
+    derive_upstream_account_health_status(
+        UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+        true,
+        &candidate.status,
+        candidate.last_error.as_deref(),
+        candidate.last_error_at.as_deref(),
+        candidate.last_route_failure_at.as_deref(),
+        candidate.last_route_failure_kind.as_deref(),
+        candidate.last_action_reason_code.as_deref(),
+    )
+}
+
+fn maintenance_candidate_work_status(
+    candidate: &MaintenanceCandidateRow,
+    now: DateTime<Utc>,
+) -> &'static str {
+    let health_status = maintenance_candidate_health_status(candidate);
+    let sync_state = derive_upstream_account_sync_state(true, &candidate.status);
+    derive_upstream_account_work_status(
+        true,
+        &candidate.status,
+        health_status,
+        sync_state,
+        maintenance_candidate_snapshot_exhausted(candidate),
+        candidate.cooldown_until.as_deref(),
+        candidate.last_error_at.as_deref(),
+        candidate.last_route_failure_at.as_deref(),
+        candidate.last_route_failure_kind.as_deref(),
+        candidate.last_action_reason_code.as_deref(),
+        candidate
+            .temporary_route_failure_streak_started_at
+            .as_deref(),
+        candidate.last_selected_at.as_deref(),
+        now,
+    )
+}
+
+fn maintenance_candidate_is_high_frequency(
+    candidate: &MaintenanceCandidateRow,
+    now: DateTime<Utc>,
+) -> bool {
+    matches!(
+        maintenance_candidate_work_status(candidate, now),
+        UPSTREAM_ACCOUNT_WORK_STATUS_WORKING | UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED
+    )
 }
 
 fn maintenance_candidate_is_available(candidate: &MaintenanceCandidateRow) -> bool {
@@ -7556,9 +7669,31 @@ fn maintenance_interval_for_tier(
     settings: PoolRoutingMaintenanceSettings,
 ) -> u64 {
     match tier {
+        MaintenanceTier::HighFrequency => MIN_UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS,
         MaintenanceTier::Priority => settings.primary_sync_interval_secs,
         MaintenanceTier::Secondary => settings.secondary_sync_interval_secs,
     }
+}
+
+fn maintenance_window_reset_due(
+    resets_at: Option<&str>,
+    last_attempt_at: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+) -> bool {
+    let Some(reset_at) = resets_at.and_then(parse_rfc3339_utc) else {
+        return false;
+    };
+    reset_at <= now && last_attempt_at.is_none_or(|last_attempt_at| last_attempt_at < reset_at)
+}
+
+fn maintenance_reset_due(candidate: &MaintenanceCandidateRow, now: DateTime<Utc>) -> bool {
+    let last_attempt_at = maintenance_last_attempt_at(candidate);
+    maintenance_window_reset_due(candidate.primary_resets_at.as_deref(), last_attempt_at, now)
+        || maintenance_window_reset_due(
+            candidate.secondary_resets_at.as_deref(),
+            last_attempt_at,
+            now,
+        )
 }
 
 fn maintenance_plan_is_due(
@@ -7567,11 +7702,12 @@ fn maintenance_plan_is_due(
     settings: PoolRoutingMaintenanceSettings,
     now: DateTime<Utc>,
 ) -> bool {
-    maintenance_interval_is_due(
-        candidate,
-        maintenance_interval_for_tier(tier, settings),
-        now,
-    )
+    maintenance_reset_due(candidate, now)
+        || maintenance_interval_is_due(
+            candidate,
+            maintenance_interval_for_tier(tier, settings),
+            now,
+        )
 }
 
 async fn execute_queued_maintenance_sync(
@@ -7582,7 +7718,9 @@ async fn execute_queued_maintenance_sync(
     let Some(candidate) = load_maintenance_candidate(&state.pool, id).await? else {
         return Ok(None);
     };
-    if !maintenance_interval_is_due(&candidate, plan.sync_interval_secs, Utc::now()) {
+    if !maintenance_reset_due(&candidate, Utc::now())
+        && !maintenance_interval_is_due(&candidate, plan.sync_interval_secs, Utc::now())
+    {
         return Ok(None);
     }
 
@@ -7596,12 +7734,15 @@ fn resolve_due_maintenance_dispatch_plans(
     now: DateTime<Utc>,
 ) -> Vec<MaintenanceDispatchPlan> {
     let mut forced_priority = Vec::new();
+    let mut high_frequency = Vec::new();
     let mut ranked_available = Vec::new();
     let mut secondary = Vec::new();
 
     for candidate in candidates {
         if maintenance_candidate_force_priority(&candidate, refresh_lead_time, now) {
             forced_priority.push(candidate);
+        } else if maintenance_candidate_is_high_frequency(&candidate, now) {
+            high_frequency.push(candidate);
         } else if maintenance_candidate_is_available(&candidate) {
             ranked_available.push(candidate);
         } else {
@@ -7611,6 +7752,7 @@ fn resolve_due_maintenance_dispatch_plans(
 
     ranked_available.sort_by(compare_maintenance_candidates);
     forced_priority.sort_by(|lhs, rhs| lhs.id.cmp(&rhs.id));
+    high_frequency.sort_by(compare_maintenance_candidates);
     secondary.sort_by(compare_maintenance_candidates);
 
     let mut plans = Vec::new();
@@ -7620,6 +7762,15 @@ fn resolve_due_maintenance_dispatch_plans(
                 account_id: candidate.id,
                 tier: MaintenanceTier::Priority,
                 sync_interval_secs: settings.primary_sync_interval_secs,
+            });
+        }
+    }
+    for candidate in high_frequency {
+        if maintenance_plan_is_due(&candidate, MaintenanceTier::HighFrequency, settings, now) {
+            plans.push(MaintenanceDispatchPlan {
+                account_id: candidate.id,
+                tier: MaintenanceTier::HighFrequency,
+                sync_interval_secs: MIN_UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS,
             });
         }
     }
@@ -7633,10 +7784,7 @@ fn resolve_due_maintenance_dispatch_plans(
             plans.push(MaintenanceDispatchPlan {
                 account_id: candidate.id,
                 tier,
-                sync_interval_secs: match tier {
-                    MaintenanceTier::Priority => settings.primary_sync_interval_secs,
-                    MaintenanceTier::Secondary => settings.secondary_sync_interval_secs,
-                },
+                sync_interval_secs: maintenance_interval_for_tier(tier, settings),
             });
         }
     }
@@ -21585,6 +21733,35 @@ mod tests {
         assert_eq!(stored.secondary_sync_interval_secs, Some(2400));
     }
 
+    fn maintenance_candidates(
+        id: i64,
+        status: &str,
+        last_synced_at: Option<&str>,
+        last_error_at: Option<&str>,
+        token_expires_at: Option<&str>,
+        primary_used_percent: Option<f64>,
+        secondary_used_percent: Option<f64>,
+    ) -> MaintenanceCandidateRow {
+        MaintenanceCandidateRow {
+            id,
+            status: status.to_string(),
+            last_synced_at: last_synced_at.map(ToOwned::to_owned),
+            last_selected_at: None,
+            last_error_at: last_error_at.map(ToOwned::to_owned),
+            last_error: None,
+            last_route_failure_at: None,
+            last_route_failure_kind: None,
+            last_action_reason_code: None,
+            cooldown_until: None,
+            temporary_route_failure_streak_started_at: None,
+            token_expires_at: token_expires_at.map(ToOwned::to_owned),
+            primary_used_percent,
+            primary_resets_at: None,
+            secondary_used_percent,
+            secondary_resets_at: None,
+        }
+    }
+
     #[test]
     fn resolve_due_maintenance_dispatch_plans_prioritizes_forced_accounts_and_overflow() {
         let now = Utc
@@ -21600,60 +21777,60 @@ mod tests {
 
         let plans = resolve_due_maintenance_dispatch_plans(
             vec![
-                MaintenanceCandidateRow {
-                    id: 1,
-                    status: UPSTREAM_ACCOUNT_STATUS_ACTIVE.to_string(),
-                    last_synced_at: Some("2026-03-23T11:40:00Z".to_string()),
-                    last_error_at: None,
-                    token_expires_at: Some("2026-04-23T12:00:00Z".to_string()),
-                    primary_used_percent: Some(15.0),
-                    secondary_used_percent: Some(10.0),
-                },
-                MaintenanceCandidateRow {
-                    id: 2,
-                    status: UPSTREAM_ACCOUNT_STATUS_ACTIVE.to_string(),
-                    last_synced_at: Some("2026-03-23T11:20:00Z".to_string()),
-                    last_error_at: None,
-                    token_expires_at: Some("2026-04-23T12:00:00Z".to_string()),
-                    primary_used_percent: Some(12.0),
-                    secondary_used_percent: Some(22.0),
-                },
-                MaintenanceCandidateRow {
-                    id: 3,
-                    status: UPSTREAM_ACCOUNT_STATUS_ERROR.to_string(),
-                    last_synced_at: None,
-                    last_error_at: Some("2026-03-23T11:58:30Z".to_string()),
-                    token_expires_at: Some("2026-04-23T12:00:00Z".to_string()),
-                    primary_used_percent: Some(8.0),
-                    secondary_used_percent: Some(8.0),
-                },
-                MaintenanceCandidateRow {
-                    id: 4,
-                    status: UPSTREAM_ACCOUNT_STATUS_ERROR.to_string(),
-                    last_synced_at: None,
-                    last_error_at: Some("2026-03-23T11:50:00Z".to_string()),
-                    token_expires_at: Some("2026-04-23T12:00:00Z".to_string()),
-                    primary_used_percent: Some(9.0),
-                    secondary_used_percent: Some(9.0),
-                },
-                MaintenanceCandidateRow {
-                    id: 5,
-                    status: UPSTREAM_ACCOUNT_STATUS_ACTIVE.to_string(),
-                    last_synced_at: Some("2026-03-23T11:50:00Z".to_string()),
-                    last_error_at: None,
-                    token_expires_at: Some("2026-04-23T12:00:00Z".to_string()),
-                    primary_used_percent: Some(5.0),
-                    secondary_used_percent: None,
-                },
-                MaintenanceCandidateRow {
-                    id: 6,
-                    status: UPSTREAM_ACCOUNT_STATUS_ACTIVE.to_string(),
-                    last_synced_at: Some("2026-03-23T11:54:00Z".to_string()),
-                    last_error_at: None,
-                    token_expires_at: Some("2026-03-23T12:10:00Z".to_string()),
-                    primary_used_percent: Some(4.0),
-                    secondary_used_percent: Some(4.0),
-                },
+                maintenance_candidates(
+                    1,
+                    UPSTREAM_ACCOUNT_STATUS_ACTIVE,
+                    Some("2026-03-23T11:40:00Z"),
+                    None,
+                    Some("2026-04-23T12:00:00Z"),
+                    Some(15.0),
+                    Some(10.0),
+                ),
+                maintenance_candidates(
+                    2,
+                    UPSTREAM_ACCOUNT_STATUS_ACTIVE,
+                    Some("2026-03-23T11:20:00Z"),
+                    None,
+                    Some("2026-04-23T12:00:00Z"),
+                    Some(12.0),
+                    Some(22.0),
+                ),
+                maintenance_candidates(
+                    3,
+                    UPSTREAM_ACCOUNT_STATUS_ERROR,
+                    None,
+                    Some("2026-03-23T11:58:30Z"),
+                    Some("2026-04-23T12:00:00Z"),
+                    Some(8.0),
+                    Some(8.0),
+                ),
+                maintenance_candidates(
+                    4,
+                    UPSTREAM_ACCOUNT_STATUS_ERROR,
+                    None,
+                    Some("2026-03-23T11:50:00Z"),
+                    Some("2026-04-23T12:00:00Z"),
+                    Some(9.0),
+                    Some(9.0),
+                ),
+                maintenance_candidates(
+                    5,
+                    UPSTREAM_ACCOUNT_STATUS_ACTIVE,
+                    Some("2026-03-23T11:50:00Z"),
+                    None,
+                    Some("2026-04-23T12:00:00Z"),
+                    Some(5.0),
+                    None,
+                ),
+                maintenance_candidates(
+                    6,
+                    UPSTREAM_ACCOUNT_STATUS_ACTIVE,
+                    Some("2026-03-23T11:54:00Z"),
+                    None,
+                    Some("2026-03-23T12:10:00Z"),
+                    Some(4.0),
+                    Some(4.0),
+                ),
             ],
             settings,
             refresh_lead_time,
@@ -21685,15 +21862,15 @@ mod tests {
         };
 
         let plans = resolve_due_maintenance_dispatch_plans(
-            vec![MaintenanceCandidateRow {
-                id: 7,
-                status: UPSTREAM_ACCOUNT_STATUS_ACTIVE.to_string(),
-                last_synced_at: Some("2026-03-23T11:59:00Z".to_string()),
-                last_error_at: None,
-                token_expires_at: Some("2026-03-23T12:10:00Z".to_string()),
-                primary_used_percent: Some(6.0),
-                secondary_used_percent: Some(6.0),
-            }],
+            vec![maintenance_candidates(
+                7,
+                UPSTREAM_ACCOUNT_STATUS_ACTIVE,
+                Some("2026-03-23T11:59:00Z"),
+                None,
+                Some("2026-03-23T12:10:00Z"),
+                Some(6.0),
+                Some(6.0),
+            )],
             settings,
             Duration::from_secs(15 * 60),
             now,
@@ -21703,6 +21880,134 @@ mod tests {
             plans.is_empty(),
             "refresh-due accounts should stay on the configured primary cadence until the interval elapses"
         );
+    }
+
+    #[test]
+    fn resolve_due_maintenance_dispatch_plans_routes_working_accounts_to_high_frequency() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 3, 23, 12, 0, 0)
+            .single()
+            .expect("valid time");
+        let settings = PoolRoutingMaintenanceSettings {
+            primary_sync_interval_secs: 300,
+            secondary_sync_interval_secs: 1800,
+            priority_available_account_cap: 1,
+        };
+        let mut candidate = maintenance_candidates(
+            8,
+            UPSTREAM_ACCOUNT_STATUS_ACTIVE,
+            Some("2026-03-23T11:58:30Z"),
+            None,
+            Some("2026-04-23T12:00:00Z"),
+            Some(10.0),
+            Some(10.0),
+        );
+        candidate.last_selected_at = Some("2026-03-23T11:59:30Z".to_string());
+
+        let plans = resolve_due_maintenance_dispatch_plans(
+            vec![candidate],
+            settings,
+            Duration::from_secs(15 * 60),
+            now,
+        );
+
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].tier, MaintenanceTier::HighFrequency);
+        assert_eq!(plans[0].sync_interval_secs, 60);
+    }
+
+    #[test]
+    fn resolve_due_maintenance_dispatch_plans_routes_degraded_accounts_to_high_frequency() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 3, 23, 12, 0, 0)
+            .single()
+            .expect("valid time");
+        let settings = PoolRoutingMaintenanceSettings {
+            primary_sync_interval_secs: 300,
+            secondary_sync_interval_secs: 1800,
+            priority_available_account_cap: 1,
+        };
+        let mut candidate = maintenance_candidates(
+            9,
+            UPSTREAM_ACCOUNT_STATUS_ACTIVE,
+            Some("2026-03-23T11:58:30Z"),
+            Some("2026-03-23T11:59:45Z"),
+            Some("2026-04-23T12:00:00Z"),
+            Some(10.0),
+            Some(10.0),
+        );
+        candidate.last_route_failure_at = Some("2026-03-23T11:59:45Z".to_string());
+        candidate.last_route_failure_kind = Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM.to_string());
+        candidate.last_action_reason_code =
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE.to_string());
+
+        let plans = resolve_due_maintenance_dispatch_plans(
+            vec![candidate],
+            settings,
+            Duration::from_secs(15 * 60),
+            now,
+        );
+
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].tier, MaintenanceTier::HighFrequency);
+        assert_eq!(plans[0].sync_interval_secs, 60);
+    }
+
+    #[test]
+    fn resolve_due_maintenance_dispatch_plans_triggers_reset_due_sync_before_interval() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 3, 23, 12, 0, 0)
+            .single()
+            .expect("valid time");
+        let settings = PoolRoutingMaintenanceSettings {
+            primary_sync_interval_secs: 300,
+            secondary_sync_interval_secs: 1800,
+            priority_available_account_cap: 100,
+        };
+        let mut candidate = maintenance_candidates(
+            10,
+            UPSTREAM_ACCOUNT_STATUS_ACTIVE,
+            Some("2026-03-23T11:58:30Z"),
+            None,
+            Some("2026-04-23T12:00:00Z"),
+            Some(10.0),
+            Some(10.0),
+        );
+        candidate.primary_resets_at = Some("2026-03-23T11:59:00Z".to_string());
+
+        let plans = resolve_due_maintenance_dispatch_plans(
+            vec![candidate],
+            settings,
+            Duration::from_secs(15 * 60),
+            now,
+        );
+
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].tier, MaintenanceTier::Priority);
+        assert_eq!(plans[0].sync_interval_secs, 300);
+    }
+
+    #[test]
+    fn maintenance_reset_due_only_triggers_once_per_reset_boundary() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 3, 23, 12, 0, 0)
+            .single()
+            .expect("valid time");
+        let mut before_reset_sync = maintenance_candidates(
+            11,
+            UPSTREAM_ACCOUNT_STATUS_ACTIVE,
+            Some("2026-03-23T11:58:30Z"),
+            None,
+            Some("2026-04-23T12:00:00Z"),
+            Some(10.0),
+            Some(10.0),
+        );
+        before_reset_sync.secondary_resets_at = Some("2026-03-23T11:59:00Z".to_string());
+        assert!(maintenance_reset_due(&before_reset_sync, now));
+
+        let mut after_reset_sync = before_reset_sync.clone();
+        after_reset_sync.last_synced_at = Some("2026-03-23T11:59:30Z".to_string());
+        assert!(!maintenance_reset_due(&after_reset_sync, now));
     }
 
     fn test_routing_candidate(id: i64) -> AccountRoutingCandidateRow {
