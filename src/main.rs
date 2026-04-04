@@ -14622,7 +14622,17 @@ async fn proxy_openai_v1_via_pool(
                 body_sticky_key,
             )
         } else {
-            let sticky_key = header_sticky_key;
+            let request_body_snapshot = read_request_body_snapshot_with_limit(
+                body,
+                body_limit,
+                runtime_timeouts.request_read_timeout,
+                proxy_request_id,
+            )
+            .await
+            .map_err(|err| (err.status, err.message))?;
+            let sticky_key = extract_sticky_key_from_replay_snapshot(&request_body_snapshot)
+                .await
+                .or(header_sticky_key);
             let initial_account = match resolve_pool_account_for_request_with_wait(
                 state.as_ref(),
                 sticky_key.as_deref(),
@@ -14668,24 +14678,6 @@ async fn proxy_openai_v1_via_pool(
                     ));
                 }
             };
-            let request_body_snapshot = read_request_body_snapshot_with_limit(
-                body,
-                body_limit,
-                runtime_timeouts.request_read_timeout,
-                proxy_request_id,
-            )
-            .await
-            .map_err(|err| (err.status, err.message))?;
-            let body_sticky_key = extract_sticky_key_from_replay_snapshot(&request_body_snapshot)
-                .await
-                .or(sticky_key.clone());
-            let preferred_account = if body_sticky_key.as_deref() == sticky_key.as_deref() {
-                Some(initial_account)
-            } else if body_sticky_key.is_some() {
-                None
-            } else {
-                Some(initial_account)
-            };
             (
                 send_pool_request_with_failover(
                     state.clone(),
@@ -14697,8 +14689,8 @@ async fn proxy_openai_v1_via_pool(
                     handshake_timeout,
                     None,
                     None,
-                    body_sticky_key.as_deref(),
-                    preferred_account,
+                    sticky_key.as_deref(),
+                    Some(initial_account),
                     PoolFailoverProgress {
                         responses_total_timeout_started_at,
                         ..PoolFailoverProgress::default()
@@ -14707,7 +14699,7 @@ async fn proxy_openai_v1_via_pool(
                 )
                 .await
                 .map_err(|err| (err.status, err.message))?,
-                body_sticky_key,
+                sticky_key,
             )
         }
     } else {
