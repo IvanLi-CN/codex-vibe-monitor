@@ -13,7 +13,11 @@ use base64::engine::general_purpose::{STANDARD as BASE64_STANDARD, URL_SAFE_NO_P
 use futures_util::FutureExt;
 use rand::{Rng, RngCore, rngs::OsRng};
 use sqlx::Transaction;
-use std::{any::Any, collections::BTreeSet, panic::AssertUnwindSafe};
+use std::{
+    any::Any,
+    collections::{BTreeSet, HashMap},
+    panic::AssertUnwindSafe,
+};
 pub(crate) const ENV_UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET: &str =
     "UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET";
 pub(crate) const ENV_UPSTREAM_ACCOUNTS_OAUTH_CLIENT_ID: &str = "UPSTREAM_ACCOUNTS_OAUTH_CLIENT_ID";
@@ -2135,6 +2139,9 @@ struct MaintenanceCandidateRow {
     primary_resets_at: Option<String>,
     secondary_used_percent: Option<f64>,
     secondary_resets_at: Option<String>,
+    credits_has_credits: Option<i64>,
+    credits_unlimited: Option<i64>,
+    credits_balance: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2142,6 +2149,7 @@ struct MaintenanceDispatchPlan {
     account_id: i64,
     tier: MaintenanceTier,
     sync_interval_secs: u64,
+    fallback_sync_interval_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -7448,7 +7456,28 @@ async fn load_maintenance_candidates(pool: &Pool<Sqlite>) -> Result<Vec<Maintena
                 WHERE sample.account_id = account.id
                 ORDER BY sample.captured_at DESC
                 LIMIT 1
-            ) AS secondary_resets_at
+            ) AS secondary_resets_at,
+            (
+                SELECT sample.credits_has_credits
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS credits_has_credits,
+            (
+                SELECT sample.credits_unlimited
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS credits_unlimited,
+            (
+                SELECT sample.credits_balance
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS credits_balance
         FROM pool_upstream_accounts account
         WHERE account.kind = ?1
           AND account.enabled = 1
@@ -7459,6 +7488,91 @@ async fn load_maintenance_candidates(pool: &Pool<Sqlite>) -> Result<Vec<Maintena
     .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
     .bind(UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH)
     .fetch_all(pool)
+    .await
+    .map_err(Into::into)
+}
+
+async fn load_maintenance_candidate(
+    pool: &Pool<Sqlite>,
+    account_id: i64,
+) -> Result<Option<MaintenanceCandidateRow>> {
+    sqlx::query_as::<_, MaintenanceCandidateRow>(
+        r#"
+        SELECT
+            account.id,
+            account.status,
+            account.last_synced_at,
+            account.last_action_source,
+            account.last_action_at,
+            account.last_selected_at,
+            account.last_error_at,
+            account.last_error,
+            account.last_route_failure_at,
+            account.last_route_failure_kind,
+            account.last_action_reason_code,
+            account.cooldown_until,
+            account.temporary_route_failure_streak_started_at,
+            account.token_expires_at,
+            (
+                SELECT sample.primary_used_percent
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS primary_used_percent,
+            (
+                SELECT sample.primary_resets_at
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS primary_resets_at,
+            (
+                SELECT sample.secondary_used_percent
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS secondary_used_percent,
+            (
+                SELECT sample.secondary_resets_at
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS secondary_resets_at,
+            (
+                SELECT sample.credits_has_credits
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS credits_has_credits,
+            (
+                SELECT sample.credits_unlimited
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS credits_unlimited,
+            (
+                SELECT sample.credits_balance
+                FROM pool_upstream_account_limit_samples sample
+                WHERE sample.account_id = account.id
+                ORDER BY sample.captured_at DESC
+                LIMIT 1
+            ) AS credits_balance
+        FROM pool_upstream_accounts account
+        WHERE account.id = ?1
+          AND account.kind = ?2
+          AND account.enabled = 1
+          AND account.status <> ?3
+        "#,
+    )
+    .bind(account_id)
+    .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
+    .bind(UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH)
+    .fetch_optional(pool)
     .await
     .map_err(Into::into)
 }
@@ -7484,9 +7598,9 @@ fn maintenance_candidate_snapshot_exhausted(candidate: &MaintenanceCandidateRow)
     persisted_usage_snapshot_is_exhausted(
         candidate.primary_used_percent,
         candidate.secondary_used_percent,
-        None,
-        None,
-        None,
+        candidate.credits_has_credits.map(|value| value != 0),
+        candidate.credits_unlimited.map(|value| value != 0),
+        candidate.credits_balance.as_deref(),
     )
 }
 
@@ -7540,8 +7654,7 @@ fn maintenance_candidate_is_high_frequency(
 
 fn maintenance_candidate_is_available(candidate: &MaintenanceCandidateRow) -> bool {
     maintenance_candidate_has_complete_usage(candidate)
-        && candidate.primary_used_percent.unwrap_or(100.0) < 100.0
-        && candidate.secondary_used_percent.unwrap_or(100.0) < 100.0
+        && !maintenance_candidate_snapshot_exhausted(candidate)
 }
 
 fn maintenance_candidate_force_priority(
@@ -7661,33 +7774,48 @@ fn maintenance_plan_is_due(
         )
 }
 
-async fn load_due_maintenance_plan(
-    state: &AppState,
-    account_id: i64,
+fn maintenance_high_frequency_fallback_interval_secs(
+    candidate: &MaintenanceCandidateRow,
+    fallback_available_ranks: &HashMap<i64, usize>,
+    settings: PoolRoutingMaintenanceSettings,
+    refresh_lead_time: Duration,
     now: DateTime<Utc>,
-) -> Result<Option<MaintenanceDispatchPlan>> {
-    let routing = load_pool_routing_settings(&state.pool).await?;
-    let settings = resolve_pool_routing_maintenance_settings(&routing, &state.config);
-    let candidates = load_maintenance_candidates(&state.pool).await?;
-    Ok(resolve_due_maintenance_dispatch_plans(
-        candidates,
-        settings,
-        state.config.upstream_accounts_refresh_lead_time,
-        now,
-    )
-    .into_iter()
-    .find(|candidate_plan| candidate_plan.account_id == account_id))
+) -> u64 {
+    let fallback_tier = if maintenance_candidate_force_priority(candidate, refresh_lead_time, now) {
+        MaintenanceTier::Priority
+    } else if fallback_available_ranks
+        .get(&candidate.id)
+        .is_some_and(|rank| *rank < settings.priority_available_account_cap)
+    {
+        MaintenanceTier::Priority
+    } else {
+        MaintenanceTier::Secondary
+    };
+    maintenance_interval_for_tier(fallback_tier, settings)
 }
 
 async fn execute_queued_maintenance_sync(
     state: &AppState,
-    _plan: MaintenanceDispatchPlan,
+    plan: MaintenanceDispatchPlan,
     id: i64,
 ) -> Result<Option<UpstreamAccountDetail>> {
     let now = Utc::now();
-    let Some(_current_plan) = load_due_maintenance_plan(state, id, now).await? else {
+    let Some(candidate) = load_maintenance_candidate(&state.pool, id).await? else {
         return Ok(None);
     };
+    let interval_secs = if matches!(plan.tier, MaintenanceTier::HighFrequency)
+        && !maintenance_candidate_is_high_frequency(&candidate, now)
+    {
+        plan.fallback_sync_interval_secs
+            .unwrap_or(plan.sync_interval_secs)
+    } else {
+        plan.sync_interval_secs
+    };
+    if !maintenance_reset_due(&candidate, now)
+        && !maintenance_interval_is_due(&candidate, interval_secs, now)
+    {
+        return Ok(None);
+    }
 
     sync_upstream_account_by_id(state, id, SyncCause::Maintenance).await
 }
@@ -7720,6 +7848,23 @@ fn resolve_due_maintenance_dispatch_plans(
     high_frequency.sort_by(compare_maintenance_candidates);
     secondary.sort_by(compare_maintenance_candidates);
 
+    let mut fallback_available = ranked_available.clone();
+    fallback_available.extend(
+        high_frequency
+            .iter()
+            .filter(|candidate| {
+                !maintenance_candidate_force_priority(candidate, refresh_lead_time, now)
+                    && maintenance_candidate_is_available(candidate)
+            })
+            .cloned(),
+    );
+    fallback_available.sort_by(compare_maintenance_candidates);
+    let fallback_available_ranks = fallback_available
+        .into_iter()
+        .enumerate()
+        .map(|(index, candidate)| (candidate.id, index))
+        .collect::<HashMap<_, _>>();
+
     let mut plans = Vec::new();
     for candidate in forced_priority {
         if maintenance_plan_is_due(&candidate, MaintenanceTier::Priority, settings, now) {
@@ -7727,6 +7872,7 @@ fn resolve_due_maintenance_dispatch_plans(
                 account_id: candidate.id,
                 tier: MaintenanceTier::Priority,
                 sync_interval_secs: settings.primary_sync_interval_secs,
+                fallback_sync_interval_secs: None,
             });
         }
     }
@@ -7736,6 +7882,15 @@ fn resolve_due_maintenance_dispatch_plans(
                 account_id: candidate.id,
                 tier: MaintenanceTier::HighFrequency,
                 sync_interval_secs: MIN_UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS,
+                fallback_sync_interval_secs: Some(
+                    maintenance_high_frequency_fallback_interval_secs(
+                        &candidate,
+                        &fallback_available_ranks,
+                        settings,
+                        refresh_lead_time,
+                        now,
+                    ),
+                ),
             });
         }
     }
@@ -7750,6 +7905,7 @@ fn resolve_due_maintenance_dispatch_plans(
                 account_id: candidate.id,
                 tier,
                 sync_interval_secs: maintenance_interval_for_tier(tier, settings),
+                fallback_sync_interval_secs: None,
             });
         }
     }
@@ -7759,6 +7915,7 @@ fn resolve_due_maintenance_dispatch_plans(
                 account_id: candidate.id,
                 tier: MaintenanceTier::Secondary,
                 sync_interval_secs: settings.secondary_sync_interval_secs,
+                fallback_sync_interval_secs: None,
             });
         }
     }
@@ -21441,6 +21598,7 @@ mod tests {
                         account_id,
                         tier: MaintenanceTier::Priority,
                         sync_interval_secs: 300,
+                        fallback_sync_interval_secs: None,
                     },
                 )
                 .expect("queue maintenance plan"),
@@ -21576,6 +21734,7 @@ mod tests {
                         account_id,
                         tier: MaintenanceTier::HighFrequency,
                         sync_interval_secs: MIN_UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS,
+                        fallback_sync_interval_secs: Some(300),
                     },
                 )
                 .expect("queue maintenance plan"),
@@ -21862,6 +22021,9 @@ mod tests {
             primary_resets_at: None,
             secondary_used_percent,
             secondary_resets_at: None,
+            credits_has_credits: None,
+            credits_unlimited: None,
+            credits_balance: None,
         }
     }
 
@@ -22098,6 +22260,42 @@ mod tests {
         assert_eq!(plans.len(), 1);
         assert_eq!(plans[0].tier, MaintenanceTier::HighFrequency);
         assert_eq!(plans[0].sync_interval_secs, 60);
+    }
+
+    #[test]
+    fn resolve_due_maintenance_dispatch_plans_keeps_credits_exhausted_accounts_out_of_high_frequency()
+     {
+        let now = Utc
+            .with_ymd_and_hms(2026, 3, 23, 12, 0, 0)
+            .single()
+            .expect("valid time");
+        let settings = PoolRoutingMaintenanceSettings {
+            primary_sync_interval_secs: 300,
+            secondary_sync_interval_secs: 1800,
+            priority_available_account_cap: 1,
+        };
+        let mut candidate = maintenance_candidates(
+            91,
+            UPSTREAM_ACCOUNT_STATUS_ACTIVE,
+            Some("2026-03-23T11:58:30Z"),
+            None,
+            Some("2026-04-23T12:00:00Z"),
+            Some(10.0),
+            Some(10.0),
+        );
+        candidate.last_selected_at = Some("2026-03-23T11:59:30Z".to_string());
+        candidate.credits_has_credits = Some(1);
+        candidate.credits_unlimited = Some(0);
+        candidate.credits_balance = Some("0".to_string());
+
+        let plans = resolve_due_maintenance_dispatch_plans(
+            vec![candidate],
+            settings,
+            Duration::from_secs(15 * 60),
+            now,
+        );
+
+        assert_eq!(plans.len(), 0);
     }
 
     #[test]
