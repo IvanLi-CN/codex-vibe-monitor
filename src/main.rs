@@ -14571,10 +14571,6 @@ async fn proxy_openai_v1_via_pool(
         proxy_upstream_send_timeout_for_capture_target(&runtime_timeouts, capture_target);
     let _pre_first_byte_timeout =
         pool_upstream_first_chunk_timeout(&runtime_timeouts, original_uri, &method);
-    let responses_total_timeout =
-        pool_upstream_responses_total_timeout(&state.config, original_uri, &method);
-    let pre_attempt_total_timeout_deadline =
-        responses_total_timeout.map(|total_timeout| Instant::now() + total_timeout);
     let responses_total_timeout_started_at = None;
     let header_sticky_key = extract_sticky_key_from_headers(&headers);
     let body_size_hint_exact = body
@@ -14679,8 +14675,6 @@ async fn proxy_openai_v1_via_pool(
                 let state_for_wait = state.clone();
                 let sticky_key_for_join_error = sticky_key.clone();
                 let wait_task_sticky_key = sticky_key.clone();
-                let pre_attempt_total_timeout_deadline_for_task =
-                    pre_attempt_total_timeout_deadline;
                 let shared_wait_deadline = Arc::new(std::sync::Mutex::new(None));
                 let shared_wait_deadline_for_task = shared_wait_deadline.clone();
                 let mut header_sticky_resolution = tokio::spawn(async move {
@@ -14714,17 +14708,12 @@ async fn proxy_openai_v1_via_pool(
                                             Some(deadline);
                                         deadline
                                     };
-                                let effective_deadline =
-                                    pre_attempt_total_timeout_deadline_for_task
-                                        .map(|deadline| std::cmp::min(wait_deadline, deadline))
-                                        .unwrap_or(wait_deadline);
                                 let now = Instant::now();
-                                if now >= effective_deadline {
+                                if now >= wait_deadline {
                                     break (resolution, no_available_wait_deadline);
                                 }
                                 tokio::time::sleep(
-                                    poll_interval
-                                        .min(effective_deadline.saturating_duration_since(now)),
+                                    poll_interval.min(wait_deadline.saturating_duration_since(now)),
                                 )
                                 .await;
                             }
@@ -14826,7 +14815,7 @@ async fn proxy_openai_v1_via_pool(
                     &HashSet::new(),
                     true,
                     &mut no_available_wait_deadline,
-                    pre_attempt_total_timeout_deadline,
+                    None,
                 )
                 .await;
                 let (initial_account, no_available_wait_deadline) =
@@ -14856,7 +14845,7 @@ async fn proxy_openai_v1_via_pool(
                     &HashSet::new(),
                     true,
                     &mut no_available_wait_deadline,
-                    pre_attempt_total_timeout_deadline,
+                    None,
                 )
                 .await;
                 let (initial_account, no_available_wait_deadline) =
