@@ -1547,7 +1547,7 @@ describe("UpstreamAccountsPage duplicates", () => {
 
     expect(document.body.textContent).toContain("Current pool API key");
     expect(document.body.textContent).toContain("pool-live••••");
-    expect(document.body.textContent).not.toContain("High-frequency sync interval");
+    expect(document.body.textContent).not.toContain("Priority sync interval");
     expect(document.body.textContent).not.toContain("Secondary sync interval");
     expect(document.body.textContent).not.toContain(
       "Priority available account cap",
@@ -1568,7 +1568,7 @@ describe("UpstreamAccountsPage duplicates", () => {
     clickButton(/Edit routing settings/i);
     await flushAsync();
 
-    expect(document.body.textContent).toContain("High-frequency sync interval");
+    expect(document.body.textContent).toContain("Priority sync interval");
     expect(document.body.textContent).toContain("Secondary sync interval");
     expect(document.body.textContent).toContain(
       "Priority available account cap",

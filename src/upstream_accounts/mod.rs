@@ -7639,19 +7639,36 @@ fn maintenance_last_attempt_at(candidate: &MaintenanceCandidateRow) -> Option<Da
         .last_synced_at
         .as_deref()
         .and_then(parse_rfc3339_utc);
-    if candidate.status != UPSTREAM_ACCOUNT_STATUS_ERROR {
-        return last_synced_at;
-    }
-
     let last_error_at = candidate
         .last_error_at
         .as_deref()
         .and_then(parse_rfc3339_utc);
-    match (last_synced_at, last_error_at) {
-        (Some(lhs), Some(rhs)) => Some(lhs.max(rhs)),
-        (Some(value), None) | (None, Some(value)) => Some(value),
-        (None, None) => None,
-    }
+    let last_route_failure_at = candidate
+        .last_route_failure_at
+        .as_deref()
+        .and_then(parse_rfc3339_utc);
+
+    [last_synced_at, last_error_at, last_route_failure_at]
+        .into_iter()
+        .flatten()
+        .max()
+}
+
+fn maintenance_last_attempt_recorded_after_reset(
+    candidate: &MaintenanceCandidateRow,
+    reset_at: DateTime<Utc>,
+) -> bool {
+    maintenance_last_attempt_at(candidate).is_some_and(|last_attempt_at| last_attempt_at >= reset_at)
+        || candidate
+            .last_error_at
+            .as_deref()
+            .and_then(parse_rfc3339_utc)
+            .is_some_and(|last_error_at| last_error_at >= reset_at)
+        || candidate
+            .last_route_failure_at
+            .as_deref()
+            .and_then(parse_rfc3339_utc)
+            .is_some_and(|last_route_failure_at| last_route_failure_at >= reset_at)
 }
 
 fn maintenance_interval_is_due(
@@ -7676,22 +7693,21 @@ fn maintenance_interval_for_tier(
 }
 
 fn maintenance_window_reset_due(
+    candidate: &MaintenanceCandidateRow,
     resets_at: Option<&str>,
-    last_attempt_at: Option<DateTime<Utc>>,
     now: DateTime<Utc>,
 ) -> bool {
     let Some(reset_at) = resets_at.and_then(parse_rfc3339_utc) else {
         return false;
     };
-    reset_at <= now && last_attempt_at.is_none_or(|last_attempt_at| last_attempt_at < reset_at)
+    reset_at <= now && !maintenance_last_attempt_recorded_after_reset(candidate, reset_at)
 }
 
 fn maintenance_reset_due(candidate: &MaintenanceCandidateRow, now: DateTime<Utc>) -> bool {
-    let last_attempt_at = maintenance_last_attempt_at(candidate);
-    maintenance_window_reset_due(candidate.primary_resets_at.as_deref(), last_attempt_at, now)
+    maintenance_window_reset_due(candidate, candidate.primary_resets_at.as_deref(), now)
         || maintenance_window_reset_due(
+            candidate,
             candidate.secondary_resets_at.as_deref(),
-            last_attempt_at,
             now,
         )
 }
@@ -22008,6 +22024,34 @@ mod tests {
         let mut after_reset_sync = before_reset_sync.clone();
         after_reset_sync.last_synced_at = Some("2026-03-23T11:59:30Z".to_string());
         assert!(!maintenance_reset_due(&after_reset_sync, now));
+    }
+
+    #[test]
+    fn maintenance_reset_due_stops_after_post_reset_failure_even_if_status_stays_active() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 3, 23, 12, 0, 0)
+            .single()
+            .expect("valid time");
+        let mut candidate = maintenance_candidates(
+            12,
+            UPSTREAM_ACCOUNT_STATUS_ACTIVE,
+            Some("2026-03-23T11:58:30Z"),
+            None,
+            Some("2026-04-23T12:00:00Z"),
+            Some(10.0),
+            Some(10.0),
+        );
+        candidate.primary_resets_at = Some("2026-03-23T11:59:00Z".to_string());
+        assert!(maintenance_reset_due(&candidate, now));
+
+        candidate.last_error_at = Some("2026-03-23T11:59:20Z".to_string());
+        candidate.last_route_failure_at = Some("2026-03-23T11:59:20Z".to_string());
+        candidate.last_route_failure_kind =
+            Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM.to_string());
+        candidate.last_action_reason_code =
+            Some(UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE.to_string());
+
+        assert!(!maintenance_reset_due(&candidate, now));
     }
 
     fn test_routing_candidate(id: i64) -> AccountRoutingCandidateRow {

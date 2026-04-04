@@ -128,7 +128,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.routing.maintenanceSectionDescription":
       "Working or degraded OAuth accounts run on a 60-second high-frequency sync. Other accounts still follow the existing priority and secondary queues, and any account gets a catch-up sync on the next tick after either reset time passes.",
     "accountPool.upstreamAccounts.routing.primarySyncIntervalLabel":
-      "High-frequency sync interval",
+      "Priority sync interval",
     "accountPool.upstreamAccounts.routing.secondarySyncIntervalLabel":
       "Secondary sync interval",
     "accountPool.upstreamAccounts.routing.priorityCapLabel":
@@ -146,11 +146,11 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.routing.validation.integerRequired":
       "Sync fields must be positive integers.",
     "accountPool.upstreamAccounts.routing.validation.primaryMin":
-      "High-frequency sync interval must be at least 60 seconds.",
+      "Priority sync interval must be at least 60 seconds.",
     "accountPool.upstreamAccounts.routing.validation.secondaryMin":
       "Secondary sync interval must be at least 60 seconds.",
     "accountPool.upstreamAccounts.routing.validation.secondaryAtLeastPrimary":
-      "Secondary sync interval must be greater than or equal to the high-frequency sync interval.",
+      "Secondary sync interval must be greater than or equal to the priority sync interval.",
     "accountPool.upstreamAccounts.routing.validation.priorityCapMin":
       "Priority available account cap must be at least 1.",
     "accountPool.upstreamAccounts.routing.timeout.sectionTitle":
@@ -1751,7 +1751,7 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.routing.maintenanceSectionDescription":
       "工作中或工作降级中的 OAuth 账号固定走 60 秒高频同步；其他账号继续按原有主层 / 次层队列执行，并且主限制或次限制一旦跨过重置时间，会在下个 tick 尽快补一次同步。",
     "accountPool.upstreamAccounts.routing.primarySyncIntervalLabel":
-      "高频同步间隔",
+      "优先队列同步间隔",
     "accountPool.upstreamAccounts.routing.secondarySyncIntervalLabel":
       "次级队列同步间隔",
     "accountPool.upstreamAccounts.routing.priorityCapLabel": "优先可用账号上限",
@@ -1767,11 +1767,11 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.routing.validation.integerRequired":
       "同步字段必须填写为正整数。",
     "accountPool.upstreamAccounts.routing.validation.primaryMin":
-      "高频同步间隔不能小于 60 秒。",
+      "优先队列同步间隔不能小于 60 秒。",
     "accountPool.upstreamAccounts.routing.validation.secondaryMin":
       "次级队列同步间隔不能小于 60 秒。",
     "accountPool.upstreamAccounts.routing.validation.secondaryAtLeastPrimary":
-      "次级队列同步间隔必须大于等于高频同步间隔。",
+      "次级队列同步间隔必须大于等于优先队列同步间隔。",
     "accountPool.upstreamAccounts.routing.validation.priorityCapMin":
       "优先可用账号上限不能小于 1。",
     "accountPool.upstreamAccounts.routing.timeout.sectionTitle":

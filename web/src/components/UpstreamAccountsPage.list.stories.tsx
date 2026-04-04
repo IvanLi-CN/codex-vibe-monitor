@@ -243,7 +243,7 @@ export const Operational: Story = {
         }),
       ).toBeInTheDocument()
       await expect(
-        canvasScope.queryByText(/high-frequency sync interval|高频同步间隔/i),
+        canvasScope.queryByText(/priority sync interval|优先队列同步间隔/i),
       ).not.toBeInTheDocument()
       await expect(
         canvasScope.queryByText(/secondary sync interval|次级队列同步间隔/i),
