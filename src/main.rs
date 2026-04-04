@@ -12566,7 +12566,8 @@ async fn resolve_pool_account_for_request_with_wait(
     sticky_key: Option<&str>,
     excluded_ids: &[i64],
     excluded_upstream_route_keys: &HashSet<String>,
-    wait_deadline: Option<Instant>,
+    wait_for_no_available: bool,
+    wait_deadline: &mut Option<Instant>,
     total_timeout_deadline: Option<Instant>,
 ) -> Result<PoolAccountResolution> {
     let poll_interval = state.pool_no_available_wait.normalized_poll_interval();
@@ -12581,10 +12582,14 @@ async fn resolve_pool_account_for_request_with_wait(
         .await?;
         match resolution {
             PoolAccountResolution::Unavailable | PoolAccountResolution::NoCandidate
-                if wait_deadline.is_some() =>
+                if wait_for_no_available =>
             {
-                let Some(wait_deadline) = wait_deadline else {
-                    return Ok(resolution);
+                let wait_deadline = if let Some(deadline) = *wait_deadline {
+                    deadline
+                } else {
+                    let deadline = Instant::now() + state.pool_no_available_wait.timeout;
+                    *wait_deadline = Some(deadline);
+                    deadline
                 };
                 let effective_deadline = total_timeout_deadline
                     .map(|deadline| std::cmp::min(wait_deadline, deadline))
@@ -12802,14 +12807,6 @@ async fn send_pool_request_with_failover(
             let wait_for_no_available = !(uses_timeout_route_failover
                 && timeout_route_failover_pending)
                 && !(exhausted_accounts_all_rate_limited && distinct_account_count > 0);
-            let wait_deadline = if wait_for_no_available {
-                let deadline = no_available_wait_deadline
-                    .unwrap_or_else(|| Instant::now() + state.pool_no_available_wait.timeout);
-                no_available_wait_deadline = Some(deadline);
-                Some(deadline)
-            } else {
-                None
-            };
             let total_timeout_deadline =
                 match (responses_total_timeout, responses_total_timeout_started_at) {
                     (Some(total_timeout), Some(started_at)) => Some(started_at + total_timeout),
@@ -12820,7 +12817,8 @@ async fn send_pool_request_with_failover(
                 sticky_key,
                 &excluded_ids,
                 &excluded_upstream_route_keys,
-                wait_deadline,
+                wait_for_no_available,
+                &mut no_available_wait_deadline,
                 total_timeout_deadline,
             )
             .await
@@ -14632,14 +14630,16 @@ async fn proxy_openai_v1_via_pool(
             )
         } else {
             let sticky_key = header_sticky_key;
-            let no_available_wait_deadline =
-                Some(Instant::now() + state.pool_no_available_wait.timeout);
+            let mut no_available_wait_deadline = None;
             let initial_account = match resolve_pool_account_for_request_with_wait(
                 state.as_ref(),
                 sticky_key.as_deref(),
                 &[],
                 &HashSet::new(),
-                no_available_wait_deadline,
+                true,
+                &mut no_available_wait_deadline,
+                // Route-level total timeout starts at the first upstream attempt,
+                // so pre-attempt pool admission waits must not consume that budget.
                 None,
             )
             .await
