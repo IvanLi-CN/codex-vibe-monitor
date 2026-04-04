@@ -174,7 +174,7 @@ export const RoutingDialog: Story = {
     const generateButton = within(dialog).getByRole('button', { name: /生成密钥|generate key/i })
     await expect(generateButton).toBeInTheDocument()
     await expect(
-      within(dialog).getByLabelText(/优先队列同步间隔|priority sync interval/i),
+      within(dialog).getByLabelText(/高频同步间隔|high-frequency sync interval/i),
     ).toBeInTheDocument()
     await expect(
       within(dialog).getByLabelText(/次级队列同步间隔|secondary sync interval/i),
@@ -208,7 +208,7 @@ export const RoutingDialogMaintenanceOnlySave: Story = {
       name: /高级路由与同步设置|advanced routing & sync settings/i,
     })
     const primaryInput = within(dialog).getByLabelText(
-      /优先队列同步间隔|priority sync interval/i,
+      /高频同步间隔|high-frequency sync interval/i,
     ) as HTMLInputElement
     const secondaryInput = within(dialog).getByLabelText(
       /次级队列同步间隔|secondary sync interval/i,
@@ -254,7 +254,7 @@ export const RoutingDialogMaintenanceOnlySave: Story = {
     await expect(
       (
         within(reopenedDialog).getByLabelText(
-          /优先队列同步间隔|priority sync interval/i,
+          /高频同步间隔|high-frequency sync interval/i,
         ) as HTMLInputElement
       ).value,
     ).toBe('600')
@@ -376,7 +376,7 @@ export const RoutingDialogValidation: Story = {
       name: /高级路由与同步设置|advanced routing & sync settings/i,
     })
     const primaryInput = within(dialog).getByLabelText(
-      /优先队列同步间隔|priority sync interval/i,
+      /高频同步间隔|high-frequency sync interval/i,
     ) as HTMLInputElement
     const secondaryInput = within(dialog).getByLabelText(
       /次级队列同步间隔|secondary sync interval/i,
@@ -390,7 +390,7 @@ export const RoutingDialogValidation: Story = {
 
     await expect(
       within(dialog).getByText(
-        /次级队列同步间隔必须大于等于优先队列同步间隔|secondary sync interval must be greater than or equal to the priority sync interval/i,
+        /次级队列同步间隔必须大于等于高频同步间隔|secondary sync interval must be greater than or equal to the high-frequency sync interval/i,
       ),
     ).toBeInTheDocument()
     await expect(saveButton).toBeDisabled()
