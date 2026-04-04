@@ -5348,6 +5348,38 @@ describe("UpstreamAccountCreatePage display name validation", () => {
     expect(navigateMock).not.toHaveBeenCalled();
   });
 
+  it("does not show duplicate warnings on the create page when mixed-plan oauth accounts can coexist", async () => {
+    const completeOauthLogin = vi.fn().mockResolvedValue({
+      id: 41,
+      displayName: "Fresh OAuth",
+      duplicateInfo: null,
+    });
+    mockUpstreamAccounts({ completeOauthLogin });
+    render();
+
+    setInputValue('input[name="oauthDisplayName"]', "Fresh OAuth");
+    await flushAsync();
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+    setInputValue(
+      'textarea[name="oauthCallbackUrl"]',
+      "http://localhost:1455/oauth/callback?code=test",
+    );
+    await flushAsync();
+    clickButton(/Complete OAuth login/i);
+    await flushAsync();
+
+    expect(document.body.textContent).not.toContain("Possible upstream duplicate");
+    expect(document.body.textContent).not.toContain("Matched:");
+    expect(navigateMock).toHaveBeenCalledWith("/account-pool/upstream-accounts", {
+      state: {
+        selectedAccountId: 41,
+        openDetail: true,
+        duplicateWarning: null,
+      },
+    });
+  });
+
   it("clears a completed single oauth session after edits so a fresh url can be regenerated", async () => {
     const completeOauthLogin = vi.fn().mockResolvedValue({
       id: 41,

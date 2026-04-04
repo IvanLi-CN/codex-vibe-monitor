@@ -422,6 +422,67 @@ describe('UpstreamAccountsTable', () => {
     expect(html).toContain('title="12h quota')
   })
 
+  it('does not render duplicate badges when mixed-plan oauth peers coexist independently', () => {
+    const html = renderTable([
+      {
+        id: 31,
+        kind: 'oauth_codex',
+        provider: 'codex',
+        displayName: 'Team OAuth account',
+        groupName: 'production',
+        isMother: false,
+        status: 'active',
+        displayStatus: 'active',
+        enabled: true,
+        enableStatus: 'enabled',
+        workStatus: 'working',
+        healthStatus: 'normal',
+        syncState: 'idle',
+        planType: 'team',
+        lastSuccessfulSyncAt: '2026-03-16T01:55:00.000Z',
+        lastActivityAt: '2026-03-16T02:05:00.000Z',
+        primaryWindow: null,
+        secondaryWindow: null,
+        credits: null,
+        localLimits: null,
+        duplicateInfo: null,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
+      {
+        id: 32,
+        kind: 'oauth_codex',
+        provider: 'codex',
+        displayName: 'Personal OAuth account',
+        groupName: 'production',
+        isMother: false,
+        status: 'active',
+        displayStatus: 'active',
+        enabled: true,
+        enableStatus: 'enabled',
+        workStatus: 'idle',
+        healthStatus: 'normal',
+        syncState: 'idle',
+        planType: 'pro',
+        lastSuccessfulSyncAt: '2026-03-16T01:50:00.000Z',
+        lastActivityAt: '2026-03-16T02:00:00.000Z',
+        primaryWindow: null,
+        secondaryWindow: null,
+        credits: null,
+        localLimits: null,
+        duplicateInfo: null,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
+    ])
+
+    expect(html).toContain('Team OAuth account')
+    expect(html).toContain('Personal OAuth account')
+    expect(html).toContain('data-plan="team"')
+    expect(html).toContain('data-plan="pro"')
+    expect(html).not.toContain('Duplicate')
+  })
+
   it('keeps disabled and placeholder values in the compact layout', () => {
     const html = renderTable([
       {

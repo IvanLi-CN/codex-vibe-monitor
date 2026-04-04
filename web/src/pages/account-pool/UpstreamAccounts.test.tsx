@@ -2182,6 +2182,29 @@ describe("UpstreamAccountsPage duplicates", () => {
     );
   });
 
+  it("does not show duplicate warnings when mixed-plan oauth peers coexist independently", async () => {
+    mockAccountsPage({
+      item: {
+        duplicateInfo: null,
+        planType: "team",
+      },
+      selectedSummary: {
+        duplicateInfo: null,
+        planType: "team",
+      },
+      detail: {
+        duplicateInfo: null,
+        planType: "team",
+      },
+    });
+    render("/account-pool/upstream-accounts");
+
+    expect(document.body.textContent).not.toContain("Duplicate");
+    clickFirstRosterRow();
+    await flushAsync();
+    expect(document.body.textContent).not.toContain("Matched reasons:");
+  });
+
   it("clears the one-time duplicate warning after dismissing it", async () => {
     mockAccountsPage();
     render({
