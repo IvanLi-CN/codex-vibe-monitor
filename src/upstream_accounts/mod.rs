@@ -7463,70 +7463,6 @@ async fn load_maintenance_candidates(pool: &Pool<Sqlite>) -> Result<Vec<Maintena
     .map_err(Into::into)
 }
 
-async fn load_maintenance_candidate(
-    pool: &Pool<Sqlite>,
-    account_id: i64,
-) -> Result<Option<MaintenanceCandidateRow>> {
-    sqlx::query_as::<_, MaintenanceCandidateRow>(
-        r#"
-        SELECT
-            account.id,
-            account.status,
-            account.last_synced_at,
-            account.last_action_source,
-            account.last_action_at,
-            account.last_selected_at,
-            account.last_error_at,
-            account.last_error,
-            account.last_route_failure_at,
-            account.last_route_failure_kind,
-            account.last_action_reason_code,
-            account.cooldown_until,
-            account.temporary_route_failure_streak_started_at,
-            account.token_expires_at,
-            (
-                SELECT sample.primary_used_percent
-                FROM pool_upstream_account_limit_samples sample
-                WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
-                LIMIT 1
-            ) AS primary_used_percent,
-            (
-                SELECT sample.primary_resets_at
-                FROM pool_upstream_account_limit_samples sample
-                WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
-                LIMIT 1
-            ) AS primary_resets_at,
-            (
-                SELECT sample.secondary_used_percent
-                FROM pool_upstream_account_limit_samples sample
-                WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
-                LIMIT 1
-            ) AS secondary_used_percent,
-            (
-                SELECT sample.secondary_resets_at
-                FROM pool_upstream_account_limit_samples sample
-                WHERE sample.account_id = account.id
-                ORDER BY sample.captured_at DESC
-                LIMIT 1
-            ) AS secondary_resets_at
-        FROM pool_upstream_accounts account
-        WHERE account.id = ?1
-          AND account.kind = ?2
-          AND account.enabled = 1
-          AND account.status <> ?3
-        "#,
-    )
-    .bind(account_id)
-    .bind(UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX)
-    .bind(UPSTREAM_ACCOUNT_STATUS_NEEDS_REAUTH)
-    .fetch_optional(pool)
-    .await
-    .map_err(Into::into)
-}
-
 fn maintenance_refresh_due(
     candidate: &MaintenanceCandidateRow,
     refresh_lead_time: Duration,
@@ -7708,11 +7644,7 @@ fn maintenance_window_reset_due(
 
 fn maintenance_reset_due(candidate: &MaintenanceCandidateRow, now: DateTime<Utc>) -> bool {
     maintenance_window_reset_due(candidate, candidate.primary_resets_at.as_deref(), now)
-        || maintenance_window_reset_due(
-            candidate,
-            candidate.secondary_resets_at.as_deref(),
-            now,
-        )
+        || maintenance_window_reset_due(candidate, candidate.secondary_resets_at.as_deref(), now)
 }
 
 fn maintenance_plan_is_due(
@@ -7729,19 +7661,33 @@ fn maintenance_plan_is_due(
         )
 }
 
+async fn load_due_maintenance_plan(
+    state: &AppState,
+    account_id: i64,
+    now: DateTime<Utc>,
+) -> Result<Option<MaintenanceDispatchPlan>> {
+    let routing = load_pool_routing_settings(&state.pool).await?;
+    let settings = resolve_pool_routing_maintenance_settings(&routing, &state.config);
+    let candidates = load_maintenance_candidates(&state.pool).await?;
+    Ok(resolve_due_maintenance_dispatch_plans(
+        candidates,
+        settings,
+        state.config.upstream_accounts_refresh_lead_time,
+        now,
+    )
+    .into_iter()
+    .find(|candidate_plan| candidate_plan.account_id == account_id))
+}
+
 async fn execute_queued_maintenance_sync(
     state: &AppState,
-    plan: MaintenanceDispatchPlan,
+    _plan: MaintenanceDispatchPlan,
     id: i64,
 ) -> Result<Option<UpstreamAccountDetail>> {
-    let Some(candidate) = load_maintenance_candidate(&state.pool, id).await? else {
+    let now = Utc::now();
+    let Some(_current_plan) = load_due_maintenance_plan(state, id, now).await? else {
         return Ok(None);
     };
-    if !maintenance_reset_due(&candidate, Utc::now())
-        && !maintenance_interval_is_due(&candidate, plan.sync_interval_secs, Utc::now())
-    {
-        return Ok(None);
-    }
 
     sync_upstream_account_by_id(state, id, SyncCause::Maintenance).await
 }
@@ -21528,6 +21474,142 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn queued_high_frequency_maintenance_sync_revalidates_current_tier_before_execution() {
+        async fn handler(State(requests): State<Arc<AtomicUsize>>) -> (StatusCode, String) {
+            requests.fetch_add(1, Ordering::SeqCst);
+            (
+                StatusCode::OK,
+                json!({
+                    "planType": "team",
+                    "rateLimit": {
+                        "primaryWindow": {
+                            "usedPercent": 8,
+                            "windowDurationMins": 300,
+                            "resetsAt": 1771322400
+                        },
+                        "secondaryWindow": {
+                            "usedPercent": 8,
+                            "windowDurationMins": 10080,
+                            "resetsAt": 1771927200
+                        }
+                    }
+                })
+                .to_string(),
+            )
+        }
+
+        let requests = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .route("/backend-api/wham/usage", get(handler))
+            .with_state(requests.clone());
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind usage server");
+        let addr = listener.local_addr().expect("usage server addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve usage server");
+        });
+
+        let state = test_app_state_with_usage_base_and_parallelism(
+            &format!("http://{addr}/backend-api"),
+            1,
+        )
+        .await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Queued High Frequency OAuth",
+            "queued-high-frequency@example.com",
+            "org_queued_high_frequency",
+            "user_queued_high_frequency",
+        )
+        .await;
+        insert_limit_sample_with_usage(
+            &state.pool,
+            account_id,
+            "2026-03-23T11:00:00Z",
+            Some(12.0),
+            Some(10.0),
+        )
+        .await;
+
+        let due_at = format_utc_iso(Utc::now() - ChronoDuration::seconds(70));
+        let working_selected_at = format_utc_iso(Utc::now());
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET last_synced_at = ?2,
+                last_successful_sync_at = ?2,
+                last_selected_at = ?3
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .bind(&due_at)
+        .bind(&working_selected_at)
+        .execute(&state.pool)
+        .await
+        .expect("seed high-frequency due account");
+
+        let held_slot = state
+            .upstream_accounts
+            .account_ops
+            .maintenance_slots
+            .clone()
+            .acquire_owned()
+            .await
+            .expect("hold maintenance slot");
+        assert_eq!(
+            state
+                .upstream_accounts
+                .account_ops
+                .dispatch_maintenance_sync(
+                    state.clone(),
+                    MaintenanceDispatchPlan {
+                        account_id,
+                        tier: MaintenanceTier::HighFrequency,
+                        sync_interval_secs: MIN_UPSTREAM_ACCOUNTS_SYNC_INTERVAL_SECS,
+                    },
+                )
+                .expect("queue maintenance plan"),
+            MaintenanceQueueOutcome::Queued
+        );
+
+        let idle_selected_at = format_utc_iso(
+            Utc::now() - ChronoDuration::minutes(POOL_ROUTE_ACTIVE_STICKY_WINDOW_MINUTES + 1),
+        );
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET last_selected_at = ?2
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .bind(&idle_selected_at)
+        .execute(&state.pool)
+        .await
+        .expect("drop account out of high-frequency tier before queued maintenance executes");
+
+        drop(held_slot);
+        state.upstream_accounts.drain_background_tasks().await;
+
+        assert_eq!(
+            requests.load(Ordering::SeqCst),
+            0,
+            "queued high-frequency maintenance should skip once the account falls back to a slower tier"
+        );
+        server.abort();
+    }
+
+    #[tokio::test]
     async fn maintenance_dedupe_flag_resets_after_panicking_job() {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
         let account_id = 777_i64;
@@ -22099,8 +22181,7 @@ mod tests {
         candidate.last_action_at = Some("2026-03-23T11:59:20Z".to_string());
         candidate.last_error_at = Some("2026-03-23T11:59:20Z".to_string());
         candidate.last_route_failure_at = Some("2026-03-23T11:59:20Z".to_string());
-        candidate.last_route_failure_kind =
-            Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM.to_string());
+        candidate.last_route_failure_kind = Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM.to_string());
         candidate.last_action_reason_code =
             Some(UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE.to_string());
 
