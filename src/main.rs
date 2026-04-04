@@ -16888,10 +16888,7 @@ fn pool_upstream_send_timeout(
     if pool_uses_responses_timeout_failover_policy(original_uri, method) {
         pre_first_byte_timeout
     } else {
-        // Some upstreams do not flush headers until the first body chunk is ready.
-        // Clamp the send phase so non-responses routes still respect the default
-        // first-byte budget when that happens.
-        send_timeout.min(pre_first_byte_timeout)
+        send_timeout
     }
 }
 
