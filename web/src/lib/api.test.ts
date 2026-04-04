@@ -976,6 +976,117 @@ describe("account pool frontend API helpers", () => {
     expect(response.activeConversationCount).toBe(2);
   });
 
+  it("normalizes tag fast mode values from upstream account roster payloads", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(
+          JSON.stringify({
+            writesEnabled: true,
+            groups: [],
+            hasUngroupedAccounts: false,
+            items: [
+              {
+                id: 1,
+                kind: "oauth_codex",
+                provider: "codex",
+                displayName: "Fast Mode OAuth",
+                isMother: false,
+                status: "active",
+                enabled: true,
+                tags: [
+                  {
+                    id: 31,
+                    name: "priority-route",
+                    routingRule: {
+                      guardEnabled: false,
+                      allowCutOut: true,
+                      allowCutIn: true,
+                      priorityTier: "primary",
+                      fastModeRewriteMode: "force_add",
+                    },
+                  },
+                ],
+                effectiveRoutingRule: {
+                  guardEnabled: false,
+                  allowCutOut: true,
+                  allowCutIn: true,
+                  priorityTier: "fallback",
+                  fastModeRewriteMode: "force_remove",
+                  sourceTagIds: [31],
+                  sourceTagNames: ["priority-route"],
+                  guardRules: [],
+                },
+              },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch,
+    );
+
+    const response = await fetchUpstreamAccounts();
+
+    expect(response.items[0]?.tags?.[0]?.routingRule.fastModeRewriteMode).toBe(
+      "force_add",
+    );
+    expect(response.items[0]?.effectiveRoutingRule?.fastModeRewriteMode).toBe(
+      "force_remove",
+    );
+  });
+
+  it("falls back to keep_original when upstream account detail fast mode is missing or invalid", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(
+          JSON.stringify({
+            id: 9,
+            kind: "oauth_codex",
+            provider: "codex",
+            displayName: "Detail OAuth",
+            isMother: false,
+            status: "active",
+            enabled: true,
+            tags: [
+              {
+                id: 41,
+                name: "legacy-tag",
+                routingRule: {
+                  guardEnabled: false,
+                  allowCutOut: true,
+                  allowCutIn: true,
+                  priorityTier: "normal",
+                },
+              },
+            ],
+            effectiveRoutingRule: {
+              guardEnabled: false,
+              allowCutOut: true,
+              allowCutIn: true,
+              priorityTier: "normal",
+              fastModeRewriteMode: "unexpected",
+              sourceTagIds: [41],
+              sourceTagNames: ["legacy-tag"],
+              guardRules: [],
+            },
+            history: [],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch,
+    );
+
+    const response = await fetchUpstreamAccountDetail(9);
+
+    expect(response.tags[0]?.routingRule.fastModeRewriteMode).toBe(
+      "keep_original",
+    );
+    expect(response.effectiveRoutingRule?.fastModeRewriteMode).toBe(
+      "keep_original",
+    );
+  });
+
   it("normalizes window actual usage from upstream account roster payloads", async () => {
     vi.stubGlobal(
       "fetch",

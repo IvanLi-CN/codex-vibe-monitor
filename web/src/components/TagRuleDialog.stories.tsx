@@ -46,6 +46,11 @@ function DialogHarness({ tag = null, draftName, mode }: DialogHarnessProps) {
             priorityPrimary: 'Primary',
             priorityNormal: 'Normal',
             priorityFallback: 'Fallback only',
+            fastModeRewriteMode: 'Fast mode',
+            fastModeKeepOriginal: 'Keep original',
+            fastModeFillMissing: 'Fill when missing',
+            fastModeForceAdd: 'Force add',
+            fastModeForceRemove: 'Force remove',
             concurrencyLimit: 'Concurrency limit',
             concurrencyHint: 'Use 1-30 to cap fresh assignments. The last slider step means unlimited.',
             currentValue: 'Current',
@@ -71,6 +76,7 @@ const finiteTag: TagSummary = {
     allowCutOut: true,
     allowCutIn: false,
     priorityTier: 'primary',
+    fastModeRewriteMode: 'force_add',
     concurrencyLimit: 6,
   },
   accountCount: 4,
@@ -88,6 +94,7 @@ const unlimitedTag: TagSummary = {
     allowCutOut: false,
     allowCutIn: true,
     priorityTier: 'fallback',
+    fastModeRewriteMode: 'force_remove',
     concurrencyLimit: 0,
   },
   accountCount: 2,
@@ -128,5 +135,12 @@ export const CreateDialog: Story = {
     mode: 'create',
     tag: null,
     draftName: 'new-lane',
+  },
+}
+
+export const ForceRemoveMode: Story = {
+  args: {
+    mode: 'edit',
+    tag: unlimitedTag,
   },
 }

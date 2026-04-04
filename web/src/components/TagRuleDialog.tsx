@@ -5,7 +5,13 @@ import { Input } from './ui/input'
 import { SelectField } from './ui/select-field'
 import { Switch } from './ui/switch'
 import { ConcurrencyLimitSlider } from './ConcurrencyLimitSlider'
-import type { CreateTagPayload, TagPriorityTier, TagSummary, UpdateTagPayload } from '../lib/api'
+import type {
+  CreateTagPayload,
+  TagFastModeRewriteMode,
+  TagPriorityTier,
+  TagSummary,
+  UpdateTagPayload,
+} from '../lib/api'
 import { apiConcurrencyLimitToSliderValue, sliderConcurrencyLimitToApiValue } from '../lib/concurrencyLimit'
 
 export type TagRuleDialogMode = 'create' | 'edit'
@@ -18,6 +24,7 @@ type TagRuleDraft = {
   allowCutOut: boolean
   allowCutIn: boolean
   priorityTier: TagPriorityTier
+  fastModeRewriteMode: TagFastModeRewriteMode
   concurrencyLimit: number
 }
 
@@ -30,6 +37,7 @@ function buildDraft(tag?: TagSummary | null, draftName = ''): TagRuleDraft {
     allowCutOut: tag?.routingRule.allowCutOut ?? true,
     allowCutIn: tag?.routingRule.allowCutIn ?? true,
     priorityTier: tag?.routingRule.priorityTier ?? 'normal',
+    fastModeRewriteMode: tag?.routingRule.fastModeRewriteMode ?? 'keep_original',
     concurrencyLimit: apiConcurrencyLimitToSliderValue(tag?.routingRule.concurrencyLimit),
   }
 }
@@ -54,6 +62,7 @@ function buildPayload(draft: TagRuleDraft): CreateTagPayload | UpdateTagPayload 
     allowCutOut: draft.allowCutOut,
     allowCutIn: draft.allowCutIn,
     priorityTier: draft.priorityTier,
+    fastModeRewriteMode: draft.fastModeRewriteMode,
     concurrencyLimit: sliderConcurrencyLimitToApiValue(draft.concurrencyLimit),
   }
 }
@@ -82,6 +91,11 @@ interface TagRuleDialogProps {
     priorityPrimary: string
     priorityNormal: string
     priorityFallback: string
+    fastModeRewriteMode: string
+    fastModeKeepOriginal: string
+    fastModeFillMissing: string
+    fastModeForceAdd: string
+    fastModeForceRemove: string
     concurrencyLimit?: string
     concurrencyHint?: string
     currentValue?: string
@@ -135,6 +149,25 @@ export function TagRuleDialog({ open, mode, tag, draftName, busy = false, error,
               { value: 'fallback', label: labels.priorityFallback },
             ]}
             onValueChange={(value) => setDraft((current) => ({ ...current, priorityTier: value as TagPriorityTier }))}
+          />
+
+          <SelectField
+            className="field"
+            label={labels.fastModeRewriteMode}
+            name="tagFastModeRewriteMode"
+            value={draft.fastModeRewriteMode}
+            disabled={busy}
+            options={[
+              { value: 'keep_original', label: labels.fastModeKeepOriginal },
+              { value: 'fill_missing', label: labels.fastModeFillMissing },
+              { value: 'force_add', label: labels.fastModeForceAdd },
+              { value: 'force_remove', label: labels.fastModeForceRemove },
+            ]}
+            onValueChange={(value) =>
+              setDraft((current) => ({
+                ...current,
+                fastModeRewriteMode: value as TagFastModeRewriteMode,
+              }))}
           />
 
           <div className="rounded-[1.25rem] border border-base-300/80 bg-base-100/80 p-4">

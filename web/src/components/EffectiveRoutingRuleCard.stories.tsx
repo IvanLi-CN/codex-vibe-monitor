@@ -18,6 +18,10 @@ const labels = {
   priorityPrimary: 'Primary',
   priorityNormal: 'Normal',
   priorityFallback: 'Fallback only',
+  fastModeKeepOriginal: 'Keep original',
+  fastModeFillMissing: 'Fill when missing',
+  fastModeForceAdd: 'Force add',
+  fastModeForceRemove: 'Force remove',
 }
 
 const relaxedRule: EffectiveRoutingRule = {
@@ -27,6 +31,7 @@ const relaxedRule: EffectiveRoutingRule = {
   allowCutOut: true,
   allowCutIn: true,
   priorityTier: 'normal',
+  fastModeRewriteMode: 'keep_original',
   sourceTagIds: [],
   sourceTagNames: [],
   guardRules: [],
@@ -39,6 +44,7 @@ const strictRule: EffectiveRoutingRule = {
   allowCutOut: false,
   allowCutIn: false,
   priorityTier: 'fallback',
+  fastModeRewriteMode: 'force_remove',
   sourceTagIds: [1, 2],
   sourceTagNames: ['vip-routing', 'handoff-blocked'],
   guardRules: [
@@ -92,8 +98,20 @@ export const PrimaryRule: Story = {
     rule: {
       ...relaxedRule,
       priorityTier: 'primary',
+      fastModeRewriteMode: 'force_add',
       sourceTagIds: [9],
       sourceTagNames: ['priority-lane'],
+    },
+  },
+}
+
+export const FillMissingRule: Story = {
+  args: {
+    rule: {
+      ...relaxedRule,
+      fastModeRewriteMode: 'fill_missing',
+      sourceTagIds: [12],
+      sourceTagNames: ['overflow-guard'],
     },
   },
 }

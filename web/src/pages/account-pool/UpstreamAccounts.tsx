@@ -2011,6 +2011,11 @@ export function SharedUpstreamAccountDetailDrawer({
     priorityPrimary: t("accountPool.tags.dialog.priorityPrimary"),
     priorityNormal: t("accountPool.tags.dialog.priorityNormal"),
     priorityFallback: t("accountPool.tags.dialog.priorityFallback"),
+    fastModeRewriteMode: t("accountPool.tags.dialog.fastModeRewriteMode"),
+    fastModeKeepOriginal: t("accountPool.tags.dialog.fastModeKeepOriginal"),
+    fastModeFillMissing: t("accountPool.tags.dialog.fastModeFillMissing"),
+    fastModeForceAdd: t("accountPool.tags.dialog.fastModeForceAdd"),
+    fastModeForceRemove: t("accountPool.tags.dialog.fastModeForceRemove"),
     concurrencyLimit: t("accountPool.tags.dialog.concurrencyLimit"),
     concurrencyHint: t("accountPool.tags.dialog.concurrencyHint"),
     currentValue: t("accountPool.tags.dialog.currentValue"),
@@ -3258,6 +3263,18 @@ export function SharedUpstreamAccountDetailDrawer({
                       ),
                       priorityFallback: t(
                         "accountPool.upstreamAccounts.effectiveRule.priorityFallback",
+                      ),
+                      fastModeKeepOriginal: t(
+                        "accountPool.upstreamAccounts.effectiveRule.fastModeKeepOriginal",
+                      ),
+                      fastModeFillMissing: t(
+                        "accountPool.upstreamAccounts.effectiveRule.fastModeFillMissing",
+                      ),
+                      fastModeForceAdd: t(
+                        "accountPool.upstreamAccounts.effectiveRule.fastModeForceAdd",
+                      ),
+                      fastModeForceRemove: t(
+                        "accountPool.upstreamAccounts.effectiveRule.fastModeForceRemove",
                       ),
                     }}
                   />

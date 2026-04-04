@@ -1843,6 +1843,11 @@ export interface UpstreamAccountDuplicateInfo {
 }
 
 export type TagPriorityTier = "primary" | "normal" | "fallback";
+export type TagFastModeRewriteMode =
+  | "force_remove"
+  | "keep_original"
+  | "fill_missing"
+  | "force_add";
 
 export interface TagRoutingRule {
   guardEnabled: boolean;
@@ -1851,6 +1856,7 @@ export interface TagRoutingRule {
   allowCutOut: boolean;
   allowCutIn: boolean;
   priorityTier?: TagPriorityTier;
+  fastModeRewriteMode?: TagFastModeRewriteMode;
   concurrencyLimit?: number | null;
 }
 
@@ -2512,6 +2518,12 @@ function normalizeTagRoutingRule(raw: unknown): TagRoutingRule {
       payload.priorityTier === "primary" || payload.priorityTier === "fallback"
         ? payload.priorityTier
         : "normal",
+    fastModeRewriteMode:
+      payload.fastModeRewriteMode === "force_remove" ||
+      payload.fastModeRewriteMode === "fill_missing" ||
+      payload.fastModeRewriteMode === "force_add"
+        ? payload.fastModeRewriteMode
+        : "keep_original",
     concurrencyLimit:
       concurrencyLimit != null && concurrencyLimit >= 0
         ? Math.min(concurrencyLimit, 30)
