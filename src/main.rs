@@ -12949,11 +12949,13 @@ async fn send_pool_request_with_failover(
                                 PROXY_FAILURE_POOL_ALL_ACCOUNTS_RATE_LIMITED,
                             )
                         } else {
-                            let mut err = build_pool_no_available_account_error(
-                                attempt_count,
-                                distinct_account_count,
-                                state.pool_no_available_wait.retry_after_secs,
-                            );
+                            let mut err = last_error.unwrap_or_else(|| {
+                                build_pool_no_available_account_error(
+                                    attempt_count,
+                                    distinct_account_count,
+                                    state.pool_no_available_wait.retry_after_secs,
+                                )
+                            });
                             err.attempt_summary = pool_attempt_summary(
                                 attempt_count,
                                 distinct_account_count,

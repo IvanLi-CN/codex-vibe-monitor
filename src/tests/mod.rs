@@ -17163,6 +17163,67 @@ async fn pool_route_wait_timeout_overrides_stale_upstream_failure_with_503() {
 }
 
 #[tokio::test]
+async fn pool_route_no_candidate_after_wait_preserves_last_upstream_failure() {
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_static_failure_responses_upstream(
+        &[("Bearer upstream-primary", StatusCode::INTERNAL_SERVER_ERROR)],
+    )
+    .await;
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(60),
+        Duration::from_millis(10),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let started = Instant::now();
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-no-candidate-preserve-last-error"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert!(
+        started.elapsed() >= Duration::from_millis(50),
+        "request should wait roughly the bounded window before failing"
+    );
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert!(
+        response.headers().get(http_header::RETRY_AFTER).is_none(),
+        "preserved upstream failures should not advertise pool Retry-After"
+    );
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read failure body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode failure payload");
+    assert!(
+        payload["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("pool upstream responded with 500")),
+        "unexpected preserved upstream failure payload: {payload}"
+    );
+
+    wait_for_pool_attempt_row_count(&state.pool, 3).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 3);
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn pool_route_skips_ungrouped_account_when_grouped_alternate_exists() {
     let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
     let state =

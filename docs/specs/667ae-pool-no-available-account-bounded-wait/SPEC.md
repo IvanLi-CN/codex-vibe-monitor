@@ -17,7 +17,7 @@
 ### Goals
 
 - 当 pool 进入 generic `Unavailable / NoCandidate` 时，服务端先内部等待最多 `10s`，有账号恢复即可继续同一请求。
-- 若等待窗口结束仍无账号，则对调用方返回 `503 Service Unavailable`，并带 `Retry-After: 10`。
+- 若等待窗口结束仍无账号，则对调用方返回 `503 Service Unavailable`，并带 `Retry-After: 10`；但如果当前请求已经拿到具体 upstream failure 且之后只是 `NoCandidate` 耗尽，则继续保留那个具体 upstream 错误。
 - 保持 `RateLimited -> 429`、`DegradedOnly -> 503`、`pool_no_alternate_upstream_after_timeout -> 502` 的现有语义不变。
 - `BlockedByPolicy` 改为即时 `503`，保留具体错误 message，但不进入等待。
 - 纯等待阶段不得写入伪造的 `pool_upstream_request_attempts`。
@@ -36,6 +36,7 @@
 - `send_pool_request_with_failover()` 在 generic no-account 分支也必须复用该 helper；但当终态已经是 `429 exhaustion` 或 `no alternate after timeout` 时，不进入该等待。
 - 等待期间每轮只重新调用既有 resolver；在真正选中账号前，不得创建 upstream attempt row。
 - generic no-account 最终 message 保持 `no healthy pool account is available`，仅状态码从 `502` 改为 `503`。
+- `Unavailable` 在等待耗尽后必须落到新的 generic `503`；`NoCandidate` 若没有更具体的 `last_error` 才落到 generic `503`，否则保留最后一次真实 upstream failure。
 - `BlockedByPolicy` 对外状态码改为 `503`，但不附带 `Retry-After`。
 
 ## 接口契约（Interfaces & Contracts）
@@ -51,7 +52,8 @@
 
 - Given pool 当前只有 generic `Unavailable / NoCandidate`，When 新请求到达，Then 服务端最多等待 `10s`，而不是立即返回 `502`。
 - Given 等待窗口内账号恢复可选，When 同一请求继续执行，Then 请求成功命中上游，且等待阶段没有伪造 attempt row。
-- Given 等待窗口结束仍无账号，When 请求返回，Then 调用方收到 `503`、body 为现有 error JSON 壳，且包含 `Retry-After: 10`。
+- Given 等待窗口结束仍无账号且不存在更具体的 upstream failure，When 请求返回，Then 调用方收到 `503`、body 为现有 error JSON 壳，且包含 `Retry-After: 10`。
+- Given 当前请求已经拿到具体 upstream failure，When 后续 fresh candidate 在等待后仍是 `NoCandidate`，Then 对外继续保留该 upstream failure，而不是改写成 generic `503`。
 - Given 终态属于 `BlockedByPolicy`，When 请求返回，Then 状态码为 `503` 且 message 保持具体原因，不等待、不附 `Retry-After`。
 - Given 终态属于 `RateLimited`、`DegradedOnly` 或 `pool_no_alternate_upstream_after_timeout`，When 请求返回，Then 它们保持原有状态码与 message，不被这次修复改变。
 
