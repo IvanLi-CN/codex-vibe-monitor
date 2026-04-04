@@ -2,10 +2,12 @@
 import { type ReactNode, useEffect, useRef, useState } from 'react'
 import { AppIcon } from './AppIcon'
 import { Badge } from './ui/badge'
+import { Button } from './ui/button'
 import { Spinner } from './ui/spinner'
 import {
   fetchInvocationPoolAttempts,
   type ApiInvocation,
+  type ApiInvocationAbnormalResponseBodyPreview,
   type ApiPoolUpstreamRequestAttempt,
 } from '../lib/api'
 import {
@@ -94,6 +96,11 @@ interface InvocationExpandedDetailsProps {
   detailNotice: string | null
   size: DetailPanelSize
   poolAttemptsState: InvocationPoolAttemptsState
+  abnormalResponseBody?: ApiInvocationAbnormalResponseBodyPreview | null
+  abnormalResponseBodyLoading?: boolean
+  abnormalResponseBodyError?: string | null
+  onOpenFullDetails?: (() => void) | null
+  showFullDetailsAction?: boolean
   t: Translator
 }
 
@@ -1063,6 +1070,20 @@ function renderPoolAttemptsContent(
   )
 }
 
+function resolveUnavailableResponseBodyMessage(
+  reason: string | null | undefined,
+  t: Translator,
+) {
+  const normalized = reason?.trim().toLowerCase() ?? ''
+  if (normalized === 'not_abnormal') return t('table.responseBody.unavailable.notAbnormal')
+  if (normalized === 'detail_pruned') return t('table.responseBody.unavailable.detailPruned')
+  if (normalized.startsWith('raw_file_missing')) return t('table.responseBody.unavailable.rawFileMissing')
+  if (normalized.startsWith('raw_file_unreadable')) return t('table.responseBody.unavailable.rawFileUnreadable')
+  if (normalized.startsWith('preview_only')) return t('table.responseBody.unavailable.previewOnly')
+  if (normalized.startsWith('missing_body')) return t('table.responseBody.unavailable.missingBody')
+  return t('table.responseBody.unavailable.generic')
+}
+
 export function InvocationExpandedDetails({
   record,
   detailId,
@@ -1072,8 +1093,19 @@ export function InvocationExpandedDetails({
   detailNotice,
   size,
   poolAttemptsState,
+  abnormalResponseBody,
+  abnormalResponseBodyLoading = false,
+  abnormalResponseBodyError,
+  onOpenFullDetails,
+  showFullDetailsAction = false,
   t,
 }: InvocationExpandedDetailsProps) {
+  const showResponseBodySection =
+    abnormalResponseBody != null ||
+    abnormalResponseBodyLoading ||
+    Boolean(abnormalResponseBodyError) ||
+    showFullDetailsAction
+
   return (
     <div id={detailId} className={cn('flex flex-col gap-4', size === 'compact' ? 'p-3' : 'p-4')}>
       {detailNotice ? (
@@ -1116,6 +1148,57 @@ export function InvocationExpandedDetails({
           ))}
         </div>
       </div>
+
+      {showResponseBodySection ? (
+        <div className="flex flex-col gap-2" data-testid="invocation-response-body-section">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <span className="text-xs font-semibold uppercase tracking-wide text-base-content/70">
+              {t('table.responseBody.title')}
+            </span>
+            {showFullDetailsAction && onOpenFullDetails ? (
+              <Button type="button" variant="outline" size="sm" onClick={onOpenFullDetails}>
+                {t('table.responseBody.openFullDetails')}
+              </Button>
+            ) : null}
+          </div>
+
+          {abnormalResponseBodyLoading ? (
+            <div
+              className="inline-flex items-center gap-2 rounded-lg border border-base-300/70 bg-base-200/45 px-3 py-2 text-sm text-base-content/70"
+              data-testid="invocation-response-body-loading"
+            >
+              <Spinner size="sm" aria-label={t('table.responseBody.loading')} />
+              <span>{t('table.responseBody.loading')}</span>
+            </div>
+          ) : abnormalResponseBodyError ? (
+            <div
+              className="rounded-lg border border-error/25 bg-error/8 px-3 py-2 text-sm text-error"
+              data-testid="invocation-response-body-error"
+            >
+              {t('table.responseBody.loadError', { error: abnormalResponseBodyError })}
+            </div>
+          ) : abnormalResponseBody?.available && abnormalResponseBody.previewText ? (
+            <>
+              <pre
+                className="max-h-72 overflow-auto rounded-lg border border-base-300/70 bg-base-100/70 p-3 whitespace-pre-wrap break-words font-mono text-sm"
+                data-testid="invocation-response-body-preview"
+              >
+                {abnormalResponseBody.previewText}
+              </pre>
+              {abnormalResponseBody.hasMore ? (
+                <p className="text-xs text-base-content/60">{t('table.responseBody.previewTruncated')}</p>
+              ) : null}
+            </>
+          ) : abnormalResponseBody ? (
+            <div
+              className="rounded-lg border border-base-300/70 bg-base-200/45 px-3 py-2 text-sm text-base-content/70"
+              data-testid="invocation-response-body-unavailable"
+            >
+              {resolveUnavailableResponseBodyMessage(abnormalResponseBody.unavailableReason, t)}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       {renderPoolAttemptsContent(record, poolAttemptsState, t)}
 

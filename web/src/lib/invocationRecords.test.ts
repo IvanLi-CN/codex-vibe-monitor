@@ -98,14 +98,14 @@ describe('buildAppliedInvocationFilters', () => {
     expect(query.model).toBe('gpt-5.4-mini')
   })
 
-  it('preserves upstream scope across applied filters and suggestion queries', () => {
+  it('normalizes requestId across applied filters and suggestion queries', () => {
     const draft = {
       ...createDefaultInvocationRecordsDraft(),
-      upstreamScope: 'internal' as const,
+      requestId: ' invoke-123 ',
     }
 
-    expect(buildAppliedInvocationFilters(draft).upstreamScope).toBe('internal')
-    expect(buildInvocationSuggestionsQuery(draft, 42).upstreamScope).toBe('internal')
+    expect(buildAppliedInvocationFilters(draft).requestId).toBe('invoke-123')
+    expect(buildInvocationSuggestionsQuery(draft, 42).requestId).toBe('invoke-123')
   })
 
   it('tolerates invalid draft values when building suggestion queries', () => {

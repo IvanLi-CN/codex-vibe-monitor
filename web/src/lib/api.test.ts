@@ -703,11 +703,11 @@ describe("account pool frontend API helpers", () => {
     vi.unstubAllGlobals();
   });
 
-  it("adds upstreamScope to invocation records query parameters", async () => {
+  it("adds requestId to invocation records query parameters", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
       expect(url).toContain("/api/invocations?");
-      expect(url).toContain("upstreamScope=internal");
+      expect(url).toContain("requestId=invoke-123");
       return new Response(
         JSON.stringify({
           snapshotId: 1,
@@ -721,7 +721,7 @@ describe("account pool frontend API helpers", () => {
     });
     vi.stubGlobal("fetch", fetchMock as typeof fetch);
 
-    await fetchInvocationRecords({ upstreamScope: "internal" });
+    await fetchInvocationRecords({ requestId: "invoke-123" });
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
