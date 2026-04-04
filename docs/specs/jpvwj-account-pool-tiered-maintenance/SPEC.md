@@ -170,7 +170,7 @@ PR: include
   submission_gate: approved
   story_id_or_title: `Account Pool/Pages/Upstream Accounts/Overlays/Routing Dialog Maintenance Only Save`
   state: persisted high-frequency maintenance settings
-  evidence_note: 验证高级路由与同步设置弹窗已将 maintenance 说明与字段标题统一为“高频同步”，并在仅保存 maintenance 参数后回显新的高频、次级和主层上限数值。
+  evidence_note: 验证高级路由与同步设置弹窗将“高频同步”限定在 maintenance 说明文案中，同时保留“优先队列同步间隔 / 次级队列同步间隔”的原有可配置字段语义，并在仅保存 maintenance 参数后回显新的优先、次级和主层上限数值。
   image:
   ![High-frequency maintenance routing dialog](./assets/high-frequency-maintenance-routing-dialog.png)
 
