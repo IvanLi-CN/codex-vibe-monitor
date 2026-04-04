@@ -33,6 +33,11 @@ interface AccountTagFieldLabels {
   priorityPrimary: string
   priorityNormal: string
   priorityFallback: string
+  fastModeRewriteMode: string
+  fastModeKeepOriginal: string
+  fastModeFillMissing: string
+  fastModeForceAdd: string
+  fastModeForceRemove: string
   concurrencyLimit?: string
   concurrencyHint?: string
   currentValue?: string
@@ -286,6 +291,11 @@ export function AccountTagField({
           priorityPrimary: labels.priorityPrimary,
           priorityNormal: labels.priorityNormal,
           priorityFallback: labels.priorityFallback,
+          fastModeRewriteMode: labels.fastModeRewriteMode,
+          fastModeKeepOriginal: labels.fastModeKeepOriginal,
+          fastModeFillMissing: labels.fastModeFillMissing,
+          fastModeForceAdd: labels.fastModeForceAdd,
+          fastModeForceRemove: labels.fastModeForceRemove,
           concurrencyLimit: labels.concurrencyLimit,
           concurrencyHint: labels.concurrencyHint,
           currentValue: labels.currentValue,

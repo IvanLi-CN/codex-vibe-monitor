@@ -1,6 +1,12 @@
 import { Badge } from './ui/badge'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card'
 import type { EffectiveRoutingRule } from '../lib/api'
+import {
+  fastModeRewriteBadgeLabel,
+  fastModeRewriteBadgeVariant,
+  priorityTierBadgeLabel,
+  priorityTierBadgeVariant,
+} from '../lib/tagRoutingRule'
 
 interface EffectiveRoutingRuleCardProps {
   rule?: EffectiveRoutingRule | null
@@ -20,6 +26,10 @@ interface EffectiveRoutingRuleCardProps {
     priorityPrimary: string
     priorityNormal: string
     priorityFallback: string
+    fastModeKeepOriginal: string
+    fastModeFillMissing: string
+    fastModeForceAdd: string
+    fastModeForceRemove: string
   }
 }
 
@@ -31,22 +41,11 @@ export function EffectiveRoutingRuleCard({ rule, labels }: EffectiveRoutingRuleC
     allowCutOut: true,
     allowCutIn: true,
     priorityTier: 'normal',
+    fastModeRewriteMode: 'keep_original',
     sourceTagIds: [],
     sourceTagNames: [],
     guardRules: [],
   }
-  const priorityVariant: 'default' | 'secondary' | 'warning' =
-    resolvedRule.priorityTier === 'primary'
-      ? 'default'
-      : resolvedRule.priorityTier === 'fallback'
-        ? 'warning'
-        : 'secondary'
-  const priorityLabel =
-    resolvedRule.priorityTier === 'primary'
-      ? labels.priorityPrimary
-      : resolvedRule.priorityTier === 'fallback'
-        ? labels.priorityFallback
-        : labels.priorityNormal
 
   return (
     <Card className="border-base-300/80 bg-base-100/72">
@@ -56,8 +55,11 @@ export function EffectiveRoutingRuleCard({ rule, labels }: EffectiveRoutingRuleC
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex flex-wrap gap-2">
-          <Badge variant={priorityVariant}>
-            {priorityLabel}
+          <Badge variant={priorityTierBadgeVariant(resolvedRule.priorityTier)}>
+            {priorityTierBadgeLabel(resolvedRule.priorityTier, labels)}
+          </Badge>
+          <Badge variant={fastModeRewriteBadgeVariant(resolvedRule.fastModeRewriteMode)}>
+            {fastModeRewriteBadgeLabel(resolvedRule.fastModeRewriteMode, labels)}
           </Badge>
           <Badge variant={resolvedRule.guardEnabled ? 'default' : 'secondary'}>
             {resolvedRule.guardEnabled ? labels.guardEnabled : labels.guardDisabled}

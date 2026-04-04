@@ -50,6 +50,11 @@ const labels = {
   priorityPrimary: 'Primary',
   priorityNormal: 'Normal',
   priorityFallback: 'Fallback only',
+  fastModeRewriteMode: 'Fast mode',
+  fastModeKeepOriginal: 'Keep original',
+  fastModeFillMissing: 'Fill when missing',
+  fastModeForceAdd: 'Force add',
+  fastModeForceRemove: 'Force remove',
   concurrencyLimit: 'Concurrency limit',
   concurrencyHint: 'Use 1-30. The last step means unlimited.',
   currentValue: 'Current',
@@ -87,6 +92,7 @@ describe('TagRuleDialog', () => {
       expect.objectContaining({
         name: 'vip',
         priorityTier: 'normal',
+        fastModeRewriteMode: 'keep_original',
         concurrencyLimit: 0,
       }),
     )
@@ -104,6 +110,7 @@ describe('TagRuleDialog', () => {
         allowCutOut: true,
         allowCutIn: true,
         priorityTier: 'primary',
+        fastModeRewriteMode: 'force_remove',
         concurrencyLimit: 6,
       },
       accountCount: 0,
@@ -133,6 +140,7 @@ describe('TagRuleDialog', () => {
       expect.objectContaining({
         name: 'lane',
         priorityTier: 'primary',
+        fastModeRewriteMode: 'force_remove',
         concurrencyLimit: 6,
       }),
     )

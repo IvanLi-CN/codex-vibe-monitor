@@ -1,6 +1,7 @@
 import { useEffect, useRef, type ReactNode } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { expect, within } from 'storybook/test'
 import { I18nProvider } from '../i18n'
 import type { CreateTagPayload, TagDetail, TagListResponse, TagSummary, UpdateTagPayload } from '../lib/api'
 import AccountPoolLayout from '../pages/account-pool/AccountPoolLayout'
@@ -17,6 +18,7 @@ const baseTags: TagSummary[] = [
       allowCutOut: true,
       allowCutIn: false,
       priorityTier: 'primary',
+      fastModeRewriteMode: 'force_add',
     },
     accountCount: 3,
     groupCount: 2,
@@ -32,6 +34,7 @@ const baseTags: TagSummary[] = [
       allowCutOut: false,
       allowCutIn: false,
       priorityTier: 'fallback',
+      fastModeRewriteMode: 'force_remove',
     },
     accountCount: 2,
     groupCount: 1,
@@ -47,6 +50,7 @@ const baseTags: TagSummary[] = [
       allowCutOut: true,
       allowCutIn: true,
       priorityTier: 'normal',
+      fastModeRewriteMode: 'keep_original',
     },
     accountCount: 1,
     groupCount: 1,
@@ -137,6 +141,7 @@ function StorybookTagsMock({ children }: { children: ReactNode }) {
           allowCutIn: true,
           allowCutOut: true,
           priorityTier: 'normal',
+          fastModeRewriteMode: 'keep_original',
         } as CreateTagPayload)
         const next: TagSummary = {
           id: store.nextId++,
@@ -148,6 +153,7 @@ function StorybookTagsMock({ children }: { children: ReactNode }) {
             allowCutOut: body.allowCutOut,
             allowCutIn: body.allowCutIn,
             priorityTier: body.priorityTier ?? 'normal',
+            fastModeRewriteMode: body.fastModeRewriteMode ?? 'keep_original',
           },
           accountCount: 0,
           groupCount: 0,
@@ -174,6 +180,8 @@ function StorybookTagsMock({ children }: { children: ReactNode }) {
               allowCutOut: body.allowCutOut ?? tag.routingRule.allowCutOut,
               allowCutIn: body.allowCutIn ?? tag.routingRule.allowCutIn,
               priorityTier: body.priorityTier ?? tag.routingRule.priorityTier ?? 'normal',
+              fastModeRewriteMode:
+                body.fastModeRewriteMode ?? tag.routingRule.fastModeRewriteMode ?? 'keep_original',
             },
             updatedAt: '2026-03-14T10:20:00.000Z',
           }
@@ -243,8 +251,20 @@ type Story = StoryObj<typeof meta>
 
 export const Default: Story = {
   render: () => <TagsPageRouter />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.findByText('强制补充')).resolves.toBeTruthy()
+    await expect(canvas.findByText('强制去掉')).resolves.toBeTruthy()
+    await expect(canvas.findByText('保持原样')).resolves.toBeTruthy()
+  },
 }
 
 export const GuardFilterEnabled: Story = {
   render: () => <TagsPageRouter initialEntry="/account-pool/tags?guardEnabled=true" />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.findByText('vip-routing')).resolves.toBeTruthy()
+    await expect(canvas.findByText('warm-standby')).resolves.toBeTruthy()
+    expect(canvas.queryByText('handoff-blocked')).toBeNull()
+  },
 }

@@ -9,6 +9,12 @@ import { Spinner } from '../../components/ui/spinner'
 import { TagRuleDialog } from '../../components/TagRuleDialog'
 import { usePoolTags } from '../../hooks/usePoolTags'
 import type { CreateTagPayload, TagSummary, UpdateTagPayload } from '../../lib/api'
+import {
+  fastModeRewriteBadgeLabel,
+  fastModeRewriteBadgeVariant,
+  priorityTierBadgeLabel,
+  priorityTierBadgeVariant,
+} from '../../lib/tagRoutingRule'
 import { useTranslation } from '../../i18n'
 
 type TernaryFilter = 'all' | 'true' | 'false'
@@ -30,18 +36,6 @@ function RuleBadge({
       {label}
     </Badge>
   )
-}
-
-function priorityBadgeVariant(priorityTier: string | undefined) {
-  if (priorityTier === 'primary') return 'default' as const
-  if (priorityTier === 'fallback') return 'warning' as const
-  return 'secondary' as const
-}
-
-function priorityBadgeLabel(priorityTier: string | undefined, t: ReturnType<typeof useTranslation>['t']) {
-  if (priorityTier === 'primary') return t('accountPool.tags.rule.priorityPrimary')
-  if (priorityTier === 'fallback') return t('accountPool.tags.rule.priorityFallback')
-  return t('accountPool.tags.rule.priorityNormal')
 }
 
 export default function TagsPage() {
@@ -240,8 +234,21 @@ export default function TagsPage() {
                       <td className="px-4 py-4 text-sm text-base-content/70">
                         <div className="flex flex-wrap gap-2">
                           <RuleBadge
-                            variant={priorityBadgeVariant(tag.routingRule.priorityTier)}
-                            label={priorityBadgeLabel(tag.routingRule.priorityTier, t)}
+                            variant={priorityTierBadgeVariant(tag.routingRule.priorityTier)}
+                            label={priorityTierBadgeLabel(tag.routingRule.priorityTier, {
+                              priorityPrimary: t('accountPool.tags.rule.priorityPrimary'),
+                              priorityNormal: t('accountPool.tags.rule.priorityNormal'),
+                              priorityFallback: t('accountPool.tags.rule.priorityFallback'),
+                            })}
+                          />
+                          <RuleBadge
+                            variant={fastModeRewriteBadgeVariant(tag.routingRule.fastModeRewriteMode)}
+                            label={fastModeRewriteBadgeLabel(tag.routingRule.fastModeRewriteMode, {
+                              fastModeKeepOriginal: t('accountPool.tags.rule.fastModeKeepOriginal'),
+                              fastModeFillMissing: t('accountPool.tags.rule.fastModeFillMissing'),
+                              fastModeForceAdd: t('accountPool.tags.rule.fastModeForceAdd'),
+                              fastModeForceRemove: t('accountPool.tags.rule.fastModeForceRemove'),
+                            })}
                           />
                           {tag.routingRule.guardEnabled ? (
                             <RuleBadge
@@ -330,6 +337,11 @@ export default function TagsPage() {
           priorityPrimary: t('accountPool.tags.dialog.priorityPrimary'),
           priorityNormal: t('accountPool.tags.dialog.priorityNormal'),
           priorityFallback: t('accountPool.tags.dialog.priorityFallback'),
+          fastModeRewriteMode: t('accountPool.tags.dialog.fastModeRewriteMode'),
+          fastModeKeepOriginal: t('accountPool.tags.dialog.fastModeKeepOriginal'),
+          fastModeFillMissing: t('accountPool.tags.dialog.fastModeFillMissing'),
+          fastModeForceAdd: t('accountPool.tags.dialog.fastModeForceAdd'),
+          fastModeForceRemove: t('accountPool.tags.dialog.fastModeForceRemove'),
           concurrencyLimit: t('accountPool.tags.dialog.concurrencyLimit'),
           concurrencyHint: t('accountPool.tags.dialog.concurrencyHint'),
           currentValue: t('accountPool.tags.dialog.currentValue'),

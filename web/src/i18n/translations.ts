@@ -606,6 +606,14 @@ const baseTranslations = {
       "Normal",
     "accountPool.upstreamAccounts.effectiveRule.priorityFallback":
       "Fallback only",
+    "accountPool.upstreamAccounts.effectiveRule.fastModeKeepOriginal":
+      "Keep original",
+    "accountPool.upstreamAccounts.effectiveRule.fastModeFillMissing":
+      "Fill when missing",
+    "accountPool.upstreamAccounts.effectiveRule.fastModeForceAdd":
+      "Force add",
+    "accountPool.upstreamAccounts.effectiveRule.fastModeForceRemove":
+      "Force remove",
     "accountPool.upstreamAccounts.effectiveRule.sourceTags": "Rule source tags",
     "accountPool.upstreamAccounts.effectiveRule.guardRule":
       "Max {{count}} conversations within {{hours}} hour(s)",
@@ -798,6 +806,10 @@ const baseTranslations = {
     "accountPool.tags.rule.priorityPrimary": "Primary",
     "accountPool.tags.rule.priorityNormal": "Normal",
     "accountPool.tags.rule.priorityFallback": "Fallback only",
+    "accountPool.tags.rule.fastModeKeepOriginal": "Keep original",
+    "accountPool.tags.rule.fastModeFillMissing": "Fill when missing",
+    "accountPool.tags.rule.fastModeForceAdd": "Force add",
+    "accountPool.tags.rule.fastModeForceRemove": "Force remove",
     "accountPool.tags.rule.concurrency": "Concurrency {{count}}",
     "accountPool.tags.field.label": "Tags",
     "accountPool.tags.field.add": "Add tag",
@@ -829,6 +841,11 @@ const baseTranslations = {
     "accountPool.tags.dialog.priorityPrimary": "Primary",
     "accountPool.tags.dialog.priorityNormal": "Normal",
     "accountPool.tags.dialog.priorityFallback": "Fallback only",
+    "accountPool.tags.dialog.fastModeRewriteMode": "Fast mode",
+    "accountPool.tags.dialog.fastModeKeepOriginal": "Keep original",
+    "accountPool.tags.dialog.fastModeFillMissing": "Fill when missing",
+    "accountPool.tags.dialog.fastModeForceAdd": "Force add",
+    "accountPool.tags.dialog.fastModeForceRemove": "Force remove",
     "accountPool.tags.dialog.concurrencyLimit": "Concurrency limit",
     "accountPool.tags.dialog.concurrencyHint":
       "Use 1-30 to cap fresh assignments. The final slider step means unlimited.",
@@ -2193,6 +2210,13 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.priorityPrimary": "主力",
     "accountPool.upstreamAccounts.effectiveRule.priorityNormal": "正常",
     "accountPool.upstreamAccounts.effectiveRule.priorityFallback": "兜底",
+    "accountPool.upstreamAccounts.effectiveRule.fastModeKeepOriginal":
+      "保持原样",
+    "accountPool.upstreamAccounts.effectiveRule.fastModeFillMissing":
+      "缺少时补充",
+    "accountPool.upstreamAccounts.effectiveRule.fastModeForceAdd": "强制补充",
+    "accountPool.upstreamAccounts.effectiveRule.fastModeForceRemove":
+      "强制去掉",
     "accountPool.upstreamAccounts.effectiveRule.sourceTags": "规则来源 tag",
     "accountPool.upstreamAccounts.effectiveRule.guardRule":
       "{{hours}} 小时内最多 {{count}} 个对话",
@@ -2377,6 +2401,10 @@ const baseTranslations = {
     "accountPool.tags.rule.priorityPrimary": "主力",
     "accountPool.tags.rule.priorityNormal": "正常",
     "accountPool.tags.rule.priorityFallback": "兜底",
+    "accountPool.tags.rule.fastModeKeepOriginal": "保持原样",
+    "accountPool.tags.rule.fastModeFillMissing": "缺少时补充",
+    "accountPool.tags.rule.fastModeForceAdd": "强制补充",
+    "accountPool.tags.rule.fastModeForceRemove": "强制去掉",
     "accountPool.tags.rule.concurrency": "并发 {{count}}",
     "accountPool.tags.field.label": "Tags",
     "accountPool.tags.field.add": "添加 tag",
@@ -2405,6 +2433,11 @@ const baseTranslations = {
     "accountPool.tags.dialog.priorityPrimary": "主力",
     "accountPool.tags.dialog.priorityNormal": "正常",
     "accountPool.tags.dialog.priorityFallback": "兜底",
+    "accountPool.tags.dialog.fastModeRewriteMode": "Fast 模式",
+    "accountPool.tags.dialog.fastModeKeepOriginal": "保持原样",
+    "accountPool.tags.dialog.fastModeFillMissing": "缺少时补充",
+    "accountPool.tags.dialog.fastModeForceAdd": "强制补充",
+    "accountPool.tags.dialog.fastModeForceRemove": "强制去掉",
     "accountPool.tags.dialog.concurrencyLimit": "并发限制",
     "accountPool.tags.dialog.concurrencyHint":
       "用 1-30 限制新分配并发，最后一档表示无限。",
