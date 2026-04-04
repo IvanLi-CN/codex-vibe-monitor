@@ -17320,8 +17320,7 @@ async fn pool_route_body_sticky_returns_503_after_wait_timeout() {
 }
 
 #[tokio::test]
-async fn pool_route_body_sticky_wait_timeout_respects_responses_total_timeout_before_first_attempt()
-{
+async fn pool_route_body_sticky_wait_timeout_returns_total_timeout_error_before_first_attempt() {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -17366,13 +17365,13 @@ async fn pool_route_body_sticky_wait_timeout_respects_responses_total_timeout_be
         elapsed < Duration::from_millis(150),
         "responses total timeout should cap the pre-attempt no-account wait, elapsed={elapsed:?}"
     );
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
     assert_eq!(
         response
             .headers()
             .get(http_header::RETRY_AFTER)
             .and_then(|value| value.to_str().ok()),
-        Some("10")
+        None
     );
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
@@ -17380,9 +17379,9 @@ async fn pool_route_body_sticky_wait_timeout_respects_responses_total_timeout_be
     let payload: Value = serde_json::from_slice(&body).expect("decode failure payload");
     assert_eq!(
         payload["error"].as_str(),
-        Some(POOL_NO_AVAILABLE_ACCOUNT_MESSAGE)
+        Some(pool_total_timeout_exhausted_message(Duration::from_millis(45)).as_str())
     );
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
 }
 
 #[tokio::test]
@@ -17416,12 +17415,66 @@ async fn resolve_pool_account_for_request_with_wait_respects_external_deadline()
         "helper should stop on the external deadline instead of sleeping for the full wait window, elapsed={elapsed:?}"
     );
     assert!(
-        matches!(resolution, PoolAccountResolution::Unavailable),
-        "expected blocked account to stay unavailable, got {resolution:?}"
+        matches!(
+            resolution,
+            PoolAccountResolutionWithWait::TotalTimeoutExpired
+        ),
+        "expected helper to stop on the external deadline, got {resolution:?}"
     );
     assert!(
         wait_deadline.is_some(),
         "bounded waits should record the deadline once they actually start"
+    );
+}
+
+#[tokio::test]
+async fn resolve_pool_account_for_request_with_wait_rejects_recovery_after_external_deadline() {
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        Duration::from_secs(2),
+        Duration::from_millis(10),
+    )
+    .await;
+    let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
+    let delayed_id = insert_test_pool_api_key_account(&state, "Delayed", "upstream-delayed").await;
+    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+    set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
+
+    let pool = state.pool.clone();
+    let delayed_release_task = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(70)).await;
+        set_test_account_status(&pool, delayed_id, "active").await;
+    });
+
+    let started = Instant::now();
+    let mut wait_deadline = None;
+    let resolution = resolve_pool_account_for_request_with_wait(
+        state.as_ref(),
+        None,
+        &[],
+        &HashSet::new(),
+        true,
+        &mut wait_deadline,
+        Some(Instant::now() + Duration::from_millis(40)),
+    )
+    .await
+    .expect("helper resolution should succeed");
+    let elapsed = started.elapsed();
+
+    delayed_release_task
+        .await
+        .expect("delayed release task should join");
+
+    assert!(
+        elapsed < Duration::from_millis(200),
+        "helper should stop on the external deadline before late recovery, elapsed={elapsed:?}"
+    );
+    assert!(
+        matches!(
+            resolution,
+            PoolAccountResolutionWithWait::TotalTimeoutExpired
+        ),
+        "late recovery after the deadline must not be accepted, got {resolution:?}"
     );
 }
 
@@ -21732,16 +21785,17 @@ async fn proxy_openai_v1_header_sticky_stream_waits_for_body_sticky_override_bef
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_header_sticky_responses_wait_timeout_respects_total_timeout_after_body() {
+async fn proxy_openai_v1_header_sticky_responses_wait_timeout_respects_total_timeout_from_request_start()
+ {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
-    config.pool_upstream_responses_total_timeout = Duration::from_millis(45);
+    config.pool_upstream_responses_total_timeout = Duration::from_millis(90);
     let state = test_state_from_config_with_pool_no_available_wait(
         config,
         true,
         PoolNoAvailableWaitSettings {
-            timeout: Duration::from_millis(220),
+            timeout: Duration::from_millis(400),
             poll_interval: Duration::from_millis(10),
             retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
         },
@@ -21755,6 +21809,16 @@ async fn proxy_openai_v1_header_sticky_responses_wait_timeout_respects_total_tim
         .await
         .expect("resolve pool runtime timeouts");
     let started = Instant::now();
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    tokio::spawn(async move {
+        let _ = tx
+            .send(Ok(Bytes::from_static(b"{\"model\":\"gpt-5\",")))
+            .await;
+        tokio::time::sleep(Duration::from_millis(180)).await;
+        let _ = tx
+            .send(Ok(Bytes::from_static(b"\"input\":\"hello\"}")))
+            .await;
+    });
     let response = proxy_openai_v1_via_pool(
         state.clone(),
         6243,
@@ -21774,19 +21838,19 @@ async fn proxy_openai_v1_header_sticky_responses_wait_timeout_respects_total_tim
                 HeaderValue::from_static("application/json"),
             ),
         ]),
-        Body::from(r#"{"model":"gpt-5","input":"hello"}"#.as_bytes().to_vec()),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
     )
     .await;
     let elapsed = started.elapsed();
 
     assert!(
-        elapsed >= Duration::from_millis(25),
-        "request should still wait briefly before failing, elapsed={elapsed:?}"
+        elapsed >= Duration::from_millis(150),
+        "request should wait for the streamed body before failing, elapsed={elapsed:?}"
     );
     assert!(
-        elapsed < Duration::from_millis(150),
-        "responses total timeout should cap the header-sticky no-account wait, elapsed={elapsed:?}"
+        elapsed < Duration::from_millis(240),
+        "responses total timeout should start from request entry, not after body buffering, elapsed={elapsed:?}"
     );
     let (status, message) = response.expect_err("via-pool request should fail");
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);

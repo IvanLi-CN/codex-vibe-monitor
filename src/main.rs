@@ -12176,6 +12176,12 @@ impl PoolNoAvailableWaitSettings {
     }
 }
 
+#[derive(Debug)]
+enum PoolAccountResolutionWithWait {
+    Resolution(PoolAccountResolution),
+    TotalTimeoutExpired,
+}
+
 const POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS: u8 = 3;
 const OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES: usize = 8 * 1024 * 1024;
 
@@ -12577,10 +12583,13 @@ async fn resolve_pool_account_for_request_with_wait(
     wait_for_no_available: bool,
     wait_deadline: &mut Option<Instant>,
     total_timeout_deadline: Option<Instant>,
-) -> Result<PoolAccountResolution> {
+) -> Result<PoolAccountResolutionWithWait> {
     let poll_interval = state.pool_no_available_wait.normalized_poll_interval();
 
     loop {
+        if total_timeout_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
+            return Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired);
+        }
         let resolution = resolve_pool_account_for_request(
             state,
             sticky_key,
@@ -12588,6 +12597,11 @@ async fn resolve_pool_account_for_request_with_wait(
             excluded_upstream_route_keys,
         )
         .await?;
+        if total_timeout_deadline.is_some_and(|deadline| Instant::now() >= deadline)
+            && matches!(resolution, PoolAccountResolution::Resolved(_))
+        {
+            return Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired);
+        }
         match resolution {
             PoolAccountResolution::Unavailable | PoolAccountResolution::NoCandidate
                 if wait_for_no_available =>
@@ -12604,14 +12618,14 @@ async fn resolve_pool_account_for_request_with_wait(
                     .unwrap_or(wait_deadline);
                 let now = Instant::now();
                 if now >= effective_deadline {
-                    return Ok(resolution);
+                    return Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired);
                 }
                 tokio::time::sleep(
                     poll_interval.min(effective_deadline.saturating_duration_since(now)),
                 )
                 .await;
             }
-            _ => return Ok(resolution),
+            _ => return Ok(PoolAccountResolutionWithWait::Resolution(resolution)),
         }
     }
 }
@@ -12833,21 +12847,55 @@ async fn send_pool_request_with_failover(
             )
             .await
             {
-                Ok(PoolAccountResolution::Resolved(account)) => account,
-                Ok(PoolAccountResolution::RateLimited) => {
+                Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Resolved(
+                    account,
+                ))) => account,
+                Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired) => {
+                    let final_error = build_pool_total_timeout_exhausted_error(
+                        responses_total_timeout.expect("responses total timeout should be present"),
+                        last_error,
+                        attempt_count,
+                        distinct_account_count,
+                    );
+                    if let Some(trace) = trace_context.as_ref()
+                        && let Err(err) = insert_pool_upstream_terminal_attempt(
+                            &state.pool,
+                            trace,
+                            &final_error,
+                            (attempt_count + 1) as i64,
+                            distinct_account_count as i64,
+                            PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED,
+                        )
+                        .await
+                    {
+                        warn!(
+                            invoke_id = trace.invoke_id,
+                            error = %err,
+                            "failed to persist pool total-timeout exhaustion attempt"
+                        );
+                    }
+                    return Err(final_error);
+                }
+                Ok(PoolAccountResolutionWithWait::Resolution(
+                    PoolAccountResolution::RateLimited,
+                )) => {
                     return Err(build_pool_rate_limited_error(
                         attempt_count,
                         distinct_account_count,
                         PROXY_FAILURE_POOL_ALL_ACCOUNTS_RATE_LIMITED,
                     ));
                 }
-                Ok(PoolAccountResolution::DegradedOnly) => {
+                Ok(PoolAccountResolutionWithWait::Resolution(
+                    PoolAccountResolution::DegradedOnly,
+                )) => {
                     return Err(build_pool_degraded_only_error(
                         attempt_count,
                         distinct_account_count,
                     ));
                 }
-                Ok(PoolAccountResolution::Unavailable) => {
+                Ok(PoolAccountResolutionWithWait::Resolution(
+                    PoolAccountResolution::Unavailable,
+                )) => {
                     let terminal_failure_kind =
                         if uses_timeout_route_failover && timeout_route_failover_pending {
                             PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT
@@ -12917,7 +12965,9 @@ async fn send_pool_request_with_failover(
                     }
                     return Err(err);
                 }
-                Ok(PoolAccountResolution::NoCandidate) => {
+                Ok(PoolAccountResolutionWithWait::Resolution(
+                    PoolAccountResolution::NoCandidate,
+                )) => {
                     if uses_timeout_route_failover && timeout_route_failover_pending {
                         let mut err = last_error.unwrap_or(PoolUpstreamError {
                             account: None,
@@ -12993,7 +13043,9 @@ async fn send_pool_request_with_failover(
                         },
                     );
                 }
-                Ok(PoolAccountResolution::BlockedByPolicy(message)) => {
+                Ok(PoolAccountResolutionWithWait::Resolution(
+                    PoolAccountResolution::BlockedByPolicy(message),
+                )) => {
                     let terminal_failure_kind = PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT;
                     let err = PoolUpstreamError {
                         account: None,
@@ -14573,6 +14625,8 @@ async fn proxy_openai_v1_via_pool(
         pool_upstream_first_chunk_timeout(&runtime_timeouts, original_uri, &method);
     let responses_total_timeout =
         pool_upstream_responses_total_timeout(&state.config, original_uri, &method);
+    let pre_attempt_total_timeout_deadline =
+        responses_total_timeout.map(|total_timeout| Instant::now() + total_timeout);
     let responses_total_timeout_started_at = None;
     let header_sticky_key = extract_sticky_key_from_headers(&headers);
     let body_size_hint_exact = body
@@ -14636,27 +14690,40 @@ async fn proxy_openai_v1_via_pool(
                 (StatusCode, String),
             > {
                 let initial_account = match resolution {
-                    Ok(PoolAccountResolution::Resolved(account)) => account,
-                    Ok(PoolAccountResolution::RateLimited) => {
-                        return Err((
-                            StatusCode::TOO_MANY_REQUESTS,
-                            POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
-                        ));
-                    }
-                    Ok(PoolAccountResolution::DegradedOnly) => {
-                        return Err((
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
-                        ));
-                    }
-                    Ok(PoolAccountResolution::Unavailable)
-                    | Ok(PoolAccountResolution::NoCandidate) => {
+                    Ok(PoolAccountResolutionWithWait::Resolution(
+                        PoolAccountResolution::Resolved(account),
+                    )) => account,
+                    Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired)
+                    | Ok(PoolAccountResolutionWithWait::Resolution(
+                        PoolAccountResolution::Unavailable,
+                    ))
+                    | Ok(PoolAccountResolutionWithWait::Resolution(
+                        PoolAccountResolution::NoCandidate,
+                    )) => {
                         return Err((
                             StatusCode::SERVICE_UNAVAILABLE,
                             POOL_NO_AVAILABLE_ACCOUNT_MESSAGE.to_string(),
                         ));
                     }
-                    Ok(PoolAccountResolution::BlockedByPolicy(message)) => {
+                    Ok(PoolAccountResolutionWithWait::Resolution(
+                        PoolAccountResolution::RateLimited,
+                    )) => {
+                        return Err((
+                            StatusCode::TOO_MANY_REQUESTS,
+                            POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
+                        ));
+                    }
+                    Ok(PoolAccountResolutionWithWait::Resolution(
+                        PoolAccountResolution::DegradedOnly,
+                    )) => {
+                        return Err((
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
+                        ));
+                    }
+                    Ok(PoolAccountResolutionWithWait::Resolution(
+                        PoolAccountResolution::BlockedByPolicy(message),
+                    )) => {
                         return Err((StatusCode::SERVICE_UNAVAILABLE, message));
                     }
                     Err(err) => {
@@ -14752,8 +14819,6 @@ async fn proxy_openai_v1_via_pool(
                     extract_sticky_key_from_replay_snapshot(&request_body_snapshot)
                         .await
                         .or(Some(sticky_key));
-                let total_timeout_deadline =
-                    responses_total_timeout.map(|total_timeout| Instant::now() + total_timeout);
                 let mut no_available_wait_deadline = *shared_wait_deadline
                     .lock()
                     .expect("lock shared header wait deadline");
@@ -14764,7 +14829,7 @@ async fn proxy_openai_v1_via_pool(
                     &HashSet::new(),
                     true,
                     &mut no_available_wait_deadline,
-                    total_timeout_deadline,
+                    pre_attempt_total_timeout_deadline,
                 )
                 .await;
                 let (initial_account, no_available_wait_deadline) =
@@ -14786,8 +14851,6 @@ async fn proxy_openai_v1_via_pool(
                 .map_err(|err| (err.status, err.message))?;
                 let body_sticky_key =
                     extract_sticky_key_from_replay_snapshot(&request_body_snapshot).await;
-                let total_timeout_deadline =
-                    responses_total_timeout.map(|total_timeout| Instant::now() + total_timeout);
                 let mut no_available_wait_deadline = None;
                 let resolution = resolve_pool_account_for_request_with_wait(
                     state.as_ref(),
@@ -14796,7 +14859,7 @@ async fn proxy_openai_v1_via_pool(
                     &HashSet::new(),
                     true,
                     &mut no_available_wait_deadline,
-                    total_timeout_deadline,
+                    pre_attempt_total_timeout_deadline,
                 )
                 .await;
                 let (initial_account, no_available_wait_deadline) =
