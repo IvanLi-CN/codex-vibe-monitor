@@ -17320,6 +17320,72 @@ async fn pool_route_body_sticky_returns_503_after_wait_timeout() {
 }
 
 #[tokio::test]
+async fn pool_route_body_sticky_wait_timeout_respects_responses_total_timeout_before_first_attempt()
+{
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.pool_upstream_responses_total_timeout = Duration::from_millis(45);
+    let state = test_state_from_config_with_pool_no_available_wait(
+        config,
+        true,
+        PoolNoAvailableWaitSettings {
+            timeout: Duration::from_millis(220),
+            poll_interval: Duration::from_millis(10),
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        },
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
+    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+
+    let started = Instant::now();
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-wait-total-timeout"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed >= Duration::from_millis(25),
+        "request should still wait briefly before failing, elapsed={elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_millis(150),
+        "responses total timeout should cap the pre-attempt no-account wait, elapsed={elapsed:?}"
+    );
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(
+        response
+            .headers()
+            .get(http_header::RETRY_AFTER)
+            .and_then(|value| value.to_str().ok()),
+        Some("10")
+    );
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read failure body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode failure payload");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some(POOL_NO_AVAILABLE_ACCOUNT_MESSAGE)
+    );
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+}
+
+#[tokio::test]
 async fn resolve_pool_account_for_request_with_wait_respects_external_deadline() {
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -19340,6 +19406,14 @@ async fn capture_target_pool_route_timeout_ignores_broken_same_route_groups() {
 #[tokio::test]
 async fn capture_target_pool_route_timeout_prefers_real_alternate_group_proxy_error() {
     #[derive(Debug, sqlx::FromRow)]
+    struct AttemptRouteRow {
+        attempt_index: i64,
+        status: String,
+        failure_kind: Option<String>,
+        error_message: Option<String>,
+    }
+
+    #[derive(Debug, sqlx::FromRow)]
     struct PersistedPayloadRow {
         error_message: Option<String>,
         payload: Option<String>,
@@ -19426,6 +19500,42 @@ async fn capture_target_pool_route_timeout_prefers_real_alternate_group_proxy_er
 
     wait_for_codex_invocations(&state.pool, 1).await;
     wait_for_pool_attempt_row_count(&state.pool, 2).await;
+
+    let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
+        r#"
+        SELECT
+            attempt_index,
+            status,
+            failure_kind,
+            error_message
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load timeout broken-alt attempt rows");
+    assert_eq!(attempt_rows.len(), 2);
+    assert_eq!(attempt_rows[0].attempt_index, 1);
+    assert_eq!(
+        attempt_rows[0].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+    );
+    assert_eq!(
+        attempt_rows[1].attempt_index, 2,
+        "blocked-policy exits should still persist a terminal attempt row"
+    );
+    assert_eq!(
+        attempt_rows[1].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL,
+    );
+    assert_eq!(
+        attempt_rows[1].failure_kind.as_deref(),
+        Some(PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT),
+    );
+    assert!(attempt_rows[1].error_message.as_deref().is_some_and(|msg| {
+        msg.contains("upstream account group \"broken-alt-group\" has no bound forward proxy nodes")
+    }));
 
     let row = sqlx::query_as::<_, PersistedPayloadRow>(
         r#"

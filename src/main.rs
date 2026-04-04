@@ -12661,6 +12661,8 @@ async fn send_pool_request_with_failover(
         pool_uses_responses_timeout_failover_policy(original_uri, &method);
     let responses_total_timeout =
         pool_upstream_responses_total_timeout(&state.config, original_uri, &method);
+    let pre_attempt_total_timeout_deadline =
+        responses_total_timeout.map(|total_timeout| Instant::now() + total_timeout);
     let mut responses_total_timeout_started_at =
         failover_progress.responses_total_timeout_started_at;
     let send_timeout = pool_upstream_send_timeout(
@@ -12816,11 +12818,10 @@ async fn send_pool_request_with_failover(
                 && last_error.is_none()
                 && !(uses_timeout_route_failover && timeout_route_failover_pending)
                 && !(exhausted_accounts_all_rate_limited && distinct_account_count > 0);
-            let total_timeout_deadline =
-                match (responses_total_timeout, responses_total_timeout_started_at) {
-                    (Some(total_timeout), Some(started_at)) => Some(started_at + total_timeout),
-                    _ => None,
-                };
+            let total_timeout_deadline = responses_total_timeout_started_at
+                .zip(responses_total_timeout)
+                .map(|(started_at, total_timeout)| started_at + total_timeout)
+                .or(pre_attempt_total_timeout_deadline);
             match resolve_pool_account_for_request_with_wait(
                 state.as_ref(),
                 sticky_key,
@@ -13012,6 +13013,24 @@ async fn send_pool_request_with_failover(
                         requested_service_tier: None,
                         request_body_for_capture: None,
                     };
+                    if let Some(trace) = trace_context.as_ref()
+                        && let Err(record_err) =
+                            insert_and_broadcast_pool_upstream_terminal_attempt(
+                                state.as_ref(),
+                                trace,
+                                &err,
+                                (attempt_count + 1) as i64,
+                                distinct_account_count as i64,
+                                terminal_failure_kind,
+                            )
+                            .await
+                    {
+                        warn!(
+                            invoke_id = trace.invoke_id,
+                            error = %record_err,
+                            "failed to persist pool blocked-policy terminal attempt"
+                        );
+                    }
                     return Err(err);
                 }
                 Err(err) => {
@@ -14552,8 +14571,10 @@ async fn proxy_openai_v1_via_pool(
         proxy_upstream_send_timeout_for_capture_target(&runtime_timeouts, capture_target);
     let _pre_first_byte_timeout =
         pool_upstream_first_chunk_timeout(&runtime_timeouts, original_uri, &method);
-    let _responses_total_timeout =
+    let responses_total_timeout =
         pool_upstream_responses_total_timeout(&state.config, original_uri, &method);
+    let pre_attempt_total_timeout_deadline =
+        responses_total_timeout.map(|total_timeout| Instant::now() + total_timeout);
     let responses_total_timeout_started_at = None;
     let header_sticky_key = extract_sticky_key_from_headers(&headers);
     let body_size_hint_exact = body
@@ -14658,6 +14679,8 @@ async fn proxy_openai_v1_via_pool(
                 let state_for_wait = state.clone();
                 let sticky_key_for_join_error = sticky_key.clone();
                 let wait_task_sticky_key = sticky_key.clone();
+                let pre_attempt_total_timeout_deadline_for_task =
+                    pre_attempt_total_timeout_deadline;
                 let shared_wait_deadline = Arc::new(std::sync::Mutex::new(None));
                 let shared_wait_deadline_for_task = shared_wait_deadline.clone();
                 let mut header_sticky_resolution = tokio::spawn(async move {
@@ -14691,12 +14714,17 @@ async fn proxy_openai_v1_via_pool(
                                             Some(deadline);
                                         deadline
                                     };
+                                let effective_deadline =
+                                    pre_attempt_total_timeout_deadline_for_task
+                                        .map(|deadline| std::cmp::min(wait_deadline, deadline))
+                                        .unwrap_or(wait_deadline);
                                 let now = Instant::now();
-                                if now >= wait_deadline {
+                                if now >= effective_deadline {
                                     break (resolution, no_available_wait_deadline);
                                 }
                                 tokio::time::sleep(
-                                    poll_interval.min(wait_deadline.saturating_duration_since(now)),
+                                    poll_interval
+                                        .min(effective_deadline.saturating_duration_since(now)),
                                 )
                                 .await;
                             }
@@ -14798,7 +14826,7 @@ async fn proxy_openai_v1_via_pool(
                     &HashSet::new(),
                     true,
                     &mut no_available_wait_deadline,
-                    None,
+                    pre_attempt_total_timeout_deadline,
                 )
                 .await;
                 let (initial_account, no_available_wait_deadline) =
@@ -14828,7 +14856,7 @@ async fn proxy_openai_v1_via_pool(
                     &HashSet::new(),
                     true,
                     &mut no_available_wait_deadline,
-                    None,
+                    pre_attempt_total_timeout_deadline,
                 )
                 .await;
                 let (initial_account, no_available_wait_deadline) =
@@ -16990,12 +17018,12 @@ fn pool_upstream_first_chunk_timeout(
 }
 
 fn pool_upstream_responses_total_timeout(
-    _config: &AppConfig,
+    config: &AppConfig,
     original_uri: &Uri,
     method: &Method,
 ) -> Option<Duration> {
-    let _ = (original_uri, method);
-    None
+    pool_uses_responses_timeout_failover_policy(original_uri, method)
+        .then_some(config.pool_upstream_responses_total_timeout)
 }
 
 fn proxy_capture_target_stream_timeout(
