@@ -12245,6 +12245,26 @@ struct PreparedPoolRequestBody {
     requested_service_tier: Option<String>,
 }
 
+fn pool_request_snapshot_preserves_content_length(snapshot: &PoolReplayBodySnapshot) -> bool {
+    matches!(snapshot, PoolReplayBodySnapshot::File { .. })
+}
+
+fn pool_request_snapshot_kind(snapshot: &PoolReplayBodySnapshot) -> &'static str {
+    match snapshot {
+        PoolReplayBodySnapshot::Empty => "empty",
+        PoolReplayBodySnapshot::Memory(_) => "memory",
+        PoolReplayBodySnapshot::File { .. } => "file",
+    }
+}
+
+fn pool_request_snapshot_body_bytes(snapshot: &PoolReplayBodySnapshot) -> usize {
+    match snapshot {
+        PoolReplayBodySnapshot::Empty => 0,
+        PoolReplayBodySnapshot::Memory(bytes) => bytes.len(),
+        PoolReplayBodySnapshot::File { size, .. } => *size,
+    }
+}
+
 async fn prepare_pool_request_body_for_account(
     body: Option<&PoolReplayBodySnapshot>,
     original_uri: &Uri,
@@ -13138,8 +13158,22 @@ async fn send_pool_request_with_failover(
                             .clone()
                             .expect("api key pool route should always have an upstream url"),
                     );
+                    let preserve_content_length = pool_request_snapshot_preserves_content_length(
+                        &prepared_request_body.snapshot,
+                    );
+                    let forwarded_content_length = headers
+                        .get(header::CONTENT_LENGTH)
+                        .and_then(|value| value.to_str().ok())
+                        .map(str::to_string);
+                    let outbound_snapshot_kind =
+                        pool_request_snapshot_kind(&prepared_request_body.snapshot);
+                    let outbound_body_bytes =
+                        pool_request_snapshot_body_bytes(&prepared_request_body.snapshot);
                     for (name, value) in headers {
                         if *name == header::AUTHORIZATION {
+                            continue;
+                        }
+                        if *name == header::CONTENT_LENGTH && !preserve_content_length {
                             continue;
                         }
                         if should_forward_proxy_header(name, &request_connection_scoped) {
@@ -13222,6 +13256,21 @@ async fn send_pool_request_with_failover(
                                 ForwardProxyRouteResultKind::NetworkFailure,
                             )
                             .await;
+                            warn!(
+                                invoke_id = trace_context
+                                    .as_ref()
+                                    .map(|trace| trace.invoke_id.as_str())
+                                    .unwrap_or(""),
+                                account_id = account.account_id,
+                                endpoint = original_uri.path(),
+                                requested_service_tier = attempted_requested_service_tier.as_deref(),
+                                snapshot_kind = outbound_snapshot_kind,
+                                outbound_body_bytes,
+                                forwarded_content_length = forwarded_content_length.as_deref(),
+                                preserved_content_length = preserve_content_length,
+                                error = %err,
+                                "pool upstream request send failed before response"
+                            );
                             let message = format!("failed to contact upstream: {err}");
                             let compact_support_observation = classify_compact_support_observation(
                                 original_uri,
@@ -13332,6 +13381,22 @@ async fn send_pool_request_with_failover(
                                 ForwardProxyRouteResultKind::NetworkFailure,
                             )
                             .await;
+                            warn!(
+                                invoke_id = trace_context
+                                    .as_ref()
+                                    .map(|trace| trace.invoke_id.as_str())
+                                    .unwrap_or(""),
+                                account_id = account.account_id,
+                                endpoint = original_uri.path(),
+                                requested_service_tier =
+                                    attempted_requested_service_tier.as_deref(),
+                                snapshot_kind = outbound_snapshot_kind,
+                                outbound_body_bytes,
+                                forwarded_content_length = forwarded_content_length.as_deref(),
+                                preserved_content_length = preserve_content_length,
+                                timeout_ms = attempt_send_timeout.as_millis(),
+                                "pool upstream request send timed out before response"
+                            );
                             let message = proxy_request_send_timeout_message(
                                 capture_target_for_request(original_uri.path(), &method),
                                 attempt_send_timeout,
