@@ -7758,10 +7758,10 @@ fn resolve_due_maintenance_dispatch_plans(
     let mut secondary = Vec::new();
 
     for candidate in candidates {
-        if maintenance_candidate_force_priority(&candidate, refresh_lead_time, now) {
-            forced_priority.push(candidate);
-        } else if maintenance_candidate_is_high_frequency(&candidate, now) {
+        if maintenance_candidate_is_high_frequency(&candidate, now) {
             high_frequency.push(candidate);
+        } else if maintenance_candidate_force_priority(&candidate, refresh_lead_time, now) {
+            forced_priority.push(candidate);
         } else if maintenance_candidate_is_available(&candidate) {
             ranked_available.push(candidate);
         } else {
@@ -21796,6 +21796,32 @@ mod tests {
         };
         let refresh_lead_time = Duration::from_secs(15 * 60);
 
+        let mut recent_error = maintenance_candidates(
+            3,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            None,
+            Some("2026-03-23T11:58:30Z"),
+            Some("2026-04-23T12:00:00Z"),
+            Some(8.0),
+            Some(8.0),
+        );
+        recent_error.last_action_source =
+            Some(UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE.to_string());
+        recent_error.last_action_at = Some("2026-03-23T11:58:30Z".to_string());
+
+        let mut stale_error = maintenance_candidates(
+            4,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            None,
+            Some("2026-03-23T11:50:00Z"),
+            Some("2026-04-23T12:00:00Z"),
+            Some(9.0),
+            Some(9.0),
+        );
+        stale_error.last_action_source =
+            Some(UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE.to_string());
+        stale_error.last_action_at = Some("2026-03-23T11:50:00Z".to_string());
+
         let plans = resolve_due_maintenance_dispatch_plans(
             vec![
                 maintenance_candidates(
@@ -21816,24 +21842,8 @@ mod tests {
                     Some(12.0),
                     Some(22.0),
                 ),
-                maintenance_candidates(
-                    3,
-                    UPSTREAM_ACCOUNT_STATUS_ERROR,
-                    None,
-                    Some("2026-03-23T11:58:30Z"),
-                    Some("2026-04-23T12:00:00Z"),
-                    Some(8.0),
-                    Some(8.0),
-                ),
-                maintenance_candidates(
-                    4,
-                    UPSTREAM_ACCOUNT_STATUS_ERROR,
-                    None,
-                    Some("2026-03-23T11:50:00Z"),
-                    Some("2026-04-23T12:00:00Z"),
-                    Some(9.0),
-                    Some(9.0),
-                ),
+                recent_error,
+                stale_error,
                 maintenance_candidates(
                     5,
                     UPSTREAM_ACCOUNT_STATUS_ACTIVE,
@@ -21920,6 +21930,40 @@ mod tests {
             Some("2026-03-23T11:58:30Z"),
             None,
             Some("2026-04-23T12:00:00Z"),
+            Some(10.0),
+            Some(10.0),
+        );
+        candidate.last_selected_at = Some("2026-03-23T11:59:30Z".to_string());
+
+        let plans = resolve_due_maintenance_dispatch_plans(
+            vec![candidate],
+            settings,
+            Duration::from_secs(15 * 60),
+            now,
+        );
+
+        assert_eq!(plans.len(), 1);
+        assert_eq!(plans[0].tier, MaintenanceTier::HighFrequency);
+        assert_eq!(plans[0].sync_interval_secs, 60);
+    }
+
+    #[test]
+    fn resolve_due_maintenance_dispatch_plans_keeps_working_refresh_due_accounts_high_frequency() {
+        let now = Utc
+            .with_ymd_and_hms(2026, 3, 23, 12, 0, 0)
+            .single()
+            .expect("valid time");
+        let settings = PoolRoutingMaintenanceSettings {
+            primary_sync_interval_secs: 300,
+            secondary_sync_interval_secs: 1800,
+            priority_available_account_cap: 1,
+        };
+        let mut candidate = maintenance_candidates(
+            81,
+            UPSTREAM_ACCOUNT_STATUS_ACTIVE,
+            Some("2026-03-23T11:58:30Z"),
+            None,
+            Some("2026-03-23T12:10:00Z"),
             Some(10.0),
             Some(10.0),
         );
