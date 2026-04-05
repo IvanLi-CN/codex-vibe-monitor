@@ -22342,7 +22342,7 @@ async fn proxy_openai_v1_header_sticky_stream_preserves_body_timeout_over_rate_l
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_header_sticky_stream_returns_immediate_blocked_policy_header_error() {
+async fn proxy_openai_v1_header_sticky_stream_waits_for_blocked_policy_header_error() {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
@@ -22443,8 +22443,8 @@ async fn proxy_openai_v1_header_sticky_stream_returns_immediate_blocked_policy_h
     let elapsed = started.elapsed();
 
     assert!(
-        elapsed < Duration::from_millis(140),
-        "blocked policy should fail before the streamed body finishes buffering, elapsed={elapsed:?}"
+        elapsed >= Duration::from_millis(140),
+        "blocked policy should wait for the streamed body before failing, elapsed={elapsed:?}"
     );
     let (status, message) = response.expect_err("via-pool request should fail");
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
@@ -23163,6 +23163,134 @@ async fn proxy_openai_v1_header_sticky_stream_body_override_beats_rate_limited_h
 
     let attempts = attempts.lock().expect("lock attempts");
     assert_eq!(attempts.get("Bearer upstream-rate-limited").copied(), None);
+    assert_eq!(
+        attempts.get("Bearer upstream-replacement").copied(),
+        Some(1)
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_header_sticky_stream_body_override_beats_blocked_policy_header() {
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(80),
+        Duration::from_millis(20),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
+    let replacement_id =
+        insert_test_pool_api_key_account(&state, "Replacement", "upstream-replacement").await;
+    sqlx::query("UPDATE pool_upstream_accounts SET group_name = NULL WHERE id = ?1")
+        .bind(blocked_id)
+        .execute(&state.pool)
+        .await
+        .expect("clear blocked group");
+
+    let now_iso = format_utc_iso(Utc::now());
+    let disallow_cut_out_tag_id: i64 = sqlx::query_scalar(
+        r#"
+        INSERT INTO pool_tags (
+            name, guard_enabled, lookback_hours, max_conversations,
+            allow_cut_out, allow_cut_in, created_at, updated_at
+        ) VALUES (?1, 0, NULL, NULL, 0, 1, ?2, ?2)
+        RETURNING id
+        "#,
+    )
+    .bind("via-pool-no-cut-out")
+    .bind(&now_iso)
+    .fetch_one(&state.pool)
+    .await
+    .expect("insert no-cut-out tag");
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_account_tags (
+            account_id, tag_id, created_at, updated_at
+        ) VALUES (?1, ?2, ?3, ?3)
+        "#,
+    )
+    .bind(blocked_id)
+    .bind(disallow_cut_out_tag_id)
+    .bind(&now_iso)
+    .execute(&state.pool)
+    .await
+    .expect("attach no-cut-out tag");
+
+    let sticky_seen_at = format_utc_iso(Utc::now());
+    upsert_test_sticky_route_at(
+        &state.pool,
+        "header-blocked-policy-sticky",
+        blocked_id,
+        &sticky_seen_at,
+    )
+    .await;
+    upsert_test_sticky_route_at(
+        &state.pool,
+        "body-live-sticky",
+        replacement_id,
+        &sticky_seen_at,
+    )
+    .await;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    tokio::spawn(async move {
+        let _ = tx
+            .send(Ok(Bytes::from_static(b"{\"model\":\"gpt-5\",")))
+            .await;
+        tokio::time::sleep(Duration::from_millis(170)).await;
+        let _ = tx
+            .send(Ok(Bytes::from_static(
+                b"\"messages\":[],\"stickyKey\":\"body-live-sticky\"}",
+            )))
+            .await;
+    });
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let started = Instant::now();
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6246,
+        &"/v1/chat/completions".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                HeaderName::from_static("x-sticky-key"),
+                HeaderValue::from_static("header-blocked-policy-sticky"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        runtime_timeouts,
+    )
+    .await
+    .expect("via-pool request should succeed");
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed >= Duration::from_millis(140),
+        "request should wait for the body sticky override before resolving, elapsed={elapsed:?}"
+    );
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read via-pool response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
+    assert_eq!(payload["authorization"], "Bearer upstream-replacement");
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-blocked").copied(), None);
     assert_eq!(
         attempts.get("Bearer upstream-replacement").copied(),
         Some(1)

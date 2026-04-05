@@ -14952,7 +14952,7 @@ async fn proxy_openai_v1_via_pool(
                 let wait_task_sticky_key = sticky_key.clone();
                 let shared_wait_deadline = Arc::new(std::sync::Mutex::new(None));
                 let shared_wait_deadline_for_task = shared_wait_deadline.clone();
-                let header_sticky_resolution = tokio::spawn(async move {
+                let header_sticky_resolution = async move {
                     let excluded_ids = Vec::new();
                     let excluded_upstream_route_keys = HashSet::new();
                     let mut no_available_wait_deadline = None;
@@ -15034,49 +15034,32 @@ async fn proxy_openai_v1_via_pool(
                             Err(err) => break (Err(err), no_available_wait_deadline),
                         }
                     }
-                });
-                let mut header_sticky_resolution = header_sticky_resolution;
-                let mut request_body_snapshot_task = tokio::spawn(async move {
-                    read_request_body_snapshot_with_limit(
-                        body,
-                        body_limit,
-                        runtime_timeouts.request_read_timeout,
-                        proxy_request_id,
-                    )
-                    .await
-                });
+                };
+                let request_body_snapshot = read_request_body_snapshot_with_limit(
+                    body,
+                    body_limit,
+                    runtime_timeouts.request_read_timeout,
+                    proxy_request_id,
+                );
+                tokio::pin!(header_sticky_resolution);
+                tokio::pin!(request_body_snapshot);
                 let mut header_sticky_resolution_finished = false;
                 let mut pending_header_sticky_terminal_error: Option<(StatusCode, String)> = None;
                 let mut resolved_header_sticky_account: Option<PoolResolvedAccount> = None;
                 let mut header_sticky_wait_deadline = None;
                 let request_body_snapshot = loop {
                     tokio::select! {
-                        body_result = &mut request_body_snapshot_task => {
+                        body_result = &mut request_body_snapshot => {
                             match body_result {
-                                Ok(Ok(snapshot)) => break snapshot,
-                                Ok(Err(err)) => {
-                                    header_sticky_resolution.abort();
-                                    return Err((err.status, err.message));
-                                }
+                                Ok(snapshot) => break snapshot,
                                 Err(err) => {
-                                    header_sticky_resolution.abort();
-                                    return Err((
-                                        StatusCode::INTERNAL_SERVER_ERROR,
-                                        format!("failed to join request body snapshot task: {err}"),
-                                    ));
+                                    return Err((err.status, err.message));
                                 }
                             }
                         }
                         resolution_result = &mut header_sticky_resolution, if !header_sticky_resolution_finished => {
                             header_sticky_resolution_finished = true;
-                            let (resolution, no_available_wait_deadline) = resolution_result.map_err(|err| {
-                                (
-                                    StatusCode::INTERNAL_SERVER_ERROR,
-                                    format!(
-                                        "failed to join pool wait task for sticky {sticky_key}: {err}"
-                                    ),
-                                )
-                            })?;
+                            let (resolution, no_available_wait_deadline) = resolution_result;
                             header_sticky_wait_deadline = no_available_wait_deadline;
                             match resolution {
                                 Ok(PoolAccountResolutionWithWait::Resolution(
@@ -15085,7 +15068,6 @@ async fn proxy_openai_v1_via_pool(
                                     resolved_header_sticky_account = Some(account);
                                 }
                                 Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired) => {
-                                    request_body_snapshot_task.abort();
                                     let total_timeout =
                                         responses_total_timeout.expect(
                                             "pre-attempt total-timeout expiry requires responses timeout",
@@ -15114,8 +15096,8 @@ async fn proxy_openai_v1_via_pool(
                                 Ok(PoolAccountResolutionWithWait::Resolution(
                                     PoolAccountResolution::BlockedByPolicy(message),
                                 )) => {
-                                    request_body_snapshot_task.abort();
-                                    return Err((StatusCode::SERVICE_UNAVAILABLE, message));
+                                    pending_header_sticky_terminal_error =
+                                        Some((StatusCode::SERVICE_UNAVAILABLE, message));
                                 }
                                 Err(err) => {
                                     pending_header_sticky_terminal_error = Some((
@@ -15138,19 +15120,9 @@ async fn proxy_openai_v1_via_pool(
                         .await
                         .or(Some(sticky_key.clone()));
                 if !header_sticky_resolution_finished {
-                    if body_sticky_key.as_deref() == Some(sticky_key.as_str())
-                        || header_sticky_resolution.is_finished()
-                    {
-                        let (resolution, no_available_wait_deadline) = header_sticky_resolution
-                            .await
-                            .map_err(|err| {
-                                (
-                                    StatusCode::INTERNAL_SERVER_ERROR,
-                                    format!(
-                                        "failed to join pool wait task for sticky {sticky_key}: {err}"
-                                    ),
-                                )
-                            })?;
+                    if body_sticky_key.as_deref() == Some(sticky_key.as_str()) {
+                        let (resolution, no_available_wait_deadline) =
+                            header_sticky_resolution.await;
                         header_sticky_wait_deadline = no_available_wait_deadline;
                         match resolution {
                             Ok(PoolAccountResolutionWithWait::Resolution(
@@ -15202,8 +15174,6 @@ async fn proxy_openai_v1_via_pool(
                                 PoolAccountResolution::NoCandidate,
                             )) => {}
                         }
-                    } else {
-                        header_sticky_resolution.abort();
                     }
                 }
                 if body_sticky_key.as_deref() == Some(sticky_key.as_str())
