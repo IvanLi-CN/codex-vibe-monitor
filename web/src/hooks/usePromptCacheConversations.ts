@@ -55,7 +55,12 @@ function isSameSelection(
     (left.mode === "count"
       ? right.mode === "count" && left.limit === right.limit
       : right.mode === "activityWindow" &&
-        left.activityHours === right.activityHours)
+        (("activityHours" in left &&
+          "activityHours" in right &&
+          left.activityHours === right.activityHours) ||
+          ("activityMinutes" in left &&
+            "activityMinutes" in right &&
+            left.activityMinutes === right.activityMinutes)))
   );
 }
 

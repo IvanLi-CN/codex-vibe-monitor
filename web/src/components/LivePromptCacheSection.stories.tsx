@@ -430,6 +430,10 @@ function resolveStats(selection: PromptCacheConversationSelection) {
     };
   }
 
+  if ("activityMinutes" in selection) {
+    return buildActivityWindowStats(Math.max(1, selection.activityMinutes / 60));
+  }
+
   return buildActivityWindowStats(selection.activityHours);
 }
 

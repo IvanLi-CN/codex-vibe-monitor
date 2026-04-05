@@ -4358,6 +4358,57 @@ async fn insert_test_pool_api_key_account_with_options(
         .expect("load inserted test pool upstream account id")
 }
 
+async fn create_test_fast_mode_tag(
+    state: &Arc<AppState>,
+    name: &str,
+    fast_mode_rewrite_mode: &str,
+    priority_tier: &str,
+) -> i64 {
+    let payload = serde_json::from_value::<CreateTagRequest>(json!({
+        "name": name,
+        "guardEnabled": false,
+        "allowCutOut": true,
+        "allowCutIn": true,
+        "priorityTier": priority_tier,
+        "fastModeRewriteMode": fast_mode_rewrite_mode,
+    }))
+    .expect("deserialize fast mode tag payload");
+    let Json(_) = create_tag(State(state.clone()), HeaderMap::new(), Json(payload))
+        .await
+        .expect("create fast mode tag");
+    sqlx::query_scalar("SELECT id FROM pool_tags WHERE name = ?1")
+        .bind(name)
+        .fetch_one(&state.pool)
+        .await
+        .expect("load fast mode tag id")
+}
+
+async fn create_test_tagged_pool_api_key_account(
+    state: &Arc<AppState>,
+    display_name: &str,
+    api_key: &str,
+    upstream_base_url: &str,
+    tag_ids: &[i64],
+) -> i64 {
+    let payload: CreateApiKeyAccountRequest = serde_json::from_value(json!({
+        "displayName": display_name,
+        "groupName": test_required_group_name(),
+        "groupBoundProxyKeys": test_required_group_bound_proxy_keys(),
+        "upstreamBaseUrl": upstream_base_url,
+        "apiKey": api_key,
+        "tagIds": tag_ids,
+    }))
+    .expect("deserialize tagged api-key account payload");
+    let Json(_) = create_api_key_account(State(state.clone()), HeaderMap::new(), Json(payload))
+        .await
+        .expect("create tagged pool account");
+    sqlx::query_scalar("SELECT id FROM pool_upstream_accounts WHERE display_name = ?1")
+        .bind(display_name)
+        .fetch_one(&state.pool)
+        .await
+        .expect("load tagged pool account id")
+}
+
 async fn insert_test_pool_limit_sample(
     state: &Arc<AppState>,
     account_id: i64,
@@ -18600,6 +18651,240 @@ async fn pool_openai_v1_responses_failover_reapplies_account_fast_mode_from_orig
 }
 
 #[tokio::test]
+async fn pool_openai_v1_responses_fast_fill_missing_large_body_recomputes_content_length() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct PersistedRow {
+        payload: Option<String>,
+        request_raw_path: Option<String>,
+    }
+
+    let (capture_base, captured_requests, capture_handle) =
+        spawn_capture_target_body_upstream().await;
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+
+    let fill_missing_tag_id =
+        create_test_fast_mode_tag(&state, "fill-missing-large-fast", "fill_missing", "primary")
+            .await;
+    create_test_tagged_pool_api_key_account(
+        &state,
+        "Large Fast Account",
+        "upstream-large-fast",
+        &capture_base,
+        &[fill_missing_tag_id],
+    )
+    .await;
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "stream": false,
+        "input": [{
+            "role": "user",
+            "content": "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 4096)
+        }],
+        "stickyKey": "sticky-fast-large-success"
+    }))
+    .expect("serialize large fast request body");
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+            (
+                http_header::CONTENT_LENGTH,
+                HeaderValue::from_str(&request_body.len().to_string())
+                    .expect("valid content length"),
+            ),
+        ]),
+        Body::from(request_body),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let response_body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read large fast response body");
+    let response_payload: Value =
+        serde_json::from_slice(&response_body).expect("decode large fast response body");
+    assert_eq!(
+        response_payload["received"]["service_tier"].as_str(),
+        Some("priority")
+    );
+    assert!(response_payload["received"].get("serviceTier").is_none());
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    let captured = captured_requests.lock().await;
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0]["service_tier"].as_str(), Some("priority"));
+    assert!(captured[0].get("serviceTier").is_none());
+    drop(captured);
+
+    let row = sqlx::query_as::<_, PersistedRow>(
+        r#"
+        SELECT payload, request_raw_path
+        FROM codex_invocations
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load persisted large fast row");
+    let payload: Value = serde_json::from_str(
+        row.payload
+            .as_deref()
+            .expect("persisted payload should exist"),
+    )
+    .expect("decode persisted large fast payload");
+    assert_eq!(payload["requestedServiceTier"].as_str(), Some("priority"));
+
+    let request_raw = read_proxy_raw_bytes(
+        row.request_raw_path
+            .as_deref()
+            .expect("large fast request raw path should exist"),
+        state.config.database_path.parent(),
+    )
+    .expect("read large fast request raw");
+    let request_payload: Value =
+        serde_json::from_slice(&request_raw).expect("decode large fast request raw");
+    assert_eq!(request_payload["service_tier"].as_str(), Some("priority"));
+    assert!(request_payload.get("serviceTier").is_none());
+
+    capture_handle.abort();
+}
+
+#[tokio::test]
+async fn pool_openai_v1_responses_fast_fill_missing_transport_failure_persists_rewritten_request_raw()
+ {
+    #[derive(Debug, sqlx::FromRow)]
+    struct PersistedRow {
+        status: Option<String>,
+        error_message: Option<String>,
+        payload: Option<String>,
+        request_raw_path: Option<String>,
+    }
+
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+
+    let fill_missing_tag_id = create_test_fast_mode_tag(
+        &state,
+        "fill-missing-transport-fast",
+        "fill_missing",
+        "primary",
+    )
+    .await;
+    create_test_tagged_pool_api_key_account(
+        &state,
+        "Broken Fast Account",
+        "upstream-broken-fast",
+        "http://127.0.0.1:1/",
+        &[fill_missing_tag_id],
+    )
+    .await;
+
+    let request_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "stream": false,
+        "input": [{
+            "role": "user",
+            "content": "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 4096)
+        }],
+        "stickyKey": "sticky-fast-large-failure"
+    }))
+    .expect("serialize failed large fast request body");
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+            (
+                http_header::CONTENT_LENGTH,
+                HeaderValue::from_str(&request_body.len().to_string())
+                    .expect("valid content length"),
+            ),
+        ]),
+        Body::from(request_body),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let response_body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read failed large fast response body");
+    let response_text = String::from_utf8_lossy(&response_body);
+    assert!(
+        response_text.contains("failed to contact upstream"),
+        "unexpected failed large fast response body: {response_text}"
+    );
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    let row = sqlx::query_as::<_, PersistedRow>(
+        r#"
+        SELECT status, error_message, payload, request_raw_path
+        FROM codex_invocations
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load failed large fast row");
+    assert_eq!(row.status.as_deref(), Some("http_502"));
+    assert!(
+        row.error_message
+            .as_deref()
+            .is_some_and(|message| { message.contains("[failed_contact_upstream]") })
+    );
+
+    let payload: Value = serde_json::from_str(
+        row.payload
+            .as_deref()
+            .expect("failed large fast payload should exist"),
+    )
+    .expect("decode failed large fast payload");
+    assert_eq!(payload["requestedServiceTier"].as_str(), Some("priority"));
+    assert_eq!(
+        payload["failureKind"].as_str(),
+        Some(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM)
+    );
+
+    let request_raw = read_proxy_raw_bytes(
+        row.request_raw_path
+            .as_deref()
+            .expect("failed large fast request raw path should exist"),
+        state.config.database_path.parent(),
+    )
+    .expect("read failed large fast request raw");
+    let request_payload: Value =
+        serde_json::from_slice(&request_raw).expect("decode failed large fast request raw");
+    assert_eq!(request_payload["service_tier"].as_str(), Some("priority"));
+    assert!(request_payload.get("serviceTier").is_none());
+}
+
+#[tokio::test]
 async fn pool_route_responses_compact_limits_follow_up_accounts_to_single_attempt() {
     #[derive(Debug, sqlx::FromRow)]
     struct AttemptRow {
@@ -25393,6 +25678,7 @@ async fn prompt_cache_views_ignore_sticky_only_internal_keys() {
         Query(PromptCacheConversationsQuery {
             limit: Some(20),
             activity_hours: None,
+            activity_minutes: None,
         }),
     )
     .await
@@ -25819,6 +26105,24 @@ fn rewrite_request_service_tier_for_fast_mode_force_remove_deletes_both_aliases(
     assert!(did_rewrite);
     assert!(payload.get("service_tier").is_none());
     assert!(payload.get("serviceTier").is_none());
+}
+
+#[test]
+fn pool_request_snapshot_preserves_content_length_only_for_file_backed_replays() {
+    assert!(!pool_request_snapshot_preserves_content_length(
+        &PoolReplayBodySnapshot::Empty
+    ));
+    assert!(!pool_request_snapshot_preserves_content_length(
+        &PoolReplayBodySnapshot::Memory(Bytes::from_static(b"{}"))
+    ));
+    assert!(pool_request_snapshot_preserves_content_length(
+        &PoolReplayBodySnapshot::File {
+            temp_file: Arc::new(PoolReplayTempFile {
+                path: PathBuf::from("/tmp/cvm-pool-replay-test.bin"),
+            }),
+            size: 2,
+        }
+    ));
 }
 
 #[tokio::test]
@@ -29872,12 +30176,51 @@ fn normalize_prompt_cache_conversation_activity_hours_accepts_whitelist_values_o
 }
 
 #[test]
+fn normalize_prompt_cache_conversation_activity_minutes_accepts_precise_five_minutes_only() {
+    assert_eq!(
+        normalize_prompt_cache_conversation_activity_minutes(None),
+        None
+    );
+    assert_eq!(
+        normalize_prompt_cache_conversation_activity_minutes(Some(5)),
+        Some(5)
+    );
+    assert_eq!(
+        normalize_prompt_cache_conversation_activity_minutes(Some(1)),
+        None
+    );
+    assert_eq!(
+        normalize_prompt_cache_conversation_activity_minutes(Some(10)),
+        None
+    );
+}
+
+#[test]
 fn resolve_prompt_cache_conversation_selection_rejects_mutually_exclusive_params() {
     let err = resolve_prompt_cache_conversation_selection(PromptCacheConversationsQuery {
         limit: Some(20),
         activity_hours: Some(3),
+        activity_minutes: None,
     })
     .expect_err("selection should reject mutually exclusive params");
+
+    match err {
+        ApiError::BadRequest(inner) => {
+            let message = inner.to_string();
+            assert!(message.contains("mutually exclusive"));
+        }
+        other => panic!("expected bad request, got {other:?}"),
+    }
+}
+
+#[test]
+fn resolve_prompt_cache_conversation_selection_rejects_activity_hours_and_minutes_combo() {
+    let err = resolve_prompt_cache_conversation_selection(PromptCacheConversationsQuery {
+        limit: None,
+        activity_hours: Some(3),
+        activity_minutes: Some(5),
+    })
+    .expect_err("selection should reject mixed hour and minute windows");
 
     match err {
         ApiError::BadRequest(inner) => {
@@ -30005,6 +30348,7 @@ async fn prompt_cache_conversations_groups_recent_keys_and_uses_history_totals()
         Query(PromptCacheConversationsQuery {
             limit: Some(20),
             activity_hours: None,
+            activity_minutes: None,
         }),
     )
     .await
@@ -30162,6 +30506,7 @@ async fn prompt_cache_conversations_include_recent_upstream_account_summaries() 
         Query(PromptCacheConversationsQuery {
             limit: Some(20),
             activity_hours: None,
+            activity_minutes: None,
         }),
     )
     .await
@@ -30465,6 +30810,7 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
         Query(PromptCacheConversationsQuery {
             limit: Some(20),
             activity_hours: None,
+            activity_minutes: None,
         }),
     )
     .await
@@ -30704,6 +31050,7 @@ async fn prompt_cache_conversations_preserve_upstream_account_history_after_raw_
         Query(PromptCacheConversationsQuery {
             limit: Some(20),
             activity_hours: None,
+            activity_minutes: None,
         }),
     )
     .await
@@ -30779,6 +31126,7 @@ async fn prompt_cache_conversations_keep_totals_when_recent_preview_is_empty() {
         Query(PromptCacheConversationsQuery {
             limit: Some(20),
             activity_hours: None,
+            activity_minutes: None,
         }),
     )
     .await
@@ -30855,6 +31203,7 @@ async fn prompt_cache_conversations_count_mode_reports_inactive_recent_history_f
         Query(PromptCacheConversationsQuery {
             limit: Some(20),
             activity_hours: None,
+            activity_minutes: None,
         }),
     )
     .await
@@ -30937,6 +31286,7 @@ async fn prompt_cache_conversations_count_mode_reports_all_skipped_newer_inactiv
         Query(PromptCacheConversationsQuery {
             limit: Some(20),
             activity_hours: None,
+            activity_minutes: None,
         }),
     )
     .await
@@ -31018,6 +31368,7 @@ async fn prompt_cache_conversations_count_mode_clamps_sparse_inactive_hidden_row
         Query(PromptCacheConversationsQuery {
             limit: Some(20),
             activity_hours: None,
+            activity_minutes: None,
         }),
     )
     .await
@@ -31070,6 +31421,7 @@ async fn prompt_cache_conversations_activity_window_caps_results_to_fifty() {
         Query(PromptCacheConversationsQuery {
             limit: None,
             activity_hours: Some(3),
+            activity_minutes: None,
         }),
     )
     .await
@@ -31087,6 +31439,119 @@ async fn prompt_cache_conversations_activity_window_caps_results_to_fifty() {
         Some(PromptCacheConversationImplicitFilterKind::CappedTo50)
     );
     assert_eq!(response.implicit_filter.filtered_count, 5);
+}
+
+#[tokio::test]
+async fn prompt_cache_conversations_activity_minutes_include_running_only_rows_and_report_selected_minutes()
+ {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+
+    async fn insert_row(
+        pool: &Pool<Sqlite>,
+        invoke_id: &str,
+        occurred_at: DateTime<Utc>,
+        key: &str,
+        status: &str,
+        total_tokens: i64,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(format_naive(
+            occurred_at.with_timezone(&Shanghai).naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(total_tokens)
+        .bind(0.01_f64)
+        .bind(json!({ "promptCacheKey": key, "routeMode": "pool" }).to_string())
+        .bind("{}")
+        .execute(pool)
+        .await
+        .expect("insert prompt cache invocation row");
+    }
+
+    insert_row(
+        &state.pool,
+        "pck-terminal-early",
+        now - ChronoDuration::minutes(4),
+        "pck-terminal-early",
+        "success",
+        100,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "pck-running-old-terminal",
+        now - ChronoDuration::minutes(12),
+        "pck-running",
+        "success",
+        120,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "pck-running-live",
+        now - ChronoDuration::minutes(1),
+        "pck-running",
+        "running",
+        140,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "pck-terminal-late",
+        now - ChronoDuration::minutes(2),
+        "pck-terminal-late",
+        "http_502",
+        160,
+    )
+    .await;
+
+    let Json(response) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+        }),
+    )
+    .await
+    .expect("5-minute prompt cache conversations should succeed");
+
+    assert_eq!(
+        response.selection_mode,
+        PromptCacheConversationSelectionMode::ActivityWindow
+    );
+    assert_eq!(response.selected_limit, None);
+    assert_eq!(response.selected_activity_hours, None);
+    assert_eq!(response.selected_activity_minutes, Some(5));
+    assert_eq!(
+        response
+            .conversations
+            .iter()
+            .map(|item| item.prompt_cache_key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["pck-running", "pck-terminal-late", "pck-terminal-early"]
+    );
+
+    let running = response
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-running")
+        .expect("pck-running should remain visible");
+    assert_eq!(running.recent_invocations[0].status, "running");
+    assert_eq!(running.recent_invocations[1].status, "success");
 }
 
 #[tokio::test]
@@ -31157,6 +31622,7 @@ async fn prompt_cache_conversations_chart_window_caps_history_to_recent_24_hours
         Query(PromptCacheConversationsQuery {
             limit: None,
             activity_hours: Some(1),
+            activity_minutes: None,
         }),
     )
     .await
@@ -31206,6 +31672,7 @@ async fn prompt_cache_conversation_timestamps_serialize_as_utc_iso() {
         Query(PromptCacheConversationsQuery {
             limit: Some(20),
             activity_hours: None,
+            activity_minutes: None,
         }),
     )
     .await
@@ -31283,6 +31750,7 @@ async fn prompt_cache_conversations_cache_reuses_recent_result_within_ttl() {
         Query(PromptCacheConversationsQuery {
             limit: Some(20),
             activity_hours: None,
+            activity_minutes: None,
         }),
     )
     .await
@@ -31320,6 +31788,7 @@ async fn prompt_cache_conversations_cache_reuses_recent_result_within_ttl() {
         Query(PromptCacheConversationsQuery {
             limit: Some(20),
             activity_hours: None,
+            activity_minutes: None,
         }),
     )
     .await
@@ -31376,6 +31845,7 @@ async fn prompt_cache_conversations_cache_invalidation_exposes_new_proxy_capture
         Query(PromptCacheConversationsQuery {
             limit: Some(20),
             activity_hours: None,
+            activity_minutes: None,
         }),
     )
     .await
@@ -31401,6 +31871,7 @@ async fn prompt_cache_conversations_cache_invalidation_exposes_new_proxy_capture
         Query(PromptCacheConversationsQuery {
             limit: Some(20),
             activity_hours: None,
+            activity_minutes: None,
         }),
     )
     .await
@@ -31457,6 +31928,7 @@ async fn prompt_cache_conversations_cache_ignores_proxy_captures_without_prompt_
         Query(PromptCacheConversationsQuery {
             limit: Some(20),
             activity_hours: None,
+            activity_minutes: None,
         }),
     )
     .await
@@ -31481,6 +31953,7 @@ async fn prompt_cache_conversations_cache_ignores_proxy_captures_without_prompt_
         Query(PromptCacheConversationsQuery {
             limit: Some(20),
             activity_hours: None,
+            activity_minutes: None,
         }),
     )
     .await
@@ -31548,6 +32021,7 @@ async fn prompt_cache_conversations_cache_returns_under_sustained_invalidations(
             Query(PromptCacheConversationsQuery {
                 limit: Some(20),
                 activity_hours: None,
+                activity_minutes: None,
             }),
         ),
     )
@@ -31611,6 +32085,7 @@ async fn prompt_cache_conversations_concurrent_requests_same_limit_do_not_stall(
                     Query(PromptCacheConversationsQuery {
                         limit: Some(20),
                         activity_hours: None,
+                        activity_minutes: None,
                     }),
                 ),
             )
