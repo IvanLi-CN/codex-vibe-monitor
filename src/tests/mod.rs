@@ -23558,6 +23558,7 @@ async fn prompt_cache_views_ignore_sticky_only_internal_keys() {
         Query(PromptCacheConversationsQuery {
             limit: Some(20),
             activity_hours: None,
+            activity_minutes: None,
         }),
     )
     .await
@@ -28053,12 +28054,51 @@ fn normalize_prompt_cache_conversation_activity_hours_accepts_whitelist_values_o
 }
 
 #[test]
+fn normalize_prompt_cache_conversation_activity_minutes_accepts_precise_five_minutes_only() {
+    assert_eq!(
+        normalize_prompt_cache_conversation_activity_minutes(None),
+        None
+    );
+    assert_eq!(
+        normalize_prompt_cache_conversation_activity_minutes(Some(5)),
+        Some(5)
+    );
+    assert_eq!(
+        normalize_prompt_cache_conversation_activity_minutes(Some(1)),
+        None
+    );
+    assert_eq!(
+        normalize_prompt_cache_conversation_activity_minutes(Some(10)),
+        None
+    );
+}
+
+#[test]
 fn resolve_prompt_cache_conversation_selection_rejects_mutually_exclusive_params() {
     let err = resolve_prompt_cache_conversation_selection(PromptCacheConversationsQuery {
         limit: Some(20),
         activity_hours: Some(3),
+        activity_minutes: None,
     })
     .expect_err("selection should reject mutually exclusive params");
+
+    match err {
+        ApiError::BadRequest(inner) => {
+            let message = inner.to_string();
+            assert!(message.contains("mutually exclusive"));
+        }
+        other => panic!("expected bad request, got {other:?}"),
+    }
+}
+
+#[test]
+fn resolve_prompt_cache_conversation_selection_rejects_activity_hours_and_minutes_combo() {
+    let err = resolve_prompt_cache_conversation_selection(PromptCacheConversationsQuery {
+        limit: None,
+        activity_hours: Some(3),
+        activity_minutes: Some(5),
+    })
+    .expect_err("selection should reject mixed hour and minute windows");
 
     match err {
         ApiError::BadRequest(inner) => {
@@ -28186,6 +28226,7 @@ async fn prompt_cache_conversations_groups_recent_keys_and_uses_history_totals()
         Query(PromptCacheConversationsQuery {
             limit: Some(20),
             activity_hours: None,
+            activity_minutes: None,
         }),
     )
     .await
@@ -28343,6 +28384,7 @@ async fn prompt_cache_conversations_include_recent_upstream_account_summaries() 
         Query(PromptCacheConversationsQuery {
             limit: Some(20),
             activity_hours: None,
+            activity_minutes: None,
         }),
     )
     .await
@@ -28646,6 +28688,7 @@ async fn prompt_cache_conversations_include_recent_invocation_previews_with_limi
         Query(PromptCacheConversationsQuery {
             limit: Some(20),
             activity_hours: None,
+            activity_minutes: None,
         }),
     )
     .await
@@ -28885,6 +28928,7 @@ async fn prompt_cache_conversations_preserve_upstream_account_history_after_raw_
         Query(PromptCacheConversationsQuery {
             limit: Some(20),
             activity_hours: None,
+            activity_minutes: None,
         }),
     )
     .await
@@ -28960,6 +29004,7 @@ async fn prompt_cache_conversations_keep_totals_when_recent_preview_is_empty() {
         Query(PromptCacheConversationsQuery {
             limit: Some(20),
             activity_hours: None,
+            activity_minutes: None,
         }),
     )
     .await
@@ -29036,6 +29081,7 @@ async fn prompt_cache_conversations_count_mode_reports_inactive_recent_history_f
         Query(PromptCacheConversationsQuery {
             limit: Some(20),
             activity_hours: None,
+            activity_minutes: None,
         }),
     )
     .await
@@ -29118,6 +29164,7 @@ async fn prompt_cache_conversations_count_mode_reports_all_skipped_newer_inactiv
         Query(PromptCacheConversationsQuery {
             limit: Some(20),
             activity_hours: None,
+            activity_minutes: None,
         }),
     )
     .await
@@ -29199,6 +29246,7 @@ async fn prompt_cache_conversations_count_mode_clamps_sparse_inactive_hidden_row
         Query(PromptCacheConversationsQuery {
             limit: Some(20),
             activity_hours: None,
+            activity_minutes: None,
         }),
     )
     .await
@@ -29251,6 +29299,7 @@ async fn prompt_cache_conversations_activity_window_caps_results_to_fifty() {
         Query(PromptCacheConversationsQuery {
             limit: None,
             activity_hours: Some(3),
+            activity_minutes: None,
         }),
     )
     .await
@@ -29268,6 +29317,119 @@ async fn prompt_cache_conversations_activity_window_caps_results_to_fifty() {
         Some(PromptCacheConversationImplicitFilterKind::CappedTo50)
     );
     assert_eq!(response.implicit_filter.filtered_count, 5);
+}
+
+#[tokio::test]
+async fn prompt_cache_conversations_activity_minutes_include_running_only_rows_and_report_selected_minutes()
+ {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+
+    async fn insert_row(
+        pool: &Pool<Sqlite>,
+        invoke_id: &str,
+        occurred_at: DateTime<Utc>,
+        key: &str,
+        status: &str,
+        total_tokens: i64,
+    ) {
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id, occurred_at, source, status, total_tokens, cost, payload, raw_response
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+            "#,
+        )
+        .bind(invoke_id)
+        .bind(format_naive(
+            occurred_at.with_timezone(&Shanghai).naive_local(),
+        ))
+        .bind(SOURCE_PROXY)
+        .bind(status)
+        .bind(total_tokens)
+        .bind(0.01_f64)
+        .bind(json!({ "promptCacheKey": key, "routeMode": "pool" }).to_string())
+        .bind("{}")
+        .execute(pool)
+        .await
+        .expect("insert prompt cache invocation row");
+    }
+
+    insert_row(
+        &state.pool,
+        "pck-terminal-early",
+        now - ChronoDuration::minutes(4),
+        "pck-terminal-early",
+        "success",
+        100,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "pck-running-old-terminal",
+        now - ChronoDuration::minutes(12),
+        "pck-running",
+        "success",
+        120,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "pck-running-live",
+        now - ChronoDuration::minutes(1),
+        "pck-running",
+        "running",
+        140,
+    )
+    .await;
+    insert_row(
+        &state.pool,
+        "pck-terminal-late",
+        now - ChronoDuration::minutes(2),
+        "pck-terminal-late",
+        "http_502",
+        160,
+    )
+    .await;
+
+    let Json(response) = fetch_prompt_cache_conversations(
+        State(state),
+        Query(PromptCacheConversationsQuery {
+            limit: None,
+            activity_hours: None,
+            activity_minutes: Some(5),
+        }),
+    )
+    .await
+    .expect("5-minute prompt cache conversations should succeed");
+
+    assert_eq!(
+        response.selection_mode,
+        PromptCacheConversationSelectionMode::ActivityWindow
+    );
+    assert_eq!(response.selected_limit, None);
+    assert_eq!(response.selected_activity_hours, None);
+    assert_eq!(response.selected_activity_minutes, Some(5));
+    assert_eq!(
+        response
+            .conversations
+            .iter()
+            .map(|item| item.prompt_cache_key.as_str())
+            .collect::<Vec<_>>(),
+        vec!["pck-running", "pck-terminal-late", "pck-terminal-early"]
+    );
+
+    let running = response
+        .conversations
+        .iter()
+        .find(|item| item.prompt_cache_key == "pck-running")
+        .expect("pck-running should remain visible");
+    assert_eq!(running.recent_invocations[0].status, "running");
+    assert_eq!(running.recent_invocations[1].status, "success");
 }
 
 #[tokio::test]
@@ -29338,6 +29500,7 @@ async fn prompt_cache_conversations_chart_window_caps_history_to_recent_24_hours
         Query(PromptCacheConversationsQuery {
             limit: None,
             activity_hours: Some(1),
+            activity_minutes: None,
         }),
     )
     .await
@@ -29387,6 +29550,7 @@ async fn prompt_cache_conversation_timestamps_serialize_as_utc_iso() {
         Query(PromptCacheConversationsQuery {
             limit: Some(20),
             activity_hours: None,
+            activity_minutes: None,
         }),
     )
     .await
@@ -29464,6 +29628,7 @@ async fn prompt_cache_conversations_cache_reuses_recent_result_within_ttl() {
         Query(PromptCacheConversationsQuery {
             limit: Some(20),
             activity_hours: None,
+            activity_minutes: None,
         }),
     )
     .await
@@ -29501,6 +29666,7 @@ async fn prompt_cache_conversations_cache_reuses_recent_result_within_ttl() {
         Query(PromptCacheConversationsQuery {
             limit: Some(20),
             activity_hours: None,
+            activity_minutes: None,
         }),
     )
     .await
@@ -29557,6 +29723,7 @@ async fn prompt_cache_conversations_cache_invalidation_exposes_new_proxy_capture
         Query(PromptCacheConversationsQuery {
             limit: Some(20),
             activity_hours: None,
+            activity_minutes: None,
         }),
     )
     .await
@@ -29582,6 +29749,7 @@ async fn prompt_cache_conversations_cache_invalidation_exposes_new_proxy_capture
         Query(PromptCacheConversationsQuery {
             limit: Some(20),
             activity_hours: None,
+            activity_minutes: None,
         }),
     )
     .await
@@ -29638,6 +29806,7 @@ async fn prompt_cache_conversations_cache_ignores_proxy_captures_without_prompt_
         Query(PromptCacheConversationsQuery {
             limit: Some(20),
             activity_hours: None,
+            activity_minutes: None,
         }),
     )
     .await
@@ -29662,6 +29831,7 @@ async fn prompt_cache_conversations_cache_ignores_proxy_captures_without_prompt_
         Query(PromptCacheConversationsQuery {
             limit: Some(20),
             activity_hours: None,
+            activity_minutes: None,
         }),
     )
     .await
@@ -29729,6 +29899,7 @@ async fn prompt_cache_conversations_cache_returns_under_sustained_invalidations(
             Query(PromptCacheConversationsQuery {
                 limit: Some(20),
                 activity_hours: None,
+                activity_minutes: None,
             }),
         ),
     )
@@ -29792,6 +29963,7 @@ async fn prompt_cache_conversations_concurrent_requests_same_limit_do_not_stall(
                     Query(PromptCacheConversationsQuery {
                         limit: Some(20),
                         activity_hours: None,
+                        activity_minutes: None,
                     }),
                 ),
             )

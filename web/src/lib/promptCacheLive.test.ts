@@ -316,6 +316,131 @@ describe("mergePromptCacheConversationsResponse", () => {
       }),
     ]);
   });
+
+  it("keeps running-only conversations visible in the precise 5-minute dashboard window", () => {
+    const merged = mergePromptCacheConversationsResponse(
+      {
+        rangeStart: "2026-03-10T02:55:00Z",
+        rangeEnd: "2026-03-10T03:00:00Z",
+        selectionMode: "activityWindow",
+        selectedLimit: null,
+        selectedActivityHours: null,
+        selectedActivityMinutes: 5,
+        implicitFilter: { kind: null, filteredCount: 0 },
+        conversations: [
+          createConversation("pck-terminal", {
+            recentInvocations: [
+              buildPromptCachePreviewFromInvocation(
+                createLiveRecord({
+                  id: 1300,
+                  invokeId: "invoke-terminal",
+                  occurredAt: "2026-03-10T02:58:00Z",
+                  promptCacheKey: "pck-terminal",
+                  status: "completed",
+                }),
+              ),
+            ],
+          }),
+        ],
+      },
+      {
+        "pck-running-old": [
+          createLiveRecord({
+            id: 1301,
+            invokeId: "invoke-running-old",
+            occurredAt: "2026-03-10T02:40:00Z",
+            promptCacheKey: "pck-running-old",
+            status: "running",
+          }),
+        ],
+      },
+      { mode: "activityWindow", activityMinutes: 5 },
+      Date.parse("2026-03-10T03:00:00Z"),
+    );
+
+    expect(merged?.conversations.map((item) => item.promptCacheKey)).toContain(
+      "pck-running-old",
+    );
+    expect(merged?.conversations.find((item) => item.promptCacheKey === "pck-running-old")?.recentInvocations[0]?.status).toBe(
+      "running",
+    );
+  });
+
+  it("sorts the precise 5-minute dashboard window by recent terminal time and then in-flight fallback time", () => {
+    const merged = mergePromptCacheConversationsResponse(
+      {
+        rangeStart: "2026-03-10T02:55:00Z",
+        rangeEnd: "2026-03-10T03:00:00Z",
+        selectionMode: "activityWindow",
+        selectedLimit: null,
+        selectedActivityHours: null,
+        selectedActivityMinutes: 5,
+        implicitFilter: { kind: null, filteredCount: 0 },
+        conversations: [
+          createConversation("pck-terminal-early", {
+            createdAt: "2026-03-10T02:56:00Z",
+            recentInvocations: [
+              buildPromptCachePreviewFromInvocation(
+                createLiveRecord({
+                  id: 1401,
+                  invokeId: "invoke-terminal-early",
+                  occurredAt: "2026-03-10T02:57:00Z",
+                  promptCacheKey: "pck-terminal-early",
+                  status: "completed",
+                }),
+              ),
+            ],
+          }),
+          createConversation("pck-running-only", {
+            createdAt: "2026-03-10T02:40:00Z",
+            recentInvocations: [
+              buildPromptCachePreviewFromInvocation(
+                createLiveRecord({
+                  id: 1402,
+                  invokeId: "invoke-running-only",
+                  occurredAt: "2026-03-10T02:59:00Z",
+                  promptCacheKey: "pck-running-only",
+                  status: "running",
+                }),
+              ),
+              buildPromptCachePreviewFromInvocation(
+                createLiveRecord({
+                  id: 1403,
+                  invokeId: "invoke-running-only-old-terminal",
+                  occurredAt: "2026-03-10T02:48:00Z",
+                  promptCacheKey: "pck-running-only",
+                  status: "completed",
+                }),
+              ),
+            ],
+          }),
+          createConversation("pck-terminal-late", {
+            createdAt: "2026-03-10T02:58:00Z",
+            recentInvocations: [
+              buildPromptCachePreviewFromInvocation(
+                createLiveRecord({
+                  id: 1404,
+                  invokeId: "invoke-terminal-late",
+                  occurredAt: "2026-03-10T02:58:30Z",
+                  promptCacheKey: "pck-terminal-late",
+                  status: "completed",
+                }),
+              ),
+            ],
+          }),
+        ],
+      },
+      {},
+      { mode: "activityWindow", activityMinutes: 5 },
+      Date.parse("2026-03-10T03:00:00Z"),
+    );
+
+    expect(merged?.conversations.map((item) => item.promptCacheKey)).toEqual([
+      "pck-running-only",
+      "pck-terminal-late",
+      "pck-terminal-early",
+    ]);
+  });
 });
 
 describe("reconcilePromptCacheLiveRecordMap", () => {

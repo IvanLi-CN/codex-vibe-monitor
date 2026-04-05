@@ -6,12 +6,12 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import DashboardPage from './Dashboard'
 
 const hookMocks = vi.hoisted(() => ({
-  useInvocationStream: vi.fn(),
+  useDashboardWorkingConversations: vi.fn(),
   useSummary: vi.fn(),
 }))
 
-vi.mock('../hooks/useInvocations', () => ({
-  useInvocationStream: hookMocks.useInvocationStream,
+vi.mock('../hooks/useDashboardWorkingConversations', () => ({
+  useDashboardWorkingConversations: hookMocks.useDashboardWorkingConversations,
 }))
 
 vi.mock('../hooks/useStats', () => ({
@@ -72,8 +72,16 @@ vi.mock('../components/WeeklyHourlyHeatmap', () => ({
   ),
 }))
 
-vi.mock('../components/InvocationTable', () => ({
-  InvocationTable: () => <div data-testid="invocation-table" />,
+vi.mock('../components/DashboardWorkingConversationsSection', () => ({
+  DashboardWorkingConversationsSection: ({
+    cards,
+  }: {
+    cards: Array<{ conversationSequenceId: string }>
+  }) => (
+    <div data-testid="dashboard-working-conversations-section">
+      {cards.map((card) => card.conversationSequenceId).join(',')}
+    </div>
+  ),
 }))
 
 vi.mock('../theme', () => ({
@@ -83,14 +91,14 @@ vi.mock('../theme', () => ({
 vi.mock('../i18n', () => ({
   useTranslation: () => ({
     locale: 'zh',
-    t: (key: string, values?: Record<string, string | number>) => {
+    t: (key: string) => {
       const map: Record<string, string> = {
         'dashboard.activityOverview.title': '活动总览',
         'dashboard.activityOverview.range24h': '24 小时',
         'dashboard.activityOverview.range7d': '7 日',
         'dashboard.activityOverview.rangeToggleAria': '时间范围切换',
         'dashboard.today.title': '今日统计信息',
-        'dashboard.section.recentLiveTitle': `最近 ${values?.count ?? 0} 条实况`,
+        'dashboard.section.workingConversationsTitle': '当前工作中的对话',
         'heatmap.metricsToggleAria': '指标切换',
         'metric.totalCount': '次数',
         'metric.totalCost': '金额',
@@ -145,8 +153,8 @@ describe('DashboardPage', () => {
       }
       return { summary: null, isLoading: false, error: null }
     })
-    hookMocks.useInvocationStream.mockReturnValue({
-      records: [],
+    hookMocks.useDashboardWorkingConversations.mockReturnValue({
+      cards: [{ conversationSequenceId: 'WC-ABC123' }],
       isLoading: false,
       error: null,
     })
@@ -161,6 +169,10 @@ describe('DashboardPage', () => {
     expect(host?.querySelector('[data-testid="dashboard-activity-range-7d"]')?.getAttribute('aria-hidden')).toBe('true')
     expect(host?.querySelector('[data-testid="dashboard-activity-range-7d"]')?.className).toContain('invisible')
     expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toContain('metric:totalCount')
+    expect(host?.querySelector('[data-testid="dashboard-working-conversations-section"]')?.textContent).toContain(
+      'WC-ABC123',
+    )
+    expect(host?.textContent).not.toContain('最近 20 条实况')
 
     const rangeButtons = host?.querySelectorAll('button[role="tab"]')
     const range7dButton = Array.from(rangeButtons ?? []).find(

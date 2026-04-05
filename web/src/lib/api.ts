@@ -995,7 +995,8 @@ export interface PromptCacheConversationImplicitFilter {
 
 export type PromptCacheConversationSelection =
   | { mode: "count"; limit: number }
-  | { mode: "activityWindow"; activityHours: number };
+  | { mode: "activityWindow"; activityHours: number }
+  | { mode: "activityWindow"; activityMinutes: number };
 
 export interface PromptCacheConversationsResponse {
   rangeStart: string;
@@ -1003,6 +1004,7 @@ export interface PromptCacheConversationsResponse {
   selectionMode: PromptCacheConversationSelectionMode;
   selectedLimit: number | null;
   selectedActivityHours: number | null;
+  selectedActivityMinutes?: number | null;
   implicitFilter: PromptCacheConversationImplicitFilter;
   conversations: PromptCacheConversation[];
 }
@@ -1018,7 +1020,9 @@ export interface StickyKeyConversationImplicitFilter {
   filteredCount: number;
 }
 
-export type StickyKeyConversationSelection = PromptCacheConversationSelection;
+export type StickyKeyConversationSelection =
+  | { mode: "count"; limit: number }
+  | { mode: "activityWindow"; activityHours: number };
 
 export type StickyKeyConversationInvocationPreview =
   PromptCacheConversationInvocationPreview;
@@ -1784,6 +1788,10 @@ function normalizePromptCacheConversationsResponse(
       selectionModeRaw === "activityWindow"
         ? (normalizeFiniteNumber(payload.selectedActivityHours) ?? null)
         : (normalizeFiniteNumber(payload.selectedActivityHours) ?? null),
+    selectedActivityMinutes:
+      selectionModeRaw === "activityWindow"
+        ? (normalizeFiniteNumber(payload.selectedActivityMinutes) ?? null)
+        : (normalizeFiniteNumber(payload.selectedActivityMinutes) ?? null),
     implicitFilter: {
       kind: implicitFilterKind,
       filteredCount:
@@ -3561,6 +3569,8 @@ export async function fetchPromptCacheConversations(
   const search = new URLSearchParams();
   if (selection.mode === "count") {
     search.set("limit", String(selection.limit));
+  } else if ("activityMinutes" in selection) {
+    search.set("activityMinutes", String(selection.activityMinutes));
   } else {
     search.set("activityHours", String(selection.activityHours));
   }
