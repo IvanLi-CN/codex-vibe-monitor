@@ -11757,13 +11757,6 @@ fn build_pool_no_available_account_error(
     }
 }
 
-fn pool_timeout_failover_should_surface_blocked_policy_message(message: &str) -> bool {
-    let normalized = message.trim();
-    normalized.contains("upstream account group \"")
-        && (normalized.contains("has no bound forward proxy nodes")
-            || normalized.contains("has no selectable bound forward proxy nodes"))
-}
-
 fn retry_after_secs_for_proxy_error(status: StatusCode, message: &str) -> Option<u64> {
     (status == StatusCode::SERVICE_UNAVAILABLE && message == POOL_NO_AVAILABLE_ACCOUNT_MESSAGE)
         .then_some(DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS)
@@ -13091,59 +13084,21 @@ async fn send_pool_request_with_failover(
                 Ok(PoolAccountResolutionWithWait::Resolution(
                     PoolAccountResolution::BlockedByPolicy(message),
                 )) => {
-                    let preserve_timeout_terminal = uses_timeout_route_failover
-                        && timeout_route_failover_pending
-                        && !pool_timeout_failover_should_surface_blocked_policy_message(&message);
-                    let terminal_failure_kind = if preserve_timeout_terminal {
-                        PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT
-                    } else {
-                        PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT
+                    let terminal_failure_kind = PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT;
+                    let mut err = PoolUpstreamError {
+                        account: None,
+                        status: StatusCode::SERVICE_UNAVAILABLE,
+                        message,
+                        failure_kind: terminal_failure_kind,
+                        connect_latency_ms: 0.0,
+                        upstream_error_code: None,
+                        upstream_error_message: None,
+                        upstream_request_id: None,
+                        oauth_responses_debug: None,
+                        attempt_summary: PoolAttemptSummary::default(),
+                        requested_service_tier: None,
+                        request_body_for_capture: None,
                     };
-                    let mut err = if terminal_failure_kind
-                        == PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT
-                    {
-                        last_error.unwrap_or(PoolUpstreamError {
-                            account: None,
-                            status: StatusCode::BAD_GATEWAY,
-                            message: "no alternate upstream route is available after timeout"
-                                .to_string(),
-                            failure_kind: terminal_failure_kind,
-                            connect_latency_ms: 0.0,
-                            upstream_error_code: None,
-                            upstream_error_message: None,
-                            upstream_request_id: None,
-                            oauth_responses_debug: None,
-                            attempt_summary: PoolAttemptSummary::default(),
-                            requested_service_tier: None,
-                            request_body_for_capture: None,
-                        })
-                    } else {
-                        PoolUpstreamError {
-                            account: None,
-                            status: StatusCode::SERVICE_UNAVAILABLE,
-                            message,
-                            failure_kind: terminal_failure_kind,
-                            connect_latency_ms: 0.0,
-                            upstream_error_code: None,
-                            upstream_error_message: None,
-                            upstream_request_id: None,
-                            oauth_responses_debug: None,
-                            attempt_summary: PoolAttemptSummary::default(),
-                            requested_service_tier: None,
-                            request_body_for_capture: None,
-                        }
-                    };
-                    if terminal_failure_kind
-                        == PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT
-                    {
-                        err.status = StatusCode::BAD_GATEWAY;
-                        err.message =
-                            "no alternate upstream route is available after timeout".to_string();
-                        err.failure_kind = terminal_failure_kind;
-                        err.upstream_error_code = None;
-                        err.upstream_error_message = None;
-                        err.upstream_request_id = None;
-                    }
                     err.attempt_summary = pool_attempt_summary(
                         attempt_count,
                         distinct_account_count,
@@ -13240,11 +13195,24 @@ async fn send_pool_request_with_failover(
         let same_account_attempt_loop_budget =
             same_account_attempt_budget.saturating_add(group_upstream_429_max_retries);
         let mut group_upstream_429_retry_count = 0_u8;
-        let mut carried_attempt_total_timeout_started_at =
-            responses_total_timeout_started_at.take();
+        let mut first_response_attempt_started_at = None;
 
         for same_account_attempt in 0..same_account_attempt_loop_budget {
-            let attempt_total_timeout_started_at = carried_attempt_total_timeout_started_at.take();
+            if original_uri.path() == "/v1/responses" && first_response_attempt_started_at.is_none()
+            {
+                first_response_attempt_started_at = Some(Instant::now());
+            }
+            let attempt_total_timeout_started_at = if original_uri.path() == "/v1/responses" {
+                if let Some(started_at) = responses_total_timeout_started_at {
+                    Some(started_at)
+                } else if same_account_attempt > 0 {
+                    first_response_attempt_started_at
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
             let Some(attempt_pre_first_byte_timeout) = pool_timeout_budget_with_total_limit(
                 pre_first_byte_timeout,
                 responses_total_timeout,

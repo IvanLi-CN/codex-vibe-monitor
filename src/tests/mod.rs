@@ -19673,7 +19673,6 @@ async fn capture_target_pool_route_timeout_returns_no_alternate_when_only_same_r
         attempt_rows[0].upstream_route_key,
         attempt_rows[1].upstream_route_key,
     );
-
     let row = sqlx::query_as::<_, PersistedPayloadRow>(
         r#"
         SELECT error_message, payload
@@ -19708,7 +19707,7 @@ async fn capture_target_pool_route_timeout_returns_no_alternate_when_only_same_r
 }
 
 #[tokio::test]
-async fn capture_target_pool_route_timeout_blocked_policy_keeps_no_alternate_terminal() {
+async fn capture_target_pool_route_timeout_surfaces_blocked_policy_terminal() {
     #[derive(Debug, sqlx::FromRow)]
     struct AttemptRouteRow {
         upstream_route_key: Option<String>,
@@ -19772,7 +19771,8 @@ async fn capture_target_pool_route_timeout_blocked_policy_keeps_no_alternate_ter
         ),
     )
     .await;
-    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert!(response.headers().get(http_header::RETRY_AFTER).is_none());
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read timeout blocked-policy response body");
@@ -19782,7 +19782,7 @@ async fn capture_target_pool_route_timeout_blocked_policy_keeps_no_alternate_ter
         response_payload["error"]
             .as_str()
             .expect("timeout blocked-policy error should be present")
-            .contains("no alternate upstream route is available after timeout")
+            .contains("upstream account is not assigned to a group")
     );
 
     wait_for_codex_invocations(&state.pool, 1).await;
@@ -19819,13 +19819,9 @@ async fn capture_target_pool_route_timeout_blocked_policy_keeps_no_alternate_ter
     );
     assert_eq!(
         attempt_rows[1].failure_kind.as_deref(),
-        Some(PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT),
+        Some(PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT),
     );
     assert_eq!(attempt_rows[1].same_account_retry_index, 0);
-    assert_eq!(
-        attempt_rows[0].upstream_route_key,
-        attempt_rows[1].upstream_route_key,
-    );
 
     let row = sqlx::query_as::<_, PersistedPayloadRow>(
         r#"
@@ -19845,15 +19841,15 @@ async fn capture_target_pool_route_timeout_blocked_policy_keeps_no_alternate_ter
     )
     .expect("decode timeout blocked-policy payload");
     assert!(
-        row.error_message.as_deref().is_some_and(
-            |msg| msg.contains("no alternate upstream route is available after timeout")
-        )
+        row.error_message
+            .as_deref()
+            .is_some_and(|msg| msg.contains("upstream account is not assigned to a group"))
     );
     assert_eq!(payload["poolAttemptCount"].as_i64(), Some(1));
     assert_eq!(payload["poolDistinctAccountCount"].as_i64(), Some(1));
     assert_eq!(
         payload["poolAttemptTerminalReason"].as_str(),
-        Some(PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT),
+        Some(PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT),
     );
     assert!(payload["upstreamErrorMessage"].is_null());
 
@@ -21182,10 +21178,10 @@ async fn pool_openai_v1_responses_total_timeout_starts_at_first_upstream_attempt
 }
 
 #[tokio::test]
-async fn pool_openai_v1_responses_stream_timeout_does_not_cap_same_account_retry_before_first_byte()
-{
+async fn pool_openai_v1_responses_total_timeout_caps_same_account_retry_before_first_byte() {
     #[derive(Debug, sqlx::FromRow)]
     struct PersistedPayloadRow {
+        error_message: Option<String>,
         payload: Option<String>,
     }
 
@@ -21194,6 +21190,7 @@ async fn pool_openai_v1_responses_stream_timeout_does_not_cap_same_account_retry
         attempt_index: i64,
         distinct_account_index: i64,
         status: String,
+        failure_kind: Option<String>,
     }
 
     let (retry_upstream_base, retry_attempts, retry_upstream_handle) =
@@ -21230,35 +21227,35 @@ async fn pool_openai_v1_responses_stream_timeout_does_not_cap_same_account_retry
         ),
     )
     .await;
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
-        .expect("read same-account retry success response");
+        .expect("read same-account retry timeout response");
     let response_payload: Value =
-        serde_json::from_slice(&body).expect("decode same-account retry success body");
-    assert_eq!(response_payload["ok"].as_bool(), Some(true));
+        serde_json::from_slice(&body).expect("decode same-account retry timeout body");
     assert_eq!(
-        response_payload["authorization"].as_str(),
-        Some("Bearer route-one"),
+        response_payload["error"].as_str(),
+        Some("pool upstream total timeout exhausted after 300ms"),
     );
 
     wait_for_codex_invocations(&state.pool, 1).await;
-    wait_for_pool_attempt_row_count(&state.pool, 3).await;
+    wait_for_pool_attempt_row_count(&state.pool, 2).await;
 
     let attempt_rows = sqlx::query_as::<_, AttemptRouteRow>(
         r#"
         SELECT
             attempt_index,
             distinct_account_index,
-            status
+            status,
+            failure_kind
         FROM pool_upstream_request_attempts
         ORDER BY attempt_index ASC
         "#,
     )
     .fetch_all(&state.pool)
     .await
-    .expect("load same-account retry success rows");
-    assert_eq!(attempt_rows.len(), 3);
+    .expect("load same-account retry timeout rows");
+    assert_eq!(attempt_rows.len(), 2);
     assert_eq!(attempt_rows[0].attempt_index, 1);
     assert_eq!(attempt_rows[0].distinct_account_index, 1);
     assert_eq!(
@@ -21269,22 +21266,20 @@ async fn pool_openai_v1_responses_stream_timeout_does_not_cap_same_account_retry
     assert_eq!(attempt_rows[1].distinct_account_index, 1);
     assert_eq!(
         attempt_rows[1].status,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL,
     );
-    assert_eq!(attempt_rows[2].attempt_index, 3);
-    assert_eq!(attempt_rows[2].distinct_account_index, 1);
     assert_eq!(
-        attempt_rows[2].status,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+        attempt_rows[1].failure_kind.as_deref(),
+        Some(PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED),
     );
 
     let attempts = retry_attempts.lock().expect("lock retry route attempts");
-    assert_eq!(attempts.get("Bearer route-one").copied(), Some(3));
+    assert_eq!(attempts.get("Bearer route-one").copied(), Some(1));
     drop(attempts);
 
     let row = sqlx::query_as::<_, PersistedPayloadRow>(
         r#"
-        SELECT payload
+        SELECT error_message, payload
         FROM codex_invocations
         ORDER BY id DESC
         LIMIT 1
@@ -21296,12 +21291,20 @@ async fn pool_openai_v1_responses_stream_timeout_does_not_cap_same_account_retry
     let payload: Value = serde_json::from_str(
         row.payload
             .as_deref()
-            .expect("same-account retry success payload should be present"),
+            .expect("same-account retry timeout payload should be present"),
     )
-    .expect("decode same-account retry success payload");
-    assert_eq!(payload["poolAttemptCount"].as_i64(), Some(3));
+    .expect("decode same-account retry timeout payload");
+    assert!(
+        row.error_message.as_deref().is_some_and(|msg| {
+            msg.contains("pool upstream total timeout exhausted after 300ms")
+        })
+    );
+    assert_eq!(payload["poolAttemptCount"].as_i64(), Some(1));
     assert_eq!(payload["poolDistinctAccountCount"].as_i64(), Some(1));
-    assert!(payload["poolAttemptTerminalReason"].is_null());
+    assert_eq!(
+        payload["poolAttemptTerminalReason"].as_str(),
+        Some(PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED),
+    );
 
     retry_upstream_handle.abort();
 }
