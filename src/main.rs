@@ -14833,6 +14833,8 @@ async fn proxy_openai_v1_via_pool(
                 });
                 let mut header_sticky_resolution_finished = false;
                 let mut pending_header_sticky_terminal_error: Option<(StatusCode, String)> = None;
+                let mut resolved_header_sticky_account: Option<PoolResolvedAccount> = None;
+                let mut header_sticky_wait_deadline = None;
                 let request_body_snapshot = loop {
                     tokio::select! {
                         body_result = &mut request_body_snapshot_task => {
@@ -14853,7 +14855,7 @@ async fn proxy_openai_v1_via_pool(
                         }
                         resolution_result = &mut header_sticky_resolution, if !header_sticky_resolution_finished => {
                             header_sticky_resolution_finished = true;
-                            let (resolution, _no_available_wait_deadline) = resolution_result.map_err(|err| {
+                            let (resolution, no_available_wait_deadline) = resolution_result.map_err(|err| {
                                 (
                                     StatusCode::INTERNAL_SERVER_ERROR,
                                     format!(
@@ -14861,7 +14863,11 @@ async fn proxy_openai_v1_via_pool(
                                     ),
                                 )
                             })?;
+                            header_sticky_wait_deadline = no_available_wait_deadline;
                             match resolution {
+                                Ok(PoolAccountResolution::Resolved(account)) => {
+                                    resolved_header_sticky_account = Some(account);
+                                }
                                 Ok(PoolAccountResolution::RateLimited) => {
                                     pending_header_sticky_terminal_error = Some((
                                         StatusCode::TOO_MANY_REQUESTS,
@@ -14884,8 +14890,7 @@ async fn proxy_openai_v1_via_pool(
                                         format!("failed to resolve pool account: {err}"),
                                     ));
                                 }
-                                Ok(PoolAccountResolution::Resolved(_))
-                                | Ok(PoolAccountResolution::Unavailable)
+                                Ok(PoolAccountResolution::Unavailable)
                                 | Ok(PoolAccountResolution::NoCandidate) => {}
                             }
                         }
@@ -14893,7 +14898,7 @@ async fn proxy_openai_v1_via_pool(
                 };
                 if !header_sticky_resolution_finished {
                     if header_sticky_resolution.is_finished() {
-                        let (resolution, _no_available_wait_deadline) = header_sticky_resolution
+                        let (resolution, no_available_wait_deadline) = header_sticky_resolution
                             .await
                             .map_err(|err| {
                                 (
@@ -14903,7 +14908,11 @@ async fn proxy_openai_v1_via_pool(
                                     ),
                                 )
                             })?;
+                        header_sticky_wait_deadline = no_available_wait_deadline;
                         match resolution {
+                            Ok(PoolAccountResolution::Resolved(account)) => {
+                                resolved_header_sticky_account = Some(account);
+                            }
                             Ok(PoolAccountResolution::RateLimited) => {
                                 pending_header_sticky_terminal_error = Some((
                                     StatusCode::TOO_MANY_REQUESTS,
@@ -14926,8 +14935,7 @@ async fn proxy_openai_v1_via_pool(
                                     format!("failed to resolve pool account: {err}"),
                                 ));
                             }
-                            Ok(PoolAccountResolution::Resolved(_))
-                            | Ok(PoolAccountResolution::Unavailable)
+                            Ok(PoolAccountResolution::Unavailable)
                             | Ok(PoolAccountResolution::NoCandidate) => {}
                         }
                     } else {
@@ -14943,21 +14951,45 @@ async fn proxy_openai_v1_via_pool(
                 {
                     return Err((status, message));
                 }
-                let mut no_available_wait_deadline = *shared_wait_deadline
-                    .lock()
-                    .expect("lock shared header wait deadline");
-                let resolution = resolve_pool_account_for_request_with_wait(
-                    state.as_ref(),
-                    body_sticky_key.as_deref(),
-                    &[],
-                    &HashSet::new(),
-                    true,
-                    &mut no_available_wait_deadline,
-                    pre_attempt_total_timeout_deadline,
-                )
-                .await;
-                let (initial_account, no_available_wait_deadline) =
-                    unwrap_initial_pool_account(resolution, no_available_wait_deadline)?;
+                let mut no_available_wait_deadline =
+                    header_sticky_wait_deadline.or(*shared_wait_deadline
+                        .lock()
+                        .expect("lock shared header wait deadline"));
+                let initial_account = if body_sticky_key.as_deref() == Some(sticky_key.as_str()) {
+                    if let Some(account) = resolved_header_sticky_account {
+                        account
+                    } else {
+                        let resolution = resolve_pool_account_for_request_with_wait(
+                            state.as_ref(),
+                            body_sticky_key.as_deref(),
+                            &[],
+                            &HashSet::new(),
+                            true,
+                            &mut no_available_wait_deadline,
+                            pre_attempt_total_timeout_deadline,
+                        )
+                        .await;
+                        let (initial_account, updated_no_available_wait_deadline) =
+                            unwrap_initial_pool_account(resolution, no_available_wait_deadline)?;
+                        no_available_wait_deadline = updated_no_available_wait_deadline;
+                        initial_account
+                    }
+                } else {
+                    let resolution = resolve_pool_account_for_request_with_wait(
+                        state.as_ref(),
+                        body_sticky_key.as_deref(),
+                        &[],
+                        &HashSet::new(),
+                        true,
+                        &mut no_available_wait_deadline,
+                        pre_attempt_total_timeout_deadline,
+                    )
+                    .await;
+                    let (initial_account, updated_no_available_wait_deadline) =
+                        unwrap_initial_pool_account(resolution, no_available_wait_deadline)?;
+                    no_available_wait_deadline = updated_no_available_wait_deadline;
+                    initial_account
+                };
                 (
                     request_body_snapshot,
                     body_sticky_key,

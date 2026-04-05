@@ -22194,7 +22194,7 @@ async fn pool_route_waited_initial_account_still_uses_remaining_total_timeout_bu
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_header_sticky_stream_revalidates_pre_resolved_account_after_body() {
+async fn proxy_openai_v1_header_sticky_stream_preserves_pre_resolved_account_after_body() {
     let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse(&upstream_base).expect("valid upstream base url"),
@@ -22266,15 +22266,12 @@ async fn proxy_openai_v1_header_sticky_stream_revalidates_pre_resolved_account_a
         .await
         .expect("read via-pool response");
     let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
-    assert_eq!(payload["authorization"], "Bearer upstream-replacement");
+    assert_eq!(payload["authorization"], "Bearer upstream-primary");
     assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
 
     let attempts = attempts.lock().expect("lock attempts");
-    assert_eq!(attempts.get("Bearer upstream-primary").copied(), None);
-    assert_eq!(
-        attempts.get("Bearer upstream-replacement").copied(),
-        Some(1)
-    );
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
+    assert_eq!(attempts.get("Bearer upstream-replacement").copied(), None);
 
     upstream_handle.abort();
 }
