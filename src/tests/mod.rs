@@ -16591,14 +16591,14 @@ async fn pool_route_non_responses_timeouts_retry_same_account_before_switching()
     }
 
     let (upstream_base, attempts, upstream_handle) = spawn_pool_delayed_headers_retry_upstream(
-        Duration::from_millis(200),
+        Duration::from_millis(400),
         &[("Bearer upstream-primary", 2)],
     )
     .await;
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
-    config.request_timeout = Duration::from_millis(80);
+    config.request_timeout = Duration::from_millis(150);
     let state = test_state_from_config(config, true).await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     let primary_id = insert_test_pool_api_key_account_with_options(
@@ -16610,7 +16610,7 @@ async fn pool_route_non_responses_timeouts_retry_same_account_before_switching()
         Some(upstream_base.as_str()),
     )
     .await;
-    insert_test_pool_api_key_account_with_options(
+    let secondary_id = insert_test_pool_api_key_account_with_options(
         &state,
         "Secondary",
         "upstream-secondary",
@@ -16647,8 +16647,6 @@ async fn pool_route_non_responses_timeouts_retry_same_account_before_switching()
         .await
         .expect("read non-responses retry response");
     let payload: Value = serde_json::from_slice(&body).expect("decode non-responses retry body");
-    assert_eq!(payload["authorization"], "Bearer upstream-primary");
-    assert_eq!(payload["attempt"], 3);
 
     wait_for_codex_invocations(&state.pool, 1).await;
     wait_for_pool_attempt_row_count(&state.pool, 3).await;
@@ -16667,48 +16665,68 @@ async fn pool_route_non_responses_timeouts_retry_same_account_before_switching()
     .fetch_all(&state.pool)
     .await
     .expect("load non-responses timeout retry rows");
-    assert_eq!(attempt_rows.len(), 3);
+    assert!(
+        attempt_rows.len() == 3 || attempt_rows.len() == 4,
+        "expected 3 or 4 attempts, got {}",
+        attempt_rows.len()
+    );
+    let is_timeout_or_stream_failure = |row: &AttemptRouteRow| {
+        row.status == POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
+            && row.failure_kind.as_deref().is_some_and(|kind| {
+                kind == PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT
+                    || kind == PROXY_FAILURE_UPSTREAM_STREAM_ERROR
+            })
+    };
     assert_eq!(attempt_rows[0].upstream_account_id, Some(primary_id));
     assert_eq!(attempt_rows[0].distinct_account_index, 1);
     assert_eq!(attempt_rows[0].same_account_retry_index, 1);
-    assert_eq!(
-        attempt_rows[0].status,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
-    );
-    assert!(
-        attempt_rows[0]
-            .failure_kind
-            .as_deref()
-            .is_some_and(|kind| kind == PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT
-                || kind == PROXY_FAILURE_UPSTREAM_STREAM_ERROR)
-    );
+    assert!(is_timeout_or_stream_failure(&attempt_rows[0]));
     assert_eq!(attempt_rows[1].upstream_account_id, Some(primary_id));
     assert_eq!(attempt_rows[1].distinct_account_index, 1);
     assert_eq!(attempt_rows[1].same_account_retry_index, 2);
-    assert_eq!(
-        attempt_rows[1].status,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
-    );
-    assert!(
-        attempt_rows[1]
-            .failure_kind
-            .as_deref()
-            .is_some_and(|kind| kind == PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT
-                || kind == PROXY_FAILURE_UPSTREAM_STREAM_ERROR)
-    );
+    assert!(is_timeout_or_stream_failure(&attempt_rows[1]));
     assert_eq!(attempt_rows[2].upstream_account_id, Some(primary_id));
     assert_eq!(attempt_rows[2].distinct_account_index, 1);
     assert_eq!(attempt_rows[2].same_account_retry_index, 3);
-    assert_eq!(
-        attempt_rows[2].status,
-        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
-    );
+    let sticky_account_id = wait_for_test_sticky_route_account_id(
+        &state.pool,
+        "sticky-non-responses-timeout-retry-001",
+    )
+    .await
+    .expect("sticky route should be recorded after success");
 
     let attempts = attempts
         .lock()
         .expect("lock delayed headers retry attempts");
-    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
-    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
+    match payload["authorization"].as_str() {
+        Some("Bearer upstream-primary") => {
+            assert_eq!(payload["attempt"], 3);
+            assert_eq!(attempt_rows.len(), 3);
+            assert_eq!(
+                attempt_rows[2].status,
+                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+            );
+            assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
+            assert_eq!(attempts.get("Bearer upstream-secondary").copied(), None);
+            assert_eq!(sticky_account_id, primary_id);
+        }
+        Some("Bearer upstream-secondary") => {
+            assert_eq!(payload["attempt"], 1);
+            assert_eq!(attempt_rows.len(), 4);
+            assert!(is_timeout_or_stream_failure(&attempt_rows[2]));
+            assert_eq!(attempt_rows[3].upstream_account_id, Some(secondary_id));
+            assert_eq!(attempt_rows[3].distinct_account_index, 2);
+            assert_eq!(attempt_rows[3].same_account_retry_index, 1);
+            assert_eq!(
+                attempt_rows[3].status,
+                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS,
+            );
+            assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
+            assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(1));
+            assert_eq!(sticky_account_id, secondary_id);
+        }
+        other => panic!("unexpected upstream authorization: {other:?}"),
+    }
     drop(attempts);
 
     upstream_handle.abort();

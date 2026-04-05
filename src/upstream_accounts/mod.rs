@@ -1,5 +1,5 @@
-use super::*;
 use crate::oauth_bridge::oauth_codex_upstream_base_url;
+use crate::*;
 use aes_gcm::{
     Aes256Gcm,
     aead::{Aead, KeyInit},
