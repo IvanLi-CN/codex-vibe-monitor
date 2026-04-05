@@ -13047,11 +13047,28 @@ async fn send_pool_request_with_failover(
                 Ok(PoolAccountResolutionWithWait::Resolution(
                     PoolAccountResolution::BlockedByPolicy(message),
                 )) => {
-                    let terminal_failure_kind = PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT;
+                    let terminal_failure_kind =
+                        if uses_timeout_route_failover && timeout_route_failover_pending {
+                            PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT
+                        } else {
+                            PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT
+                        };
                     let err = PoolUpstreamError {
                         account: None,
-                        status: StatusCode::SERVICE_UNAVAILABLE,
-                        message,
+                        status: if terminal_failure_kind
+                            == PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT
+                        {
+                            StatusCode::BAD_GATEWAY
+                        } else {
+                            StatusCode::SERVICE_UNAVAILABLE
+                        },
+                        message: if terminal_failure_kind
+                            == PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT
+                        {
+                            "no alternate upstream route is available after timeout".to_string()
+                        } else {
+                            message
+                        },
                         failure_kind: terminal_failure_kind,
                         connect_latency_ms: 0.0,
                         upstream_error_code: None,
@@ -14694,8 +14711,15 @@ async fn proxy_openai_v1_via_pool(
                     Ok(PoolAccountResolutionWithWait::Resolution(
                         PoolAccountResolution::Resolved(account),
                     )) => account,
-                    Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired)
-                    | Ok(PoolAccountResolutionWithWait::Resolution(
+                    Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired) => {
+                        let total_timeout = responses_total_timeout
+                            .expect("pre-attempt total-timeout expiry requires responses timeout");
+                        return Err((
+                            StatusCode::GATEWAY_TIMEOUT,
+                            pool_total_timeout_exhausted_message(total_timeout),
+                        ));
+                    }
+                    Ok(PoolAccountResolutionWithWait::Resolution(
                         PoolAccountResolution::Unavailable,
                     ))
                     | Ok(PoolAccountResolutionWithWait::Resolution(

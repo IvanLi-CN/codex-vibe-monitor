@@ -22112,9 +22112,10 @@ async fn proxy_openai_v1_header_sticky_responses_wait_timeout_respects_total_tim
         "responses total timeout should start from request entry, not after body buffering, elapsed={elapsed:?}"
     );
     let (status, message) = response.expect_err("via-pool request should fail");
-    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
     assert_eq!(
-        message, POOL_NO_AVAILABLE_ACCOUNT_MESSAGE,
+        message,
+        pool_total_timeout_exhausted_message(Duration::from_millis(90)),
         "unexpected via-pool failure: {message}"
     );
     assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
