@@ -12679,6 +12679,9 @@ async fn send_pool_request_with_failover(
         pool_upstream_responses_total_timeout(&state.config, original_uri, &method);
     let pre_attempt_total_timeout_deadline =
         responses_total_timeout.map(|total_timeout| Instant::now() + total_timeout);
+    let pre_attempt_total_timeout_started_at = responses_total_timeout
+        .zip(pre_attempt_total_timeout_deadline)
+        .map(|(total_timeout, deadline)| deadline - total_timeout);
     let mut responses_total_timeout_started_at =
         failover_progress.responses_total_timeout_started_at;
     let send_timeout = pool_upstream_send_timeout(
@@ -13125,6 +13128,9 @@ async fn send_pool_request_with_failover(
                 }
             }
         };
+        if responses_total_timeout_started_at.is_none() && no_available_wait_deadline.is_some() {
+            responses_total_timeout_started_at = pre_attempt_total_timeout_started_at;
+        }
         reserve_pool_routing_account(state.as_ref(), &reservation_key, &account);
         timeout_route_failover_pending = false;
 
@@ -14634,6 +14640,7 @@ async fn proxy_openai_v1_via_pool(
     body: Body,
     runtime_timeouts: PoolRoutingTimeoutSettingsResolved,
 ) -> Result<Response, (StatusCode, String)> {
+    let request_started_at = Instant::now();
     let body_limit = state.config.openai_proxy_max_request_body_bytes;
     let pool_routing_reservation_key = build_pool_routing_reservation_key(proxy_request_id);
     let capture_target = capture_target_for_request(original_uri.path(), &method);
@@ -14644,7 +14651,7 @@ async fn proxy_openai_v1_via_pool(
     let responses_total_timeout =
         pool_upstream_responses_total_timeout(&state.config, original_uri, &method);
     let pre_attempt_total_timeout_deadline =
-        responses_total_timeout.map(|total_timeout| Instant::now() + total_timeout);
+        responses_total_timeout.map(|total_timeout| request_started_at + total_timeout);
     let responses_total_timeout_started_at = None;
     let header_sticky_key = extract_sticky_key_from_headers(&headers);
     let body_size_hint_exact = body
@@ -14832,12 +14839,6 @@ async fn proxy_openai_v1_via_pool(
                             match body_result {
                                 Ok(Ok(snapshot)) => break snapshot,
                                 Ok(Err(err)) => {
-                                    if err.status == StatusCode::REQUEST_TIMEOUT
-                                        && let Some((status, message)) =
-                                            pending_header_sticky_terminal_error.take()
-                                    {
-                                        return Err((status, message));
-                                    }
                                     header_sticky_resolution.abort();
                                     return Err((err.status, err.message));
                                 }
@@ -15008,7 +15009,8 @@ async fn proxy_openai_v1_via_pool(
                     body_sticky_key.as_deref(),
                     Some(initial_account),
                     PoolFailoverProgress {
-                        responses_total_timeout_started_at,
+                        responses_total_timeout_started_at: no_available_wait_deadline
+                            .map(|_| request_started_at),
                         no_available_wait_deadline,
                         ..PoolFailoverProgress::default()
                     },
