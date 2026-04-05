@@ -15035,28 +15035,36 @@ async fn proxy_openai_v1_via_pool(
                         }
                     }
                 };
-                let request_body_snapshot = read_request_body_snapshot_with_limit(
-                    body,
-                    body_limit,
-                    runtime_timeouts.request_read_timeout,
-                    proxy_request_id,
-                );
                 tokio::pin!(header_sticky_resolution);
-                tokio::pin!(request_body_snapshot);
                 let mut header_sticky_resolution_finished = false;
                 let mut pending_header_sticky_terminal_error: Option<(StatusCode, String)> = None;
                 let mut resolved_header_sticky_account: Option<PoolResolvedAccount> = None;
                 let mut header_sticky_wait_deadline = None;
+                let mut request_body_buffer = PoolReplayBodyBuffer::new(proxy_request_id);
+                let mut request_body_stream = body.into_data_stream();
+                let request_body_deadline = Instant::now() + runtime_timeouts.request_read_timeout;
+                let mut request_body_len = 0usize;
+                let mut observed_body_sticky_key = None;
+                let mut sticky_key_probe = Vec::new();
+                let mut sticky_key_probe_exhausted = false;
+                let request_body_timeout_error = || RequestBodyReadError {
+                    status: StatusCode::REQUEST_TIMEOUT,
+                    message: format!(
+                        "request body read timed out after {}ms",
+                        runtime_timeouts.request_read_timeout.as_millis()
+                    ),
+                    failure_kind: PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
+                    partial_body: Vec::new(),
+                };
                 let request_body_snapshot = loop {
+                    let remaining = request_body_deadline.saturating_duration_since(Instant::now());
+                    if remaining.is_zero() {
+                        return Err((
+                            request_body_timeout_error().status,
+                            request_body_timeout_error().message,
+                        ));
+                    }
                     tokio::select! {
-                        body_result = &mut request_body_snapshot => {
-                            match body_result {
-                                Ok(snapshot) => break snapshot,
-                                Err(err) => {
-                                    return Err((err.status, err.message));
-                                }
-                            }
-                        }
                         resolution_result = &mut header_sticky_resolution, if !header_sticky_resolution_finished => {
                             header_sticky_resolution_finished = true;
                             let (resolution, no_available_wait_deadline) = resolution_result;
@@ -15112,13 +15120,85 @@ async fn proxy_openai_v1_via_pool(
                                     PoolAccountResolution::NoCandidate,
                                 )) => {}
                             }
+                            if observed_body_sticky_key.as_deref() == Some(sticky_key.as_str())
+                                && let Some((status, message)) =
+                                    pending_header_sticky_terminal_error.as_ref()
+                            {
+                                return Err((*status, message.clone()));
+                            }
+                        }
+                        next_chunk = timeout(remaining, request_body_stream.next()) => {
+                            let next_chunk = match next_chunk {
+                                Ok(chunk) => chunk,
+                                Err(_) => {
+                                    let err = request_body_timeout_error();
+                                    return Err((err.status, err.message));
+                                }
+                            };
+                            let Some(chunk) = next_chunk else {
+                                break request_body_buffer.finish().await.map_err(|err| {
+                                    (
+                                        StatusCode::BAD_GATEWAY,
+                                        format!("failed to cache request body for oauth replay: {err}"),
+                                    )
+                                })?;
+                            };
+                            let chunk = match chunk {
+                                Ok(chunk) => chunk,
+                                Err(err) => {
+                                    return Err((
+                                        StatusCode::BAD_REQUEST,
+                                        format!("failed to read request body stream: {err}"),
+                                    ));
+                                }
+                            };
+                            if request_body_len.saturating_add(chunk.len()) > body_limit {
+                                return Err((
+                                    StatusCode::PAYLOAD_TOO_LARGE,
+                                    format!("request body exceeds {body_limit} bytes"),
+                                ));
+                            }
+                            request_body_len = request_body_len.saturating_add(chunk.len());
+                            request_body_buffer.append(&chunk).await.map_err(|err| {
+                                (
+                                    StatusCode::BAD_GATEWAY,
+                                    format!("failed to cache request body for oauth replay: {err}"),
+                                )
+                            })?;
+                            if !sticky_key_probe_exhausted
+                                && observed_body_sticky_key.is_none()
+                                && sticky_key_probe.len() < HEADER_STICKY_EARLY_STICKY_SCAN_BYTES
+                            {
+                                let probe_remaining = HEADER_STICKY_EARLY_STICKY_SCAN_BYTES
+                                    .saturating_sub(sticky_key_probe.len());
+                                sticky_key_probe.extend_from_slice(&chunk[..chunk.len().min(probe_remaining)]);
+                                observed_body_sticky_key =
+                                    best_effort_extract_sticky_key_from_request_body_prefix(
+                                        &sticky_key_probe,
+                                    );
+                                sticky_key_probe_exhausted =
+                                    observed_body_sticky_key.is_some()
+                                        || sticky_key_probe.len()
+                                            >= HEADER_STICKY_EARLY_STICKY_SCAN_BYTES;
+                            }
+                            if header_sticky_resolution_finished
+                                && observed_body_sticky_key.as_deref() == Some(sticky_key.as_str())
+                                && let Some((status, message)) =
+                                    pending_header_sticky_terminal_error.as_ref()
+                            {
+                                return Err((*status, message.clone()));
+                            }
                         }
                     }
                 };
                 let body_sticky_key =
-                    extract_sticky_key_from_replay_snapshot(&request_body_snapshot)
-                        .await
-                        .or(Some(sticky_key.clone()));
+                    if let Some(observed_body_sticky_key) = observed_body_sticky_key {
+                        Some(observed_body_sticky_key)
+                    } else {
+                        extract_sticky_key_from_replay_snapshot(&request_body_snapshot)
+                            .await
+                            .or(Some(sticky_key.clone()))
+                    };
                 if !header_sticky_resolution_finished {
                     if body_sticky_key.as_deref() == Some(sticky_key.as_str()) {
                         let (resolution, no_available_wait_deadline) =
@@ -17318,6 +17398,87 @@ async fn read_request_body_snapshot_with_limit(
                 partial_body: Vec::new(),
             })?;
     }
+}
+
+const HEADER_STICKY_EARLY_STICKY_SCAN_BYTES: usize = 64 * 1024;
+
+fn best_effort_extract_sticky_key_from_request_body_prefix(bytes: &[u8]) -> Option<String> {
+    const STICKY_KEY_PATTERNS: &[&[u8]] = &[
+        br#""sticky_key""#,
+        br#""stickyKey""#,
+        br#""prompt_cache_key""#,
+        br#""promptCacheKey""#,
+    ];
+
+    fn find_subslice(haystack: &[u8], needle: &[u8], start: usize) -> Option<usize> {
+        haystack[start..]
+            .windows(needle.len())
+            .position(|window| window == needle)
+            .map(|offset| start + offset)
+    }
+
+    fn skip_ascii_whitespace(bytes: &[u8], mut index: usize) -> usize {
+        while index < bytes.len() && bytes[index].is_ascii_whitespace() {
+            index += 1;
+        }
+        index
+    }
+
+    fn parse_json_string(bytes: &[u8], index: usize) -> Option<(String, usize)> {
+        if bytes.get(index) != Some(&b'"') {
+            return None;
+        }
+        let mut parsed = String::new();
+        let mut cursor = index + 1;
+        while cursor < bytes.len() {
+            match bytes[cursor] {
+                b'"' => return Some((parsed, cursor + 1)),
+                b'\\' => {
+                    cursor += 1;
+                    let escaped = *bytes.get(cursor)?;
+                    match escaped {
+                        b'"' | b'\\' | b'/' => parsed.push(escaped as char),
+                        b'b' => parsed.push('\u{0008}'),
+                        b'f' => parsed.push('\u{000C}'),
+                        b'n' => parsed.push('\n'),
+                        b'r' => parsed.push('\r'),
+                        b't' => parsed.push('\t'),
+                        // Stay conservative for unicode escapes; missing the key is better
+                        // than returning a false early decision.
+                        b'u' => return None,
+                        _ => return None,
+                    }
+                }
+                byte if byte.is_ascii_control() => return None,
+                byte if byte.is_ascii() => parsed.push(byte as char),
+                _ => return None,
+            }
+            cursor += 1;
+        }
+        None
+    }
+
+    for pattern in STICKY_KEY_PATTERNS {
+        let mut cursor = 0usize;
+        while let Some(key_start) = find_subslice(bytes, pattern, cursor) {
+            let mut value_start = skip_ascii_whitespace(bytes, key_start + pattern.len());
+            if bytes.get(value_start) != Some(&b':') {
+                cursor = key_start + pattern.len();
+                continue;
+            }
+            value_start = skip_ascii_whitespace(bytes, value_start + 1);
+            let Some((value, next_index)) = parse_json_string(bytes, value_start) else {
+                cursor = key_start + pattern.len();
+                continue;
+            };
+            let normalized = value.trim();
+            if !normalized.is_empty() {
+                return Some(normalized.to_string());
+            }
+            cursor = next_index;
+        }
+    }
+    None
 }
 
 fn prepare_target_request_body(
