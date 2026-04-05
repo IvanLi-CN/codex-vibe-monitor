@@ -12919,18 +12919,18 @@ fn pool_upstream_first_chunk_timeout_keeps_default_budget_for_non_responses_rout
 }
 
 #[test]
-fn pool_upstream_send_timeout_keeps_handshake_budget_for_non_responses_route() {
-    let handshake_timeout = Duration::from_millis(100);
-    let responses_timeout = Duration::from_millis(1200);
+fn pool_upstream_send_timeout_caps_non_responses_route_by_first_byte_budget() {
+    let handshake_timeout = Duration::from_millis(1200);
+    let first_byte_timeout = Duration::from_millis(100);
 
     let timeout = pool_upstream_send_timeout(
         &"/v1/chat/completions".parse().expect("valid uri"),
         &Method::POST,
         handshake_timeout,
-        responses_timeout,
+        first_byte_timeout,
     );
 
-    assert_eq!(timeout, handshake_timeout);
+    assert_eq!(timeout, first_byte_timeout);
 }
 
 #[test]

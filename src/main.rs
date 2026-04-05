@@ -12833,14 +12833,27 @@ async fn send_pool_request_with_failover(
         let account = if let Some(account) = preferred_account.take() {
             account
         } else {
-            // A prior 429 should not suppress bounded wait when alternates are only temporarily
-            // unavailable. Pure pool-wide 429 states still resolve as `RateLimited` immediately.
-            let wait_for_no_available =
-                !(uses_timeout_route_failover && timeout_route_failover_pending);
+            // Pre-attempt no-account gaps should wait across all routes. After a concrete
+            // upstream failure, only responses-family failover keeps the bounded wait so a
+            // recovered alternate can still take over; non-responses routes preserve the last
+            // upstream failure instead of re-entering the generic no-account wait loop.
+            let wait_for_no_available = if attempt_count == 0 {
+                true
+            } else if uses_timeout_route_failover {
+                !timeout_route_failover_pending
+            } else {
+                false
+            };
             let total_timeout_deadline = responses_total_timeout_started_at
                 .zip(responses_total_timeout)
                 .map(|(started_at, total_timeout)| started_at + total_timeout)
-                .or(pre_attempt_total_timeout_deadline);
+                .or_else(|| {
+                    if attempt_count == 0 {
+                        pre_attempt_total_timeout_deadline
+                    } else {
+                        None
+                    }
+                });
             match resolve_pool_account_for_request_with_wait(
                 state.as_ref(),
                 sticky_key,
@@ -13051,28 +13064,11 @@ async fn send_pool_request_with_failover(
                 Ok(PoolAccountResolutionWithWait::Resolution(
                     PoolAccountResolution::BlockedByPolicy(message),
                 )) => {
-                    let terminal_failure_kind =
-                        if uses_timeout_route_failover && timeout_route_failover_pending {
-                            PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT
-                        } else {
-                            PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT
-                        };
+                    let terminal_failure_kind = PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT;
                     let err = PoolUpstreamError {
                         account: None,
-                        status: if terminal_failure_kind
-                            == PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT
-                        {
-                            StatusCode::BAD_GATEWAY
-                        } else {
-                            StatusCode::SERVICE_UNAVAILABLE
-                        },
-                        message: if terminal_failure_kind
-                            == PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT
-                        {
-                            "no alternate upstream route is available after timeout".to_string()
-                        } else {
-                            message
-                        },
+                        status: StatusCode::SERVICE_UNAVAILABLE,
+                        message,
                         failure_kind: terminal_failure_kind,
                         connect_latency_ms: 0.0,
                         upstream_error_code: None,
@@ -13178,12 +13174,11 @@ async fn send_pool_request_with_failover(
         let same_account_attempt_loop_budget =
             same_account_attempt_budget.saturating_add(group_upstream_429_max_retries);
         let mut group_upstream_429_retry_count = 0_u8;
+        let mut carried_attempt_total_timeout_started_at =
+            responses_total_timeout_started_at.take();
 
         for same_account_attempt in 0..same_account_attempt_loop_budget {
-            let attempt_total_timeout_started_at = ensure_pool_total_timeout_started_at(
-                responses_total_timeout,
-                &mut responses_total_timeout_started_at,
-            );
+            let attempt_total_timeout_started_at = carried_attempt_total_timeout_started_at.take();
             let Some(attempt_pre_first_byte_timeout) = pool_timeout_budget_with_total_limit(
                 pre_first_byte_timeout,
                 responses_total_timeout,
@@ -13400,7 +13395,6 @@ async fn send_pool_request_with_failover(
                             "failed to advance pool attempt into sending-request phase"
                         );
                     }
-
                     match timeout(attempt_send_timeout, request.send()).await {
                         Ok(Ok(response)) => (
                             ProxyUpstreamResponseBody::Reqwest(response),
@@ -13577,6 +13571,50 @@ async fn send_pool_request_with_failover(
                                     error = %err,
                                     "failed to broadcast pool handshake timeout snapshot"
                                 );
+                            }
+                            if let (Some(total_timeout), Some(started_at)) =
+                                (responses_total_timeout, attempt_total_timeout_started_at)
+                                && pool_total_timeout_exhausted(total_timeout, started_at)
+                            {
+                                let final_error = build_pool_total_timeout_exhausted_error(
+                                    total_timeout,
+                                    Some(PoolUpstreamError {
+                                        account: Some(account.clone()),
+                                        status: StatusCode::BAD_GATEWAY,
+                                        message: message.clone(),
+                                        failure_kind: PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT,
+                                        connect_latency_ms: elapsed_ms(connect_started),
+                                        upstream_error_code: None,
+                                        upstream_error_message: None,
+                                        upstream_request_id: None,
+                                        oauth_responses_debug: None,
+                                        attempt_summary: PoolAttemptSummary::default(),
+                                        requested_service_tier: attempted_requested_service_tier
+                                            .clone(),
+                                        request_body_for_capture:
+                                            attempted_request_body_for_capture.clone(),
+                                    }),
+                                    attempt_count,
+                                    distinct_account_count,
+                                );
+                                if let Some(trace) = trace_context.as_ref()
+                                    && let Err(err) = insert_pool_upstream_terminal_attempt(
+                                        &state.pool,
+                                        trace,
+                                        &final_error,
+                                        (attempt_count + 1) as i64,
+                                        distinct_account_count as i64,
+                                        PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED,
+                                    )
+                                    .await
+                                {
+                                    warn!(
+                                        invoke_id = trace.invoke_id,
+                                        error = %err,
+                                        "failed to persist pool total-timeout exhaustion attempt"
+                                    );
+                                }
+                                return Err(final_error);
                             }
                             let has_retry_budget =
                                 same_account_attempt + 1 < same_account_attempt_budget;
@@ -14139,6 +14177,49 @@ async fn send_pool_request_with_failover(
                             "failed to broadcast pool first-chunk failure snapshot"
                         );
                     }
+                    if let (Some(total_timeout), Some(started_at)) =
+                        (responses_total_timeout, attempt_total_timeout_started_at)
+                        && pool_total_timeout_exhausted(total_timeout, started_at)
+                    {
+                        let final_error = build_pool_total_timeout_exhausted_error(
+                            total_timeout,
+                            Some(PoolUpstreamError {
+                                account: Some(account.clone()),
+                                status: StatusCode::BAD_GATEWAY,
+                                message: message.clone(),
+                                failure_kind: PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
+                                connect_latency_ms,
+                                upstream_error_code: None,
+                                upstream_error_message: None,
+                                upstream_request_id: None,
+                                oauth_responses_debug: oauth_responses_debug.clone(),
+                                attempt_summary: PoolAttemptSummary::default(),
+                                requested_service_tier: attempted_requested_service_tier.clone(),
+                                request_body_for_capture: attempted_request_body_for_capture
+                                    .clone(),
+                            }),
+                            attempt_count,
+                            distinct_account_count,
+                        );
+                        if let Some(trace) = trace_context.as_ref()
+                            && let Err(err) = insert_pool_upstream_terminal_attempt(
+                                &state.pool,
+                                trace,
+                                &final_error,
+                                (attempt_count + 1) as i64,
+                                distinct_account_count as i64,
+                                PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED,
+                            )
+                            .await
+                        {
+                            warn!(
+                                invoke_id = trace.invoke_id,
+                                error = %err,
+                                "failed to persist pool total-timeout exhaustion attempt"
+                            );
+                        }
+                        return Err(final_error);
+                    }
                     let has_retry_budget = same_account_attempt + 1 < same_account_attempt_budget;
                     if has_retry_budget && !should_timeout_route_failover {
                         let retry_delay =
@@ -14657,6 +14738,13 @@ async fn proxy_openai_v1_via_pool(
     let responses_total_timeout_started_at_from_request =
         responses_total_timeout.map(|_| request_started_at);
     let responses_total_timeout_started_at = None;
+    let pre_attempt_total_timeout_exceeded =
+        || pre_attempt_total_timeout_deadline.is_some_and(|deadline| Instant::now() >= deadline);
+    let pre_attempt_total_timeout_error = || {
+        pool_pre_attempt_total_timeout_error(
+            responses_total_timeout.expect("pre-attempt total-timeout requires responses timeout"),
+        )
+    };
     let header_sticky_key = extract_sticky_key_from_headers(&headers);
     let body_size_hint_exact = body
         .size_hint()
@@ -14684,6 +14772,9 @@ async fn proxy_openai_v1_via_pool(
             )
             .await
             .map_err(|err| (err.status, err.message))?;
+            if pre_attempt_total_timeout_exceeded() {
+                return Err(pre_attempt_total_timeout_error());
+            }
             let request_body_bytes = Bytes::from(request_body_bytes);
             let body_sticky_key = serde_json::from_slice::<Value>(&request_body_bytes)
                 .ok()
@@ -14702,8 +14793,6 @@ async fn proxy_openai_v1_via_pool(
                     body_sticky_key.as_deref(),
                     None,
                     PoolFailoverProgress {
-                        responses_total_timeout_started_at:
-                            responses_total_timeout_started_at_from_request,
                         ..PoolFailoverProgress::default()
                     },
                     POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
@@ -15080,6 +15169,9 @@ async fn proxy_openai_v1_via_pool(
                     no_available_wait_deadline = updated_no_available_wait_deadline;
                     initial_account
                 };
+                if pre_attempt_total_timeout_exceeded() {
+                    return Err(pre_attempt_total_timeout_error());
+                }
                 (
                     request_body_snapshot,
                     body_sticky_key,
@@ -15131,8 +15223,12 @@ async fn proxy_openai_v1_via_pool(
                     body_sticky_key.as_deref(),
                     Some(initial_account),
                     PoolFailoverProgress {
-                        responses_total_timeout_started_at:
-                            responses_total_timeout_started_at_from_request,
+                        responses_total_timeout_started_at: if no_available_wait_deadline.is_some()
+                        {
+                            responses_total_timeout_started_at_from_request
+                        } else {
+                            None
+                        },
                         no_available_wait_deadline,
                         ..PoolFailoverProgress::default()
                     },
@@ -15144,6 +15240,11 @@ async fn proxy_openai_v1_via_pool(
             )
         }
     } else {
+        let same_account_attempts = if method == Method::GET {
+            1
+        } else {
+            POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS
+        };
         (
             send_pool_request_with_failover(
                 state.clone(),
@@ -15161,7 +15262,7 @@ async fn proxy_openai_v1_via_pool(
                     responses_total_timeout_started_at,
                     ..PoolFailoverProgress::default()
                 },
-                POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
+                same_account_attempts,
             )
             .await
             .map_err(|err| (err.status, err.message))?,
@@ -17296,7 +17397,7 @@ fn pool_upstream_send_timeout(
     if pool_uses_responses_timeout_failover_policy(original_uri, method) {
         pre_first_byte_timeout
     } else {
-        send_timeout
+        send_timeout.min(pre_first_byte_timeout)
     }
 }
 
@@ -17318,19 +17419,12 @@ fn pool_timeout_budget_with_total_limit(
             remaining_timeout_budget(total_timeout, started_at.elapsed())
                 .map(|remaining| remaining.min(timeout))
         }
-        (Some(total_timeout), None) => Some(timeout.min(total_timeout)),
+        // A running total-timeout only exists once we have an anchor instant.
+        // Pre-attempt no-account waiting uses an explicit deadline earlier in the flow;
+        // real upstream attempts without an anchor should keep their own per-phase budgets.
+        (Some(_), None) => Some(timeout),
         (None, _) => Some(timeout),
     }
-}
-
-fn ensure_pool_total_timeout_started_at(
-    total_timeout: Option<Duration>,
-    total_timeout_started_at: &mut Option<Instant>,
-) -> Option<Instant> {
-    if total_timeout.is_some() && total_timeout_started_at.is_none() {
-        *total_timeout_started_at = Some(Instant::now());
-    }
-    *total_timeout_started_at
 }
 
 fn pool_total_timeout_exhausted(total_timeout: Duration, started_at: Instant) -> bool {
@@ -17376,6 +17470,13 @@ fn build_pool_total_timeout_exhausted_error(
         Some(PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED.to_string()),
     );
     final_error
+}
+
+fn pool_pre_attempt_total_timeout_error(total_timeout: Duration) -> (StatusCode, String) {
+    (
+        StatusCode::GATEWAY_TIMEOUT,
+        pool_total_timeout_exhausted_message(total_timeout),
+    )
 }
 
 fn pool_uses_responses_family_retry_budget_policy(original_uri: &Uri, method: &Method) -> bool {
