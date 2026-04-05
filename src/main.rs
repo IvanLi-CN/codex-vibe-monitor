@@ -14801,12 +14801,19 @@ async fn proxy_openai_v1_via_pool(
                     .await
                 });
                 let mut header_sticky_resolution_finished = false;
+                let mut pending_header_sticky_terminal_error: Option<(StatusCode, String)> = None;
                 let request_body_snapshot = loop {
                     tokio::select! {
                         body_result = &mut request_body_snapshot_task => {
                             match body_result {
                                 Ok(Ok(snapshot)) => break snapshot,
                                 Ok(Err(err)) => {
+                                    if err.status == StatusCode::REQUEST_TIMEOUT
+                                        && let Some((status, message)) =
+                                            pending_header_sticky_terminal_error.take()
+                                    {
+                                        return Err((status, message));
+                                    }
                                     header_sticky_resolution.abort();
                                     return Err((err.status, err.message));
                                 }
@@ -14831,26 +14838,23 @@ async fn proxy_openai_v1_via_pool(
                             })?;
                             match resolution {
                                 Ok(PoolAccountResolution::RateLimited) => {
-                                    request_body_snapshot_task.abort();
-                                    return Err((
+                                    pending_header_sticky_terminal_error = Some((
                                         StatusCode::TOO_MANY_REQUESTS,
                                         POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
                                     ));
                                 }
                                 Ok(PoolAccountResolution::DegradedOnly) => {
-                                    request_body_snapshot_task.abort();
-                                    return Err((
+                                    pending_header_sticky_terminal_error = Some((
                                         StatusCode::SERVICE_UNAVAILABLE,
                                         POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
                                     ));
                                 }
                                 Ok(PoolAccountResolution::BlockedByPolicy(message)) => {
-                                    request_body_snapshot_task.abort();
-                                    return Err((StatusCode::SERVICE_UNAVAILABLE, message));
+                                    pending_header_sticky_terminal_error =
+                                        Some((StatusCode::SERVICE_UNAVAILABLE, message));
                                 }
                                 Err(err) => {
-                                    request_body_snapshot_task.abort();
-                                    return Err((
+                                    pending_header_sticky_terminal_error = Some((
                                         StatusCode::BAD_GATEWAY,
                                         format!("failed to resolve pool account: {err}"),
                                     ));
@@ -14876,22 +14880,23 @@ async fn proxy_openai_v1_via_pool(
                             })?;
                         match resolution {
                             Ok(PoolAccountResolution::RateLimited) => {
-                                return Err((
+                                pending_header_sticky_terminal_error = Some((
                                     StatusCode::TOO_MANY_REQUESTS,
                                     POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
                                 ));
                             }
                             Ok(PoolAccountResolution::DegradedOnly) => {
-                                return Err((
+                                pending_header_sticky_terminal_error = Some((
                                     StatusCode::SERVICE_UNAVAILABLE,
                                     POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
                                 ));
                             }
                             Ok(PoolAccountResolution::BlockedByPolicy(message)) => {
-                                return Err((StatusCode::SERVICE_UNAVAILABLE, message));
+                                pending_header_sticky_terminal_error =
+                                    Some((StatusCode::SERVICE_UNAVAILABLE, message));
                             }
                             Err(err) => {
-                                return Err((
+                                pending_header_sticky_terminal_error = Some((
                                     StatusCode::BAD_GATEWAY,
                                     format!("failed to resolve pool account: {err}"),
                                 ));
@@ -14907,7 +14912,12 @@ async fn proxy_openai_v1_via_pool(
                 let body_sticky_key =
                     extract_sticky_key_from_replay_snapshot(&request_body_snapshot)
                         .await
-                        .or(Some(sticky_key));
+                        .or(Some(sticky_key.clone()));
+                if body_sticky_key.as_deref() == Some(sticky_key.as_str())
+                    && let Some((status, message)) = pending_header_sticky_terminal_error
+                {
+                    return Err((status, message));
+                }
                 let mut no_available_wait_deadline = *shared_wait_deadline
                     .lock()
                     .expect("lock shared header wait deadline");
