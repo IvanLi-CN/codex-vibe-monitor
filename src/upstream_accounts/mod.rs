@@ -20643,6 +20643,7 @@ mod tests {
             maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
             pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
             pool_group_429_retry_delay_override: None,
+            pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
             hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
             upstream_accounts: Arc::new(
                 UpstreamAccountsRuntime::test_instance_with_maintenance_parallelism(
@@ -21053,6 +21054,7 @@ mod tests {
             maintenance_stats_cache: Arc::new(Mutex::new(StatsMaintenanceCacheState::default())),
             pool_routing_reservations: Arc::new(std::sync::Mutex::new(HashMap::new())),
             pool_group_429_retry_delay_override: None,
+            pool_no_available_wait: PoolNoAvailableWaitSettings::default(),
             hourly_rollup_sync_lock: Arc::new(Mutex::new(())),
             upstream_accounts: Arc::new(UpstreamAccountsRuntime::test_instance()),
         });
