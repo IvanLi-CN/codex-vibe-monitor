@@ -12833,9 +12833,10 @@ async fn send_pool_request_with_failover(
         let account = if let Some(account) = preferred_account.take() {
             account
         } else {
-            let wait_for_no_available = !(uses_timeout_route_failover
-                && timeout_route_failover_pending)
-                && !(exhausted_accounts_all_rate_limited && distinct_account_count > 0);
+            // A prior 429 should not suppress bounded wait when alternates are only temporarily
+            // unavailable. Pure pool-wide 429 states still resolve as `RateLimited` immediately.
+            let wait_for_no_available =
+                !(uses_timeout_route_failover && timeout_route_failover_pending);
             let total_timeout_deadline = responses_total_timeout_started_at
                 .zip(responses_total_timeout)
                 .map(|(started_at, total_timeout)| started_at + total_timeout)
@@ -14899,8 +14900,14 @@ async fn proxy_openai_v1_via_pool(
                         }
                     }
                 };
+                let body_sticky_key =
+                    extract_sticky_key_from_replay_snapshot(&request_body_snapshot)
+                        .await
+                        .or(Some(sticky_key.clone()));
                 if !header_sticky_resolution_finished {
-                    if header_sticky_resolution.is_finished() {
+                    if body_sticky_key.as_deref() == Some(sticky_key.as_str())
+                        || header_sticky_resolution.is_finished()
+                    {
                         let (resolution, no_available_wait_deadline) = header_sticky_resolution
                             .await
                             .map_err(|err| {
@@ -14945,10 +14952,6 @@ async fn proxy_openai_v1_via_pool(
                         header_sticky_resolution.abort();
                     }
                 }
-                let body_sticky_key =
-                    extract_sticky_key_from_replay_snapshot(&request_body_snapshot)
-                        .await
-                        .or(Some(sticky_key.clone()));
                 if body_sticky_key.as_deref() == Some(sticky_key.as_str())
                     && let Some((status, message)) = pending_header_sticky_terminal_error
                 {

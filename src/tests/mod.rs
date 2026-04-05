@@ -16011,6 +16011,73 @@ async fn pool_route_switches_accounts_immediately_after_upstream_429() {
 }
 
 #[tokio::test]
+async fn pool_route_waits_for_recovered_alternate_after_upstream_429() {
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_rate_limit_responses_upstream(&[("Bearer upstream-primary", 99)]).await;
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(180),
+        Duration::from_millis(10),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let secondary_id =
+        insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+    set_test_account_status(&state.pool, secondary_id, "needs_reauth").await;
+
+    let pool = state.pool.clone();
+    let release_task = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        set_test_account_status(&pool, secondary_id, "active").await;
+    });
+
+    let started = Instant::now();
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-429-wait-recovered"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+    let elapsed = started.elapsed();
+
+    release_task
+        .await
+        .expect("alternate release task should join");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(
+        elapsed >= Duration::from_millis(35),
+        "request should wait for the alternate to recover, elapsed={elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_millis(220),
+        "bounded wait should still complete within the configured window, elapsed={elapsed:?}"
+    );
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read proxy response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode proxy response");
+    assert_eq!(payload["authorization"], "Bearer upstream-secondary");
+    assert_eq!(payload["attempt"], 1);
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(1));
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(1));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn pool_route_group_without_upstream_429_retry_switches_accounts_immediately() {
     let (upstream_base, attempts, upstream_handle) =
         spawn_pool_rate_limit_responses_upstream(&[("Bearer upstream-primary", 99)]).await;
