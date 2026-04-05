@@ -12597,9 +12597,7 @@ async fn resolve_pool_account_for_request_with_wait(
             excluded_upstream_route_keys,
         )
         .await?;
-        if total_timeout_deadline.is_some_and(|deadline| Instant::now() >= deadline)
-            && matches!(resolution, PoolAccountResolution::Resolved(_))
-        {
+        if total_timeout_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             return Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired);
         }
         match resolution {
