@@ -12603,7 +12603,8 @@ async fn resolve_pool_account_for_request_with_wait(
             return Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired);
         }
         match resolution {
-            PoolAccountResolution::Unavailable | PoolAccountResolution::NoCandidate
+            resolution @ (PoolAccountResolution::Unavailable
+            | PoolAccountResolution::NoCandidate)
                 if wait_for_no_available =>
             {
                 let wait_deadline = if let Some(deadline) = *wait_deadline {
@@ -12618,7 +12619,10 @@ async fn resolve_pool_account_for_request_with_wait(
                     .unwrap_or(wait_deadline);
                 let now = Instant::now();
                 if now >= effective_deadline {
-                    return Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired);
+                    if total_timeout_deadline.is_some_and(|deadline| deadline <= wait_deadline) {
+                        return Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired);
+                    }
+                    return Ok(PoolAccountResolutionWithWait::Resolution(resolution));
                 }
                 tokio::time::sleep(
                     poll_interval.min(effective_deadline.saturating_duration_since(now)),
@@ -12828,9 +12832,8 @@ async fn send_pool_request_with_failover(
         let account = if let Some(account) = preferred_account.take() {
             account
         } else {
-            let wait_for_no_available = attempt_count == 0
-                && last_error.is_none()
-                && !(uses_timeout_route_failover && timeout_route_failover_pending)
+            let wait_for_no_available = !(uses_timeout_route_failover
+                && timeout_route_failover_pending)
                 && !(exhausted_accounts_all_rate_limited && distinct_account_count > 0);
             let total_timeout_deadline = responses_total_timeout_started_at
                 .zip(responses_total_timeout)
