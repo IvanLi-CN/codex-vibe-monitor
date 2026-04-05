@@ -13195,7 +13195,8 @@ async fn send_pool_request_with_failover(
                     attempt_count,
                     distinct_account_count,
                 );
-                if let Some(trace) = trace_context.as_ref()
+                if attempt_count > 0
+                    && let Some(trace) = trace_context.as_ref()
                     && let Err(err) = insert_pool_upstream_terminal_attempt(
                         &state.pool,
                         trace,

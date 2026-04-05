@@ -17326,7 +17326,7 @@ async fn pool_route_waits_for_header_sticky_account_before_first_attempt() {
     let payload: Value = serde_json::from_slice(&body).expect("decode proxy response");
     assert_eq!(payload["authorization"], "Bearer upstream-delayed");
     assert_eq!(payload["attempt"], 1);
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
 
     let attempts = attempts.lock().expect("lock attempts");
     assert_eq!(attempts.get("Bearer upstream-delayed").copied(), Some(1));
