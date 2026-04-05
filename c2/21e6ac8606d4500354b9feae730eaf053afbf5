@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.39.1",
+  "base_stable_version": "1.39.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-05T14:59:40Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.39.1",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "0304317b36174d80ed3ab36c1f0db7096ec8d6fd",
+  "pr_number": 288,
+  "pr_title": "fix(pool): bounded-wait no-available account routing",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.39.1",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.39.1",
+  "target_sha": "c221e6ac8606d4500354b9feae730eaf053afbf5",
+  "type_label": "type:patch"
+}
