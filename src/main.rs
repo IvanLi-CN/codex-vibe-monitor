@@ -14790,6 +14790,14 @@ async fn proxy_openai_v1_via_pool(
                         .pool_no_available_wait
                         .normalized_poll_interval();
                     loop {
+                        if pre_attempt_total_timeout_deadline
+                            .is_some_and(|deadline| Instant::now() >= deadline)
+                        {
+                            break (
+                                Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired),
+                                no_available_wait_deadline,
+                            );
+                        }
                         let resolution = resolve_pool_account_for_request(
                             state_for_wait.as_ref(),
                             Some(wait_task_sticky_key.as_str()),
@@ -14797,9 +14805,19 @@ async fn proxy_openai_v1_via_pool(
                             &excluded_upstream_route_keys,
                         )
                         .await;
+                        if pre_attempt_total_timeout_deadline
+                            .is_some_and(|deadline| Instant::now() >= deadline)
+                        {
+                            break (
+                                Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired),
+                                no_available_wait_deadline,
+                            );
+                        }
                         match resolution {
-                            Ok(PoolAccountResolution::Unavailable)
-                            | Ok(PoolAccountResolution::NoCandidate) => {
+                            Ok(
+                                resolution @ (PoolAccountResolution::Unavailable
+                                | PoolAccountResolution::NoCandidate),
+                            ) => {
                                 let wait_deadline =
                                     if let Some(deadline) = no_available_wait_deadline {
                                         deadline
@@ -14813,16 +14831,37 @@ async fn proxy_openai_v1_via_pool(
                                             Some(deadline);
                                         deadline
                                     };
+                                let effective_deadline = pre_attempt_total_timeout_deadline
+                                    .map(|deadline| std::cmp::min(wait_deadline, deadline))
+                                    .unwrap_or(wait_deadline);
                                 let now = Instant::now();
-                                if now >= wait_deadline {
-                                    break (resolution, no_available_wait_deadline);
+                                if now >= effective_deadline {
+                                    if pre_attempt_total_timeout_deadline
+                                        .is_some_and(|deadline| deadline <= wait_deadline)
+                                    {
+                                        break (
+                                            Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired),
+                                            no_available_wait_deadline,
+                                        );
+                                    }
+                                    break (
+                                        Ok(PoolAccountResolutionWithWait::Resolution(resolution)),
+                                        no_available_wait_deadline,
+                                    );
                                 }
                                 tokio::time::sleep(
-                                    poll_interval.min(wait_deadline.saturating_duration_since(now)),
+                                    poll_interval
+                                        .min(effective_deadline.saturating_duration_since(now)),
                                 )
                                 .await;
                             }
-                            _ => break (resolution, no_available_wait_deadline),
+                            Ok(resolution) => {
+                                break (
+                                    Ok(PoolAccountResolutionWithWait::Resolution(resolution)),
+                                    no_available_wait_deadline,
+                                );
+                            }
+                            Err(err) => break (Err(err), no_available_wait_deadline),
                         }
                     }
                 });
@@ -14870,24 +14909,43 @@ async fn proxy_openai_v1_via_pool(
                             })?;
                             header_sticky_wait_deadline = no_available_wait_deadline;
                             match resolution {
-                                Ok(PoolAccountResolution::Resolved(account)) => {
+                                Ok(PoolAccountResolutionWithWait::Resolution(
+                                    PoolAccountResolution::Resolved(account),
+                                )) => {
                                     resolved_header_sticky_account = Some(account);
                                 }
-                                Ok(PoolAccountResolution::RateLimited) => {
+                                Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired) => {
+                                    request_body_snapshot_task.abort();
+                                    let total_timeout =
+                                        responses_total_timeout.expect(
+                                            "pre-attempt total-timeout expiry requires responses timeout",
+                                        );
+                                    return Err((
+                                        StatusCode::GATEWAY_TIMEOUT,
+                                        pool_total_timeout_exhausted_message(total_timeout),
+                                    ));
+                                }
+                                Ok(PoolAccountResolutionWithWait::Resolution(
+                                    PoolAccountResolution::RateLimited,
+                                )) => {
                                     pending_header_sticky_terminal_error = Some((
                                         StatusCode::TOO_MANY_REQUESTS,
                                         POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
                                     ));
                                 }
-                                Ok(PoolAccountResolution::DegradedOnly) => {
+                                Ok(PoolAccountResolutionWithWait::Resolution(
+                                    PoolAccountResolution::DegradedOnly,
+                                )) => {
                                     pending_header_sticky_terminal_error = Some((
                                         StatusCode::SERVICE_UNAVAILABLE,
                                         POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
                                     ));
                                 }
-                                Ok(PoolAccountResolution::BlockedByPolicy(message)) => {
-                                    pending_header_sticky_terminal_error =
-                                        Some((StatusCode::SERVICE_UNAVAILABLE, message));
+                                Ok(PoolAccountResolutionWithWait::Resolution(
+                                    PoolAccountResolution::BlockedByPolicy(message),
+                                )) => {
+                                    request_body_snapshot_task.abort();
+                                    return Err((StatusCode::SERVICE_UNAVAILABLE, message));
                                 }
                                 Err(err) => {
                                     pending_header_sticky_terminal_error = Some((
@@ -14895,8 +14953,12 @@ async fn proxy_openai_v1_via_pool(
                                         format!("failed to resolve pool account: {err}"),
                                     ));
                                 }
-                                Ok(PoolAccountResolution::Unavailable)
-                                | Ok(PoolAccountResolution::NoCandidate) => {}
+                                Ok(PoolAccountResolutionWithWait::Resolution(
+                                    PoolAccountResolution::Unavailable,
+                                ))
+                                | Ok(PoolAccountResolutionWithWait::Resolution(
+                                    PoolAccountResolution::NoCandidate,
+                                )) => {}
                             }
                         }
                     }
@@ -14921,22 +14983,39 @@ async fn proxy_openai_v1_via_pool(
                             })?;
                         header_sticky_wait_deadline = no_available_wait_deadline;
                         match resolution {
-                            Ok(PoolAccountResolution::Resolved(account)) => {
+                            Ok(PoolAccountResolutionWithWait::Resolution(
+                                PoolAccountResolution::Resolved(account),
+                            )) => {
                                 resolved_header_sticky_account = Some(account);
                             }
-                            Ok(PoolAccountResolution::RateLimited) => {
+                            Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired) => {
+                                let total_timeout = responses_total_timeout.expect(
+                                    "pre-attempt total-timeout expiry requires responses timeout",
+                                );
+                                return Err((
+                                    StatusCode::GATEWAY_TIMEOUT,
+                                    pool_total_timeout_exhausted_message(total_timeout),
+                                ));
+                            }
+                            Ok(PoolAccountResolutionWithWait::Resolution(
+                                PoolAccountResolution::RateLimited,
+                            )) => {
                                 pending_header_sticky_terminal_error = Some((
                                     StatusCode::TOO_MANY_REQUESTS,
                                     POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
                                 ));
                             }
-                            Ok(PoolAccountResolution::DegradedOnly) => {
+                            Ok(PoolAccountResolutionWithWait::Resolution(
+                                PoolAccountResolution::DegradedOnly,
+                            )) => {
                                 pending_header_sticky_terminal_error = Some((
                                     StatusCode::SERVICE_UNAVAILABLE,
                                     POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
                                 ));
                             }
-                            Ok(PoolAccountResolution::BlockedByPolicy(message)) => {
+                            Ok(PoolAccountResolutionWithWait::Resolution(
+                                PoolAccountResolution::BlockedByPolicy(message),
+                            )) => {
                                 pending_header_sticky_terminal_error =
                                     Some((StatusCode::SERVICE_UNAVAILABLE, message));
                             }
@@ -14946,8 +15025,12 @@ async fn proxy_openai_v1_via_pool(
                                     format!("failed to resolve pool account: {err}"),
                                 ));
                             }
-                            Ok(PoolAccountResolution::Unavailable)
-                            | Ok(PoolAccountResolution::NoCandidate) => {}
+                            Ok(PoolAccountResolutionWithWait::Resolution(
+                                PoolAccountResolution::Unavailable,
+                            ))
+                            | Ok(PoolAccountResolutionWithWait::Resolution(
+                                PoolAccountResolution::NoCandidate,
+                            )) => {}
                         }
                     } else {
                         header_sticky_resolution.abort();

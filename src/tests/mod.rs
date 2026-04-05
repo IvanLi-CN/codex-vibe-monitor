@@ -17309,9 +17309,6 @@ async fn pool_route_waits_for_header_sticky_account_before_first_attempt() {
         set_test_account_status(&pool, delayed_id, "active").await;
     });
 
-    tokio::time::sleep(Duration::from_millis(20)).await;
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
-
     let response = request_task
         .await
         .expect("header sticky request task should join");
@@ -17326,7 +17323,8 @@ async fn pool_route_waits_for_header_sticky_account_before_first_attempt() {
     let payload: Value = serde_json::from_slice(&body).expect("decode proxy response");
     assert_eq!(payload["authorization"], "Bearer upstream-delayed");
     assert_eq!(payload["attempt"], 1);
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+    wait_for_pool_attempt_row_count(&state.pool, 1).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 1);
 
     let attempts = attempts.lock().expect("lock attempts");
     assert_eq!(attempts.get("Bearer upstream-delayed").copied(), Some(1));
@@ -21903,11 +21901,11 @@ async fn proxy_openai_v1_header_sticky_stream_preserves_body_timeout_over_rate_l
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_header_sticky_stream_preserves_body_timeout_over_blocked_policy_header() {
+async fn proxy_openai_v1_header_sticky_stream_returns_immediate_blocked_policy_header_error() {
     let mut config = test_config();
     config.openai_upstream_base_url =
         Url::parse("https://api.openai.com/").expect("valid upstream base url");
-    config.openai_proxy_request_read_timeout = Duration::from_millis(80);
+    config.openai_proxy_request_read_timeout = Duration::from_millis(500);
     let state = test_state_from_config_with_pool_no_available_wait(
         config,
         true,
@@ -22004,12 +22002,15 @@ async fn proxy_openai_v1_header_sticky_stream_preserves_body_timeout_over_blocke
     let elapsed = started.elapsed();
 
     assert!(
-        elapsed < Duration::from_millis(180),
-        "body timeout should still fire first, elapsed={elapsed:?}"
+        elapsed < Duration::from_millis(140),
+        "blocked policy should fail before the streamed body finishes buffering, elapsed={elapsed:?}"
     );
     let (status, message) = response.expect_err("via-pool request should fail");
-    assert_eq!(status, StatusCode::REQUEST_TIMEOUT);
-    assert_eq!(message, "request body read timed out after 80ms");
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(
+        message.contains("upstream account is not assigned to a group"),
+        "unexpected via-pool failure: {message}"
+    );
     assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
 }
 
@@ -22168,12 +22169,91 @@ async fn proxy_openai_v1_header_sticky_responses_wait_timeout_respects_total_tim
     let elapsed = started.elapsed();
 
     assert!(
-        elapsed >= Duration::from_millis(150),
-        "request should wait for the streamed body before failing, elapsed={elapsed:?}"
+        elapsed >= Duration::from_millis(60),
+        "request should still wait briefly for bounded pool recovery, elapsed={elapsed:?}"
     );
     assert!(
-        elapsed < Duration::from_millis(240),
-        "responses total timeout should start from request entry, not after body buffering, elapsed={elapsed:?}"
+        elapsed < Duration::from_millis(150),
+        "responses total timeout should short-circuit even while the body is still buffering, elapsed={elapsed:?}"
+    );
+    let (status, message) = response.expect_err("via-pool request should fail");
+    assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
+    assert_eq!(
+        message,
+        pool_total_timeout_exhausted_message(Duration::from_millis(90)),
+        "unexpected via-pool failure: {message}"
+    );
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_header_sticky_responses_total_timeout_short_circuits_body_buffering() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.pool_upstream_responses_total_timeout = Duration::from_millis(90);
+    config.openai_proxy_request_read_timeout = Duration::from_millis(500);
+    let state = test_state_from_config_with_pool_no_available_wait(
+        config,
+        true,
+        PoolNoAvailableWaitSettings {
+            timeout: Duration::from_millis(400),
+            poll_interval: Duration::from_millis(10),
+            retry_after_secs: DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS,
+        },
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let blocked_id = insert_test_pool_api_key_account(&state, "Blocked", "upstream-blocked").await;
+    set_test_account_status(&state.pool, blocked_id, "needs_reauth").await;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    tokio::spawn(async move {
+        let _ = tx
+            .send(Ok(Bytes::from_static(b"{\"model\":\"gpt-5\",")))
+            .await;
+        tokio::time::sleep(Duration::from_millis(220)).await;
+        let _ = tx
+            .send(Ok(Bytes::from_static(b"\"input\":\"hello\"}")))
+            .await;
+    });
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let started = Instant::now();
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6246,
+        &"/v1/responses".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                HeaderName::from_static("x-sticky-key"),
+                HeaderValue::from_static("header-responses-sticky"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        runtime_timeouts,
+    )
+    .await;
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed >= Duration::from_millis(60),
+        "request should still wait briefly for bounded pool recovery, elapsed={elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_millis(180),
+        "responses total timeout should short-circuit before body buffering completes, elapsed={elapsed:?}"
     );
     let (status, message) = response.expect_err("via-pool request should fail");
     assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
