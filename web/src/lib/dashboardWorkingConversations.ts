@@ -58,7 +58,10 @@ interface DashboardWorkingConversationMapOptions
   limit?: number;
 }
 
-interface PendingSequenceCardModel extends Omit<DashboardWorkingConversationCardModel, "conversationSequenceId"> {}
+type PendingSequenceCardModel = Omit<
+  DashboardWorkingConversationCardModel,
+  "conversationSequenceId"
+>;
 
 function normalizePromptCacheKey(value: string) {
   return value.trim();
