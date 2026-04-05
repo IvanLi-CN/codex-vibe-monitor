@@ -14789,31 +14789,119 @@ async fn proxy_openai_v1_via_pool(
                         }
                     }
                 });
-                let request_body_snapshot = read_request_body_snapshot_with_limit(
-                    body,
-                    body_limit,
-                    runtime_timeouts.request_read_timeout,
-                    proxy_request_id,
-                )
-                .await
-                .map_err(|err| {
-                    header_sticky_resolution.abort();
-                    (err.status, err.message)
-                })?;
-                if header_sticky_resolution.is_finished() {
-                    match header_sticky_resolution.await {
-                        Ok(_) => {}
-                        Err(err) => {
-                            return Err((
-                                StatusCode::INTERNAL_SERVER_ERROR,
-                                format!(
-                                    "failed to join pool wait task for sticky {sticky_key}: {err}"
-                                ),
-                            ));
+                let mut header_sticky_resolution = header_sticky_resolution;
+                let mut request_body_snapshot_task = tokio::spawn(async move {
+                    read_request_body_snapshot_with_limit(
+                        body,
+                        body_limit,
+                        runtime_timeouts.request_read_timeout,
+                        proxy_request_id,
+                    )
+                    .await
+                });
+                let mut header_sticky_resolution_finished = false;
+                let request_body_snapshot = loop {
+                    tokio::select! {
+                        body_result = &mut request_body_snapshot_task => {
+                            match body_result {
+                                Ok(Ok(snapshot)) => break snapshot,
+                                Ok(Err(err)) => {
+                                    header_sticky_resolution.abort();
+                                    return Err((err.status, err.message));
+                                }
+                                Err(err) => {
+                                    header_sticky_resolution.abort();
+                                    return Err((
+                                        StatusCode::INTERNAL_SERVER_ERROR,
+                                        format!("failed to join request body snapshot task: {err}"),
+                                    ));
+                                }
+                            }
+                        }
+                        resolution_result = &mut header_sticky_resolution, if !header_sticky_resolution_finished => {
+                            header_sticky_resolution_finished = true;
+                            let (resolution, _no_available_wait_deadline) = resolution_result.map_err(|err| {
+                                (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    format!(
+                                        "failed to join pool wait task for sticky {sticky_key}: {err}"
+                                    ),
+                                )
+                            })?;
+                            match resolution {
+                                Ok(PoolAccountResolution::RateLimited) => {
+                                    request_body_snapshot_task.abort();
+                                    return Err((
+                                        StatusCode::TOO_MANY_REQUESTS,
+                                        POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
+                                    ));
+                                }
+                                Ok(PoolAccountResolution::DegradedOnly) => {
+                                    request_body_snapshot_task.abort();
+                                    return Err((
+                                        StatusCode::SERVICE_UNAVAILABLE,
+                                        POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
+                                    ));
+                                }
+                                Ok(PoolAccountResolution::BlockedByPolicy(message)) => {
+                                    request_body_snapshot_task.abort();
+                                    return Err((StatusCode::SERVICE_UNAVAILABLE, message));
+                                }
+                                Err(err) => {
+                                    request_body_snapshot_task.abort();
+                                    return Err((
+                                        StatusCode::BAD_GATEWAY,
+                                        format!("failed to resolve pool account: {err}"),
+                                    ));
+                                }
+                                Ok(PoolAccountResolution::Resolved(_))
+                                | Ok(PoolAccountResolution::Unavailable)
+                                | Ok(PoolAccountResolution::NoCandidate) => {}
+                            }
                         }
                     }
-                } else {
-                    header_sticky_resolution.abort();
+                };
+                if !header_sticky_resolution_finished {
+                    if header_sticky_resolution.is_finished() {
+                        let (resolution, _no_available_wait_deadline) = header_sticky_resolution
+                            .await
+                            .map_err(|err| {
+                                (
+                                    StatusCode::INTERNAL_SERVER_ERROR,
+                                    format!(
+                                        "failed to join pool wait task for sticky {sticky_key}: {err}"
+                                    ),
+                                )
+                            })?;
+                        match resolution {
+                            Ok(PoolAccountResolution::RateLimited) => {
+                                return Err((
+                                    StatusCode::TOO_MANY_REQUESTS,
+                                    POOL_ALL_ACCOUNTS_RATE_LIMITED_MESSAGE.to_string(),
+                                ));
+                            }
+                            Ok(PoolAccountResolution::DegradedOnly) => {
+                                return Err((
+                                    StatusCode::SERVICE_UNAVAILABLE,
+                                    POOL_ALL_ACCOUNTS_DEGRADED_MESSAGE.to_string(),
+                                ));
+                            }
+                            Ok(PoolAccountResolution::BlockedByPolicy(message)) => {
+                                return Err((StatusCode::SERVICE_UNAVAILABLE, message));
+                            }
+                            Err(err) => {
+                                return Err((
+                                    StatusCode::BAD_GATEWAY,
+                                    format!("failed to resolve pool account: {err}"),
+                                ));
+                            }
+                            Ok(PoolAccountResolution::Resolved(_))
+                            | Ok(PoolAccountResolution::Unavailable)
+                            | Ok(PoolAccountResolution::NoCandidate) => {}
+                        }
+                    } else {
+                        header_sticky_resolution.abort();
+                    }
                 }
                 let body_sticky_key =
                     extract_sticky_key_from_replay_snapshot(&request_body_snapshot)
