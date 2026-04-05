@@ -1611,4 +1611,38 @@ describe("account pool frontend API helpers", () => {
     expect(response.conversations[0]?.recentInvocations[0]?.tPersistMs).toBe(16);
     expect(response.conversations[0]?.recentInvocations[0]?.tTotalMs).toBe(91);
   });
+
+  it("supports the precise 5-minute working-conversation query contract", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      expect(String(input)).toContain(
+        "/api/stats/prompt-cache-conversations?activityMinutes=5",
+      );
+      return new Response(
+        JSON.stringify({
+          rangeStart: "2026-03-10T23:55:00Z",
+          rangeEnd: "2026-03-11T00:00:00Z",
+          selectionMode: "activityWindow",
+          selectedLimit: null,
+          selectedActivityHours: null,
+          selectedActivityMinutes: 5,
+          implicitFilter: {
+            kind: null,
+            filteredCount: 0,
+          },
+          conversations: [],
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    const response = await fetchPromptCacheConversations({
+      mode: "activityWindow",
+      activityMinutes: 5,
+    });
+
+    expect(response.selectionMode).toBe("activityWindow");
+    expect(response.selectedActivityHours).toBeNull();
+    expect(response.selectedActivityMinutes).toBe(5);
+  });
 });

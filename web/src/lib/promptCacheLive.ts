@@ -62,6 +62,31 @@ function parseOccurredAtEpoch(raw: string | null | undefined) {
   return Number.isNaN(epoch) ? null : epoch;
 }
 
+function parsePromptCacheSelectionWindowMs(
+  selection: PromptCacheConversationSelection,
+) {
+  if (selection.mode === "count") {
+    return PROMPT_CACHE_COUNT_MODE_WINDOW_HOURS * 3_600_000;
+  }
+  if ("activityMinutes" in selection) {
+    return selection.activityMinutes * 60_000;
+  }
+  return selection.activityHours * 3_600_000;
+}
+
+function promptCachePreviewIsPending(
+  preview: Pick<PromptCacheConversationInvocationPreview, "status">,
+) {
+  const normalizedStatus = preview.status?.trim().toLowerCase() ?? "";
+  return normalizedStatus === "running" || normalizedStatus === "pending";
+}
+
+function promptCachePreviewIsTerminal(
+  preview: Pick<PromptCacheConversationInvocationPreview, "status">,
+) {
+  return !promptCachePreviewIsPending(preview);
+}
+
 function withinPromptCacheSelectionWindow(
   occurredAt: string,
   selection: PromptCacheConversationSelection,
@@ -69,11 +94,22 @@ function withinPromptCacheSelectionWindow(
 ) {
   const occurredAtEpoch = parseOccurredAtEpoch(occurredAt);
   if (occurredAtEpoch == null) return false;
-  const hours =
-    selection.mode === "activityWindow"
-      ? selection.activityHours
-      : PROMPT_CACHE_COUNT_MODE_WINDOW_HOURS;
-  return occurredAtEpoch >= now - hours * 3_600_000;
+  return occurredAtEpoch >= now - parsePromptCacheSelectionWindowMs(selection);
+}
+
+function recordMatchesPromptCacheSelection(
+  record: Pick<ApiInvocation, "occurredAt" | "status">,
+  selection: PromptCacheConversationSelection,
+  now: number,
+) {
+  if (
+    selection.mode === "activityWindow" &&
+    "activityMinutes" in selection &&
+    promptCacheInvocationIsPending(record as ApiInvocation)
+  ) {
+    return true;
+  }
+  return withinPromptCacheSelectionWindow(record.occurredAt, selection, now);
 }
 
 export function getPromptCacheConversationVisibleLimit(
@@ -85,9 +121,51 @@ export function getPromptCacheConversationVisibleLimit(
 }
 
 function comparePromptCacheConversationOrder(
-  left: Pick<PromptCacheConversation, "createdAt" | "promptCacheKey">,
-  right: Pick<PromptCacheConversation, "createdAt" | "promptCacheKey">,
+  left: Pick<
+    PromptCacheConversation,
+    "createdAt" | "promptCacheKey" | "recentInvocations"
+  >,
+  right: Pick<
+    PromptCacheConversation,
+    "createdAt" | "promptCacheKey" | "recentInvocations"
+  >,
+  selection: PromptCacheConversationSelection,
+  now: number,
 ) {
+  if (selection.mode === "activityWindow" && "activityMinutes" in selection) {
+    const rangeStartMs = now - parsePromptCacheSelectionWindowMs(selection);
+    const resolveSortEpoch = (
+      conversation: Pick<
+        PromptCacheConversation,
+        "createdAt" | "recentInvocations"
+      >,
+    ) => {
+      const recentTerminal = conversation.recentInvocations.find((preview) => {
+        if (!promptCachePreviewIsTerminal(preview)) return false;
+        const epoch = parseOccurredAtEpoch(preview.occurredAt);
+        return epoch != null && epoch >= rangeStartMs;
+      });
+      if (recentTerminal) {
+        return parseOccurredAtEpoch(recentTerminal.occurredAt);
+      }
+      const inFlight = conversation.recentInvocations.find((preview) =>
+        promptCachePreviewIsPending(preview)
+      );
+      if (inFlight) {
+        return parseOccurredAtEpoch(inFlight.occurredAt);
+      }
+      return null;
+    };
+
+    const leftAnchor = resolveSortEpoch(left);
+    const rightAnchor = resolveSortEpoch(right);
+    const normalizedLeftAnchor = leftAnchor ?? Number.MIN_SAFE_INTEGER;
+    const normalizedRightAnchor = rightAnchor ?? Number.MIN_SAFE_INTEGER;
+    if (normalizedLeftAnchor !== normalizedRightAnchor) {
+      return normalizedRightAnchor - normalizedLeftAnchor;
+    }
+  }
+
   const leftEpoch = parseOccurredAtEpoch(left.createdAt) ?? Number.MIN_SAFE_INTEGER;
   const rightEpoch = parseOccurredAtEpoch(right.createdAt) ?? Number.MIN_SAFE_INTEGER;
   if (leftEpoch !== rightEpoch) return rightEpoch - leftEpoch;
@@ -593,8 +671,7 @@ export function mergePromptCacheConversationsResponse(
 
   const nextConversations = base.conversations.map((conversation) => {
     const liveRecords = (liveRecordsByKey[conversation.promptCacheKey] ?? []).filter(
-      (record) =>
-        withinPromptCacheSelectionWindow(record.occurredAt, selection, now),
+      (record) => recordMatchesPromptCacheSelection(record, selection, now),
     );
     if (liveRecords.length === 0) {
       return conversation;
@@ -634,7 +711,7 @@ export function mergePromptCacheConversationsResponse(
   for (const [promptCacheKey, records] of Object.entries(liveRecordsByKey)) {
     if (knownKeys.has(promptCacheKey)) continue;
     const filteredRecords = records.filter((record) =>
-      withinPromptCacheSelectionWindow(record.occurredAt, selection, now),
+      recordMatchesPromptCacheSelection(record, selection, now),
     );
     if (filteredRecords.length === 0) continue;
     const knownConversation = knownConversationHistoryByKey[promptCacheKey];
@@ -653,7 +730,9 @@ export function mergePromptCacheConversationsResponse(
     );
   }
 
-  nextConversations.sort(comparePromptCacheConversationOrder);
+  nextConversations.sort((left, right) =>
+    comparePromptCacheConversationOrder(left, right, selection, now),
+  );
 
   return {
     ...base,
