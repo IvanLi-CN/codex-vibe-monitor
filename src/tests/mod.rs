@@ -22119,6 +22119,140 @@ async fn proxy_openai_v1_header_sticky_responses_wait_timeout_respects_total_tim
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_responses_prebuffer_body_counts_total_timeout_from_request_start() {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.pool_upstream_responses_total_timeout = Duration::from_millis(90);
+    config.openai_proxy_request_read_timeout = Duration::from_millis(500);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let request_body = br#"{"model":"gpt-5","input":"hello"}"#.to_vec();
+    let content_length =
+        HeaderValue::from_str(&request_body.len().to_string()).expect("content length header");
+    let slow_body = stream::unfold(Some(request_body), |state| async move {
+        match state {
+            Some(body) => {
+                tokio::time::sleep(Duration::from_millis(180)).await;
+                Some((Ok::<Bytes, Infallible>(Bytes::from(body)), None))
+            }
+            None => None,
+        }
+    });
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let started = Instant::now();
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6244,
+        &"/v1/responses".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+            (http_header::CONTENT_LENGTH, content_length),
+        ]),
+        Body::from_stream(slow_body),
+        runtime_timeouts,
+    )
+    .await;
+    let elapsed = started.elapsed();
+
+    let (status, message) = response.expect_err("via-pool request should fail");
+    assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
+    assert!(
+        elapsed >= Duration::from_millis(160),
+        "request should wait for the body upload before timing out, elapsed={elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_millis(280),
+        "responses total timeout should include prebuffer body upload time, elapsed={elapsed:?}"
+    );
+    assert_eq!(
+        message,
+        pool_total_timeout_exhausted_message(Duration::from_millis(90)),
+        "unexpected via-pool failure: {message}"
+    );
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_responses_streamed_body_counts_total_timeout_from_request_start_without_wait()
+ {
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse("https://api.openai.com/").expect("valid upstream base url");
+    config.pool_upstream_responses_total_timeout = Duration::from_millis(90);
+    config.openai_proxy_request_read_timeout = Duration::from_millis(500);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    tokio::spawn(async move {
+        let _ = tx
+            .send(Ok(Bytes::from_static(b"{\"model\":\"gpt-5\",")))
+            .await;
+        tokio::time::sleep(Duration::from_millis(180)).await;
+        let _ = tx
+            .send(Ok(Bytes::from_static(b"\"input\":\"hello\"}")))
+            .await;
+    });
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let started = Instant::now();
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6245,
+        &"/v1/responses".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        runtime_timeouts,
+    )
+    .await;
+    let elapsed = started.elapsed();
+
+    let (status, message) = response.expect_err("via-pool request should fail");
+    assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
+    assert!(
+        elapsed >= Duration::from_millis(160),
+        "request should wait for streamed body buffering before timing out, elapsed={elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_millis(280),
+        "responses total timeout should include streamed body buffering, elapsed={elapsed:?}"
+    );
+    assert_eq!(
+        message,
+        pool_total_timeout_exhausted_message(Duration::from_millis(90)),
+        "unexpected via-pool failure: {message}"
+    );
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+}
+
+#[tokio::test]
 async fn pool_route_waited_initial_account_still_uses_remaining_total_timeout_budget() {
     let (upstream_base, upstream_handle) =
         spawn_pool_delayed_headers_upstream(Duration::from_millis(50)).await;

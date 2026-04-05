@@ -14652,6 +14652,8 @@ async fn proxy_openai_v1_via_pool(
         pool_upstream_responses_total_timeout(&state.config, original_uri, &method);
     let pre_attempt_total_timeout_deadline =
         responses_total_timeout.map(|total_timeout| request_started_at + total_timeout);
+    let responses_total_timeout_started_at_from_request =
+        responses_total_timeout.map(|_| request_started_at);
     let responses_total_timeout_started_at = None;
     let header_sticky_key = extract_sticky_key_from_headers(&headers);
     let body_size_hint_exact = body
@@ -14698,7 +14700,8 @@ async fn proxy_openai_v1_via_pool(
                     body_sticky_key.as_deref(),
                     None,
                     PoolFailoverProgress {
-                        responses_total_timeout_started_at,
+                        responses_total_timeout_started_at:
+                            responses_total_timeout_started_at_from_request,
                         ..PoolFailoverProgress::default()
                     },
                     POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
@@ -15041,8 +15044,8 @@ async fn proxy_openai_v1_via_pool(
                     body_sticky_key.as_deref(),
                     Some(initial_account),
                     PoolFailoverProgress {
-                        responses_total_timeout_started_at: no_available_wait_deadline
-                            .map(|_| request_started_at),
+                        responses_total_timeout_started_at:
+                            responses_total_timeout_started_at_from_request,
                         no_available_wait_deadline,
                         ..PoolFailoverProgress::default()
                     },
