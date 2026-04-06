@@ -5028,12 +5028,8 @@ async fn proxy_openai_v1_capture_target(
                     request_body_for_capture.as_ref(),
                 );
                 let usage = ParsedUsage::default();
-                let (billing_service_tier, pricing_mode) =
-                    resolve_proxy_billing_service_tier_and_pricing_mode_for_account(
-                        request_info.requested_service_tier.as_deref(),
-                        None,
-                        err.account.as_ref(),
-                    );
+                let billing_service_tier: Option<String> = None;
+                let pricing_mode = ProxyPricingMode::Standard;
                 let (cost, cost_estimated, price_version) =
                     estimate_proxy_cost_from_shared_catalog(
                         &state.pricing_catalog,
@@ -5212,13 +5208,8 @@ async fn proxy_openai_v1_capture_target(
                 )
                 .await;
                 let usage = ParsedUsage::default();
-                let (billing_service_tier, pricing_mode) =
-                    resolve_proxy_billing_service_tier_and_pricing_mode(
-                        request_info.requested_service_tier.as_deref(),
-                        None,
-                        None,
-                        None,
-                    );
+                let billing_service_tier: Option<String> = None;
+                let pricing_mode = ProxyPricingMode::Standard;
                 let (cost, cost_estimated, price_version) =
                     estimate_proxy_cost_from_shared_catalog(
                         &state.pricing_catalog,
@@ -5350,12 +5341,8 @@ async fn proxy_openai_v1_capture_target(
                 ForwardProxyAttemptUpdate::default()
             };
             let usage = ParsedUsage::default();
-            let (billing_service_tier, pricing_mode) =
-                resolve_proxy_billing_service_tier_and_pricing_mode_for_account(
-                    request_info.requested_service_tier.as_deref(),
-                    None,
-                    pool_account.as_ref(),
-                );
+            let billing_service_tier: Option<String> = None;
+            let pricing_mode = ProxyPricingMode::Standard;
             let (cost, cost_estimated, price_version) = estimate_proxy_cost_from_shared_catalog(
                 &state.pricing_catalog,
                 request_info.model.as_deref(),
@@ -8926,6 +8913,12 @@ fn build_running_proxy_capture_record(
     t_upstream_connect_ms: f64,
     t_upstream_ttfb_ms: f64,
 ) -> ProxyCaptureRecord {
+    let (billing_service_tier, _) = resolve_proxy_billing_service_tier_and_pricing_mode(
+        request_info.requested_service_tier.as_deref(),
+        None,
+        upstream_account_kind,
+        upstream_base_url_host,
+    );
     ProxyCaptureRecord {
         invoke_id: invoke_id.to_string(),
         occurred_at: occurred_at.to_string(),
@@ -8943,7 +8936,7 @@ fn build_running_proxy_capture_record(
             is_stream: request_info.is_stream,
             request_model: request_info.model.as_deref(),
             requested_service_tier: request_info.requested_service_tier.as_deref(),
-            billing_service_tier: None,
+            billing_service_tier: billing_service_tier.as_deref(),
             reasoning_effort: request_info.reasoning_effort.as_deref(),
             response_model: None,
             usage_missing_reason: None,

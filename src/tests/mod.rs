@@ -6534,6 +6534,7 @@ fn runtime_api_invocation_from_running_proxy_capture_record_uses_transient_shape
         Some("gzip")
     );
     assert_eq!(api_record.prompt_cache_key.as_deref(), Some("pck-running"));
+    assert_eq!(api_record.billing_service_tier.as_deref(), Some("priority"));
     assert_eq!(
         api_record.t_total_ms, None,
         "running snapshots should not freeze total time"
