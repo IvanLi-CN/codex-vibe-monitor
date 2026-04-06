@@ -5,6 +5,7 @@ import {
   fetchInvocationRecords,
   fetchForwardProxyLiveStats,
   fetchForwardProxyTimeseries,
+  fetchParallelWorkStats,
   fetchPromptCacheConversations,
   fetchTimeseries,
   fetchSettings,
@@ -288,6 +289,76 @@ describe("fetchTimeseries", () => {
     expect(response.points[1].firstResponseByteTotalSampleCount).toBe(0);
     expect(response.points[1].firstResponseByteTotalAvgMs).toBeNull();
     expect(response.points[1].firstResponseByteTotalP95Ms).toBeNull();
+  });
+});
+
+describe("fetchParallelWorkStats", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("normalizes the three fixed parallel-work windows", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => {
+        return new Response(
+          JSON.stringify({
+            minute7d: {
+              rangeStart: "2026-03-01T00:00:00Z",
+              rangeEnd: "2026-03-08T00:00:00Z",
+              bucketSeconds: 60,
+              completeBucketCount: 10080,
+              activeBucketCount: 4132,
+              minCount: 0,
+              maxCount: 18,
+              avgCount: 4.67,
+              points: [
+                {
+                  bucketStart: "2026-03-07T10:00:00Z",
+                  bucketEnd: "2026-03-07T10:01:00Z",
+                  parallelCount: 4,
+                },
+              ],
+            },
+            hour30d: {
+              rangeStart: "2026-02-06T00:00:00Z",
+              rangeEnd: "2026-03-08T00:00:00Z",
+              bucketSeconds: 3600,
+              completeBucketCount: 720,
+              activeBucketCount: 321,
+              minCount: 0,
+              maxCount: 9,
+              avgCount: 2.13,
+              points: [
+                {
+                  bucketStart: "2026-03-07T00:00:00Z",
+                  bucketEnd: "2026-03-07T01:00:00Z",
+                  parallelCount: 2,
+                },
+              ],
+            },
+            dayAll: {
+              rangeStart: "2026-03-08T00:00:00Z",
+              rangeEnd: "2026-03-08T00:00:00Z",
+              bucketSeconds: 86400,
+              completeBucketCount: 0,
+              activeBucketCount: 0,
+              minCount: null,
+              maxCount: null,
+              avgCount: null,
+              points: [],
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }) as typeof fetch,
+    );
+
+    const response = await fetchParallelWorkStats();
+    expect(response.minute7d.points[0]?.parallelCount).toBe(4);
+    expect(response.hour30d.avgCount).toBe(2.13);
+    expect(response.dayAll.completeBucketCount).toBe(0);
+    expect(response.dayAll.avgCount).toBeNull();
   });
 });
 

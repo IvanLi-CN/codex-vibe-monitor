@@ -2,10 +2,12 @@ import { useEffect, useMemo, useState } from 'react'
 import { StatsCards } from '../components/StatsCards'
 import { TimeseriesChart } from '../components/TimeseriesChart'
 import { SuccessFailureChart } from '../components/SuccessFailureChart'
+import { ParallelWorkStatsSection } from '../components/ParallelWorkStatsSection'
 import { useSummary } from '../hooks/useStats'
 import { useTimeseries } from '../hooks/useTimeseries'
 import { useErrorDistribution } from '../hooks/useErrorDistribution'
 import { useFailureSummary } from '../hooks/useFailureSummary'
+import { useParallelWorkStats } from '../hooks/useParallelWorkStats'
 import { useTranslation } from '../i18n'
 import { ErrorReasonPieChart } from '../components/ErrorReasonPieChart'
 import { Alert } from '../components/ui/alert'
@@ -86,6 +88,11 @@ export default function StatsPage() {
     isLoading: failureSummaryLoading,
     error: failureSummaryError,
   } = useFailureSummary(range)
+  const {
+    data: parallelWorkStats,
+    isLoading: parallelWorkLoading,
+    error: parallelWorkError,
+  } = useParallelWorkStats()
 
   const scopeOptions = useMemo(
     () =>
@@ -164,6 +171,12 @@ export default function StatsPage() {
           )}
         </div>
       </section>
+
+      <ParallelWorkStatsSection
+        stats={parallelWorkStats}
+        isLoading={parallelWorkLoading}
+        error={parallelWorkError}
+      />
 
       <section className="surface-panel">
         <div className="surface-panel-body gap-4">
