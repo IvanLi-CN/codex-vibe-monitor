@@ -7166,7 +7166,12 @@ impl StreamResponsePayloadParser {
                 }
                 if let Some(service_tier) = extract_service_tier_from_payload(&value) {
                     let rank = stream_payload_service_tier_rank(event_name.as_deref(), &value);
-                    if self.service_tier.is_none() || rank >= self.service_tier_rank {
+                    if should_overwrite_stream_service_tier(
+                        self.service_tier.as_deref(),
+                        self.service_tier_rank,
+                        &service_tier,
+                        rank,
+                    ) {
                         self.service_tier = Some(service_tier);
                         self.service_tier_rank = rank;
                     }
@@ -7372,6 +7377,31 @@ fn stream_payload_service_tier_rank(event_name: Option<&str>, value: &Value) -> 
         Some("response.completed" | "response.failed") => 2,
         Some("response.created" | "response.in_progress") => 1,
         _ => 0,
+    }
+}
+
+fn should_overwrite_stream_service_tier(
+    current_tier: Option<&str>,
+    current_rank: u8,
+    next_tier: &str,
+    next_rank: u8,
+) -> bool {
+    let Some(current_tier) = current_tier else {
+        return true;
+    };
+
+    if next_rank > current_rank {
+        return true;
+    }
+    if next_rank < current_rank {
+        return false;
+    }
+
+    match (current_tier, next_tier) {
+        (AUTO_SERVICE_TIER, AUTO_SERVICE_TIER) => true,
+        (AUTO_SERVICE_TIER, _) => true,
+        (_, AUTO_SERVICE_TIER) => false,
+        _ => true,
     }
 }
 
@@ -7739,6 +7769,7 @@ fn normalize_service_tier(value: &str) -> Option<String> {
     }
 }
 
+const AUTO_SERVICE_TIER: &str = "auto";
 const PRIORITY_SERVICE_TIER: &str = "priority";
 const RELAY_PRIORITY_BILLING_ACCOUNT_KIND: &str = "api_key_codex";
 const RELAY_PRIORITY_BILLING_UPSTREAM_HOST: &str = "sub2api.nsngc.org";
@@ -10641,7 +10672,8 @@ async fn current_proxy_cost_backfill_snapshot_max_id(
                         LOWER(TRIM(COALESCE(snapshot_upstream_base_url_host, ''))) = ?5
                         OR (
                             (snapshot_upstream_base_url_host IS NULL OR TRIM(CAST(snapshot_upstream_base_url_host AS TEXT)) = '')
-                            AND LOWER(COALESCE(live_upstream_base_url, '')) LIKE ?6
+                            AND live_upstream_base_url IS NOT NULL
+                            AND TRIM(CAST(live_upstream_base_url AS TEXT)) != ''
                         )
                     )
                   THEN 1
@@ -10679,7 +10711,6 @@ async fn current_proxy_cost_backfill_snapshot_max_id(
     .bind(relay_priority_price_version)
     .bind(RELAY_PRIORITY_BILLING_ACCOUNT_KIND)
     .bind(RELAY_PRIORITY_BILLING_UPSTREAM_HOST)
-    .bind(format!("%{RELAY_PRIORITY_BILLING_UPSTREAM_HOST}%"))
     .fetch_one(pool)
     .await?)
 }
@@ -10779,7 +10810,8 @@ async fn backfill_proxy_missing_costs_from_cursor(
                             LOWER(TRIM(COALESCE(snapshot_upstream_base_url_host, ''))) = ?7
                             OR (
                                 (snapshot_upstream_base_url_host IS NULL OR TRIM(CAST(snapshot_upstream_base_url_host AS TEXT)) = '')
-                                AND LOWER(COALESCE(live_upstream_base_url, '')) LIKE ?8
+                                AND live_upstream_base_url IS NOT NULL
+                                AND TRIM(CAST(live_upstream_base_url AS TEXT)) != ''
                             )
                         )
                       THEN 1
@@ -10824,7 +10856,7 @@ async fn backfill_proxy_missing_costs_from_cursor(
                 )
             )
             ORDER BY id ASC
-            LIMIT ?9
+            LIMIT ?8
             "#,
         )
         .bind(SOURCE_PROXY)
@@ -10834,7 +10866,6 @@ async fn backfill_proxy_missing_costs_from_cursor(
         .bind(relay_priority_price_version)
         .bind(RELAY_PRIORITY_BILLING_ACCOUNT_KIND)
         .bind(RELAY_PRIORITY_BILLING_UPSTREAM_HOST)
-        .bind(format!("%{RELAY_PRIORITY_BILLING_UPSTREAM_HOST}%"))
         .bind(startup_backfill_query_limit(summary.scanned, scan_limit))
         .fetch_all(pool)
         .await?;
