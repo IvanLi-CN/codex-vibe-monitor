@@ -5897,7 +5897,7 @@ pub(crate) struct ProxyCostBackfillCandidate {
     pub(crate) snapshot_upstream_base_url_host: Option<String>,
     pub(crate) live_upstream_base_url_host: Option<String>,
     pub(crate) live_upstream_account_kind: Option<String>,
-    pub(crate) live_upstream_snapshot_safe: i64,
+    pub(crate) live_upstream_account_existed: i64,
 }
 
 #[derive(Debug, FromRow)]
