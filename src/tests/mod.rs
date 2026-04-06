@@ -34729,6 +34729,137 @@ async fn backfill_proxy_missing_costs_reprices_relay_fast_priority_rows() {
 }
 
 #[tokio::test]
+async fn backfill_proxy_missing_costs_reprices_failed_relay_fast_priority_rows() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect in-memory sqlite");
+    ensure_schema(&pool)
+        .await
+        .expect("schema should initialize");
+
+    let created_at = "2026-01-01T00:00:00Z".to_string();
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, upstream_base_url, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
+    .bind(2750_i64)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("SUB2API")
+    .bind("https://sub2api.nsngc.org/")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&pool)
+    .await
+    .expect("insert failed relay upstream account");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            model,
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            cost,
+            cost_estimated,
+            price_version,
+            payload,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+        "#,
+    )
+    .bind("proxy-failed-relay-fast-cost-backfill")
+    .bind("2026-02-23 00:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("failed")
+    .bind("gpt-5.4")
+    .bind(1_000_i64)
+    .bind(500_i64)
+    .bind(1_500_i64)
+    .bind(0.01_f64)
+    .bind(1_i64)
+    .bind("openai-standard-2026-02-23")
+    .bind(r#"{"endpoint":"/v1/responses","requestedServiceTier":"priority","serviceTier":"default","upstreamAccountId":2750,"upstreamAccountName":"SUB2API","routeMode":"pool"}"#)
+    .bind(r#"{"type":"response.failed"}"#)
+    .execute(&pool)
+    .await
+    .expect("insert failed relay proxy cost row");
+
+    let catalog = PricingCatalog {
+        version: "openai-standard-2026-02-23".to_string(),
+        models: HashMap::from([(
+            "gpt-5.4".to_string(),
+            ModelPricing {
+                input_per_1m: 2.5,
+                output_per_1m: 15.0,
+                cache_input_per_1m: None,
+                reasoning_per_1m: None,
+                source: "custom".to_string(),
+            },
+        )]),
+    };
+
+    let summary = backfill_proxy_missing_costs(&pool, &catalog)
+        .await
+        .expect("failed relay fast cost backfill should succeed");
+    assert_eq!(summary.scanned, 1);
+    assert_eq!(summary.updated, 1);
+    assert_eq!(summary.skipped_unpriced_model, 0);
+
+    let row = sqlx::query(
+        "SELECT status, cost, cost_estimated, price_version, payload FROM codex_invocations WHERE invoke_id = ?1",
+    )
+    .bind("proxy-failed-relay-fast-cost-backfill")
+    .fetch_one(&pool)
+    .await
+    .expect("query repriced failed relay row");
+
+    assert_eq!(
+        row.try_get::<String, _>("status")
+            .expect("read failed relay status"),
+        "failed"
+    );
+    assert!(
+        (row.try_get::<Option<f64>, _>("cost")
+            .expect("read failed relay cost")
+            .expect("failed relay cost should exist")
+            - 0.02)
+            .abs()
+            < 1e-12
+    );
+    assert_eq!(
+        row.try_get::<Option<i64>, _>("cost_estimated")
+            .expect("read failed relay cost_estimated"),
+        Some(1)
+    );
+    assert_eq!(
+        row.try_get::<Option<String>, _>("price_version")
+            .expect("read failed relay price_version")
+            .as_deref(),
+        Some("openai-standard-2026-02-23+relay-fast-billing-v1")
+    );
+
+    let payload: String = row.try_get("payload").expect("read failed relay payload");
+    let payload_json: Value =
+        serde_json::from_str(&payload).expect("decode failed relay payload JSON");
+    assert_eq!(payload_json["serviceTier"], "default");
+    assert_eq!(payload_json["billingServiceTier"], "priority");
+    assert_eq!(payload_json["upstreamAccountKind"], "api_key_codex");
+    assert_eq!(payload_json["upstreamBaseUrlHost"], "sub2api.nsngc.org");
+}
+
+#[tokio::test]
 async fn backfill_proxy_missing_costs_prefers_payload_snapshots_over_live_account_rows() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await

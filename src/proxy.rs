@@ -10736,7 +10736,7 @@ async fn current_proxy_cost_backfill_snapshot_max_id(
                     THEN CAST(json_extract(inv.payload, '$.upstreamAccountId') AS INTEGER)
                 END
             WHERE inv.source = ?1
-              AND inv.status = 'success'
+              AND LOWER(TRIM(COALESCE(inv.status, ''))) IN ('success', 'failed')
               AND inv.model IS NOT NULL
               AND (
                   COALESCE(inv.input_tokens, 0) > 0
@@ -10944,7 +10944,7 @@ async fn backfill_proxy_missing_costs_from_cursor(
                         THEN CAST(json_extract(inv.payload, '$.upstreamAccountId') AS INTEGER)
                     END
                 WHERE inv.source = ?1
-                  AND inv.status = 'success'
+                  AND LOWER(TRIM(COALESCE(inv.status, ''))) IN ('success', 'failed')
                   AND inv.model IS NOT NULL
                   AND (
                       COALESCE(inv.input_tokens, 0) > 0
