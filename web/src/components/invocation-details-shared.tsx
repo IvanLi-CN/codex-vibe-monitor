@@ -41,6 +41,7 @@ export interface InvocationDetailViewModel {
   modelValue: string
   requestedServiceTierValue: string
   serviceTierValue: string
+  billingServiceTierValue: string
   fastIndicatorState: FastIndicatorState
   costValue: string
   inputTokensValue: string
@@ -357,7 +358,12 @@ export function buildInvocationDetailViewModel({
   const accountClickable = canOpenInvocationAccount(record)
   const requestedServiceTierValue = formatServiceTier(record.requestedServiceTier)
   const serviceTierValue = formatServiceTier(record.serviceTier)
-  const fastIndicatorState = getFastIndicatorState(record.requestedServiceTier, record.serviceTier)
+  const billingServiceTierValue = formatServiceTier(record.billingServiceTier)
+  const fastIndicatorState = getFastIndicatorState(
+    record.requestedServiceTier,
+    record.serviceTier,
+    record.billingServiceTier,
+  )
   const reasoningEffortValue = formatOptionalText(record.reasoningEffort)
   const reasoningTokensValue = formatOptionalNumber(record.reasoningTokens, numberFormatter)
   const outputReasoningBreakdownValue = `${t('table.column.reasoningTokensShort')} ${reasoningTokensValue}`
@@ -465,6 +471,7 @@ export function buildInvocationDetailViewModel({
     { key: 'responseContentEncoding', label: t('table.details.httpCompression'), value: responseContentEncodingValue },
     { key: 'requestedServiceTier', label: t('table.details.requestedServiceTier'), value: requestedServiceTierValue },
     { key: 'serviceTier', label: t('table.details.serviceTier'), value: serviceTierValue },
+    { key: 'billingServiceTier', label: t('table.details.billingServiceTier'), value: billingServiceTierValue },
     { key: 'reasoningEffort', label: t('table.details.reasoningEffort'), value: renderReasoningEffortBadge(reasoningEffortValue) },
     { key: 'reasoningTokens', label: t('table.details.reasoningTokens'), value: reasoningTokensValue },
     { key: 'proxyWeightDelta', label: t('table.details.proxyWeightDelta'), value: proxyWeightDeltaValue },
@@ -515,6 +522,7 @@ export function buildInvocationDetailViewModel({
     modelValue: record.model ?? FALLBACK_CELL,
     requestedServiceTierValue,
     serviceTierValue,
+    billingServiceTierValue,
     fastIndicatorState,
     costValue: typeof record.cost === 'number' ? currencyFormatter.format(record.cost) : FALLBACK_CELL,
     inputTokensValue: formatOptionalNumber(record.inputTokens, numberFormatter),

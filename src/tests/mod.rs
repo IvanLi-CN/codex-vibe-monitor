@@ -3829,6 +3829,56 @@ fn write_backfill_response_payload_with_service_tier(path: &Path, service_tier: 
     fs::write(path, compressed).expect("write response payload");
 }
 
+fn write_backfill_response_payload_with_terminal_service_tier(
+    path: &Path,
+    initial_service_tier: Option<&str>,
+    terminal_service_tier: Option<&str>,
+) {
+    let mut created_response = json!({
+        "type": "response.created",
+        "response": {
+            "id": "resp_backfill",
+            "status": "in_progress"
+        }
+    });
+    if let Some(service_tier) = initial_service_tier {
+        created_response["response"]["service_tier"] = Value::String(service_tier.to_string());
+    }
+
+    let mut completed_response = json!({
+        "type": "response.completed",
+        "response": {
+            "id": "resp_backfill",
+            "status": "completed",
+            "usage": {
+                "input_tokens": 88,
+                "output_tokens": 22,
+                "total_tokens": 110,
+                "input_tokens_details": { "cached_tokens": 9 },
+                "output_tokens_details": { "reasoning_tokens": 3 }
+            }
+        }
+    });
+    if let Some(service_tier) = terminal_service_tier {
+        completed_response["response"]["service_tier"] = Value::String(service_tier.to_string());
+    }
+
+    let raw = [
+        "event: response.created".to_string(),
+        format!("data: {created_response}"),
+        "".to_string(),
+        "event: response.completed".to_string(),
+        format!("data: {completed_response}"),
+    ]
+    .join("\n");
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder
+        .write_all(raw.as_bytes())
+        .expect("write gzip payload");
+    let compressed = encoder.finish().expect("finish gzip payload");
+    fs::write(path, compressed).expect("write response payload");
+}
+
 fn write_backfill_request_payload(path: &Path, prompt_cache_key: Option<&str>) {
     write_backfill_request_payload_with_fields(
         path,
@@ -6449,6 +6499,8 @@ fn runtime_api_invocation_from_running_proxy_capture_record_uses_transient_shape
         true,
         Some(17),
         Some("pool-account-17"),
+        Some("api_key_codex"),
+        Some("sub2api.nsngc.org"),
         Some("jp-relay-01"),
         None,
         None,
@@ -6482,6 +6534,7 @@ fn runtime_api_invocation_from_running_proxy_capture_record_uses_transient_shape
         Some("gzip")
     );
     assert_eq!(api_record.prompt_cache_key.as_deref(), Some("pck-running"));
+    assert_eq!(api_record.billing_service_tier, None);
     assert_eq!(
         api_record.t_total_ms, None,
         "running snapshots should not freeze total time"
@@ -6509,6 +6562,8 @@ async fn broadcast_proxy_capture_runtime_snapshot_emits_records_payload() {
         None,
         None,
         false,
+        None,
+        None,
         None,
         None,
         Some("edge-runtime"),
@@ -27359,7 +27414,12 @@ fn estimate_proxy_cost_subtracts_cached_tokens_from_base_input_rate() {
         total_tokens: Some(1_200),
     };
 
-    let (cost, estimated, price_version) = estimate_proxy_cost(&catalog, Some("gpt-test"), &usage);
+    let (cost, estimated, price_version) = estimate_proxy_cost(
+        &catalog,
+        Some("gpt-test"),
+        &usage,
+        ProxyPricingMode::Standard,
+    );
 
     let expected = ((600.0 * 1.0) + (200.0 * 2.0) + (400.0 * 0.5)) / 1_000_000.0;
     let computed = cost.expect("cost should be present");
@@ -27391,7 +27451,12 @@ fn estimate_proxy_cost_keeps_full_input_when_cache_price_missing() {
         total_tokens: Some(1_200),
     };
 
-    let (cost, estimated, _) = estimate_proxy_cost(&catalog, Some("gpt-test"), &usage);
+    let (cost, estimated, _) = estimate_proxy_cost(
+        &catalog,
+        Some("gpt-test"),
+        &usage,
+        ProxyPricingMode::Standard,
+    );
 
     let expected = ((1_000.0 * 1.0) + (200.0 * 2.0)) / 1_000_000.0;
     let computed = cost.expect("cost should be present");
@@ -27422,7 +27487,12 @@ fn estimate_proxy_cost_falls_back_to_dated_model_base_pricing() {
         total_tokens: Some(1500),
     };
 
-    let (cost, estimated, _) = estimate_proxy_cost(&catalog, Some("gpt-5.2-2025-12-11"), &usage);
+    let (cost, estimated, _) = estimate_proxy_cost(
+        &catalog,
+        Some("gpt-5.2-2025-12-11"),
+        &usage,
+        ProxyPricingMode::Standard,
+    );
 
     let expected = ((1000.0 * 2.0) + (500.0 * 3.0)) / 1_000_000.0;
     assert!((cost.expect("cost should be present") - expected).abs() < 1e-12);
@@ -27464,7 +27534,12 @@ fn estimate_proxy_cost_prefers_exact_model_over_dated_model_base_pricing() {
         total_tokens: Some(2000),
     };
 
-    let (cost, estimated, _) = estimate_proxy_cost(&catalog, Some("gpt-5.2-2025-12-11"), &usage);
+    let (cost, estimated, _) = estimate_proxy_cost(
+        &catalog,
+        Some("gpt-5.2-2025-12-11"),
+        &usage,
+        ProxyPricingMode::Standard,
+    );
 
     let expected = ((1000.0 * 4.0) + (1000.0 * 5.0)) / 1_000_000.0;
     assert!((cost.expect("cost should be present") - expected).abs() < 1e-12);
@@ -27494,7 +27569,12 @@ fn estimate_proxy_cost_does_not_apply_gpt_5_4_long_context_surcharge_at_threshol
         total_tokens: None,
     };
 
-    let (cost, estimated, _) = estimate_proxy_cost(&catalog, Some("gpt-5.4"), &usage);
+    let (cost, estimated, _) = estimate_proxy_cost(
+        &catalog,
+        Some("gpt-5.4"),
+        &usage,
+        ProxyPricingMode::Standard,
+    );
 
     let expected = ((271_000.0 * 2.5) + (1_000.0 * 0.25) + (1_000.0 * 15.0)) / 1_000_000.0;
     let computed = cost.expect("cost should be present");
@@ -27525,7 +27605,12 @@ fn estimate_proxy_cost_applies_gpt_5_4_long_context_surcharge_above_threshold() 
         total_tokens: None,
     };
 
-    let (cost, estimated, _) = estimate_proxy_cost(&catalog, Some("gpt-5.4"), &usage);
+    let (cost, estimated, _) = estimate_proxy_cost(
+        &catalog,
+        Some("gpt-5.4"),
+        &usage,
+        ProxyPricingMode::Standard,
+    );
 
     let input_part = ((271_001.0 * 2.5) + (1_000.0 * 0.25)) / 1_000_000.0;
     let output_part = (1_000.0 * 15.0) / 1_000_000.0;
@@ -27558,7 +27643,12 @@ fn estimate_proxy_cost_applies_gpt_5_4_long_context_surcharge_to_reasoning_cost(
         total_tokens: None,
     };
 
-    let (cost, estimated, _) = estimate_proxy_cost(&catalog, Some("gpt-5.4"), &usage);
+    let (cost, estimated, _) = estimate_proxy_cost(
+        &catalog,
+        Some("gpt-5.4"),
+        &usage,
+        ProxyPricingMode::Standard,
+    );
 
     let input_part = ((271_001.0 * 2.5) + (1_000.0 * 0.25)) / 1_000_000.0;
     let output_part = (1_000.0 * 15.0) / 1_000_000.0;
@@ -27592,7 +27682,12 @@ fn estimate_proxy_cost_applies_gpt_5_4_pro_long_context_surcharge_above_threshol
         total_tokens: None,
     };
 
-    let (cost, estimated, _) = estimate_proxy_cost(&catalog, Some("gpt-5.4-pro"), &usage);
+    let (cost, estimated, _) = estimate_proxy_cost(
+        &catalog,
+        Some("gpt-5.4-pro"),
+        &usage,
+        ProxyPricingMode::Standard,
+    );
 
     let input_part = (272_001.0 * 30.0) / 1_000_000.0;
     let output_part = (1_000.0 * 180.0) / 1_000_000.0;
@@ -27625,8 +27720,12 @@ fn estimate_proxy_cost_applies_gpt_5_4_pro_long_context_surcharge_for_dated_mode
         total_tokens: None,
     };
 
-    let (cost, estimated, _) =
-        estimate_proxy_cost(&catalog, Some("gpt-5.4-pro-2026-03-01"), &usage);
+    let (cost, estimated, _) = estimate_proxy_cost(
+        &catalog,
+        Some("gpt-5.4-pro-2026-03-01"),
+        &usage,
+        ProxyPricingMode::Standard,
+    );
 
     let input_part = (272_001.0 * 30.0) / 1_000_000.0;
     let output_part = (1_000.0 * 180.0) / 1_000_000.0;
@@ -27660,7 +27759,12 @@ fn estimate_proxy_cost_applies_gpt_5_4_long_context_surcharge_for_dated_model_su
         total_tokens: None,
     };
 
-    let (cost, estimated, _) = estimate_proxy_cost(&catalog, Some("gpt-5.4-2026-03-01"), &usage);
+    let (cost, estimated, _) = estimate_proxy_cost(
+        &catalog,
+        Some("gpt-5.4-2026-03-01"),
+        &usage,
+        ProxyPricingMode::Standard,
+    );
 
     let input_part = ((271_001.0 * 2.5) + (1_000.0 * 0.25)) / 1_000_000.0;
     let output_part = (1_000.0 * 15.0) / 1_000_000.0;
@@ -27693,12 +27797,124 @@ fn estimate_proxy_cost_does_not_apply_gpt_5_4_long_context_surcharge_for_other_m
         total_tokens: None,
     };
 
-    let (cost, estimated, _) = estimate_proxy_cost(&catalog, Some("gpt-5.4o"), &usage);
+    let (cost, estimated, _) = estimate_proxy_cost(
+        &catalog,
+        Some("gpt-5.4o"),
+        &usage,
+        ProxyPricingMode::Standard,
+    );
 
     let expected = ((272_001.0 * 2.5) + (1_000.0 * 15.0)) / 1_000_000.0;
     let computed = cost.expect("cost should be present");
     assert!((computed - expected).abs() < 1e-12);
     assert!(estimated);
+}
+
+#[test]
+fn estimate_proxy_cost_applies_relay_fast_priority_multiplier_and_price_version_suffix() {
+    let catalog = PricingCatalog {
+        version: "unit-test".to_string(),
+        models: HashMap::from([(
+            "gpt-5.4".to_string(),
+            ModelPricing {
+                input_per_1m: 2.5,
+                output_per_1m: 15.0,
+                cache_input_per_1m: Some(0.25),
+                reasoning_per_1m: Some(20.0),
+                source: "custom".to_string(),
+            },
+        )]),
+    };
+    let usage = ParsedUsage {
+        input_tokens: Some(1_000),
+        output_tokens: Some(200),
+        cache_input_tokens: Some(400),
+        reasoning_tokens: Some(50),
+        total_tokens: Some(1_200),
+    };
+
+    let (cost, estimated, price_version) = estimate_proxy_cost(
+        &catalog,
+        Some("gpt-5.4"),
+        &usage,
+        ProxyPricingMode::RelayFastPriority,
+    );
+
+    let base_expected =
+        ((600.0 * 2.5) + (400.0 * 0.25) + (200.0 * 15.0) + (50.0 * 20.0)) / 1_000_000.0;
+    let computed = cost.expect("cost should be present");
+    assert!((computed - (base_expected * 2.0)).abs() < 1e-12);
+    assert!(estimated);
+    assert_eq!(
+        price_version.as_deref(),
+        Some("unit-test+relay-fast-billing-v1")
+    );
+}
+
+#[test]
+fn resolve_proxy_billing_service_tier_and_pricing_mode_detects_relay_fast_priority() {
+    let (billing_service_tier, pricing_mode) = resolve_proxy_billing_service_tier_and_pricing_mode(
+        Some("priority"),
+        Some("default"),
+        Some("api_key_codex"),
+        Some("sub2api.nsngc.org"),
+    );
+
+    assert_eq!(billing_service_tier.as_deref(), Some("priority"));
+    assert_eq!(pricing_mode, ProxyPricingMode::RelayFastPriority);
+}
+
+#[test]
+fn resolve_proxy_billing_service_tier_and_pricing_mode_prices_explicit_relay_priority() {
+    let (billing_service_tier, pricing_mode) = resolve_proxy_billing_service_tier_and_pricing_mode(
+        Some("priority"),
+        Some("priority"),
+        Some("api_key_codex"),
+        Some("sub2api.nsngc.org"),
+    );
+
+    assert_eq!(billing_service_tier.as_deref(), Some("priority"));
+    assert_eq!(pricing_mode, ProxyPricingMode::RelayFastPriority);
+}
+
+#[test]
+fn resolve_proxy_billing_service_tier_and_pricing_mode_keeps_response_tier_for_non_relay() {
+    let (billing_service_tier, pricing_mode) = resolve_proxy_billing_service_tier_and_pricing_mode(
+        Some("priority"),
+        Some("default"),
+        Some("api_key_codex"),
+        Some("api.openai.com"),
+    );
+
+    assert_eq!(billing_service_tier.as_deref(), Some("default"));
+    assert_eq!(pricing_mode, ProxyPricingMode::Standard);
+}
+
+#[test]
+fn resolve_proxy_billing_service_tier_and_pricing_mode_preserves_explicit_relay_response_tier() {
+    let (billing_service_tier, pricing_mode) = resolve_proxy_billing_service_tier_and_pricing_mode(
+        Some("priority"),
+        Some("flex"),
+        Some("api_key_codex"),
+        Some("sub2api.nsngc.org"),
+    );
+
+    assert_eq!(billing_service_tier.as_deref(), Some("flex"));
+    assert_eq!(pricing_mode, ProxyPricingMode::Standard);
+}
+
+#[test]
+fn resolve_proxy_billing_service_tier_and_pricing_mode_keeps_missing_relay_response_tier_standard()
+{
+    let (billing_service_tier, pricing_mode) = resolve_proxy_billing_service_tier_and_pricing_mode(
+        Some("priority"),
+        None,
+        Some("api_key_codex"),
+        Some("sub2api.nsngc.org"),
+    );
+
+    assert_eq!(billing_service_tier, None);
+    assert_eq!(pricing_mode, ProxyPricingMode::Standard);
 }
 
 #[test]
@@ -27783,6 +27999,46 @@ fn parse_target_response_payload_detects_sse_without_request_stream_hint() {
     assert_eq!(parsed.service_tier.as_deref(), Some("priority"));
     assert_eq!(parsed.usage.total_tokens, Some(15));
     assert!(parsed.usage_missing_reason.is_none());
+}
+
+#[test]
+fn parse_target_response_payload_prefers_terminal_stream_service_tier_over_initial_auto() {
+    let raw = [
+        "event: response.created",
+        r#"data: {"type":"response.created","response":{"model":"gpt-5.4","status":"in_progress","service_tier":"auto"}}"#,
+        "",
+        "event: response.in_progress",
+        r#"data: {"type":"response.in_progress","response":{"model":"gpt-5.4","status":"in_progress","service_tier":"auto"}}"#,
+        "",
+        "event: response.completed",
+        r#"data: {"type":"response.completed","response":{"model":"gpt-5.4","status":"completed","service_tier":"default","usage":{"input_tokens":12,"output_tokens":3,"total_tokens":15}}}"#,
+        "",
+    ]
+    .join("\n");
+
+    let parsed =
+        parse_target_response_payload(ProxyCaptureTarget::Responses, raw.as_bytes(), true, None);
+
+    assert_eq!(parsed.service_tier.as_deref(), Some("default"));
+    assert_eq!(parsed.usage.total_tokens, Some(15));
+}
+
+#[test]
+fn parse_target_response_payload_does_not_downgrade_same_rank_stream_tier_to_auto() {
+    let raw = [
+        "event: response.created",
+        r#"data: {"type":"response.created","response":{"model":"gpt-5.4","status":"in_progress","service_tier":"default"}}"#,
+        "",
+        "event: response.in_progress",
+        r#"data: {"type":"response.in_progress","response":{"model":"gpt-5.4","status":"in_progress","service_tier":"auto"}}"#,
+        "",
+    ]
+    .join("\n");
+
+    let parsed =
+        parse_target_response_payload(ProxyCaptureTarget::Responses, raw.as_bytes(), true, None);
+
+    assert_eq!(parsed.service_tier.as_deref(), Some("default"));
 }
 
 #[test]
@@ -33718,7 +33974,11 @@ async fn backfill_invocation_service_tiers_updates_payload_and_is_idempotent() {
 
     let temp_dir = make_temp_test_dir("invocation-service-tier-backfill");
     let response_path = temp_dir.join("response.bin");
-    write_backfill_response_payload_with_service_tier(&response_path, Some("priority"));
+    write_backfill_response_payload_with_terminal_service_tier(
+        &response_path,
+        Some("auto"),
+        Some("default"),
+    );
 
     sqlx::query(
         r#"
@@ -33783,7 +34043,11 @@ async fn backfill_invocation_service_tiers_updates_payload_and_is_idempotent() {
             .expect("query proxy payload");
     let proxy_payload_json: Value =
         serde_json::from_str(&proxy_payload).expect("decode proxy payload JSON");
-    assert_eq!(proxy_payload_json["serviceTier"], "priority");
+    assert_eq!(proxy_payload_json["serviceTier"], "default");
+    assert_eq!(
+        proxy_payload_json["serviceTierBackfillVersion"],
+        "stream-terminal-v1"
+    );
 
     let summary_second = backfill_invocation_service_tiers(&pool, None)
         .await
@@ -33792,6 +34056,127 @@ async fn backfill_invocation_service_tiers_updates_payload_and_is_idempotent() {
     assert_eq!(summary_second.updated, 0);
 
     let _ = fs::remove_dir_all(&temp_dir);
+}
+
+#[tokio::test]
+async fn backfill_invocation_service_tiers_revisits_inline_proxy_auto_tiers_without_raw_files() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect in-memory sqlite");
+    ensure_schema(&pool)
+        .await
+        .expect("schema should initialize");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, payload, raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "#,
+    )
+    .bind("proxy-inline-service-tier-backfill")
+    .bind("2026-02-23 00:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(r#"{"endpoint":"/v1/responses","serviceTier":"auto"}"#)
+    .bind(r#"{"service_tier":"default"}"#)
+    .execute(&pool)
+    .await
+    .expect("insert inline proxy service tier row");
+
+    let summary_first = backfill_invocation_service_tiers(&pool, None)
+        .await
+        .expect("inline service tier backfill should succeed");
+    assert_eq!(summary_first.scanned, 1);
+    assert_eq!(summary_first.updated, 1);
+    assert_eq!(summary_first.skipped_missing_file, 0);
+    assert_eq!(summary_first.skipped_missing_tier, 0);
+
+    let payload: String =
+        sqlx::query_scalar("SELECT payload FROM codex_invocations WHERE invoke_id = ?1")
+            .bind("proxy-inline-service-tier-backfill")
+            .fetch_one(&pool)
+            .await
+            .expect("query inline proxy payload");
+    let payload_json: Value = serde_json::from_str(&payload).expect("decode inline payload JSON");
+    assert_eq!(payload_json["serviceTier"], "default");
+    assert_eq!(
+        payload_json["serviceTierBackfillVersion"],
+        "stream-terminal-v1"
+    );
+
+    let summary_second = backfill_invocation_service_tiers(&pool, None)
+        .await
+        .expect("inline service tier backfill should be idempotent");
+    assert_eq!(summary_second.scanned, 0);
+    assert_eq!(summary_second.updated, 0);
+}
+
+#[tokio::test]
+async fn backfill_invocation_service_tiers_revisits_inline_proxy_non_auto_stream_tiers() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect in-memory sqlite");
+    ensure_schema(&pool)
+        .await
+        .expect("schema should initialize");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, payload, raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "#,
+    )
+    .bind("proxy-inline-non-auto-service-tier-backfill")
+    .bind("2026-02-23 00:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(r#"{"endpoint":"/v1/responses","serviceTier":"priority"}"#)
+    .bind(
+        [
+            "event: response.created",
+            r#"data: {"type":"response.created","response":{"service_tier":"priority"}}"#,
+            "",
+            "event: response.completed",
+            r#"data: {"type":"response.completed","response":{"service_tier":"default"}}"#,
+            "",
+        ]
+        .join("\n"),
+    )
+    .execute(&pool)
+    .await
+    .expect("insert inline proxy non-auto service tier row");
+
+    let summary_first = backfill_invocation_service_tiers(&pool, None)
+        .await
+        .expect("inline non-auto service tier backfill should succeed");
+    assert_eq!(summary_first.scanned, 1);
+    assert_eq!(summary_first.updated, 1);
+    assert_eq!(summary_first.skipped_missing_file, 0);
+    assert_eq!(summary_first.skipped_missing_tier, 0);
+
+    let payload: String =
+        sqlx::query_scalar("SELECT payload FROM codex_invocations WHERE invoke_id = ?1")
+            .bind("proxy-inline-non-auto-service-tier-backfill")
+            .fetch_one(&pool)
+            .await
+            .expect("query inline proxy non-auto payload");
+    let payload_json: Value =
+        serde_json::from_str(&payload).expect("decode inline non-auto payload JSON");
+    assert_eq!(payload_json["serviceTier"], "default");
+    assert_eq!(
+        payload_json["serviceTierBackfillVersion"],
+        "stream-terminal-v1"
+    );
+
+    let summary_second = backfill_invocation_service_tiers(&pool, None)
+        .await
+        .expect("inline non-auto service tier backfill should be idempotent");
+    assert_eq!(summary_second.scanned, 0);
+    assert_eq!(summary_second.updated, 0);
 }
 
 #[tokio::test]
@@ -34148,6 +34533,1188 @@ async fn backfill_proxy_missing_costs_updates_dated_model_alias_and_is_idempoten
         .expect("second cost backfill should be idempotent");
     assert_eq!(summary_second.scanned, 0);
     assert_eq!(summary_second.updated, 0);
+}
+
+#[tokio::test]
+async fn backfill_proxy_missing_costs_backfills_standard_rows_with_missing_billing_service_tier() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect in-memory sqlite");
+    ensure_schema(&pool)
+        .await
+        .expect("schema should initialize");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            model,
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            cost,
+            cost_estimated,
+            price_version,
+            payload,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+        "#,
+    )
+    .bind("proxy-standard-null-billing-tier")
+    .bind("2026-02-23 00:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind("gpt-5.2")
+    .bind(1_000_i64)
+    .bind(500_i64)
+    .bind(1_500_i64)
+    .bind(0.0035_f64)
+    .bind(1_i64)
+    .bind("unit-cost-backfill")
+    .bind(r#"{"endpoint":"/v1/responses","serviceTier":"default","billingServiceTier":null}"#)
+    .bind("{}")
+    .execute(&pool)
+    .await
+    .expect("insert standard proxy cost row");
+
+    let catalog = PricingCatalog {
+        version: "unit-cost-backfill".to_string(),
+        models: HashMap::from([(
+            "gpt-5.2".to_string(),
+            ModelPricing {
+                input_per_1m: 2.0,
+                output_per_1m: 3.0,
+                cache_input_per_1m: None,
+                reasoning_per_1m: None,
+                source: "custom".to_string(),
+            },
+        )]),
+    };
+
+    let summary = backfill_proxy_missing_costs(&pool, &catalog)
+        .await
+        .expect("standard missing billing tier row should be backfilled");
+    assert_eq!(summary.scanned, 1);
+    assert_eq!(summary.updated, 1);
+    assert_eq!(summary.skipped_unpriced_model, 0);
+
+    let row = sqlx::query(
+        "SELECT cost, cost_estimated, price_version, payload FROM codex_invocations WHERE invoke_id = ?1",
+    )
+    .bind("proxy-standard-null-billing-tier")
+    .fetch_one(&pool)
+    .await
+    .expect("query standard proxy cost row");
+
+    assert!(
+        (row.try_get::<Option<f64>, _>("cost")
+            .expect("read standard cost")
+            .expect("standard cost should exist")
+            - 0.0035)
+            .abs()
+            < 1e-12
+    );
+    assert_eq!(
+        row.try_get::<Option<i64>, _>("cost_estimated")
+            .expect("read standard cost_estimated"),
+        Some(1)
+    );
+    assert_eq!(
+        row.try_get::<Option<String>, _>("price_version")
+            .expect("read standard price_version")
+            .as_deref(),
+        Some("unit-cost-backfill")
+    );
+
+    let payload: String = row.try_get("payload").expect("read standard payload");
+    let payload_json: Value = serde_json::from_str(&payload).expect("decode standard payload JSON");
+    assert_eq!(payload_json["serviceTier"], "default");
+    assert_eq!(payload_json["billingServiceTier"], "default");
+
+    let summary_second = backfill_proxy_missing_costs(&pool, &catalog)
+        .await
+        .expect("standard row backfill should become idempotent");
+    assert_eq!(summary_second.scanned, 0);
+    assert_eq!(summary_second.updated, 0);
+}
+
+#[tokio::test]
+async fn backfill_proxy_missing_costs_rewrites_stale_standard_billing_service_tier() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect in-memory sqlite");
+    ensure_schema(&pool)
+        .await
+        .expect("schema should initialize");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            model,
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            cost,
+            cost_estimated,
+            price_version,
+            payload,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+        "#,
+    )
+    .bind("proxy-standard-stale-billing-tier")
+    .bind("2026-02-23 00:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind("gpt-5.2")
+    .bind(1_000_i64)
+    .bind(500_i64)
+    .bind(1_500_i64)
+    .bind(0.0035_f64)
+    .bind(1_i64)
+    .bind("unit-cost-backfill")
+    .bind(r#"{"endpoint":"/v1/responses","serviceTier":"default","billingServiceTier":"auto"}"#)
+    .bind("{}")
+    .execute(&pool)
+    .await
+    .expect("insert stale standard billing tier row");
+
+    let catalog = PricingCatalog {
+        version: "unit-cost-backfill".to_string(),
+        models: HashMap::from([(
+            "gpt-5.2".to_string(),
+            ModelPricing {
+                input_per_1m: 2.0,
+                output_per_1m: 3.0,
+                cache_input_per_1m: None,
+                reasoning_per_1m: None,
+                source: "custom".to_string(),
+            },
+        )]),
+    };
+
+    let summary = backfill_proxy_missing_costs(&pool, &catalog)
+        .await
+        .expect("stale standard billing tier row should be backfilled");
+    assert_eq!(summary.scanned, 1);
+    assert_eq!(summary.updated, 1);
+    assert_eq!(summary.skipped_unpriced_model, 0);
+
+    let row = sqlx::query("SELECT payload FROM codex_invocations WHERE invoke_id = ?1")
+        .bind("proxy-standard-stale-billing-tier")
+        .fetch_one(&pool)
+        .await
+        .expect("query stale standard billing tier row");
+
+    let payload: String = row.try_get("payload").expect("read stale standard payload");
+    let payload_json: Value =
+        serde_json::from_str(&payload).expect("decode stale standard payload JSON");
+    assert_eq!(payload_json["serviceTier"], "default");
+    assert_eq!(payload_json["billingServiceTier"], "default");
+
+    let summary_second = backfill_proxy_missing_costs(&pool, &catalog)
+        .await
+        .expect("stale standard billing tier row should become idempotent");
+    assert_eq!(summary_second.scanned, 0);
+    assert_eq!(summary_second.updated, 0);
+}
+
+#[tokio::test]
+async fn backfill_proxy_missing_costs_reprices_relay_fast_priority_rows() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect in-memory sqlite");
+    ensure_schema(&pool)
+        .await
+        .expect("schema should initialize");
+
+    let created_at = "2026-01-01T00:00:00Z".to_string();
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, upstream_base_url, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
+    .bind(2568_i64)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("SUB2API")
+    .bind("https://sub2api.nsngc.org/")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&pool)
+    .await
+    .expect("insert relay upstream account");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            model,
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            cost,
+            cost_estimated,
+            price_version,
+            payload,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+        "#,
+    )
+    .bind("proxy-relay-fast-cost-backfill")
+    .bind("2026-02-23 00:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind("gpt-5.4")
+    .bind(1_000_i64)
+    .bind(500_i64)
+    .bind(1_500_i64)
+    .bind(0.01_f64)
+    .bind(1_i64)
+    .bind("openai-standard-2026-02-23")
+    .bind(r#"{"endpoint":"/v1/responses","requestedServiceTier":"priority","serviceTier":"default","upstreamAccountId":2568,"upstreamAccountName":"SUB2API","routeMode":"pool"}"#)
+    .bind("{}")
+    .execute(&pool)
+    .await
+    .expect("insert relay proxy cost row");
+
+    let catalog = PricingCatalog {
+        version: "openai-standard-2026-02-23".to_string(),
+        models: HashMap::from([(
+            "gpt-5.4".to_string(),
+            ModelPricing {
+                input_per_1m: 2.5,
+                output_per_1m: 15.0,
+                cache_input_per_1m: None,
+                reasoning_per_1m: None,
+                source: "custom".to_string(),
+            },
+        )]),
+    };
+
+    let summary = backfill_proxy_missing_costs(&pool, &catalog)
+        .await
+        .expect("relay fast cost backfill should succeed");
+    assert_eq!(summary.scanned, 1);
+    assert_eq!(summary.updated, 1);
+    assert_eq!(summary.skipped_unpriced_model, 0);
+
+    let row = sqlx::query(
+        "SELECT cost, cost_estimated, price_version, payload FROM codex_invocations WHERE invoke_id = ?1",
+    )
+    .bind("proxy-relay-fast-cost-backfill")
+    .fetch_one(&pool)
+    .await
+    .expect("query repriced relay row");
+
+    assert!(
+        (row.try_get::<Option<f64>, _>("cost")
+            .expect("read relay cost")
+            .expect("relay cost should exist")
+            - 0.02)
+            .abs()
+            < 1e-12
+    );
+    assert_eq!(
+        row.try_get::<Option<i64>, _>("cost_estimated")
+            .expect("read relay cost_estimated"),
+        Some(1)
+    );
+    assert_eq!(
+        row.try_get::<Option<String>, _>("price_version")
+            .expect("read relay price_version")
+            .as_deref(),
+        Some("openai-standard-2026-02-23+relay-fast-billing-v1")
+    );
+
+    let payload: String = row.try_get("payload").expect("read relay payload");
+    let payload_json: Value = serde_json::from_str(&payload).expect("decode relay payload JSON");
+    assert_eq!(payload_json["serviceTier"], "default");
+    assert_eq!(payload_json["billingServiceTier"], "priority");
+    assert_eq!(payload_json["upstreamAccountKind"], "api_key_codex");
+    assert_eq!(payload_json["upstreamBaseUrlHost"], "sub2api.nsngc.org");
+}
+
+#[tokio::test]
+async fn backfill_proxy_missing_costs_reprices_failed_relay_fast_priority_rows() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect in-memory sqlite");
+    ensure_schema(&pool)
+        .await
+        .expect("schema should initialize");
+
+    let created_at = "2026-01-01T00:00:00Z".to_string();
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, upstream_base_url, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
+    .bind(2750_i64)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("SUB2API")
+    .bind("https://sub2api.nsngc.org/")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&pool)
+    .await
+    .expect("insert failed relay upstream account");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            model,
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            cost,
+            cost_estimated,
+            price_version,
+            payload,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+        "#,
+    )
+    .bind("proxy-failed-relay-fast-cost-backfill")
+    .bind("2026-02-23 00:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("failed")
+    .bind("gpt-5.4")
+    .bind(1_000_i64)
+    .bind(500_i64)
+    .bind(1_500_i64)
+    .bind(0.01_f64)
+    .bind(1_i64)
+    .bind("openai-standard-2026-02-23")
+    .bind(r#"{"endpoint":"/v1/responses","requestedServiceTier":"priority","serviceTier":"default","upstreamAccountId":2750,"upstreamAccountName":"SUB2API","routeMode":"pool"}"#)
+    .bind(r#"{"type":"response.failed"}"#)
+    .execute(&pool)
+    .await
+    .expect("insert failed relay proxy cost row");
+
+    let catalog = PricingCatalog {
+        version: "openai-standard-2026-02-23".to_string(),
+        models: HashMap::from([(
+            "gpt-5.4".to_string(),
+            ModelPricing {
+                input_per_1m: 2.5,
+                output_per_1m: 15.0,
+                cache_input_per_1m: None,
+                reasoning_per_1m: None,
+                source: "custom".to_string(),
+            },
+        )]),
+    };
+
+    let summary = backfill_proxy_missing_costs(&pool, &catalog)
+        .await
+        .expect("failed relay fast cost backfill should succeed");
+    assert_eq!(summary.scanned, 1);
+    assert_eq!(summary.updated, 1);
+    assert_eq!(summary.skipped_unpriced_model, 0);
+
+    let row = sqlx::query(
+        "SELECT status, cost, cost_estimated, price_version, payload FROM codex_invocations WHERE invoke_id = ?1",
+    )
+    .bind("proxy-failed-relay-fast-cost-backfill")
+    .fetch_one(&pool)
+    .await
+    .expect("query repriced failed relay row");
+
+    assert_eq!(
+        row.try_get::<String, _>("status")
+            .expect("read failed relay status"),
+        "failed"
+    );
+    assert!(
+        (row.try_get::<Option<f64>, _>("cost")
+            .expect("read failed relay cost")
+            .expect("failed relay cost should exist")
+            - 0.02)
+            .abs()
+            < 1e-12
+    );
+    assert_eq!(
+        row.try_get::<Option<i64>, _>("cost_estimated")
+            .expect("read failed relay cost_estimated"),
+        Some(1)
+    );
+    assert_eq!(
+        row.try_get::<Option<String>, _>("price_version")
+            .expect("read failed relay price_version")
+            .as_deref(),
+        Some("openai-standard-2026-02-23+relay-fast-billing-v1")
+    );
+
+    let payload: String = row.try_get("payload").expect("read failed relay payload");
+    let payload_json: Value =
+        serde_json::from_str(&payload).expect("decode failed relay payload JSON");
+    assert_eq!(payload_json["serviceTier"], "default");
+    assert_eq!(payload_json["billingServiceTier"], "priority");
+    assert_eq!(payload_json["upstreamAccountKind"], "api_key_codex");
+    assert_eq!(payload_json["upstreamBaseUrlHost"], "sub2api.nsngc.org");
+}
+
+#[tokio::test]
+async fn backfill_proxy_missing_costs_prefers_payload_snapshots_over_live_account_rows() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect in-memory sqlite");
+    ensure_schema(&pool)
+        .await
+        .expect("schema should initialize");
+
+    let created_at = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, upstream_base_url, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
+    .bind(2568_i64)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("SUB2API")
+    .bind("https://sub2api.nsngc.org/")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&pool)
+    .await
+    .expect("insert relay upstream account");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            model,
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            cost,
+            cost_estimated,
+            price_version,
+            payload,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+        "#,
+    )
+    .bind("proxy-relay-fast-cost-snapshot")
+    .bind("2026-02-23 00:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind("gpt-5.4")
+    .bind(1_000_i64)
+    .bind(500_i64)
+    .bind(1_500_i64)
+    .bind(0.01_f64)
+    .bind(1_i64)
+    .bind("openai-standard-2026-02-23")
+    .bind(r#"{"endpoint":"/v1/responses","requestedServiceTier":"priority","serviceTier":"default","upstreamAccountId":2568,"upstreamAccountName":"SUB2API","upstreamAccountKind":"api_key_codex","upstreamBaseUrlHost":"sub2api.nsngc.org","routeMode":"pool"}"#)
+    .bind("{}")
+    .execute(&pool)
+    .await
+    .expect("insert relay proxy snapshot row");
+
+    let catalog = PricingCatalog {
+        version: "openai-standard-2026-02-23".to_string(),
+        models: HashMap::from([(
+            "gpt-5.4".to_string(),
+            ModelPricing {
+                input_per_1m: 2.5,
+                output_per_1m: 15.0,
+                cache_input_per_1m: None,
+                reasoning_per_1m: None,
+                source: "custom".to_string(),
+            },
+        )]),
+    };
+
+    let summary_first = backfill_proxy_missing_costs(&pool, &catalog)
+        .await
+        .expect("first relay snapshot backfill should succeed");
+    assert_eq!(summary_first.scanned, 1);
+    assert_eq!(summary_first.updated, 1);
+
+    sqlx::query(
+        r#"
+        UPDATE pool_upstream_accounts
+        SET kind = ?1,
+            upstream_base_url = ?2,
+            updated_at = ?3
+        WHERE id = ?4
+        "#,
+    )
+    .bind("api_key")
+    .bind("https://api.openai.com/")
+    .bind(format_utc_iso(Utc::now()))
+    .bind(2568_i64)
+    .execute(&pool)
+    .await
+    .expect("mutate live relay account");
+
+    sqlx::query(
+        r#"
+        UPDATE codex_invocations
+        SET cost = ?1,
+            cost_estimated = ?2,
+            price_version = ?3,
+            payload = json_set(payload, '$.billingServiceTier', NULL)
+        WHERE invoke_id = ?4
+        "#,
+    )
+    .bind(0.01_f64)
+    .bind(1_i64)
+    .bind("openai-standard-2026-02-23")
+    .bind("proxy-relay-fast-cost-snapshot")
+    .execute(&pool)
+    .await
+    .expect("regress relay snapshot row");
+
+    let summary_second = backfill_proxy_missing_costs(&pool, &catalog)
+        .await
+        .expect("second relay snapshot backfill should still use payload snapshot");
+    assert_eq!(summary_second.scanned, 1);
+    assert_eq!(summary_second.updated, 1);
+
+    let row = sqlx::query(
+        "SELECT cost, cost_estimated, price_version, payload FROM codex_invocations WHERE invoke_id = ?1",
+    )
+    .bind("proxy-relay-fast-cost-snapshot")
+    .fetch_one(&pool)
+    .await
+    .expect("query relay snapshot row");
+    assert!(
+        (row.try_get::<Option<f64>, _>("cost")
+            .expect("read relay snapshot cost")
+            .expect("relay snapshot cost should exist")
+            - 0.02)
+            .abs()
+            < 1e-12
+    );
+    assert_eq!(
+        row.try_get::<Option<i64>, _>("cost_estimated")
+            .expect("read relay snapshot cost_estimated"),
+        Some(1)
+    );
+    assert_eq!(
+        row.try_get::<Option<String>, _>("price_version")
+            .expect("read relay snapshot price_version")
+            .as_deref(),
+        Some("openai-standard-2026-02-23+relay-fast-billing-v1")
+    );
+
+    let payload: String = row.try_get("payload").expect("read relay snapshot payload");
+    let payload_json: Value =
+        serde_json::from_str(&payload).expect("decode relay snapshot payload JSON");
+    assert_eq!(payload_json["billingServiceTier"], "priority");
+    assert_eq!(payload_json["upstreamAccountKind"], "api_key_codex");
+    assert_eq!(payload_json["upstreamBaseUrlHost"], "sub2api.nsngc.org");
+}
+
+#[tokio::test]
+async fn backfill_proxy_missing_costs_matches_live_host_exactly_before_repricing() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect in-memory sqlite");
+    ensure_schema(&pool)
+        .await
+        .expect("schema should initialize");
+
+    let created_at = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, upstream_base_url, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
+    .bind(4096_i64)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Attacker Relay")
+    .bind("https://sub2api.nsngc.org.attacker.example/relay")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&pool)
+    .await
+    .expect("insert lookalike relay upstream account");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            model,
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            cost,
+            cost_estimated,
+            price_version,
+            payload,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+        "#,
+    )
+    .bind("proxy-lookalike-relay-host")
+    .bind("2026-02-23 00:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind("gpt-5.4")
+    .bind(1_000_i64)
+    .bind(500_i64)
+    .bind(1_500_i64)
+    .bind(None::<f64>)
+    .bind(0_i64)
+    .bind(None::<&str>)
+    .bind(r#"{"endpoint":"/v1/responses","requestedServiceTier":"priority","serviceTier":"default","upstreamAccountId":4096,"upstreamAccountName":"Attacker Relay","upstreamAccountKind":"api_key_codex","upstreamBaseUrlHost":"sub2api.nsngc.org.attacker.example","routeMode":"pool"}"#)
+    .bind("{}")
+    .execute(&pool)
+    .await
+    .expect("insert lookalike relay invocation");
+
+    let catalog = PricingCatalog {
+        version: "openai-standard-2026-02-23".to_string(),
+        models: HashMap::from([(
+            "gpt-5.4".to_string(),
+            ModelPricing {
+                input_per_1m: 2.5,
+                output_per_1m: 15.0,
+                cache_input_per_1m: None,
+                reasoning_per_1m: None,
+                source: "custom".to_string(),
+            },
+        )]),
+    };
+
+    let summary_first = backfill_proxy_missing_costs(&pool, &catalog)
+        .await
+        .expect("lookalike host backfill should succeed");
+    assert_eq!(summary_first.scanned, 1);
+    assert_eq!(summary_first.updated, 1);
+
+    let row = sqlx::query(
+        "SELECT cost, cost_estimated, price_version, payload FROM codex_invocations WHERE invoke_id = ?1",
+    )
+    .bind("proxy-lookalike-relay-host")
+    .fetch_one(&pool)
+    .await
+    .expect("query lookalike relay row");
+    assert!(
+        (row.try_get::<Option<f64>, _>("cost")
+            .expect("read lookalike cost")
+            .expect("lookalike cost should exist")
+            - 0.01)
+            .abs()
+            < 1e-12
+    );
+    assert_eq!(
+        row.try_get::<Option<i64>, _>("cost_estimated")
+            .expect("read lookalike cost_estimated"),
+        Some(1)
+    );
+    assert_eq!(
+        row.try_get::<Option<String>, _>("price_version")
+            .expect("read lookalike price_version")
+            .as_deref(),
+        Some("openai-standard-2026-02-23")
+    );
+
+    let payload: String = row.try_get("payload").expect("read lookalike payload");
+    let payload_json: Value =
+        serde_json::from_str(&payload).expect("decode lookalike payload JSON");
+    assert_eq!(payload_json["billingServiceTier"], "default");
+    assert_eq!(payload_json["upstreamAccountKind"], "api_key_codex");
+    assert_eq!(
+        payload_json["upstreamBaseUrlHost"],
+        "sub2api.nsngc.org.attacker.example"
+    );
+
+    let summary_second = backfill_proxy_missing_costs(&pool, &catalog)
+        .await
+        .expect("lookalike host backfill should become idempotent after snapshot write");
+    assert_eq!(summary_second.scanned, 0);
+    assert_eq!(summary_second.updated, 0);
+}
+
+#[tokio::test]
+async fn backfill_proxy_missing_costs_does_not_reprice_using_live_host_when_account_created_after_invocation()
+ {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect in-memory sqlite");
+    ensure_schema(&pool)
+        .await
+        .expect("schema should initialize");
+
+    let created_at = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, upstream_base_url, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
+    .bind(5120_i64)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("SUB2API")
+    .bind("https://sub2api.nsngc.org/")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&pool)
+    .await
+    .expect("insert relay upstream account");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            model,
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            cost,
+            cost_estimated,
+            price_version,
+            payload,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+        "#,
+    )
+    .bind("proxy-live-host-only-relay")
+    .bind("2026-02-23 00:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind("gpt-5.4")
+    .bind(1_000_i64)
+    .bind(500_i64)
+    .bind(1_500_i64)
+    .bind(0.01_f64)
+    .bind(1_i64)
+    .bind("openai-standard-2026-02-23")
+    .bind(r#"{"endpoint":"/v1/responses","requestedServiceTier":"priority","serviceTier":"default","upstreamAccountId":5120,"upstreamAccountName":"SUB2API","routeMode":"pool"}"#)
+    .bind("{}")
+    .execute(&pool)
+    .await
+    .expect("insert live-host-only relay invocation");
+
+    let catalog = PricingCatalog {
+        version: "openai-standard-2026-02-23".to_string(),
+        models: HashMap::from([(
+            "gpt-5.4".to_string(),
+            ModelPricing {
+                input_per_1m: 2.5,
+                output_per_1m: 15.0,
+                cache_input_per_1m: None,
+                reasoning_per_1m: None,
+                source: "custom".to_string(),
+            },
+        )]),
+    };
+
+    let summary = backfill_proxy_missing_costs(&pool, &catalog).await.expect(
+        "rows whose linked account did not exist yet should still backfill standard billing tier",
+    );
+    assert_eq!(summary.scanned, 1);
+    assert_eq!(summary.updated, 1);
+
+    let row = sqlx::query(
+        "SELECT cost, cost_estimated, price_version, payload FROM codex_invocations WHERE invoke_id = ?1",
+    )
+    .bind("proxy-live-host-only-relay")
+    .fetch_one(&pool)
+    .await
+    .expect("query live-host-only relay row");
+    assert!(
+        (row.try_get::<Option<f64>, _>("cost")
+            .expect("read live-host-only cost")
+            .expect("live-host-only cost should exist")
+            - 0.01)
+            .abs()
+            < 1e-12
+    );
+    assert_eq!(
+        row.try_get::<Option<i64>, _>("cost_estimated")
+            .expect("read live-host-only cost_estimated"),
+        Some(1)
+    );
+    assert_eq!(
+        row.try_get::<Option<String>, _>("price_version")
+            .expect("read live-host-only price_version")
+            .as_deref(),
+        Some("openai-standard-2026-02-23")
+    );
+
+    let payload: String = row.try_get("payload").expect("read live-host-only payload");
+    let payload_json: Value =
+        serde_json::from_str(&payload).expect("decode live-host-only payload JSON");
+    assert_eq!(payload_json["billingServiceTier"], "default");
+    assert_eq!(payload_json.get("upstreamBaseUrlHost"), Some(&Value::Null));
+}
+
+#[tokio::test]
+async fn backfill_proxy_missing_costs_does_not_reprice_live_relay_rows_after_account_edit() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect in-memory sqlite");
+    ensure_schema(&pool)
+        .await
+        .expect("schema should initialize");
+
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, upstream_base_url, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
+    .bind(5632_i64)
+    .bind("api_key_codex")
+    .bind("codex")
+        .bind("SUB2API Renamed")
+        .bind("https://sub2api.nsngc.org/")
+        .bind("active")
+        .bind(1_i64)
+        .bind("2026-01-01T00:00:00Z")
+        .bind("2026-03-01T00:00:00Z")
+    .execute(&pool)
+    .await
+    .expect("insert edited relay upstream account");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            model,
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            cost,
+            cost_estimated,
+            price_version,
+            payload,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+        "#,
+    )
+    .bind("proxy-live-host-relay-after-edit")
+    .bind("2026-02-23 00:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind("gpt-5.4")
+    .bind(1_000_i64)
+    .bind(500_i64)
+    .bind(1_500_i64)
+    .bind(0.01_f64)
+    .bind(1_i64)
+    .bind("openai-standard-2026-02-23")
+    .bind(r#"{"endpoint":"/v1/responses","requestedServiceTier":"priority","serviceTier":"default","upstreamAccountId":5632,"upstreamAccountName":"SUB2API","routeMode":"pool"}"#)
+    .bind("{}")
+    .execute(&pool)
+    .await
+    .expect("insert relay invocation without relay snapshots");
+
+    let catalog = PricingCatalog {
+        version: "openai-standard-2026-02-23".to_string(),
+        models: HashMap::from([(
+            "gpt-5.4".to_string(),
+            ModelPricing {
+                input_per_1m: 2.5,
+                output_per_1m: 15.0,
+                cache_input_per_1m: None,
+                reasoning_per_1m: None,
+                source: "custom".to_string(),
+            },
+        )]),
+    };
+
+    let summary = backfill_proxy_missing_costs(&pool, &catalog)
+        .await
+        .expect("edited relay account should not relay-reprice legacy rows from live host, but should backfill standard billing tier");
+    assert_eq!(summary.scanned, 1);
+    assert_eq!(summary.updated, 1);
+
+    let row = sqlx::query(
+        "SELECT cost, cost_estimated, price_version, payload FROM codex_invocations WHERE invoke_id = ?1",
+    )
+    .bind("proxy-live-host-relay-after-edit")
+    .fetch_one(&pool)
+    .await
+    .expect("query skipped relay row");
+    assert!(
+        (row.try_get::<Option<f64>, _>("cost")
+            .expect("read relay-after-edit cost")
+            .expect("relay-after-edit cost should exist")
+            - 0.01)
+            .abs()
+            < 1e-12
+    );
+    assert_eq!(
+        row.try_get::<Option<i64>, _>("cost_estimated")
+            .expect("read relay-after-edit cost_estimated"),
+        Some(1)
+    );
+    assert_eq!(
+        row.try_get::<Option<String>, _>("price_version")
+            .expect("read relay-after-edit price_version")
+            .as_deref(),
+        Some("openai-standard-2026-02-23")
+    );
+
+    let payload: String = row
+        .try_get("payload")
+        .expect("read relay-after-edit payload");
+    let payload_json: Value =
+        serde_json::from_str(&payload).expect("decode relay-after-edit payload JSON");
+    assert_eq!(payload_json["billingServiceTier"], "default");
+    assert_eq!(payload_json.get("upstreamAccountKind"), Some(&Value::Null));
+    assert_eq!(payload_json.get("upstreamBaseUrlHost"), Some(&Value::Null));
+}
+
+#[tokio::test]
+async fn backfill_proxy_missing_costs_skips_non_priority_relay_tiers_after_snapshot_write() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect in-memory sqlite");
+    ensure_schema(&pool)
+        .await
+        .expect("schema should initialize");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            model,
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            cost,
+            cost_estimated,
+            price_version,
+            payload,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+        "#,
+    )
+    .bind("proxy-relay-flex-tier")
+    .bind("2026-02-23 00:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind("gpt-5.4")
+    .bind(1_000_i64)
+    .bind(500_i64)
+    .bind(1_500_i64)
+    .bind(0.01_f64)
+    .bind(1_i64)
+    .bind("openai-standard-2026-02-23")
+    .bind(r#"{"endpoint":"/v1/responses","requestedServiceTier":"priority","serviceTier":"flex","billingServiceTier":"flex","upstreamAccountKind":"api_key_codex","upstreamBaseUrlHost":"sub2api.nsngc.org","routeMode":"pool"}"#)
+    .bind("{}")
+    .execute(&pool)
+    .await
+    .expect("insert relay flex invocation");
+
+    let catalog = PricingCatalog {
+        version: "openai-standard-2026-02-23".to_string(),
+        models: HashMap::from([(
+            "gpt-5.4".to_string(),
+            ModelPricing {
+                input_per_1m: 2.5,
+                output_per_1m: 15.0,
+                cache_input_per_1m: None,
+                reasoning_per_1m: None,
+                source: "custom".to_string(),
+            },
+        )]),
+    };
+
+    let summary = backfill_proxy_missing_costs(&pool, &catalog)
+        .await
+        .expect("relay flex tier row should already be settled");
+    assert_eq!(summary.scanned, 0);
+    assert_eq!(summary.updated, 0);
+}
+
+#[tokio::test]
+async fn backfill_proxy_missing_costs_does_not_reprice_safe_live_nonrelay_host_without_snapshot() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect in-memory sqlite");
+    ensure_schema(&pool)
+        .await
+        .expect("schema should initialize");
+
+    let created_at = "2026-01-01T00:00:00Z".to_string();
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, upstream_base_url, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
+    .bind(6144_i64)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("Safe Nonrelay Host")
+    .bind("https://api.example.invalid/v1")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&pool)
+    .await
+    .expect("insert safe nonrelay upstream account");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            model,
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            cost,
+            cost_estimated,
+            price_version,
+            payload,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+        "#,
+    )
+    .bind("proxy-safe-live-nonrelay-host")
+    .bind("2026-02-23 00:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind("gpt-5.4")
+    .bind(1_000_i64)
+    .bind(500_i64)
+    .bind(1_500_i64)
+    .bind(0.01_f64)
+    .bind(1_i64)
+    .bind("openai-standard-2026-02-23")
+    .bind(r#"{"endpoint":"/v1/responses","requestedServiceTier":"priority","serviceTier":"default","upstreamAccountId":6144,"upstreamAccountName":"Safe Nonrelay Host","routeMode":"pool"}"#)
+    .bind("{}")
+    .execute(&pool)
+    .await
+    .expect("insert safe live nonrelay invocation");
+
+    let catalog = PricingCatalog {
+        version: "openai-standard-2026-02-23".to_string(),
+        models: HashMap::from([(
+            "gpt-5.4".to_string(),
+            ModelPricing {
+                input_per_1m: 2.5,
+                output_per_1m: 15.0,
+                cache_input_per_1m: None,
+                reasoning_per_1m: None,
+                source: "custom".to_string(),
+            },
+        )]),
+    };
+
+    let summary = backfill_proxy_missing_costs(&pool, &catalog).await.expect(
+        "safe nonrelay host should backfill standard billing tier from the safe live snapshot",
+    );
+    assert_eq!(summary.scanned, 1);
+    assert_eq!(summary.updated, 1);
+
+    let row = sqlx::query(
+        "SELECT cost, cost_estimated, price_version, payload FROM codex_invocations WHERE invoke_id = ?1",
+    )
+    .bind("proxy-safe-live-nonrelay-host")
+    .fetch_one(&pool)
+    .await
+    .expect("query safe nonrelay row");
+    assert!(
+        (row.try_get::<Option<f64>, _>("cost")
+            .expect("read safe nonrelay cost")
+            .expect("safe nonrelay cost should exist")
+            - 0.01)
+            .abs()
+            < 1e-12
+    );
+    assert_eq!(
+        row.try_get::<Option<i64>, _>("cost_estimated")
+            .expect("read safe nonrelay cost_estimated"),
+        Some(1)
+    );
+    assert_eq!(
+        row.try_get::<Option<String>, _>("price_version")
+            .expect("read safe nonrelay price_version")
+            .as_deref(),
+        Some("openai-standard-2026-02-23")
+    );
+
+    let payload: String = row.try_get("payload").expect("read safe nonrelay payload");
+    let payload_json: Value =
+        serde_json::from_str(&payload).expect("decode safe nonrelay payload JSON");
+    assert_eq!(payload_json["billingServiceTier"], "default");
+    assert_eq!(payload_json["upstreamAccountKind"], "api_key_codex");
+    assert_eq!(payload_json["upstreamBaseUrlHost"], "api.example.invalid");
 }
 
 #[tokio::test]

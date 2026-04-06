@@ -59,6 +59,7 @@ function recordCompletenessScore(record: ApiInvocation) {
   if (record.responseContentEncoding?.trim()) score += 1;
   if (record.requestedServiceTier?.trim()) score += 1;
   if (record.serviceTier?.trim()) score += 1;
+  if (record.billingServiceTier?.trim()) score += 1;
   if (record.reasoningEffort?.trim()) score += 1;
   if (typeof record.inputTokens === "number" && Number.isFinite(record.inputTokens)) {
     score += 1;
@@ -198,6 +199,7 @@ function mergeInvocationRecordDetails(
     "responseContentEncoding",
     "requestedServiceTier",
     "serviceTier",
+    "billingServiceTier",
     "reasoningEffort",
     "promptCacheKey",
     "requesterIp",
