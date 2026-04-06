@@ -66,27 +66,28 @@ function createPreview(
 function createConversation(
   promptCacheKey: string,
   recentInvocations: PromptCacheConversationInvocationPreview[],
+  overrides: Partial<PromptCacheConversation> = {},
 ): PromptCacheConversation {
   return {
     promptCacheKey,
-    requestCount: recentInvocations.length,
-    totalTokens: recentInvocations.reduce(
+    requestCount: overrides.requestCount ?? recentInvocations.length,
+    totalTokens: overrides.totalTokens ?? recentInvocations.reduce(
       (sum, preview) => sum + Math.max(0, preview.totalTokens),
       0,
     ),
-    totalCost: Number(
+    totalCost: overrides.totalCost ?? Number(
       recentInvocations
         .reduce((sum, preview) => sum + (preview.cost ?? 0), 0)
         .toFixed(4),
     ),
-    createdAt:
+    createdAt: overrides.createdAt ??
       recentInvocations[recentInvocations.length - 1]?.occurredAt ??
       "2026-04-04T10:00:00Z",
-    lastActivityAt:
+    lastActivityAt: overrides.lastActivityAt ??
       recentInvocations[0]?.occurredAt ?? "2026-04-04T10:00:00Z",
-    upstreamAccounts: [],
+    upstreamAccounts: overrides.upstreamAccounts ?? [],
     recentInvocations,
-    last24hRequests: [],
+    last24hRequests: overrides.last24hRequests ?? [],
   };
 }
 
@@ -187,6 +188,62 @@ const failedClickableResponse = createResponse([
       model: "gpt-5.4-mini",
     }),
   ]),
+]);
+
+const createdAtDescendingOrderResponse = createResponse([
+  createConversation(
+    "pck-created-middle",
+    [
+      createPreview({
+        id: 52,
+        invokeId: "invoke-created-middle-running",
+        occurredAt: "2026-04-04T10:04:58Z",
+        status: "running",
+        upstreamAccountName: "ordering-middle@example.com",
+        tTotalMs: null,
+      }),
+      createPreview({
+        id: 51,
+        invokeId: "invoke-created-middle-previous",
+        occurredAt: "2026-04-04T10:03:40Z",
+        status: "completed",
+        upstreamAccountName: "ordering-middle@example.com",
+      }),
+    ],
+    {
+      createdAt: "2026-04-04T10:02:00Z",
+    },
+  ),
+  createConversation(
+    "pck-created-oldest",
+    [
+      createPreview({
+        id: 61,
+        invokeId: "invoke-created-oldest",
+        occurredAt: "2026-04-04T10:03:20Z",
+        status: "completed",
+        upstreamAccountName: "ordering-oldest@example.com",
+      }),
+    ],
+    {
+      createdAt: "2026-04-04T09:58:00Z",
+    },
+  ),
+  createConversation(
+    "pck-created-newest",
+    [
+      createPreview({
+        id: 71,
+        invokeId: "invoke-created-newest",
+        occurredAt: "2026-04-04T10:01:00Z",
+        status: "completed",
+        upstreamAccountName: "ordering-newest@example.com",
+      }),
+    ],
+    {
+      createdAt: "2026-04-04T10:03:00Z",
+    },
+  ),
 ]);
 
 function buildCards(response: PromptCacheConversationsResponse) {
@@ -299,5 +356,20 @@ export const StateGallery: Story = {
     ),
     isLoading: false,
     error: null,
+  },
+};
+
+export const CreatedAtDescendingOrder: Story = {
+  args: {
+    cards: buildCards(createdAtDescendingOrderResponse),
+    isLoading: false,
+    error: null,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const cards = await canvas.findAllByTestId("dashboard-working-conversation-card");
+    await expect(cards[0]).toHaveTextContent("pck-created-newest");
+    await expect(cards[1]).toHaveTextContent("pck-created-middle");
+    await expect(cards[2]).toHaveTextContent("pck-created-oldest");
   },
 };

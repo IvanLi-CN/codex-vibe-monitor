@@ -59,10 +59,9 @@ const CARD_CLASS_NAME =
 const SLOT_CLASS_NAME =
   "flex flex-col overflow-hidden rounded-[0.95rem] px-2.5 py-2 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]";
 
-const CARD_SURFACE_CLASS_NAME =
-  "bg-[linear-gradient(180deg,rgba(12,19,29,0.98),rgba(14,21,32,0.96))]";
+const CARD_SURFACE_CLASS_NAME = "working-conversation-card-surface";
 
-const INVOCATION_SURFACE_CLASS_NAME = "bg-base-100/6";
+const INVOCATION_SURFACE_CLASS_NAME = "working-conversation-slot-surface";
 
 const STATUS_META: Record<DashboardWorkingConversationTone, StatusMeta> = {
   running: {
@@ -231,7 +230,7 @@ function PlaceholderSlot() {
   return (
     <div
       data-testid="dashboard-working-conversation-placeholder"
-      className={cn(SLOT_CLASS_NAME, "bg-base-100/6")}
+      className={cn(SLOT_CLASS_NAME, INVOCATION_SURFACE_CLASS_NAME)}
     >
       <div className="flex items-center justify-between gap-2">
         <div className="shrink-0 text-[9px] font-semibold uppercase tracking-[0.14em] text-base-content/55">
@@ -256,7 +255,10 @@ function PlaceholderSlot() {
       </p>
       <div className="mt-2 space-y-1" aria-hidden>
         {Array.from({ length: 3 }, (_, index) => (
-          <div key={index} className="h-3 rounded-[0.5rem] bg-base-100/10" />
+          <div
+            key={index}
+            className="working-conversation-placeholder-line h-3 rounded-[0.5rem]"
+          />
         ))}
       </div>
     </div>

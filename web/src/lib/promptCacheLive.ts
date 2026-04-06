@@ -74,19 +74,6 @@ function parsePromptCacheSelectionWindowMs(
   return selection.activityHours * 3_600_000;
 }
 
-function promptCachePreviewIsPending(
-  preview: Pick<PromptCacheConversationInvocationPreview, "status">,
-) {
-  const normalizedStatus = preview.status?.trim().toLowerCase() ?? "";
-  return normalizedStatus === "running" || normalizedStatus === "pending";
-}
-
-function promptCachePreviewIsTerminal(
-  preview: Pick<PromptCacheConversationInvocationPreview, "status">,
-) {
-  return !promptCachePreviewIsPending(preview);
-}
-
 function withinPromptCacheSelectionWindow(
   occurredAt: string,
   selection: PromptCacheConversationSelection,
@@ -129,43 +116,7 @@ function comparePromptCacheConversationOrder(
     PromptCacheConversation,
     "createdAt" | "promptCacheKey" | "recentInvocations"
   >,
-  selection: PromptCacheConversationSelection,
-  now: number,
 ) {
-  if (selection.mode === "activityWindow" && "activityMinutes" in selection) {
-    const rangeStartMs = now - parsePromptCacheSelectionWindowMs(selection);
-    const resolveSortEpoch = (
-      conversation: Pick<
-        PromptCacheConversation,
-        "createdAt" | "recentInvocations"
-      >,
-    ) => {
-      const recentTerminal = conversation.recentInvocations.find((preview) => {
-        if (!promptCachePreviewIsTerminal(preview)) return false;
-        const epoch = parseOccurredAtEpoch(preview.occurredAt);
-        return epoch != null && epoch >= rangeStartMs;
-      });
-      if (recentTerminal) {
-        return parseOccurredAtEpoch(recentTerminal.occurredAt);
-      }
-      const inFlight = conversation.recentInvocations.find((preview) =>
-        promptCachePreviewIsPending(preview)
-      );
-      if (inFlight) {
-        return parseOccurredAtEpoch(inFlight.occurredAt);
-      }
-      return null;
-    };
-
-    const leftAnchor = resolveSortEpoch(left);
-    const rightAnchor = resolveSortEpoch(right);
-    const normalizedLeftAnchor = leftAnchor ?? Number.MIN_SAFE_INTEGER;
-    const normalizedRightAnchor = rightAnchor ?? Number.MIN_SAFE_INTEGER;
-    if (normalizedLeftAnchor !== normalizedRightAnchor) {
-      return normalizedRightAnchor - normalizedLeftAnchor;
-    }
-  }
-
   const leftEpoch = parseOccurredAtEpoch(left.createdAt) ?? Number.MIN_SAFE_INTEGER;
   const rightEpoch = parseOccurredAtEpoch(right.createdAt) ?? Number.MIN_SAFE_INTEGER;
   if (leftEpoch !== rightEpoch) return rightEpoch - leftEpoch;
@@ -731,7 +682,7 @@ export function mergePromptCacheConversationsResponse(
   }
 
   nextConversations.sort((left, right) =>
-    comparePromptCacheConversationOrder(left, right, selection, now),
+    comparePromptCacheConversationOrder(left, right),
   );
 
   return {

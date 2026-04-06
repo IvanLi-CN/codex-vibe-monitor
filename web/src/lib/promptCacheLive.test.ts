@@ -366,7 +366,7 @@ describe("mergePromptCacheConversationsResponse", () => {
     );
   });
 
-  it("sorts the precise 5-minute dashboard window by recent terminal time and then in-flight fallback time", () => {
+  it("sorts the precise 5-minute dashboard window by conversation created time descending", () => {
     const merged = mergePromptCacheConversationsResponse(
       {
         rangeStart: "2026-03-10T02:55:00Z",
@@ -436,9 +436,9 @@ describe("mergePromptCacheConversationsResponse", () => {
     );
 
     expect(merged?.conversations.map((item) => item.promptCacheKey)).toEqual([
-      "pck-running-only",
       "pck-terminal-late",
       "pck-terminal-early",
+      "pck-running-only",
     ]);
   });
 });

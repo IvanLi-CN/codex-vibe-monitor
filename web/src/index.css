@@ -53,6 +53,15 @@ body,
   --dialog-surface-bg: rgba(250, 252, 255, 0.995);
   --dialog-surface-border: rgba(148, 163, 184, 0.46);
   --dialog-surface-shadow: 0 32px 90px rgba(15, 23, 42, 0.16);
+  --working-conversation-card-bg: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.96),
+    rgba(239, 246, 255, 0.94)
+  );
+  --working-conversation-card-border: rgba(148, 163, 184, 0.28);
+  --working-conversation-slot-bg: rgba(255, 255, 255, 0.74);
+  --working-conversation-slot-border: rgba(148, 163, 184, 0.16);
+  --working-conversation-placeholder-line: rgba(148, 163, 184, 0.22);
 }
 
 
@@ -100,6 +109,15 @@ body,
   --dialog-surface-bg: rgba(13, 21, 36, 0.985);
   --dialog-surface-border: rgba(148, 163, 184, 0.36);
   --dialog-surface-shadow: 0 36px 110px rgba(2, 6, 23, 0.62);
+  --working-conversation-card-bg: linear-gradient(
+    180deg,
+    rgba(12, 19, 29, 0.98),
+    rgba(14, 21, 32, 0.96)
+  );
+  --working-conversation-card-border: rgba(148, 163, 184, 0.12);
+  --working-conversation-slot-bg: rgba(248, 250, 252, 0.06);
+  --working-conversation-slot-border: rgba(255, 255, 255, 0.06);
+  --working-conversation-placeholder-line: rgba(255, 255, 255, 0.1);
 }
 
 
@@ -273,6 +291,20 @@ body {
 
   .surface-panel-body {
     @apply flex flex-col p-5;
+  }
+
+  .working-conversation-card-surface {
+    border: 1px solid var(--working-conversation-card-border);
+    background: var(--working-conversation-card-bg);
+  }
+
+  .working-conversation-slot-surface {
+    border: 1px solid var(--working-conversation-slot-border);
+    background: var(--working-conversation-slot-bg);
+  }
+
+  .working-conversation-placeholder-line {
+    background-color: var(--working-conversation-placeholder-line);
   }
 
   .drawer-shell {

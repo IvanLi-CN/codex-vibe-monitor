@@ -131,22 +131,28 @@ describe("mapPromptCacheConversationsToDashboardCards", () => {
     ]);
   });
 
-  it("sorts by recent terminal time first and falls back to in-flight time for running-only conversations", () => {
+  it("sorts cards by conversation created time descending even when a running-only card is newer by activity", () => {
     const response = createResponse([
-      createConversation("pck-terminal-late", [
-        createPreview({
-          id: 11,
-          invokeId: "invoke-11",
-          occurredAt: "2026-04-04T10:04:00Z",
-          status: "completed",
-        }),
-        createPreview({
-          id: 10,
-          invokeId: "invoke-10",
-          occurredAt: "2026-04-04T10:01:00Z",
-          status: "completed",
-        }),
-      ]),
+      createConversation(
+        "pck-terminal-late",
+        [
+          createPreview({
+            id: 11,
+            invokeId: "invoke-11",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "completed",
+          }),
+          createPreview({
+            id: 10,
+            invokeId: "invoke-10",
+            occurredAt: "2026-04-04T10:01:00Z",
+            status: "completed",
+          }),
+        ],
+        {
+          createdAt: "2026-04-04T10:03:00Z",
+        },
+      ),
       createConversation("pck-running-only", [
         createPreview({
           id: 21,
@@ -161,25 +167,31 @@ describe("mapPromptCacheConversationsToDashboardCards", () => {
           status: "completed",
         }),
       ]),
-      createConversation("pck-terminal-early", [
-        createPreview({
-          id: 31,
-          invokeId: "invoke-31",
-          occurredAt: "2026-04-04T10:03:00Z",
-          status: "completed",
-        }),
-      ]),
+      createConversation(
+        "pck-terminal-early",
+        [
+          createPreview({
+            id: 31,
+            invokeId: "invoke-31",
+            occurredAt: "2026-04-04T10:03:00Z",
+            status: "completed",
+          }),
+        ],
+        {
+          createdAt: "2026-04-04T10:02:00Z",
+        },
+      ),
     ]);
 
     const cards = mapPromptCacheConversationsToDashboardCards(response);
 
     expect(cards.map((card) => card.promptCacheKey)).toEqual([
-      "pck-running-only",
       "pck-terminal-late",
       "pck-terminal-early",
+      "pck-running-only",
     ]);
-    expect(cards[0]?.currentInvocation.displayStatus).toBe("running");
-    expect(cards[0]?.previousInvocation?.displayStatus).toBe("completed");
-    expect(cards[0]?.sortAnchorEpoch).toBe(Date.parse("2026-04-04T10:05:00Z"));
+    expect(cards[2]?.currentInvocation.displayStatus).toBe("running");
+    expect(cards[2]?.previousInvocation?.displayStatus).toBe("completed");
+    expect(cards[2]?.sortAnchorEpoch).toBe(Date.parse("2026-04-04T10:05:00Z"));
   });
 });

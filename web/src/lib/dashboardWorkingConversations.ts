@@ -36,6 +36,7 @@ export interface DashboardWorkingConversationCardModel {
   promptCacheKey: string;
   normalizedPromptCacheKey: string;
   conversationSequenceId: string;
+  createdAtEpoch: number | null;
   currentInvocation: DashboardWorkingConversationInvocationModel;
   previousInvocation: DashboardWorkingConversationInvocationModel | null;
   hasPreviousPlaceholder: boolean;
@@ -162,6 +163,7 @@ function buildPendingCardModel(
   return {
     promptCacheKey: conversation.promptCacheKey,
     normalizedPromptCacheKey,
+    createdAtEpoch: parseEpoch(conversation.createdAt),
     currentInvocation,
     previousInvocation,
     hasPreviousPlaceholder: previousInvocation == null,
@@ -187,14 +189,10 @@ export function mapPromptCacheConversationsToDashboardCards(
     .map((conversation) => buildPendingCardModel(conversation, rangeStartEpoch))
     .filter((card): card is PendingSequenceCardModel => card != null)
     .sort((left, right) => {
-      if (left.sortAnchorEpoch !== right.sortAnchorEpoch) {
-        return right.sortAnchorEpoch - left.sortAnchorEpoch;
-      }
-
-      const leftCurrentEpoch = left.currentInvocation.occurredAtEpoch ?? Number.MIN_SAFE_INTEGER;
-      const rightCurrentEpoch = right.currentInvocation.occurredAtEpoch ?? Number.MIN_SAFE_INTEGER;
-      if (leftCurrentEpoch !== rightCurrentEpoch) {
-        return rightCurrentEpoch - leftCurrentEpoch;
+      const leftCreatedAtEpoch = left.createdAtEpoch ?? Number.MIN_SAFE_INTEGER;
+      const rightCreatedAtEpoch = right.createdAtEpoch ?? Number.MIN_SAFE_INTEGER;
+      if (leftCreatedAtEpoch !== rightCreatedAtEpoch) {
+        return rightCreatedAtEpoch - leftCreatedAtEpoch;
       }
 
       return right.normalizedPromptCacheKey.localeCompare(left.normalizedPromptCacheKey);

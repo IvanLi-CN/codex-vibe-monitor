@@ -2993,8 +2993,7 @@ pub(crate) async fn query_prompt_cache_working_conversation_aggregates(
          ), collapsed_working AS (\
             SELECT prompt_cache_key, \
                    MAX(last_terminal_at) AS last_terminal_at, \
-                   MAX(last_in_flight_at) AS last_in_flight_at, \
-                   COALESCE(MAX(last_terminal_at), MAX(last_in_flight_at)) AS sort_anchor_at \
+                   MAX(last_in_flight_at) AS last_in_flight_at \
               FROM working \
               GROUP BY prompt_cache_key\
          ), aggregates AS (\
@@ -3020,7 +3019,7 @@ pub(crate) async fn query_prompt_cache_working_conversation_aggregates(
                 aggregates.total_cost, aggregates.created_at, aggregates.last_activity_at \
            FROM aggregates \
            INNER JOIN collapsed_working ON collapsed_working.prompt_cache_key = aggregates.prompt_cache_key \
-          ORDER BY collapsed_working.sort_anchor_at DESC, aggregates.created_at DESC, aggregates.prompt_cache_key DESC \
+          ORDER BY aggregates.created_at DESC, aggregates.prompt_cache_key DESC \
           LIMIT ",
         )
         .push_bind(limit);
