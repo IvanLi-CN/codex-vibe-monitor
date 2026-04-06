@@ -499,6 +499,34 @@ fn take_sticky_owner_terminal_error(
     Some(err)
 }
 
+async fn take_and_record_sticky_owner_terminal_error(
+    state: &AppState,
+    trace_context: Option<&PoolUpstreamAttemptTraceContext>,
+    last_error: &mut Option<PoolUpstreamError>,
+    attempt_count: usize,
+    distinct_account_count: usize,
+) -> Option<PoolUpstreamError> {
+    let err = take_sticky_owner_terminal_error(last_error, attempt_count, distinct_account_count)?;
+    if let Some(trace) = trace_context
+        && let Err(record_err) = insert_and_broadcast_pool_upstream_terminal_attempt(
+            state,
+            trace,
+            &err,
+            (attempt_count + 1) as i64,
+            distinct_account_count as i64,
+            err.failure_kind,
+        )
+        .await
+    {
+        warn!(
+            invoke_id = trace.invoke_id,
+            error = %record_err,
+            "failed to persist preserved sticky-owner terminal attempt"
+        );
+    }
+    Some(err)
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct PendingPoolAttemptRecord {
     pub(crate) attempt_id: Option<i64>,
@@ -1572,10 +1600,10 @@ async fn send_pool_request_with_failover(
             // upstream failure instead of re-entering the generic no-account wait loop.
             let wait_for_no_available = if attempt_count == 0 {
                 true
-            } else if pool_upstream_error_preserves_existing_sticky_owner(last_error.as_ref()) {
-                false
             } else if uses_timeout_route_failover {
                 !timeout_route_failover_pending
+            } else if pool_upstream_error_preserves_existing_sticky_owner(last_error.as_ref()) {
+                false
             } else {
                 false
             };
@@ -1632,11 +1660,15 @@ async fn send_pool_request_with_failover(
                 Ok(PoolAccountResolutionWithWait::Resolution(
                     PoolAccountResolution::RateLimited,
                 )) => {
-                    if let Some(err) = take_sticky_owner_terminal_error(
+                    if let Some(err) = take_and_record_sticky_owner_terminal_error(
+                        state.as_ref(),
+                        trace_context.as_ref(),
                         &mut last_error,
                         attempt_count,
                         distinct_account_count,
-                    ) {
+                    )
+                    .await
+                    {
                         return Err(err);
                     }
                     return Err(build_pool_rate_limited_error(
@@ -1648,11 +1680,15 @@ async fn send_pool_request_with_failover(
                 Ok(PoolAccountResolutionWithWait::Resolution(
                     PoolAccountResolution::DegradedOnly,
                 )) => {
-                    if let Some(err) = take_sticky_owner_terminal_error(
+                    if let Some(err) = take_and_record_sticky_owner_terminal_error(
+                        state.as_ref(),
+                        trace_context.as_ref(),
                         &mut last_error,
                         attempt_count,
                         distinct_account_count,
-                    ) {
+                    )
+                    .await
+                    {
                         return Err(err);
                     }
                     return Err(build_pool_degraded_only_error(
@@ -1670,11 +1706,14 @@ async fn send_pool_request_with_failover(
                             PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT
                         };
                     if terminal_failure_kind == PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT
-                        && let Some(err) = take_sticky_owner_terminal_error(
+                        && let Some(err) = take_and_record_sticky_owner_terminal_error(
+                            state.as_ref(),
+                            trace_context.as_ref(),
                             &mut last_error,
                             attempt_count,
                             distinct_account_count,
                         )
+                        .await
                     {
                         return Err(err);
                     }
@@ -1795,11 +1834,15 @@ async fn send_pool_request_with_failover(
                         return Err(err);
                     }
 
-                    if let Some(err) = take_sticky_owner_terminal_error(
+                    if let Some(err) = take_and_record_sticky_owner_terminal_error(
+                        state.as_ref(),
+                        trace_context.as_ref(),
                         &mut last_error,
                         attempt_count,
                         distinct_account_count,
-                    ) {
+                    )
+                    .await
+                    {
                         return Err(err);
                     }
 
@@ -1830,11 +1873,15 @@ async fn send_pool_request_with_failover(
                 Ok(PoolAccountResolutionWithWait::Resolution(
                     PoolAccountResolution::BlockedByPolicy(message),
                 )) => {
-                    if let Some(err) = take_sticky_owner_terminal_error(
+                    if let Some(err) = take_and_record_sticky_owner_terminal_error(
+                        state.as_ref(),
+                        trace_context.as_ref(),
                         &mut last_error,
                         attempt_count,
                         distinct_account_count,
-                    ) {
+                    )
+                    .await
+                    {
                         return Err(err);
                     }
                     let terminal_failure_kind = PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT;

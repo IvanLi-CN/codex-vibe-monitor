@@ -17470,6 +17470,94 @@ async fn pool_route_waits_for_recovered_alternate_after_upstream_failure() {
 }
 
 #[tokio::test]
+async fn pool_route_existing_sticky_owner_waits_for_recovered_alternate_after_upstream_failure() {
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_static_failure_responses_upstream(
+        &[("Bearer upstream-primary", StatusCode::INTERNAL_SERVER_ERROR)],
+    )
+    .await;
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(180),
+        Duration::from_millis(10),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let delayed_id = insert_test_pool_api_key_account(&state, "Delayed", "upstream-delayed").await;
+    upsert_test_sticky_route_at(
+        &state.pool,
+        "sticky-existing-owner-wait-recovered",
+        primary_id,
+        &format_utc_iso(Utc::now()),
+    )
+    .await;
+    set_test_account_generic_route_cooldown(&state.pool, primary_id, 120).await;
+    set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
+
+    let request_state = state.clone();
+    let request_task = tokio::spawn(async move {
+        proxy_openai_v1(
+            State(request_state),
+            OriginalUri("/v1/responses".parse().expect("valid uri")),
+            Method::POST,
+            HeaderMap::from_iter([(
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            )]),
+            Body::from(
+                r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-existing-owner-wait-recovered"}"#
+                    .as_bytes()
+                    .to_vec(),
+            ),
+        )
+        .await
+    });
+
+    let pool = state.pool.clone();
+    let release_task = tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        set_test_account_status(&pool, delayed_id, "active").await;
+    });
+
+    let response = request_task.await.expect("request task should join");
+    release_task
+        .await
+        .expect("delayed account release task should join");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read proxy response");
+    let payload: Value = serde_json::from_slice(&body).expect("decode proxy response");
+    assert_eq!(payload["authorization"], "Bearer upstream-delayed");
+    assert_eq!(payload["attempt"], 1);
+
+    wait_for_pool_attempt_row_count(&state.pool, 4).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 4);
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
+    assert_eq!(attempts.get("Bearer upstream-delayed").copied(), Some(1));
+    drop(attempts);
+
+    let mut route_account_id =
+        load_test_sticky_route_account_id(&state.pool, "sticky-existing-owner-wait-recovered")
+            .await;
+    for _ in 0..20 {
+        if route_account_id == Some(delayed_id) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        route_account_id =
+            load_test_sticky_route_account_id(&state.pool, "sticky-existing-owner-wait-recovered")
+                .await;
+    }
+    assert_eq!(route_account_id, Some(delayed_id));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn pool_route_body_sticky_returns_503_after_wait_timeout() {
     let state = test_state_with_openai_base_and_pool_no_available_wait(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -17799,8 +17887,18 @@ async fn pool_route_existing_sticky_owner_retries_before_cutting_out_to_healthy_
     assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(1));
     drop(attempts);
 
+    let mut route_account_id =
+        load_test_sticky_route_account_id(&state.pool, "sticky-existing-owner-cutout").await;
+    for _ in 0..20 {
+        if route_account_id == Some(secondary_id) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(25)).await;
+        route_account_id =
+            load_test_sticky_route_account_id(&state.pool, "sticky-existing-owner-cutout").await;
+    }
     assert_eq!(
-        load_test_sticky_route_account_id(&state.pool, "sticky-existing-owner-cutout").await,
+        route_account_id,
         Some(secondary_id),
         "sticky binding should move only after the alternate succeeds",
     );
@@ -17810,6 +17908,12 @@ async fn pool_route_existing_sticky_owner_retries_before_cutting_out_to_healthy_
 
 #[tokio::test]
 async fn pool_route_existing_sticky_owner_preserves_last_failure_when_cutout_target_is_unusable() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptStatusRow {
+        status: String,
+        failure_kind: Option<String>,
+    }
+
     let (upstream_base, attempts, upstream_handle) = spawn_pool_static_failure_responses_upstream(
         &[("Bearer upstream-primary", StatusCode::INTERNAL_SERVER_ERROR)],
     )
@@ -17866,8 +17970,28 @@ async fn pool_route_existing_sticky_owner_preserves_last_failure_when_cutout_tar
         "unexpected preserved upstream failure payload: {payload}"
     );
 
-    wait_for_pool_attempt_row_count(&state.pool, 3).await;
-    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 3);
+    wait_for_pool_attempt_row_count(&state.pool, 4).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 4);
+
+    let attempt_rows = sqlx::query_as::<_, AttemptStatusRow>(
+        r#"
+        SELECT status, failure_kind
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load preserved sticky-owner attempt rows");
+    assert_eq!(attempt_rows.len(), 4);
+    assert_eq!(
+        attempt_rows[3].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL
+    );
+    assert_eq!(
+        attempt_rows[3].failure_kind.as_deref(),
+        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX)
+    );
 
     let attempts = attempts.lock().expect("lock attempts");
     assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
