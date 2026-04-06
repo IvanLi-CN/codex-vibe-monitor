@@ -30675,7 +30675,6 @@ async fn fetch_invocation_suggestions_filters_active_bucket_before_limit() {
         .collect::<Vec<_>>();
     assert_eq!(model_values, vec!["model-needle"]);
     assert!(!suggestions.model.has_more);
-    assert!(suggestions.proxy.items.is_empty());
     assert!(suggestions.endpoint.items.is_empty());
     assert!(suggestions.failure_kind.items.is_empty());
     assert!(suggestions.prompt_cache_key.items.is_empty());
@@ -30704,7 +30703,7 @@ async fn fetch_invocation_suggestions_use_snapshot_and_keep_other_filters() {
         ),
         (
             "suggest-snapshot-gamma",
-            "2026-03-10 09:02:00",
+            "2026-03-10 08:59:00",
             "model-gamma",
             "proxy-b",
         ),
@@ -30776,7 +30775,7 @@ async fn fetch_invocation_suggestions_use_snapshot_and_keep_other_filters() {
         Query(ListQuery {
             snapshot_id: Some(initial_list.snapshot_id),
             model: Some("model-alpha".to_string()),
-            proxy: Some("proxy-a".to_string()),
+            from: Some("2026-03-10T01:00:00Z".to_string()),
             ..Default::default()
         }),
     )
@@ -30797,7 +30796,7 @@ async fn fetch_invocation_suggestions_use_snapshot_and_keep_other_filters() {
     );
     assert!(
         !model_values.contains(&"model-gamma"),
-        "suggestions should keep the other applied proxy filter"
+        "suggestions should keep the other applied time-range filter"
     );
 }
 

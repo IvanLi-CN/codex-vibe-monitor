@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, type ReactNode } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { MemoryRouter } from 'react-router-dom'
 import { expect, userEvent, waitFor, within } from 'storybook/test'
 import { I18nProvider } from '../i18n'
 import type {
@@ -85,7 +86,6 @@ function filterRecords(records: ApiInvocation[], params: URLSearchParams) {
     if (to && occurredAt > Date.parse(to)) return false
     if (!matchesText(record.status, params.get('status'))) return false
     if (!matchesText(record.model, params.get('model'))) return false
-    if (!matchesText(record.proxyDisplayName, params.get('proxy'))) return false
     if (!matchesText(record.endpoint, params.get('endpoint'))) return false
     if (!matchesText(record.failureClass ?? undefined, params.get('failureClass'))) return false
     if (!matchesText(record.failureKind, params.get('failureKind'))) return false
@@ -181,7 +181,6 @@ function buildSuggestionBucket(records: ApiInvocation[], extract: (record: ApiIn
 function buildSuggestions(records: ApiInvocation[]) {
   return {
     model: buildSuggestionBucket(records, (record) => record.model),
-    proxy: buildSuggestionBucket(records, (record) => record.proxyDisplayName ?? record.source),
     endpoint: buildSuggestionBucket(records, (record) => record.endpoint),
     failureKind: buildSuggestionBucket(records, (record) => record.failureKind),
     promptCacheKey: buildSuggestionBucket(records, (record) => record.promptCacheKey),
@@ -364,13 +363,15 @@ const meta = {
     (Story, context) => {
       const { newRecordsCount, records, refreshDelayMs } = context.parameters as RecordsStoryParameters
       return (
-        <I18nProvider>
-          <StorybookRecordsPageMock newRecordsCount={newRecordsCount} records={records} refreshDelayMs={refreshDelayMs}>
-            <StorySurface>
-              <Story />
-            </StorySurface>
-          </StorybookRecordsPageMock>
-        </I18nProvider>
+        <MemoryRouter>
+          <I18nProvider>
+            <StorybookRecordsPageMock newRecordsCount={newRecordsCount} records={records} refreshDelayMs={refreshDelayMs}>
+              <StorySurface>
+                <Story />
+              </StorySurface>
+            </StorybookRecordsPageMock>
+          </I18nProvider>
+        </MemoryRouter>
       )
     },
   ],
@@ -383,6 +384,13 @@ type Story = StoryObj<typeof meta>
 export const Default: Story = {
   parameters: {
     newRecordsCount: 17,
+  },
+  render: () => <RecordsPage />,
+}
+
+export const ProxyFilterRemoved: Story = {
+  parameters: {
+    newRecordsCount: 0,
   },
   render: () => <RecordsPage />,
 }
