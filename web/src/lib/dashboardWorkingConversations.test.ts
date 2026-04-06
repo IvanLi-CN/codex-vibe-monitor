@@ -131,22 +131,28 @@ describe("mapPromptCacheConversationsToDashboardCards", () => {
     ]);
   });
 
-  it("sorts by recent terminal time first and falls back to in-flight time for running-only conversations", () => {
+  it("sorts cards by conversation created time descending even when a running-only card is newer by activity", () => {
     const response = createResponse([
-      createConversation("pck-terminal-late", [
-        createPreview({
-          id: 11,
-          invokeId: "invoke-11",
-          occurredAt: "2026-04-04T10:04:00Z",
-          status: "completed",
-        }),
-        createPreview({
-          id: 10,
-          invokeId: "invoke-10",
-          occurredAt: "2026-04-04T10:01:00Z",
-          status: "completed",
-        }),
-      ]),
+      createConversation(
+        "pck-terminal-late",
+        [
+          createPreview({
+            id: 11,
+            invokeId: "invoke-11",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "completed",
+          }),
+          createPreview({
+            id: 10,
+            invokeId: "invoke-10",
+            occurredAt: "2026-04-04T10:01:00Z",
+            status: "completed",
+          }),
+        ],
+        {
+          createdAt: "2026-04-04T10:03:00Z",
+        },
+      ),
       createConversation("pck-running-only", [
         createPreview({
           id: 21,
@@ -161,25 +167,142 @@ describe("mapPromptCacheConversationsToDashboardCards", () => {
           status: "completed",
         }),
       ]),
-      createConversation("pck-terminal-early", [
-        createPreview({
-          id: 31,
-          invokeId: "invoke-31",
-          occurredAt: "2026-04-04T10:03:00Z",
-          status: "completed",
-        }),
-      ]),
+      createConversation(
+        "pck-terminal-early",
+        [
+          createPreview({
+            id: 31,
+            invokeId: "invoke-31",
+            occurredAt: "2026-04-04T10:03:00Z",
+            status: "completed",
+          }),
+        ],
+        {
+          createdAt: "2026-04-04T10:02:00Z",
+        },
+      ),
     ]);
 
     const cards = mapPromptCacheConversationsToDashboardCards(response);
 
     expect(cards.map((card) => card.promptCacheKey)).toEqual([
-      "pck-running-only",
       "pck-terminal-late",
       "pck-terminal-early",
+      "pck-running-only",
     ]);
-    expect(cards[0]?.currentInvocation.displayStatus).toBe("running");
-    expect(cards[0]?.previousInvocation?.displayStatus).toBe("completed");
-    expect(cards[0]?.sortAnchorEpoch).toBe(Date.parse("2026-04-04T10:05:00Z"));
+    expect(cards[2]?.currentInvocation.displayStatus).toBe("running");
+    expect(cards[2]?.previousInvocation?.displayStatus).toBe("completed");
+    expect(cards[2]?.sortAnchorEpoch).toBe(Date.parse("2026-04-04T10:05:00Z"));
+  });
+
+  it("keeps the 20-card dashboard cap anchored on active work before display reordering", () => {
+    const response = createResponse([
+      ...Array.from({ length: 20 }, (_, index) =>
+        createConversation(
+          `pck-base-${index.toString().padStart(2, "0")}`,
+          [
+            createPreview({
+              id: 100 + index,
+              invokeId: `invoke-base-${index}`,
+              occurredAt: `2026-04-04T10:00:${index.toString().padStart(2, "0")}Z`,
+              status: "completed",
+            }),
+          ],
+          {
+            createdAt: `2026-04-04T10:00:${index.toString().padStart(2, "0")}Z`,
+          },
+        ),
+      ),
+      createConversation(
+        "pck-old-running",
+        [
+          createPreview({
+            id: 201,
+            invokeId: "invoke-old-running",
+            occurredAt: "2026-04-04T10:04:59Z",
+            status: "running",
+          }),
+          createPreview({
+            id: 200,
+            invokeId: "invoke-old-running-previous",
+            occurredAt: "2026-04-04T09:40:00Z",
+            status: "completed",
+          }),
+        ],
+        {
+          createdAt: "2026-04-04T09:30:00Z",
+        },
+      ),
+    ]);
+
+    const cards = mapPromptCacheConversationsToDashboardCards(response);
+
+    expect(cards).toHaveLength(20);
+    expect(cards.map((card) => card.promptCacheKey)).toContain("pck-old-running");
+    expect(cards.map((card) => card.promptCacheKey)).not.toContain("pck-base-00");
+    expect(cards.at(-1)?.promptCacheKey).toBe("pck-old-running");
+  });
+
+  it("breaks dashboard cap ties by createdAt descending after the shared anchor", () => {
+    const response = createResponse([
+      ...Array.from({ length: 19 }, (_, index) =>
+        createConversation(
+          `pck-base-${index.toString().padStart(2, "0")}`,
+          [
+            createPreview({
+              id: 300 + index,
+              invokeId: `invoke-base-${index}`,
+              occurredAt: `2026-04-04T10:04:${(59 - index).toString().padStart(2, "0")}Z`,
+              status: "completed",
+            }),
+          ],
+          {
+            createdAt: `2026-04-04T10:${index.toString().padStart(2, "0")}:00Z`,
+          },
+        ),
+      ),
+      createConversation(
+        "pck-tie-older",
+        [
+          createPreview({
+            id: 401,
+            invokeId: "invoke-tie-older-running",
+            occurredAt: "2026-04-04T10:04:59Z",
+            status: "running",
+          }),
+          createPreview({
+            id: 400,
+            invokeId: "invoke-tie-older-terminal",
+            occurredAt: "2026-04-04T10:00:00Z",
+            status: "completed",
+          }),
+        ],
+        {
+          createdAt: "2026-04-04T09:00:00Z",
+          lastActivityAt: "2026-04-04T10:04:59Z",
+        },
+      ),
+      createConversation(
+        "pck-tie-newer",
+        [
+          createPreview({
+            id: 402,
+            invokeId: "invoke-tie-newer-terminal",
+            occurredAt: "2026-04-04T10:00:00Z",
+            status: "completed",
+          }),
+        ],
+        {
+          createdAt: "2026-04-04T09:59:00Z",
+          lastActivityAt: "2026-04-04T10:00:00Z",
+        },
+      ),
+    ]);
+
+    const cards = mapPromptCacheConversationsToDashboardCards(response);
+
+    expect(cards).toHaveLength(20);
+    expect(cards.map((card) => card.promptCacheKey)).toContain("pck-tie-newer");
+    expect(cards.map((card) => card.promptCacheKey)).not.toContain("pck-tie-older");
   });
 });

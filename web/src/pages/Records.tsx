@@ -162,7 +162,6 @@ export default function RecordsPage() {
   const listControlsDisabled = isSearching || isRecordsLoading
   const hasOpenSuggestion = activeSuggestionField !== null
   const modelBucket = suggestions?.model
-  const proxyBucket = suggestions?.proxy
   const endpointBucket = suggestions?.endpoint
   const failureKindBucket = suggestions?.failureKind
   const promptCacheKeyBucket = suggestions?.promptCacheKey
@@ -331,23 +330,6 @@ export default function RecordsPage() {
                   loadingText={t('records.filters.searching')}
                   inputClassName={inputClassName}
                   onOpenChange={handleSuggestionOpenChange('model')}
-                />
-              </label>
-              <label className="field">
-                <span className="field-label">{t('records.filters.proxy')}</span>
-                <FilterableCombobox
-                  label={t('records.filters.proxy')}
-                  name="proxy"
-                  id="records-filter-proxy"
-                  value={draft.proxy}
-                  onValueChange={(next) => updateDraft('proxy', next)}
-                  options={(proxyBucket?.items ?? []).map((item) => item.value)}
-                  placeholder={t('records.filters.any')}
-                  emptyText={t('records.filters.noMatches')}
-                  loading={isSuggestionsLoading && activeSuggestionField === 'proxy'}
-                  loadingText={t('records.filters.searching')}
-                  inputClassName={inputClassName}
-                  onOpenChange={handleSuggestionOpenChange('proxy')}
                 />
               </label>
               <label className="field">

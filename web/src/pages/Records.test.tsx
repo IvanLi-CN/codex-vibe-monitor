@@ -175,7 +175,6 @@ function createSuggestions(overrides: Partial<InvocationSuggestionsResponse> = {
   const emptyBucket = { items: [], hasMore: false }
   return {
     model: emptyBucket,
-    proxy: emptyBucket,
     endpoint: emptyBucket,
     failureKind: emptyBucket,
     promptCacheKey: emptyBucket,
@@ -227,6 +226,15 @@ function getNewDataLabel(testId: 'records-new-data-label-idle' | 'records-new-da
 }
 
 describe('RecordsPage suggestions', () => {
+  it('does not render the removed proxy filter control', () => {
+    mockInvocationRecords()
+
+    render(<RecordsPage />)
+
+    expect(host?.querySelector('#records-filter-proxy')).toBeNull()
+    expect(host?.textContent ?? '').not.toContain('records.filters.proxy')
+  })
+
   it('disables browser native autocomplete for filter controls', () => {
     mockInvocationRecords()
 

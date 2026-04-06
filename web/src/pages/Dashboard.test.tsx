@@ -280,6 +280,7 @@ function createWorkingConversationCard(): DashboardWorkingConversationCardModel 
     },
     previousInvocation: null,
     hasPreviousPlaceholder: true,
+    createdAtEpoch: Date.parse('2026-04-06T10:20:00Z'),
     sortAnchorEpoch: Date.parse('2026-04-06T10:20:00Z'),
     lastTerminalAtEpoch: Date.parse('2026-04-06T10:20:00Z'),
     lastInFlightAtEpoch: null,

@@ -36,6 +36,7 @@ export interface DashboardWorkingConversationCardModel {
   promptCacheKey: string;
   normalizedPromptCacheKey: string;
   conversationSequenceId: string;
+  createdAtEpoch: number | null;
   currentInvocation: DashboardWorkingConversationInvocationModel;
   previousInvocation: DashboardWorkingConversationInvocationModel | null;
   hasPreviousPlaceholder: boolean;
@@ -169,6 +170,7 @@ function buildPendingCardModel(
   return {
     promptCacheKey: conversation.promptCacheKey,
     normalizedPromptCacheKey,
+    createdAtEpoch: parseEpoch(conversation.createdAt),
     currentInvocation,
     previousInvocation,
     hasPreviousPlaceholder: previousInvocation == null,
@@ -182,6 +184,30 @@ function buildPendingCardModel(
   };
 }
 
+function compareDashboardWorkingConversationDisplayOrder(
+  left: PendingSequenceCardModel,
+  right: PendingSequenceCardModel,
+) {
+  const leftCreatedAtEpoch = left.createdAtEpoch ?? Number.MIN_SAFE_INTEGER;
+  const rightCreatedAtEpoch = right.createdAtEpoch ?? Number.MIN_SAFE_INTEGER;
+  if (leftCreatedAtEpoch !== rightCreatedAtEpoch) {
+    return rightCreatedAtEpoch - leftCreatedAtEpoch;
+  }
+
+  return right.normalizedPromptCacheKey.localeCompare(left.normalizedPromptCacheKey);
+}
+
+function compareDashboardWorkingConversationVisibleSetOrder(
+  left: PendingSequenceCardModel,
+  right: PendingSequenceCardModel,
+) {
+  if (left.sortAnchorEpoch !== right.sortAnchorEpoch) {
+    return right.sortAnchorEpoch - left.sortAnchorEpoch;
+  }
+
+  return compareDashboardWorkingConversationDisplayOrder(left, right);
+}
+
 export function mapPromptCacheConversationsToDashboardCards(
   response: PromptCacheConversationsResponse | null,
   options: DashboardWorkingConversationMapOptions = {},
@@ -193,20 +219,10 @@ export function mapPromptCacheConversationsToDashboardCards(
   const sortedCards = response.conversations
     .map((conversation) => buildPendingCardModel(conversation, rangeStartEpoch))
     .filter((card): card is PendingSequenceCardModel => card != null)
-    .sort((left, right) => {
-      if (left.sortAnchorEpoch !== right.sortAnchorEpoch) {
-        return right.sortAnchorEpoch - left.sortAnchorEpoch;
-      }
-
-      const leftCurrentEpoch = left.currentInvocation.occurredAtEpoch ?? Number.MIN_SAFE_INTEGER;
-      const rightCurrentEpoch = right.currentInvocation.occurredAtEpoch ?? Number.MIN_SAFE_INTEGER;
-      if (leftCurrentEpoch !== rightCurrentEpoch) {
-        return rightCurrentEpoch - leftCurrentEpoch;
-      }
-
-      return right.normalizedPromptCacheKey.localeCompare(left.normalizedPromptCacheKey);
-    })
+    .sort(compareDashboardWorkingConversationVisibleSetOrder)
     .slice(0, limit);
+
+  sortedCards.sort(compareDashboardWorkingConversationDisplayOrder);
 
   const hashFn = options.hashFn ?? hashDashboardWorkingConversationKey;
   const collisionHashFn =

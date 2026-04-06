@@ -49,7 +49,6 @@ describe('buildAppliedInvocationFilters', () => {
       customTo: '2026-03-10T10:32:45',
       status: ' failed ',
       model: ' gpt-5.4 ',
-      proxy: ' proxy-a ',
       endpoint: ' /v1/responses ',
       failureClass: ' service_failure ',
       failureKind: ' http_502 ',
@@ -67,7 +66,6 @@ describe('buildAppliedInvocationFilters', () => {
     expect(query.snapshotId).toBe(99)
     expect(query.status).toBe('failed')
     expect(query.model).toBe('gpt-5.4')
-    expect(query.proxy).toBe('proxy-a')
     expect(query.endpoint).toBe('/v1/responses')
     expect(query.failureClass).toBe('service_failure')
     expect(query.failureKind).toBe('http_502')

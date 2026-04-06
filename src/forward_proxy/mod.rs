@@ -1,5 +1,5 @@
-use super::*;
 use crate::stats::*;
+use crate::*;
 
 #[derive(Debug, FromRow)]
 pub(crate) struct ForwardProxyAttemptStatsRow {

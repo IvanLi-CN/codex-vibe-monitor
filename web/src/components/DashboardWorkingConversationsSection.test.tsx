@@ -297,4 +297,30 @@ describe("DashboardWorkingConversationsSection", () => {
 
     expect(onOpenInvocation).toHaveBeenCalledTimes(2);
   });
+
+  it("uses theme-aware surface classes instead of a hardcoded dark canvas surface", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-theme-aware", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-theme-aware",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "completed",
+          }),
+        ]),
+      ]),
+    );
+
+    const card = host?.querySelector('[data-testid="dashboard-working-conversation-card"]');
+    const placeholder = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-placeholder"]',
+    );
+    const placeholderLine = host?.querySelector(".working-conversation-placeholder-line");
+
+    expect(card?.className).toContain("working-conversation-card-surface");
+    expect(card?.className).not.toContain("bg-[linear-gradient");
+    expect(placeholder?.className).toContain("working-conversation-slot-surface");
+    expect(placeholderLine).not.toBeNull();
+  });
 });

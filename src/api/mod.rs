@@ -1,6 +1,6 @@
-use super::*;
 use crate::forward_proxy::*;
 use crate::stats::*;
+use crate::*;
 use chrono::Offset;
 use chrono::Timelike;
 
@@ -203,7 +203,6 @@ struct InvocationRecordsFilters {
     occurred_to: Option<String>,
     status: Option<String>,
     model: Option<String>,
-    proxy: Option<String>,
     endpoint: Option<String>,
     request_id: Option<String>,
     failure_class: Option<String>,
@@ -326,7 +325,6 @@ pub(crate) struct InvocationSuggestionBucket {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct InvocationSuggestionsResponse {
     pub(crate) model: InvocationSuggestionBucket,
-    pub(crate) proxy: InvocationSuggestionBucket,
     pub(crate) endpoint: InvocationSuggestionBucket,
     pub(crate) failure_kind: InvocationSuggestionBucket,
     pub(crate) prompt_cache_key: InvocationSuggestionBucket,
@@ -437,7 +435,6 @@ fn build_invocation_filters(params: &ListQuery) -> Result<InvocationRecordsFilte
         occurred_to,
         status: normalize_query_text(params.status.as_deref()),
         model: normalize_query_text(params.model.as_deref()),
-        proxy: normalize_query_text(params.proxy.as_deref()),
         endpoint: normalize_query_text(params.endpoint.as_deref()),
         request_id: normalize_query_text(params.request_id.as_deref()),
         failure_class: normalize_query_text(params.failure_class.as_deref()),
@@ -580,10 +577,6 @@ fn apply_invocation_records_filters(
         } else {
             push_exact_text_filter(query, "status", status);
         }
-    }
-
-    if let Some(proxy) = filters.proxy.as_deref() {
-        push_exact_text_filter(query, INVOCATION_PROXY_DISPLAY_SQL, proxy);
     }
 
     if let Some(endpoint) = filters.endpoint.as_deref() {
@@ -869,7 +862,6 @@ async fn query_invocation_new_records_count(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InvocationSuggestionField {
     Model,
-    Proxy,
     Endpoint,
     FailureKind,
     PromptCacheKey,
@@ -885,7 +877,6 @@ impl InvocationSuggestionField {
 
         match normalized.as_str() {
             "model" => Ok(Some(Self::Model)),
-            "proxy" => Ok(Some(Self::Proxy)),
             "endpoint" => Ok(Some(Self::Endpoint)),
             "failurekind" => Ok(Some(Self::FailureKind)),
             "promptcachekey" => Ok(Some(Self::PromptCacheKey)),
@@ -899,7 +890,6 @@ impl InvocationSuggestionField {
     fn sql_expr(self) -> &'static str {
         match self {
             Self::Model => "model",
-            Self::Proxy => INVOCATION_PROXY_DISPLAY_SQL,
             Self::Endpoint => INVOCATION_ENDPOINT_SQL,
             Self::FailureKind => INVOCATION_FAILURE_KIND_SQL,
             Self::PromptCacheKey => INVOCATION_PROMPT_CACHE_KEY_SQL,
@@ -911,7 +901,6 @@ impl InvocationSuggestionField {
         let mut next = filters.clone();
         match self {
             Self::Model => next.model = None,
-            Self::Proxy => next.proxy = None,
             Self::Endpoint => next.endpoint = None,
             Self::FailureKind => next.failure_kind = None,
             Self::PromptCacheKey => next.prompt_cache_key = None,
@@ -936,15 +925,6 @@ fn suggestion_response_for_field(
     match field {
         InvocationSuggestionField::Model => InvocationSuggestionsResponse {
             model: bucket,
-            proxy: empty(),
-            endpoint: empty(),
-            failure_kind: empty(),
-            prompt_cache_key: empty(),
-            requester_ip: empty(),
-        },
-        InvocationSuggestionField::Proxy => InvocationSuggestionsResponse {
-            model: empty(),
-            proxy: bucket,
             endpoint: empty(),
             failure_kind: empty(),
             prompt_cache_key: empty(),
@@ -952,7 +932,6 @@ fn suggestion_response_for_field(
         },
         InvocationSuggestionField::Endpoint => InvocationSuggestionsResponse {
             model: empty(),
-            proxy: empty(),
             endpoint: bucket,
             failure_kind: empty(),
             prompt_cache_key: empty(),
@@ -960,7 +939,6 @@ fn suggestion_response_for_field(
         },
         InvocationSuggestionField::FailureKind => InvocationSuggestionsResponse {
             model: empty(),
-            proxy: empty(),
             endpoint: empty(),
             failure_kind: bucket,
             prompt_cache_key: empty(),
@@ -968,7 +946,6 @@ fn suggestion_response_for_field(
         },
         InvocationSuggestionField::PromptCacheKey => InvocationSuggestionsResponse {
             model: empty(),
-            proxy: empty(),
             endpoint: empty(),
             failure_kind: empty(),
             prompt_cache_key: bucket,
@@ -976,7 +953,6 @@ fn suggestion_response_for_field(
         },
         InvocationSuggestionField::RequesterIp => InvocationSuggestionsResponse {
             model: empty(),
-            proxy: empty(),
             endpoint: empty(),
             failure_kind: empty(),
             prompt_cache_key: empty(),
@@ -1055,7 +1031,6 @@ fn is_legacy_invocation_stream_query(params: &ListQuery) -> bool {
         && params.range_preset.is_none()
         && params.from.is_none()
         && params.to.is_none()
-        && params.proxy.is_none()
         && params.endpoint.is_none()
         && params.request_id.is_none()
         && params.failure_class.is_none()
@@ -1542,19 +1517,6 @@ pub(crate) async fn fetch_invocation_suggestions(
         SUGGESTION_LIMIT,
     )
     .await?;
-    let proxy = query_invocation_suggestion_bucket(
-        &state.pool,
-        &InvocationRecordsFilters {
-            proxy: None,
-            ..filters.clone()
-        },
-        source_scope,
-        snapshot,
-        INVOCATION_PROXY_DISPLAY_SQL,
-        None,
-        SUGGESTION_LIMIT,
-    )
-    .await?;
     let endpoint = query_invocation_suggestion_bucket(
         &state.pool,
         &InvocationRecordsFilters {
@@ -1610,7 +1572,6 @@ pub(crate) async fn fetch_invocation_suggestions(
 
     Ok(Json(InvocationSuggestionsResponse {
         model,
-        proxy,
         endpoint,
         failure_kind,
         prompt_cache_key,
@@ -4752,6 +4713,20 @@ mod tests {
     }
 
     #[test]
+    fn build_invocation_filters_ignores_legacy_proxy_param() {
+        let params = ListQuery {
+            proxy: Some(" tokyo-edge-01 ".to_string()),
+            ..Default::default()
+        };
+
+        let filters = build_invocation_filters(&params).expect("filters should build");
+
+        assert_eq!(params.proxy.as_deref(), Some(" tokyo-edge-01 "));
+        assert_eq!(filters.endpoint, None);
+        assert_eq!(filters.request_id, None);
+    }
+
+    #[test]
     fn response_body_falls_back_to_preview_when_complete() {
         let row = InvocationResponseBodyRow {
             id: 1,
@@ -6017,6 +5992,9 @@ pub(crate) struct ListQuery {
     pub(crate) to: Option<String>,
     pub(crate) model: Option<String>,
     pub(crate) status: Option<String>,
+    // Kept for compatibility so stale /records URLs with `?proxy=...` deserialize cleanly,
+    // but records queries intentionally ignore this field.
+    #[allow(dead_code)]
     pub(crate) proxy: Option<String>,
     pub(crate) endpoint: Option<String>,
     pub(crate) request_id: Option<String>,
