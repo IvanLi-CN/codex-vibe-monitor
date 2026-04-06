@@ -4552,8 +4552,13 @@ async fn proxy_openai_v1_capture_target(
                 &read_err.partial_body,
             );
             let usage = ParsedUsage::default();
-            let (cost, cost_estimated, price_version) =
-                estimate_proxy_cost_from_shared_catalog(&state.pricing_catalog, None, &usage).await;
+            let (cost, cost_estimated, price_version) = estimate_proxy_cost_from_shared_catalog(
+                &state.pricing_catalog,
+                None,
+                &usage,
+                ProxyPricingMode::Standard,
+            )
+            .await;
             let error_message = format!("[{}] {}", read_err.failure_kind, read_err.message);
 
             warn!(
@@ -4586,6 +4591,7 @@ async fn proxy_openai_v1_capture_target(
                     is_stream: request_info.is_stream,
                     request_model: None,
                     requested_service_tier: request_info.requested_service_tier.as_deref(),
+                    billing_service_tier: None,
                     reasoning_effort: request_info.reasoning_effort.as_deref(),
                     response_model: None,
                     usage_missing_reason: None,
@@ -4793,11 +4799,18 @@ async fn proxy_openai_v1_capture_target(
                     request_body_for_capture.as_ref(),
                 );
                 let usage = ParsedUsage::default();
+                let (billing_service_tier, pricing_mode) =
+                    resolve_proxy_billing_service_tier_and_pricing_mode_for_account(
+                        request_info.requested_service_tier.as_deref(),
+                        None,
+                        err.account.as_ref(),
+                    );
                 let (cost, cost_estimated, price_version) =
                     estimate_proxy_cost_from_shared_catalog(
                         &state.pricing_catalog,
                         request_info.model.as_deref(),
                         &usage,
+                        pricing_mode,
                     )
                     .await;
                 let error_message = format!("[{}] {}", err.failure_kind, err.message);
@@ -4823,6 +4836,7 @@ async fn proxy_openai_v1_capture_target(
                         is_stream: request_info.is_stream,
                         request_model: None,
                         requested_service_tier: request_info.requested_service_tier.as_deref(),
+                        billing_service_tier: billing_service_tier.as_deref(),
                         reasoning_effort: request_info.reasoning_effort.as_deref(),
                         response_model: None,
                         usage_missing_reason: None,
@@ -4963,11 +4977,19 @@ async fn proxy_openai_v1_capture_target(
                 )
                 .await;
                 let usage = ParsedUsage::default();
+                let (billing_service_tier, pricing_mode) =
+                    resolve_proxy_billing_service_tier_and_pricing_mode(
+                        request_info.requested_service_tier.as_deref(),
+                        None,
+                        None,
+                        None,
+                    );
                 let (cost, cost_estimated, price_version) =
                     estimate_proxy_cost_from_shared_catalog(
                         &state.pricing_catalog,
                         request_info.model.as_deref(),
                         &usage,
+                        pricing_mode,
                     )
                     .await;
                 let error_message = format!("[{}] {}", err.failure_kind, err.message);
@@ -4992,6 +5014,7 @@ async fn proxy_openai_v1_capture_target(
                         is_stream: request_info.is_stream,
                         request_model: None,
                         requested_service_tier: request_info.requested_service_tier.as_deref(),
+                        billing_service_tier: billing_service_tier.as_deref(),
                         reasoning_effort: request_info.reasoning_effort.as_deref(),
                         response_model: None,
                         usage_missing_reason: None,
@@ -5090,10 +5113,17 @@ async fn proxy_openai_v1_capture_target(
                 ForwardProxyAttemptUpdate::default()
             };
             let usage = ParsedUsage::default();
+            let (billing_service_tier, pricing_mode) =
+                resolve_proxy_billing_service_tier_and_pricing_mode_for_account(
+                    request_info.requested_service_tier.as_deref(),
+                    None,
+                    pool_account.as_ref(),
+                );
             let (cost, cost_estimated, price_version) = estimate_proxy_cost_from_shared_catalog(
                 &state.pricing_catalog,
                 request_info.model.as_deref(),
                 &usage,
+                pricing_mode,
             )
             .await;
             let proxy_display_name = resolve_invocation_proxy_display_name(selected_proxy.as_ref());
@@ -5114,6 +5144,7 @@ async fn proxy_openai_v1_capture_target(
                     is_stream: request_info.is_stream,
                     request_model: None,
                     requested_service_tier: request_info.requested_service_tier.as_deref(),
+                    billing_service_tier: billing_service_tier.as_deref(),
                     reasoning_effort: request_info.reasoning_effort.as_deref(),
                     response_model: None,
                     usage_missing_reason: None,
@@ -5749,10 +5780,17 @@ async fn proxy_openai_v1_capture_target(
                 );
             }
         }
+        let (billing_service_tier, pricing_mode) =
+            resolve_proxy_billing_service_tier_and_pricing_mode_for_account(
+                request_info_for_task.requested_service_tier.as_deref(),
+                response_info.service_tier.as_deref(),
+                pool_account_for_task.as_ref(),
+            );
         let (cost, cost_estimated, price_version) = estimate_proxy_cost_from_shared_catalog(
             &state_for_task.pricing_catalog,
             response_info.model.as_deref(),
             &response_info.usage,
+            pricing_mode,
         )
         .await;
         let payload = build_proxy_payload_summary(ProxyPayloadSummary {
@@ -5761,6 +5799,7 @@ async fn proxy_openai_v1_capture_target(
             is_stream: request_info_for_task.is_stream,
             request_model: request_info_for_task.model.as_deref(),
             requested_service_tier: request_info_for_task.requested_service_tier.as_deref(),
+            billing_service_tier: billing_service_tier.as_deref(),
             reasoning_effort: request_info_for_task.reasoning_effort.as_deref(),
             response_model: response_info.model.as_deref(),
             usage_missing_reason: response_info.usage_missing_reason.as_deref(),
@@ -6847,6 +6886,7 @@ struct StreamResponsePayloadParser {
     model: Option<String>,
     usage: ParsedUsage,
     service_tier: Option<String>,
+    service_tier_rank: u8,
     stream_terminal_event: Option<String>,
     upstream_error_code: Option<String>,
     upstream_error_message: Option<String>,
@@ -6880,8 +6920,12 @@ impl StreamResponsePayloadParser {
                 if self.model.is_none() {
                     self.model = extract_model_from_payload(&value);
                 }
-                if self.service_tier.is_none() {
-                    self.service_tier = extract_service_tier_from_payload(&value);
+                if let Some(service_tier) = extract_service_tier_from_payload(&value) {
+                    let rank = stream_payload_service_tier_rank(event_name.as_deref(), &value);
+                    if self.service_tier.is_none() || rank >= self.service_tier_rank {
+                        self.service_tier = Some(service_tier);
+                        self.service_tier_rank = rank;
+                    }
                 }
                 if let Some(parsed_usage) = extract_usage_from_payload(&value) {
                     self.usage = parsed_usage;
@@ -7077,6 +7121,14 @@ fn extract_stream_payload_type(value: &Value) -> Option<String> {
         .get("type")
         .and_then(|entry| entry.as_str())
         .map(|entry| entry.to_string())
+}
+
+fn stream_payload_service_tier_rank(event_name: Option<&str>, value: &Value) -> u8 {
+    match event_name.or_else(|| value.get("type").and_then(|entry| entry.as_str())) {
+        Some("response.completed" | "response.failed") => 2,
+        Some("response.created" | "response.in_progress") => 1,
+        _ => 0,
+    }
 }
 
 fn stream_payload_indicates_failure(event_name: Option<&str>, value: &Value) -> bool {
@@ -7441,6 +7493,79 @@ fn normalize_service_tier(value: &str) -> Option<String> {
     } else {
         Some(normalized)
     }
+}
+
+const PRIORITY_SERVICE_TIER: &str = "priority";
+const RELAY_PRIORITY_BILLING_ACCOUNT_KIND: &str = "api_key_codex";
+const RELAY_PRIORITY_BILLING_UPSTREAM_HOST: &str = "sub2api.nsngc.org";
+const RELAY_PRIORITY_BILLING_PRICE_VERSION_SUFFIX: &str = "+relay-fast-billing-v1";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProxyPricingMode {
+    Standard,
+    RelayFastPriority,
+}
+
+fn normalize_upstream_base_url_host(raw: &str) -> Option<String> {
+    Url::parse(raw)
+        .ok()
+        .and_then(|url| url.host_str().map(|host| host.trim().to_ascii_lowercase()))
+        .filter(|host| !host.is_empty())
+}
+
+fn relay_priority_billing_matches_context(
+    requested_service_tier: Option<&str>,
+    upstream_account_kind: Option<&str>,
+    upstream_base_url_host: Option<&str>,
+) -> bool {
+    requested_service_tier
+        .and_then(normalize_service_tier)
+        .is_some_and(|tier| tier == PRIORITY_SERVICE_TIER)
+        && upstream_account_kind
+            .map(str::trim)
+            .is_some_and(|kind| kind.eq_ignore_ascii_case(RELAY_PRIORITY_BILLING_ACCOUNT_KIND))
+        && upstream_base_url_host
+            .map(str::trim)
+            .is_some_and(|host| host.eq_ignore_ascii_case(RELAY_PRIORITY_BILLING_UPSTREAM_HOST))
+}
+
+fn resolve_proxy_billing_service_tier_and_pricing_mode(
+    requested_service_tier: Option<&str>,
+    response_service_tier: Option<&str>,
+    upstream_account_kind: Option<&str>,
+    upstream_base_url_host: Option<&str>,
+) -> (Option<String>, ProxyPricingMode) {
+    if relay_priority_billing_matches_context(
+        requested_service_tier,
+        upstream_account_kind,
+        upstream_base_url_host,
+    ) {
+        return (
+            Some(PRIORITY_SERVICE_TIER.to_string()),
+            ProxyPricingMode::RelayFastPriority,
+        );
+    }
+
+    (
+        response_service_tier.and_then(normalize_service_tier),
+        ProxyPricingMode::Standard,
+    )
+}
+
+fn resolve_proxy_billing_service_tier_and_pricing_mode_for_account(
+    requested_service_tier: Option<&str>,
+    response_service_tier: Option<&str>,
+    account: Option<&PoolResolvedAccount>,
+) -> (Option<String>, ProxyPricingMode) {
+    let upstream_base_url_host = account
+        .and_then(|entry| entry.upstream_base_url.host_str())
+        .map(|host| host.trim().to_ascii_lowercase());
+    resolve_proxy_billing_service_tier_and_pricing_mode(
+        requested_service_tier,
+        response_service_tier,
+        account.map(|entry| entry.kind.as_str()),
+        upstream_base_url_host.as_deref(),
+    )
 }
 
 fn extract_service_tier_from_payload(value: &Value) -> Option<String> {
@@ -8186,6 +8311,7 @@ struct ProxyPayloadSummary<'a> {
     is_stream: bool,
     request_model: Option<&'a str>,
     requested_service_tier: Option<&'a str>,
+    billing_service_tier: Option<&'a str>,
     reasoning_effort: Option<&'a str>,
     response_model: Option<&'a str>,
     usage_missing_reason: Option<&'a str>,
@@ -8228,6 +8354,7 @@ fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> String {
         is_stream,
         request_model,
         requested_service_tier,
+        billing_service_tier,
         reasoning_effort,
         response_model,
         usage_missing_reason,
@@ -8268,6 +8395,7 @@ fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> String {
         "isStream": is_stream,
         "requestModel": request_model,
         "requestedServiceTier": requested_service_tier,
+        "billingServiceTier": billing_service_tier,
         "reasoningEffort": reasoning_effort,
         "responseModel": response_model,
         "usageMissingReason": usage_missing_reason,
@@ -8411,6 +8539,7 @@ fn runtime_api_invocation_from_proxy_capture_record(record: &ProxyCaptureRecord)
         ),
         requested_service_tier: runtime_payload_text(payload.as_ref(), "requestedServiceTier"),
         service_tier: runtime_payload_text(payload.as_ref(), "serviceTier"),
+        billing_service_tier: runtime_payload_text(payload.as_ref(), "billingServiceTier"),
         proxy_weight_delta: runtime_payload_f64(payload.as_ref(), "proxyWeightDelta"),
         cost_estimated: Some(i64::from(record.cost_estimated)),
         price_version: record.price_version.clone(),
@@ -8506,6 +8635,7 @@ fn build_running_proxy_capture_record(
             is_stream: request_info.is_stream,
             request_model: request_info.model.as_deref(),
             requested_service_tier: request_info.requested_service_tier.as_deref(),
+            billing_service_tier: None,
             reasoning_effort: request_info.reasoning_effort.as_deref(),
             response_model: None,
             usage_missing_reason: None,
@@ -9007,9 +9137,10 @@ async fn estimate_proxy_cost_from_shared_catalog(
     catalog: &Arc<RwLock<PricingCatalog>>,
     model: Option<&str>,
     usage: &ParsedUsage,
+    pricing_mode: ProxyPricingMode,
 ) -> (Option<f64>, bool, Option<String>) {
     let guard = catalog.read().await;
-    estimate_proxy_cost(&guard, model, usage)
+    estimate_proxy_cost(&guard, model, usage, pricing_mode)
 }
 
 fn has_billable_usage(usage: &ParsedUsage) -> bool {
@@ -9058,6 +9189,15 @@ fn is_gpt_5_4_long_context_surcharge_model(model: &str) -> bool {
     matches!(base, "gpt-5.4" | "gpt-5.4-pro")
 }
 
+fn proxy_price_version(catalog_version: &str, pricing_mode: ProxyPricingMode) -> String {
+    match pricing_mode {
+        ProxyPricingMode::Standard => catalog_version.to_string(),
+        ProxyPricingMode::RelayFastPriority => {
+            format!("{catalog_version}{RELAY_PRIORITY_BILLING_PRICE_VERSION_SUFFIX}")
+        }
+    }
+}
+
 fn pricing_backfill_attempt_version(catalog: &PricingCatalog) -> String {
     fn mix_fvn1a(hash: &mut u64, bytes: &[u8]) {
         for byte in bytes {
@@ -9071,6 +9211,15 @@ fn pricing_backfill_attempt_version(catalog: &PricingCatalog) -> String {
     mix_fvn1a(&mut hash, &[0xfc]);
     mix_fvn1a(&mut hash, catalog.version.as_bytes());
     mix_fvn1a(&mut hash, &[0xff]);
+    mix_fvn1a(&mut hash, RELAY_PRIORITY_BILLING_ACCOUNT_KIND.as_bytes());
+    mix_fvn1a(&mut hash, &[0xfb]);
+    mix_fvn1a(&mut hash, RELAY_PRIORITY_BILLING_UPSTREAM_HOST.as_bytes());
+    mix_fvn1a(&mut hash, &[0xfa]);
+    mix_fvn1a(
+        &mut hash,
+        RELAY_PRIORITY_BILLING_PRICE_VERSION_SUFFIX.as_bytes(),
+    );
+    mix_fvn1a(&mut hash, &[0xf9]);
 
     let mut models = catalog.models.iter().collect::<Vec<_>>();
     models.sort_by(|(a, _), (b, _)| a.cmp(b));
@@ -9104,8 +9253,9 @@ fn estimate_proxy_cost(
     catalog: &PricingCatalog,
     model: Option<&str>,
     usage: &ParsedUsage,
+    pricing_mode: ProxyPricingMode,
 ) -> (Option<f64>, bool, Option<String>) {
-    let price_version = Some(catalog.version.clone());
+    let price_version = Some(proxy_price_version(&catalog.version, pricing_mode));
     let Some(model) = model else {
         return (None, false, price_version);
     };
@@ -9149,6 +9299,12 @@ fn estimate_proxy_cost(
         input_cost *= 2.0;
         output_cost *= 1.5;
         reasoning_cost *= 1.5;
+    }
+
+    if matches!(pricing_mode, ProxyPricingMode::RelayFastPriority) {
+        input_cost *= 2.0;
+        output_cost *= 2.0;
+        reasoning_cost *= 2.0;
     }
 
     let cost = input_cost + output_cost + reasoning_cost;
@@ -9806,6 +9962,11 @@ async fn persist_proxy_capture_record(
                 THEN json_extract(payload, '$.serviceTier')
               WHEN json_valid(payload) AND json_type(payload, '$.service_tier') = 'text'
                 THEN json_extract(payload, '$.service_tier') END AS service_tier,
+            CASE
+              WHEN json_valid(payload) AND json_type(payload, '$.billingServiceTier') = 'text'
+                THEN json_extract(payload, '$.billingServiceTier')
+              WHEN json_valid(payload) AND json_type(payload, '$.billing_service_tier') = 'text'
+                THEN json_extract(payload, '$.billing_service_tier') END AS billing_service_tier,
             CASE WHEN json_valid(payload)
               AND json_type(payload, '$.proxyWeightDelta') IN ('integer', 'real')
               THEN json_extract(payload, '$.proxyWeightDelta') END AS proxy_weight_delta,
@@ -10116,26 +10277,78 @@ async fn run_backfill_with_retry(
 async fn current_proxy_cost_backfill_snapshot_max_id(
     pool: &Pool<Sqlite>,
     attempt_version: &str,
+    relay_priority_price_version: &str,
 ) -> Result<i64> {
     Ok(sqlx::query_scalar(
         r#"
-        SELECT COALESCE(MAX(id), 0)
-        FROM codex_invocations
-        WHERE source = ?1
-          AND status = 'success'
-          AND cost IS NULL
-          AND model IS NOT NULL
+        SELECT COALESCE(MAX(inv.id), 0)
+        FROM codex_invocations inv
+        LEFT JOIN pool_upstream_accounts acc
+          ON acc.id = CASE
+              WHEN json_valid(inv.payload)
+                THEN CAST(json_extract(inv.payload, '$.upstreamAccountId') AS INTEGER)
+            END
+        WHERE inv.source = ?1
+          AND inv.status = 'success'
+          AND inv.model IS NOT NULL
           AND (
-              COALESCE(input_tokens, 0) > 0
-              OR COALESCE(output_tokens, 0) > 0
-              OR COALESCE(cache_input_tokens, 0) > 0
-              OR COALESCE(reasoning_tokens, 0) > 0
+              COALESCE(inv.input_tokens, 0) > 0
+              OR COALESCE(inv.output_tokens, 0) > 0
+              OR COALESCE(inv.cache_input_tokens, 0) > 0
+              OR COALESCE(inv.reasoning_tokens, 0) > 0
           )
-          AND (price_version IS NULL OR price_version != ?2)
+          AND (
+              (inv.cost IS NULL AND (inv.price_version IS NULL OR inv.price_version != ?2))
+              OR inv.payload IS NULL
+              OR NOT json_valid(inv.payload)
+              OR json_extract(inv.payload, '$.billingServiceTier') IS NULL
+              OR TRIM(CAST(json_extract(inv.payload, '$.billingServiceTier') AS TEXT)) = ''
+              OR (
+                  LOWER(
+                      TRIM(
+                          COALESCE(
+                              CASE
+                                WHEN json_valid(inv.payload)
+                                  AND json_type(inv.payload, '$.requestedServiceTier') = 'text'
+                                  THEN json_extract(inv.payload, '$.requestedServiceTier')
+                                WHEN json_valid(inv.payload)
+                                  AND json_type(inv.payload, '$.requested_service_tier') = 'text'
+                                  THEN json_extract(inv.payload, '$.requested_service_tier')
+                              END,
+                              ''
+                          )
+                      )
+                  ) = 'priority'
+                  AND LOWER(TRIM(COALESCE(acc.kind, ''))) = ?3
+                  AND LOWER(COALESCE(acc.upstream_base_url, '')) LIKE ?4
+                  AND (
+                      inv.price_version IS NULL
+                      OR inv.price_version != ?5
+                      OR LOWER(
+                          TRIM(
+                              COALESCE(
+                                  CASE
+                                    WHEN json_valid(inv.payload)
+                                      AND json_type(inv.payload, '$.billingServiceTier') = 'text'
+                                      THEN json_extract(inv.payload, '$.billingServiceTier')
+                                    WHEN json_valid(inv.payload)
+                                      AND json_type(inv.payload, '$.billing_service_tier') = 'text'
+                                      THEN json_extract(inv.payload, '$.billing_service_tier')
+                                  END,
+                                  ''
+                              )
+                          )
+                      ) != 'priority'
+                  )
+              )
+          )
         "#,
     )
     .bind(SOURCE_PROXY)
     .bind(attempt_version)
+    .bind(RELAY_PRIORITY_BILLING_ACCOUNT_KIND)
+    .bind(format!("%{RELAY_PRIORITY_BILLING_UPSTREAM_HOST}%"))
+    .bind(relay_priority_price_version)
     .fetch_one(pool)
     .await?)
 }
@@ -10146,6 +10359,7 @@ async fn backfill_proxy_missing_costs_from_cursor(
     snapshot_max_id: i64,
     catalog: &PricingCatalog,
     attempt_version: &str,
+    relay_priority_price_version: &str,
     scan_limit: Option<u64>,
     max_elapsed: Option<Duration>,
 ) -> Result<BackfillBatchOutcome<ProxyCostBackfillSummary>> {
@@ -10163,29 +10377,107 @@ async fn backfill_proxy_missing_costs_from_cursor(
 
         let candidates = sqlx::query_as::<_, ProxyCostBackfillCandidate>(
             r#"
-            SELECT id, model, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, total_tokens
-            FROM codex_invocations
-            WHERE source = ?1
-              AND status = 'success'
-              AND cost IS NULL
-              AND model IS NOT NULL
+            SELECT
+                inv.id,
+                inv.model,
+                inv.input_tokens,
+                inv.output_tokens,
+                inv.cache_input_tokens,
+                inv.reasoning_tokens,
+                inv.total_tokens,
+                CASE
+                  WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.requestedServiceTier') = 'text'
+                    THEN json_extract(inv.payload, '$.requestedServiceTier')
+                  WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.requested_service_tier') = 'text'
+                    THEN json_extract(inv.payload, '$.requested_service_tier')
+                END AS requested_service_tier,
+                CASE
+                  WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.serviceTier') = 'text'
+                    THEN json_extract(inv.payload, '$.serviceTier')
+                  WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.service_tier') = 'text'
+                    THEN json_extract(inv.payload, '$.service_tier')
+                END AS service_tier,
+                CASE
+                  WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.billingServiceTier') = 'text'
+                    THEN json_extract(inv.payload, '$.billingServiceTier')
+                  WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.billing_service_tier') = 'text'
+                    THEN json_extract(inv.payload, '$.billing_service_tier')
+                END AS billing_service_tier,
+                acc.kind AS upstream_account_kind,
+                acc.upstream_base_url
+            FROM codex_invocations inv
+            LEFT JOIN pool_upstream_accounts acc
+              ON acc.id = CASE
+                  WHEN json_valid(inv.payload)
+                    THEN CAST(json_extract(inv.payload, '$.upstreamAccountId') AS INTEGER)
+                END
+            WHERE inv.source = ?1
+              AND inv.status = 'success'
+              AND inv.model IS NOT NULL
               AND (
-                  COALESCE(input_tokens, 0) > 0
-                  OR COALESCE(output_tokens, 0) > 0
-                  OR COALESCE(cache_input_tokens, 0) > 0
-                  OR COALESCE(reasoning_tokens, 0) > 0
+                  COALESCE(inv.input_tokens, 0) > 0
+                  OR COALESCE(inv.output_tokens, 0) > 0
+                  OR COALESCE(inv.cache_input_tokens, 0) > 0
+                  OR COALESCE(inv.reasoning_tokens, 0) > 0
               )
-              AND (price_version IS NULL OR price_version != ?4)
-              AND id > ?2
-              AND id <= ?3
-            ORDER BY id ASC
-            LIMIT ?5
+              AND (
+                  (inv.cost IS NULL AND (inv.price_version IS NULL OR inv.price_version != ?4))
+                  OR inv.payload IS NULL
+                  OR NOT json_valid(inv.payload)
+                  OR json_extract(inv.payload, '$.billingServiceTier') IS NULL
+                  OR TRIM(CAST(json_extract(inv.payload, '$.billingServiceTier') AS TEXT)) = ''
+                  OR (
+                      LOWER(
+                          TRIM(
+                              COALESCE(
+                                  CASE
+                                    WHEN json_valid(inv.payload)
+                                      AND json_type(inv.payload, '$.requestedServiceTier') = 'text'
+                                      THEN json_extract(inv.payload, '$.requestedServiceTier')
+                                    WHEN json_valid(inv.payload)
+                                      AND json_type(inv.payload, '$.requested_service_tier') = 'text'
+                                      THEN json_extract(inv.payload, '$.requested_service_tier')
+                                  END,
+                                  ''
+                              )
+                          )
+                      ) = 'priority'
+                      AND LOWER(TRIM(COALESCE(acc.kind, ''))) = ?5
+                      AND LOWER(COALESCE(acc.upstream_base_url, '')) LIKE ?6
+                      AND (
+                          inv.price_version IS NULL
+                          OR inv.price_version != ?7
+                          OR LOWER(
+                              TRIM(
+                                  COALESCE(
+                                      CASE
+                                        WHEN json_valid(inv.payload)
+                                          AND json_type(inv.payload, '$.billingServiceTier') = 'text'
+                                          THEN json_extract(inv.payload, '$.billingServiceTier')
+                                        WHEN json_valid(inv.payload)
+                                          AND json_type(inv.payload, '$.billing_service_tier') = 'text'
+                                          THEN json_extract(inv.payload, '$.billing_service_tier')
+                                      END,
+                                      ''
+                                  )
+                              )
+                          ) != 'priority'
+                      )
+                  )
+              )
+              AND inv.id > ?2
+              AND inv.id <= ?3
+            ORDER BY inv.id ASC
+            LIMIT ?8
             "#,
         )
         .bind(SOURCE_PROXY)
         .bind(last_seen_id)
         .bind(snapshot_max_id)
         .bind(attempt_version)
+        .bind(RELAY_PRIORITY_BILLING_ACCOUNT_KIND)
+        .bind(format!("%{RELAY_PRIORITY_BILLING_UPSTREAM_HOST}%"))
+        .bind(relay_priority_price_version)
         .bind(startup_backfill_query_limit(summary.scanned, scan_limit))
         .fetch_all(pool)
         .await?;
@@ -10214,8 +10506,19 @@ async fn backfill_proxy_missing_costs_from_cursor(
                 continue;
             }
 
+            let upstream_base_url_host = candidate
+                .upstream_base_url
+                .as_deref()
+                .and_then(normalize_upstream_base_url_host);
+            let (billing_service_tier, pricing_mode) =
+                resolve_proxy_billing_service_tier_and_pricing_mode(
+                    candidate.requested_service_tier.as_deref(),
+                    candidate.service_tier.as_deref(),
+                    candidate.upstream_account_kind.as_deref(),
+                    upstream_base_url_host.as_deref(),
+                );
             let (cost, cost_estimated, price_version) =
-                estimate_proxy_cost(catalog, Some(model), &usage);
+                estimate_proxy_cost(catalog, Some(model), &usage, pricing_mode);
             if cost.is_none() || !cost_estimated {
                 summary.skipped_unpriced_model += 1;
                 push_backfill_sample(
@@ -10233,6 +10536,7 @@ async fn backfill_proxy_missing_costs_from_cursor(
                 cost,
                 cost_estimated,
                 price_version: persisted_price_version,
+                billing_service_tier,
             });
         }
 
@@ -10244,14 +10548,19 @@ async fn backfill_proxy_missing_costs_from_cursor(
                 let affected = sqlx::query(
                     r#"
                     UPDATE codex_invocations
-                    SET cost = ?1,
-                        cost_estimated = ?2,
-                        price_version = ?3
-                    WHERE id = ?4
-                      AND source = ?5
-                      AND cost IS NULL
+                    SET payload = json_set(
+                            CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,
+                            '$.billingServiceTier',
+                            ?1
+                        ),
+                        cost = ?2,
+                        cost_estimated = ?3,
+                        price_version = ?4
+                    WHERE id = ?5
+                      AND source = ?6
                     "#,
                 )
+                .bind(update.billing_service_tier.as_deref())
                 .bind(update.cost)
                 .bind(update.cost_estimated as i64)
                 .bind(update.price_version.as_deref())
@@ -10287,14 +10596,21 @@ async fn backfill_proxy_missing_costs(
     catalog: &PricingCatalog,
 ) -> Result<ProxyCostBackfillSummary> {
     let attempt_version = pricing_backfill_attempt_version(catalog);
-    let snapshot_max_id =
-        current_proxy_cost_backfill_snapshot_max_id(pool, &attempt_version).await?;
+    let relay_priority_price_version =
+        proxy_price_version(&catalog.version, ProxyPricingMode::RelayFastPriority);
+    let snapshot_max_id = current_proxy_cost_backfill_snapshot_max_id(
+        pool,
+        &attempt_version,
+        &relay_priority_price_version,
+    )
+    .await?;
     Ok(backfill_proxy_missing_costs_from_cursor(
         pool,
         0,
         snapshot_max_id,
         catalog,
         &attempt_version,
+        &relay_priority_price_version,
         None,
         None,
     )
@@ -10310,12 +10626,15 @@ async fn backfill_proxy_missing_costs_up_to_id(
     catalog: &PricingCatalog,
     attempt_version: &str,
 ) -> Result<ProxyCostBackfillSummary> {
+    let relay_priority_price_version =
+        proxy_price_version(&catalog.version, ProxyPricingMode::RelayFastPriority);
     Ok(backfill_proxy_missing_costs_from_cursor(
         pool,
         0,
         snapshot_max_id,
         catalog,
         attempt_version,
+        &relay_priority_price_version,
         None,
         None,
     )
@@ -10807,6 +11126,7 @@ struct InvocationServiceTierBackfillCandidate {
     source: String,
     raw_response: String,
     response_raw_path: Option<String>,
+    current_service_tier: Option<String>,
 }
 
 async fn backfill_invocation_service_tiers_from_cursor(
@@ -10830,7 +11150,17 @@ async fn backfill_invocation_service_tiers_from_cursor(
 
         let candidates = sqlx::query_as::<_, InvocationServiceTierBackfillCandidate>(
             r#"
-            SELECT id, source, raw_response, response_raw_path
+            SELECT
+                id,
+                source,
+                raw_response,
+                response_raw_path,
+                CASE
+                  WHEN json_valid(payload) AND json_type(payload, '$.serviceTier') = 'text'
+                    THEN json_extract(payload, '$.serviceTier')
+                  WHEN json_valid(payload) AND json_type(payload, '$.service_tier') = 'text'
+                    THEN json_extract(payload, '$.service_tier')
+                END AS current_service_tier
             FROM codex_invocations
             WHERE id > ?1
               AND (
@@ -10838,12 +11168,27 @@ async fn backfill_invocation_service_tiers_from_cursor(
                 OR NOT json_valid(payload)
                 OR COALESCE(json_extract(payload, '$.serviceTier'), json_extract(payload, '$.service_tier')) IS NULL
                 OR TRIM(CAST(COALESCE(json_extract(payload, '$.serviceTier'), json_extract(payload, '$.service_tier')) AS TEXT)) = ''
+                OR (
+                    source = ?2
+                    AND response_raw_path IS NOT NULL
+                    AND LOWER(
+                        TRIM(
+                            CAST(
+                                COALESCE(
+                                    json_extract(payload, '$.serviceTier'),
+                                    json_extract(payload, '$.service_tier')
+                                ) AS TEXT
+                            )
+                        )
+                    ) = 'auto'
+                )
               )
             ORDER BY id ASC
-            LIMIT ?2
+            LIMIT ?3
             "#,
         )
         .bind(last_seen_id)
+        .bind(SOURCE_PROXY)
         .bind(startup_backfill_query_limit(summary.scanned, scan_limit))
         .fetch_all(pool)
         .await?;
@@ -10899,6 +11244,15 @@ async fn backfill_invocation_service_tiers_from_cursor(
                 continue;
             };
 
+            if candidate
+                .current_service_tier
+                .as_deref()
+                .and_then(normalize_service_tier)
+                .is_some_and(|current| current == service_tier)
+            {
+                continue;
+            }
+
             let affected = sqlx::query(
                 r#"
                 UPDATE codex_invocations
@@ -10908,12 +11262,6 @@ async fn backfill_invocation_service_tiers_from_cursor(
                     ?1
                 )
                 WHERE id = ?2
-                  AND (
-                    payload IS NULL
-                    OR NOT json_valid(payload)
-                    OR COALESCE(json_extract(payload, '$.serviceTier'), json_extract(payload, '$.service_tier')) IS NULL
-                    OR TRIM(CAST(COALESCE(json_extract(payload, '$.serviceTier'), json_extract(payload, '$.service_tier')) AS TEXT)) = ''
-                  )
                 "#,
             )
             .bind(&service_tier)

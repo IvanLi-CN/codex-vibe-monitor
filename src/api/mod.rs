@@ -19,6 +19,7 @@ pub(crate) const INVOCATION_UPSTREAM_ACCOUNT_ID_SQL: &str = "CASE WHEN json_vali
 pub(crate) const INVOCATION_UPSTREAM_ACCOUNT_NAME_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.upstreamAccountName') AS TEXT) END";
 pub(crate) const INVOCATION_REASONING_EFFORT_SQL: &str = "CASE WHEN json_valid(payload) AND json_type(payload, '$.reasoningEffort') = 'text' THEN json_extract(payload, '$.reasoningEffort') END";
 pub(crate) const INVOCATION_RESPONSE_CONTENT_ENCODING_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.responseContentEncoding') AS TEXT) END";
+pub(crate) const INVOCATION_BILLING_SERVICE_TIER_SQL: &str = "CASE   WHEN json_valid(payload) AND json_type(payload, '$.billingServiceTier') = 'text'     THEN json_extract(payload, '$.billingServiceTier')   WHEN json_valid(payload) AND json_type(payload, '$.billing_service_tier') = 'text'     THEN json_extract(payload, '$.billing_service_tier') END";
 const INVOCATION_POOL_ATTEMPT_COUNT_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.poolAttemptCount') AS INTEGER) END";
 const INVOCATION_POOL_DISTINCT_ACCOUNT_COUNT_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.poolDistinctAccountCount') AS INTEGER) END";
 const INVOCATION_POOL_ATTEMPT_TERMINAL_REASON_SQL: &str = "CASE WHEN json_valid(payload) THEN CAST(json_extract(payload, '$.poolAttemptTerminalReason') AS TEXT) END";
@@ -112,6 +113,11 @@ fn build_invocation_select_query() -> QueryBuilder<'static, Sqlite> {
              THEN json_extract(payload, '$.serviceTier') \
            WHEN json_valid(payload) AND json_type(payload, '$.service_tier') = 'text' \
              THEN json_extract(payload, '$.service_tier') END AS service_tier, \
+         ",
+        )
+        .push(INVOCATION_BILLING_SERVICE_TIER_SQL)
+        .push(
+            " AS billing_service_tier, \
          CASE WHEN json_valid(payload) \
            AND json_type(payload, '$.proxyWeightDelta') IN ('integer', 'real') \
            THEN json_extract(payload, '$.proxyWeightDelta') END AS proxy_weight_delta, \
@@ -2514,6 +2520,7 @@ pub(crate) async fn build_prompt_cache_conversations_response(
                     row.requested_service_tier,
                 ),
                 service_tier: normalize_trimmed_optional_string(row.service_tier),
+                billing_service_tier: normalize_trimmed_optional_string(row.billing_service_tier),
                 t_req_read_ms: row.t_req_read_ms,
                 t_req_parse_ms: row.t_req_parse_ms,
                 t_upstream_connect_ms: row.t_upstream_connect_ms,
@@ -3126,6 +3133,11 @@ pub(crate) async fn query_prompt_cache_conversation_recent_invocations(
                  THEN json_extract(payload, '$.serviceTier') \
                WHEN json_valid(payload) AND json_type(payload, '$.service_tier') = 'text' \
                  THEN json_extract(payload, '$.service_tier') END AS service_tier, \
+             ",
+        )
+        .push(INVOCATION_BILLING_SERVICE_TIER_SQL)
+        .push(
+            " AS billing_service_tier, \
              t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, \
              t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, ",
         )
@@ -3151,7 +3163,7 @@ pub(crate) async fn query_prompt_cache_conversation_recent_invocations(
     }
 
     query
-        .push(") SELECT prompt_cache_key, id, invoke_id, occurred_at, status, failure_class, route_mode, model, total_tokens, cost, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, reasoning_effort, error_message, failure_kind, is_actionable, proxy_display_name, upstream_account_id, upstream_account_name, response_content_encoding, requested_service_tier, service_tier, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, endpoint FROM ranked WHERE row_number <= ")
+        .push(") SELECT prompt_cache_key, id, invoke_id, occurred_at, status, failure_class, route_mode, model, total_tokens, cost, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, reasoning_effort, error_message, failure_kind, is_actionable, proxy_display_name, upstream_account_id, upstream_account_name, response_content_encoding, requested_service_tier, service_tier, billing_service_tier, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, endpoint FROM ranked WHERE row_number <= ")
         .push_bind(limit_per_key)
         .push(" ORDER BY prompt_cache_key ASC, occurred_at DESC, id DESC");
 
@@ -4938,6 +4950,8 @@ pub(crate) struct ApiInvocation {
     #[sqlx(default)]
     pub(crate) service_tier: Option<String>,
     #[sqlx(default)]
+    pub(crate) billing_service_tier: Option<String>,
+    #[sqlx(default)]
     pub(crate) proxy_weight_delta: Option<f64>,
     #[sqlx(default)]
     pub(crate) cost_estimated: Option<i64>,
@@ -5516,6 +5530,7 @@ pub(crate) struct PromptCacheConversationInvocationPreviewResponse {
     pub(crate) response_content_encoding: Option<String>,
     pub(crate) requested_service_tier: Option<String>,
     pub(crate) service_tier: Option<String>,
+    pub(crate) billing_service_tier: Option<String>,
     pub(crate) t_req_read_ms: Option<f64>,
     pub(crate) t_req_parse_ms: Option<f64>,
     pub(crate) t_upstream_connect_ms: Option<f64>,
@@ -5876,6 +5891,11 @@ pub(crate) struct ProxyCostBackfillCandidate {
     pub(crate) cache_input_tokens: Option<i64>,
     pub(crate) reasoning_tokens: Option<i64>,
     pub(crate) total_tokens: Option<i64>,
+    pub(crate) requested_service_tier: Option<String>,
+    pub(crate) service_tier: Option<String>,
+    pub(crate) billing_service_tier: Option<String>,
+    pub(crate) upstream_account_kind: Option<String>,
+    pub(crate) upstream_base_url: Option<String>,
 }
 
 #[derive(Debug, FromRow)]
@@ -5908,6 +5928,7 @@ pub(crate) struct ProxyCostBackfillUpdate {
     pub(crate) cost: Option<f64>,
     pub(crate) cost_estimated: bool,
     pub(crate) price_version: Option<String>,
+    pub(crate) billing_service_tier: Option<String>,
 }
 
 #[derive(Debug, FromRow)]
@@ -5955,6 +5976,7 @@ pub(crate) struct PromptCacheConversationInvocationPreviewRow {
     pub(crate) response_content_encoding: Option<String>,
     pub(crate) requested_service_tier: Option<String>,
     pub(crate) service_tier: Option<String>,
+    pub(crate) billing_service_tier: Option<String>,
     pub(crate) t_req_read_ms: Option<f64>,
     pub(crate) t_req_parse_ms: Option<f64>,
     pub(crate) t_upstream_connect_ms: Option<f64>,

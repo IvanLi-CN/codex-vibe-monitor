@@ -3829,6 +3829,56 @@ fn write_backfill_response_payload_with_service_tier(path: &Path, service_tier: 
     fs::write(path, compressed).expect("write response payload");
 }
 
+fn write_backfill_response_payload_with_terminal_service_tier(
+    path: &Path,
+    initial_service_tier: Option<&str>,
+    terminal_service_tier: Option<&str>,
+) {
+    let mut created_response = json!({
+        "type": "response.created",
+        "response": {
+            "id": "resp_backfill",
+            "status": "in_progress"
+        }
+    });
+    if let Some(service_tier) = initial_service_tier {
+        created_response["response"]["service_tier"] = Value::String(service_tier.to_string());
+    }
+
+    let mut completed_response = json!({
+        "type": "response.completed",
+        "response": {
+            "id": "resp_backfill",
+            "status": "completed",
+            "usage": {
+                "input_tokens": 88,
+                "output_tokens": 22,
+                "total_tokens": 110,
+                "input_tokens_details": { "cached_tokens": 9 },
+                "output_tokens_details": { "reasoning_tokens": 3 }
+            }
+        }
+    });
+    if let Some(service_tier) = terminal_service_tier {
+        completed_response["response"]["service_tier"] = Value::String(service_tier.to_string());
+    }
+
+    let raw = [
+        "event: response.created".to_string(),
+        format!("data: {created_response}"),
+        "".to_string(),
+        "event: response.completed".to_string(),
+        format!("data: {completed_response}"),
+    ]
+    .join("\n");
+    let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+    encoder
+        .write_all(raw.as_bytes())
+        .expect("write gzip payload");
+    let compressed = encoder.finish().expect("finish gzip payload");
+    fs::write(path, compressed).expect("write response payload");
+}
+
 fn write_backfill_request_payload(path: &Path, prompt_cache_key: Option<&str>) {
     write_backfill_request_payload_with_fields(
         path,
@@ -26871,7 +26921,12 @@ fn estimate_proxy_cost_subtracts_cached_tokens_from_base_input_rate() {
         total_tokens: Some(1_200),
     };
 
-    let (cost, estimated, price_version) = estimate_proxy_cost(&catalog, Some("gpt-test"), &usage);
+    let (cost, estimated, price_version) = estimate_proxy_cost(
+        &catalog,
+        Some("gpt-test"),
+        &usage,
+        ProxyPricingMode::Standard,
+    );
 
     let expected = ((600.0 * 1.0) + (200.0 * 2.0) + (400.0 * 0.5)) / 1_000_000.0;
     let computed = cost.expect("cost should be present");
@@ -26903,7 +26958,12 @@ fn estimate_proxy_cost_keeps_full_input_when_cache_price_missing() {
         total_tokens: Some(1_200),
     };
 
-    let (cost, estimated, _) = estimate_proxy_cost(&catalog, Some("gpt-test"), &usage);
+    let (cost, estimated, _) = estimate_proxy_cost(
+        &catalog,
+        Some("gpt-test"),
+        &usage,
+        ProxyPricingMode::Standard,
+    );
 
     let expected = ((1_000.0 * 1.0) + (200.0 * 2.0)) / 1_000_000.0;
     let computed = cost.expect("cost should be present");
@@ -26934,7 +26994,12 @@ fn estimate_proxy_cost_falls_back_to_dated_model_base_pricing() {
         total_tokens: Some(1500),
     };
 
-    let (cost, estimated, _) = estimate_proxy_cost(&catalog, Some("gpt-5.2-2025-12-11"), &usage);
+    let (cost, estimated, _) = estimate_proxy_cost(
+        &catalog,
+        Some("gpt-5.2-2025-12-11"),
+        &usage,
+        ProxyPricingMode::Standard,
+    );
 
     let expected = ((1000.0 * 2.0) + (500.0 * 3.0)) / 1_000_000.0;
     assert!((cost.expect("cost should be present") - expected).abs() < 1e-12);
@@ -26976,7 +27041,12 @@ fn estimate_proxy_cost_prefers_exact_model_over_dated_model_base_pricing() {
         total_tokens: Some(2000),
     };
 
-    let (cost, estimated, _) = estimate_proxy_cost(&catalog, Some("gpt-5.2-2025-12-11"), &usage);
+    let (cost, estimated, _) = estimate_proxy_cost(
+        &catalog,
+        Some("gpt-5.2-2025-12-11"),
+        &usage,
+        ProxyPricingMode::Standard,
+    );
 
     let expected = ((1000.0 * 4.0) + (1000.0 * 5.0)) / 1_000_000.0;
     assert!((cost.expect("cost should be present") - expected).abs() < 1e-12);
@@ -27006,7 +27076,12 @@ fn estimate_proxy_cost_does_not_apply_gpt_5_4_long_context_surcharge_at_threshol
         total_tokens: None,
     };
 
-    let (cost, estimated, _) = estimate_proxy_cost(&catalog, Some("gpt-5.4"), &usage);
+    let (cost, estimated, _) = estimate_proxy_cost(
+        &catalog,
+        Some("gpt-5.4"),
+        &usage,
+        ProxyPricingMode::Standard,
+    );
 
     let expected = ((271_000.0 * 2.5) + (1_000.0 * 0.25) + (1_000.0 * 15.0)) / 1_000_000.0;
     let computed = cost.expect("cost should be present");
@@ -27037,7 +27112,12 @@ fn estimate_proxy_cost_applies_gpt_5_4_long_context_surcharge_above_threshold() 
         total_tokens: None,
     };
 
-    let (cost, estimated, _) = estimate_proxy_cost(&catalog, Some("gpt-5.4"), &usage);
+    let (cost, estimated, _) = estimate_proxy_cost(
+        &catalog,
+        Some("gpt-5.4"),
+        &usage,
+        ProxyPricingMode::Standard,
+    );
 
     let input_part = ((271_001.0 * 2.5) + (1_000.0 * 0.25)) / 1_000_000.0;
     let output_part = (1_000.0 * 15.0) / 1_000_000.0;
@@ -27070,7 +27150,12 @@ fn estimate_proxy_cost_applies_gpt_5_4_long_context_surcharge_to_reasoning_cost(
         total_tokens: None,
     };
 
-    let (cost, estimated, _) = estimate_proxy_cost(&catalog, Some("gpt-5.4"), &usage);
+    let (cost, estimated, _) = estimate_proxy_cost(
+        &catalog,
+        Some("gpt-5.4"),
+        &usage,
+        ProxyPricingMode::Standard,
+    );
 
     let input_part = ((271_001.0 * 2.5) + (1_000.0 * 0.25)) / 1_000_000.0;
     let output_part = (1_000.0 * 15.0) / 1_000_000.0;
@@ -27104,7 +27189,12 @@ fn estimate_proxy_cost_applies_gpt_5_4_pro_long_context_surcharge_above_threshol
         total_tokens: None,
     };
 
-    let (cost, estimated, _) = estimate_proxy_cost(&catalog, Some("gpt-5.4-pro"), &usage);
+    let (cost, estimated, _) = estimate_proxy_cost(
+        &catalog,
+        Some("gpt-5.4-pro"),
+        &usage,
+        ProxyPricingMode::Standard,
+    );
 
     let input_part = (272_001.0 * 30.0) / 1_000_000.0;
     let output_part = (1_000.0 * 180.0) / 1_000_000.0;
@@ -27137,8 +27227,12 @@ fn estimate_proxy_cost_applies_gpt_5_4_pro_long_context_surcharge_for_dated_mode
         total_tokens: None,
     };
 
-    let (cost, estimated, _) =
-        estimate_proxy_cost(&catalog, Some("gpt-5.4-pro-2026-03-01"), &usage);
+    let (cost, estimated, _) = estimate_proxy_cost(
+        &catalog,
+        Some("gpt-5.4-pro-2026-03-01"),
+        &usage,
+        ProxyPricingMode::Standard,
+    );
 
     let input_part = (272_001.0 * 30.0) / 1_000_000.0;
     let output_part = (1_000.0 * 180.0) / 1_000_000.0;
@@ -27172,7 +27266,12 @@ fn estimate_proxy_cost_applies_gpt_5_4_long_context_surcharge_for_dated_model_su
         total_tokens: None,
     };
 
-    let (cost, estimated, _) = estimate_proxy_cost(&catalog, Some("gpt-5.4-2026-03-01"), &usage);
+    let (cost, estimated, _) = estimate_proxy_cost(
+        &catalog,
+        Some("gpt-5.4-2026-03-01"),
+        &usage,
+        ProxyPricingMode::Standard,
+    );
 
     let input_part = ((271_001.0 * 2.5) + (1_000.0 * 0.25)) / 1_000_000.0;
     let output_part = (1_000.0 * 15.0) / 1_000_000.0;
@@ -27205,12 +27304,84 @@ fn estimate_proxy_cost_does_not_apply_gpt_5_4_long_context_surcharge_for_other_m
         total_tokens: None,
     };
 
-    let (cost, estimated, _) = estimate_proxy_cost(&catalog, Some("gpt-5.4o"), &usage);
+    let (cost, estimated, _) = estimate_proxy_cost(
+        &catalog,
+        Some("gpt-5.4o"),
+        &usage,
+        ProxyPricingMode::Standard,
+    );
 
     let expected = ((272_001.0 * 2.5) + (1_000.0 * 15.0)) / 1_000_000.0;
     let computed = cost.expect("cost should be present");
     assert!((computed - expected).abs() < 1e-12);
     assert!(estimated);
+}
+
+#[test]
+fn estimate_proxy_cost_applies_relay_fast_priority_multiplier_and_price_version_suffix() {
+    let catalog = PricingCatalog {
+        version: "unit-test".to_string(),
+        models: HashMap::from([(
+            "gpt-5.4".to_string(),
+            ModelPricing {
+                input_per_1m: 2.5,
+                output_per_1m: 15.0,
+                cache_input_per_1m: Some(0.25),
+                reasoning_per_1m: Some(20.0),
+                source: "custom".to_string(),
+            },
+        )]),
+    };
+    let usage = ParsedUsage {
+        input_tokens: Some(1_000),
+        output_tokens: Some(200),
+        cache_input_tokens: Some(400),
+        reasoning_tokens: Some(50),
+        total_tokens: Some(1_200),
+    };
+
+    let (cost, estimated, price_version) = estimate_proxy_cost(
+        &catalog,
+        Some("gpt-5.4"),
+        &usage,
+        ProxyPricingMode::RelayFastPriority,
+    );
+
+    let base_expected =
+        ((600.0 * 2.5) + (400.0 * 0.25) + (200.0 * 15.0) + (50.0 * 20.0)) / 1_000_000.0;
+    let computed = cost.expect("cost should be present");
+    assert!((computed - (base_expected * 2.0)).abs() < 1e-12);
+    assert!(estimated);
+    assert_eq!(
+        price_version.as_deref(),
+        Some("unit-test+relay-fast-billing-v1")
+    );
+}
+
+#[test]
+fn resolve_proxy_billing_service_tier_and_pricing_mode_detects_relay_fast_priority() {
+    let (billing_service_tier, pricing_mode) = resolve_proxy_billing_service_tier_and_pricing_mode(
+        Some("priority"),
+        Some("default"),
+        Some("api_key_codex"),
+        Some("sub2api.nsngc.org"),
+    );
+
+    assert_eq!(billing_service_tier.as_deref(), Some("priority"));
+    assert_eq!(pricing_mode, ProxyPricingMode::RelayFastPriority);
+}
+
+#[test]
+fn resolve_proxy_billing_service_tier_and_pricing_mode_keeps_response_tier_for_non_relay() {
+    let (billing_service_tier, pricing_mode) = resolve_proxy_billing_service_tier_and_pricing_mode(
+        Some("priority"),
+        Some("default"),
+        Some("api_key_codex"),
+        Some("api.openai.com"),
+    );
+
+    assert_eq!(billing_service_tier.as_deref(), Some("default"));
+    assert_eq!(pricing_mode, ProxyPricingMode::Standard);
 }
 
 #[test]
@@ -27295,6 +27466,28 @@ fn parse_target_response_payload_detects_sse_without_request_stream_hint() {
     assert_eq!(parsed.service_tier.as_deref(), Some("priority"));
     assert_eq!(parsed.usage.total_tokens, Some(15));
     assert!(parsed.usage_missing_reason.is_none());
+}
+
+#[test]
+fn parse_target_response_payload_prefers_terminal_stream_service_tier_over_initial_auto() {
+    let raw = [
+        "event: response.created",
+        r#"data: {"type":"response.created","response":{"model":"gpt-5.4","status":"in_progress","service_tier":"auto"}}"#,
+        "",
+        "event: response.in_progress",
+        r#"data: {"type":"response.in_progress","response":{"model":"gpt-5.4","status":"in_progress","service_tier":"auto"}}"#,
+        "",
+        "event: response.completed",
+        r#"data: {"type":"response.completed","response":{"model":"gpt-5.4","status":"completed","service_tier":"default","usage":{"input_tokens":12,"output_tokens":3,"total_tokens":15}}}"#,
+        "",
+    ]
+    .join("\n");
+
+    let parsed =
+        parse_target_response_payload(ProxyCaptureTarget::Responses, raw.as_bytes(), true, None);
+
+    assert_eq!(parsed.service_tier.as_deref(), Some("default"));
+    assert_eq!(parsed.usage.total_tokens, Some(15));
 }
 
 #[test]
@@ -33230,7 +33423,11 @@ async fn backfill_invocation_service_tiers_updates_payload_and_is_idempotent() {
 
     let temp_dir = make_temp_test_dir("invocation-service-tier-backfill");
     let response_path = temp_dir.join("response.bin");
-    write_backfill_response_payload_with_service_tier(&response_path, Some("priority"));
+    write_backfill_response_payload_with_terminal_service_tier(
+        &response_path,
+        Some("auto"),
+        Some("default"),
+    );
 
     sqlx::query(
         r#"
@@ -33295,7 +33492,7 @@ async fn backfill_invocation_service_tiers_updates_payload_and_is_idempotent() {
             .expect("query proxy payload");
     let proxy_payload_json: Value =
         serde_json::from_str(&proxy_payload).expect("decode proxy payload JSON");
-    assert_eq!(proxy_payload_json["serviceTier"], "priority");
+    assert_eq!(proxy_payload_json["serviceTier"], "default");
 
     let summary_second = backfill_invocation_service_tiers(&pool, None)
         .await
@@ -33660,6 +33857,129 @@ async fn backfill_proxy_missing_costs_updates_dated_model_alias_and_is_idempoten
         .expect("second cost backfill should be idempotent");
     assert_eq!(summary_second.scanned, 0);
     assert_eq!(summary_second.updated, 0);
+}
+
+#[tokio::test]
+async fn backfill_proxy_missing_costs_reprices_relay_fast_priority_rows() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect in-memory sqlite");
+    ensure_schema(&pool)
+        .await
+        .expect("schema should initialize");
+
+    let created_at = format_utc_iso(Utc::now());
+    sqlx::query(
+        r#"
+        INSERT INTO pool_upstream_accounts (
+            id, kind, provider, display_name, upstream_base_url, status, enabled, created_at, updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+        "#,
+    )
+    .bind(2568_i64)
+    .bind("api_key_codex")
+    .bind("codex")
+    .bind("SUB2API")
+    .bind("https://sub2api.nsngc.org/")
+    .bind("active")
+    .bind(1_i64)
+    .bind(&created_at)
+    .bind(&created_at)
+    .execute(&pool)
+    .await
+    .expect("insert relay upstream account");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            model,
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            cost,
+            cost_estimated,
+            price_version,
+            payload,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+        "#,
+    )
+    .bind("proxy-relay-fast-cost-backfill")
+    .bind("2026-02-23 00:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind("gpt-5.4")
+    .bind(1_000_i64)
+    .bind(500_i64)
+    .bind(1_500_i64)
+    .bind(0.01_f64)
+    .bind(1_i64)
+    .bind("openai-standard-2026-02-23")
+    .bind(r#"{"endpoint":"/v1/responses","requestedServiceTier":"priority","serviceTier":"default","upstreamAccountId":2568,"upstreamAccountName":"SUB2API","routeMode":"pool"}"#)
+    .bind("{}")
+    .execute(&pool)
+    .await
+    .expect("insert relay proxy cost row");
+
+    let catalog = PricingCatalog {
+        version: "openai-standard-2026-02-23".to_string(),
+        models: HashMap::from([(
+            "gpt-5.4".to_string(),
+            ModelPricing {
+                input_per_1m: 2.5,
+                output_per_1m: 15.0,
+                cache_input_per_1m: None,
+                reasoning_per_1m: None,
+                source: "custom".to_string(),
+            },
+        )]),
+    };
+
+    let summary = backfill_proxy_missing_costs(&pool, &catalog)
+        .await
+        .expect("relay fast cost backfill should succeed");
+    assert_eq!(summary.scanned, 1);
+    assert_eq!(summary.updated, 1);
+    assert_eq!(summary.skipped_unpriced_model, 0);
+
+    let row = sqlx::query(
+        "SELECT cost, cost_estimated, price_version, payload FROM codex_invocations WHERE invoke_id = ?1",
+    )
+    .bind("proxy-relay-fast-cost-backfill")
+    .fetch_one(&pool)
+    .await
+    .expect("query repriced relay row");
+
+    assert!(
+        (row.try_get::<Option<f64>, _>("cost")
+            .expect("read relay cost")
+            .expect("relay cost should exist")
+            - 0.02)
+            .abs()
+            < 1e-12
+    );
+    assert_eq!(
+        row.try_get::<Option<i64>, _>("cost_estimated")
+            .expect("read relay cost_estimated"),
+        Some(1)
+    );
+    assert_eq!(
+        row.try_get::<Option<String>, _>("price_version")
+            .expect("read relay price_version")
+            .as_deref(),
+        Some("openai-standard-2026-02-23+relay-fast-billing-v1")
+    );
+
+    let payload: String = row.try_get("payload").expect("read relay payload");
+    let payload_json: Value = serde_json::from_str(&payload).expect("decode relay payload JSON");
+    assert_eq!(payload_json["serviceTier"], "default");
+    assert_eq!(payload_json["billingServiceTier"], "priority");
 }
 
 #[tokio::test]

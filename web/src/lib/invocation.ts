@@ -56,8 +56,10 @@ export function isPriorityServiceTier(value: string | null | undefined): boolean
 export function getFastIndicatorState(
   requestedServiceTier: string | null | undefined,
   effectiveServiceTier: string | null | undefined,
+  billingServiceTier?: string | null | undefined,
 ): FastIndicatorState {
-  if (isPriorityServiceTier(effectiveServiceTier)) return 'effective'
+  const resolvedEffectiveTier = billingServiceTier ?? effectiveServiceTier
+  if (isPriorityServiceTier(resolvedEffectiveTier)) return 'effective'
   if (isPriorityServiceTier(requestedServiceTier)) return 'requested_only'
   return 'none'
 }

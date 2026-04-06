@@ -39,6 +39,7 @@ type PromptCacheConversationPreviewExtras = Partial<
     | "responseContentEncoding"
     | "requestedServiceTier"
     | "serviceTier"
+    | "billingServiceTier"
     | "tReqReadMs"
     | "tReqParseMs"
     | "tUpstreamConnectMs"
@@ -228,6 +229,7 @@ export function buildInvocationFromPromptCachePreview(
     responseContentEncoding: extras.responseContentEncoding,
     requestedServiceTier: extras.requestedServiceTier,
     serviceTier: extras.serviceTier,
+    billingServiceTier: extras.billingServiceTier,
     tReqReadMs: extras.tReqReadMs,
     tReqParseMs: extras.tReqParseMs,
     tUpstreamConnectMs: extras.tUpstreamConnectMs,
@@ -278,6 +280,7 @@ export function buildPromptCachePreviewFromInvocation(
     responseContentEncoding: record.responseContentEncoding,
     requestedServiceTier: record.requestedServiceTier,
     serviceTier: record.serviceTier,
+    billingServiceTier: record.billingServiceTier,
     tReqReadMs: record.tReqReadMs,
     tReqParseMs: record.tReqParseMs,
     tUpstreamConnectMs: record.tUpstreamConnectMs,
@@ -402,6 +405,9 @@ function authoritativePreviewLacksLiveExtras(
     return true;
   }
   if (!hasString(authoritative.serviceTier) && hasString(live.serviceTier)) {
+    return true;
+  }
+  if (!hasString(authoritative.billingServiceTier) && hasString(live.billingServiceTier)) {
     return true;
   }
   if (!hasNumber(authoritative.tReqReadMs) && hasNumber(live.tReqReadMs)) return true;
