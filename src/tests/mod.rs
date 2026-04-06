@@ -18012,6 +18012,113 @@ async fn pool_route_existing_sticky_owner_preserves_last_failure_when_cutout_tar
 }
 
 #[tokio::test]
+async fn pool_route_existing_sticky_owner_preserves_last_failure_after_cutout_alternate_fails() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct AttemptStatusRow {
+        status: String,
+        failure_kind: Option<String>,
+    }
+
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_static_failure_responses_upstream(&[
+            ("Bearer upstream-primary", StatusCode::INTERNAL_SERVER_ERROR),
+            ("Bearer upstream-secondary", StatusCode::BAD_GATEWAY),
+        ])
+        .await;
+    let state = test_state_with_openai_base_and_pool_no_available_wait(
+        Url::parse(&upstream_base).expect("valid upstream base url"),
+        Duration::from_millis(180),
+        Duration::from_millis(10),
+    )
+    .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let primary_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let secondary_id =
+        insert_test_pool_api_key_account(&state, "Secondary", "upstream-secondary").await;
+    upsert_test_sticky_route_at(
+        &state.pool,
+        "sticky-existing-owner-preserve-after-cutout-failure",
+        primary_id,
+        &format_utc_iso(Utc::now()),
+    )
+    .await;
+    set_test_account_generic_route_cooldown(&state.pool, primary_id, 120).await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer pool-live-key"),
+        )]),
+        Body::from(
+            r#"{"model":"gpt-5","input":"hello","stickyKey":"sticky-existing-owner-preserve-after-cutout-failure"}"#
+                .as_bytes()
+                .to_vec(),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    assert!(
+        response.headers().get(http_header::RETRY_AFTER).is_none(),
+        "cut-out failure preservation should not regress into pool wait semantics"
+    );
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read failure body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode failure payload");
+    assert!(
+        payload["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("pool upstream responded with 502")),
+        "unexpected preserved alternate failure payload: {payload}"
+    );
+
+    wait_for_pool_attempt_row_count(&state.pool, 5).await;
+    assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 5);
+
+    let attempt_rows = sqlx::query_as::<_, AttemptStatusRow>(
+        r#"
+        SELECT status, failure_kind
+        FROM pool_upstream_request_attempts
+        ORDER BY attempt_index ASC
+        "#,
+    )
+    .fetch_all(&state.pool)
+    .await
+    .expect("load preserved cut-out alternate attempt rows");
+    assert_eq!(attempt_rows.len(), 5);
+    assert_eq!(
+        attempt_rows[4].status,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_BUDGET_EXHAUSTED_FINAL
+    );
+    assert_eq!(
+        attempt_rows[4].failure_kind.as_deref(),
+        Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX)
+    );
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-primary").copied(), Some(3));
+    assert_eq!(attempts.get("Bearer upstream-secondary").copied(), Some(1));
+    drop(attempts);
+
+    assert_eq!(
+        load_test_sticky_route_account_id(
+            &state.pool,
+            "sticky-existing-owner-preserve-after-cutout-failure",
+        )
+        .await,
+        Some(primary_id),
+        "sticky binding should stay on the original owner when cut-out never succeeds",
+    );
+    assert_ne!(secondary_id, primary_id);
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn pool_route_no_candidate_after_wait_preserves_last_upstream_failure() {
     let (upstream_base, attempts, upstream_handle) = spawn_pool_static_failure_responses_upstream(
         &[("Bearer upstream-primary", StatusCode::INTERNAL_SERVER_ERROR)],

@@ -479,12 +479,27 @@ fn pool_upstream_error_preserves_existing_sticky_owner(
         )
 }
 
+fn pool_upstream_error_has_concrete_account_context(err: Option<&PoolUpstreamError>) -> bool {
+    err.and_then(|value| value.account.as_ref()).is_some()
+}
+
+fn sticky_owner_terminal_error_preservation_is_active(
+    preserve_sticky_owner_terminal_error: bool,
+    err: Option<&PoolUpstreamError>,
+) -> bool {
+    preserve_sticky_owner_terminal_error && pool_upstream_error_has_concrete_account_context(err)
+}
+
 fn take_sticky_owner_terminal_error(
+    preserve_sticky_owner_terminal_error: bool,
     last_error: &mut Option<PoolUpstreamError>,
     attempt_count: usize,
     distinct_account_count: usize,
 ) -> Option<PoolUpstreamError> {
-    if !pool_upstream_error_preserves_existing_sticky_owner(last_error.as_ref()) {
+    if !sticky_owner_terminal_error_preservation_is_active(
+        preserve_sticky_owner_terminal_error,
+        last_error.as_ref(),
+    ) {
         return None;
     }
     let mut err = last_error.take()?;
@@ -502,11 +517,17 @@ fn take_sticky_owner_terminal_error(
 async fn take_and_record_sticky_owner_terminal_error(
     state: &AppState,
     trace_context: Option<&PoolUpstreamAttemptTraceContext>,
+    preserve_sticky_owner_terminal_error: bool,
     last_error: &mut Option<PoolUpstreamError>,
     attempt_count: usize,
     distinct_account_count: usize,
 ) -> Option<PoolUpstreamError> {
-    let err = take_sticky_owner_terminal_error(last_error, attempt_count, distinct_account_count)?;
+    let err = take_sticky_owner_terminal_error(
+        preserve_sticky_owner_terminal_error,
+        last_error,
+        attempt_count,
+        distinct_account_count,
+    )?;
     if let Some(trace) = trace_context
         && let Err(record_err) = insert_and_broadcast_pool_upstream_terminal_attempt(
             state,
@@ -525,6 +546,16 @@ async fn take_and_record_sticky_owner_terminal_error(
         );
     }
     Some(err)
+}
+
+fn store_pool_failover_error(
+    last_error: &mut Option<PoolUpstreamError>,
+    preserve_sticky_owner_terminal_error: &mut bool,
+    err: PoolUpstreamError,
+) {
+    *preserve_sticky_owner_terminal_error |=
+        pool_upstream_error_preserves_existing_sticky_owner(Some(&err));
+    *last_error = Some(err);
 }
 
 #[derive(Debug, Clone)]
@@ -553,6 +584,7 @@ struct PoolFailoverProgress {
     excluded_upstream_route_keys: HashSet<String>,
     attempt_count: usize,
     last_error: Option<PoolUpstreamError>,
+    preserve_sticky_owner_terminal_error: bool,
     timeout_route_failover_pending: bool,
     responses_total_timeout_started_at: Option<Instant>,
     no_available_wait_deadline: Option<Instant>,
@@ -1454,6 +1486,9 @@ async fn send_pool_request_with_failover(
     let mut excluded_ids = failover_progress.excluded_account_ids;
     let mut excluded_upstream_route_keys = failover_progress.excluded_upstream_route_keys;
     let mut last_error = failover_progress.last_error;
+    let mut preserve_sticky_owner_terminal_error =
+        failover_progress.preserve_sticky_owner_terminal_error
+            || pool_upstream_error_preserves_existing_sticky_owner(last_error.as_ref());
     let mut attempted_account_ids = excluded_ids.iter().copied().collect::<HashSet<_>>();
     if let Some(account_id) = last_error
         .as_ref()
@@ -1602,7 +1637,10 @@ async fn send_pool_request_with_failover(
                 true
             } else if uses_timeout_route_failover {
                 !timeout_route_failover_pending
-            } else if pool_upstream_error_preserves_existing_sticky_owner(last_error.as_ref()) {
+            } else if sticky_owner_terminal_error_preservation_is_active(
+                preserve_sticky_owner_terminal_error,
+                last_error.as_ref(),
+            ) {
                 false
             } else {
                 false
@@ -1663,6 +1701,7 @@ async fn send_pool_request_with_failover(
                     if let Some(err) = take_and_record_sticky_owner_terminal_error(
                         state.as_ref(),
                         trace_context.as_ref(),
+                        preserve_sticky_owner_terminal_error,
                         &mut last_error,
                         attempt_count,
                         distinct_account_count,
@@ -1683,6 +1722,7 @@ async fn send_pool_request_with_failover(
                     if let Some(err) = take_and_record_sticky_owner_terminal_error(
                         state.as_ref(),
                         trace_context.as_ref(),
+                        preserve_sticky_owner_terminal_error,
                         &mut last_error,
                         attempt_count,
                         distinct_account_count,
@@ -1709,6 +1749,7 @@ async fn send_pool_request_with_failover(
                         && let Some(err) = take_and_record_sticky_owner_terminal_error(
                             state.as_ref(),
                             trace_context.as_ref(),
+                            preserve_sticky_owner_terminal_error,
                             &mut last_error,
                             attempt_count,
                             distinct_account_count,
@@ -1837,6 +1878,7 @@ async fn send_pool_request_with_failover(
                     if let Some(err) = take_and_record_sticky_owner_terminal_error(
                         state.as_ref(),
                         trace_context.as_ref(),
+                        preserve_sticky_owner_terminal_error,
                         &mut last_error,
                         attempt_count,
                         distinct_account_count,
@@ -1876,6 +1918,7 @@ async fn send_pool_request_with_failover(
                     if let Some(err) = take_and_record_sticky_owner_terminal_error(
                         state.as_ref(),
                         trace_context.as_ref(),
+                        preserve_sticky_owner_terminal_error,
                         &mut last_error,
                         attempt_count,
                         distinct_account_count,
@@ -2090,7 +2133,10 @@ async fn send_pool_request_with_failover(
             {
                 Ok(prepared) => prepared,
                 Err(message) => {
-                    last_error = Some(PoolUpstreamError {
+                    store_pool_failover_error(
+                        &mut last_error,
+                        &mut preserve_sticky_owner_terminal_error,
+                        PoolUpstreamError {
                         account: Some(account.clone()),
                         status: StatusCode::BAD_GATEWAY,
                         message,
@@ -2103,7 +2149,8 @@ async fn send_pool_request_with_failover(
                         attempt_summary: PoolAttemptSummary::default(),
                         requested_service_tier: None,
                         request_body_for_capture: None,
-                    });
+                        },
+                    );
                     exhausted_accounts_all_rate_limited = false;
                     continue 'account_loop;
                 }
@@ -2131,7 +2178,10 @@ async fn send_pool_request_with_failover(
                                 {
                                     warn!(account_id = account.account_id, error = %route_err, "failed to record pool forward proxy selection failure");
                                 }
-                                last_error = Some(PoolUpstreamError {
+                                store_pool_failover_error(
+                                    &mut last_error,
+                                    &mut preserve_sticky_owner_terminal_error,
+                                    PoolUpstreamError {
                                     account: Some(account.clone()),
                                     status: StatusCode::BAD_GATEWAY,
                                     message: message.clone(),
@@ -2146,7 +2196,8 @@ async fn send_pool_request_with_failover(
                                         .clone(),
                                     request_body_for_capture: attempted_request_body_for_capture
                                         .clone(),
-                                });
+                                    },
+                                );
                                 exhausted_accounts_all_rate_limited = false;
                                 continue 'account_loop;
                             }
@@ -2353,7 +2404,10 @@ async fn send_pool_request_with_failover(
                             {
                                 warn!(account_id = account.account_id, error = %route_err, "failed to record pool transport failure");
                             }
-                            last_error = Some(PoolUpstreamError {
+                            store_pool_failover_error(
+                                &mut last_error,
+                                &mut preserve_sticky_owner_terminal_error,
+                                PoolUpstreamError {
                                 account: Some(account.clone()),
                                 status: StatusCode::BAD_GATEWAY,
                                 message: message.clone(),
@@ -2367,7 +2421,8 @@ async fn send_pool_request_with_failover(
                                 requested_service_tier: attempted_requested_service_tier.clone(),
                                 request_body_for_capture: attempted_request_body_for_capture
                                     .clone(),
-                            });
+                                },
+                            );
                             exhausted_accounts_all_rate_limited = false;
                             if should_timeout_route_failover {
                                 excluded_upstream_route_keys.insert(upstream_route_key.clone());
@@ -2522,7 +2577,10 @@ async fn send_pool_request_with_failover(
                             {
                                 warn!(account_id = account.account_id, error = %route_err, "failed to record pool handshake timeout");
                             }
-                            last_error = Some(PoolUpstreamError {
+                            store_pool_failover_error(
+                                &mut last_error,
+                                &mut preserve_sticky_owner_terminal_error,
+                                PoolUpstreamError {
                                 account: Some(account.clone()),
                                 status: StatusCode::BAD_GATEWAY,
                                 message: message.clone(),
@@ -2536,7 +2594,8 @@ async fn send_pool_request_with_failover(
                                 requested_service_tier: attempted_requested_service_tier.clone(),
                                 request_body_for_capture: attempted_request_body_for_capture
                                     .clone(),
-                            });
+                                },
+                            );
                             exhausted_accounts_all_rate_limited = false;
                             if should_timeout_route_failover {
                                 excluded_upstream_route_keys.insert(upstream_route_key.clone());
@@ -2567,7 +2626,10 @@ async fn send_pool_request_with_failover(
                                 {
                                     warn!(account_id = account.account_id, error = %route_err, "failed to record pool oauth forward proxy selection failure");
                                 }
-                                last_error = Some(PoolUpstreamError {
+                                store_pool_failover_error(
+                                    &mut last_error,
+                                    &mut preserve_sticky_owner_terminal_error,
+                                    PoolUpstreamError {
                                     account: Some(account.clone()),
                                     status: StatusCode::BAD_GATEWAY,
                                     message: message.clone(),
@@ -2582,7 +2644,8 @@ async fn send_pool_request_with_failover(
                                         .clone(),
                                     request_body_for_capture: attempted_request_body_for_capture
                                         .clone(),
-                                });
+                                    },
+                                );
                                 exhausted_accounts_all_rate_limited = false;
                                 continue 'account_loop;
                             }
@@ -2592,7 +2655,10 @@ async fn send_pool_request_with_failover(
                             if original_uri.path() == "/v1/responses"
                                 && *size > OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES =>
                         {
-                            last_error = Some(PoolUpstreamError {
+                            store_pool_failover_error(
+                                &mut last_error,
+                                &mut preserve_sticky_owner_terminal_error,
+                                PoolUpstreamError {
                                 account: Some(account.clone()),
                                 status: StatusCode::PAYLOAD_TOO_LARGE,
                                 message: format!(
@@ -2613,7 +2679,8 @@ async fn send_pool_request_with_failover(
                                 requested_service_tier: attempted_requested_service_tier.clone(),
                                 request_body_for_capture:
                                     attempted_request_body_for_capture.clone(),
-                            });
+                                },
+                            );
                             exhausted_accounts_all_rate_limited = false;
                             continue 'account_loop;
                         }
@@ -2945,7 +3012,10 @@ async fn send_pool_request_with_failover(
                         "failed to record compact support observation"
                     );
                 }
-                last_error = Some(PoolUpstreamError {
+                store_pool_failover_error(
+                    &mut last_error,
+                    &mut preserve_sticky_owner_terminal_error,
+                    PoolUpstreamError {
                     account: Some(account.clone()),
                     status,
                     message: message.clone(),
@@ -2958,7 +3028,8 @@ async fn send_pool_request_with_failover(
                     attempt_summary: PoolAttemptSummary::default(),
                     requested_service_tier: attempted_requested_service_tier.clone(),
                     request_body_for_capture: attempted_request_body_for_capture.clone(),
-                });
+                    },
+                );
                 exhausted_accounts_all_rate_limited &= status == StatusCode::TOO_MANY_REQUESTS;
                 if should_timeout_route_failover {
                     excluded_upstream_route_keys.insert(upstream_route_key.clone());
@@ -3124,7 +3195,10 @@ async fn send_pool_request_with_failover(
                     {
                         warn!(account_id = account.account_id, error = %route_err, "failed to record pool first chunk failure");
                     }
-                    last_error = Some(PoolUpstreamError {
+                    store_pool_failover_error(
+                        &mut last_error,
+                        &mut preserve_sticky_owner_terminal_error,
+                        PoolUpstreamError {
                         account: Some(account.clone()),
                         status: StatusCode::BAD_GATEWAY,
                         message: message.clone(),
@@ -3137,7 +3211,8 @@ async fn send_pool_request_with_failover(
                         attempt_summary: PoolAttemptSummary::default(),
                         requested_service_tier: attempted_requested_service_tier.clone(),
                         request_body_for_capture: attempted_request_body_for_capture.clone(),
-                    });
+                        },
+                    );
                     exhausted_accounts_all_rate_limited = false;
                     if should_timeout_route_failover {
                         excluded_upstream_route_keys.insert(upstream_route_key.clone());
@@ -3241,7 +3316,10 @@ async fn send_pool_request_with_failover(
                         {
                             warn!(account_id = account.account_id, error = %route_err, "failed to record retryable response.failed route state");
                         }
-                        last_error = Some(PoolUpstreamError {
+                        store_pool_failover_error(
+                            &mut last_error,
+                            &mut preserve_sticky_owner_terminal_error,
+                            PoolUpstreamError {
                             account: Some(account.clone()),
                             status,
                             message: message.clone(),
@@ -3254,7 +3332,8 @@ async fn send_pool_request_with_failover(
                             attempt_summary: PoolAttemptSummary::default(),
                             requested_service_tier: attempted_requested_service_tier.clone(),
                             request_body_for_capture: attempted_request_body_for_capture.clone(),
-                        });
+                            },
+                        );
                         exhausted_accounts_all_rate_limited = false;
                         continue 'account_loop;
                     }
@@ -3309,7 +3388,10 @@ async fn send_pool_request_with_failover(
                         {
                             warn!(account_id = account.account_id, error = %route_err, "failed to record first-event gate transport failure");
                         }
-                        last_error = Some(PoolUpstreamError {
+                        store_pool_failover_error(
+                            &mut last_error,
+                            &mut preserve_sticky_owner_terminal_error,
+                            PoolUpstreamError {
                             account: Some(account.clone()),
                             status: StatusCode::BAD_GATEWAY,
                             message: message.clone(),
@@ -3322,7 +3404,8 @@ async fn send_pool_request_with_failover(
                             attempt_summary: PoolAttemptSummary::default(),
                             requested_service_tier: attempted_requested_service_tier.clone(),
                             request_body_for_capture: attempted_request_body_for_capture.clone(),
-                        });
+                            },
+                        );
                         exhausted_accounts_all_rate_limited = false;
                         continue 'account_loop;
                     }
@@ -3463,6 +3546,8 @@ async fn continue_or_retry_pool_live_request(
                 pool_uses_responses_timeout_failover_policy(original_uri, &method);
             let first_error_is_timeout_shaped = uses_timeout_route_failover
                 && pool_failure_is_timeout_shaped(first_error.failure_kind, &first_error.message);
+            let preserve_sticky_owner_terminal_error =
+                pool_upstream_error_preserves_existing_sticky_owner(Some(&first_error));
             let (preferred_account, failover_progress, same_account_attempts) =
                 if first_error_is_timeout_shaped {
                     let mut excluded_upstream_route_keys = HashSet::new();
@@ -3474,6 +3559,7 @@ async fn continue_or_retry_pool_live_request(
                             excluded_upstream_route_keys,
                             attempt_count: 1,
                             last_error: Some(first_error),
+                            preserve_sticky_owner_terminal_error,
                             timeout_route_failover_pending: true,
                             responses_total_timeout_started_at,
                             no_available_wait_deadline: None,
@@ -3487,6 +3573,7 @@ async fn continue_or_retry_pool_live_request(
                             excluded_account_ids: vec![initial_account.account_id],
                             attempt_count: 1,
                             last_error: Some(first_error),
+                            preserve_sticky_owner_terminal_error,
                             responses_total_timeout_started_at,
                             ..PoolFailoverProgress::default()
                         },
