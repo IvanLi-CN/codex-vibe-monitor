@@ -330,6 +330,7 @@ export interface ApiInvocation {
   upstreamScope?: string;
   requestedServiceTier?: string;
   serviceTier?: string;
+  billingServiceTier?: string;
   proxyWeightDelta?: number;
   costEstimated?: number;
   priceVersion?: string;
@@ -956,6 +957,7 @@ export interface PromptCacheConversationInvocationPreview {
   responseContentEncoding?: ApiInvocation["responseContentEncoding"];
   requestedServiceTier?: ApiInvocation["requestedServiceTier"];
   serviceTier?: ApiInvocation["serviceTier"];
+  billingServiceTier?: ApiInvocation["billingServiceTier"];
   tReqReadMs?: ApiInvocation["tReqReadMs"];
   tReqParseMs?: ApiInvocation["tReqParseMs"];
   tUpstreamConnectMs?: ApiInvocation["tUpstreamConnectMs"];
@@ -1527,6 +1529,10 @@ function normalizePromptCacheConversationInvocationPreview(
     serviceTier:
       typeof payload.serviceTier === "string" && payload.serviceTier.trim()
         ? payload.serviceTier.trim()
+        : undefined,
+    billingServiceTier:
+      typeof payload.billingServiceTier === "string" && payload.billingServiceTier.trim()
+        ? payload.billingServiceTier.trim()
         : undefined,
     tReqReadMs: normalizeFiniteNumber(payload.tReqReadMs),
     tReqParseMs: normalizeFiniteNumber(payload.tReqParseMs),

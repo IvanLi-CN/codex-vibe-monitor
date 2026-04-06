@@ -86,6 +86,7 @@ interface InvocationRowViewModel {
   modelValue: string
   requestedServiceTierValue: string
   serviceTierValue: string
+  billingServiceTierValue: string
   fastIndicatorState: FastIndicatorState
   costValue: string
   inputTokensValue: string
