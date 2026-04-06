@@ -5893,9 +5893,10 @@ pub(crate) struct ProxyCostBackfillCandidate {
     pub(crate) total_tokens: Option<i64>,
     pub(crate) requested_service_tier: Option<String>,
     pub(crate) service_tier: Option<String>,
-    pub(crate) billing_service_tier: Option<String>,
-    pub(crate) upstream_account_kind: Option<String>,
-    pub(crate) upstream_base_url: Option<String>,
+    pub(crate) snapshot_upstream_account_kind: Option<String>,
+    pub(crate) snapshot_upstream_base_url_host: Option<String>,
+    pub(crate) live_upstream_account_kind: Option<String>,
+    pub(crate) live_upstream_base_url: Option<String>,
 }
 
 #[derive(Debug, FromRow)]
@@ -5929,6 +5930,8 @@ pub(crate) struct ProxyCostBackfillUpdate {
     pub(crate) cost_estimated: bool,
     pub(crate) price_version: Option<String>,
     pub(crate) billing_service_tier: Option<String>,
+    pub(crate) upstream_account_kind: Option<String>,
+    pub(crate) upstream_base_url_host: Option<String>,
 }
 
 #[derive(Debug, FromRow)]

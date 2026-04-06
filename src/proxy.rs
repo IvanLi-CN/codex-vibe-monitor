@@ -4837,6 +4837,8 @@ async fn proxy_openai_v1_capture_target(
                     prompt_cache_key: header_prompt_cache_key.as_deref(),
                     upstream_account_id: None,
                     upstream_account_name: None,
+                    upstream_account_kind: None,
+                    upstream_base_url_host: None,
                     oauth_account_header_attached: None,
                     oauth_account_id_shape: None,
                     oauth_forwarded_header_count: None,
@@ -4918,6 +4920,8 @@ async fn proxy_openai_v1_capture_target(
         sticky_key.as_deref(),
         prompt_cache_key.as_deref(),
         pool_route_active,
+        None,
+        None,
         None,
         None,
         None,
@@ -5077,6 +5081,12 @@ async fn proxy_openai_v1_capture_target(
                             .account
                             .as_ref()
                             .map(|account| account.display_name.as_str()),
+                        upstream_account_kind: payload_summary_upstream_account_kind(
+                            err.account.as_ref(),
+                        ),
+                        upstream_base_url_host: payload_summary_upstream_base_url_host(
+                            err.account.as_ref(),
+                        ),
                         oauth_account_header_attached: oauth_account_header_attached_for_account(
                             err.account.as_ref(),
                         ),
@@ -5252,6 +5262,8 @@ async fn proxy_openai_v1_capture_target(
                         prompt_cache_key: prompt_cache_key.as_deref(),
                         upstream_account_id: None,
                         upstream_account_name: None,
+                        upstream_account_kind: None,
+                        upstream_base_url_host: None,
                         oauth_account_header_attached: None,
                         oauth_account_id_shape: None,
                         oauth_forwarded_header_count: None,
@@ -5392,6 +5404,12 @@ async fn proxy_openai_v1_capture_target(
                     upstream_account_name: pool_account
                         .as_ref()
                         .map(|account| account.display_name.as_str()),
+                    upstream_account_kind: payload_summary_upstream_account_kind(
+                        pool_account.as_ref(),
+                    ),
+                    upstream_base_url_host: payload_summary_upstream_base_url_host(
+                        pool_account.as_ref(),
+                    ),
                     oauth_account_header_attached: oauth_account_header_attached_for_account(
                         pool_account.as_ref(),
                     ),
@@ -5481,6 +5499,8 @@ async fn proxy_openai_v1_capture_target(
         pool_account
             .as_ref()
             .map(|account| account.display_name.as_str()),
+        payload_summary_upstream_account_kind(pool_account.as_ref()),
+        payload_summary_upstream_base_url_host(pool_account.as_ref()),
         selected_proxy_display_name.as_deref(),
         pool_account
             .as_ref()
@@ -5674,6 +5694,12 @@ async fn proxy_openai_v1_capture_target(
                             pool_account_for_task
                                 .as_ref()
                                 .map(|account| account.display_name.as_str()),
+                            payload_summary_upstream_account_kind(
+                                pool_account_for_task.as_ref(),
+                            ),
+                            payload_summary_upstream_base_url_host(
+                                pool_account_for_task.as_ref(),
+                            ),
                             selected_proxy_display_name_for_task.as_deref(),
                             pool_account_for_task
                                 .as_ref()
@@ -6049,6 +6075,12 @@ async fn proxy_openai_v1_capture_target(
             upstream_account_name: pool_account_for_task
                 .as_ref()
                 .map(|account| account.display_name.as_str()),
+            upstream_account_kind: payload_summary_upstream_account_kind(
+                pool_account_for_task.as_ref(),
+            ),
+            upstream_base_url_host: payload_summary_upstream_base_url_host(
+                pool_account_for_task.as_ref(),
+            ),
             oauth_account_header_attached: oauth_account_header_attached_for_account(
                 pool_account_for_task.as_ref(),
             ),
@@ -7735,6 +7767,14 @@ fn normalize_upstream_base_url_host(raw: &str) -> Option<String> {
     Url::parse(raw)
         .ok()
         .and_then(|url| url.host_str().map(|host| host.trim().to_ascii_lowercase()))
+        .or_else(|| {
+            let host = raw.trim().trim_end_matches('/').to_ascii_lowercase();
+            if host.is_empty() || host.contains('/') {
+                None
+            } else {
+                Some(host)
+            }
+        })
         .filter(|host| !host.is_empty())
 }
 
@@ -7791,6 +7831,39 @@ fn resolve_proxy_billing_service_tier_and_pricing_mode_for_account(
         account.map(|entry| entry.kind.as_str()),
         upstream_base_url_host.as_deref(),
     )
+}
+
+fn payload_summary_upstream_account_kind(account: Option<&PoolResolvedAccount>) -> Option<&str> {
+    account.map(|entry| entry.kind.as_str())
+}
+
+fn payload_summary_upstream_base_url_host(account: Option<&PoolResolvedAccount>) -> Option<&str> {
+    account.and_then(|entry| entry.upstream_base_url.host_str())
+}
+
+fn resolve_backfill_upstream_account_kind(
+    snapshot_kind: Option<&str>,
+    live_kind: Option<&str>,
+) -> Option<String> {
+    snapshot_kind
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            live_kind
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string)
+        })
+}
+
+fn resolve_backfill_upstream_base_url_host(
+    snapshot_host: Option<&str>,
+    live_base_url: Option<&str>,
+) -> Option<String> {
+    snapshot_host
+        .and_then(normalize_upstream_base_url_host)
+        .or_else(|| live_base_url.and_then(normalize_upstream_base_url_host))
 }
 
 fn extract_service_tier_from_payload(value: &Value) -> Option<String> {
@@ -8186,6 +8259,8 @@ async fn broadcast_pool_attempt_started_runtime_snapshot(
         true,
         Some(account.account_id),
         Some(account.display_name.as_str()),
+        payload_summary_upstream_account_kind(Some(account)),
+        payload_summary_upstream_base_url_host(Some(account)),
         None,
         Some(attempt_count),
         Some(distinct_account_count),
@@ -8549,6 +8624,8 @@ struct ProxyPayloadSummary<'a> {
     prompt_cache_key: Option<&'a str>,
     upstream_account_id: Option<i64>,
     upstream_account_name: Option<&'a str>,
+    upstream_account_kind: Option<&'a str>,
+    upstream_base_url_host: Option<&'a str>,
     oauth_account_header_attached: Option<bool>,
     oauth_account_id_shape: Option<&'a str>,
     oauth_forwarded_header_count: Option<usize>,
@@ -8592,6 +8669,8 @@ fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> String {
         prompt_cache_key,
         upstream_account_id,
         upstream_account_name,
+        upstream_account_kind,
+        upstream_base_url_host,
         oauth_account_header_attached,
         oauth_account_id_shape,
         oauth_forwarded_header_count,
@@ -8633,6 +8712,8 @@ fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> String {
         "promptCacheKey": prompt_cache_key,
         "upstreamAccountId": upstream_account_id,
         "upstreamAccountName": upstream_account_name,
+        "upstreamAccountKind": upstream_account_kind,
+        "upstreamBaseUrlHost": upstream_base_url_host,
         "oauthAccountHeaderAttached": oauth_account_header_attached,
         "oauthAccountIdShape": oauth_account_id_shape,
         "oauthForwardedHeaderCount": oauth_forwarded_header_count,
@@ -8833,6 +8914,8 @@ fn build_running_proxy_capture_record(
     pool_route_active: bool,
     upstream_account_id: Option<i64>,
     upstream_account_name: Option<&str>,
+    upstream_account_kind: Option<&str>,
+    upstream_base_url_host: Option<&str>,
     proxy_display_name: Option<&str>,
     pool_attempt_count: Option<usize>,
     pool_distinct_account_count: Option<usize>,
@@ -8881,6 +8964,8 @@ fn build_running_proxy_capture_record(
             prompt_cache_key,
             upstream_account_id,
             upstream_account_name,
+            upstream_account_kind,
+            upstream_base_url_host,
             oauth_account_header_attached: None,
             oauth_account_id_shape: None,
             oauth_forwarded_header_count: None,
@@ -10506,74 +10591,102 @@ async fn current_proxy_cost_backfill_snapshot_max_id(
 ) -> Result<i64> {
     Ok(sqlx::query_scalar(
         r#"
-        SELECT COALESCE(MAX(inv.id), 0)
-        FROM codex_invocations inv
-        LEFT JOIN pool_upstream_accounts acc
-          ON acc.id = CASE
-              WHEN json_valid(inv.payload)
-                THEN CAST(json_extract(inv.payload, '$.upstreamAccountId') AS INTEGER)
-            END
-        WHERE inv.source = ?1
-          AND inv.status = 'success'
-          AND inv.model IS NOT NULL
-          AND (
-              COALESCE(inv.input_tokens, 0) > 0
-              OR COALESCE(inv.output_tokens, 0) > 0
-              OR COALESCE(inv.cache_input_tokens, 0) > 0
-              OR COALESCE(inv.reasoning_tokens, 0) > 0
-          )
-          AND (
-              (inv.cost IS NULL AND (inv.price_version IS NULL OR inv.price_version != ?2))
-              OR inv.payload IS NULL
-              OR NOT json_valid(inv.payload)
-              OR json_extract(inv.payload, '$.billingServiceTier') IS NULL
-              OR TRIM(CAST(json_extract(inv.payload, '$.billingServiceTier') AS TEXT)) = ''
-              OR (
-                  LOWER(
-                      TRIM(
-                          COALESCE(
-                              CASE
-                                WHEN json_valid(inv.payload)
-                                  AND json_type(inv.payload, '$.requestedServiceTier') = 'text'
-                                  THEN json_extract(inv.payload, '$.requestedServiceTier')
-                                WHEN json_valid(inv.payload)
-                                  AND json_type(inv.payload, '$.requested_service_tier') = 'text'
-                                  THEN json_extract(inv.payload, '$.requested_service_tier')
-                              END,
-                              ''
-                          )
-                      )
-                  ) = 'priority'
-                  AND LOWER(TRIM(COALESCE(acc.kind, ''))) = ?3
-                  AND LOWER(COALESCE(acc.upstream_base_url, '')) LIKE ?4
-                  AND (
-                      inv.price_version IS NULL
-                      OR inv.price_version != ?5
-                      OR LOWER(
-                          TRIM(
-                              COALESCE(
-                                  CASE
-                                    WHEN json_valid(inv.payload)
-                                      AND json_type(inv.payload, '$.billingServiceTier') = 'text'
-                                      THEN json_extract(inv.payload, '$.billingServiceTier')
-                                    WHEN json_valid(inv.payload)
-                                      AND json_type(inv.payload, '$.billing_service_tier') = 'text'
-                                      THEN json_extract(inv.payload, '$.billing_service_tier')
-                                  END,
-                                  ''
-                              )
-                          )
-                      ) != 'priority'
-                  )
+        WITH base AS (
+            SELECT
+                inv.id,
+                inv.cost,
+                inv.price_version,
+                CASE
+                  WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.requestedServiceTier') = 'text'
+                    THEN json_extract(inv.payload, '$.requestedServiceTier')
+                  WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.requested_service_tier') = 'text'
+                    THEN json_extract(inv.payload, '$.requested_service_tier')
+                END AS requested_service_tier,
+                CASE
+                  WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.billingServiceTier') = 'text'
+                    THEN json_extract(inv.payload, '$.billingServiceTier')
+                  WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.billing_service_tier') = 'text'
+                    THEN json_extract(inv.payload, '$.billing_service_tier')
+                END AS billing_service_tier,
+                CASE
+                  WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.upstreamAccountKind') = 'text'
+                    THEN json_extract(inv.payload, '$.upstreamAccountKind')
+                  WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.upstream_account_kind') = 'text'
+                    THEN json_extract(inv.payload, '$.upstream_account_kind')
+                END AS snapshot_upstream_account_kind,
+                CASE
+                  WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.upstreamBaseUrlHost') = 'text'
+                    THEN json_extract(inv.payload, '$.upstreamBaseUrlHost')
+                  WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.upstream_base_url_host') = 'text'
+                    THEN json_extract(inv.payload, '$.upstream_base_url_host')
+                END AS snapshot_upstream_base_url_host,
+                acc.kind AS live_upstream_account_kind,
+                acc.upstream_base_url AS live_upstream_base_url
+            FROM codex_invocations inv
+            LEFT JOIN pool_upstream_accounts acc
+              ON acc.id = CASE
+                  WHEN json_valid(inv.payload)
+                    THEN CAST(json_extract(inv.payload, '$.upstreamAccountId') AS INTEGER)
+                END
+            WHERE inv.source = ?1
+              AND inv.status = 'success'
+              AND inv.model IS NOT NULL
+              AND (
+                  COALESCE(inv.input_tokens, 0) > 0
+                  OR COALESCE(inv.output_tokens, 0) > 0
+                  OR COALESCE(inv.cache_input_tokens, 0) > 0
+                  OR COALESCE(inv.reasoning_tokens, 0) > 0
               )
-          )
+        ),
+        cost_candidates AS (
+            SELECT
+                *,
+                CASE
+                  WHEN LOWER(TRIM(COALESCE(requested_service_tier, ''))) = 'priority'
+                    AND LOWER(TRIM(COALESCE(snapshot_upstream_account_kind, live_upstream_account_kind, ''))) = ?4
+                    AND (
+                        LOWER(TRIM(COALESCE(snapshot_upstream_base_url_host, ''))) = ?5
+                        OR (
+                            (snapshot_upstream_base_url_host IS NULL OR TRIM(CAST(snapshot_upstream_base_url_host AS TEXT)) = '')
+                            AND LOWER(COALESCE(live_upstream_base_url, '')) LIKE ?6
+                        )
+                    )
+                  THEN 1
+                  ELSE 0
+                END AS is_relay_priority_context
+            FROM base
+        )
+        SELECT COALESCE(MAX(id), 0)
+        FROM cost_candidates
+        WHERE (
+            is_relay_priority_context = 1
+            AND (
+                LOWER(TRIM(COALESCE(billing_service_tier, ''))) != 'priority'
+                OR (
+                    cost IS NOT NULL
+                    AND (price_version IS NULL OR price_version != ?3)
+                )
+                OR (
+                    cost IS NULL
+                    AND (price_version IS NULL OR price_version != ?2)
+                )
+            )
+        )
+        OR (
+            is_relay_priority_context = 0
+            AND (
+                (cost IS NULL AND (price_version IS NULL OR price_version != ?2))
+                OR (cost IS NOT NULL AND (price_version IS NULL OR TRIM(price_version) = ''))
+            )
+        )
         "#,
     )
     .bind(SOURCE_PROXY)
     .bind(attempt_version)
-    .bind(RELAY_PRIORITY_BILLING_ACCOUNT_KIND)
-    .bind(format!("%{RELAY_PRIORITY_BILLING_UPSTREAM_HOST}%"))
     .bind(relay_priority_price_version)
+    .bind(RELAY_PRIORITY_BILLING_ACCOUNT_KIND)
+    .bind(RELAY_PRIORITY_BILLING_UPSTREAM_HOST)
+    .bind(format!("%{RELAY_PRIORITY_BILLING_UPSTREAM_HOST}%"))
     .fetch_one(pool)
     .await?)
 }
@@ -10602,107 +10715,133 @@ async fn backfill_proxy_missing_costs_from_cursor(
 
         let candidates = sqlx::query_as::<_, ProxyCostBackfillCandidate>(
             r#"
-            SELECT
-                inv.id,
-                inv.model,
-                inv.input_tokens,
-                inv.output_tokens,
-                inv.cache_input_tokens,
-                inv.reasoning_tokens,
-                inv.total_tokens,
-                CASE
-                  WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.requestedServiceTier') = 'text'
-                    THEN json_extract(inv.payload, '$.requestedServiceTier')
-                  WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.requested_service_tier') = 'text'
-                    THEN json_extract(inv.payload, '$.requested_service_tier')
-                END AS requested_service_tier,
-                CASE
-                  WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.serviceTier') = 'text'
-                    THEN json_extract(inv.payload, '$.serviceTier')
-                  WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.service_tier') = 'text'
-                    THEN json_extract(inv.payload, '$.service_tier')
-                END AS service_tier,
-                CASE
-                  WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.billingServiceTier') = 'text'
-                    THEN json_extract(inv.payload, '$.billingServiceTier')
-                  WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.billing_service_tier') = 'text'
-                    THEN json_extract(inv.payload, '$.billing_service_tier')
-                END AS billing_service_tier,
-                acc.kind AS upstream_account_kind,
-                acc.upstream_base_url
-            FROM codex_invocations inv
-            LEFT JOIN pool_upstream_accounts acc
-              ON acc.id = CASE
-                  WHEN json_valid(inv.payload)
-                    THEN CAST(json_extract(inv.payload, '$.upstreamAccountId') AS INTEGER)
-                END
-            WHERE inv.source = ?1
-              AND inv.status = 'success'
-              AND inv.model IS NOT NULL
-              AND (
-                  COALESCE(inv.input_tokens, 0) > 0
-                  OR COALESCE(inv.output_tokens, 0) > 0
-                  OR COALESCE(inv.cache_input_tokens, 0) > 0
-                  OR COALESCE(inv.reasoning_tokens, 0) > 0
-              )
-              AND (
-                  (inv.cost IS NULL AND (inv.price_version IS NULL OR inv.price_version != ?4))
-                  OR inv.payload IS NULL
-                  OR NOT json_valid(inv.payload)
-                  OR json_extract(inv.payload, '$.billingServiceTier') IS NULL
-                  OR TRIM(CAST(json_extract(inv.payload, '$.billingServiceTier') AS TEXT)) = ''
-                  OR (
-                      LOWER(
-                          TRIM(
-                              COALESCE(
-                                  CASE
-                                    WHEN json_valid(inv.payload)
-                                      AND json_type(inv.payload, '$.requestedServiceTier') = 'text'
-                                      THEN json_extract(inv.payload, '$.requestedServiceTier')
-                                    WHEN json_valid(inv.payload)
-                                      AND json_type(inv.payload, '$.requested_service_tier') = 'text'
-                                      THEN json_extract(inv.payload, '$.requested_service_tier')
-                                  END,
-                                  ''
-                              )
-                          )
-                      ) = 'priority'
-                      AND LOWER(TRIM(COALESCE(acc.kind, ''))) = ?5
-                      AND LOWER(COALESCE(acc.upstream_base_url, '')) LIKE ?6
-                      AND (
-                          inv.price_version IS NULL
-                          OR inv.price_version != ?7
-                          OR LOWER(
-                              TRIM(
-                                  COALESCE(
-                                      CASE
-                                        WHEN json_valid(inv.payload)
-                                          AND json_type(inv.payload, '$.billingServiceTier') = 'text'
-                                          THEN json_extract(inv.payload, '$.billingServiceTier')
-                                        WHEN json_valid(inv.payload)
-                                          AND json_type(inv.payload, '$.billing_service_tier') = 'text'
-                                          THEN json_extract(inv.payload, '$.billing_service_tier')
-                                      END,
-                                      ''
-                                  )
-                              )
-                          ) != 'priority'
-                      )
+            WITH base AS (
+                SELECT
+                    inv.id,
+                    inv.model,
+                    inv.input_tokens,
+                    inv.output_tokens,
+                    inv.cache_input_tokens,
+                    inv.reasoning_tokens,
+                    inv.total_tokens,
+                    inv.cost,
+                    inv.price_version,
+                    CASE
+                      WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.requestedServiceTier') = 'text'
+                        THEN json_extract(inv.payload, '$.requestedServiceTier')
+                      WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.requested_service_tier') = 'text'
+                        THEN json_extract(inv.payload, '$.requested_service_tier')
+                    END AS requested_service_tier,
+                    CASE
+                      WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.serviceTier') = 'text'
+                        THEN json_extract(inv.payload, '$.serviceTier')
+                      WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.service_tier') = 'text'
+                        THEN json_extract(inv.payload, '$.service_tier')
+                    END AS service_tier,
+                    CASE
+                      WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.billingServiceTier') = 'text'
+                        THEN json_extract(inv.payload, '$.billingServiceTier')
+                      WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.billing_service_tier') = 'text'
+                        THEN json_extract(inv.payload, '$.billing_service_tier')
+                    END AS billing_service_tier,
+                    CASE
+                      WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.upstreamAccountKind') = 'text'
+                        THEN json_extract(inv.payload, '$.upstreamAccountKind')
+                      WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.upstream_account_kind') = 'text'
+                        THEN json_extract(inv.payload, '$.upstream_account_kind')
+                    END AS snapshot_upstream_account_kind,
+                    CASE
+                      WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.upstreamBaseUrlHost') = 'text'
+                        THEN json_extract(inv.payload, '$.upstreamBaseUrlHost')
+                      WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.upstream_base_url_host') = 'text'
+                        THEN json_extract(inv.payload, '$.upstream_base_url_host')
+                    END AS snapshot_upstream_base_url_host,
+                    acc.kind AS live_upstream_account_kind,
+                    acc.upstream_base_url AS live_upstream_base_url
+                FROM codex_invocations inv
+                LEFT JOIN pool_upstream_accounts acc
+                  ON acc.id = CASE
+                      WHEN json_valid(inv.payload)
+                        THEN CAST(json_extract(inv.payload, '$.upstreamAccountId') AS INTEGER)
+                    END
+                WHERE inv.source = ?1
+                  AND inv.status = 'success'
+                  AND inv.model IS NOT NULL
+                  AND (
+                      COALESCE(inv.input_tokens, 0) > 0
+                      OR COALESCE(inv.output_tokens, 0) > 0
+                      OR COALESCE(inv.cache_input_tokens, 0) > 0
+                      OR COALESCE(inv.reasoning_tokens, 0) > 0
                   )
-              )
-              AND inv.id > ?2
-              AND inv.id <= ?3
-            ORDER BY inv.id ASC
-            LIMIT ?8
+                  AND inv.id > ?2
+                  AND inv.id <= ?3
+            ),
+            cost_candidates AS (
+                SELECT
+                    *,
+                    CASE
+                      WHEN LOWER(TRIM(COALESCE(requested_service_tier, ''))) = 'priority'
+                        AND LOWER(TRIM(COALESCE(snapshot_upstream_account_kind, live_upstream_account_kind, ''))) = ?6
+                        AND (
+                            LOWER(TRIM(COALESCE(snapshot_upstream_base_url_host, ''))) = ?7
+                            OR (
+                                (snapshot_upstream_base_url_host IS NULL OR TRIM(CAST(snapshot_upstream_base_url_host AS TEXT)) = '')
+                                AND LOWER(COALESCE(live_upstream_base_url, '')) LIKE ?8
+                            )
+                        )
+                      THEN 1
+                      ELSE 0
+                    END AS is_relay_priority_context
+                FROM base
+            )
+            SELECT
+                id,
+                model,
+                input_tokens,
+                output_tokens,
+                cache_input_tokens,
+                reasoning_tokens,
+                total_tokens,
+                requested_service_tier,
+                service_tier,
+                snapshot_upstream_account_kind,
+                snapshot_upstream_base_url_host,
+                live_upstream_account_kind,
+                live_upstream_base_url
+            FROM cost_candidates
+            WHERE (
+                is_relay_priority_context = 1
+                AND (
+                    LOWER(TRIM(COALESCE(billing_service_tier, ''))) != 'priority'
+                    OR (
+                        cost IS NOT NULL
+                        AND (price_version IS NULL OR price_version != ?5)
+                    )
+                    OR (
+                        cost IS NULL
+                        AND (price_version IS NULL OR price_version != ?4)
+                    )
+                )
+            )
+            OR (
+                is_relay_priority_context = 0
+                AND (
+                    (cost IS NULL AND (price_version IS NULL OR price_version != ?4))
+                    OR (cost IS NOT NULL AND (price_version IS NULL OR TRIM(price_version) = ''))
+                )
+            )
+            ORDER BY id ASC
+            LIMIT ?9
             "#,
         )
         .bind(SOURCE_PROXY)
         .bind(last_seen_id)
         .bind(snapshot_max_id)
         .bind(attempt_version)
-        .bind(RELAY_PRIORITY_BILLING_ACCOUNT_KIND)
-        .bind(format!("%{RELAY_PRIORITY_BILLING_UPSTREAM_HOST}%"))
         .bind(relay_priority_price_version)
+        .bind(RELAY_PRIORITY_BILLING_ACCOUNT_KIND)
+        .bind(RELAY_PRIORITY_BILLING_UPSTREAM_HOST)
+        .bind(format!("%{RELAY_PRIORITY_BILLING_UPSTREAM_HOST}%"))
         .bind(startup_backfill_query_limit(summary.scanned, scan_limit))
         .fetch_all(pool)
         .await?;
@@ -10731,15 +10870,19 @@ async fn backfill_proxy_missing_costs_from_cursor(
                 continue;
             }
 
-            let upstream_base_url_host = candidate
-                .upstream_base_url
-                .as_deref()
-                .and_then(normalize_upstream_base_url_host);
+            let upstream_account_kind = resolve_backfill_upstream_account_kind(
+                candidate.snapshot_upstream_account_kind.as_deref(),
+                candidate.live_upstream_account_kind.as_deref(),
+            );
+            let upstream_base_url_host = resolve_backfill_upstream_base_url_host(
+                candidate.snapshot_upstream_base_url_host.as_deref(),
+                candidate.live_upstream_base_url.as_deref(),
+            );
             let (billing_service_tier, pricing_mode) =
                 resolve_proxy_billing_service_tier_and_pricing_mode(
                     candidate.requested_service_tier.as_deref(),
                     candidate.service_tier.as_deref(),
-                    candidate.upstream_account_kind.as_deref(),
+                    upstream_account_kind.as_deref(),
                     upstream_base_url_host.as_deref(),
                 );
             let (cost, cost_estimated, price_version) =
@@ -10762,6 +10905,8 @@ async fn backfill_proxy_missing_costs_from_cursor(
                 cost_estimated,
                 price_version: persisted_price_version,
                 billing_service_tier,
+                upstream_account_kind,
+                upstream_base_url_host,
             });
         }
 
@@ -10774,18 +10919,28 @@ async fn backfill_proxy_missing_costs_from_cursor(
                     r#"
                     UPDATE codex_invocations
                     SET payload = json_set(
-                            CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,
-                            '$.billingServiceTier',
-                            ?1
+                            json_set(
+                                json_set(
+                                    CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,
+                                    '$.billingServiceTier',
+                                    ?1
+                                ),
+                                '$.upstreamAccountKind',
+                                ?2
+                            ),
+                            '$.upstreamBaseUrlHost',
+                            ?3
                         ),
-                        cost = ?2,
-                        cost_estimated = ?3,
-                        price_version = ?4
-                    WHERE id = ?5
-                      AND source = ?6
+                        cost = ?4,
+                        cost_estimated = ?5,
+                        price_version = ?6
+                    WHERE id = ?7
+                      AND source = ?8
                     "#,
                 )
                 .bind(update.billing_service_tier.as_deref())
+                .bind(update.upstream_account_kind.as_deref())
+                .bind(update.upstream_base_url_host.as_deref())
                 .bind(update.cost)
                 .bind(update.cost_estimated as i64)
                 .bind(update.price_version.as_deref())
@@ -11395,7 +11550,6 @@ async fn backfill_invocation_service_tiers_from_cursor(
                 OR TRIM(CAST(COALESCE(json_extract(payload, '$.serviceTier'), json_extract(payload, '$.service_tier')) AS TEXT)) = ''
                 OR (
                     source = ?2
-                    AND response_raw_path IS NOT NULL
                     AND LOWER(
                         TRIM(
                             CAST(
@@ -11406,6 +11560,15 @@ async fn backfill_invocation_service_tiers_from_cursor(
                             )
                         )
                     ) = 'auto'
+                    AND (
+                        response_raw_path IS NOT NULL
+                        OR INSTR(LOWER(COALESCE(raw_response, '')), 'service_tier') > 0
+                        OR INSTR(LOWER(COALESCE(raw_response, '')), 'servicetier') > 0
+                        OR INSTR(LOWER(COALESCE(raw_response, '')), 'response.completed') > 0
+                        OR INSTR(LOWER(COALESCE(raw_response, '')), 'response.failed') > 0
+                        OR INSTR(LOWER(COALESCE(raw_response, '')), 'response.created') > 0
+                        OR INSTR(LOWER(COALESCE(raw_response, '')), 'response.in_progress') > 0
+                    )
                 )
               )
             ORDER BY id ASC
