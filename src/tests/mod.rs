@@ -27878,6 +27878,19 @@ fn resolve_proxy_billing_service_tier_and_pricing_mode_keeps_response_tier_for_n
 }
 
 #[test]
+fn resolve_proxy_billing_service_tier_and_pricing_mode_preserves_explicit_relay_response_tier() {
+    let (billing_service_tier, pricing_mode) = resolve_proxy_billing_service_tier_and_pricing_mode(
+        Some("priority"),
+        Some("flex"),
+        Some("api_key_codex"),
+        Some("sub2api.nsngc.org"),
+    );
+
+    assert_eq!(billing_service_tier.as_deref(), Some("flex"));
+    assert_eq!(pricing_mode, ProxyPricingMode::Standard);
+}
+
+#[test]
 fn parse_target_response_payload_decodes_gzip_stream_usage() {
     let raw = [
         "event: response.created",
@@ -34008,7 +34021,7 @@ async fn backfill_invocation_service_tiers_updates_payload_and_is_idempotent() {
     let summary_second = backfill_invocation_service_tiers(&pool, None)
         .await
         .expect("second service tier backfill should be idempotent");
-    assert_eq!(summary_second.scanned, 0);
+    assert_eq!(summary_second.scanned, 1);
     assert_eq!(summary_second.updated, 0);
 
     let _ = fs::remove_dir_all(&temp_dir);
@@ -34061,7 +34074,69 @@ async fn backfill_invocation_service_tiers_revisits_inline_proxy_auto_tiers_with
     let summary_second = backfill_invocation_service_tiers(&pool, None)
         .await
         .expect("inline service tier backfill should be idempotent");
-    assert_eq!(summary_second.scanned, 0);
+    assert_eq!(summary_second.scanned, 1);
+    assert_eq!(summary_second.updated, 0);
+}
+
+#[tokio::test]
+async fn backfill_invocation_service_tiers_revisits_inline_proxy_non_auto_stream_tiers() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect in-memory sqlite");
+    ensure_schema(&pool)
+        .await
+        .expect("schema should initialize");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id, occurred_at, source, status, payload, raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        "#,
+    )
+    .bind("proxy-inline-non-auto-service-tier-backfill")
+    .bind("2026-02-23 00:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(r#"{"endpoint":"/v1/responses","serviceTier":"priority"}"#)
+    .bind(
+        [
+            "event: response.created",
+            r#"data: {"type":"response.created","response":{"service_tier":"priority"}}"#,
+            "",
+            "event: response.completed",
+            r#"data: {"type":"response.completed","response":{"service_tier":"default"}}"#,
+            "",
+        ]
+        .join("\n"),
+    )
+    .execute(&pool)
+    .await
+    .expect("insert inline proxy non-auto service tier row");
+
+    let summary_first = backfill_invocation_service_tiers(&pool, None)
+        .await
+        .expect("inline non-auto service tier backfill should succeed");
+    assert_eq!(summary_first.scanned, 1);
+    assert_eq!(summary_first.updated, 1);
+    assert_eq!(summary_first.skipped_missing_file, 0);
+    assert_eq!(summary_first.skipped_missing_tier, 0);
+
+    let payload: String =
+        sqlx::query_scalar("SELECT payload FROM codex_invocations WHERE invoke_id = ?1")
+            .bind("proxy-inline-non-auto-service-tier-backfill")
+            .fetch_one(&pool)
+            .await
+            .expect("query inline proxy non-auto payload");
+    let payload_json: Value =
+        serde_json::from_str(&payload).expect("decode inline non-auto payload JSON");
+    assert_eq!(payload_json["serviceTier"], "default");
+
+    let summary_second = backfill_invocation_service_tiers(&pool, None)
+        .await
+        .expect("inline non-auto service tier backfill should be idempotent");
+    assert_eq!(summary_second.scanned, 1);
     assert_eq!(summary_second.updated, 0);
 }
 

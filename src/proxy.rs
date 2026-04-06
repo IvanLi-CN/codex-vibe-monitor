@@ -7770,6 +7770,7 @@ fn normalize_service_tier(value: &str) -> Option<String> {
 }
 
 const AUTO_SERVICE_TIER: &str = "auto";
+const DEFAULT_SERVICE_TIER: &str = "default";
 const PRIORITY_SERVICE_TIER: &str = "priority";
 const RELAY_PRIORITY_BILLING_ACCOUNT_KIND: &str = "api_key_codex";
 const RELAY_PRIORITY_BILLING_UPSTREAM_HOST: &str = "sub2api.nsngc.org";
@@ -7818,10 +7819,14 @@ fn resolve_proxy_billing_service_tier_and_pricing_mode(
     upstream_account_kind: Option<&str>,
     upstream_base_url_host: Option<&str>,
 ) -> (Option<String>, ProxyPricingMode) {
+    let normalized_response_service_tier = response_service_tier.and_then(normalize_service_tier);
     if relay_priority_billing_matches_context(
         requested_service_tier,
         upstream_account_kind,
         upstream_base_url_host,
+    ) && matches!(
+        normalized_response_service_tier.as_deref(),
+        None | Some(AUTO_SERVICE_TIER) | Some(DEFAULT_SERVICE_TIER)
     ) {
         return (
             Some(PRIORITY_SERVICE_TIER.to_string()),
@@ -7829,10 +7834,7 @@ fn resolve_proxy_billing_service_tier_and_pricing_mode(
         );
     }
 
-    (
-        response_service_tier.and_then(normalize_service_tier),
-        ProxyPricingMode::Standard,
-    )
+    (normalized_response_service_tier, ProxyPricingMode::Standard)
 }
 
 fn resolve_proxy_billing_service_tier_and_pricing_mode_for_account(
@@ -11574,16 +11576,6 @@ async fn backfill_invocation_service_tiers_from_cursor(
                 OR TRIM(CAST(COALESCE(json_extract(payload, '$.serviceTier'), json_extract(payload, '$.service_tier')) AS TEXT)) = ''
                 OR (
                     source = ?2
-                    AND LOWER(
-                        TRIM(
-                            CAST(
-                                COALESCE(
-                                    json_extract(payload, '$.serviceTier'),
-                                    json_extract(payload, '$.service_tier')
-                                ) AS TEXT
-                            )
-                        )
-                    ) = 'auto'
                     AND (
                         response_raw_path IS NOT NULL
                         OR INSTR(LOWER(COALESCE(raw_response, '')), 'service_tier') > 0
