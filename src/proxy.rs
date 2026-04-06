@@ -7890,12 +7890,12 @@ fn allow_live_upstream_account_snapshot_backfill(raw: Option<i64>) -> bool {
 
 fn resolve_backfill_upstream_base_url_host(
     snapshot_host: Option<&str>,
-    live_base_url: Option<&str>,
+    live_host: Option<&str>,
     allow_live_fallback: bool,
 ) -> Option<String> {
     snapshot_host.and_then(normalize_upstream_base_url_host).or_else(|| {
         allow_live_fallback
-            .then_some(live_base_url)
+            .then_some(live_host)
             .flatten()
             .and_then(normalize_upstream_base_url_host)
     })
@@ -10662,7 +10662,58 @@ async fn current_proxy_cost_backfill_snapshot_max_id(
                     THEN json_extract(inv.payload, '$.upstream_base_url_host')
                 END AS snapshot_upstream_base_url_host,
                 acc.kind AS live_upstream_account_kind,
-                acc.upstream_base_url AS live_upstream_base_url,
+                CASE
+                  WHEN acc.upstream_base_url IS NULL OR TRIM(CAST(acc.upstream_base_url AS TEXT)) = '' THEN NULL
+                  ELSE
+                    CASE
+                      WHEN INSTR(
+                        CASE
+                          WHEN INSTR(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/') > 0
+                            THEN SUBSTR(
+                              REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''),
+                              1,
+                              INSTR(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/') - 1
+                            )
+                          ELSE RTRIM(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/')
+                        END,
+                        ':'
+                      ) > 0
+                        THEN SUBSTR(
+                          CASE
+                            WHEN INSTR(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/') > 0
+                              THEN SUBSTR(
+                                REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''),
+                                1,
+                                INSTR(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/') - 1
+                              )
+                            ELSE RTRIM(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/')
+                          END,
+                          1,
+                          INSTR(
+                            CASE
+                              WHEN INSTR(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/') > 0
+                                THEN SUBSTR(
+                                  REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''),
+                                  1,
+                                  INSTR(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/') - 1
+                                )
+                              ELSE RTRIM(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/')
+                            END,
+                            ':'
+                          ) - 1
+                        )
+                      ELSE
+                        CASE
+                          WHEN INSTR(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/') > 0
+                            THEN SUBSTR(
+                              REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''),
+                              1,
+                              INSTR(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/') - 1
+                            )
+                          ELSE RTRIM(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/')
+                        END
+                    END
+                END AS live_upstream_base_url_host,
                 CASE
                   WHEN acc.updated_at IS NOT NULL
                     AND TRIM(CAST(acc.updated_at AS TEXT)) != ''
@@ -10703,8 +10754,7 @@ async fn current_proxy_cost_backfill_snapshot_max_id(
                         OR (
                             (snapshot_upstream_base_url_host IS NULL OR TRIM(CAST(snapshot_upstream_base_url_host AS TEXT)) = '')
                             AND live_upstream_snapshot_safe = 1
-                            AND live_upstream_base_url IS NOT NULL
-                            AND TRIM(CAST(live_upstream_base_url AS TEXT)) != ''
+                            AND LOWER(TRIM(COALESCE(live_upstream_base_url_host, ''))) = ?5
                         )
                     )
                   THEN 1
@@ -10812,7 +10862,58 @@ async fn backfill_proxy_missing_costs_from_cursor(
                         THEN json_extract(inv.payload, '$.upstream_base_url_host')
                     END AS snapshot_upstream_base_url_host,
                     acc.kind AS live_upstream_account_kind,
-                    acc.upstream_base_url AS live_upstream_base_url,
+                    CASE
+                      WHEN acc.upstream_base_url IS NULL OR TRIM(CAST(acc.upstream_base_url AS TEXT)) = '' THEN NULL
+                      ELSE
+                        CASE
+                          WHEN INSTR(
+                            CASE
+                              WHEN INSTR(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/') > 0
+                                THEN SUBSTR(
+                                  REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''),
+                                  1,
+                                  INSTR(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/') - 1
+                                )
+                              ELSE RTRIM(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/')
+                            END,
+                            ':'
+                          ) > 0
+                            THEN SUBSTR(
+                              CASE
+                                WHEN INSTR(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/') > 0
+                                  THEN SUBSTR(
+                                    REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''),
+                                    1,
+                                    INSTR(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/') - 1
+                                  )
+                                ELSE RTRIM(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/')
+                              END,
+                              1,
+                              INSTR(
+                                CASE
+                                  WHEN INSTR(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/') > 0
+                                    THEN SUBSTR(
+                                      REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''),
+                                      1,
+                                      INSTR(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/') - 1
+                                    )
+                                  ELSE RTRIM(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/')
+                                END,
+                                ':'
+                              ) - 1
+                            )
+                          ELSE
+                            CASE
+                              WHEN INSTR(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/') > 0
+                                THEN SUBSTR(
+                                  REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''),
+                                  1,
+                                  INSTR(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/') - 1
+                                )
+                              ELSE RTRIM(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/')
+                            END
+                        END
+                    END AS live_upstream_base_url_host,
                     CASE
                       WHEN acc.updated_at IS NOT NULL
                         AND TRIM(CAST(acc.updated_at AS TEXT)) != ''
@@ -10855,8 +10956,7 @@ async fn backfill_proxy_missing_costs_from_cursor(
                         OR (
                             (snapshot_upstream_base_url_host IS NULL OR TRIM(CAST(snapshot_upstream_base_url_host AS TEXT)) = '')
                             AND live_upstream_snapshot_safe = 1
-                            AND live_upstream_base_url IS NOT NULL
-                            AND TRIM(CAST(live_upstream_base_url AS TEXT)) != ''
+                            AND LOWER(TRIM(COALESCE(live_upstream_base_url_host, ''))) = ?7
                         )
                     )
                       THEN 1
@@ -10876,7 +10976,7 @@ async fn backfill_proxy_missing_costs_from_cursor(
                 service_tier,
                 snapshot_upstream_account_kind,
                 snapshot_upstream_base_url_host,
-                live_upstream_base_url,
+                live_upstream_base_url_host,
                 live_upstream_account_kind,
                 live_upstream_snapshot_safe
             FROM cost_candidates
@@ -10951,7 +11051,7 @@ async fn backfill_proxy_missing_costs_from_cursor(
                 allow_live_upstream_account_snapshot_backfill(Some(candidate.live_upstream_snapshot_safe));
             let upstream_base_url_host = resolve_backfill_upstream_base_url_host(
                 candidate.snapshot_upstream_base_url_host.as_deref(),
-                candidate.live_upstream_base_url.as_deref(),
+                candidate.live_upstream_base_url_host.as_deref(),
                 allow_live_fallback,
             );
             let (billing_service_tier, pricing_mode) =
