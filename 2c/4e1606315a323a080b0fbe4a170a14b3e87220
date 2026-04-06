@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "",
+  "base_stable_version": "",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-06T04:19:26Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "b1181d7c99097fb59b3401a0b415040e459f9bd9",
+  "pr_number": 292,
+  "pr_title": "refactor: split main.rs into structured modules",
+  "registry": "ghcr.io",
+  "release_bump": "skip",
+  "release_channel": "stable",
+  "release_enabled": false,
+  "release_prerelease": false,
+  "release_tag": "",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "",
+  "target_sha": "2c4e1606315a323a080b0fbe4a170a14b3e87220",
+  "type_label": "type:skip"
+}
