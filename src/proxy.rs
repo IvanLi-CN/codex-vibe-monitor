@@ -10790,6 +10790,7 @@ async fn current_proxy_cost_backfill_snapshot_max_id(
             AND (
                 (cost IS NULL AND (price_version IS NULL OR price_version != ?2))
                 OR (cost IS NOT NULL AND (price_version IS NULL OR TRIM(price_version) = ''))
+                OR LOWER(TRIM(COALESCE(billing_service_tier, ''))) != LOWER(TRIM(COALESCE(service_tier, '')))
                 OR LOWER(TRIM(COALESCE(billing_service_tier, ''))) = 'priority'
                 OR price_version = ?3
             )
@@ -11014,6 +11015,7 @@ async fn backfill_proxy_missing_costs_from_cursor(
                 AND (
                     (cost IS NULL AND (price_version IS NULL OR price_version != ?4))
                     OR (cost IS NOT NULL AND (price_version IS NULL OR TRIM(price_version) = ''))
+                    OR LOWER(TRIM(COALESCE(billing_service_tier, ''))) != LOWER(TRIM(COALESCE(service_tier, '')))
                     OR LOWER(TRIM(COALESCE(billing_service_tier, ''))) = 'priority'
                     OR price_version = ?5
                 )

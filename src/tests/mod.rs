@@ -34536,7 +34536,7 @@ async fn backfill_proxy_missing_costs_updates_dated_model_alias_and_is_idempoten
 }
 
 #[tokio::test]
-async fn backfill_proxy_missing_costs_skips_standard_rows_with_null_billing_service_tier() {
+async fn backfill_proxy_missing_costs_backfills_standard_rows_with_missing_billing_service_tier() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await
         .expect("connect in-memory sqlite");
@@ -34597,10 +34597,135 @@ async fn backfill_proxy_missing_costs_skips_standard_rows_with_null_billing_serv
 
     let summary = backfill_proxy_missing_costs(&pool, &catalog)
         .await
-        .expect("standard null billing tier row should be skipped");
-    assert_eq!(summary.scanned, 0);
-    assert_eq!(summary.updated, 0);
+        .expect("standard missing billing tier row should be backfilled");
+    assert_eq!(summary.scanned, 1);
+    assert_eq!(summary.updated, 1);
     assert_eq!(summary.skipped_unpriced_model, 0);
+
+    let row = sqlx::query(
+        "SELECT cost, cost_estimated, price_version, payload FROM codex_invocations WHERE invoke_id = ?1",
+    )
+    .bind("proxy-standard-null-billing-tier")
+    .fetch_one(&pool)
+    .await
+    .expect("query standard proxy cost row");
+
+    assert!(
+        (row.try_get::<Option<f64>, _>("cost")
+            .expect("read standard cost")
+            .expect("standard cost should exist")
+            - 0.0035)
+            .abs()
+            < 1e-12
+    );
+    assert_eq!(
+        row.try_get::<Option<i64>, _>("cost_estimated")
+            .expect("read standard cost_estimated"),
+        Some(1)
+    );
+    assert_eq!(
+        row.try_get::<Option<String>, _>("price_version")
+            .expect("read standard price_version")
+            .as_deref(),
+        Some("unit-cost-backfill")
+    );
+
+    let payload: String = row.try_get("payload").expect("read standard payload");
+    let payload_json: Value = serde_json::from_str(&payload).expect("decode standard payload JSON");
+    assert_eq!(payload_json["serviceTier"], "default");
+    assert_eq!(payload_json["billingServiceTier"], "default");
+
+    let summary_second = backfill_proxy_missing_costs(&pool, &catalog)
+        .await
+        .expect("standard row backfill should become idempotent");
+    assert_eq!(summary_second.scanned, 0);
+    assert_eq!(summary_second.updated, 0);
+}
+
+#[tokio::test]
+async fn backfill_proxy_missing_costs_rewrites_stale_standard_billing_service_tier() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect in-memory sqlite");
+    ensure_schema(&pool)
+        .await
+        .expect("schema should initialize");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            model,
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            cost,
+            cost_estimated,
+            price_version,
+            payload,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+        "#,
+    )
+    .bind("proxy-standard-stale-billing-tier")
+    .bind("2026-02-23 00:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind("gpt-5.2")
+    .bind(1_000_i64)
+    .bind(500_i64)
+    .bind(1_500_i64)
+    .bind(0.0035_f64)
+    .bind(1_i64)
+    .bind("unit-cost-backfill")
+    .bind(r#"{"endpoint":"/v1/responses","serviceTier":"default","billingServiceTier":"auto"}"#)
+    .bind("{}")
+    .execute(&pool)
+    .await
+    .expect("insert stale standard billing tier row");
+
+    let catalog = PricingCatalog {
+        version: "unit-cost-backfill".to_string(),
+        models: HashMap::from([(
+            "gpt-5.2".to_string(),
+            ModelPricing {
+                input_per_1m: 2.0,
+                output_per_1m: 3.0,
+                cache_input_per_1m: None,
+                reasoning_per_1m: None,
+                source: "custom".to_string(),
+            },
+        )]),
+    };
+
+    let summary = backfill_proxy_missing_costs(&pool, &catalog)
+        .await
+        .expect("stale standard billing tier row should be backfilled");
+    assert_eq!(summary.scanned, 1);
+    assert_eq!(summary.updated, 1);
+    assert_eq!(summary.skipped_unpriced_model, 0);
+
+    let row = sqlx::query("SELECT payload FROM codex_invocations WHERE invoke_id = ?1")
+        .bind("proxy-standard-stale-billing-tier")
+        .fetch_one(&pool)
+        .await
+        .expect("query stale standard billing tier row");
+
+    let payload: String = row.try_get("payload").expect("read stale standard payload");
+    let payload_json: Value =
+        serde_json::from_str(&payload).expect("decode stale standard payload JSON");
+    assert_eq!(payload_json["serviceTier"], "default");
+    assert_eq!(payload_json["billingServiceTier"], "default");
+
+    let summary_second = backfill_proxy_missing_costs(&pool, &catalog)
+        .await
+        .expect("stale standard billing tier row should become idempotent");
+    assert_eq!(summary_second.scanned, 0);
+    assert_eq!(summary_second.updated, 0);
 }
 
 #[tokio::test]
@@ -35238,11 +35363,11 @@ async fn backfill_proxy_missing_costs_does_not_reprice_using_live_host_when_acco
         )]),
     };
 
-    let summary = backfill_proxy_missing_costs(&pool, &catalog)
-        .await
-        .expect("rows whose linked account did not exist yet should stay untouched");
-    assert_eq!(summary.scanned, 0);
-    assert_eq!(summary.updated, 0);
+    let summary = backfill_proxy_missing_costs(&pool, &catalog).await.expect(
+        "rows whose linked account did not exist yet should still backfill standard billing tier",
+    );
+    assert_eq!(summary.scanned, 1);
+    assert_eq!(summary.updated, 1);
 
     let row = sqlx::query(
         "SELECT cost, cost_estimated, price_version, payload FROM codex_invocations WHERE invoke_id = ?1",
@@ -35274,8 +35399,8 @@ async fn backfill_proxy_missing_costs_does_not_reprice_using_live_host_when_acco
     let payload: String = row.try_get("payload").expect("read live-host-only payload");
     let payload_json: Value =
         serde_json::from_str(&payload).expect("decode live-host-only payload JSON");
-    assert_eq!(payload_json.get("billingServiceTier"), None);
-    assert_eq!(payload_json.get("upstreamBaseUrlHost"), None);
+    assert_eq!(payload_json["billingServiceTier"], "default");
+    assert_eq!(payload_json.get("upstreamBaseUrlHost"), Some(&Value::Null));
 }
 
 #[tokio::test]
@@ -35361,9 +35486,9 @@ async fn backfill_proxy_missing_costs_does_not_reprice_live_relay_rows_after_acc
 
     let summary = backfill_proxy_missing_costs(&pool, &catalog)
         .await
-        .expect("edited relay account should not reprice legacy rows from live host");
-    assert_eq!(summary.scanned, 0);
-    assert_eq!(summary.updated, 0);
+        .expect("edited relay account should not relay-reprice legacy rows from live host, but should backfill standard billing tier");
+    assert_eq!(summary.scanned, 1);
+    assert_eq!(summary.updated, 1);
 
     let row = sqlx::query(
         "SELECT cost, cost_estimated, price_version, payload FROM codex_invocations WHERE invoke_id = ?1",
@@ -35397,9 +35522,9 @@ async fn backfill_proxy_missing_costs_does_not_reprice_live_relay_rows_after_acc
         .expect("read relay-after-edit payload");
     let payload_json: Value =
         serde_json::from_str(&payload).expect("decode relay-after-edit payload JSON");
-    assert_eq!(payload_json.get("billingServiceTier"), None);
-    assert_eq!(payload_json.get("upstreamAccountKind"), None);
-    assert_eq!(payload_json.get("upstreamBaseUrlHost"), None);
+    assert_eq!(payload_json["billingServiceTier"], "default");
+    assert_eq!(payload_json.get("upstreamAccountKind"), Some(&Value::Null));
+    assert_eq!(payload_json.get("upstreamBaseUrlHost"), Some(&Value::Null));
 }
 
 #[tokio::test]
@@ -35551,11 +35676,45 @@ async fn backfill_proxy_missing_costs_does_not_reprice_safe_live_nonrelay_host_w
         )]),
     };
 
-    let summary = backfill_proxy_missing_costs(&pool, &catalog)
-        .await
-        .expect("safe nonrelay host should remain untouched");
-    assert_eq!(summary.scanned, 0);
-    assert_eq!(summary.updated, 0);
+    let summary = backfill_proxy_missing_costs(&pool, &catalog).await.expect(
+        "safe nonrelay host should backfill standard billing tier from the safe live snapshot",
+    );
+    assert_eq!(summary.scanned, 1);
+    assert_eq!(summary.updated, 1);
+
+    let row = sqlx::query(
+        "SELECT cost, cost_estimated, price_version, payload FROM codex_invocations WHERE invoke_id = ?1",
+    )
+    .bind("proxy-safe-live-nonrelay-host")
+    .fetch_one(&pool)
+    .await
+    .expect("query safe nonrelay row");
+    assert!(
+        (row.try_get::<Option<f64>, _>("cost")
+            .expect("read safe nonrelay cost")
+            .expect("safe nonrelay cost should exist")
+            - 0.01)
+            .abs()
+            < 1e-12
+    );
+    assert_eq!(
+        row.try_get::<Option<i64>, _>("cost_estimated")
+            .expect("read safe nonrelay cost_estimated"),
+        Some(1)
+    );
+    assert_eq!(
+        row.try_get::<Option<String>, _>("price_version")
+            .expect("read safe nonrelay price_version")
+            .as_deref(),
+        Some("openai-standard-2026-02-23")
+    );
+
+    let payload: String = row.try_get("payload").expect("read safe nonrelay payload");
+    let payload_json: Value =
+        serde_json::from_str(&payload).expect("decode safe nonrelay payload JSON");
+    assert_eq!(payload_json["billingServiceTier"], "default");
+    assert_eq!(payload_json["upstreamAccountKind"], "api_key_codex");
+    assert_eq!(payload_json["upstreamBaseUrlHost"], "api.example.invalid");
 }
 
 #[tokio::test]
