@@ -27904,6 +27904,20 @@ fn resolve_proxy_billing_service_tier_and_pricing_mode_preserves_explicit_relay_
 }
 
 #[test]
+fn resolve_proxy_billing_service_tier_and_pricing_mode_keeps_missing_relay_response_tier_standard()
+{
+    let (billing_service_tier, pricing_mode) = resolve_proxy_billing_service_tier_and_pricing_mode(
+        Some("priority"),
+        None,
+        Some("api_key_codex"),
+        Some("sub2api.nsngc.org"),
+    );
+
+    assert_eq!(billing_service_tier, None);
+    assert_eq!(pricing_mode, ProxyPricingMode::Standard);
+}
+
+#[test]
 fn parse_target_response_payload_decodes_gzip_stream_usage() {
     let raw = [
         "event: response.created",
@@ -35255,6 +35269,73 @@ async fn backfill_proxy_missing_costs_does_not_reprice_live_relay_rows_after_acc
     assert_eq!(payload_json.get("billingServiceTier"), None);
     assert_eq!(payload_json.get("upstreamAccountKind"), None);
     assert_eq!(payload_json.get("upstreamBaseUrlHost"), None);
+}
+
+#[tokio::test]
+async fn backfill_proxy_missing_costs_skips_non_priority_relay_tiers_after_snapshot_write() {
+    let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
+        .await
+        .expect("connect in-memory sqlite");
+    ensure_schema(&pool)
+        .await
+        .expect("schema should initialize");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            model,
+            input_tokens,
+            output_tokens,
+            total_tokens,
+            cost,
+            cost_estimated,
+            price_version,
+            payload,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+        "#,
+    )
+    .bind("proxy-relay-flex-tier")
+    .bind("2026-02-23 00:00:00")
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind("gpt-5.4")
+    .bind(1_000_i64)
+    .bind(500_i64)
+    .bind(1_500_i64)
+    .bind(0.01_f64)
+    .bind(1_i64)
+    .bind("openai-standard-2026-02-23")
+    .bind(r#"{"endpoint":"/v1/responses","requestedServiceTier":"priority","serviceTier":"flex","billingServiceTier":"flex","upstreamAccountKind":"api_key_codex","upstreamBaseUrlHost":"sub2api.nsngc.org","routeMode":"pool"}"#)
+    .bind("{}")
+    .execute(&pool)
+    .await
+    .expect("insert relay flex invocation");
+
+    let catalog = PricingCatalog {
+        version: "openai-standard-2026-02-23".to_string(),
+        models: HashMap::from([(
+            "gpt-5.4".to_string(),
+            ModelPricing {
+                input_per_1m: 2.5,
+                output_per_1m: 15.0,
+                cache_input_per_1m: None,
+                reasoning_per_1m: None,
+                source: "custom".to_string(),
+            },
+        )]),
+    };
+
+    let summary = backfill_proxy_missing_costs(&pool, &catalog)
+        .await
+        .expect("relay flex tier row should already be settled");
+    assert_eq!(summary.scanned, 0);
+    assert_eq!(summary.updated, 0);
 }
 
 #[tokio::test]

@@ -7827,7 +7827,7 @@ fn resolve_proxy_billing_service_tier_and_pricing_mode(
         upstream_base_url_host,
     ) {
         return match normalized_response_service_tier.as_deref() {
-            None | Some(AUTO_SERVICE_TIER) | Some(DEFAULT_SERVICE_TIER) => (
+            Some(AUTO_SERVICE_TIER) | Some(DEFAULT_SERVICE_TIER) => (
                 Some(PRIORITY_SERVICE_TIER.to_string()),
                 ProxyPricingMode::RelayFastPriority,
             ),
@@ -10645,6 +10645,12 @@ async fn current_proxy_cost_backfill_snapshot_max_id(
                     THEN json_extract(inv.payload, '$.billing_service_tier')
                 END AS billing_service_tier,
                 CASE
+                  WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.serviceTier') = 'text'
+                    THEN json_extract(inv.payload, '$.serviceTier')
+                  WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.service_tier') = 'text'
+                    THEN json_extract(inv.payload, '$.service_tier')
+                END AS service_tier,
+                CASE
                   WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.upstreamAccountKind') = 'text'
                     THEN json_extract(inv.payload, '$.upstreamAccountKind')
                   WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.upstream_account_kind') = 'text'
@@ -10749,6 +10755,7 @@ async fn current_proxy_cost_backfill_snapshot_max_id(
                         CASE WHEN live_upstream_account_snapshot_safe = 1 THEN live_upstream_account_kind END,
                         ''
                     ))) = ?4
+                    AND LOWER(TRIM(COALESCE(service_tier, ''))) IN ('auto', 'default', 'priority')
                     AND (
                         LOWER(TRIM(COALESCE(snapshot_upstream_base_url_host, ''))) = ?5
                         OR (
@@ -10958,6 +10965,7 @@ async fn backfill_proxy_missing_costs_from_cursor(
                         CASE WHEN live_upstream_account_snapshot_safe = 1 THEN live_upstream_account_kind END,
                         ''
                     ))) = ?6
+                    AND LOWER(TRIM(COALESCE(service_tier, ''))) IN ('auto', 'default', 'priority')
                     AND (
                         LOWER(TRIM(COALESCE(snapshot_upstream_base_url_host, ''))) = ?7
                         OR (
