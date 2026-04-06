@@ -7868,23 +7868,37 @@ fn payload_summary_upstream_base_url_host(account: Option<&PoolResolvedAccount>)
 fn resolve_backfill_upstream_account_kind(
     snapshot_kind: Option<&str>,
     live_kind: Option<&str>,
+    allow_live_fallback: bool,
 ) -> Option<String> {
-    snapshot_kind
+    if let Some(value) = snapshot_kind.map(str::trim).filter(|value| !value.is_empty()) {
+        return Some(value.to_string());
+    }
+
+    if !allow_live_fallback {
+        return None;
+    }
+
+    live_kind
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(str::to_string)
-        .or_else(|| {
-            live_kind
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(str::to_string)
-        })
+}
+
+fn allow_live_upstream_account_snapshot_backfill(raw: Option<i64>) -> bool {
+    raw != Some(0)
 }
 
 fn resolve_backfill_upstream_base_url_host(
     snapshot_host: Option<&str>,
+    live_base_url: Option<&str>,
+    allow_live_fallback: bool,
 ) -> Option<String> {
-    snapshot_host.and_then(normalize_upstream_base_url_host)
+    snapshot_host.and_then(normalize_upstream_base_url_host).or_else(|| {
+        allow_live_fallback
+            .then_some(live_base_url)
+            .flatten()
+            .and_then(normalize_upstream_base_url_host)
+    })
 }
 
 fn extract_service_tier_from_payload(value: &Value) -> Option<String> {
@@ -10647,7 +10661,17 @@ async fn current_proxy_cost_backfill_snapshot_max_id(
                   WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.upstream_base_url_host') = 'text'
                     THEN json_extract(inv.payload, '$.upstream_base_url_host')
                 END AS snapshot_upstream_base_url_host,
-                acc.kind AS live_upstream_account_kind
+                acc.kind AS live_upstream_account_kind,
+                acc.upstream_base_url AS live_upstream_base_url,
+                CASE
+                  WHEN acc.updated_at IS NOT NULL
+                    AND TRIM(CAST(acc.updated_at AS TEXT)) != ''
+                    AND inv.occurred_at IS NOT NULL
+                    AND TRIM(CAST(inv.occurred_at AS TEXT)) != ''
+                    AND julianday(acc.updated_at) <= julianday(inv.occurred_at)
+                  THEN 1
+                  ELSE 0
+                END AS live_upstream_snapshot_safe
             FROM codex_invocations inv
             LEFT JOIN pool_upstream_accounts acc
               ON acc.id = CASE
@@ -10669,8 +10693,20 @@ async fn current_proxy_cost_backfill_snapshot_max_id(
                 *,
                 CASE
                   WHEN LOWER(TRIM(COALESCE(requested_service_tier, ''))) = 'priority'
-                    AND LOWER(TRIM(COALESCE(snapshot_upstream_account_kind, live_upstream_account_kind, ''))) = ?4
-                    AND LOWER(TRIM(COALESCE(snapshot_upstream_base_url_host, ''))) = ?5
+                    AND LOWER(TRIM(COALESCE(
+                        snapshot_upstream_account_kind,
+                        CASE WHEN live_upstream_snapshot_safe = 1 THEN live_upstream_account_kind END,
+                        ''
+                    ))) = ?4
+                    AND (
+                        LOWER(TRIM(COALESCE(snapshot_upstream_base_url_host, ''))) = ?5
+                        OR (
+                            (snapshot_upstream_base_url_host IS NULL OR TRIM(CAST(snapshot_upstream_base_url_host AS TEXT)) = '')
+                            AND live_upstream_snapshot_safe = 1
+                            AND live_upstream_base_url IS NOT NULL
+                            AND TRIM(CAST(live_upstream_base_url AS TEXT)) != ''
+                        )
+                    )
                   THEN 1
                   ELSE 0
                 END AS is_relay_priority_context
@@ -10775,7 +10811,17 @@ async fn backfill_proxy_missing_costs_from_cursor(
                       WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.upstream_base_url_host') = 'text'
                         THEN json_extract(inv.payload, '$.upstream_base_url_host')
                     END AS snapshot_upstream_base_url_host,
-                    acc.kind AS live_upstream_account_kind
+                    acc.kind AS live_upstream_account_kind,
+                    acc.upstream_base_url AS live_upstream_base_url,
+                    CASE
+                      WHEN acc.updated_at IS NOT NULL
+                        AND TRIM(CAST(acc.updated_at AS TEXT)) != ''
+                        AND inv.occurred_at IS NOT NULL
+                        AND TRIM(CAST(inv.occurred_at AS TEXT)) != ''
+                        AND julianday(acc.updated_at) <= julianday(inv.occurred_at)
+                      THEN 1
+                      ELSE 0
+                    END AS live_upstream_snapshot_safe
                 FROM codex_invocations inv
                 LEFT JOIN pool_upstream_accounts acc
                   ON acc.id = CASE
@@ -10799,8 +10845,20 @@ async fn backfill_proxy_missing_costs_from_cursor(
                     *,
                 CASE
                   WHEN LOWER(TRIM(COALESCE(requested_service_tier, ''))) = 'priority'
-                    AND LOWER(TRIM(COALESCE(snapshot_upstream_account_kind, live_upstream_account_kind, ''))) = ?6
-                    AND LOWER(TRIM(COALESCE(snapshot_upstream_base_url_host, ''))) = ?7
+                    AND LOWER(TRIM(COALESCE(
+                        snapshot_upstream_account_kind,
+                        CASE WHEN live_upstream_snapshot_safe = 1 THEN live_upstream_account_kind END,
+                        ''
+                    ))) = ?6
+                    AND (
+                        LOWER(TRIM(COALESCE(snapshot_upstream_base_url_host, ''))) = ?7
+                        OR (
+                            (snapshot_upstream_base_url_host IS NULL OR TRIM(CAST(snapshot_upstream_base_url_host AS TEXT)) = '')
+                            AND live_upstream_snapshot_safe = 1
+                            AND live_upstream_base_url IS NOT NULL
+                            AND TRIM(CAST(live_upstream_base_url AS TEXT)) != ''
+                        )
+                    )
                       THEN 1
                       ELSE 0
                     END AS is_relay_priority_context
@@ -10818,7 +10876,9 @@ async fn backfill_proxy_missing_costs_from_cursor(
                 service_tier,
                 snapshot_upstream_account_kind,
                 snapshot_upstream_base_url_host,
-                live_upstream_account_kind
+                live_upstream_base_url,
+                live_upstream_account_kind,
+                live_upstream_snapshot_safe
             FROM cost_candidates
             WHERE (
                 is_relay_priority_context = 1
@@ -10883,9 +10943,16 @@ async fn backfill_proxy_missing_costs_from_cursor(
             let upstream_account_kind = resolve_backfill_upstream_account_kind(
                 candidate.snapshot_upstream_account_kind.as_deref(),
                 candidate.live_upstream_account_kind.as_deref(),
+                allow_live_upstream_account_snapshot_backfill(Some(
+                    candidate.live_upstream_snapshot_safe,
+                )),
             );
+            let allow_live_fallback =
+                allow_live_upstream_account_snapshot_backfill(Some(candidate.live_upstream_snapshot_safe));
             let upstream_base_url_host = resolve_backfill_upstream_base_url_host(
                 candidate.snapshot_upstream_base_url_host.as_deref(),
+                candidate.live_upstream_base_url.as_deref(),
+                allow_live_fallback,
             );
             let (billing_service_tier, pricing_mode) =
                 resolve_proxy_billing_service_tier_and_pricing_mode(

@@ -34586,7 +34586,7 @@ async fn backfill_proxy_missing_costs_reprices_relay_fast_priority_rows() {
         .await
         .expect("schema should initialize");
 
-    let created_at = format_utc_iso(Utc::now());
+    let created_at = "2026-01-01T00:00:00Z".to_string();
     sqlx::query(
         r#"
         INSERT INTO pool_upstream_accounts (
@@ -34639,7 +34639,7 @@ async fn backfill_proxy_missing_costs_reprices_relay_fast_priority_rows() {
     .bind(0.01_f64)
     .bind(1_i64)
     .bind("openai-standard-2026-02-23")
-    .bind(r#"{"endpoint":"/v1/responses","requestedServiceTier":"priority","serviceTier":"default","upstreamAccountId":2568,"upstreamAccountName":"SUB2API","upstreamAccountKind":"api_key_codex","upstreamBaseUrlHost":"sub2api.nsngc.org","routeMode":"pool"}"#)
+    .bind(r#"{"endpoint":"/v1/responses","requestedServiceTier":"priority","serviceTier":"default","upstreamAccountId":2568,"upstreamAccountName":"SUB2API","routeMode":"pool"}"#)
     .bind("{}")
     .execute(&pool)
     .await
