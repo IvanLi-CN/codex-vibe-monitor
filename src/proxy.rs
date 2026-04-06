@@ -461,6 +461,44 @@ fn build_pool_degraded_only_error(
     }
 }
 
+fn pool_upstream_error_preserves_existing_sticky_owner(
+    err: Option<&PoolUpstreamError>,
+) -> bool {
+    err.and_then(|value| value.account.as_ref())
+        .is_some_and(|account| account.routing_source == PoolRoutingSelectionSource::StickyReuse)
+        && matches!(
+            err.map(|value| value.failure_kind),
+            Some(
+                FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429
+                    | FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_5XX
+                    | PROXY_FAILURE_FAILED_CONTACT_UPSTREAM
+                    | PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT
+                    | PROXY_FAILURE_UPSTREAM_STREAM_ERROR
+                    | PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED
+            )
+        )
+}
+
+fn take_sticky_owner_terminal_error(
+    last_error: &mut Option<PoolUpstreamError>,
+    attempt_count: usize,
+    distinct_account_count: usize,
+) -> Option<PoolUpstreamError> {
+    if !pool_upstream_error_preserves_existing_sticky_owner(last_error.as_ref()) {
+        return None;
+    }
+    let mut err = last_error.take()?;
+    if err.status.is_success() {
+        err.status = StatusCode::SERVICE_UNAVAILABLE;
+    }
+    err.attempt_summary = pool_attempt_summary(
+        attempt_count,
+        distinct_account_count,
+        Some(err.failure_kind.to_string()),
+    );
+    Some(err)
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct PendingPoolAttemptRecord {
     pub(crate) attempt_id: Option<i64>,
@@ -1534,6 +1572,8 @@ async fn send_pool_request_with_failover(
             // upstream failure instead of re-entering the generic no-account wait loop.
             let wait_for_no_available = if attempt_count == 0 {
                 true
+            } else if pool_upstream_error_preserves_existing_sticky_owner(last_error.as_ref()) {
+                false
             } else if uses_timeout_route_failover {
                 !timeout_route_failover_pending
             } else {
@@ -1592,6 +1632,13 @@ async fn send_pool_request_with_failover(
                 Ok(PoolAccountResolutionWithWait::Resolution(
                     PoolAccountResolution::RateLimited,
                 )) => {
+                    if let Some(err) = take_sticky_owner_terminal_error(
+                        &mut last_error,
+                        attempt_count,
+                        distinct_account_count,
+                    ) {
+                        return Err(err);
+                    }
                     return Err(build_pool_rate_limited_error(
                         attempt_count,
                         distinct_account_count,
@@ -1601,6 +1648,13 @@ async fn send_pool_request_with_failover(
                 Ok(PoolAccountResolutionWithWait::Resolution(
                     PoolAccountResolution::DegradedOnly,
                 )) => {
+                    if let Some(err) = take_sticky_owner_terminal_error(
+                        &mut last_error,
+                        attempt_count,
+                        distinct_account_count,
+                    ) {
+                        return Err(err);
+                    }
                     return Err(build_pool_degraded_only_error(
                         attempt_count,
                         distinct_account_count,
@@ -1615,6 +1669,15 @@ async fn send_pool_request_with_failover(
                         } else {
                             PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT
                         };
+                    if terminal_failure_kind == PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT
+                        && let Some(err) = take_sticky_owner_terminal_error(
+                            &mut last_error,
+                            attempt_count,
+                            distinct_account_count,
+                        )
+                    {
+                        return Err(err);
+                    }
                     let mut err = if terminal_failure_kind
                         == PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT
                     {
@@ -1732,6 +1795,14 @@ async fn send_pool_request_with_failover(
                         return Err(err);
                     }
 
+                    if let Some(err) = take_sticky_owner_terminal_error(
+                        &mut last_error,
+                        attempt_count,
+                        distinct_account_count,
+                    ) {
+                        return Err(err);
+                    }
+
                     return Err(
                         if exhausted_accounts_all_rate_limited && distinct_account_count > 0 {
                             build_pool_rate_limited_error(
@@ -1759,6 +1830,13 @@ async fn send_pool_request_with_failover(
                 Ok(PoolAccountResolutionWithWait::Resolution(
                     PoolAccountResolution::BlockedByPolicy(message),
                 )) => {
+                    if let Some(err) = take_sticky_owner_terminal_error(
+                        &mut last_error,
+                        attempt_count,
+                        distinct_account_count,
+                    ) {
+                        return Err(err);
+                    }
                     let terminal_failure_kind = PROXY_FAILURE_POOL_NO_AVAILABLE_ACCOUNT;
                     let mut err = PoolUpstreamError {
                         account: None,
