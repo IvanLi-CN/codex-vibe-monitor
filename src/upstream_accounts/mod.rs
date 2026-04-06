@@ -146,6 +146,7 @@ const UPSTREAM_ACCOUNT_LIST_PAGE_SIZE_OPTIONS: [usize; 3] = [20, 50, 100];
 const POOL_ROUTE_ACTIVE_STICKY_WINDOW_MINUTES: i64 = 5;
 const POOL_ROUTE_TEMPORARY_FAILURE_STREAK_THRESHOLD: i64 = 5;
 const POOL_ROUTE_TEMPORARY_FAILURE_DEGRADED_WINDOW_SECS: i64 = 30;
+const POOL_ROUTE_TEMPORARY_FAILURE_COOLDOWN_MAX_SECS: i64 = 60;
 pub(crate) const COMPACT_SUPPORT_STATUS_UNKNOWN: &str = "unknown";
 pub(crate) const COMPACT_SUPPORT_STATUS_SUPPORTED: &str = "supported";
 pub(crate) const COMPACT_SUPPORT_STATUS_UNSUPPORTED: &str = "unsupported";
@@ -18200,6 +18201,7 @@ fn is_account_selectable_for_sticky_reuse(
         return false;
     }
     !account_has_active_cooldown(row.cooldown_until.as_deref(), now)
+        || is_account_degraded_for_routing(row, snapshot_exhausted, now)
 }
 
 fn is_account_selectable_for_fresh_assignment(
@@ -18590,11 +18592,9 @@ async fn apply_pool_route_cooldown_failure(
     let should_start_cooldown = next_failures >= POOL_ROUTE_TEMPORARY_FAILURE_STREAK_THRESHOLD
         || now.signed_duration_since(streak_started_at).num_seconds()
             >= POOL_ROUTE_TEMPORARY_FAILURE_DEGRADED_WINDOW_SECS;
-    if should_start_cooldown && let Some(sticky_key) = sticky_key {
-        delete_sticky_route(pool, sticky_key).await?;
-    }
     let exponent = (next_failures - 1).clamp(0, 5) as u32;
-    let cooldown_secs = (base_secs * (1_i64 << exponent)).min(300);
+    let cooldown_secs =
+        (base_secs * (1_i64 << exponent)).min(POOL_ROUTE_TEMPORARY_FAILURE_COOLDOWN_MAX_SECS);
     let now_iso = format_utc_iso(now);
     let streak_started_at_iso = format_utc_iso(streak_started_at);
     let cooldown_until =
@@ -25985,11 +25985,12 @@ mod tests {
         );
         assert!(row.cooldown_until.is_some());
         assert_eq!(row.consecutive_route_failures, 2);
-        assert!(
+        assert_eq!(
             load_sticky_route(&pool, "sticky-degraded-cooldown")
                 .await
                 .expect("load sticky route after cooldown escalation")
-                .is_none()
+                .map(|route| route.account_id),
+            Some(account_id)
         );
 
         let summary = build_summary_from_row(
@@ -26004,6 +26005,72 @@ mod tests {
         assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
         assert_eq!(summary.health_status, UPSTREAM_ACCOUNT_HEALTH_STATUS_NORMAL);
         assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED);
+    }
+
+    #[tokio::test]
+    async fn record_pool_route_transport_failure_caps_temporary_cooldown_at_sixty_seconds() {
+        let pool = test_pool().await;
+        let account_id = insert_api_key_account(&pool, "Cooldown Cap").await;
+        let baseline_now = Utc::now();
+        let baseline_now_iso = format_utc_iso(baseline_now);
+        let stale_started_at = format_utc_iso(
+            baseline_now
+                - ChronoDuration::seconds(POOL_ROUTE_TEMPORARY_FAILURE_DEGRADED_WINDOW_SECS + 5),
+        );
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET status = ?2,
+                last_error = ?3,
+                last_error_at = ?4,
+                last_route_failure_at = ?4,
+                last_route_failure_kind = ?5,
+                cooldown_until = NULL,
+                consecutive_route_failures = ?6,
+                temporary_route_failure_streak_started_at = ?7,
+                updated_at = ?4
+            WHERE id = ?1
+            "#,
+        )
+        .bind(account_id)
+        .bind(UPSTREAM_ACCOUNT_STATUS_ACTIVE)
+        .bind("previous temporary failure")
+        .bind(&baseline_now_iso)
+        .bind(PROXY_FAILURE_FAILED_CONTACT_UPSTREAM)
+        .bind(7_i64)
+        .bind(&stale_started_at)
+        .execute(&pool)
+        .await
+        .expect("seed high temporary failure streak");
+
+        record_pool_route_transport_failure(
+            &pool,
+            account_id,
+            None,
+            "failed to contact upstream again",
+            Some("invk_transport_cap"),
+        )
+        .await
+        .expect("record capped transport failure");
+
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load capped row")
+            .expect("capped row exists");
+        let cooldown_until = row
+            .cooldown_until
+            .as_deref()
+            .and_then(parse_rfc3339_utc)
+            .expect("cooldown should be set");
+        let route_failure_at = row
+            .last_route_failure_at
+            .as_deref()
+            .and_then(parse_rfc3339_utc)
+            .expect("route failure timestamp should be set");
+        assert_eq!(
+            cooldown_until - route_failure_at,
+            ChronoDuration::seconds(POOL_ROUTE_TEMPORARY_FAILURE_COOLDOWN_MAX_SECS)
+        );
     }
 
     #[test]
