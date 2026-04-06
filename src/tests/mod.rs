@@ -6534,7 +6534,7 @@ fn runtime_api_invocation_from_running_proxy_capture_record_uses_transient_shape
         Some("gzip")
     );
     assert_eq!(api_record.prompt_cache_key.as_deref(), Some("pck-running"));
-    assert_eq!(api_record.billing_service_tier.as_deref(), Some("priority"));
+    assert_eq!(api_record.billing_service_tier, None);
     assert_eq!(
         api_record.t_total_ms, None,
         "running snapshots should not freeze total time"
@@ -34030,11 +34030,15 @@ async fn backfill_invocation_service_tiers_updates_payload_and_is_idempotent() {
     let proxy_payload_json: Value =
         serde_json::from_str(&proxy_payload).expect("decode proxy payload JSON");
     assert_eq!(proxy_payload_json["serviceTier"], "default");
+    assert_eq!(
+        proxy_payload_json["serviceTierBackfillVersion"],
+        "stream-terminal-v1"
+    );
 
     let summary_second = backfill_invocation_service_tiers(&pool, None)
         .await
         .expect("second service tier backfill should be idempotent");
-    assert_eq!(summary_second.scanned, 1);
+    assert_eq!(summary_second.scanned, 0);
     assert_eq!(summary_second.updated, 0);
 
     let _ = fs::remove_dir_all(&temp_dir);
@@ -34083,11 +34087,15 @@ async fn backfill_invocation_service_tiers_revisits_inline_proxy_auto_tiers_with
             .expect("query inline proxy payload");
     let payload_json: Value = serde_json::from_str(&payload).expect("decode inline payload JSON");
     assert_eq!(payload_json["serviceTier"], "default");
+    assert_eq!(
+        payload_json["serviceTierBackfillVersion"],
+        "stream-terminal-v1"
+    );
 
     let summary_second = backfill_invocation_service_tiers(&pool, None)
         .await
         .expect("inline service tier backfill should be idempotent");
-    assert_eq!(summary_second.scanned, 1);
+    assert_eq!(summary_second.scanned, 0);
     assert_eq!(summary_second.updated, 0);
 }
 
@@ -34145,11 +34153,15 @@ async fn backfill_invocation_service_tiers_revisits_inline_proxy_non_auto_stream
     let payload_json: Value =
         serde_json::from_str(&payload).expect("decode inline non-auto payload JSON");
     assert_eq!(payload_json["serviceTier"], "default");
+    assert_eq!(
+        payload_json["serviceTierBackfillVersion"],
+        "stream-terminal-v1"
+    );
 
     let summary_second = backfill_invocation_service_tiers(&pool, None)
         .await
         .expect("inline non-auto service tier backfill should be idempotent");
-    assert_eq!(summary_second.scanned, 1);
+    assert_eq!(summary_second.scanned, 0);
     assert_eq!(summary_second.updated, 0);
 }
 

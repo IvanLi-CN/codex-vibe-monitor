@@ -7775,6 +7775,7 @@ const PRIORITY_SERVICE_TIER: &str = "priority";
 const RELAY_PRIORITY_BILLING_ACCOUNT_KIND: &str = "api_key_codex";
 const RELAY_PRIORITY_BILLING_UPSTREAM_HOST: &str = "sub2api.nsngc.org";
 const RELAY_PRIORITY_BILLING_PRICE_VERSION_SUFFIX: &str = "+relay-fast-billing-v1";
+const SERVICE_TIER_STREAM_BACKFILL_VERSION: &str = "stream-terminal-v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProxyPricingMode {
@@ -8961,12 +8962,6 @@ fn build_running_proxy_capture_record(
     t_upstream_connect_ms: f64,
     t_upstream_ttfb_ms: f64,
 ) -> ProxyCaptureRecord {
-    let (billing_service_tier, _) = resolve_proxy_billing_service_tier_and_pricing_mode(
-        request_info.requested_service_tier.as_deref(),
-        None,
-        upstream_account_kind,
-        upstream_base_url_host,
-    );
     ProxyCaptureRecord {
         invoke_id: invoke_id.to_string(),
         occurred_at: occurred_at.to_string(),
@@ -8984,7 +8979,7 @@ fn build_running_proxy_capture_record(
             is_stream: request_info.is_stream,
             request_model: request_info.model.as_deref(),
             requested_service_tier: request_info.requested_service_tier.as_deref(),
-            billing_service_tier: billing_service_tier.as_deref(),
+            billing_service_tier: None,
             reasoning_effort: request_info.reasoning_effort.as_deref(),
             response_model: None,
             usage_missing_reason: None,
@@ -11726,6 +11721,15 @@ async fn backfill_invocation_service_tiers_from_cursor(
                 OR TRIM(CAST(COALESCE(json_extract(payload, '$.serviceTier'), json_extract(payload, '$.service_tier')) AS TEXT)) = ''
                 OR (
                     source = ?2
+                    AND COALESCE(
+                        CASE
+                          WHEN json_valid(payload) AND json_type(payload, '$.serviceTierBackfillVersion') = 'text'
+                            THEN json_extract(payload, '$.serviceTierBackfillVersion')
+                          WHEN json_valid(payload) AND json_type(payload, '$.service_tier_backfill_version') = 'text'
+                            THEN json_extract(payload, '$.service_tier_backfill_version')
+                        END,
+                        ''
+                    ) != ?3
                     AND (
                         response_raw_path IS NOT NULL
                         OR INSTR(LOWER(COALESCE(raw_response, '')), 'service_tier') > 0
@@ -11738,11 +11742,12 @@ async fn backfill_invocation_service_tiers_from_cursor(
                 )
               )
             ORDER BY id ASC
-            LIMIT ?3
+            LIMIT ?4
             "#,
         )
         .bind(last_seen_id)
         .bind(SOURCE_PROXY)
+        .bind(SERVICE_TIER_STREAM_BACKFILL_VERSION)
         .bind(startup_backfill_query_limit(summary.scanned, scan_limit))
         .fetch_all(pool)
         .await?;
@@ -11798,11 +11803,13 @@ async fn backfill_invocation_service_tiers_from_cursor(
                 continue;
             };
 
+            let should_mark_stream_backfill = candidate.source == SOURCE_PROXY;
             if candidate
                 .current_service_tier
                 .as_deref()
                 .and_then(normalize_service_tier)
                 .is_some_and(|current| current == service_tier)
+                && !should_mark_stream_backfill
             {
                 continue;
             }
@@ -11810,16 +11817,28 @@ async fn backfill_invocation_service_tiers_from_cursor(
             let affected = sqlx::query(
                 r#"
                 UPDATE codex_invocations
-                SET payload = json_set(
-                    CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,
-                    '$.serviceTier',
-                    ?1
-                )
+                SET payload = CASE
+                    WHEN ?3 IS NULL THEN json_set(
+                        CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,
+                        '$.serviceTier',
+                        ?1
+                    )
+                    ELSE json_set(
+                        json_set(
+                            CASE WHEN json_valid(payload) THEN payload ELSE '{}' END,
+                            '$.serviceTier',
+                            ?1
+                        ),
+                        '$.serviceTierBackfillVersion',
+                        ?3
+                    )
+                END
                 WHERE id = ?2
                 "#,
             )
             .bind(&service_tier)
             .bind(candidate.id)
+            .bind(should_mark_stream_backfill.then_some(SERVICE_TIER_STREAM_BACKFILL_VERSION))
             .execute(pool)
             .await?
             .rows_affected();
