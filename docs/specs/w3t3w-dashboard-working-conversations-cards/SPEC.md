@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 已实现，待 PR / CI / review-proof 收敛
+- Status: 已完成（6/6，PR #295）
 - Created: 2026-04-04
 - Last: 2026-04-06
 
@@ -95,7 +95,7 @@
 - [x] M3: Dashboard 工作中对话 mapper 与卡片区替换现有 `InvocationTable`。
 - [x] M4: Storybook 稳定入口覆盖四种关键状态，并作为视觉证据源。
 - [x] M5: Rust / Vitest / build / Storybook build 完成，视觉证据写入 spec。
-- [ ] M6: fast-track 推进到 PR merge-ready。
+- [x] M6: fast-track 推进到 PR merge-ready。
 
 ## 方案概述（Approach, high-level）
 
@@ -116,6 +116,7 @@
 ## 变更记录（Change log）
 
 - 2026-04-06: PR 收敛期根据 fresh review-proof 补充前端 SSE merge 与 Dashboard mapper 修正，5 分钟工作集与最终 `20` 卡 cap 在本地超额裁切时继续按工作锚点保留可见对话，最终展示顺序仍保持 `createdAt DESC`。
+- 2026-04-06: PR #295 完成 labels、远端 checks 与 fresh review-proof 收敛，快车道终态更新为 merge-ready。
 
 ## Visual Evidence
 
