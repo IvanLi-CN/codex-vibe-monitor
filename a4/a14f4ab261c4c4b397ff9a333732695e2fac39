@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.39.2",
+  "base_stable_version": "1.39.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-06T05:53:03Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.39.2",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "e40f2ba1dfa07bc43ac3d8c20cf99f163dcc62d6",
+  "pr_number": 293,
+  "pr_title": "fix(records): remove inert proxy filter",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.39.2",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.39.2",
+  "target_sha": "a4a14f4ab261c4c4b397ff9a333732695e2fac39",
+  "type_label": "type:patch"
+}
