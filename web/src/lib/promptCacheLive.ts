@@ -74,19 +74,6 @@ function parsePromptCacheSelectionWindowMs(
   return selection.activityHours * 3_600_000;
 }
 
-function promptCachePreviewIsPending(
-  preview: Pick<PromptCacheConversationInvocationPreview, "status">,
-) {
-  const normalizedStatus = preview.status?.trim().toLowerCase() ?? "";
-  return normalizedStatus === "running" || normalizedStatus === "pending";
-}
-
-function promptCachePreviewIsTerminal(
-  preview: Pick<PromptCacheConversationInvocationPreview, "status">,
-) {
-  return !promptCachePreviewIsPending(preview);
-}
-
 function withinPromptCacheSelectionWindow(
   occurredAt: string,
   selection: PromptCacheConversationSelection,
@@ -123,53 +110,102 @@ export function getPromptCacheConversationVisibleLimit(
 function comparePromptCacheConversationOrder(
   left: Pick<
     PromptCacheConversation,
-    "createdAt" | "promptCacheKey" | "recentInvocations"
+    "createdAt" | "lastActivityAt" | "promptCacheKey" | "recentInvocations"
   >,
   right: Pick<
     PromptCacheConversation,
-    "createdAt" | "promptCacheKey" | "recentInvocations"
+    "createdAt" | "lastActivityAt" | "promptCacheKey" | "recentInvocations"
   >,
-  selection: PromptCacheConversationSelection,
-  now: number,
 ) {
-  if (selection.mode === "activityWindow" && "activityMinutes" in selection) {
-    const rangeStartMs = now - parsePromptCacheSelectionWindowMs(selection);
-    const resolveSortEpoch = (
-      conversation: Pick<
-        PromptCacheConversation,
-        "createdAt" | "recentInvocations"
-      >,
-    ) => {
-      const recentTerminal = conversation.recentInvocations.find((preview) => {
-        if (!promptCachePreviewIsTerminal(preview)) return false;
-        const epoch = parseOccurredAtEpoch(preview.occurredAt);
-        return epoch != null && epoch >= rangeStartMs;
-      });
-      if (recentTerminal) {
-        return parseOccurredAtEpoch(recentTerminal.occurredAt);
-      }
-      const inFlight = conversation.recentInvocations.find((preview) =>
-        promptCachePreviewIsPending(preview)
-      );
-      if (inFlight) {
-        return parseOccurredAtEpoch(inFlight.occurredAt);
-      }
-      return null;
-    };
-
-    const leftAnchor = resolveSortEpoch(left);
-    const rightAnchor = resolveSortEpoch(right);
-    const normalizedLeftAnchor = leftAnchor ?? Number.MIN_SAFE_INTEGER;
-    const normalizedRightAnchor = rightAnchor ?? Number.MIN_SAFE_INTEGER;
-    if (normalizedLeftAnchor !== normalizedRightAnchor) {
-      return normalizedRightAnchor - normalizedLeftAnchor;
-    }
-  }
-
   const leftEpoch = parseOccurredAtEpoch(left.createdAt) ?? Number.MIN_SAFE_INTEGER;
   const rightEpoch = parseOccurredAtEpoch(right.createdAt) ?? Number.MIN_SAFE_INTEGER;
   if (leftEpoch !== rightEpoch) return rightEpoch - leftEpoch;
   return right.promptCacheKey.localeCompare(left.promptCacheKey);
+}
+
+function promptCacheSelectionUsesWorkingSetAnchor(
+  selection: PromptCacheConversationSelection,
+) {
+  return selection.mode === "activityWindow" && "activityMinutes" in selection;
+}
+
+function getPromptCacheConversationWorkingSetAnchorEpoch(
+  conversation: Pick<
+    PromptCacheConversation,
+    "lastActivityAt" | "recentInvocations"
+  >,
+  selection: PromptCacheConversationSelection,
+  now: number,
+) {
+  let latestTerminalEpoch = Number.MIN_SAFE_INTEGER;
+  let latestPendingEpoch = Number.MIN_SAFE_INTEGER;
+
+  for (const preview of conversation.recentInvocations) {
+    const previewEpoch = parseOccurredAtEpoch(preview.occurredAt);
+    if (previewEpoch == null) continue;
+    if (promptCacheInvocationIsPending(buildInvocationFromPromptCachePreview(preview))) {
+      latestPendingEpoch = Math.max(latestPendingEpoch, previewEpoch);
+      continue;
+    }
+    if (withinPromptCacheSelectionWindow(preview.occurredAt, selection, now)) {
+      latestTerminalEpoch = Math.max(latestTerminalEpoch, previewEpoch);
+    }
+  }
+
+  if (latestTerminalEpoch > Number.MIN_SAFE_INTEGER) return latestTerminalEpoch;
+  if (latestPendingEpoch > Number.MIN_SAFE_INTEGER) return latestPendingEpoch;
+  return parseOccurredAtEpoch(conversation.lastActivityAt) ?? Number.MIN_SAFE_INTEGER;
+}
+
+function comparePromptCacheConversationVisibleSetOrder(
+  left: Pick<
+    PromptCacheConversation,
+    "createdAt" | "lastActivityAt" | "promptCacheKey" | "recentInvocations"
+  >,
+  right: Pick<
+    PromptCacheConversation,
+    "createdAt" | "lastActivityAt" | "promptCacheKey" | "recentInvocations"
+  >,
+  selection: PromptCacheConversationSelection,
+  now: number,
+) {
+  const leftAnchorEpoch = getPromptCacheConversationWorkingSetAnchorEpoch(
+    left,
+    selection,
+    now,
+  );
+  const rightAnchorEpoch = getPromptCacheConversationWorkingSetAnchorEpoch(
+    right,
+    selection,
+    now,
+  );
+  if (leftAnchorEpoch !== rightAnchorEpoch) return rightAnchorEpoch - leftAnchorEpoch;
+
+  return comparePromptCacheConversationOrder(left, right);
+}
+
+function trimAndOrderPromptCacheConversations(
+  conversations: PromptCacheConversation[],
+  selection: PromptCacheConversationSelection,
+  now: number,
+) {
+  const maxVisibleConversations = getPromptCacheConversationVisibleLimit(selection);
+  if (!promptCacheSelectionUsesWorkingSetAnchor(selection)) {
+    return [...conversations]
+      .sort((left, right) => comparePromptCacheConversationOrder(left, right))
+      .slice(0, maxVisibleConversations);
+  }
+
+  const nextVisibleConversations = [...conversations]
+    .sort((left, right) =>
+      comparePromptCacheConversationVisibleSetOrder(left, right, selection, now),
+    )
+    .slice(0, maxVisibleConversations);
+
+  nextVisibleConversations.sort((left, right) =>
+    comparePromptCacheConversationOrder(left, right),
+  );
+  return nextVisibleConversations;
 }
 
 function normalizeFailureClass(
@@ -730,12 +766,12 @@ export function mergePromptCacheConversationsResponse(
     );
   }
 
-  nextConversations.sort((left, right) =>
-    comparePromptCacheConversationOrder(left, right, selection, now),
-  );
-
   return {
     ...base,
-    conversations: nextConversations.slice(0, maxVisibleConversations),
+    conversations: trimAndOrderPromptCacheConversations(
+      nextConversations,
+      selection,
+      now,
+    ),
   };
 }
