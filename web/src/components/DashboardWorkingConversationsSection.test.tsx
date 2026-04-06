@@ -106,7 +106,15 @@ afterEach(() => {
 
 function renderSection(
   response: PromptCacheConversationsResponse,
-  onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void,
+  options?: {
+    onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
+    onOpenInvocation?: (selection: {
+      slotKind: "current" | "previous";
+      conversationSequenceId: string;
+      promptCacheKey: string;
+      invocation: { record: { invokeId: string } };
+    }) => void;
+  },
 ) {
   const cards = mapPromptCacheConversationsToDashboardCards(response);
   host = document.createElement("div");
@@ -119,11 +127,13 @@ function renderSection(
           cards={cards}
           isLoading={false}
           error={null}
-          onOpenUpstreamAccount={onOpenUpstreamAccount}
+          onOpenUpstreamAccount={options?.onOpenUpstreamAccount}
+          onOpenInvocation={options?.onOpenInvocation}
         />
       </I18nProvider>,
     );
   });
+  return cards;
 }
 
 describe("DashboardWorkingConversationsSection", () => {
@@ -150,8 +160,44 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(placeholder?.textContent).toContain("等高占位");
   });
 
+  it("keeps the placeholder slot non-interactive when there is no previous invocation", () => {
+    const onOpenInvocation = vi.fn();
+    renderSection(
+      createResponse([
+        createConversation("pck-single", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-1",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "completed",
+          }),
+        ]),
+      ]),
+      { onOpenInvocation },
+    );
+
+    const previousSlot = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="previous"]',
+    );
+    const placeholder = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-placeholder"]',
+    );
+    if (!(placeholder instanceof HTMLDivElement)) {
+      throw new Error("missing placeholder");
+    }
+
+    act(() => {
+      placeholder.click();
+    });
+
+    expect(previousSlot).toBeNull();
+    expect(placeholder.getAttribute("role")).toBeNull();
+    expect(onOpenInvocation).not.toHaveBeenCalled();
+  });
+
   it("keeps upstream account buttons interactive so the shared drawer can open", () => {
     const onOpenUpstreamAccount = vi.fn();
+    const onOpenInvocation = vi.fn();
     renderSection(
       createResponse([
         createConversation("pck-account", [
@@ -173,7 +219,10 @@ describe("DashboardWorkingConversationsSection", () => {
           }),
         ]),
       ]),
-      onOpenUpstreamAccount,
+      {
+        onOpenUpstreamAccount,
+        onOpenInvocation,
+      },
     );
 
     const accountButton = Array.from(host?.querySelectorAll("button") ?? []).find((button) => {
@@ -195,6 +244,58 @@ describe("DashboardWorkingConversationsSection", () => {
       77,
       "pool-account-77@example.com",
     );
+    expect(onOpenInvocation).not.toHaveBeenCalled();
+  });
+
+  it("opens invocation details from the slot container by click and keyboard", () => {
+    const onOpenInvocation = vi.fn();
+    const response = createResponse([
+      createConversation("pck-slot-open", [
+        createPreview({
+          id: 2,
+          invokeId: "invoke-slot-current",
+          occurredAt: "2026-04-04T10:04:00Z",
+          status: "running",
+        }),
+        createPreview({
+          id: 1,
+          invokeId: "invoke-slot-previous",
+          occurredAt: "2026-04-04T10:02:00Z",
+          status: "completed",
+        }),
+      ]),
+    ]);
+    const cards = renderSection(response, { onOpenInvocation });
+
+    const currentSlot = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"]',
+    );
+    if (!(currentSlot instanceof HTMLDivElement)) {
+      throw new Error("missing current invocation slot");
+    }
+
+    act(() => {
+      currentSlot.click();
+    });
+
+    expect(onOpenInvocation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        slotKind: "current",
+        conversationSequenceId: cards[0]?.conversationSequenceId,
+        promptCacheKey: "pck-slot-open",
+      }),
+    );
+    expect(onOpenInvocation.mock.calls[0]?.[0]?.invocation?.record?.invokeId).toBe(
+      "invoke-slot-current",
+    );
+
+    act(() => {
+      currentSlot.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Enter", bubbles: true }),
+      );
+    });
+
+    expect(onOpenInvocation).toHaveBeenCalledTimes(2);
   });
 
   it("uses theme-aware surface classes instead of a hardcoded dark canvas surface", () => {
