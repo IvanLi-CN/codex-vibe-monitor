@@ -708,6 +708,7 @@ describe("account pool frontend API helpers", () => {
       const url = String(input);
       expect(url).toContain("/api/invocations?");
       expect(url).toContain("requestId=invoke-123");
+      expect(url).not.toContain("proxy=");
       return new Response(
         JSON.stringify({
           snapshotId: 1,

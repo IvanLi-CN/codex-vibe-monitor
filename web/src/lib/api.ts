@@ -416,7 +416,6 @@ export type InvocationSortOrder = "asc" | "desc";
 export type InvocationRangePreset = "today" | "1d" | "7d" | "30d" | "custom";
 export type InvocationSuggestionField =
   | "model"
-  | "proxy"
   | "endpoint"
   | "failureKind"
   | "promptCacheKey"
@@ -433,7 +432,6 @@ export interface InvocationRecordsQuery {
   to?: string;
   model?: string;
   status?: string;
-  proxy?: string;
   endpoint?: string;
   requestId?: string;
   failureClass?: string;
@@ -506,7 +504,6 @@ export interface InvocationSuggestionBucket {
 
 export interface InvocationSuggestionsResponse {
   model: InvocationSuggestionBucket;
-  proxy: InvocationSuggestionBucket;
   endpoint: InvocationSuggestionBucket;
   failureKind: InvocationSuggestionBucket;
   promptCacheKey: InvocationSuggestionBucket;
@@ -701,7 +698,6 @@ function appendInvocationRecordsQuery(
   if (query.to) search.set("to", query.to);
   if (query.model) search.set("model", query.model);
   if (query.status) search.set("status", query.status);
-  if (query.proxy) search.set("proxy", query.proxy);
   if (query.endpoint) search.set("endpoint", query.endpoint);
   if (query.requestId) search.set("requestId", query.requestId);
   if (query.failureClass) search.set("failureClass", query.failureClass);

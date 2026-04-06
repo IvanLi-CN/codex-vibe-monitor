@@ -19,7 +19,6 @@ export interface InvocationRecordsDraftFilters {
   customTo: string
   status: string
   model: string
-  proxy: string
   endpoint: string
   failureClass: string
   failureKind: string
@@ -40,7 +39,6 @@ export function createDefaultInvocationRecordsDraft(): InvocationRecordsDraftFil
     customTo: '',
     status: '',
     model: '',
-    proxy: '',
     endpoint: '',
     failureClass: '',
     failureKind: '',
@@ -187,7 +185,6 @@ export function buildAppliedInvocationFilters(
     to: bounds.to,
     status: normalizeText(draft.status),
     model: normalizeText(draft.model),
-    proxy: normalizeText(draft.proxy),
     endpoint: normalizeText(draft.endpoint),
     requestId: normalizeText(draft.requestId),
     failureClass: normalizeText(draft.failureClass),
@@ -206,8 +203,6 @@ function readSuggestionDraftValue(draft: InvocationRecordsDraftFilters, field?: 
   switch (field) {
     case 'model':
       return draft.model
-    case 'proxy':
-      return draft.proxy
     case 'endpoint':
       return draft.endpoint
     case 'failureKind':
@@ -234,7 +229,6 @@ export function buildInvocationSuggestionsQuery(
     to: bounds.to,
     status: normalizeText(draft.status),
     model: normalizeText(draft.model),
-    proxy: normalizeText(draft.proxy),
     endpoint: normalizeText(draft.endpoint),
     requestId: normalizeText(draft.requestId),
     failureClass: normalizeText(draft.failureClass),
