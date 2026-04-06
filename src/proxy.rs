@@ -1556,6 +1556,19 @@ async fn send_pool_request_with_failover(
                 } else {
                     PROXY_FAILURE_POOL_MAX_DISTINCT_ACCOUNTS_EXHAUSTED
                 };
+            if terminal_failure_kind == PROXY_FAILURE_POOL_MAX_DISTINCT_ACCOUNTS_EXHAUSTED
+                && let Some(err) = take_and_record_sticky_owner_terminal_error(
+                    state.as_ref(),
+                    trace_context.as_ref(),
+                    preserve_sticky_owner_terminal_error,
+                    &mut last_error,
+                    attempt_count,
+                    distinct_account_count,
+                )
+                .await
+            {
+                return Err(err);
+            }
             let terminal_message = if terminal_failure_kind
                 == PROXY_FAILURE_POOL_NO_ALTERNATE_UPSTREAM_AFTER_TIMEOUT
             {
