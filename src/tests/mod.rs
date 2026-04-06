@@ -35134,7 +35134,7 @@ async fn backfill_proxy_missing_costs_does_not_reprice_using_live_host_when_acco
 }
 
 #[tokio::test]
-async fn backfill_proxy_missing_costs_reprices_relay_rows_after_unrelated_account_edit() {
+async fn backfill_proxy_missing_costs_does_not_reprice_live_relay_rows_after_account_edit() {
     let pool = SqlitePool::connect("sqlite::memory:?cache=shared")
         .await
         .expect("connect in-memory sqlite");
@@ -35153,12 +35153,12 @@ async fn backfill_proxy_missing_costs_reprices_relay_rows_after_unrelated_accoun
     .bind(5632_i64)
     .bind("api_key_codex")
     .bind("codex")
-    .bind("SUB2API Renamed")
-    .bind("https://sub2api.nsngc.org/")
-    .bind("active")
-    .bind(1_i64)
-    .bind("2026-01-01T00:00:00Z")
-    .bind("2026-03-01T00:00:00Z")
+        .bind("SUB2API Renamed")
+        .bind("https://sub2api.nsngc.org/")
+        .bind("active")
+        .bind(1_i64)
+        .bind("2026-01-01T00:00:00Z")
+        .bind("2026-03-01T00:00:00Z")
     .execute(&pool)
     .await
     .expect("insert edited relay upstream account");
@@ -35216,9 +35216,9 @@ async fn backfill_proxy_missing_costs_reprices_relay_rows_after_unrelated_accoun
 
     let summary = backfill_proxy_missing_costs(&pool, &catalog)
         .await
-        .expect("edited relay account should still reprice legacy rows");
-    assert_eq!(summary.scanned, 1);
-    assert_eq!(summary.updated, 1);
+        .expect("edited relay account should not reprice legacy rows from live host");
+    assert_eq!(summary.scanned, 0);
+    assert_eq!(summary.updated, 0);
 
     let row = sqlx::query(
         "SELECT cost, cost_estimated, price_version, payload FROM codex_invocations WHERE invoke_id = ?1",
@@ -35226,12 +35226,12 @@ async fn backfill_proxy_missing_costs_reprices_relay_rows_after_unrelated_accoun
     .bind("proxy-live-host-relay-after-edit")
     .fetch_one(&pool)
     .await
-    .expect("query repriced relay row");
+    .expect("query skipped relay row");
     assert!(
         (row.try_get::<Option<f64>, _>("cost")
             .expect("read relay-after-edit cost")
             .expect("relay-after-edit cost should exist")
-            - 0.02)
+            - 0.01)
             .abs()
             < 1e-12
     );
@@ -35244,7 +35244,7 @@ async fn backfill_proxy_missing_costs_reprices_relay_rows_after_unrelated_accoun
         row.try_get::<Option<String>, _>("price_version")
             .expect("read relay-after-edit price_version")
             .as_deref(),
-        Some("openai-standard-2026-02-23+relay-fast-billing-v1")
+        Some("openai-standard-2026-02-23")
     );
 
     let payload: String = row
@@ -35252,9 +35252,9 @@ async fn backfill_proxy_missing_costs_reprices_relay_rows_after_unrelated_accoun
         .expect("read relay-after-edit payload");
     let payload_json: Value =
         serde_json::from_str(&payload).expect("decode relay-after-edit payload JSON");
-    assert_eq!(payload_json["billingServiceTier"], "priority");
-    assert_eq!(payload_json["upstreamAccountKind"], "api_key_codex");
-    assert_eq!(payload_json["upstreamBaseUrlHost"], "sub2api.nsngc.org");
+    assert_eq!(payload_json.get("billingServiceTier"), None);
+    assert_eq!(payload_json.get("upstreamAccountKind"), None);
+    assert_eq!(payload_json.get("upstreamBaseUrlHost"), None);
 }
 
 #[tokio::test]

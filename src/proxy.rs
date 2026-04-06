@@ -10715,9 +10715,14 @@ async fn current_proxy_cost_backfill_snapshot_max_id(
                     AND inv.occurred_at IS NOT NULL
                     AND TRIM(CAST(inv.occurred_at AS TEXT)) != ''
                     AND julianday(acc.created_at) <= julianday(inv.occurred_at)
+                    AND (
+                        acc.updated_at IS NULL
+                        OR TRIM(CAST(acc.updated_at AS TEXT)) = ''
+                        OR julianday(acc.updated_at) <= julianday(inv.occurred_at)
+                    )
                   THEN 1
                   ELSE 0
-                END AS live_upstream_account_existed
+                END AS live_upstream_account_snapshot_safe
             FROM codex_invocations inv
             LEFT JOIN pool_upstream_accounts acc
               ON acc.id = CASE
@@ -10736,19 +10741,19 @@ async fn current_proxy_cost_backfill_snapshot_max_id(
         ),
         cost_candidates AS (
             SELECT
-                *,
+                    *,
                 CASE
                   WHEN LOWER(TRIM(COALESCE(requested_service_tier, ''))) = 'priority'
                     AND LOWER(TRIM(COALESCE(
                         snapshot_upstream_account_kind,
-                        CASE WHEN live_upstream_account_existed = 1 THEN live_upstream_account_kind END,
+                        CASE WHEN live_upstream_account_snapshot_safe = 1 THEN live_upstream_account_kind END,
                         ''
                     ))) = ?4
                     AND (
                         LOWER(TRIM(COALESCE(snapshot_upstream_base_url_host, ''))) = ?5
                         OR (
                             (snapshot_upstream_base_url_host IS NULL OR TRIM(CAST(snapshot_upstream_base_url_host AS TEXT)) = '')
-                            AND live_upstream_account_existed = 1
+                            AND live_upstream_account_snapshot_safe = 1
                             AND LOWER(TRIM(COALESCE(live_upstream_base_url_host, ''))) = ?5
                         )
                     )
@@ -10778,6 +10783,8 @@ async fn current_proxy_cost_backfill_snapshot_max_id(
             AND (
                 (cost IS NULL AND (price_version IS NULL OR price_version != ?2))
                 OR (cost IS NOT NULL AND (price_version IS NULL OR TRIM(price_version) = ''))
+                OR LOWER(TRIM(COALESCE(billing_service_tier, ''))) = 'priority'
+                OR price_version = ?3
             )
         )
         "#,
@@ -10915,9 +10922,14 @@ async fn backfill_proxy_missing_costs_from_cursor(
                         AND inv.occurred_at IS NOT NULL
                         AND TRIM(CAST(inv.occurred_at AS TEXT)) != ''
                         AND julianday(acc.created_at) <= julianday(inv.occurred_at)
+                        AND (
+                            acc.updated_at IS NULL
+                            OR TRIM(CAST(acc.updated_at AS TEXT)) = ''
+                            OR julianday(acc.updated_at) <= julianday(inv.occurred_at)
+                        )
                       THEN 1
                       ELSE 0
-                    END AS live_upstream_account_existed
+                    END AS live_upstream_account_snapshot_safe
                 FROM codex_invocations inv
                 LEFT JOIN pool_upstream_accounts acc
                   ON acc.id = CASE
@@ -10943,14 +10955,14 @@ async fn backfill_proxy_missing_costs_from_cursor(
                   WHEN LOWER(TRIM(COALESCE(requested_service_tier, ''))) = 'priority'
                     AND LOWER(TRIM(COALESCE(
                         snapshot_upstream_account_kind,
-                        CASE WHEN live_upstream_account_existed = 1 THEN live_upstream_account_kind END,
+                        CASE WHEN live_upstream_account_snapshot_safe = 1 THEN live_upstream_account_kind END,
                         ''
                     ))) = ?6
                     AND (
                         LOWER(TRIM(COALESCE(snapshot_upstream_base_url_host, ''))) = ?7
                         OR (
                             (snapshot_upstream_base_url_host IS NULL OR TRIM(CAST(snapshot_upstream_base_url_host AS TEXT)) = '')
-                            AND live_upstream_account_existed = 1
+                            AND live_upstream_account_snapshot_safe = 1
                             AND LOWER(TRIM(COALESCE(live_upstream_base_url_host, ''))) = ?7
                         )
                     )
@@ -10973,7 +10985,7 @@ async fn backfill_proxy_missing_costs_from_cursor(
                 snapshot_upstream_base_url_host,
                 live_upstream_base_url_host,
                 live_upstream_account_kind,
-                live_upstream_account_existed
+                live_upstream_account_snapshot_safe
             FROM cost_candidates
             WHERE (
                 is_relay_priority_context = 1
@@ -10994,6 +11006,8 @@ async fn backfill_proxy_missing_costs_from_cursor(
                 AND (
                     (cost IS NULL AND (price_version IS NULL OR price_version != ?4))
                     OR (cost IS NOT NULL AND (price_version IS NULL OR TRIM(price_version) = ''))
+                    OR LOWER(TRIM(COALESCE(billing_service_tier, ''))) = 'priority'
+                    OR price_version = ?5
                 )
             )
             ORDER BY id ASC
@@ -11039,11 +11053,13 @@ async fn backfill_proxy_missing_costs_from_cursor(
                 candidate.snapshot_upstream_account_kind.as_deref(),
                 candidate.live_upstream_account_kind.as_deref(),
                 allow_live_upstream_account_fallback(Some(
-                    candidate.live_upstream_account_existed,
+                    candidate.live_upstream_account_snapshot_safe,
                 )),
             );
             let allow_live_fallback =
-                allow_live_upstream_account_fallback(Some(candidate.live_upstream_account_existed));
+                allow_live_upstream_account_fallback(Some(
+                    candidate.live_upstream_account_snapshot_safe,
+                ));
             let upstream_base_url_host = resolve_backfill_upstream_base_url_host(
                 candidate.snapshot_upstream_base_url_host.as_deref(),
                 candidate.live_upstream_base_url_host.as_deref(),
