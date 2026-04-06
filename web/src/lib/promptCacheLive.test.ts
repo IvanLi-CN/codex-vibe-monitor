@@ -502,6 +502,91 @@ describe("mergePromptCacheConversationsResponse", () => {
     );
     expect(merged?.conversations.at(-1)?.promptCacheKey).toBe("pck-old-running");
   });
+
+  it("breaks capped working-set ties by createdAt descending after the shared anchor", () => {
+    const baseConversations = Array.from({ length: 49 }, (_, index) =>
+      createConversation(`pck-base-${index.toString().padStart(2, "0")}`, {
+        createdAt: `2026-03-10T02:${(10 + index).toString().padStart(2, "0")}:00Z`,
+        lastActivityAt: `2026-03-10T02:59:${(59 - index).toString().padStart(2, "0")}Z`,
+        recentInvocations: [
+          buildPromptCachePreviewFromInvocation(
+            createLiveRecord({
+              id: 1800 + index,
+              invokeId: `invoke-base-${index}`,
+              occurredAt: `2026-03-10T02:59:${(59 - index).toString().padStart(2, "0")}Z`,
+              promptCacheKey: `pck-base-${index.toString().padStart(2, "0")}`,
+              status: "completed",
+            }),
+          ),
+        ],
+      }),
+    );
+
+    const merged = mergePromptCacheConversationsResponse(
+      {
+        rangeStart: "2026-03-10T02:55:00Z",
+        rangeEnd: "2026-03-10T03:00:00Z",
+        selectionMode: "activityWindow",
+        selectedLimit: null,
+        selectedActivityHours: null,
+        selectedActivityMinutes: 5,
+        implicitFilter: { kind: null, filteredCount: 0 },
+        conversations: [
+          ...baseConversations,
+          createConversation("pck-tie-older", {
+            createdAt: "2026-03-09T01:00:00Z",
+            lastActivityAt: "2026-03-10T02:59:59Z",
+            recentInvocations: [
+              buildPromptCachePreviewFromInvocation(
+                createLiveRecord({
+                  id: 1900,
+                  invokeId: "invoke-tie-older-running",
+                  occurredAt: "2026-03-10T02:59:59Z",
+                  promptCacheKey: "pck-tie-older",
+                  status: "running",
+                }),
+              ),
+              buildPromptCachePreviewFromInvocation(
+                createLiveRecord({
+                  id: 1899,
+                  invokeId: "invoke-tie-older-terminal",
+                  occurredAt: "2026-03-10T02:55:00Z",
+                  promptCacheKey: "pck-tie-older",
+                  status: "completed",
+                }),
+              ),
+            ],
+          }),
+          createConversation("pck-tie-newer", {
+            createdAt: "2026-03-10T02:54:59Z",
+            lastActivityAt: "2026-03-10T02:55:00Z",
+            recentInvocations: [
+              buildPromptCachePreviewFromInvocation(
+                createLiveRecord({
+                  id: 1901,
+                  invokeId: "invoke-tie-newer-terminal",
+                  occurredAt: "2026-03-10T02:55:00Z",
+                  promptCacheKey: "pck-tie-newer",
+                  status: "completed",
+                }),
+              ),
+            ],
+          }),
+        ],
+      },
+      {},
+      { mode: "activityWindow", activityMinutes: 5 },
+      Date.parse("2026-03-10T03:00:00Z"),
+    );
+
+    expect(merged?.conversations).toHaveLength(50);
+    expect(merged?.conversations.map((item) => item.promptCacheKey)).toContain(
+      "pck-tie-newer",
+    );
+    expect(merged?.conversations.map((item) => item.promptCacheKey)).not.toContain(
+      "pck-tie-older",
+    );
+  });
 });
 
 describe("reconcilePromptCacheLiveRecordMap", () => {

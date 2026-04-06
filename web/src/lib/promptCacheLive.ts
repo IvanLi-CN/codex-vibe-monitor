@@ -181,11 +181,6 @@ function comparePromptCacheConversationVisibleSetOrder(
   );
   if (leftAnchorEpoch !== rightAnchorEpoch) return rightAnchorEpoch - leftAnchorEpoch;
 
-  const lastActivityCompare =
-    (parseOccurredAtEpoch(right.lastActivityAt) ?? Number.MIN_SAFE_INTEGER) -
-    (parseOccurredAtEpoch(left.lastActivityAt) ?? Number.MIN_SAFE_INTEGER);
-  if (lastActivityCompare !== 0) return lastActivityCompare;
-
   return comparePromptCacheConversationOrder(left, right);
 }
 

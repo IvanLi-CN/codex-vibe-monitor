@@ -198,14 +198,6 @@ function compareDashboardWorkingConversationVisibleSetOrder(
     return right.sortAnchorEpoch - left.sortAnchorEpoch;
   }
 
-  const leftCurrentEpoch =
-    left.currentInvocation.occurredAtEpoch ?? Number.MIN_SAFE_INTEGER;
-  const rightCurrentEpoch =
-    right.currentInvocation.occurredAtEpoch ?? Number.MIN_SAFE_INTEGER;
-  if (leftCurrentEpoch !== rightCurrentEpoch) {
-    return rightCurrentEpoch - leftCurrentEpoch;
-  }
-
   return compareDashboardWorkingConversationDisplayOrder(left, right);
 }
 

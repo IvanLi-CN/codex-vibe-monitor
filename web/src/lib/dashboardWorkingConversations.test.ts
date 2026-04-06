@@ -242,4 +242,67 @@ describe("mapPromptCacheConversationsToDashboardCards", () => {
     expect(cards.map((card) => card.promptCacheKey)).not.toContain("pck-base-00");
     expect(cards.at(-1)?.promptCacheKey).toBe("pck-old-running");
   });
+
+  it("breaks dashboard cap ties by createdAt descending after the shared anchor", () => {
+    const response = createResponse([
+      ...Array.from({ length: 19 }, (_, index) =>
+        createConversation(
+          `pck-base-${index.toString().padStart(2, "0")}`,
+          [
+            createPreview({
+              id: 300 + index,
+              invokeId: `invoke-base-${index}`,
+              occurredAt: `2026-04-04T10:04:${(59 - index).toString().padStart(2, "0")}Z`,
+              status: "completed",
+            }),
+          ],
+          {
+            createdAt: `2026-04-04T10:${index.toString().padStart(2, "0")}:00Z`,
+          },
+        ),
+      ),
+      createConversation(
+        "pck-tie-older",
+        [
+          createPreview({
+            id: 401,
+            invokeId: "invoke-tie-older-running",
+            occurredAt: "2026-04-04T10:04:59Z",
+            status: "running",
+          }),
+          createPreview({
+            id: 400,
+            invokeId: "invoke-tie-older-terminal",
+            occurredAt: "2026-04-04T10:00:00Z",
+            status: "completed",
+          }),
+        ],
+        {
+          createdAt: "2026-04-04T09:00:00Z",
+          lastActivityAt: "2026-04-04T10:04:59Z",
+        },
+      ),
+      createConversation(
+        "pck-tie-newer",
+        [
+          createPreview({
+            id: 402,
+            invokeId: "invoke-tie-newer-terminal",
+            occurredAt: "2026-04-04T10:00:00Z",
+            status: "completed",
+          }),
+        ],
+        {
+          createdAt: "2026-04-04T09:59:00Z",
+          lastActivityAt: "2026-04-04T10:00:00Z",
+        },
+      ),
+    ]);
+
+    const cards = mapPromptCacheConversationsToDashboardCards(response);
+
+    expect(cards).toHaveLength(20);
+    expect(cards.map((card) => card.promptCacheKey)).toContain("pck-tie-newer");
+    expect(cards.map((card) => card.promptCacheKey)).not.toContain("pck-tie-older");
+  });
 });
