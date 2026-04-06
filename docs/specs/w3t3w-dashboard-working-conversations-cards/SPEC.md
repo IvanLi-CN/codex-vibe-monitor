@@ -99,19 +99,23 @@
 
 ## 方案概述（Approach, high-level）
 
-- 以后端 Prompt Cache 对话接口作为单一数据源，新增分钟窗口参数与 Dashboard 专用可见性规则，而不是在前端拼装“工作中”集合；后端在 `LIMIT 50` 前继续按当前工作锚点挑选可见集合，前端卡片显示顺序再统一收敛为 `createdAt DESC`。
+- 以后端 Prompt Cache 对话接口作为单一数据源，新增分钟窗口参数与 Dashboard 专用可见性规则，而不是在前端拼装“工作中”集合；后端在 `LIMIT 50` 前继续按当前工作锚点挑选可见集合，前端 SSE 合并在本地超额裁切时也沿用同一工作锚点保住可见集合，最终卡片显示顺序再统一收敛为 `createdAt DESC`。
 - 前端新增轻量 mapper，把接口返回的对话预览收敛成 `WC-<short-hash>` 稳定短号、当前调用 / 上一条调用双槽模型与展示状态。
 - 卡片布局采用高扫描密度监控卡：顶部序列号 + 状态，中央双槽调用摘要，底部补充指标；上一条调用缺失时使用弱化占位而不是条件消失。
 - Storybook 采用 mock 数据覆盖“完整双槽 / 缺上一条 / running-only / 失败态 + 可点账号”四个主状态，作为本轮唯一视觉证据源。
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
-- 风险：若后端在 `LIMIT 50` 前也直接按历史 `createdAt` 裁切工作集，会把“老 key 重新活跃”的对话挤出当前工作中集合；本轮要求后端选集按工作锚点，前端卡片显示再按 `createdAt DESC` 固定顺序。
+- 风险：若后端或前端 SSE 合并在 `LIMIT 50` / 本地超额裁切前直接按历史 `createdAt` 选集，会把“老 key 重新活跃”的对话挤出当前工作中集合；本轮要求可见集合先按工作锚点保留，再按 `createdAt DESC` 固定展示顺序。
 - 风险：稳定短号若只依赖可见集合位置，会在刷新时漂移；本轮固定基于规范化 `promptCacheKey` 派生。
 - 风险：若卡片表面层继续写死 dark gradient，而正文沿用 `text-base-content` 主题 token，Storybook light theme 会再次出现对比度失衡；本轮要求表面与占位层都走主题变量。
 - 假设：Dashboard 继续按 `promptCacheKey` 聚合，不改为 `invokeId` 或 sticky key。
 - 假设：Live 页仍只保留小时级 activity 选项，本轮不暴露 5 分钟选择器。
 - 假设：视觉证据全部使用 Storybook mock 数据，不截取真实线上数据。
+
+## 变更记录（Change log）
+
+- 2026-04-06: PR 收敛期根据 fresh review-proof 补充前端 SSE merge 修正，5 分钟工作集在本地超额裁切时继续按工作锚点保留可见对话，最终展示顺序仍保持 `createdAt DESC`。
 
 ## Visual Evidence
 

@@ -441,6 +441,67 @@ describe("mergePromptCacheConversationsResponse", () => {
       "pck-running-only",
     ]);
   });
+
+  it("keeps reactivated older conversations inside the capped 5-minute working set", () => {
+    const baseConversations = Array.from({ length: 50 }, (_, index) =>
+      createConversation(`pck-base-${index.toString().padStart(2, "0")}`, {
+        createdAt: `2026-03-10T02:${(10 + index).toString().padStart(2, "0")}:00Z`,
+        lastActivityAt: `2026-03-10T02:55:${index.toString().padStart(2, "0")}Z`,
+        recentInvocations: [
+          buildPromptCachePreviewFromInvocation(
+            createLiveRecord({
+              id: 1500 + index,
+              invokeId: `invoke-base-${index}`,
+              occurredAt: `2026-03-10T02:55:${index.toString().padStart(2, "0")}Z`,
+              promptCacheKey: `pck-base-${index.toString().padStart(2, "0")}`,
+              status: "completed",
+            }),
+          ),
+        ],
+      }),
+    );
+
+    const merged = mergePromptCacheConversationsResponse(
+      {
+        rangeStart: "2026-03-10T02:55:00Z",
+        rangeEnd: "2026-03-10T03:00:00Z",
+        selectionMode: "activityWindow",
+        selectedLimit: null,
+        selectedActivityHours: null,
+        selectedActivityMinutes: 5,
+        implicitFilter: { kind: null, filteredCount: 0 },
+        conversations: baseConversations,
+      },
+      {
+        "pck-old-running": [
+          createLiveRecord({
+            id: 1701,
+            invokeId: "invoke-old-running",
+            occurredAt: "2026-03-10T02:59:30Z",
+            promptCacheKey: "pck-old-running",
+            status: "running",
+          }),
+        ],
+      },
+      { mode: "activityWindow", activityMinutes: 5 },
+      Date.parse("2026-03-10T03:00:00Z"),
+      {
+        "pck-old-running": {
+          createdAt: "2026-03-09T01:00:00Z",
+          lastActivityAt: "2026-03-09T01:00:00Z",
+        },
+      },
+    );
+
+    expect(merged?.conversations).toHaveLength(50);
+    expect(merged?.conversations.map((item) => item.promptCacheKey)).toContain(
+      "pck-old-running",
+    );
+    expect(merged?.conversations.map((item) => item.promptCacheKey)).not.toContain(
+      "pck-base-00",
+    );
+    expect(merged?.conversations.at(-1)?.promptCacheKey).toBe("pck-old-running");
+  });
 });
 
 describe("reconcilePromptCacheLiveRecordMap", () => {
