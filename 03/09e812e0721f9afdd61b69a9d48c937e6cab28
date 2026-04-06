@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.40.0",
+  "base_stable_version": "1.39.5",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-06T17:15:01Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.40.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "6d4986b5520025e985d5a6f055c0ac4b8df3ae13",
+  "pr_number": 297,
+  "pr_title": "feat(web): add dashboard invocation detail drawer",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.40.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.40.0",
+  "target_sha": "0309e812e0721f9afdd61b69a9d48c937e6cab28",
+  "type_label": "type:minor"
+}
