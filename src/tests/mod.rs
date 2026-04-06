@@ -32529,7 +32529,7 @@ async fn prompt_cache_conversations_activity_minutes_include_running_only_rows_a
             .iter()
             .map(|item| item.prompt_cache_key.as_str())
             .collect::<Vec<_>>(),
-        vec!["pck-terminal-late", "pck-terminal-early", "pck-running"]
+        vec!["pck-running", "pck-terminal-late", "pck-terminal-early"]
     );
 
     let running = response
