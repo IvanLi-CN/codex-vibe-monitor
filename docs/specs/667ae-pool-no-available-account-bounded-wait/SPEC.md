@@ -34,6 +34,7 @@
 - 新增 caller-side bounded wait helper，默认内部参数固定为 `timeout=10s`、`poll_interval=250ms`、`retry_after=10s`。
 - `proxy_openai_v1_via_pool()` 的“header sticky 先解析初始账号”入口必须复用该 helper，避免绕过等待逻辑。
 - `send_pool_request_with_failover()` 在 generic no-account 分支也必须复用该 helper；但当终态已经是 `429 exhaustion` 或 `no alternate after timeout` 时，不进入该等待。
+- 已有 sticky owner 在 temporary-failure family 下重试后，如果 cut-out 仍然找不到健康备选，必须直接保留最后一次具体 upstream failure，而不是重新掉回 bounded wait 后的 generic `503 no-account`。
 - 等待期间每轮只重新调用既有 resolver；在真正选中账号前，不得创建 upstream attempt row。
 - generic no-account 最终 message 保持 `no healthy pool account is available`，仅状态码从 `502` 改为 `503`。
 - `Unavailable` 在等待耗尽后必须落到新的 generic `503`；`NoCandidate` 若没有更具体的 `last_error` 才落到 generic `503`，否则保留最后一次真实 upstream failure。
