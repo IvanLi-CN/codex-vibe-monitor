@@ -194,4 +194,52 @@ describe("mapPromptCacheConversationsToDashboardCards", () => {
     expect(cards[2]?.previousInvocation?.displayStatus).toBe("completed");
     expect(cards[2]?.sortAnchorEpoch).toBe(Date.parse("2026-04-04T10:05:00Z"));
   });
+
+  it("keeps the 20-card dashboard cap anchored on active work before display reordering", () => {
+    const response = createResponse([
+      ...Array.from({ length: 20 }, (_, index) =>
+        createConversation(
+          `pck-base-${index.toString().padStart(2, "0")}`,
+          [
+            createPreview({
+              id: 100 + index,
+              invokeId: `invoke-base-${index}`,
+              occurredAt: `2026-04-04T10:00:${index.toString().padStart(2, "0")}Z`,
+              status: "completed",
+            }),
+          ],
+          {
+            createdAt: `2026-04-04T10:00:${index.toString().padStart(2, "0")}Z`,
+          },
+        ),
+      ),
+      createConversation(
+        "pck-old-running",
+        [
+          createPreview({
+            id: 201,
+            invokeId: "invoke-old-running",
+            occurredAt: "2026-04-04T10:04:59Z",
+            status: "running",
+          }),
+          createPreview({
+            id: 200,
+            invokeId: "invoke-old-running-previous",
+            occurredAt: "2026-04-04T09:40:00Z",
+            status: "completed",
+          }),
+        ],
+        {
+          createdAt: "2026-04-04T09:30:00Z",
+        },
+      ),
+    ]);
+
+    const cards = mapPromptCacheConversationsToDashboardCards(response);
+
+    expect(cards).toHaveLength(20);
+    expect(cards.map((card) => card.promptCacheKey)).toContain("pck-old-running");
+    expect(cards.map((card) => card.promptCacheKey)).not.toContain("pck-base-00");
+    expect(cards.at(-1)?.promptCacheKey).toBe("pck-old-running");
+  });
 });
