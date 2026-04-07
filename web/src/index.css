@@ -194,7 +194,7 @@ body {
   }
 
   .app-shell-banner-boundary {
-    width: calc(100% - 2rem);
+    width: 100%;
     max-width: var(--app-shell-max-width);
     margin-inline: auto;
   }

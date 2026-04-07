@@ -26,6 +26,7 @@ type ShellMetrics = {
 
 const VIEWPORTS = [
   { width: 1660, height: 960 },
+  { width: 1680, height: 960 },
   { width: 1873, height: 960 },
 ]
 
@@ -137,7 +138,6 @@ test.describe('Wide shell layout contract', () => {
 
         const metrics = await readShellMetrics(page)
         const expectedShellWidth = Math.min(1660, viewport.width)
-        const expectedBannerWidth = Math.min(1660, viewport.width - 32)
         const expectedCenterX = viewport.width / 2
 
         test.info().annotations.push({
@@ -150,7 +150,7 @@ test.describe('Wide shell layout contract', () => {
         expect(Math.abs(metrics.header.width - expectedShellWidth)).toBeLessThanOrEqual(2)
         expect(Math.abs(metrics.main.width - expectedShellWidth)).toBeLessThanOrEqual(2)
         expect(Math.abs(metrics.footer.width - expectedShellWidth)).toBeLessThanOrEqual(2)
-        expect(Math.abs(metrics.banner.width - expectedBannerWidth)).toBeLessThanOrEqual(2)
+        expect(Math.abs(metrics.banner.width - expectedShellWidth)).toBeLessThanOrEqual(2)
 
         expect(Math.abs(metrics.header.centerX - expectedCenterX)).toBeLessThanOrEqual(1)
         expect(Math.abs(metrics.main.centerX - expectedCenterX)).toBeLessThanOrEqual(1)

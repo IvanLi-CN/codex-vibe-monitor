@@ -141,6 +141,10 @@ None
 
   ![Shell layout 1660](./assets/shell-layout-1660.png)
 
+- 本地预览页 `/#/dashboard`，深色主题，浏览器视口 `1680x960`。验证更新横幅在临界宽度下与共享壳层完全对齐；实测 `banner.width = header.width = main.width = 1660`，不再出现额外缩进。
+
+  ![Update banner 1680 dark](./assets/update-banner-1680-dark.png)
+
 - Storybook Canvas `pages-dashboardpage--default`，暗色主题，浏览器视口 `1873x1200`。验证 Dashboard 顶部双卡、活动总览与工作中对话区在宽屏下充分展开且无页面级横向滚动。
 
   ![Dashboard page 1660](./assets/dashboard-page-1660.png)
@@ -189,6 +193,7 @@ None
 - 2026-04-07: 为清除 PR freshness gate，同步 `origin/main` 并重新生成 Storybook 宽屏截图；最新工作树在同步后再次通过 `build + test + build-storybook + targeted e2e`，视觉证据已刷新到当前待推送 head。
 - 2026-04-07: fresh review 指出页面级 Storybook surface 外层 gutter 会让 `desktop1660` 少于真实壳层宽度；已把横向 padding 收回 `app-shell-boundary` 内部，并再次重跑 `build + test + build-storybook + targeted e2e`，同时刷新宽屏截图到最新工作树。
 - 2026-04-07: 本地按 CI workflow 复现 `Lint & Format Check`，确认失败点是 `web/src/components/storybookPageHelpers.tsx` 触发 `react-refresh/only-export-components`；已把 `jsonResponse` 抽到独立 `storybookResponse.ts`，并重新通过 `cargo check --locked --all-targets --all-features`、`bun run check:bun-first`、`cd web && bun run lint`、`cd web && bun run storybook:build -- --quiet`、`cd docs-site && DOCS_BASE=/codex-vibe-monitor/ bun run build` 与 `assemble-pages-site.sh`。
+- 2026-04-07: fresh merge-proof review 发现更新横幅在 `1680px` 临界宽度下会比共享壳层窄 `32px`；已把 `app-shell-banner-boundary` 改回与主壳层同宽，并把 `wide-shell-layout` 回归扩展到 `1680` 视口，同时补充深色主题下的本地预览视觉证据。
 
 ## 参考（References）
 
