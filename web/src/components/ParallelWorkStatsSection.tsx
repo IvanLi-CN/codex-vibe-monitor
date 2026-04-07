@@ -9,6 +9,7 @@ import {
   InlineChartTooltipSurface,
   type InlineChartTooltipData,
 } from "./ui/inline-chart-tooltip";
+import { InfoTooltip } from "./ui/info-tooltip";
 import { SegmentedControl, SegmentedControlItem } from "./ui/segmented-control";
 
 interface ParallelWorkStatsSectionProps {
@@ -204,6 +205,37 @@ function resolveParallelWorkDefaultIndex(
     if ((points[index]?.parallelCount ?? 0) > 0) return index;
   }
   return Math.max(0, points.length - 1);
+}
+
+function buildWindowDetailsTooltipContent(
+  description: string,
+  samples?: string | null,
+) {
+  if (!samples) return description;
+  return [description.trim(), samples.trim()].filter(Boolean).join(" ");
+}
+
+function ParallelWorkWindowHeading({
+  title,
+  tooltipContent,
+  tooltipLabel,
+}: {
+  title: string;
+  tooltipContent: string;
+  tooltipLabel: string;
+}) {
+  return (
+    <div className="flex min-w-0 items-start gap-1.5">
+      <h4 className="min-w-0 text-base font-semibold text-base-content">
+        {title}
+      </h4>
+      <InfoTooltip
+        content={tooltipContent}
+        label={tooltipLabel}
+        className="mt-0.5 shrink-0 text-base-content/46 transition-colors hover:text-base-content/70"
+      />
+    </div>
+  );
 }
 
 function ParallelWorkWindowToggle({
@@ -416,6 +448,14 @@ function ParallelWorkWindowCard({
   const { t, locale } = useTranslation();
   const meta = resolveWindowMeta(windowKey);
   const empty = window.completeBucketCount === 0;
+  const samples = t("stats.parallelWork.samples", {
+    complete: window.completeBucketCount,
+    active: window.activeBucketCount,
+  });
+  const tooltipContent = buildWindowDetailsTooltipContent(
+    t(meta.descriptionKey),
+    samples,
+  );
 
   return (
     <article
@@ -423,19 +463,14 @@ function ParallelWorkWindowCard({
       data-testid={"parallel-work-card-" + windowKey}
     >
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0 flex-1 space-y-1.5">
-          <h4 className="text-base font-semibold text-base-content">
-            {t(meta.titleKey)}
-          </h4>
-          <p className="text-sm text-base-content/65">
-            {t(meta.descriptionKey)}
-          </p>
-          <p className="text-xs text-base-content/52">
-            {t("stats.parallelWork.samples", {
-              complete: window.completeBucketCount,
-              active: window.activeBucketCount,
+        <div className="min-w-0 flex-1">
+          <ParallelWorkWindowHeading
+            title={t(meta.titleKey)}
+            tooltipContent={tooltipContent}
+            tooltipLabel={t("stats.parallelWork.detailsTooltipLabel", {
+              title: t(meta.titleKey),
             })}
-          </p>
+          />
         </div>
         <div className="sm:pl-4">
           <ParallelWorkWindowToggle
@@ -516,14 +551,14 @@ function ParallelWorkLoadingCard({
       data-testid={"parallel-work-card-" + windowKey}
     >
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0 flex-1 space-y-1.5">
-          <h4 className="text-base font-semibold text-base-content">
-            {t(meta.titleKey)}
-          </h4>
-          <p className="text-sm text-base-content/65">
-            {t(meta.descriptionKey)}
-          </p>
-          <div className="h-4 w-40 animate-pulse rounded-full bg-base-300/60" />
+        <div className="min-w-0 flex-1">
+          <ParallelWorkWindowHeading
+            title={t(meta.titleKey)}
+            tooltipContent={t(meta.descriptionKey)}
+            tooltipLabel={t("stats.parallelWork.detailsTooltipLabel", {
+              title: t(meta.titleKey),
+            })}
+          />
         </div>
         <div className="sm:pl-4">
           <ParallelWorkWindowToggle
@@ -569,13 +604,14 @@ function ParallelWorkErrorCard({
       data-testid={"parallel-work-card-" + activeWindowKey}
     >
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0 flex-1 space-y-1.5">
-          <h4 className="text-base font-semibold text-base-content">
-            {t(meta.titleKey)}
-          </h4>
-          <p className="text-sm text-base-content/65">
-            {t(meta.descriptionKey)}
-          </p>
+        <div className="min-w-0 flex-1">
+          <ParallelWorkWindowHeading
+            title={t(meta.titleKey)}
+            tooltipContent={t(meta.descriptionKey)}
+            tooltipLabel={t("stats.parallelWork.detailsTooltipLabel", {
+              title: t(meta.titleKey),
+            })}
+          />
         </div>
         <div className="sm:pl-4">
           <ParallelWorkWindowToggle

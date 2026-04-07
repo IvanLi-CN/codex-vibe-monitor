@@ -36,6 +36,7 @@ vi.mock("../i18n", () => ({
         "stats.parallelWork.windowToggleAria": "Select parallel-work window",
         "stats.parallelWork.chartAria": `${values?.title ?? ""} trend`,
         "stats.parallelWork.samples": `${values?.complete ?? 0} complete buckets · ${values?.active ?? 0} active buckets`,
+        "stats.parallelWork.detailsTooltipLabel": `Explain ${values?.title ?? "parallel-work"} details`,
         "stats.parallelWork.rangeSummary": `Range: ${values?.start ?? ""} → ${values?.end ?? ""}`,
         "stats.parallelWork.metrics.min": "Min",
         "stats.parallelWork.metrics.max": "Max",
@@ -232,6 +233,10 @@ describe("ParallelWorkStatsSection", () => {
     ).toBeNull();
     expect(host?.textContent).toContain("Parallel work");
     expect(host?.textContent).toContain("4.67");
+    expect(host?.textContent).not.toContain("Minute buckets");
+    expect(host?.textContent).not.toContain(
+      "10080 complete buckets · 4132 active buckets",
+    );
     const chart = host?.querySelector(
       '[data-chart-kind="parallel-work-sparkline"]',
     ) as SVGElement | null;
@@ -244,6 +249,38 @@ describe("ParallelWorkStatsSection", () => {
     expect(chart).not.toBeNull();
     expect(chart?.className.baseVal).toContain("w-full");
     expect(activeCard?.contains(toggle)).toBe(true);
+    expect(
+      document.querySelector(
+        'button[aria-label="Explain Last 7 days · by minute details"]',
+      ),
+    ).not.toBeNull();
+  });
+
+  it("collapses secondary window copy into a question-mark tooltip", () => {
+    render(
+      <ParallelWorkStatsSection
+        stats={populatedStats}
+        isLoading={false}
+        error={null}
+      />,
+    );
+
+    const trigger = document.querySelector(
+      'button[aria-label="Explain Last 7 days · by minute details"]',
+    ) as HTMLButtonElement | null;
+    expect(trigger).not.toBeNull();
+
+    act(() => {
+      trigger?.click();
+    });
+
+    const tooltip = document.body.querySelector(
+      '[role="tooltip"][aria-hidden="false"]',
+    ) as HTMLElement;
+    expect(tooltip.textContent).toContain("Minute buckets");
+    expect(tooltip.textContent).toContain(
+      "10080 complete buckets · 4132 active buckets",
+    );
   });
 
   it("shows inline tooltip details on click for the active window chart", () => {
