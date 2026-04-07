@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.42.0",
+  "base_stable_version": "1.41.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-07T10:42:40Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.42.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "bce48f3b39efc0059c743222b4faf2c2a35df193",
+  "pr_number": 300,
+  "pr_title": "feat(web): merge dashboard history overview",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.42.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.42.0",
+  "target_sha": "5d1d8c4995fd27b20ddb3f760eec2207d24b6631",
+  "type_label": "type:minor"
+}
