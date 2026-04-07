@@ -1,5 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { fetchParallelWorkStats, type ParallelWorkStatsResponse } from '../lib/api'
+import {
+  ApiRequestError,
+  fetchParallelWorkStats,
+  type ParallelWorkStatsResponse,
+} from '../lib/api'
 import { subscribeToSse, subscribeToSseOpen } from '../lib/sse'
 
 interface LoadOptions {
@@ -13,6 +17,17 @@ interface PendingLoad {
 
 export const PARALLEL_WORK_REFRESH_THROTTLE_MS = 60_000
 export const PARALLEL_WORK_OPEN_RESYNC_COOLDOWN_MS = 60_000
+
+export function shouldRetryParallelWorkError(error: unknown) {
+  if (!error) return false
+  if (error instanceof ApiRequestError) {
+    return error.status === 429 || error.status >= 500
+  }
+  if (error instanceof Error && error.name === 'AbortError') {
+    return false
+  }
+  return true
+}
 
 export function getParallelWorkRecordsResyncDelay(
   lastRefreshAt: number,
@@ -45,6 +60,7 @@ export function useParallelWorkStats() {
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lastRecordsRefreshAtRef = useRef(0)
   const lastOpenResyncAtRef = useRef(0)
+  const lastErrorRef = useRef<unknown>(null)
 
   const clearPendingRefreshTimer = useCallback(() => {
     if (!refreshTimerRef.current) return
@@ -70,6 +86,7 @@ export function useParallelWorkStats() {
       }
       setData(response)
       setError(null)
+      lastErrorRef.current = null
       hasHydratedRef.current = true
       if (pendingOpenResyncRef.current) {
         pendingOpenResyncRef.current = false
@@ -82,6 +99,7 @@ export function useParallelWorkStats() {
       if (err instanceof Error && err.name === 'AbortError') {
         return
       }
+      lastErrorRef.current = err
       setError(err instanceof Error ? err.message : String(err))
       hasHydratedRef.current = true
     } finally {
@@ -161,12 +179,13 @@ export function useParallelWorkStats() {
     hasHydratedRef.current = false
     lastRecordsRefreshAtRef.current = 0
     lastOpenResyncAtRef.current = 0
+    lastErrorRef.current = null
     clearPendingRefreshTimer()
     void load({ force: true })
   }, [clearPendingRefreshTimer, load])
 
   useEffect(() => {
-    if (!error) return
+    if (!error || !shouldRetryParallelWorkError(lastErrorRef.current)) return
     const timer = setTimeout(() => {
       void load()
     }, 2_000)
@@ -205,6 +224,7 @@ export function useParallelWorkStats() {
       activeRequestControllerRef.current = null
       pendingLoadRef.current = null
       pendingOpenResyncRef.current = false
+      lastErrorRef.current = null
       clearPendingRefreshTimer()
     },
     [clearPendingRefreshTimer],

@@ -8,6 +8,7 @@ const OAUTH_LOGIN_SESSION_BASE_UPDATED_AT_HEADER =
 const FORWARD_PROXY_VALIDATION_TIMEOUT_MS = 5_000;
 const FORWARD_PROXY_SUBSCRIPTION_VALIDATION_TIMEOUT_MS = 60_000;
 const FORWARD_PROXY_HISTORY_DAY_MS = 86_400_000;
+const PARALLEL_WORK_TZ_COMPAT_LOOKBACK_DAYS = 400;
 export const DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS = {
   primarySyncIntervalSecs: 300,
   secondarySyncIntervalSecs: 1_800,
@@ -23,6 +24,28 @@ type ZonedDateParts = {
 
 const withBase = (path: string) => `${API_BASE}${path}`;
 
+export class ApiRequestError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "ApiRequestError";
+    this.status = status;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+function buildRequestError(response: Response, rawText: string): ApiRequestError {
+  const compactText = rawText.replace(/\s+/g, " ").trim();
+  const detail = (compactText || response.statusText || "").slice(0, 220);
+  return new ApiRequestError(
+    response.status,
+    detail
+      ? `Request failed: ${response.status} ${detail}`
+      : `Request failed: ${response.status}`,
+  );
+}
+
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(withBase(path), {
     headers: {
@@ -33,13 +56,7 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const rawText = await response.text();
-    const compactText = rawText.replace(/\s+/g, " ").trim();
-    const detail = (compactText || response.statusText || "").slice(0, 220);
-    throw new Error(
-      detail
-        ? `Request failed: ${response.status} ${detail}`
-        : `Request failed: ${response.status}`,
-    );
+    throw buildRequestError(response, rawText);
   }
 
   if (response.status === 204) {
@@ -60,13 +77,7 @@ async function ensureJsonRequestOk(response: Response): Promise<void> {
   }
 
   const rawText = await response.text();
-  const compactText = rawText.replace(/\s+/g, " ").trim();
-  const detail = (compactText || response.statusText || "").slice(0, 220);
-  throw new Error(
-    detail
-      ? `Request failed: ${response.status} ${detail}`
-      : `Request failed: ${response.status}`,
-  );
+  throw buildRequestError(response, rawText);
 }
 
 function parseForwardProxyHistoryRangeSeconds(range: string): number | null {
@@ -289,6 +300,42 @@ function resolveForwardProxyHistoryTimeZone(
     ) {
       throw error;
     }
+    return candidate;
+  }
+}
+
+function resolveParallelWorkTimeZone(timeZone?: string): string | undefined {
+  const candidate = timeZone ?? getBrowserTimeZone();
+  const now = new Date();
+  const startMs =
+    now.getTime() -
+    PARALLEL_WORK_TZ_COMPAT_LOOKBACK_DAYS * FORWARD_PROXY_HISTORY_DAY_MS;
+
+  try {
+    for (
+      let currentMs = startMs;
+      currentMs < now.getTime();
+      currentMs += FORWARD_PROXY_HISTORY_DAY_MS
+    ) {
+      const offsetMinutes = getForwardProxyHistoryOffsetMinutes(
+        new Date(currentMs),
+        candidate,
+      );
+      if (offsetMinutes !== null && offsetMinutes % 60 !== 0) {
+        return undefined;
+      }
+    }
+
+    const currentOffsetMinutes = getForwardProxyHistoryOffsetMinutes(
+      now,
+      candidate,
+    );
+    if (currentOffsetMinutes !== null && currentOffsetMinutes % 60 !== 0) {
+      return undefined;
+    }
+
+    return candidate;
+  } catch {
     return candidate;
   }
 }
@@ -3686,9 +3733,14 @@ export async function fetchParallelWorkStats(params?: {
   signal?: AbortSignal;
 }) {
   const search = new URLSearchParams();
-  search.set("timeZone", params?.timeZone ?? getBrowserTimeZone());
+  const timeZone = resolveParallelWorkTimeZone(params?.timeZone);
+  if (timeZone) {
+    search.set("timeZone", timeZone);
+  }
   const response = await fetchJson<unknown>(
-    `/api/stats/parallel-work?${search.toString()}`,
+    search.size > 0
+      ? `/api/stats/parallel-work?${search.toString()}`
+      : "/api/stats/parallel-work",
     { signal: params?.signal },
   );
   return normalizeParallelWorkStatsResponse(response);

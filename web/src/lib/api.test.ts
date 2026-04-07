@@ -294,6 +294,7 @@ describe("fetchTimeseries", () => {
 
 describe("fetchParallelWorkStats", () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -359,6 +360,128 @@ describe("fetchParallelWorkStats", () => {
     expect(response.hour30d.avgCount).toBe(2.13);
     expect(response.dayAll.completeBucketCount).toBe(0);
     expect(response.dayAll.avgCount).toBeNull();
+  });
+
+  it("falls back to the server default time zone for fixed sub-hour offsets", async () => {
+    const fetchMock = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          minute7d: {
+            rangeStart: "2026-03-01T00:00:00Z",
+            rangeEnd: "2026-03-08T00:00:00Z",
+            bucketSeconds: 60,
+            completeBucketCount: 1,
+            activeBucketCount: 1,
+            minCount: 1,
+            maxCount: 1,
+            avgCount: 1,
+            points: [
+              {
+                bucketStart: "2026-03-07T10:00:00Z",
+                bucketEnd: "2026-03-07T10:01:00Z",
+                parallelCount: 1,
+              },
+            ],
+          },
+          hour30d: {
+            rangeStart: "2026-03-01T00:00:00Z",
+            rangeEnd: "2026-03-08T00:00:00Z",
+            bucketSeconds: 3600,
+            completeBucketCount: 1,
+            activeBucketCount: 1,
+            minCount: 1,
+            maxCount: 1,
+            avgCount: 1,
+            points: [
+              {
+                bucketStart: "2026-03-07T10:00:00Z",
+                bucketEnd: "2026-03-07T11:00:00Z",
+                parallelCount: 1,
+              },
+            ],
+          },
+          dayAll: {
+            rangeStart: "2026-03-01T00:00:00Z",
+            rangeEnd: "2026-03-08T00:00:00Z",
+            bucketSeconds: 86400,
+            completeBucketCount: 1,
+            activeBucketCount: 1,
+            minCount: 1,
+            maxCount: 1,
+            avgCount: 1,
+            points: [
+              {
+                bucketStart: "2026-03-07T00:00:00Z",
+                bucketEnd: "2026-03-08T00:00:00Z",
+                parallelCount: 1,
+              },
+            ],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    await fetchParallelWorkStats({ timeZone: "Asia/Kolkata" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const firstArg = fetchMock.mock.calls.at(0)?.at(0) as RequestInfo | URL | undefined;
+    expect(firstArg).toBeDefined();
+    expect(String(firstArg)).toBe("/api/stats/parallel-work");
+  });
+
+  it("falls back when a seasonal sub-hour offset appears inside the compatibility lookback", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-01-15T00:00:00Z"));
+    const fetchMock = vi.fn(async () => {
+      return new Response(
+        JSON.stringify({
+          minute7d: {
+            rangeStart: "2026-03-01T00:00:00Z",
+            rangeEnd: "2026-03-08T00:00:00Z",
+            bucketSeconds: 60,
+            completeBucketCount: 0,
+            activeBucketCount: 0,
+            minCount: null,
+            maxCount: null,
+            avgCount: null,
+            points: [],
+          },
+          hour30d: {
+            rangeStart: "2026-03-01T00:00:00Z",
+            rangeEnd: "2026-03-08T00:00:00Z",
+            bucketSeconds: 3600,
+            completeBucketCount: 0,
+            activeBucketCount: 0,
+            minCount: null,
+            maxCount: null,
+            avgCount: null,
+            points: [],
+          },
+          dayAll: {
+            rangeStart: "2026-03-01T00:00:00Z",
+            rangeEnd: "2026-03-08T00:00:00Z",
+            bucketSeconds: 86400,
+            completeBucketCount: 0,
+            activeBucketCount: 0,
+            minCount: null,
+            maxCount: null,
+            avgCount: null,
+            points: [],
+          },
+        }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+    });
+    vi.stubGlobal("fetch", fetchMock as typeof fetch);
+
+    await fetchParallelWorkStats({ timeZone: "Australia/Lord_Howe" });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const firstArg = fetchMock.mock.calls.at(0)?.at(0) as RequestInfo | URL | undefined;
+    expect(firstArg).toBeDefined();
+    expect(String(firstArg)).toBe("/api/stats/parallel-work");
   });
 });
 

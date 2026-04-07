@@ -2,11 +2,16 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import type { BroadcastPayload, ParallelWorkStatsResponse } from '../lib/api'
+import {
+  ApiRequestError,
+  type BroadcastPayload,
+  type ParallelWorkStatsResponse,
+} from '../lib/api'
 import {
   PARALLEL_WORK_OPEN_RESYNC_COOLDOWN_MS,
   PARALLEL_WORK_REFRESH_THROTTLE_MS,
   getParallelWorkRecordsResyncDelay,
+  shouldRetryParallelWorkError,
   shouldTriggerParallelWorkOpenResync,
   useParallelWorkStats,
 } from './useParallelWorkStats'
@@ -151,6 +156,19 @@ describe('useParallelWorkStats helpers', () => {
     ).toBe(true)
     expect(shouldTriggerParallelWorkOpenResync(0, 1, true)).toBe(true)
   })
+
+  it('only retries transient request failures', () => {
+    expect(shouldRetryParallelWorkError(new ApiRequestError(400, 'Request failed: 400'))).toBe(
+      false,
+    )
+    expect(shouldRetryParallelWorkError(new ApiRequestError(429, 'Request failed: 429'))).toBe(
+      true,
+    )
+    expect(shouldRetryParallelWorkError(new ApiRequestError(503, 'Request failed: 503'))).toBe(
+      true,
+    )
+    expect(shouldRetryParallelWorkError(new Error('network down'))).toBe(true)
+  })
 })
 
 describe('useParallelWorkStats', () => {
@@ -206,5 +224,42 @@ describe('useParallelWorkStats', () => {
     })
     await flushAsync()
     expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(3)
+  })
+
+  it('does not auto-retry permanent client errors', async () => {
+    vi.useFakeTimers()
+    apiMocks.fetchParallelWorkStats.mockRejectedValue(
+      new ApiRequestError(
+        400,
+        'Request failed: 400 unsupported timeZone for historical parallel-work rollups',
+      ),
+    )
+
+    render(<Probe />)
+    await flushAsync()
+    expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(1)
+    expect(host?.querySelector('[data-testid="error"]')?.textContent).toContain('Request failed: 400')
+
+    await vi.advanceTimersByTimeAsync(2_000)
+    await flushAsync()
+    expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps auto-retrying transient server failures', async () => {
+    vi.useFakeTimers()
+    apiMocks.fetchParallelWorkStats
+      .mockRejectedValueOnce(new ApiRequestError(503, 'Request failed: 503 gateway timeout'))
+      .mockResolvedValueOnce(createStats())
+
+    render(<Probe />)
+    await flushAsync()
+    expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(1)
+    expect(host?.querySelector('[data-testid="error"]')?.textContent).toContain('Request failed: 503')
+
+    await vi.advanceTimersByTimeAsync(2_000)
+    await flushAsync()
+    expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(2)
+    expect(host?.querySelector('[data-testid="error"]')?.textContent).toBe('')
+    expect(host?.querySelector('[data-testid="minute-count"]')?.textContent).toBe('1')
   })
 })
