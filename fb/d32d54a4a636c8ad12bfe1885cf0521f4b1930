@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.43.0",
+  "base_stable_version": "1.42.0",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-07T14:03:59Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.43.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "0d78c8c3cf774314d6ef7d6c3888de08b90b4394",
+  "pr_number": 302,
+  "pr_title": "feat(web): add dashboard 1660 wide four-column cards",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.43.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.43.0",
+  "target_sha": "fbd32d54a4a636c8ad12bfe1885cf0521f4b1930",
+  "type_label": "type:minor"
+}
