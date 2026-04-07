@@ -49,6 +49,7 @@ const records: ApiInvocation[] = [
     promptCacheKey: 'pck_6f35b9b20f0348af',
     requestedServiceTier: 'priority',
     serviceTier: 'priority',
+    billingServiceTier: 'priority',
     proxyWeightDelta: 0.55,
     tReqReadMs: 1.8,
     tReqParseMs: 3.2,
@@ -284,6 +285,7 @@ const fastIndicatorRecords: ApiInvocation[] = [
     status: 'success',
     requestedServiceTier: 'priority',
     serviceTier: 'priority',
+    billingServiceTier: 'priority',
     inputTokens: 1200,
     outputTokens: 240,
     totalTokens: 1440,
@@ -299,15 +301,15 @@ const fastIndicatorRecords: ApiInvocation[] = [
     source: 'proxy',
     routeMode: 'pool',
     upstreamAccountId: 2568,
-    upstreamAccountName: 'SUB2API',
-    proxyDisplayName: 'Fast-relay-billed-priority',
+    upstreamAccountName: 'API Keys Pool',
+    proxyDisplayName: 'API Keys requested-tier priority',
     endpoint: '/v1/responses',
     model: 'gpt-5',
     status: 'failed',
     requestedServiceTier: 'priority',
     serviceTier: 'default',
     billingServiceTier: 'priority',
-    priceVersion: 'openai-standard-2026-02-23+relay-fast-billing-v1',
+    priceVersion: 'openai-standard-2026-02-23@requested-tier',
     inputTokens: 980,
     outputTokens: 0,
     totalTokens: 980,
@@ -345,6 +347,7 @@ const fastIndicatorRecords: ApiInvocation[] = [
     status: 'success',
     requestedServiceTier: 'auto',
     serviceTier: 'priority',
+    billingServiceTier: 'priority',
     inputTokens: 1188,
     outputTokens: 202,
     totalTokens: 1390,
@@ -1156,6 +1159,7 @@ function RunningInvocationLifecyclePreview() {
           cost: 0.0046,
           requestedServiceTier: 'priority',
           serviceTier: 'priority',
+          billingServiceTier: 'priority',
           proxyWeightDelta: 0.42,
           tUpstreamTtfbMs: 184.2,
           tTotalMs: Number(terminalElapsedMs.toFixed(1)),
@@ -1211,6 +1215,7 @@ function buildPoolAttemptLifecycleRecord(
       cost: 0.0046,
       requestedServiceTier: 'priority',
       serviceTier: 'priority',
+      billingServiceTier: 'priority',
       responseContentEncoding: 'gzip',
       tUpstreamConnectMs: 26.4,
       tUpstreamTtfbMs: 148.2,
@@ -1926,7 +1931,7 @@ export const FastIndicatorStates: Story = {
     docs: {
       description: {
         story:
-          'Covers the fast indicator matrix: effective priority, relay-billed priority where the response tier is only `default`, requested-only fallback, requested priority with missing response tier, effective priority despite non-priority request, and a flex request with no lightning icon.',
+          'Covers the fast indicator matrix: effective priority, API Keys requested-tier priority where the response tier is only `default`, requested-only fallback, requested priority with missing response tier, effective priority despite non-priority request, and a flex request with no lightning icon.',
       },
     },
   },
@@ -1937,12 +1942,12 @@ export const FastIndicatorStates: Story = {
   },
 }
 
-export const RelayFastBillingPriority: Story = {
+export const ApiKeysRequestedTierPriority: Story = {
   parameters: {
     docs: {
       description: {
         story:
-          'Stable relay-billing example: the request asked for `priority`, the upstream response only reported `default`, but billing still resolves to fast priority and the lightning badge stays effective.',
+          'Stable API Keys example: the request asked for `priority`, the upstream response only reported `default`, but billing resolves from the requested-tier strategy and the lightning badge stays effective.',
       },
     },
   },
@@ -1950,14 +1955,14 @@ export const RelayFastBillingPriority: Story = {
     records: [
       {
         id: 2101,
-        invokeId: 'inv_relay_fast_billing_priority',
+        invokeId: 'inv_api_keys_requested_tier_priority',
         occurredAt: '2026-04-06T06:28:02Z',
         createdAt: '2026-04-06T06:28:02Z',
         source: 'proxy',
         routeMode: 'pool',
         upstreamAccountId: 2568,
-        upstreamAccountName: 'SUB2API',
-        proxyDisplayName: 'sub2api-relay-fast',
+        upstreamAccountName: 'API Keys Pool',
+        proxyDisplayName: 'api-keys-requested-tier',
         endpoint: '/v1/responses',
         model: 'gpt-5.4',
         status: 'success',
@@ -1967,7 +1972,7 @@ export const RelayFastBillingPriority: Story = {
         billingServiceTier: 'priority',
         totalTokens: 4096,
         cost: 0.1024,
-        priceVersion: 'openai-standard-2026-02-23+relay-fast-billing-v1',
+        priceVersion: 'openai-standard-2026-02-23@requested-tier',
         tUpstreamTtfbMs: 188.6,
         tTotalMs: 890.1,
       },
