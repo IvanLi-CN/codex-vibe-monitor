@@ -8404,13 +8404,24 @@ async fn sync_upstream_account_by_id(
             PoolAccountGroupProxyRoutingReadiness::Ready(group_metadata) => group_metadata,
             PoolAccountGroupProxyRoutingReadiness::Blocked(message) => bail!(message),
         };
-    if group_metadata.node_shunt_enabled {
-        resolve_account_forward_proxy_scope(state, &row, Some(group_metadata)).await?;
-    }
-
     let sync_result = match row.kind.as_str() {
-        UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX => sync_oauth_account(state, &row, cause).await,
-        UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX => sync_api_key_account(&state.pool, &row, cause).await,
+        UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX => {
+            if group_metadata.node_shunt_enabled {
+                resolve_account_forward_proxy_scope_for_sync(
+                    state,
+                    &row,
+                    Some(group_metadata.clone()),
+                )
+                .await?;
+            }
+            sync_oauth_account(state, &row, cause).await
+        }
+        UPSTREAM_ACCOUNT_KIND_API_KEY_CODEX => {
+            if group_metadata.node_shunt_enabled {
+                resolve_account_forward_proxy_scope(state, &row, Some(group_metadata)).await?;
+            }
+            sync_api_key_account(&state.pool, &row, cause).await
+        }
         _ => bail!("unsupported account kind: {}", row.kind),
     };
     if let Err(err) = sync_result {
@@ -8498,7 +8509,7 @@ async fn sync_oauth_account(
                     )
         })
         .unwrap_or(true);
-    let usage_scope = match resolve_account_forward_proxy_scope(state, row, None).await {
+    let usage_scope = match resolve_account_forward_proxy_scope_for_sync(state, row, None).await {
         Ok(scope) => scope,
         Err(err) if is_group_node_shunt_unassigned_message(&err.to_string()) => {
             return Err(err);
@@ -11947,6 +11958,62 @@ async fn resolve_account_forward_proxy_scope(
         &group_metadata,
         &assignments,
     )
+}
+
+async fn resolve_account_forward_proxy_scope_for_sync(
+    state: &AppState,
+    row: &UpstreamAccountRow,
+    group_metadata: Option<UpstreamAccountGroupMetadata>,
+) -> Result<ForwardProxyRouteScope> {
+    let group_metadata = match group_metadata {
+        Some(metadata) => metadata,
+        None => load_group_metadata(&state.pool, row.group_name.as_deref()).await?,
+    };
+    if !group_metadata.node_shunt_enabled {
+        return required_account_forward_proxy_scope(
+            row.group_name.as_deref(),
+            group_metadata.bound_proxy_keys,
+        );
+    }
+
+    let normalized_group_name = row
+        .group_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| anyhow!(missing_account_group_error_message()))?;
+    let normalized_bound_proxy_keys =
+        normalize_bound_proxy_keys(group_metadata.bound_proxy_keys.clone());
+    if normalized_bound_proxy_keys.is_empty() {
+        bail!(missing_group_bound_proxy_error_message(
+            normalized_group_name
+        ));
+    }
+    let valid_proxy_keys = {
+        let manager = state.forward_proxy.lock().await;
+        manager.selectable_bound_proxy_keys_in_order(&normalized_bound_proxy_keys)
+    };
+    if valid_proxy_keys.is_empty() {
+        bail!(missing_selectable_group_bound_proxy_error_message(
+            normalized_group_name
+        ));
+    }
+
+    let reservation_snapshot = pool_routing_reservation_snapshot(state);
+    if let Some(proxy_key) = reservation_snapshot
+        .pinned_proxy_keys_for_account(row.id, &valid_proxy_keys, &HashSet::new())
+        .into_iter()
+        .next()
+    {
+        return Ok(ForwardProxyRouteScope::pinned(proxy_key));
+    }
+
+    let assignments = build_upstream_account_node_shunt_assignments(state).await?;
+    if let Some(proxy_key) = assignments.account_proxy_keys.get(&row.id) {
+        return Ok(ForwardProxyRouteScope::pinned(proxy_key.clone()));
+    }
+
+    required_account_forward_proxy_scope(Some(normalized_group_name), valid_proxy_keys)
 }
 
 async fn resolve_group_forward_proxy_scope_for_provisioning(
@@ -27027,7 +27094,81 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn manual_sync_returns_group_node_shunt_unassigned_error_for_queued_account() {
+    async fn sync_scope_reuses_live_reserved_node_for_same_account_before_shared_group_probe() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Reserved OAuth",
+            "reserved@example.com",
+            "org_reserved",
+            "user_reserved",
+        )
+        .await;
+
+        set_test_account_group_name(&state.pool, account_id, Some("node-shunt-sync-reserved"))
+            .await;
+
+        let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+        save_group_metadata_record_conn(
+            &mut conn,
+            "node-shunt-sync-reserved",
+            UpstreamAccountGroupMetadata {
+                note: None,
+                bound_proxy_keys: test_required_group_bound_proxy_keys(),
+                node_shunt_enabled: true,
+                upstream_429_retry_enabled: false,
+                upstream_429_max_retries: 0,
+                concurrency_limit: 0,
+            },
+        )
+        .await
+        .expect("save reserved node shunt sync metadata");
+        drop(conn);
+
+        seed_hard_unavailable_route_failure(
+            &state.pool,
+            account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+        state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned")
+            .insert(
+                "test-node-shunt-sync-reservation".to_string(),
+                PoolRoutingReservation {
+                    account_id,
+                    proxy_key: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
+                    created_at: Instant::now(),
+                },
+            );
+
+        let row = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load reserved account")
+            .expect("reserved account exists");
+        let scope = resolve_account_forward_proxy_scope_for_sync(state.as_ref(), &row, None)
+            .await
+            .expect("sync scope should reuse same-account live reservation");
+
+        let ForwardProxyRouteScope::PinnedProxyKey(proxy_key) = scope else {
+            panic!("expected sync scope to pin the live reserved node");
+        };
+        assert_eq!(proxy_key, FORWARD_PROXY_DIRECT_KEY);
+    }
+
+    #[tokio::test]
+    async fn sync_scope_falls_back_to_shared_bound_group_when_exclusive_slot_is_full() {
         let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
         let crypto_key = state
             .upstream_accounts
@@ -27074,6 +27215,16 @@ mod tests {
         .expect("save node shunt sync metadata");
         drop(conn);
 
+        seed_hard_unavailable_route_failure(
+            &state.pool,
+            queued_account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+
         let assignments = build_upstream_account_node_shunt_assignments(state.as_ref())
             .await
             .expect("build node shunt assignments");
@@ -27091,13 +27242,418 @@ mod tests {
             "queued account should remain unassigned when the only slot is occupied",
         );
 
-        let err = state
+        let row = load_upstream_account_row(&state.pool, queued_account_id)
+            .await
+            .expect("load queued account")
+            .expect("queued account exists");
+        let scope = resolve_account_forward_proxy_scope_for_sync(state.as_ref(), &row, None)
+            .await
+            .expect("sync scope should fall back to shared bound-group probe");
+
+        let ForwardProxyRouteScope::BoundGroup {
+            group_name,
+            bound_proxy_keys,
+        } = scope
+        else {
+            panic!(
+                "expected sync scope to probe the bound group without claiming an exclusive slot"
+            );
+        };
+        assert_eq!(group_name, "node-shunt-sync");
+        assert_eq!(bound_proxy_keys, test_required_group_bound_proxy_keys());
+    }
+
+    #[tokio::test]
+    async fn manual_sync_allows_group_node_shunt_unassigned_account_to_probe_bound_node() {
+        let (base_url, server) = spawn_usage_snapshot_server(
+            StatusCode::OK,
+            json!({
+                "planType": "team",
+                "rateLimit": {
+                    "primaryWindow": {
+                        "usedPercent": 42,
+                        "windowDurationMins": 300,
+                        "resetsAt": 1771322400
+                    }
+                }
+            }),
+        )
+        .await;
+        let state = test_app_state_with_usage_base(&base_url).await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let occupying_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Occupying OAuth",
+            "occupying@example.com",
+            "org_occupying",
+            "user_occupying",
+        )
+        .await;
+        let queued_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Queued OAuth",
+            "queued@example.com",
+            "org_queued",
+            "user_queued",
+        )
+        .await;
+
+        set_test_account_group_name(&state.pool, occupying_account_id, Some("node-shunt-sync"))
+            .await;
+        set_test_account_group_name(&state.pool, queued_account_id, Some("node-shunt-sync")).await;
+
+        let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+        save_group_metadata_record_conn(
+            &mut conn,
+            "node-shunt-sync",
+            UpstreamAccountGroupMetadata {
+                note: None,
+                bound_proxy_keys: test_required_group_bound_proxy_keys(),
+                node_shunt_enabled: true,
+                upstream_429_retry_enabled: false,
+                upstream_429_max_retries: 0,
+                concurrency_limit: 0,
+            },
+        )
+        .await
+        .expect("save node shunt sync metadata");
+        drop(conn);
+
+        seed_hard_unavailable_route_failure(
+            &state.pool,
+            queued_account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+
+        let assignments = build_upstream_account_node_shunt_assignments(state.as_ref())
+            .await
+            .expect("build node shunt assignments");
+        assert_eq!(
+            assignments
+                .account_proxy_keys
+                .get(&occupying_account_id)
+                .map(String::as_str),
+            Some(FORWARD_PROXY_DIRECT_KEY),
+        );
+        assert!(
+            !assignments
+                .account_proxy_keys
+                .contains_key(&queued_account_id),
+            "queued account should remain unassigned when the only slot is occupied",
+        );
+
+        let detail = state
             .upstream_accounts
             .account_ops
             .run_manual_sync(state.clone(), queued_account_id)
             .await
-            .expect_err("queued account manual sync should fail without a node slot");
-        assert_eq!(err.to_string(), group_node_shunt_unassigned_error_message());
+            .expect("queued account manual sync should fall back to the shared bound node");
+
+        let after = load_upstream_account_row(&state.pool, queued_account_id)
+            .await
+            .expect("load queued account after sync")
+            .expect("queued account still exists");
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert!(after.last_error.is_none());
+        assert!(after.last_route_failure_kind.is_none());
+        assert!(after.last_successful_sync_at.is_some());
+        assert_eq!(
+            after.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED)
+        );
+        assert_eq!(detail.summary.id, queued_account_id);
+        assert_eq!(
+            detail.summary.routing_block_reason_code.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ROUTING_BLOCK_REASON_GROUP_NODE_SHUNT_UNASSIGNED),
+        );
+        assert_eq!(
+            detail.summary.routing_block_reason_message.as_deref(),
+            Some(group_node_shunt_unassigned_error_message()),
+        );
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn maintenance_sync_allows_group_node_shunt_unassigned_account_to_probe_bound_node() {
+        let (base_url, server) = spawn_usage_snapshot_server(
+            StatusCode::OK,
+            json!({
+                "planType": "team",
+                "rateLimit": {
+                    "primaryWindow": {
+                        "usedPercent": 42,
+                        "windowDurationMins": 300,
+                        "resetsAt": 1771322400
+                    }
+                }
+            }),
+        )
+        .await;
+        let state = test_app_state_with_usage_base(&base_url).await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let occupying_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Occupying Maintenance OAuth",
+            "occupying-maintenance@example.com",
+            "org_occupying_maintenance",
+            "user_occupying_maintenance",
+        )
+        .await;
+        let queued_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Queued Maintenance OAuth",
+            "queued-maintenance@example.com",
+            "org_queued_maintenance",
+            "user_queued_maintenance",
+        )
+        .await;
+
+        set_test_account_group_name(&state.pool, occupying_account_id, Some("node-shunt-maint"))
+            .await;
+        set_test_account_group_name(&state.pool, queued_account_id, Some("node-shunt-maint")).await;
+
+        let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+        save_group_metadata_record_conn(
+            &mut conn,
+            "node-shunt-maint",
+            UpstreamAccountGroupMetadata {
+                note: None,
+                bound_proxy_keys: test_required_group_bound_proxy_keys(),
+                node_shunt_enabled: true,
+                upstream_429_retry_enabled: false,
+                upstream_429_max_retries: 0,
+                concurrency_limit: 0,
+            },
+        )
+        .await
+        .expect("save node shunt maintenance metadata");
+        drop(conn);
+
+        seed_hard_unavailable_route_failure(
+            &state.pool,
+            queued_account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+
+        let outcome = state
+            .upstream_accounts
+            .account_ops
+            .run_maintenance_sync(state.clone(), queued_account_id)
+            .await
+            .expect("maintenance sync should execute via shared bound-node probe");
+        assert!(matches!(outcome, MaintenanceDispatchOutcome::Executed));
+
+        let after = load_upstream_account_row(&state.pool, queued_account_id)
+            .await
+            .expect("load queued maintenance account after sync")
+            .expect("queued maintenance account still exists");
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert!(after.last_error.is_none());
+        assert!(after.last_route_failure_kind.is_none());
+        assert!(after.last_successful_sync_at.is_some());
+        assert_eq!(
+            after.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED)
+        );
+        let detail =
+            load_upstream_account_detail_with_actual_usage(state.as_ref(), queued_account_id)
+                .await
+                .expect("load queued maintenance detail")
+                .expect("queued maintenance detail exists");
+        assert_eq!(
+            detail.summary.routing_block_reason_code.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ROUTING_BLOCK_REASON_GROUP_NODE_SHUNT_UNASSIGNED),
+        );
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn bulk_sync_allows_group_node_shunt_unassigned_account_to_probe_bound_node() {
+        let (base_url, server) = spawn_usage_snapshot_server(
+            StatusCode::OK,
+            json!({
+                "planType": "team",
+                "rateLimit": {
+                    "primaryWindow": {
+                        "usedPercent": 42,
+                        "windowDurationMins": 300,
+                        "resetsAt": 1771322400
+                    }
+                }
+            }),
+        )
+        .await;
+        let state = test_app_state_with_usage_base(&base_url).await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let occupying_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Occupying Bulk OAuth",
+            "occupying-bulk@example.com",
+            "org_occupying_bulk",
+            "user_occupying_bulk",
+        )
+        .await;
+        let queued_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Queued Bulk OAuth",
+            "queued-bulk@example.com",
+            "org_queued_bulk",
+            "user_queued_bulk",
+        )
+        .await;
+
+        set_test_account_group_name(&state.pool, occupying_account_id, Some("node-shunt-bulk"))
+            .await;
+        set_test_account_group_name(&state.pool, queued_account_id, Some("node-shunt-bulk")).await;
+
+        let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+        save_group_metadata_record_conn(
+            &mut conn,
+            "node-shunt-bulk",
+            UpstreamAccountGroupMetadata {
+                note: None,
+                bound_proxy_keys: test_required_group_bound_proxy_keys(),
+                node_shunt_enabled: true,
+                upstream_429_retry_enabled: false,
+                upstream_429_max_retries: 0,
+                concurrency_limit: 0,
+            },
+        )
+        .await
+        .expect("save node shunt bulk metadata");
+        drop(conn);
+
+        seed_hard_unavailable_route_failure(
+            &state.pool,
+            queued_account_id,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+            Some(429),
+        )
+        .await;
+
+        let response = create_bulk_upstream_account_sync_job(
+            State(state.clone()),
+            HeaderMap::new(),
+            Json(BulkUpstreamAccountSyncJobRequest {
+                account_ids: vec![queued_account_id],
+            }),
+        )
+        .await
+        .expect("create bulk sync job")
+        .0;
+        let job = state
+            .upstream_accounts
+            .get_bulk_sync_job(&response.job_id)
+            .await
+            .expect("bulk sync job exists");
+        let mut terminal = None;
+        for _ in 0..100 {
+            terminal = job.terminal_event.lock().await.clone();
+            if terminal.is_some() {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+        let Some(BulkUpstreamAccountSyncTerminalEvent::Completed(payload)) = terminal else {
+            panic!("bulk sync job should complete successfully");
+        };
+        assert_eq!(payload.counts.total, 1);
+        assert_eq!(payload.counts.completed, 1);
+        assert_eq!(payload.counts.failed, 0);
+        assert_eq!(payload.snapshot.rows.len(), 1);
+        assert_eq!(
+            payload.snapshot.rows[0].status,
+            BULK_UPSTREAM_ACCOUNT_SYNC_STATUS_SUCCEEDED
+        );
+        assert_eq!(payload.snapshot.rows[0].account_id, queued_account_id);
+
+        let after = load_upstream_account_row(&state.pool, queued_account_id)
+            .await
+            .expect("load queued bulk account after sync")
+            .expect("queued bulk account still exists");
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert!(after.last_successful_sync_at.is_some());
+
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn detail_preserves_group_node_shunt_unassigned_routing_block_reason() {
+        let state = test_app_state_with_usage_base("http://127.0.0.1:9").await;
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let occupying_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Occupying OAuth",
+            "occupying@example.com",
+            "org_occupying",
+            "user_occupying",
+        )
+        .await;
+        let queued_account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Queued OAuth",
+            "queued@example.com",
+            "org_queued",
+            "user_queued",
+        )
+        .await;
+
+        set_test_account_group_name(&state.pool, occupying_account_id, Some("node-shunt-sync"))
+            .await;
+        set_test_account_group_name(&state.pool, queued_account_id, Some("node-shunt-sync")).await;
+
+        let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+        save_group_metadata_record_conn(
+            &mut conn,
+            "node-shunt-sync",
+            UpstreamAccountGroupMetadata {
+                note: None,
+                bound_proxy_keys: test_required_group_bound_proxy_keys(),
+                node_shunt_enabled: true,
+                upstream_429_retry_enabled: false,
+                upstream_429_max_retries: 0,
+                concurrency_limit: 0,
+            },
+        )
+        .await
+        .expect("save node shunt sync metadata");
+        drop(conn);
 
         let detail =
             load_upstream_account_detail_with_actual_usage(state.as_ref(), queued_account_id)
