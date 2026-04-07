@@ -187,6 +187,7 @@ None
 - 2026-04-06: 本地实现完成：共享壳层宽度契约落地到 AppLayout / Update banner / 顶层路由；Storybook 页面级宽屏入口、`wide-shell-layout` E2E 与最终视觉证据已补齐，本地 `build + test + build-storybook + targeted e2e` 通过，等待截图提交授权后进入 PR 收敛。
 - 2026-04-07: 主人已确认视觉结果可继续，`gpt-5.4` review-loop 未发现可执行阻塞项；本地 `build + test + build-storybook + targeted e2e` 维持通过，PR #298 已打 `type:minor` + `channel:stable` 并收敛到 merge-ready。
 - 2026-04-07: 为清除 PR freshness gate，同步 `origin/main` 并重新生成 Storybook 宽屏截图；最新工作树在同步后再次通过 `build + test + build-storybook + targeted e2e`，视觉证据已刷新到当前待推送 head。
+- 2026-04-07: fresh review 指出页面级 Storybook surface 外层 gutter 会让 `desktop1660` 少于真实壳层宽度；已把横向 padding 收回 `app-shell-boundary` 内部，并再次重跑 `build + test + build-storybook + targeted e2e`，同时刷新宽屏截图到最新工作树。
 
 ## 参考（References）
 

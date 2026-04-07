@@ -120,8 +120,8 @@ export function StorybookPageEnvironment({
 
 export function FullPageStorySurface({ children }: { children: ReactNode }) {
   return (
-    <div className="min-h-screen bg-base-200 px-4 py-6 text-base-content sm:px-6">
-      <div className="app-shell-boundary">{children}</div>
+    <div className="min-h-screen bg-base-200 text-base-content">
+      <div className="app-shell-boundary px-4 py-6">{children}</div>
     </div>
   )
 }

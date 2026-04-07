@@ -41,8 +41,8 @@ const meta = {
   decorators: [
     (Story) => (
       <I18nProvider>
-        <div className="min-h-screen bg-base-200 px-6 py-6 text-base-content">
-          <div className="app-shell-boundary">
+        <div className="min-h-screen bg-base-200 text-base-content">
+          <div className="app-shell-boundary px-4 py-6">
             <MemoryRouter initialEntries={['/account-pool/upstream-accounts']}>
               <Routes>
                 <Route path="/account-pool" element={<Story />}>
