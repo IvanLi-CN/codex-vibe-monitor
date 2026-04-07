@@ -208,31 +208,28 @@ function resolveParallelWorkDefaultIndex(
 }
 
 function buildWindowDetailsTooltipContent(
+  title: string,
   description: string,
   samples?: string | null,
 ) {
-  if (!samples) return description;
-  return [description.trim(), samples.trim()].filter(Boolean).join(" ");
+  return [title.trim(), description.trim(), samples?.trim()]
+    .filter(Boolean)
+    .join(" · ");
 }
 
-function ParallelWorkWindowHeading({
-  title,
+function ParallelWorkWindowInfoTrigger({
   tooltipContent,
   tooltipLabel,
 }: {
-  title: string;
   tooltipContent: string;
   tooltipLabel: string;
 }) {
   return (
-    <div className="flex min-w-0 items-start gap-1.5">
-      <h4 className="min-w-0 text-base font-semibold text-base-content">
-        {title}
-      </h4>
+    <div className="flex min-h-8 items-center">
       <InfoTooltip
         content={tooltipContent}
         label={tooltipLabel}
-        className="mt-0.5 shrink-0 text-base-content/46 transition-colors hover:text-base-content/70"
+        className="shrink-0 text-base-content/46 transition-colors hover:text-base-content/70"
       />
     </div>
   );
@@ -448,11 +445,13 @@ function ParallelWorkWindowCard({
   const { t, locale } = useTranslation();
   const meta = resolveWindowMeta(windowKey);
   const empty = window.completeBucketCount === 0;
+  const title = t(meta.titleKey);
   const samples = t("stats.parallelWork.samples", {
     complete: window.completeBucketCount,
     active: window.activeBucketCount,
   });
   const tooltipContent = buildWindowDetailsTooltipContent(
+    title,
     t(meta.descriptionKey),
     samples,
   );
@@ -463,12 +462,11 @@ function ParallelWorkWindowCard({
       data-testid={"parallel-work-card-" + windowKey}
     >
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0 flex-1">
-          <ParallelWorkWindowHeading
-            title={t(meta.titleKey)}
+        <div className="flex min-w-0 flex-1 items-center">
+          <ParallelWorkWindowInfoTrigger
             tooltipContent={tooltipContent}
             tooltipLabel={t("stats.parallelWork.detailsTooltipLabel", {
-              title: t(meta.titleKey),
+              title,
             })}
           />
         </div>
@@ -544,6 +542,11 @@ function ParallelWorkLoadingCard({
 }) {
   const { t } = useTranslation();
   const meta = resolveWindowMeta(windowKey);
+  const title = t(meta.titleKey);
+  const tooltipContent = buildWindowDetailsTooltipContent(
+    title,
+    t(meta.descriptionKey),
+  );
 
   return (
     <article
@@ -551,12 +554,11 @@ function ParallelWorkLoadingCard({
       data-testid={"parallel-work-card-" + windowKey}
     >
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0 flex-1">
-          <ParallelWorkWindowHeading
-            title={t(meta.titleKey)}
-            tooltipContent={t(meta.descriptionKey)}
+        <div className="flex min-w-0 flex-1 items-center">
+          <ParallelWorkWindowInfoTrigger
+            tooltipContent={tooltipContent}
             tooltipLabel={t("stats.parallelWork.detailsTooltipLabel", {
-              title: t(meta.titleKey),
+              title,
             })}
           />
         </div>
@@ -597,6 +599,11 @@ function ParallelWorkErrorCard({
 }) {
   const { t } = useTranslation();
   const meta = resolveWindowMeta(activeWindowKey);
+  const title = t(meta.titleKey);
+  const tooltipContent = buildWindowDetailsTooltipContent(
+    title,
+    t(meta.descriptionKey),
+  );
 
   return (
     <article
@@ -604,12 +611,11 @@ function ParallelWorkErrorCard({
       data-testid={"parallel-work-card-" + activeWindowKey}
     >
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="min-w-0 flex-1">
-          <ParallelWorkWindowHeading
-            title={t(meta.titleKey)}
-            tooltipContent={t(meta.descriptionKey)}
+        <div className="flex min-w-0 flex-1 items-center">
+          <ParallelWorkWindowInfoTrigger
+            tooltipContent={tooltipContent}
             tooltipLabel={t("stats.parallelWork.detailsTooltipLabel", {
-              title: t(meta.titleKey),
+              title,
             })}
           />
         </div>

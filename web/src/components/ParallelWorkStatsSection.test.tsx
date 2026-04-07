@@ -233,6 +233,7 @@ describe("ParallelWorkStatsSection", () => {
     ).toBeNull();
     expect(host?.textContent).toContain("Parallel work");
     expect(host?.textContent).toContain("4.67");
+    expect(host?.textContent).not.toContain("Last 7 days · by minute");
     expect(host?.textContent).not.toContain("Minute buckets");
     expect(host?.textContent).not.toContain(
       "10080 complete buckets · 4132 active buckets",
@@ -277,6 +278,7 @@ describe("ParallelWorkStatsSection", () => {
     const tooltip = document.body.querySelector(
       '[role="tooltip"][aria-hidden="false"]',
     ) as HTMLElement;
+    expect(tooltip.textContent).toContain("Last 7 days · by minute");
     expect(tooltip.textContent).toContain("Minute buckets");
     expect(tooltip.textContent).toContain(
       "10080 complete buckets · 4132 active buckets",
