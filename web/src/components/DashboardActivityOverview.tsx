@@ -1,19 +1,20 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { useSummary } from '../hooks/useStats'
 import { useTranslation } from '../i18n'
 import { metricAccent } from '../lib/chartTheme'
-import { cn } from '../lib/utils'
 import { useTheme } from '../theme'
 import { Last24hTenMinuteHeatmap, type MetricKey } from './Last24hTenMinuteHeatmap'
 import { StatsCards } from './StatsCards'
 import { SegmentedControl, SegmentedControlItem } from './ui/segmented-control'
+import { UsageCalendar } from './UsageCalendar'
 import { WeeklyHourlyHeatmap } from './WeeklyHourlyHeatmap'
 
-type RangeKey = '1d' | '7d'
+type RangeKey = '1d' | '7d' | 'usage'
 
 const RANGE_OPTIONS: Array<{ key: RangeKey; labelKey: string }> = [
   { key: '1d', labelKey: 'dashboard.activityOverview.range24h' },
   { key: '7d', labelKey: 'dashboard.activityOverview.range7d' },
+  { key: 'usage', labelKey: 'dashboard.activityOverview.rangeUsage' },
 ]
 
 const METRIC_OPTIONS: Array<{ key: MetricKey; labelKey: string }> = [
@@ -26,8 +27,14 @@ export function DashboardActivityOverview() {
   const { t } = useTranslation()
   const { themeMode } = useTheme()
   const [activeRange, setActiveRange] = useState<RangeKey>('1d')
+  const [visitedRanges, setVisitedRanges] = useState<Record<RangeKey, boolean>>({
+    '1d': true,
+    '7d': false,
+    usage: false,
+  })
   const [metric24h, setMetric24h] = useState<MetricKey>('totalCount')
   const [metric7d, setMetric7d] = useState<MetricKey>('totalCount')
+  const [metricUsage, setMetricUsage] = useState<MetricKey>('totalCount')
   const {
     summary: summary24h,
     isLoading: summary24hLoading,
@@ -48,17 +55,35 @@ export function DashboardActivityOverview() {
     [t],
   )
 
-  const activeMetric = activeRange === '1d' ? metric24h : metric7d
-  const activeSummary = activeRange === '1d' ? summary24h : summary7d
-  const activeSummaryLoading = activeRange === '1d' ? summary24hLoading : summary7dLoading
-  const activeSummaryError = activeRange === '1d' ? summary24hError : summary7dError
+  const activeMetric =
+    activeRange === '1d' ? metric24h : activeRange === '7d' ? metric7d : metricUsage
+  const activeSummary = activeRange === '1d' ? summary24h : activeRange === '7d' ? summary7d : null
+  const activeSummaryLoading =
+    activeRange === '1d' ? summary24hLoading : activeRange === '7d' ? summary7dLoading : false
+  const activeSummaryError =
+    activeRange === '1d' ? summary24hError : activeRange === '7d' ? summary7dError : null
+
+  useEffect(() => {
+    setVisitedRanges((current) =>
+      current[activeRange]
+        ? current
+        : {
+            ...current,
+            [activeRange]: true,
+          },
+    )
+  }, [activeRange])
 
   const setActiveMetric = (metric: MetricKey) => {
     if (activeRange === '1d') {
       setMetric24h(metric)
       return
     }
-    setMetric7d(metric)
+    if (activeRange === '7d') {
+      setMetric7d(metric)
+      return
+    }
+    setMetricUsage(metric)
   }
 
   return (
@@ -105,17 +130,16 @@ export function DashboardActivityOverview() {
           </SegmentedControl>
         </div>
 
-        <StatsCards stats={activeSummary} loading={activeSummaryLoading} error={activeSummaryError} />
+        {activeRange === 'usage' ? null : (
+          <StatsCards stats={activeSummary} loading={activeSummaryLoading} error={activeSummaryError} />
+        )}
 
-        <div className="grid">
+        {visitedRanges['1d'] ? (
           <div
             data-testid="dashboard-activity-range-1d"
-            aria-hidden={activeRange !== '1d'}
             data-active={activeRange === '1d'}
-            className={cn(
-              'col-start-1 row-start-1',
-              activeRange !== '1d' && 'invisible pointer-events-none',
-            )}
+            hidden={activeRange !== '1d'}
+            aria-hidden={activeRange !== '1d'}
           >
             <Last24hTenMinuteHeatmap
               metric={metric24h}
@@ -123,15 +147,14 @@ export function DashboardActivityOverview() {
               showHeader={false}
             />
           </div>
+        ) : null}
 
+        {visitedRanges['7d'] ? (
           <div
             data-testid="dashboard-activity-range-7d"
-            aria-hidden={activeRange !== '7d'}
             data-active={activeRange === '7d'}
-            className={cn(
-              'col-start-1 row-start-1',
-              activeRange !== '7d' && 'invisible pointer-events-none',
-            )}
+            hidden={activeRange !== '7d'}
+            aria-hidden={activeRange !== '7d'}
           >
             <WeeklyHourlyHeatmap
               metric={metric7d}
@@ -140,7 +163,24 @@ export function DashboardActivityOverview() {
               showSurface={false}
             />
           </div>
-        </div>
+        ) : null}
+
+        {visitedRanges.usage ? (
+          <div
+            data-testid="dashboard-activity-range-usage"
+            data-active={activeRange === 'usage'}
+            hidden={activeRange !== 'usage'}
+            aria-hidden={activeRange !== 'usage'}
+          >
+            <UsageCalendar
+              metric={metricUsage}
+              onChangeMetric={setMetricUsage}
+              showSurface={false}
+              showMetricToggle={false}
+              showMeta={false}
+            />
+          </div>
+        ) : null}
       </div>
     </section>
   )

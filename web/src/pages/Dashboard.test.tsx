@@ -24,7 +24,19 @@ vi.mock('../components/TodayStatsOverview', () => ({
 }))
 
 vi.mock('../components/UsageCalendar', () => ({
-  UsageCalendar: () => <div data-testid="usage-calendar" />,
+  UsageCalendar: ({
+    metric,
+    showSurface,
+    showMetricToggle,
+  }: {
+    metric?: string
+    showSurface?: boolean
+    showMetricToggle?: boolean
+  }) => (
+    <div data-testid="usage-calendar">
+      {`metric:${metric ?? 'unset'};surface:${String(showSurface)};toggle:${String(showMetricToggle)}`}
+    </div>
+  ),
 }))
 
 vi.mock('../components/StatsCards', () => ({
@@ -182,6 +194,7 @@ vi.mock('../i18n', () => ({
         'dashboard.activityOverview.title': '活动总览',
         'dashboard.activityOverview.range24h': '24 小时',
         'dashboard.activityOverview.range7d': '7 日',
+        'dashboard.activityOverview.rangeUsage': '历史',
         'dashboard.activityOverview.rangeToggleAria': '时间范围切换',
         'dashboard.today.title': '今日统计信息',
         'dashboard.section.workingConversationsTitle': '当前工作中的对话',
@@ -292,7 +305,7 @@ function createWorkingConversationCard(): DashboardWorkingConversationCardModel 
 }
 
 describe('DashboardPage', () => {
-  it('merges the 24h and 7d activity sections into a single overview card with per-range metric memory', () => {
+  it('keeps usage activity inside the shared overview card instead of as a standalone top card', () => {
     installSummaryMocks()
     hookMocks.useDashboardWorkingConversations.mockReturnValue({
       cards: [createWorkingConversationCard()],
@@ -305,10 +318,8 @@ describe('DashboardPage', () => {
     expect(host?.textContent).toContain('活动总览')
     expect(host?.querySelectorAll('[data-testid="dashboard-activity-overview"]')).toHaveLength(1)
     expect(host?.querySelector('[data-testid="stats-cards"]')?.textContent).toBe('total:100')
-    expect(host?.querySelector('[data-testid="dashboard-activity-range-1d"]')?.getAttribute('aria-hidden')).toBe('false')
     expect(host?.querySelector('[data-testid="dashboard-activity-range-1d"]')?.getAttribute('data-active')).toBe('true')
-    expect(host?.querySelector('[data-testid="dashboard-activity-range-7d"]')?.getAttribute('aria-hidden')).toBe('true')
-    expect(host?.querySelector('[data-testid="dashboard-activity-range-7d"]')?.className).toContain('invisible')
+    expect(host?.querySelector('[data-testid="usage-calendar"]')).toBeNull()
     expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toContain('metric:totalCount')
     expect(host?.querySelector('[data-testid="dashboard-working-conversations-section"]')?.textContent).toContain(
       'WC-ABCD12',
@@ -316,7 +327,23 @@ describe('DashboardPage', () => {
     expect(host?.textContent).not.toContain('最近 20 条实况')
 
     const rangeButtons = host?.querySelectorAll('button[role="tab"]')
-    const range7dButton = Array.from(rangeButtons ?? []).find(
+    const usageButton = Array.from(rangeButtons ?? []).find(
+      (button) => button.textContent === '历史',
+    )
+    if (!(usageButton instanceof HTMLButtonElement)) {
+      throw new Error('missing usage range button')
+    }
+
+    act(() => {
+      usageButton.click()
+    })
+
+    expect(host?.querySelector('[data-testid="stats-cards"]')).toBeNull()
+    expect(host?.querySelector('[data-testid="usage-calendar"]')?.textContent).toBe(
+      'metric:totalCount;surface:false;toggle:false',
+    )
+
+    const range7dButton = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
       (button) => button.textContent === '7 日',
     )
     if (!(range7dButton instanceof HTMLButtonElement)) {
@@ -328,63 +355,17 @@ describe('DashboardPage', () => {
     })
 
     expect(host?.querySelector('[data-testid="stats-cards"]')?.textContent).toBe('total:700')
-    expect(host?.querySelector('[data-testid="dashboard-activity-range-1d"]')?.getAttribute('aria-hidden')).toBe('true')
-    expect(host?.querySelector('[data-testid="dashboard-activity-range-1d"]')?.className).toContain('invisible')
-    expect(host?.querySelector('[data-testid="dashboard-activity-range-7d"]')?.getAttribute('aria-hidden')).toBe('false')
     expect(host?.querySelector('[data-testid="dashboard-activity-range-7d"]')?.getAttribute('data-active')).toBe('true')
+    expect(host?.querySelector('[data-testid="dashboard-activity-range-usage"]')?.getAttribute('data-active')).toBe(
+      'false',
+    )
+    expect(host?.querySelector('[data-testid="usage-calendar"]')?.textContent).toBe(
+      'metric:totalCount;surface:false;toggle:false',
+    )
     expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe(
       'metric:totalCount;header:false;surface:false',
     )
 
-    const costButton = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
-      (button) => button.textContent === '金额',
-    )
-    if (!(costButton instanceof HTMLButtonElement)) {
-      throw new Error('missing cost metric button')
-    }
-
-    act(() => {
-      costButton.click()
-    })
-
-    expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe(
-      'metric:totalCost;header:false;surface:false',
-    )
-
-    const range24hButton = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
-      (button) => button.textContent === '24 小时',
-    )
-    if (!(range24hButton instanceof HTMLButtonElement)) {
-      throw new Error('missing 24h range button')
-    }
-
-    act(() => {
-      range24hButton.click()
-    })
-
-    expect(host?.querySelector('[data-testid="stats-cards"]')?.textContent).toBe('total:100')
-    expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toContain('metric:totalCount')
-
-    const tokensButton = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
-      (button) => button.textContent === 'Tokens',
-    )
-    if (!(tokensButton instanceof HTMLButtonElement)) {
-      throw new Error('missing tokens metric button')
-    }
-
-    act(() => {
-      tokensButton.click()
-    })
-
-    expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toContain('metric:totalTokens')
-
-    act(() => {
-      range7dButton.click()
-    })
-
-    expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe(
-      'metric:totalCost;header:false;surface:false',
-    )
   })
 
   it('switches between the invocation drawer and the shared account drawer from dashboard interactions', () => {
