@@ -222,12 +222,12 @@ describe('service tier helpers', () => {
     expect(isPriorityServiceTier(undefined)).toBe(false)
   })
 
-  it('resolves fast indicator states from requested and effective tiers', () => {
-    expect(getFastIndicatorState('priority', 'priority')).toBe('effective')
+  it('resolves fast indicator states from requested and billing tiers', () => {
+    expect(getFastIndicatorState('priority', 'priority', 'priority')).toBe('effective')
     expect(getFastIndicatorState('priority', 'default', 'priority')).toBe('effective')
     expect(getFastIndicatorState('priority', 'auto')).toBe('requested_only')
     expect(getFastIndicatorState('priority', undefined)).toBe('requested_only')
-    expect(getFastIndicatorState('auto', 'priority')).toBe('effective')
+    expect(getFastIndicatorState('auto', 'priority')).toBe('none')
     expect(getFastIndicatorState('flex', 'auto')).toBe('none')
   })
 })
@@ -622,8 +622,8 @@ describe('InvocationTable', () => {
       source: 'proxy',
       routeMode: 'pool',
       upstreamAccountId: 17,
-      upstreamAccountName: 'SUB2API',
-      proxyDisplayName: 'sub2api-relay',
+      upstreamAccountName: 'API Keys Pool',
+      proxyDisplayName: 'api-keys-gateway',
       endpoint: '/v1/responses',
       model: 'gpt-5.4',
       status: 'success',
@@ -1783,6 +1783,7 @@ describe('InvocationTable', () => {
         status: 'success',
         requestedServiceTier: 'priority',
         serviceTier: 'priority',
+        billingServiceTier: 'priority',
         totalTokens: 42,
       },
       {
@@ -1825,6 +1826,7 @@ describe('InvocationTable', () => {
         status: 'success',
         requestedServiceTier: 'auto',
         serviceTier: 'priority',
+        billingServiceTier: 'priority',
         totalTokens: 45,
       },
       {
