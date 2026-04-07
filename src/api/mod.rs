@@ -4322,6 +4322,7 @@ pub(crate) fn classify_invocation_failure(
     {
         FailureClass::ClientFailure
     } else if failure_kind_lower == PROXY_FAILURE_FAILED_CONTACT_UPSTREAM
+        || failure_kind_lower == PROXY_FAILURE_PROXY_CONCURRENCY_LIMIT
         || failure_kind_lower == PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED
         || failure_kind_lower == PROXY_FAILURE_UPSTREAM_STREAM_ERROR
         || failure_kind_lower == PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT
