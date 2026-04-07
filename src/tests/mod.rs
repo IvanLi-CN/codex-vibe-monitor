@@ -35312,6 +35312,63 @@ async fn parallel_work_stats_counts_distinct_prompt_cache_keys_per_bucket() {
 }
 
 #[tokio::test]
+async fn parallel_work_stats_minute7d_supports_non_shanghai_reporting_timezones() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let reporting_tz = "UTC".parse::<Tz>().expect("valid utc tz");
+    let current_minute_epoch =
+        align_reporting_bucket_epoch(Utc::now().timestamp(), 60, reporting_tz).expect("align minute");
+    let minute_bucket = Utc
+        .timestamp_opt(current_minute_epoch - 3 * 60, 0)
+        .single()
+        .expect("minute bucket");
+
+    insert_parallel_work_invocation(
+        &state.pool,
+        "parallel-minute-utc-1",
+        minute_bucket + ChronoDuration::seconds(10),
+        "pck-utc-alpha",
+    )
+    .await;
+    insert_parallel_work_invocation(
+        &state.pool,
+        "parallel-minute-utc-2",
+        minute_bucket + ChronoDuration::seconds(20),
+        "pck-utc-alpha",
+    )
+    .await;
+    insert_parallel_work_invocation(
+        &state.pool,
+        "parallel-minute-utc-3",
+        minute_bucket + ChronoDuration::seconds(30),
+        "pck-utc-beta",
+    )
+    .await;
+
+    let Json(response) = fetch_parallel_work_stats(
+        State(state),
+        Query(ParallelWorkStatsQuery {
+            time_zone: Some("UTC".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch parallel-work stats");
+
+    let minute_point = response
+        .minute7d
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(minute_bucket))
+        .expect("utc minute point");
+
+    assert_eq!(minute_point.parallel_count, 2);
+    assert_eq!(response.minute7d.active_bucket_count, 1);
+    assert_eq!(response.minute7d.max_count, Some(2));
+}
+
+#[tokio::test]
 async fn parallel_work_stats_zero_fill_and_exclude_current_minute_and_hour() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),

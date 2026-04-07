@@ -3403,6 +3403,7 @@ pub(crate) async fn fetch_parallel_work_stats(
         &state.pool,
         minute7d_window.start,
         minute7d_window.end,
+        reporting_tz,
         source_scope,
     )
     .await?;
@@ -3814,14 +3815,13 @@ async fn query_parallel_work_minute_counts(
     pool: &Pool<Sqlite>,
     range_start: DateTime<Utc>,
     range_end: DateTime<Utc>,
+    reporting_tz: Tz,
     source_scope: InvocationSourceScope,
 ) -> Result<BTreeMap<i64, i64>> {
-    let mut query = QueryBuilder::new(
-        "SELECT strftime('%Y-%m-%d %H:%M:00', occurred_at) AS bucket_start_local, COUNT(DISTINCT ",
-    );
+    let mut query = QueryBuilder::new("SELECT occurred_at, ");
     query
         .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
-        .push(") AS parallel_count FROM codex_invocations WHERE occurred_at >= ")
+        .push(" AS prompt_cache_key FROM codex_invocations WHERE occurred_at >= ")
         .push_bind(db_occurred_at_lower_bound(range_start))
         .push(" AND occurred_at < ")
         .push_bind(db_occurred_at_lower_bound(range_end))
@@ -3833,20 +3833,30 @@ async fn query_parallel_work_minute_counts(
     if source_scope == InvocationSourceScope::ProxyOnly {
         query.push(" AND source = ").push_bind(SOURCE_PROXY);
     }
-    query.push(" GROUP BY bucket_start_local ORDER BY bucket_start_local ASC");
+    query.push(" ORDER BY occurred_at ASC, prompt_cache_key ASC");
 
     let rows = query
-        .build_query_as::<ParallelWorkExactBucketRow>()
+        .build_query_as::<ParallelWorkExactInvocationRow>()
         .fetch_all(pool)
         .await?;
-    let mut counts = BTreeMap::new();
+    let mut bucket_keys: BTreeMap<i64, HashSet<String>> = BTreeMap::new();
     for row in rows {
-        let Some(bucket_start) = parse_to_utc_datetime(&row.bucket_start_local) else {
+        let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) else {
             continue;
         };
-        counts.insert(bucket_start.timestamp(), row.parallel_count.max(0));
+        let bucket_start_epoch =
+            align_reporting_bucket_epoch(occurred_at.timestamp(), 60, reporting_tz)?;
+        bucket_keys
+            .entry(bucket_start_epoch)
+            .or_default()
+            .insert(row.prompt_cache_key);
     }
-    Ok(counts)
+    Ok(bucket_keys
+        .into_iter()
+        .map(|(bucket_start_epoch, prompt_cache_keys)| {
+            (bucket_start_epoch, prompt_cache_keys.len() as i64)
+        })
+        .collect())
 }
 
 async fn query_parallel_work_hourly_counts(
@@ -6390,9 +6400,9 @@ pub(crate) struct PromptCacheConversationUpstreamAccountSummaryRow {
 }
 
 #[derive(Debug, FromRow)]
-pub(crate) struct ParallelWorkExactBucketRow {
-    pub(crate) bucket_start_local: String,
-    pub(crate) parallel_count: i64,
+pub(crate) struct ParallelWorkExactInvocationRow {
+    pub(crate) occurred_at: String,
+    pub(crate) prompt_cache_key: String,
 }
 
 #[derive(Debug, FromRow)]
