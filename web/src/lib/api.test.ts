@@ -362,7 +362,7 @@ describe("fetchParallelWorkStats", () => {
     expect(response.dayAll.avgCount).toBeNull();
   });
 
-  it("falls back to the server default time zone for fixed sub-hour offsets", async () => {
+  it("preserves the caller time zone for fixed sub-hour offsets", async () => {
     const fetchMock = vi.fn(async () => {
       return new Response(
         JSON.stringify({
@@ -428,12 +428,12 @@ describe("fetchParallelWorkStats", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const firstArg = fetchMock.mock.calls.at(0)?.at(0) as RequestInfo | URL | undefined;
     expect(firstArg).toBeDefined();
-    expect(String(firstArg)).toBe("/api/stats/parallel-work");
+    expect(String(firstArg)).toBe(
+      "/api/stats/parallel-work?timeZone=Asia%2FKolkata",
+    );
   });
 
-  it("falls back when a seasonal sub-hour offset appears inside the compatibility lookback", async () => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date("2026-01-15T00:00:00Z"));
+  it("preserves the caller time zone for seasonal sub-hour offsets", async () => {
     const fetchMock = vi.fn(async () => {
       return new Response(
         JSON.stringify({
@@ -481,7 +481,9 @@ describe("fetchParallelWorkStats", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const firstArg = fetchMock.mock.calls.at(0)?.at(0) as RequestInfo | URL | undefined;
     expect(firstArg).toBeDefined();
-    expect(String(firstArg)).toBe("/api/stats/parallel-work");
+    expect(String(firstArg)).toBe(
+      "/api/stats/parallel-work?timeZone=Australia%2FLord_Howe",
+    );
   });
 });
 

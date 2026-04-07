@@ -8,7 +8,6 @@ const OAUTH_LOGIN_SESSION_BASE_UPDATED_AT_HEADER =
 const FORWARD_PROXY_VALIDATION_TIMEOUT_MS = 5_000;
 const FORWARD_PROXY_SUBSCRIPTION_VALIDATION_TIMEOUT_MS = 60_000;
 const FORWARD_PROXY_HISTORY_DAY_MS = 86_400_000;
-const PARALLEL_WORK_TZ_COMPAT_LOOKBACK_DAYS = 400;
 export const DEFAULT_POOL_ROUTING_MAINTENANCE_SETTINGS = {
   primarySyncIntervalSecs: 300,
   secondarySyncIntervalSecs: 1_800,
@@ -300,42 +299,6 @@ function resolveForwardProxyHistoryTimeZone(
     ) {
       throw error;
     }
-    return candidate;
-  }
-}
-
-function resolveParallelWorkTimeZone(timeZone?: string): string | undefined {
-  const candidate = timeZone ?? getBrowserTimeZone();
-  const now = new Date();
-  const startMs =
-    now.getTime() -
-    PARALLEL_WORK_TZ_COMPAT_LOOKBACK_DAYS * FORWARD_PROXY_HISTORY_DAY_MS;
-
-  try {
-    for (
-      let currentMs = startMs;
-      currentMs < now.getTime();
-      currentMs += FORWARD_PROXY_HISTORY_DAY_MS
-    ) {
-      const offsetMinutes = getForwardProxyHistoryOffsetMinutes(
-        new Date(currentMs),
-        candidate,
-      );
-      if (offsetMinutes !== null && offsetMinutes % 60 !== 0) {
-        return undefined;
-      }
-    }
-
-    const currentOffsetMinutes = getForwardProxyHistoryOffsetMinutes(
-      now,
-      candidate,
-    );
-    if (currentOffsetMinutes !== null && currentOffsetMinutes % 60 !== 0) {
-      return undefined;
-    }
-
-    return candidate;
-  } catch {
     return candidate;
   }
 }
@@ -3733,14 +3696,9 @@ export async function fetchParallelWorkStats(params?: {
   signal?: AbortSignal;
 }) {
   const search = new URLSearchParams();
-  const timeZone = resolveParallelWorkTimeZone(params?.timeZone);
-  if (timeZone) {
-    search.set("timeZone", timeZone);
-  }
+  search.set("timeZone", params?.timeZone ?? getBrowserTimeZone());
   const response = await fetchJson<unknown>(
-    search.size > 0
-      ? `/api/stats/parallel-work?${search.toString()}`
-      : "/api/stats/parallel-work",
+    `/api/stats/parallel-work?${search.toString()}`,
     { signal: params?.signal },
   );
   return normalizeParallelWorkStatsResponse(response);
