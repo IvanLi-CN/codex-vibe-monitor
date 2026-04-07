@@ -140,6 +140,51 @@ function renderSection(
 }
 
 describe("DashboardWorkingConversationsSection", () => {
+  it("shows a bare hash in the card header while keeping the raw prompt cache key non-visible", () => {
+    const cards = renderSection(
+      createResponse([
+        createConversation("019d68a9-9c32-7482-a353-71e4b6265f09", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-header",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "running",
+          }),
+        ]),
+      ]),
+    );
+
+    const card = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-card"]',
+    );
+    if (!(card instanceof HTMLElement)) {
+      throw new Error("missing working conversation card");
+    }
+
+    const expectedSortAnchorLabel = new Intl.DateTimeFormat("zh-CN", {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }).format(new Date("2026-04-04T10:04:00Z"));
+
+    expect(card.textContent).toContain("运行中");
+    expect(card.textContent).toContain(expectedSortAnchorLabel);
+    expect(card.textContent).toContain(
+      cards[0]?.conversationSequenceId.replace(/^WC-/, "") ?? "",
+    );
+    expect(card.textContent).not.toContain("WC-");
+    expect(card.textContent).not.toContain("019d68a9-9c32-7482-a353-71e4b6265f09");
+    expect(card.getAttribute("data-prompt-cache-key")).toBe(
+      "019d68a9-9c32-7482-a353-71e4b6265f09",
+    );
+    expect(card.getAttribute("data-conversation-sequence-id")).toBe(
+      cards[0]?.conversationSequenceId.replace(/^WC-/, ""),
+    );
+  });
+
   it("renders a fixed previous-invocation placeholder when a conversation has only one call", () => {
     renderSection(
       createResponse([

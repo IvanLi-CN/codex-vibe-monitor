@@ -14,6 +14,7 @@ import type {
   DashboardWorkingConversationInvocationSelection,
   DashboardWorkingConversationTone,
 } from "../lib/dashboardWorkingConversations";
+import { formatDashboardWorkingConversationSequenceId } from "../lib/dashboardWorkingConversations";
 import { cn } from "../lib/utils";
 import { AppIcon } from "./AppIcon";
 import { Alert } from "./ui/alert";
@@ -738,6 +739,9 @@ export function DashboardWorkingConversationsSection({
                 card.currentInvocation.tone,
                 card.currentInvocation.displayStatus,
               );
+              const displaySequenceId = formatDashboardWorkingConversationSequenceId(
+                card.conversationSequenceId,
+              );
               const currentStatusLabel = currentStatusMeta.labelKey
                 ? t(currentStatusMeta.labelKey)
                 : (currentStatusMeta.label ?? t("table.status.unknown"));
@@ -750,40 +754,32 @@ export function DashboardWorkingConversationsSection({
                 <article
                   key={card.promptCacheKey}
                   data-testid="dashboard-working-conversation-card"
+                  data-prompt-cache-key={card.promptCacheKey}
+                  data-conversation-sequence-id={displaySequenceId}
                   className={cn(
                     CARD_CLASS_NAME,
                     currentStatusMeta.cardToneClassName,
                   )}
                 >
                   <div className="relative">
-                    <div className="flex items-start justify-between gap-2">
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-base-content/58">
-                          <span
-                            className={cn(
-                              "inline-flex h-2 w-2 rounded-full",
-                              currentStatusMeta.beaconClassName,
-                              card.currentInvocation.isInFlight &&
-                                "motion-safe:animate-pulse motion-reduce:animate-none",
-                            )}
-                            aria-hidden
-                          />
-                          <span className="font-semibold uppercase tracking-[0.14em] text-base-content/74">
-                            {currentStatusLabel}
-                          </span>
-                          <span className="font-mono">{sortAnchorLabel}</span>
-                        </div>
-                        <div className="mt-1.5 flex min-w-0 items-center gap-2">
-                          <div className="shrink-0 font-mono text-[0.95rem] font-semibold tracking-[0.08em] text-base-content">
-                            {card.conversationSequenceId}
-                          </div>
-                          <div
-                            className="min-w-0 truncate font-mono text-[9px] text-base-content/48"
-                            title={card.promptCacheKey}
-                          >
-                            {card.promptCacheKey}
-                          </div>
-                        </div>
+                    <div className="flex min-w-0 items-center justify-between gap-3">
+                      <div className="min-w-0 shrink truncate font-mono text-[0.95rem] font-semibold tracking-[0.08em] text-base-content">
+                        {displaySequenceId}
+                      </div>
+                      <div className="flex shrink-0 items-center justify-end gap-2 whitespace-nowrap text-[10px] text-base-content/62">
+                        <span className="font-mono">{sortAnchorLabel}</span>
+                        <span className="font-semibold uppercase tracking-[0.14em] text-base-content/76">
+                          {currentStatusLabel}
+                        </span>
+                        <span
+                          className={cn(
+                            "inline-flex h-2 w-2 rounded-full",
+                            currentStatusMeta.beaconClassName,
+                            card.currentInvocation.isInFlight &&
+                              "motion-safe:animate-pulse motion-reduce:animate-none",
+                          )}
+                          aria-hidden
+                        />
                       </div>
                     </div>
 

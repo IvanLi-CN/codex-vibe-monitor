@@ -528,6 +528,8 @@ function buildCards(response: PromptCacheConversationsResponse) {
   return mapPromptCacheConversationsToDashboardCards(response);
 }
 
+const createdAtDescendingOrderCards = buildCards(createdAtDescendingOrderResponse);
+
 function buildStoryMockData(response: PromptCacheConversationsResponse) {
   const recordsByInvokeId = new Map<string, ApiInvocation>();
   const detailByRecordId = new Map<number, ApiInvocationRecordDetailResponse>();
@@ -1024,7 +1026,7 @@ export const WideDesktop1660: Story = {
 
 export const CreatedAtDescendingOrder: Story = {
   args: {
-    cards: buildCards(createdAtDescendingOrderResponse),
+    cards: createdAtDescendingOrderCards,
     isLoading: false,
     error: null,
   },
@@ -1033,8 +1035,23 @@ export const CreatedAtDescendingOrder: Story = {
     const cards = await canvas.findAllByTestId(
       "dashboard-working-conversation-card",
     );
-    await expect(cards[0]).toHaveTextContent("pck-created-newest");
-    await expect(cards[1]).toHaveTextContent("pck-created-middle");
-    await expect(cards[2]).toHaveTextContent("pck-created-oldest");
+    expect(cards[0]?.getAttribute("data-conversation-sequence-id")).toBe(
+      createdAtDescendingOrderCards[0]?.conversationSequenceId.replace(
+        /^WC-/,
+        "",
+      ),
+    );
+    expect(cards[1]?.getAttribute("data-conversation-sequence-id")).toBe(
+      createdAtDescendingOrderCards[1]?.conversationSequenceId.replace(
+        /^WC-/,
+        "",
+      ),
+    );
+    expect(cards[2]?.getAttribute("data-conversation-sequence-id")).toBe(
+      createdAtDescendingOrderCards[2]?.conversationSequenceId.replace(
+        /^WC-/,
+        "",
+      ),
+    );
   },
 };

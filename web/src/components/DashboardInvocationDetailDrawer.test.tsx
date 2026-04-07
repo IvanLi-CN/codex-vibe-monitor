@@ -308,6 +308,43 @@ describe("DashboardInvocationDetailDrawer", () => {
     );
   });
 
+  it(
+    "shows the bare conversation hash in the drawer header while keeping prompt cache key visible",
+    async () => {
+      apiMocks.fetchInvocationRecords.mockResolvedValue(
+        createRecordsResponse([createRecord()]),
+      );
+
+      render(
+        <DashboardInvocationDetailDrawer
+          open
+          selection={createSelection()}
+          onClose={() => undefined}
+        />,
+      );
+
+      await waitFor(
+        () =>
+          document.body.querySelector(
+            '[data-testid="dashboard-invocation-detail-drawer"]',
+          ) != null,
+      );
+
+      const drawer = document.body.querySelector(
+        '[data-testid="dashboard-invocation-detail-drawer"]',
+      );
+      if (!(drawer instanceof HTMLElement)) {
+        throw new Error("missing invocation drawer header");
+      }
+
+      expect(drawer.textContent ?? "").toContain("AB364A");
+      expect(drawer.textContent ?? "").not.toContain("WC-AB364A");
+      expect(drawer.textContent ?? "").toContain(
+        "019d5ea7-519d-7312-a2e8-ef07abb7c09f",
+      );
+    },
+  );
+
   it("renders interrupted status with the dedicated recovery badge", async () => {
     apiMocks.fetchInvocationRecords.mockResolvedValue(
       createRecordsResponse([

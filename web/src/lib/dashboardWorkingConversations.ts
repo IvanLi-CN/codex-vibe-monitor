@@ -96,6 +96,12 @@ function normalizeHash(
   return compact.padEnd(minimumLength, "0");
 }
 
+export function formatDashboardWorkingConversationSequenceId(value: string) {
+  const normalized = value.trim();
+  if (!normalized) return normalized;
+  return normalized.replace(/^WC-/i, "");
+}
+
 export function hashDashboardWorkingConversationKey(value: string) {
   let hash = 0x811c9dc5;
   for (const character of value) {

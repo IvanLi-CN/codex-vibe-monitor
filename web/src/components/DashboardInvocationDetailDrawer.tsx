@@ -16,7 +16,10 @@ import {
   fetchInvocationRecords,
   fetchInvocationResponseBody,
 } from "../lib/api";
-import type { DashboardWorkingConversationInvocationSelection } from "../lib/dashboardWorkingConversations";
+import {
+  formatDashboardWorkingConversationSequenceId,
+  type DashboardWorkingConversationInvocationSelection,
+} from "../lib/dashboardWorkingConversations";
 import { resolveInvocationDisplayStatus } from "../lib/invocationStatus";
 import { useTranslation } from "../i18n";
 import { AccountDetailDrawerShell } from "./AccountDetailDrawerShell";
@@ -375,6 +378,15 @@ export function DashboardInvocationDetailDrawer({
         unavailableReason: responseBody.unavailableReason ?? null,
       }
     : (recordDetail?.abnormalResponseBody ?? null);
+  const displaySequenceId = selection
+    ? formatDashboardWorkingConversationSequenceId(selection.conversationSequenceId)
+    : null
+    : (recordDetail?.abnormalResponseBody ?? null);
+  const displaySequenceId = selection
+    ? formatDashboardWorkingConversationSequenceId(
+        selection.conversationSequenceId,
+      )
+    : null;
   const abnormalResponseBodyLoading =
     (recordDetailLoading || responseBodyLoading) &&
     abnormalResponseBody == null;
@@ -398,10 +410,8 @@ export function DashboardInvocationDetailDrawer({
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="secondary">{slotLabel}</Badge>
             <Badge variant={statusMeta.variant}>{statusLabel}</Badge>
-            {selection ? (
-              <Badge variant="secondary">
-                {selection.conversationSequenceId}
-              </Badge>
+            {displaySequenceId ? (
+              <Badge variant="secondary">{displaySequenceId}</Badge>
             ) : null}
           </div>
           <div className="section-heading">
