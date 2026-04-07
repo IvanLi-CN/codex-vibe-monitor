@@ -10763,6 +10763,24 @@ async fn reporting_tz_hour_alignment_rejects_sub_hour_dst_transition_windows() {
 }
 
 #[tokio::test]
+async fn parallel_work_day_all_fallbacks_when_requested_window_is_missing_in_sub_hour_zone() {
+    let now = Utc
+        .with_ymd_and_hms(2026, 4, 7, 12, 0, 0)
+        .single()
+        .expect("fixed now");
+    assert!(should_fallback_parallel_work_day_all_window(
+        "Asia/Kolkata".parse::<Tz>().expect("valid kolkata tz"),
+        None,
+        now,
+    ));
+    assert!(!should_fallback_parallel_work_day_all_window(
+        "UTC".parse::<Tz>().expect("valid utc tz"),
+        None,
+        now,
+    ));
+}
+
+#[tokio::test]
 async fn upsert_forward_proxy_weight_hourly_bucket_keeps_latest_sample_weight() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.example.com/").expect("valid upstream base url"),

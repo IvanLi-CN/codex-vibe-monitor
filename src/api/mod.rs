@@ -3995,10 +3995,11 @@ async fn resolve_parallel_work_day_all_window_with_fallback(
 ) -> Result<(Option<RangeWindow>, Tz, bool)> {
     let requested_window =
         resolve_parallel_work_day_all_window(pool, requested_reporting_tz, source_scope).await?;
-    let Some(window) = requested_window.as_ref() else {
-        return Ok((None, requested_reporting_tz, false));
-    };
-    if reporting_tz_has_whole_hour_offsets(requested_reporting_tz, window) {
+    if !should_fallback_parallel_work_day_all_window(
+        requested_reporting_tz,
+        requested_window.as_ref(),
+        Utc::now(),
+    ) {
         return Ok((requested_window, requested_reporting_tz, false));
     }
     Ok((
@@ -4006,6 +4007,29 @@ async fn resolve_parallel_work_day_all_window_with_fallback(
         Shanghai,
         true,
     ))
+}
+
+pub(crate) fn should_fallback_parallel_work_day_all_window(
+    requested_reporting_tz: Tz,
+    requested_window: Option<&RangeWindow>,
+    now: DateTime<Utc>,
+) -> bool {
+    if let Some(window) = requested_window {
+        return !reporting_tz_has_whole_hour_offsets(requested_reporting_tz, window);
+    }
+
+    let latest_complete_day_end = local_midnight_utc(
+        now.with_timezone(&requested_reporting_tz).date_naive(),
+        requested_reporting_tz,
+    );
+    let probe_start = latest_complete_day_end - ChronoDuration::days(1);
+    let probe_window = RangeWindow {
+        start: probe_start,
+        end: latest_complete_day_end,
+        display_end: latest_complete_day_end,
+        duration: ChronoDuration::days(1),
+    };
+    !reporting_tz_has_whole_hour_offsets(requested_reporting_tz, &probe_window)
 }
 
 async fn query_parallel_work_day_counts_from_hourly_rollups(
