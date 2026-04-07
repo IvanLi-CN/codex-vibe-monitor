@@ -11,7 +11,8 @@ import type {
   TimeseriesResponse,
 } from '../lib/api'
 import DashboardPage from '../pages/Dashboard'
-import { FullPageStorySurface, StorybookPageEnvironment, jsonResponse } from './storybookPageHelpers'
+import { FullPageStorySurface, StorybookPageEnvironment } from './storybookPageHelpers'
+import { jsonResponse } from './storybookResponse'
 
 type DashboardScenario = 'default' | 'degraded'
 

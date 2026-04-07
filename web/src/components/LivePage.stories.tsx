@@ -11,7 +11,8 @@ import type {
   StatsResponse,
 } from '../lib/api'
 import LivePage from '../pages/Live'
-import { FullPageStorySurface, StorybookPageEnvironment, jsonResponse } from './storybookPageHelpers'
+import { FullPageStorySurface, StorybookPageEnvironment } from './storybookPageHelpers'
+import { jsonResponse } from './storybookResponse'
 
 type LiveScenario = 'default' | 'proxy-error'
 

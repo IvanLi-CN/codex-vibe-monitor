@@ -9,17 +9,6 @@ export type StorybookRequestHandler = (
   context: StorybookRequestContext,
 ) => Response | Promise<Response | undefined> | undefined
 
-export function jsonResponse(payload: unknown, init?: number | ResponseInit) {
-  const responseInit = typeof init === 'number' ? { status: init } : init
-  return new Response(JSON.stringify(payload), {
-    status: responseInit?.status ?? 200,
-    headers: {
-      'Content-Type': 'application/json',
-      ...(responseInit?.headers ?? {}),
-    },
-  })
-}
-
 class MockEventSource implements EventTarget {
   static CONNECTING = 0
   static OPEN = 1

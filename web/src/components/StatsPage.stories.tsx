@@ -9,7 +9,8 @@ import type {
   TimeseriesResponse,
 } from '../lib/api'
 import StatsPage from '../pages/Stats'
-import { FullPageStorySurface, StorybookPageEnvironment, jsonResponse } from './storybookPageHelpers'
+import { FullPageStorySurface, StorybookPageEnvironment } from './storybookPageHelpers'
+import { jsonResponse } from './storybookResponse'
 
 type StatsScenario = 'default' | 'timeseries-error'
 
