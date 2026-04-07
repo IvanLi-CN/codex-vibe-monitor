@@ -10843,13 +10843,9 @@ fn parallel_work_complete_window_preserves_local_hour_across_dst() {
         .single()
         .expect("fixed now");
 
-    let window = resolve_complete_parallel_work_window(
-        now,
-        ChronoDuration::days(30),
-        3_600,
-        reporting_tz,
-    )
-    .expect("resolve window");
+    let window =
+        resolve_complete_parallel_work_window(now, ChronoDuration::days(30), 3_600, reporting_tz)
+            .expect("resolve window");
 
     assert_eq!(
         window.end,
