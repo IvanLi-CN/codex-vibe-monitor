@@ -444,7 +444,7 @@ function ParallelWorkWindowCard({
 
   return (
     <article
-      className="flex min-h-[22rem] flex-col gap-4 rounded-[1.35rem] border border-base-300/75 bg-base-100/82 p-4 shadow-sm"
+      className="flex flex-col gap-4 rounded-[1.35rem] border border-base-300/75 bg-base-100/82 p-4 shadow-sm"
       data-testid={"parallel-work-card-" + windowKey}
     >
       <div className="grid grid-cols-3 gap-2.5">
@@ -509,7 +509,7 @@ function ParallelWorkLoadingCard({
 
   return (
     <article
-      className="flex min-h-[22rem] flex-col gap-4 rounded-[1.35rem] border border-base-300/75 bg-base-100/82 p-4 shadow-sm"
+      className="flex min-h-[18rem] flex-col gap-4 rounded-[1.35rem] border border-base-300/75 bg-base-100/82 p-4 shadow-sm"
       data-testid={"parallel-work-card-" + windowKey}
     >
       <div className="grid grid-cols-3 gap-2.5">
