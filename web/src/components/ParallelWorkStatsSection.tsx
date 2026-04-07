@@ -206,6 +206,45 @@ function resolveParallelWorkDefaultIndex(
   return Math.max(0, points.length - 1);
 }
 
+function ParallelWorkWindowToggle({
+  activeWindowKey,
+  onWindowSelect,
+}: {
+  activeWindowKey: ParallelWorkWindowKey;
+  onWindowSelect: (windowKey: ParallelWorkWindowKey) => void;
+}) {
+  const { t } = useTranslation();
+
+  return (
+    <div className="flex w-full justify-end overflow-x-auto no-scrollbar sm:w-auto">
+      <SegmentedControl
+        size="compact"
+        className="min-w-max"
+        role="tablist"
+        aria-label={t("stats.parallelWork.windowToggleAria")}
+        data-testid="parallel-work-window-toggle"
+      >
+        {WINDOW_KEYS.map((windowKey) => {
+          const meta = resolveWindowMeta(windowKey);
+          const active = windowKey === activeWindowKey;
+          return (
+            <SegmentedControlItem
+              key={windowKey}
+              active={active}
+              role="tab"
+              aria-selected={active}
+              onClick={() => onWindowSelect(windowKey)}
+              data-testid={"parallel-work-window-trigger-" + windowKey}
+            >
+              {t(meta.toggleLabelKey)}
+            </SegmentedControlItem>
+          );
+        })}
+      </SegmentedControl>
+    </div>
+  );
+}
+
 function ParallelWorkSparkline({
   window,
   emptyLabel,
@@ -364,9 +403,13 @@ function ParallelWorkSparkline({
 }
 
 function ParallelWorkWindowCard({
+  activeWindowKey,
+  onWindowSelect,
   windowKey,
   window,
 }: {
+  activeWindowKey: ParallelWorkWindowKey;
+  onWindowSelect: (windowKey: ParallelWorkWindowKey) => void;
   windowKey: ParallelWorkWindowKey;
   window: ParallelWorkWindowResponse;
 }) {
@@ -379,17 +422,27 @@ function ParallelWorkWindowCard({
       className="flex min-h-[22rem] flex-col gap-4 rounded-[1.35rem] border border-base-300/75 bg-base-100/82 p-4 shadow-sm"
       data-testid={"parallel-work-card-" + windowKey}
     >
-      <div className="space-y-1.5">
-        <h4 className="text-base font-semibold text-base-content">
-          {t(meta.titleKey)}
-        </h4>
-        <p className="text-sm text-base-content/65">{t(meta.descriptionKey)}</p>
-        <p className="text-xs text-base-content/52">
-          {t("stats.parallelWork.samples", {
-            complete: window.completeBucketCount,
-            active: window.activeBucketCount,
-          })}
-        </p>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <h4 className="text-base font-semibold text-base-content">
+            {t(meta.titleKey)}
+          </h4>
+          <p className="text-sm text-base-content/65">
+            {t(meta.descriptionKey)}
+          </p>
+          <p className="text-xs text-base-content/52">
+            {t("stats.parallelWork.samples", {
+              complete: window.completeBucketCount,
+              active: window.activeBucketCount,
+            })}
+          </p>
+        </div>
+        <div className="sm:pl-4">
+          <ParallelWorkWindowToggle
+            activeWindowKey={activeWindowKey}
+            onWindowSelect={onWindowSelect}
+          />
+        </div>
       </div>
 
       <div className="grid grid-cols-3 gap-2.5">
@@ -446,8 +499,12 @@ function ParallelWorkWindowCard({
 }
 
 function ParallelWorkLoadingCard({
+  activeWindowKey,
+  onWindowSelect,
   windowKey,
 }: {
+  activeWindowKey: ParallelWorkWindowKey;
+  onWindowSelect: (windowKey: ParallelWorkWindowKey) => void;
   windowKey: ParallelWorkWindowKey;
 }) {
   const { t } = useTranslation();
@@ -458,12 +515,22 @@ function ParallelWorkLoadingCard({
       className="flex min-h-[22rem] flex-col gap-4 rounded-[1.35rem] border border-base-300/75 bg-base-100/82 p-4 shadow-sm"
       data-testid={"parallel-work-card-" + windowKey}
     >
-      <div className="space-y-1.5">
-        <h4 className="text-base font-semibold text-base-content">
-          {t(meta.titleKey)}
-        </h4>
-        <p className="text-sm text-base-content/65">{t(meta.descriptionKey)}</p>
-        <div className="h-4 w-40 animate-pulse rounded-full bg-base-300/60" />
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <h4 className="text-base font-semibold text-base-content">
+            {t(meta.titleKey)}
+          </h4>
+          <p className="text-sm text-base-content/65">
+            {t(meta.descriptionKey)}
+          </p>
+          <div className="h-4 w-40 animate-pulse rounded-full bg-base-300/60" />
+        </div>
+        <div className="sm:pl-4">
+          <ParallelWorkWindowToggle
+            activeWindowKey={activeWindowKey}
+            onWindowSelect={onWindowSelect}
+          />
+        </div>
       </div>
       <div className="grid grid-cols-3 gap-2.5">
         {Array.from({ length: 3 }).map((_, index) => (
@@ -484,6 +551,44 @@ function ParallelWorkLoadingCard({
   );
 }
 
+function ParallelWorkErrorCard({
+  activeWindowKey,
+  onWindowSelect,
+  error,
+}: {
+  activeWindowKey: ParallelWorkWindowKey;
+  onWindowSelect: (windowKey: ParallelWorkWindowKey) => void;
+  error: string;
+}) {
+  const { t } = useTranslation();
+  const meta = resolveWindowMeta(activeWindowKey);
+
+  return (
+    <article
+      className="flex min-h-[14rem] flex-col gap-4 rounded-[1.35rem] border border-base-300/75 bg-base-100/82 p-4 shadow-sm"
+      data-testid={"parallel-work-card-" + activeWindowKey}
+    >
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <h4 className="text-base font-semibold text-base-content">
+            {t(meta.titleKey)}
+          </h4>
+          <p className="text-sm text-base-content/65">
+            {t(meta.descriptionKey)}
+          </p>
+        </div>
+        <div className="sm:pl-4">
+          <ParallelWorkWindowToggle
+            activeWindowKey={activeWindowKey}
+            onWindowSelect={onWindowSelect}
+          />
+        </div>
+      </div>
+      <Alert variant="error">{error}</Alert>
+    </article>
+  );
+}
+
 export function ParallelWorkStatsSection({
   stats,
   isLoading,
@@ -498,46 +603,28 @@ export function ParallelWorkStatsSection({
   return (
     <section className="surface-panel" data-testid="parallel-work-section">
       <div className="surface-panel-body gap-4">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="section-heading">
-            <h3 className="section-title">{t("stats.parallelWork.title")}</h3>
-            <p className="section-description">
-              {t("stats.parallelWork.description")}
-            </p>
-          </div>
-          <div className="w-full overflow-x-auto no-scrollbar sm:w-auto">
-            <SegmentedControl
-              size="compact"
-              className="min-w-max"
-              role="tablist"
-              aria-label={t("stats.parallelWork.windowToggleAria")}
-              data-testid="parallel-work-window-toggle"
-            >
-              {WINDOW_KEYS.map((windowKey) => {
-                const meta = resolveWindowMeta(windowKey);
-                const active = windowKey === activeWindowKey;
-                return (
-                  <SegmentedControlItem
-                    key={windowKey}
-                    active={active}
-                    role="tab"
-                    aria-selected={active}
-                    onClick={() => setActiveWindowKey(windowKey)}
-                    data-testid={"parallel-work-window-trigger-" + windowKey}
-                  >
-                    {t(meta.toggleLabelKey)}
-                  </SegmentedControlItem>
-                );
-              })}
-            </SegmentedControl>
-          </div>
+        <div className="section-heading">
+          <h3 className="section-title">{t("stats.parallelWork.title")}</h3>
+          <p className="section-description">
+            {t("stats.parallelWork.description")}
+          </p>
         </div>
         {error ? (
-          <Alert variant="error">{error}</Alert>
+          <ParallelWorkErrorCard
+            activeWindowKey={activeWindowKey}
+            onWindowSelect={setActiveWindowKey}
+            error={error}
+          />
         ) : isLoading || !activeWindow ? (
-          <ParallelWorkLoadingCard windowKey={activeWindowKey} />
+          <ParallelWorkLoadingCard
+            activeWindowKey={activeWindowKey}
+            onWindowSelect={setActiveWindowKey}
+            windowKey={activeWindowKey}
+          />
         ) : (
           <ParallelWorkWindowCard
+            activeWindowKey={activeWindowKey}
+            onWindowSelect={setActiveWindowKey}
             windowKey={activeWindowKey}
             window={activeWindow}
           />

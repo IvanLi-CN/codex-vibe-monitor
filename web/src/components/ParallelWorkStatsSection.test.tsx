@@ -235,8 +235,15 @@ describe("ParallelWorkStatsSection", () => {
     const chart = host?.querySelector(
       '[data-chart-kind="parallel-work-sparkline"]',
     ) as SVGElement | null;
+    const activeCard = host?.querySelector(
+      '[data-testid="parallel-work-card-minute7d"]',
+    ) as HTMLElement | null;
+    const toggle = host?.querySelector(
+      '[data-testid="parallel-work-window-toggle"]',
+    ) as HTMLElement | null;
     expect(chart).not.toBeNull();
     expect(chart?.className.baseVal).toContain("w-full");
+    expect(activeCard?.contains(toggle)).toBe(true);
   });
 
   it("shows inline tooltip details on click for the active window chart", () => {

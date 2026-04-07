@@ -127,7 +127,7 @@
   submission_gate: pending-owner-approval
   docs_entry_or_title: Stats/ParallelWorkStatsSection
   state: populated
-  evidence_note: 验证 Stats 页并行工作 section 已按项目既有 segmented toggle 习惯切换显示 `minute7d / hour30d / dayAll` 三个窗口，当前激活窗口使用全宽趋势图，并在图表 hover / click 后展示特定 bucket 的详情浮窗。
+  evidence_note: 验证 Stats 页并行工作 section 已按项目既有 segmented toggle 习惯切换显示 `minute7d / hour30d / dayAll` 三个窗口，选择器位于卡片右上角，当前激活窗口使用全宽趋势图，并在图表 hover / click 后展示特定 bucket 的详情浮窗。
   image:
   ![并行工作统计 segmented populated docs](./assets/parallel-work-segmented-populated-docs.png)
 
@@ -138,7 +138,7 @@
   submission_gate: pending-owner-approval
   docs_entry_or_title: Stats/ParallelWorkStatsSection
   scenario: gallery
-  evidence_note: 验证同一 docs 入口已覆盖分钟窗口默认态、切换到小时窗口、`dayAll` 空历史、loading 与 error 五类关键状态，且图表采用全宽布局、每次只显示一个激活窗口。
+  evidence_note: 验证同一 docs 入口已覆盖分钟窗口默认态、切换到小时窗口、`dayAll` 空历史、loading 与 error 五类关键状态，且选择器在各卡片头部右上角、图表采用全宽布局、每次只显示一个激活窗口。
   image:
   ![并行工作统计 segmented docs gallery](./assets/parallel-work-segmented-gallery-docs.png)
 
@@ -164,4 +164,5 @@
 
 - 2026-04-07: 完成 `GET /api/stats/parallel-work`、固定窗口聚合、Stats 页 section、Storybook docs 与前后端测试；根据主人反馈将并行工作 section 改为按项目既有 segmented toggle 习惯切换窗口显示，同一时刻不再并排展示三个统计。
 - 2026-04-07: 按主人反馈把并行工作趋势图改为全宽交互图表，并补上 hover / click 详情浮窗、Storybook 交互覆盖与前端回归验证。
+- 2026-04-07: 按主人反馈把窗口选择器移到卡片右上角，并同步刷新 loading / error / empty / populated 布局与 Storybook docs 证据。
 - 2026-04-07: 刷新 Storybook docs 视觉证据并落盘到 spec 资产目录，当前等待主人确认截图可随提交一起 push 后再进入 PR 收敛。
