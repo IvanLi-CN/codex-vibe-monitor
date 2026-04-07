@@ -65,6 +65,32 @@ async fn proxy_openai_v1_common(
         "openai proxy request started"
     );
 
+    let proxy_request_permit = match acquire_proxy_request_concurrency_permit(
+        state.as_ref(),
+        proxy_request_id,
+        &method_for_log,
+        &uri_for_log,
+    )
+    .await
+    {
+        Ok(permit) => Some(permit),
+        Err(err) => {
+            warn!(
+                proxy_request_id,
+                method = %method_for_log,
+                uri = %uri_for_log,
+                status = %err.status,
+                error = %err.message,
+                elapsed_ms = started_at.elapsed().as_millis(),
+                in_flight = state.proxy_request_in_flight.load(Ordering::Acquire),
+                queued_total = state.proxy_request_queue_total.load(Ordering::Acquire),
+                rejected_total = state.proxy_request_rejected_total.load(Ordering::Acquire),
+                "openai proxy request rejected before upstream dispatch"
+            );
+            return build_proxy_error_response(err, &invoke_id);
+        }
+    };
+
     match proxy_openai_v1_inner(
         state,
         proxy_request_id,
@@ -74,6 +100,7 @@ async fn proxy_openai_v1_common(
         headers,
         body,
         peer_ip,
+        proxy_request_permit,
     )
     .await
     {
@@ -99,42 +126,7 @@ async fn proxy_openai_v1_common(
                 elapsed_ms = started_at.elapsed().as_millis(),
                 "openai proxy request failed"
             );
-            match err.cvm_id {
-                Some(cvm_id) => {
-                    let mut response = (
-                        err.status,
-                        Json(json!({ "error": err.message, "cvmId": cvm_id })),
-                    )
-                        .into_response();
-                    if let Ok(header_value) = HeaderValue::from_str(&invoke_id) {
-                        response
-                            .headers_mut()
-                            .insert(HeaderName::from_static(CVM_INVOKE_ID_HEADER), header_value);
-                    }
-                    if let Some(retry_after_secs) = err.retry_after_secs
-                        && let Ok(header_value) =
-                            HeaderValue::from_str(&retry_after_secs.to_string())
-                    {
-                        response
-                            .headers_mut()
-                            .insert(header::RETRY_AFTER, header_value);
-                    }
-                    response
-                }
-                None => {
-                    let mut response =
-                        (err.status, Json(json!({ "error": err.message }))).into_response();
-                    if let Some(retry_after_secs) = err.retry_after_secs
-                        && let Ok(header_value) =
-                            HeaderValue::from_str(&retry_after_secs.to_string())
-                    {
-                        response
-                            .headers_mut()
-                            .insert(header::RETRY_AFTER, header_value);
-                    }
-                    response
-                }
-            }
+            build_proxy_error_response(err, &invoke_id)
         }
     }
 }
@@ -145,6 +137,150 @@ struct ProxyErrorResponse {
     message: String,
     cvm_id: Option<String>,
     retry_after_secs: Option<u64>,
+}
+
+const PROXY_CONCURRENCY_LIMIT_MESSAGE: &str = "proxy concurrency limit reached; retry later";
+const RAW_PAYLOAD_TRUNCATED_REASON_ASYNC_BACKPRESSURE_DROPPED: &str =
+    "async_backpressure_dropped";
+const ASYNC_STREAMING_RAW_WRITER_QUEUE_CAPACITY: usize = 8;
+
+fn build_proxy_error_response(err: ProxyErrorResponse, invoke_id: &str) -> Response {
+    match err.cvm_id {
+        Some(cvm_id) => {
+            let mut response = (
+                err.status,
+                Json(json!({ "error": err.message, "cvmId": cvm_id })),
+            )
+                .into_response();
+            if let Ok(header_value) = HeaderValue::from_str(invoke_id) {
+                response
+                    .headers_mut()
+                    .insert(HeaderName::from_static(CVM_INVOKE_ID_HEADER), header_value);
+            }
+            if let Some(retry_after_secs) = err.retry_after_secs
+                && let Ok(header_value) = HeaderValue::from_str(&retry_after_secs.to_string())
+            {
+                response
+                    .headers_mut()
+                    .insert(header::RETRY_AFTER, header_value);
+            }
+            response
+        }
+        None => {
+            let mut response = (err.status, Json(json!({ "error": err.message }))).into_response();
+            if let Some(retry_after_secs) = err.retry_after_secs
+                && let Ok(header_value) = HeaderValue::from_str(&retry_after_secs.to_string())
+            {
+                response
+                    .headers_mut()
+                    .insert(header::RETRY_AFTER, header_value);
+            }
+            response
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ProxyRequestConcurrencyPermit {
+    _permit: OwnedSemaphorePermit,
+    in_flight: Arc<AtomicUsize>,
+}
+
+impl Drop for ProxyRequestConcurrencyPermit {
+    fn drop(&mut self) {
+        let _ = self.in_flight.fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            Some(current.saturating_sub(1))
+        });
+    }
+}
+
+async fn acquire_proxy_request_concurrency_permit(
+    state: &AppState,
+    proxy_request_id: u64,
+    method: &Method,
+    original_uri: &Uri,
+) -> Result<ProxyRequestConcurrencyPermit, ProxyErrorResponse> {
+    let wait_started_at = Instant::now();
+    let queue_was_full = state.proxy_request_semaphore.available_permits() == 0;
+    let queued_total = if queue_was_full {
+        Some(
+            state
+                .proxy_request_queue_total
+                .fetch_add(1, Ordering::Relaxed)
+                .saturating_add(1),
+        )
+    } else {
+        None
+    };
+    let permit = match timeout(
+        state.config.proxy_request_concurrency_wait_timeout,
+        state.proxy_request_semaphore.clone().acquire_owned(),
+    )
+    .await
+    {
+        Ok(Ok(permit)) => permit,
+        Ok(Err(_)) => {
+            return Err(ProxyErrorResponse {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                message: PROXY_CONCURRENCY_LIMIT_MESSAGE.to_string(),
+                cvm_id: None,
+                retry_after_secs: retry_after_secs_for_proxy_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    PROXY_CONCURRENCY_LIMIT_MESSAGE,
+                ),
+            });
+        }
+        Err(_) => {
+            let rejected_total = state
+                .proxy_request_rejected_total
+                .fetch_add(1, Ordering::Relaxed)
+                .saturating_add(1);
+            warn!(
+                proxy_request_id,
+                method = %method,
+                uri = %original_uri,
+                limit = state.config.proxy_request_concurrency_limit,
+                wait_timeout_ms = state.config.proxy_request_concurrency_wait_timeout.as_millis(),
+                queued_total = queued_total.unwrap_or_else(|| {
+                    state.proxy_request_queue_total.load(Ordering::Acquire)
+                }),
+                rejected_total,
+                "proxy request concurrency wait timed out"
+            );
+            return Err(ProxyErrorResponse {
+                status: StatusCode::SERVICE_UNAVAILABLE,
+                message: PROXY_CONCURRENCY_LIMIT_MESSAGE.to_string(),
+                cvm_id: None,
+                retry_after_secs: retry_after_secs_for_proxy_error(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    PROXY_CONCURRENCY_LIMIT_MESSAGE,
+                ),
+            });
+        }
+    };
+
+    let queue_wait_ms = wait_started_at.elapsed().as_millis();
+    let in_flight = state
+        .proxy_request_in_flight
+        .fetch_add(1, Ordering::AcqRel)
+        .saturating_add(1);
+    info!(
+        proxy_request_id,
+        method = %method,
+        uri = %original_uri,
+        limit = state.config.proxy_request_concurrency_limit,
+        in_flight,
+        queue_wait_ms,
+        queued_total = queued_total.unwrap_or_else(|| {
+            state.proxy_request_queue_total.load(Ordering::Acquire)
+        }),
+        rejected_total = state.proxy_request_rejected_total.load(Ordering::Acquire),
+        "proxy request concurrency slot acquired"
+    );
+    Ok(ProxyRequestConcurrencyPermit {
+        _permit: permit,
+        in_flight: state.proxy_request_in_flight.clone(),
+    })
 }
 
 async fn resolve_proxy_request_timeouts(
@@ -433,8 +569,18 @@ fn build_pool_no_available_account_error(
 }
 
 fn retry_after_secs_for_proxy_error(status: StatusCode, message: &str) -> Option<u64> {
-    (status == StatusCode::SERVICE_UNAVAILABLE && message == POOL_NO_AVAILABLE_ACCOUNT_MESSAGE)
-        .then_some(DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS)
+    if status != StatusCode::SERVICE_UNAVAILABLE {
+        return None;
+    }
+    if message == POOL_NO_AVAILABLE_ACCOUNT_MESSAGE {
+        return Some(DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS);
+    }
+    if message == PROXY_CONCURRENCY_LIMIT_MESSAGE {
+        let retry_after_secs =
+            (DEFAULT_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS / 1_000).max(1);
+        return Some(retry_after_secs);
+    }
+    None
 }
 
 fn build_pool_degraded_only_error(
@@ -1141,6 +1287,14 @@ async fn prepare_pool_request_body_for_account(
             snapshot,
             request_body_for_capture,
             requested_service_tier,
+        });
+    }
+
+    if pool_request_snapshot_body_bytes(&snapshot) > POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES {
+        return Ok(PreparedPoolRequestBody {
+            snapshot,
+            request_body_for_capture: None,
+            requested_service_tier: None,
         });
     }
 
@@ -3571,6 +3725,16 @@ async fn extract_sticky_key_from_replay_snapshot(
         .and_then(|value| extract_sticky_key_from_request_body(&value))
 }
 
+async fn extract_sticky_key_from_replay_snapshot_prefix(
+    snapshot: &PoolReplayBodySnapshot,
+) -> Option<String> {
+    snapshot
+        .to_prefix_bytes(HEADER_STICKY_EARLY_STICKY_SCAN_BYTES)
+        .await
+        .ok()
+        .and_then(|bytes| best_effort_extract_sticky_key_from_request_body_prefix(bytes.as_ref()))
+}
+
 async fn continue_or_retry_pool_live_request(
     state: Arc<AppState>,
     proxy_request_id: u64,
@@ -3739,6 +3903,7 @@ async fn proxy_openai_v1_via_pool(
     headers: HeaderMap,
     body: Body,
     runtime_timeouts: PoolRoutingTimeoutSettingsResolved,
+    proxy_request_permit: Option<ProxyRequestConcurrencyPermit>,
 ) -> Result<Response, (StatusCode, String)> {
     let request_started_at = Instant::now();
     let body_limit = state.config.openai_proxy_max_request_body_bytes;
@@ -3767,21 +3932,21 @@ async fn proxy_openai_v1_via_pool(
         .size_hint()
         .exact()
         .and_then(|value| usize::try_from(value).ok());
+    let request_body_size_hint = headers
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<usize>().ok())
+        .or(body_size_hint_exact);
     let (upstream, sticky_key) = if request_may_have_body(&method, &headers) {
         let should_prebuffer_for_body_sticky = header_sticky_key.is_none()
             && headers
                 .get(header::CONTENT_TYPE)
                 .and_then(|value| value.to_str().ok())
                 .is_some_and(|value| value.to_ascii_lowercase().starts_with("application/json"))
-            && headers
-                .get(header::CONTENT_LENGTH)
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| value.parse::<usize>().ok())
-                .or(body_size_hint_exact)
-                .is_some_and(|value| value <= body_limit);
+            && request_body_size_hint.is_some_and(|value| value <= body_limit);
 
         if should_prebuffer_for_body_sticky {
-            let request_body_bytes = read_request_body_with_limit(
+            let request_body_snapshot = read_request_body_snapshot_with_limit(
                 body,
                 body_limit,
                 runtime_timeouts.request_read_timeout,
@@ -3792,10 +3957,13 @@ async fn proxy_openai_v1_via_pool(
             if pre_attempt_total_timeout_exceeded() {
                 return Err(pre_attempt_total_timeout_error());
             }
-            let request_body_bytes = Bytes::from(request_body_bytes);
-            let body_sticky_key = serde_json::from_slice::<Value>(&request_body_bytes)
-                .ok()
-                .and_then(|value| extract_sticky_key_from_request_body(&value));
+            let should_fully_parse_body_sticky = request_body_size_hint
+                .is_some_and(|value| value <= POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES);
+            let body_sticky_key = if should_fully_parse_body_sticky {
+                extract_sticky_key_from_replay_snapshot(&request_body_snapshot).await
+            } else {
+                extract_sticky_key_from_replay_snapshot_prefix(&request_body_snapshot).await
+            };
             (
                 send_pool_request_with_failover(
                     state.clone(),
@@ -3803,7 +3971,7 @@ async fn proxy_openai_v1_via_pool(
                     method,
                     original_uri,
                     &headers,
-                    Some(PoolReplayBodySnapshot::Memory(request_body_bytes)),
+                    Some(request_body_snapshot),
                     handshake_timeout,
                     None,
                     None,
@@ -4258,8 +4426,13 @@ async fn proxy_openai_v1_via_pool(
                 )
                 .await
                 .map_err(|err| (err.status, err.message))?;
-                let body_sticky_key =
-                    extract_sticky_key_from_replay_snapshot(&request_body_snapshot).await;
+                let body_sticky_key = if request_body_size_hint
+                    .is_some_and(|value| value <= POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES)
+                {
+                    extract_sticky_key_from_replay_snapshot(&request_body_snapshot).await
+                } else {
+                    extract_sticky_key_from_replay_snapshot_prefix(&request_body_snapshot).await
+                };
                 let mut no_available_wait_deadline = None;
                 let resolution = resolve_pool_account_for_request_with_wait(
                     state.as_ref(),
@@ -4415,7 +4588,16 @@ async fn proxy_openai_v1_via_pool(
     let sticky_key_for_record = sticky_key.clone();
     let invoke_id_for_record = upstream_invoke_id.clone();
     let upstream_attempt_started_at_utc_for_record = upstream_attempt_started_at_utc;
+    let response = response_builder
+        .body(Body::from_stream(ReceiverStream::new(rx)))
+        .map_err(|err| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to build proxy response: {err}"),
+            )
+        })?;
     tokio::spawn(async move {
+        let _proxy_request_permit = proxy_request_permit;
         let mut forwarded_chunks = 0usize;
         let mut forwarded_bytes = 0usize;
         let stream_started_at = Instant::now();
@@ -4499,14 +4681,7 @@ async fn proxy_openai_v1_via_pool(
         );
     });
 
-    response_builder
-        .body(Body::from_stream(ReceiverStream::new(rx)))
-        .map_err(|err| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to build proxy response: {err}"),
-            )
-        })
+    Ok(response)
 }
 
 pub(crate) async fn send_forward_proxy_request_with_429_retry(
@@ -4655,6 +4830,7 @@ async fn proxy_openai_v1_inner(
     headers: HeaderMap,
     body: Body,
     peer_ip: Option<IpAddr>,
+    mut proxy_request_permit: Option<ProxyRequestConcurrencyPermit>,
 ) -> Result<Response, ProxyErrorResponse> {
     let pool_route_active = request_matches_pool_route(state.as_ref(), &headers)
         .await
@@ -4711,6 +4887,7 @@ async fn proxy_openai_v1_inner(
             headers,
             body,
             runtime_timeouts,
+            proxy_request_permit.take(),
         )
         .await
         .map_err(|(status, message)| ProxyErrorResponse {
@@ -4735,6 +4912,7 @@ async fn proxy_openai_v1_inner(
             peer_ip,
             pool_route_active,
             runtime_timeouts,
+            proxy_request_permit.take(),
         )
         .await
         .map_err(|(status, message)| ProxyErrorResponse {
@@ -4753,6 +4931,7 @@ async fn proxy_openai_v1_inner(
         headers,
         body,
         runtime_timeouts,
+        proxy_request_permit.take(),
     )
     .await
     .map_err(|(status, message)| ProxyErrorResponse {
@@ -4788,6 +4967,7 @@ async fn proxy_openai_v1_capture_target(
     peer_ip: Option<IpAddr>,
     pool_route_active: bool,
     runtime_timeouts: PoolRoutingTimeoutSettingsResolved,
+    proxy_request_permit: Option<ProxyRequestConcurrencyPermit>,
 ) -> Result<Response, (StatusCode, String)> {
     let capture_started = Instant::now();
     let pool_routing_reservation_key = build_pool_routing_reservation_key(proxy_request_id);
@@ -4811,12 +4991,14 @@ async fn proxy_openai_v1_capture_target(
         Err(read_err) => {
             let t_req_read_ms = elapsed_ms(req_read_started);
             let request_info = RequestCaptureInfo::default();
-            let req_raw = store_raw_payload_file(
-                &state.config,
+            let req_raw = spawn_raw_payload_file_write(
+                state.as_ref(),
                 &invoke_id,
                 "request",
-                &read_err.partial_body,
-            );
+                Bytes::from(read_err.partial_body.clone()),
+            )
+            .finish()
+            .await;
             let usage = ParsedUsage::default();
             let (cost, cost_estimated, price_version) = estimate_proxy_cost_from_shared_catalog(
                 &state.pricing_catalog,
@@ -5066,12 +5248,14 @@ async fn proxy_openai_v1_capture_target(
                     .request_body_for_capture
                     .clone()
                     .unwrap_or_else(|| base_request_bytes_for_capture.clone());
-                let req_raw = store_raw_payload_file(
-                    &state.config,
+                let req_raw = spawn_raw_payload_file_write(
+                    state.as_ref(),
                     &invoke_id,
                     "request",
-                    request_body_for_capture.as_ref(),
-                );
+                    request_body_for_capture,
+                )
+                .finish()
+                .await;
                 let usage = ParsedUsage::default();
                 let (billing_service_tier, pricing_mode) =
                     resolve_proxy_billing_service_tier_and_pricing_mode_for_account(
@@ -5243,12 +5427,14 @@ async fn proxy_openai_v1_capture_target(
                 response.response,
             ),
             Err(err) => {
-                let req_raw = store_raw_payload_file(
-                    &state.config,
+                let req_raw = spawn_raw_payload_file_write(
+                    state.as_ref(),
                     &invoke_id,
                     "request",
-                    base_request_bytes_for_capture.as_ref(),
-                );
+                    base_request_bytes_for_capture.clone(),
+                )
+                .finish()
+                .await;
                 let proxy_attempt_update = record_forward_proxy_attempt(
                     state.clone(),
                     err.selected_proxy.clone(),
@@ -5361,15 +5547,14 @@ async fn proxy_openai_v1_capture_target(
     request_info.requested_service_tier = final_requested_service_tier
         .clone()
         .or(request_info.requested_service_tier);
-    let req_raw = store_raw_payload_file(
-        &state.config,
+    let mut req_raw_pending = Some(spawn_raw_payload_file_write(
+        state.as_ref(),
         &invoke_id,
         "request",
         final_request_body_for_capture
-            .as_ref()
-            .unwrap_or(&base_request_bytes_for_capture)
-            .as_ref(),
-    );
+            .clone()
+            .unwrap_or_else(|| base_request_bytes_for_capture.clone()),
+    ));
 
     let upstream_status = upstream_response.status();
     let location_base_url = location_rewrite_upstream_base(
@@ -5414,6 +5599,11 @@ async fn proxy_openai_v1_capture_target(
             )
             .await;
             let proxy_display_name = resolve_invocation_proxy_display_name(selected_proxy.as_ref());
+            let req_raw = req_raw_pending
+                .take()
+                .expect("request raw capture should be pending before redirect normalization")
+                .finish()
+                .await;
             let record = ProxyCaptureRecord {
                 invoke_id,
                 occurred_at,
@@ -5592,7 +5782,9 @@ async fn proxy_openai_v1_capture_target(
 
     let state_for_task = state.clone();
     let request_info_for_task = request_info.clone();
-    let req_raw_for_task = req_raw.clone();
+    let req_raw_pending_for_task = req_raw_pending
+        .take()
+        .expect("request raw capture should still be pending when response stream starts");
     let invoke_id_for_task = invoke_id.clone();
     let occurred_at_for_task = occurred_at.clone();
     let upstream_content_encoding_for_task = upstream_content_encoding.clone();
@@ -5615,9 +5807,19 @@ async fn proxy_openai_v1_capture_target(
     let first_byte_timeout_for_task = first_byte_timeout;
     let stream_timeout_for_task = stream_timeout;
     let response_is_event_stream_for_task = response_is_event_stream;
+    let proxy_request_permit_for_task = proxy_request_permit;
     let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(16);
+    let response = response_builder
+        .body(Body::from_stream(ReceiverStream::new(rx)))
+        .map_err(|err| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("failed to build proxy response: {err}"),
+            )
+        })?;
 
     tokio::spawn(async move {
+        let _proxy_request_permit = proxy_request_permit_for_task;
         let mut stream = upstream_response.into_bytes_stream();
         let ttfb_started = Instant::now();
         let stream_started = Instant::now();
@@ -5625,7 +5827,7 @@ async fn proxy_openai_v1_capture_target(
         let mut stream_started_at: Option<Instant> = None;
         let mut response_preview = RawResponsePreviewBuffer::default();
         let mut response_raw_writer =
-            StreamingRawPayloadWriter::new(&state_for_task.config, &invoke_id_for_task, "response");
+            AsyncStreamingRawPayloadWriter::new(state_for_task.as_ref(), &invoke_id_for_task, "response");
         let mut stream_response_parser = StreamResponsePayloadChunkParser::default();
         let mut nonstream_parse_buffer = (!response_is_event_stream_for_task).then(|| {
             BoundedResponseParseBuffer::new(BOUNDED_NON_STREAM_RESPONSE_PARSE_LIMIT_BYTES)
@@ -5636,8 +5838,8 @@ async fn proxy_openai_v1_capture_target(
         let mut forwarded_bytes = 0usize;
 
         if let Some(chunk) = prefetched_first_chunk_for_task {
+            let chunk_for_raw = chunk.clone();
             response_preview.append(&chunk);
-            response_raw_writer.append(&chunk).await;
             stream_response_parser.ingest_bytes(&chunk);
             if let Some(buffer) = nonstream_parse_buffer.as_mut() {
                 buffer.append(&chunk);
@@ -5648,6 +5850,7 @@ async fn proxy_openai_v1_capture_target(
             if !downstream_closed && tx.send(Ok(chunk)).await.is_err() {
                 downstream_closed = true;
             }
+            response_raw_writer.append(chunk_for_raw.as_ref()).await;
         }
 
         loop {
@@ -5727,6 +5930,7 @@ async fn proxy_openai_v1_capture_target(
             };
             match next_chunk {
                 Ok(chunk) => {
+                    let chunk_for_raw = chunk.clone();
                     if stream_started_at.is_none() {
                         t_upstream_ttfb_ms = upstream_attempt_started_at_for_task
                             .map(elapsed_ms)
@@ -5781,7 +5985,6 @@ async fn proxy_openai_v1_capture_target(
                         }
                     }
                     response_preview.append(&chunk);
-                    response_raw_writer.append(&chunk).await;
                     stream_response_parser.ingest_bytes(&chunk);
                     if let Some(buffer) = nonstream_parse_buffer.as_mut() {
                         buffer.append(&chunk);
@@ -5791,6 +5994,7 @@ async fn proxy_openai_v1_capture_target(
                     if !downstream_closed && tx.send(Ok(chunk)).await.is_err() {
                         downstream_closed = true;
                     }
+                    response_raw_writer.append(chunk_for_raw.as_ref()).await;
                 }
                 Err(err) => {
                     let msg = format!("upstream stream error: {err}");
@@ -5833,6 +6037,7 @@ async fn proxy_openai_v1_capture_target(
         }
 
         let t_upstream_stream_ms = stream_started_at.map(elapsed_ms).unwrap_or(0.0);
+        let req_raw = req_raw_pending_for_task.finish().await;
         let resp_raw = response_raw_writer.finish().await;
         let preview_bytes = response_preview.as_slice().to_vec();
         let raw_response_preview = response_preview.into_preview();
@@ -6204,7 +6409,7 @@ async fn proxy_openai_v1_capture_target(
             failure_kind: failure_kind.map(|kind| kind.to_string()),
             payload: Some(payload),
             raw_response: raw_response_preview,
-            req_raw: req_raw_for_task,
+            req_raw,
             resp_raw,
             timings: StageTimings {
                 t_total_ms: 0.0,
@@ -6226,14 +6431,7 @@ async fn proxy_openai_v1_capture_target(
         }
     });
 
-    response_builder
-        .body(Body::from_stream(ReceiverStream::new(rx)))
-        .map_err(|err| {
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("failed to build proxy response: {err}"),
-            )
-        })
+    Ok(response)
 }
 
 async fn read_request_body_with_limit(
@@ -9729,92 +9927,212 @@ impl BoundedResponseParseBuffer {
     }
 }
 
-struct StreamingRawPayloadWriter {
-    path: PathBuf,
-    max_bytes: Option<usize>,
-    written_bytes: usize,
-    meta: RawPayloadMeta,
-    file: Option<tokio::fs::File>,
+enum PendingRawPayloadWrite {
+    Ready(RawPayloadMeta),
+    Task(JoinHandle<RawPayloadMeta>),
 }
 
-impl StreamingRawPayloadWriter {
-    fn new(config: &AppConfig, invoke_id: &str, kind: &str) -> Self {
-        let path = config
+impl PendingRawPayloadWrite {
+    fn dropped(size_bytes: usize) -> Self {
+        Self::Ready(RawPayloadMeta {
+            path: None,
+            size_bytes: size_bytes as i64,
+            truncated: size_bytes > 0,
+            truncated_reason: (size_bytes > 0)
+                .then_some(RAW_PAYLOAD_TRUNCATED_REASON_ASYNC_BACKPRESSURE_DROPPED.to_string()),
+        })
+    }
+
+    async fn finish(self) -> RawPayloadMeta {
+        match self {
+            Self::Ready(meta) => meta,
+            Self::Task(handle) => match handle.await {
+                Ok(meta) => meta,
+                Err(err) => RawPayloadMeta {
+                    path: None,
+                    size_bytes: 0,
+                    truncated: true,
+                    truncated_reason: Some(format!("write_failed:{err}")),
+                },
+            },
+        }
+    }
+}
+
+fn spawn_raw_payload_file_write(
+    state: &AppState,
+    invoke_id: &str,
+    kind: &'static str,
+    bytes: Bytes,
+) -> PendingRawPayloadWrite {
+    if bytes.is_empty() {
+        return PendingRawPayloadWrite::Ready(RawPayloadMeta::default());
+    }
+
+    let Ok(permit) = state.proxy_raw_async_semaphore.clone().try_acquire_owned() else {
+        return PendingRawPayloadWrite::dropped(bytes.len());
+    };
+
+    let config = state.config.clone();
+    let invoke_id = invoke_id.to_string();
+    PendingRawPayloadWrite::Task(tokio::spawn(async move {
+        let _permit = permit;
+        store_raw_payload_file_async(&config, &invoke_id, kind, bytes).await
+    }))
+}
+
+struct AsyncStreamingRawPayloadWriter {
+    tx: Option<mpsc::Sender<Bytes>>,
+    meta_rx: Option<oneshot::Receiver<RawPayloadMeta>>,
+    observed_size_bytes: i64,
+    local_truncated_reason: Option<String>,
+    local_truncated: bool,
+}
+
+impl AsyncStreamingRawPayloadWriter {
+    fn new(state: &AppState, invoke_id: &str, kind: &'static str) -> Self {
+        let Ok(permit) = state.proxy_raw_async_semaphore.clone().try_acquire_owned() else {
+            return Self {
+                tx: None,
+                meta_rx: None,
+                observed_size_bytes: 0,
+                local_truncated_reason: Some(
+                    RAW_PAYLOAD_TRUNCATED_REASON_ASYNC_BACKPRESSURE_DROPPED.to_string(),
+                ),
+                local_truncated: true,
+            };
+        };
+
+        let path = state
+            .config
             .resolved_proxy_raw_dir()
             .join(format!("{invoke_id}-{kind}.bin"));
+        let max_bytes = state.config.proxy_raw_max_bytes;
+        let (tx, mut rx) = mpsc::channel::<Bytes>(ASYNC_STREAMING_RAW_WRITER_QUEUE_CAPACITY);
+        let (meta_tx, meta_rx) = oneshot::channel();
+        tokio::spawn(async move {
+            let _permit = permit;
+            let meta = write_streaming_raw_payload_to_file(path, max_bytes, &mut rx).await;
+            let _ = meta_tx.send(meta);
+        });
+
         Self {
-            path,
-            max_bytes: config.proxy_raw_max_bytes,
-            written_bytes: 0,
-            meta: RawPayloadMeta::default(),
-            file: None,
+            tx: Some(tx),
+            meta_rx: Some(meta_rx),
+            observed_size_bytes: 0,
+            local_truncated_reason: None,
+            local_truncated: false,
         }
     }
 
-    async fn ensure_file(&mut self) -> io::Result<()> {
-        if self.file.is_some() {
-            return Ok(());
-        }
-        let Some(parent) = self.path.parent() else {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                format!("raw payload path has no parent: {}", self.path.display()),
-            ));
-        };
-        tokio::fs::create_dir_all(parent).await?;
-        let file = tokio::fs::File::create(&self.path).await?;
-        self.meta.path = Some(self.path.to_string_lossy().to_string());
-        self.file = Some(file);
-        Ok(())
+    fn mark_async_backpressure_dropped(&mut self) {
+        self.local_truncated = true;
+        self.local_truncated_reason
+            .get_or_insert_with(|| RAW_PAYLOAD_TRUNCATED_REASON_ASYNC_BACKPRESSURE_DROPPED.to_string());
+        self.tx = None;
     }
 
-    fn mark_max_bytes_exceeded(&mut self) {
-        self.meta.truncated = true;
-        self.meta
-            .truncated_reason
-            .get_or_insert_with(|| "max_bytes_exceeded".to_string());
-    }
-
-    async fn record_write_failure(&mut self, err: io::Error) {
-        self.meta.truncated = true;
-        self.meta.truncated_reason = Some(format!("write_failed:{err}"));
-        self.file = None;
-        if self.meta.path.is_some() {
-            let _ = tokio::fs::remove_file(&self.path).await;
-            self.meta.path = None;
-        }
+    fn mark_writer_closed(&mut self, message: String) {
+        self.local_truncated = true;
+        self.local_truncated_reason
+            .get_or_insert_with(|| format!("write_failed:{message}"));
+        self.tx = None;
     }
 
     async fn append(&mut self, bytes: &[u8]) {
         if bytes.is_empty() {
             return;
         }
-
-        self.meta.size_bytes = self.meta.size_bytes.saturating_add(bytes.len() as i64);
-
-        if self
-            .meta
-            .truncated_reason
-            .as_deref()
-            .is_some_and(|reason| reason.starts_with("write_failed:"))
-        {
+        self.observed_size_bytes = self.observed_size_bytes.saturating_add(bytes.len() as i64);
+        let Some(tx) = self.tx.as_ref() else {
             return;
+        };
+        match tx.try_send(Bytes::copy_from_slice(bytes)) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => self.mark_async_backpressure_dropped(),
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                self.mark_writer_closed("async raw writer channel closed".to_string())
+            }
         }
+    }
 
-        if let Err(err) = self.ensure_file().await {
-            self.record_write_failure(err).await;
-            return;
+    async fn finish(mut self) -> RawPayloadMeta {
+        self.tx.take();
+        let mut meta = match self.meta_rx.take() {
+            Some(meta_rx) => match meta_rx.await {
+                Ok(meta) => meta,
+                Err(err) => RawPayloadMeta {
+                    path: None,
+                    size_bytes: self.observed_size_bytes,
+                    truncated: true,
+                    truncated_reason: Some(format!("write_failed:{err}")),
+                },
+            },
+            None => RawPayloadMeta::default(),
+        };
+        meta.size_bytes = self.observed_size_bytes;
+        if self.local_truncated {
+            meta.truncated = true;
+            if meta.truncated_reason.is_none() {
+                meta.truncated_reason = self.local_truncated_reason;
+            }
         }
+        meta
+    }
+}
 
-        let write_len = if let Some(limit) = self.max_bytes {
-            let remaining = limit.saturating_sub(self.written_bytes);
+async fn write_streaming_raw_payload_to_file(
+    path: PathBuf,
+    max_bytes: Option<usize>,
+    rx: &mut mpsc::Receiver<Bytes>,
+) -> RawPayloadMeta {
+    let mut meta = RawPayloadMeta::default();
+    let Some(parent) = path.parent() else {
+        meta.truncated = true;
+        meta.truncated_reason = Some(format!(
+            "write_failed:raw payload path has no parent: {}",
+            path.display()
+        ));
+        return meta;
+    };
+    if let Err(err) = tokio::fs::create_dir_all(parent).await {
+        meta.truncated = true;
+        meta.truncated_reason = Some(format!("write_failed:{err}"));
+        return meta;
+    }
+
+    let mut file = match tokio::fs::File::create(&path).await {
+        Ok(file) => {
+            meta.path = Some(path.to_string_lossy().to_string());
+            file
+        }
+        Err(err) => {
+            meta.truncated = true;
+            meta.truncated_reason = Some(format!("write_failed:{err}"));
+            return meta;
+        }
+    };
+
+    let mut written_bytes = 0usize;
+    while let Some(bytes) = rx.recv().await {
+        if bytes.is_empty() {
+            continue;
+        }
+        meta.size_bytes = meta.size_bytes.saturating_add(bytes.len() as i64);
+
+        let write_len = if let Some(limit) = max_bytes {
+            let remaining = limit.saturating_sub(written_bytes);
             if remaining == 0 {
-                self.mark_max_bytes_exceeded();
-                return;
+                meta.truncated = true;
+                meta.truncated_reason
+                    .get_or_insert_with(|| "max_bytes_exceeded".to_string());
+                continue;
             }
             let write_len = remaining.min(bytes.len());
             if write_len < bytes.len() {
-                self.mark_max_bytes_exceeded();
+                meta.truncated = true;
+                meta.truncated_reason
+                    .get_or_insert_with(|| "max_bytes_exceeded".to_string());
             }
             write_len
         } else {
@@ -9822,26 +10140,26 @@ impl StreamingRawPayloadWriter {
         };
 
         if write_len == 0 {
-            return;
+            continue;
         }
 
-        if let Some(file) = self.file.as_mut() {
-            if let Err(err) = file.write_all(&bytes[..write_len]).await {
-                self.record_write_failure(err).await;
-                return;
-            }
-            self.written_bytes = self.written_bytes.saturating_add(write_len);
+        if let Err(err) = file.write_all(&bytes[..write_len]).await {
+            meta.truncated = true;
+            meta.truncated_reason = Some(format!("write_failed:{err}"));
+            let _ = tokio::fs::remove_file(&path).await;
+            meta.path = None;
+            return meta;
         }
+        written_bytes = written_bytes.saturating_add(write_len);
     }
 
-    async fn finish(mut self) -> RawPayloadMeta {
-        if let Some(file) = self.file.as_mut()
-            && let Err(err) = file.flush().await
-        {
-            self.record_write_failure(err).await;
-        }
-        self.meta
+    if let Err(err) = file.flush().await {
+        meta.truncated = true;
+        meta.truncated_reason = Some(format!("write_failed:{err}"));
+        let _ = tokio::fs::remove_file(&path).await;
+        meta.path = None;
     }
+    meta
 }
 
 fn build_raw_response_preview(bytes: &[u8]) -> String {
@@ -10261,11 +10579,11 @@ fn estimate_proxy_cost(
     (Some(cost), true, price_version)
 }
 
-fn store_raw_payload_file(
+async fn store_raw_payload_file_async(
     config: &AppConfig,
     invoke_id: &str,
     kind: &str,
-    bytes: &[u8],
+    bytes: Bytes,
 ) -> RawPayloadMeta {
     let mut meta = RawPayloadMeta {
         path: None,
@@ -10290,7 +10608,7 @@ fn store_raw_payload_file(
 
     let raw_dir = config.resolved_proxy_raw_dir();
 
-    if let Err(err) = fs::create_dir_all(&raw_dir) {
+    if let Err(err) = tokio::fs::create_dir_all(&raw_dir).await {
         meta.truncated = true;
         meta.truncated_reason = Some(format!("write_failed:{err}"));
         return meta;
@@ -10298,7 +10616,7 @@ fn store_raw_payload_file(
 
     let filename = format!("{invoke_id}-{kind}.bin");
     let path = raw_dir.join(filename);
-    match fs::File::create(&path).and_then(|mut f| f.write_all(content)) {
+    match tokio::fs::write(&path, content).await {
         Ok(_) => {
             meta.path = Some(path.to_string_lossy().to_string());
         }
@@ -10562,6 +10880,35 @@ async fn persist_and_broadcast_proxy_capture(
 
             if broadcaster.receiver_count() == 0 {
                 continue;
+            }
+
+            if DEFAULT_PROXY_SUMMARY_QUOTA_BROADCAST_DEBOUNCE_MS > 0 {
+                tokio::select! {
+                    _ = shutdown.cancelled() => {
+                        broadcast_proxy_capture_follow_up(
+                            &pool,
+                            &broadcaster,
+                            broadcast_state_cache.as_ref(),
+                            relay_config.as_ref(),
+                            invocation_max_days,
+                            &invoke_id,
+                        )
+                        .await;
+                        broadcast_running.store(false, Ordering::Release);
+                        info!(
+                            invoke_id = %invoke_id,
+                            "summary/quota broadcast worker flushed follow-up during debounce because shutdown is in progress"
+                        );
+                        break;
+                    }
+                    _ = sleep(Duration::from_millis(
+                        DEFAULT_PROXY_SUMMARY_QUOTA_BROADCAST_DEBOUNCE_MS,
+                    )) => {}
+                }
+                synced_seq = latest_broadcast_seq.load(Ordering::Acquire);
+                if broadcaster.receiver_count() == 0 {
+                    continue;
+                }
             }
 
             let summaries = tokio::select! {

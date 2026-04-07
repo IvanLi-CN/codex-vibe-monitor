@@ -1000,6 +1000,36 @@ fn parse_retry_after_delay_rejects_invalid_or_past_values() {
     assert_eq!(parse_retry_after_delay(&past_header), None);
 }
 
+#[tokio::test]
+async fn acquire_proxy_request_concurrency_permit_times_out_when_limit_is_reached() {
+    let mut config = test_config();
+    config.proxy_request_concurrency_limit = 1;
+    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(50);
+    let state = test_state_from_config(config, true).await;
+    let uri = "/v1/responses".parse::<Uri>().expect("valid proxy uri");
+
+    let permit =
+        acquire_proxy_request_concurrency_permit(state.as_ref(), 1001, &Method::POST, &uri)
+            .await
+            .expect("first request should acquire concurrency slot");
+    assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 1);
+
+    let err = acquire_proxy_request_concurrency_permit(state.as_ref(), 1002, &Method::POST, &uri)
+        .await
+        .expect_err("second request should time out while waiting for concurrency slot");
+
+    assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(err.message, PROXY_CONCURRENCY_LIMIT_MESSAGE);
+    assert_eq!(state.proxy_request_queue_total.load(Ordering::Acquire), 1);
+    assert_eq!(
+        state.proxy_request_rejected_total.load(Ordering::Acquire),
+        1
+    );
+
+    drop(permit);
+    assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 0);
+}
+
 #[test]
 fn validation_probe_reachable_status_accepts_success_auth_and_not_found() {
     for status in [
@@ -2682,6 +2712,10 @@ fn test_config() -> AppConfig {
             DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS,
         ),
         openai_proxy_max_request_body_bytes: DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES,
+        proxy_request_concurrency_limit: DEFAULT_PROXY_REQUEST_CONCURRENCY_LIMIT,
+        proxy_request_concurrency_wait_timeout: Duration::from_millis(
+            DEFAULT_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS,
+        ),
         proxy_enforce_stream_include_usage: DEFAULT_PROXY_ENFORCE_STREAM_INCLUDE_USAGE,
         proxy_usage_backfill_on_startup: DEFAULT_PROXY_USAGE_BACKFILL_ON_STARTUP,
         proxy_raw_max_bytes: DEFAULT_PROXY_RAW_MAX_BYTES,
@@ -2804,7 +2838,14 @@ fn store_raw_payload_file_anchors_relative_dir_to_database_parent() {
     config.database_path = db_root.join("codex_vibe_monitor.db");
     config.proxy_raw_dir = PathBuf::from("proxy_raw_payloads");
 
-    let meta = store_raw_payload_file(&config, "proxy-test", "request", b"{\"ok\":true}");
+    let meta = tokio::runtime::Runtime::new()
+        .expect("create tokio runtime for raw payload store test")
+        .block_on(store_raw_payload_file_async(
+            &config,
+            "proxy-test",
+            "request",
+            Bytes::from_static(b"{\"ok\":true}"),
+        ));
     let expected = db_root.join("proxy_raw_payloads/proxy-test-request.bin");
 
     assert_eq!(
@@ -2822,6 +2863,81 @@ fn store_raw_payload_file_anchors_relative_dir_to_database_parent() {
     );
 
     cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn spawn_raw_payload_file_write_drops_when_async_writer_pool_is_saturated() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let available_permits = state.proxy_raw_async_semaphore.available_permits();
+    let permit = state
+        .proxy_raw_async_semaphore
+        .clone()
+        .acquire_many_owned(available_permits as u32)
+        .await
+        .expect("saturate async raw writer permits");
+
+    let meta = spawn_raw_payload_file_write(
+        state.as_ref(),
+        "proxy-test",
+        "request",
+        Bytes::from_static(br#"{"ok":true}"#),
+    )
+    .finish()
+    .await;
+
+    assert!(
+        meta.path.is_none(),
+        "dropped raw payload should not have a file"
+    );
+    assert_eq!(meta.size_bytes, br#"{"ok":true}"#.len() as i64);
+    assert!(
+        meta.truncated,
+        "dropped raw payload should be marked truncated"
+    );
+    assert_eq!(
+        meta.truncated_reason.as_deref(),
+        Some(RAW_PAYLOAD_TRUNCATED_REASON_ASYNC_BACKPRESSURE_DROPPED)
+    );
+
+    drop(permit);
+}
+
+#[tokio::test]
+async fn async_streaming_raw_payload_writer_drops_when_async_writer_pool_is_saturated() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let available_permits = state.proxy_raw_async_semaphore.available_permits();
+    let permit = state
+        .proxy_raw_async_semaphore
+        .clone()
+        .acquire_many_owned(available_permits as u32)
+        .await
+        .expect("saturate async raw writer permits");
+
+    let mut writer = AsyncStreamingRawPayloadWriter::new(state.as_ref(), "proxy-test", "response");
+    writer.append(br#"{"chunk":1}"#).await;
+    let meta = writer.finish().await;
+
+    assert!(
+        meta.path.is_none(),
+        "dropped raw payload should not have a file"
+    );
+    assert_eq!(meta.size_bytes, br#"{"chunk":1}"#.len() as i64);
+    assert!(
+        meta.truncated,
+        "dropped raw payload should be marked truncated"
+    );
+    assert_eq!(
+        meta.truncated_reason.as_deref(),
+        Some(RAW_PAYLOAD_TRUNCATED_REASON_ASYNC_BACKPRESSURE_DROPPED)
+    );
+
+    drop(permit);
 }
 
 #[test]
@@ -4135,6 +4251,7 @@ async fn test_state_from_config_with_pool_no_available_wait(
 
     let http_clients = HttpClients::build(&config).expect("http clients");
     let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
+    let _proxy_request_semaphore = Arc::new(Semaphore::new(config.proxy_request_concurrency_limit));
     let (broadcaster, _rx) = broadcast::channel(16);
     let pricing_catalog = load_pricing_catalog(&pool)
         .await
@@ -4152,6 +4269,13 @@ async fn test_state_from_config_with_pool_no_available_wait(
         startup_ready: Arc::new(AtomicBool::new(startup_ready)),
         shutdown: CancellationToken::new(),
         semaphore,
+        proxy_request_semaphore: Arc::new(Semaphore::new(config.proxy_request_concurrency_limit)),
+        proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
+        proxy_request_queue_total: Arc::new(AtomicU64::new(0)),
+        proxy_request_rejected_total: Arc::new(AtomicU64::new(0)),
+        proxy_raw_async_semaphore: Arc::new(Semaphore::new(
+            DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS,
+        )),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
@@ -4195,6 +4319,11 @@ fn clone_state_with_upstream_accounts(
         startup_ready: state.startup_ready.clone(),
         shutdown: state.shutdown.clone(),
         semaphore: state.semaphore.clone(),
+        proxy_request_semaphore: state.proxy_request_semaphore.clone(),
+        proxy_request_in_flight: state.proxy_request_in_flight.clone(),
+        proxy_request_queue_total: state.proxy_request_queue_total.clone(),
+        proxy_request_rejected_total: state.proxy_request_rejected_total.clone(),
+        proxy_raw_async_semaphore: state.proxy_raw_async_semaphore.clone(),
         proxy_model_settings: state.proxy_model_settings.clone(),
         proxy_model_settings_update_lock: state.proxy_model_settings_update_lock.clone(),
         forward_proxy: state.forward_proxy.clone(),
@@ -4231,6 +4360,11 @@ fn clone_state_with_pool_group_429_retry_delay_override(
         startup_ready: state.startup_ready.clone(),
         shutdown: state.shutdown.clone(),
         semaphore: state.semaphore.clone(),
+        proxy_request_semaphore: state.proxy_request_semaphore.clone(),
+        proxy_request_in_flight: state.proxy_request_in_flight.clone(),
+        proxy_request_queue_total: state.proxy_request_queue_total.clone(),
+        proxy_request_rejected_total: state.proxy_request_rejected_total.clone(),
+        proxy_raw_async_semaphore: state.proxy_raw_async_semaphore.clone(),
         proxy_model_settings: state.proxy_model_settings.clone(),
         proxy_model_settings_update_lock: state.proxy_model_settings_update_lock.clone(),
         forward_proxy: state.forward_proxy.clone(),
@@ -4261,6 +4395,7 @@ async fn test_state_from_existing_pool(
 
     let http_clients = HttpClients::build(&config).expect("http clients");
     let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
+    let _proxy_request_semaphore = Arc::new(Semaphore::new(config.proxy_request_concurrency_limit));
     let (broadcaster, _rx) = broadcast::channel(16);
     let pricing_catalog = load_pricing_catalog(&pool)
         .await
@@ -4278,6 +4413,13 @@ async fn test_state_from_existing_pool(
         startup_ready: Arc::new(AtomicBool::new(startup_ready)),
         shutdown: CancellationToken::new(),
         semaphore,
+        proxy_request_semaphore: Arc::new(Semaphore::new(config.proxy_request_concurrency_limit)),
+        proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
+        proxy_request_queue_total: Arc::new(AtomicU64::new(0)),
+        proxy_request_rejected_total: Arc::new(AtomicU64::new(0)),
+        proxy_raw_async_semaphore: Arc::new(Semaphore::new(
+            DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS,
+        )),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
@@ -11844,6 +11986,13 @@ async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
+        proxy_request_semaphore: Arc::new(Semaphore::new(config.proxy_request_concurrency_limit)),
+        proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
+        proxy_request_queue_total: Arc::new(AtomicU64::new(0)),
+        proxy_request_rejected_total: Arc::new(AtomicU64::new(0)),
+        proxy_raw_async_semaphore: Arc::new(Semaphore::new(
+            DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS,
+        )),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings {
             hijack_enabled: true,
             merge_upstream_enabled: true,
@@ -13563,6 +13712,13 @@ async fn proxy_openai_v1_allows_slow_upload_with_short_timeout() {
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
+        proxy_request_semaphore: Arc::new(Semaphore::new(config.proxy_request_concurrency_limit)),
+        proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
+        proxy_request_queue_total: Arc::new(AtomicU64::new(0)),
+        proxy_request_rejected_total: Arc::new(AtomicU64::new(0)),
+        proxy_raw_async_semaphore: Arc::new(Semaphore::new(
+            DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS,
+        )),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
@@ -23412,6 +23568,7 @@ async fn proxy_openai_v1_via_pool_waits_for_initial_account_resolution_before_se
             ]),
             Body::from(r#"{"model":"gpt-5","messages":[]}"#.as_bytes().to_vec()),
             runtime_timeouts,
+            None,
         )
         .await
     });
@@ -23492,6 +23649,7 @@ async fn proxy_openai_v1_body_only_sticky_stream_waits_only_once_before_503() {
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
@@ -23563,6 +23721,7 @@ async fn proxy_openai_v1_header_sticky_stream_prefers_body_timeout_before_pool_w
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
@@ -23643,6 +23802,7 @@ async fn proxy_openai_v1_header_sticky_stream_preserves_body_timeout_over_rate_l
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
@@ -23757,6 +23917,7 @@ async fn proxy_openai_v1_header_sticky_stream_waits_for_blocked_policy_header_er
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
@@ -23877,6 +24038,7 @@ async fn proxy_openai_v1_header_sticky_stream_same_value_short_circuits_blocked_
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
@@ -23962,6 +24124,7 @@ async fn proxy_openai_v1_header_sticky_stream_waits_for_body_sticky_override_bef
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await
     .expect("via-pool request should succeed");
@@ -24044,6 +24207,7 @@ async fn proxy_openai_v1_header_sticky_responses_wait_timeout_respects_total_tim
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
@@ -24123,6 +24287,7 @@ async fn proxy_openai_v1_header_sticky_responses_total_timeout_short_circuits_bo
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
@@ -24191,6 +24356,7 @@ async fn proxy_openai_v1_responses_prebuffer_body_counts_total_timeout_from_requ
         ]),
         Body::from_stream(slow_body),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
@@ -24269,6 +24435,7 @@ async fn proxy_openai_v1_responses_prebuffer_body_wait_counts_total_timeout_from
         ]),
         Body::from_stream(slow_body),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
@@ -24335,6 +24502,7 @@ async fn proxy_openai_v1_responses_streamed_body_counts_total_timeout_from_reque
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
@@ -24492,6 +24660,7 @@ async fn proxy_openai_v1_header_sticky_stream_preserves_pre_resolved_account_aft
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await
     .expect("via-pool request should succeed");
@@ -24584,6 +24753,7 @@ async fn proxy_openai_v1_header_sticky_stream_body_override_beats_rate_limited_h
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await
     .expect("via-pool request should succeed");
@@ -24712,6 +24882,7 @@ async fn proxy_openai_v1_header_sticky_stream_body_override_beats_blocked_policy
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await
     .expect("via-pool request should succeed");
@@ -24788,6 +24959,7 @@ async fn proxy_openai_v1_header_sticky_stream_prefers_body_too_large_before_pool
         ]),
         body,
         runtime_timeouts,
+        None,
     )
     .await;
 
@@ -24863,6 +25035,7 @@ async fn proxy_openai_v1_header_sticky_stream_waits_after_body_reroute_needs_acc
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await
     .expect("via-pool request should succeed");
@@ -24948,6 +25121,7 @@ async fn proxy_openai_v1_header_sticky_stream_reroute_preserves_original_wait_wi
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
@@ -25062,6 +25236,7 @@ async fn pool_route_oauth_passthrough_streams_without_eager_prebuffering() {
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         pool_routing_timeouts_from_config(&state.config),
+        None,
     )
     .await
     .expect("oauth pool passthrough response");
@@ -25944,13 +26119,14 @@ async fn pool_route_oauth_responses_rejects_large_file_backed_rewrite_body() {
 
 #[tokio::test]
 async fn extract_sticky_key_from_large_file_backed_replay_snapshot() {
+    let temp_dir = make_temp_test_dir("sticky-large-replay");
     let sticky_body = serde_json::to_vec(&json!({
         "stickyKey": "sticky-large-file",
         "input": "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 128),
     }))
     .expect("serialize sticky replay body");
     let temp_file = Arc::new(PoolReplayTempFile {
-        path: build_pool_replay_temp_path(737373),
+        path: temp_dir.join("sticky-large-file.bin"),
     });
     tokio::fs::write(&temp_file.path, &sticky_body)
         .await
@@ -25966,6 +26142,37 @@ async fn extract_sticky_key_from_large_file_backed_replay_snapshot() {
             .as_deref(),
         Some("sticky-large-file")
     );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn extract_sticky_key_from_large_file_backed_replay_snapshot_prefix() {
+    let temp_dir = make_temp_test_dir("sticky-prefix-large-replay");
+    let sticky_body = format!(
+        r#"{{"stickyKey":"sticky-large-prefix","input":"{}"}}"#,
+        "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 128)
+    )
+    .into_bytes();
+    let temp_file = Arc::new(PoolReplayTempFile {
+        path: temp_dir.join("sticky-large-prefix.bin"),
+    });
+    tokio::fs::write(&temp_file.path, &sticky_body)
+        .await
+        .expect("write sticky replay temp file");
+    let snapshot = PoolReplayBodySnapshot::File {
+        temp_file,
+        size: sticky_body.len(),
+    };
+
+    assert_eq!(
+        extract_sticky_key_from_replay_snapshot_prefix(&snapshot)
+            .await
+            .as_deref(),
+        Some("sticky-large-prefix")
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
 }
 
 #[test]
@@ -26434,6 +26641,13 @@ async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
+        proxy_request_semaphore: Arc::new(Semaphore::new(config.proxy_request_concurrency_limit)),
+        proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
+        proxy_request_queue_total: Arc::new(AtomicU64::new(0)),
+        proxy_request_rejected_total: Arc::new(AtomicU64::new(0)),
+        proxy_raw_async_semaphore: Arc::new(Semaphore::new(
+            DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS,
+        )),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
@@ -27635,6 +27849,13 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout() {
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
+        proxy_request_semaphore: Arc::new(Semaphore::new(config.proxy_request_concurrency_limit)),
+        proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
+        proxy_request_queue_total: Arc::new(AtomicU64::new(0)),
+        proxy_request_rejected_total: Arc::new(AtomicU64::new(0)),
+        proxy_raw_async_semaphore: Arc::new(Semaphore::new(
+            DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS,
+        )),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
@@ -27713,6 +27934,13 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout_with_
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
+        proxy_request_semaphore: Arc::new(Semaphore::new(config.proxy_request_concurrency_limit)),
+        proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
+        proxy_request_queue_total: Arc::new(AtomicU64::new(0)),
+        proxy_request_rejected_total: Arc::new(AtomicU64::new(0)),
+        proxy_raw_async_semaphore: Arc::new(Semaphore::new(
+            DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS,
+        )),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
@@ -27955,6 +28183,57 @@ async fn prepare_pool_request_body_for_account_skips_fast_mode_rewrite_for_compa
     let payload: Value = serde_json::from_slice(&request_body).expect("decode body");
     assert_eq!(payload, expected);
     assert!(payload.get("service_tier").is_none());
+}
+
+#[tokio::test]
+async fn prepare_pool_request_body_for_account_skips_fast_mode_rewrite_for_large_file_snapshot() {
+    let temp_dir = make_temp_test_dir("pool-request-large-rewrite-skip");
+    let temp_file = Arc::new(PoolReplayTempFile {
+        path: temp_dir.join("request-body.bin"),
+    });
+    let original_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.3-codex",
+        "serviceTier": "flex",
+        "stickyKey": "sticky-large-body",
+        "input": "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 128),
+    }))
+    .expect("serialize large request body");
+    tokio::fs::write(&temp_file.path, &original_body)
+        .await
+        .expect("write large request body");
+
+    let prepared = prepare_pool_request_body_for_account(
+        Some(&PoolReplayBodySnapshot::File {
+            temp_file: temp_file.clone(),
+            size: original_body.len(),
+        }),
+        &"/v1/responses".parse().expect("valid responses uri"),
+        &Method::POST,
+        TagFastModeRewriteMode::ForceAdd,
+    )
+    .await
+    .expect("prepare large pool request body");
+
+    match prepared.snapshot {
+        PoolReplayBodySnapshot::File {
+            temp_file: actual,
+            size,
+        } => {
+            assert_eq!(actual.path, temp_file.path);
+            assert_eq!(size, original_body.len());
+        }
+        other => panic!("expected file-backed snapshot, got {other:?}"),
+    }
+    assert!(
+        prepared.request_body_for_capture.is_none(),
+        "large file-backed body should skip capture materialization during rewrite"
+    );
+    assert!(
+        prepared.requested_service_tier.is_none(),
+        "large file-backed rewrite skip should avoid JSON materialization"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
 }
 
 #[test]
@@ -36866,6 +37145,13 @@ async fn quota_latest_returns_degraded_when_empty() {
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
+        proxy_request_semaphore: Arc::new(Semaphore::new(config.proxy_request_concurrency_limit)),
+        proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
+        proxy_request_queue_total: Arc::new(AtomicU64::new(0)),
+        proxy_request_rejected_total: Arc::new(AtomicU64::new(0)),
+        proxy_raw_async_semaphore: Arc::new(Semaphore::new(
+            DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS,
+        )),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(

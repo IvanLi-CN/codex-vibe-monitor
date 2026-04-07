@@ -284,6 +284,8 @@ struct AppConfig {
     openai_proxy_compact_handshake_timeout: Duration,
     openai_proxy_request_read_timeout: Duration,
     openai_proxy_max_request_body_bytes: usize,
+    proxy_request_concurrency_limit: usize,
+    proxy_request_concurrency_wait_timeout: Duration,
     proxy_enforce_stream_include_usage: bool,
     proxy_usage_backfill_on_startup: bool,
     proxy_raw_max_bytes: Option<usize>,
@@ -410,6 +412,18 @@ impl AppConfig {
             .and_then(|v| v.parse::<usize>().ok())
             .filter(|&v| v > 0)
             .unwrap_or(DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES);
+        let proxy_request_concurrency_limit = env::var(ENV_PROXY_REQUEST_CONCURRENCY_LIMIT)
+            .ok()
+            .and_then(|v| v.parse::<usize>().ok())
+            .filter(|&v| v > 0)
+            .unwrap_or(DEFAULT_PROXY_REQUEST_CONCURRENCY_LIMIT);
+        let proxy_request_concurrency_wait_timeout = Duration::from_millis(
+            env::var(ENV_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS)
+                .ok()
+                .and_then(|v| v.parse::<u64>().ok())
+                .filter(|&v| v > 0)
+                .unwrap_or(DEFAULT_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS),
+        );
         let proxy_enforce_stream_include_usage = parse_bool_env_var(
             "PROXY_ENFORCE_STREAM_INCLUDE_USAGE",
             DEFAULT_PROXY_ENFORCE_STREAM_INCLUDE_USAGE,
@@ -679,6 +693,8 @@ impl AppConfig {
             openai_proxy_compact_handshake_timeout,
             openai_proxy_request_read_timeout,
             openai_proxy_max_request_body_bytes,
+            proxy_request_concurrency_limit,
+            proxy_request_concurrency_wait_timeout,
             proxy_enforce_stream_include_usage,
             proxy_usage_backfill_on_startup,
             proxy_raw_max_bytes,

@@ -20389,6 +20389,10 @@ mod tests {
                 DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS,
             ),
             openai_proxy_max_request_body_bytes: DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES,
+            proxy_request_concurrency_limit: DEFAULT_PROXY_REQUEST_CONCURRENCY_LIMIT,
+            proxy_request_concurrency_wait_timeout: Duration::from_millis(
+                DEFAULT_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS,
+            ),
             proxy_enforce_stream_include_usage: DEFAULT_PROXY_ENFORCE_STREAM_INCLUDE_USAGE,
             proxy_usage_backfill_on_startup: DEFAULT_PROXY_USAGE_BACKFILL_ON_STARTUP,
             proxy_raw_max_bytes: DEFAULT_PROXY_RAW_MAX_BYTES,
@@ -20735,7 +20739,7 @@ mod tests {
         let http_clients = HttpClients::build(&config).expect("build http clients");
         let (broadcaster, _) = broadcast::channel(8);
         Arc::new(AppState {
-            config,
+            config: config.clone(),
             pool: test_pool().await,
             http_clients,
             broadcaster,
@@ -20749,6 +20753,15 @@ mod tests {
             startup_ready: Arc::new(AtomicBool::new(true)),
             shutdown: CancellationToken::new(),
             semaphore: Arc::new(Semaphore::new(4)),
+            proxy_request_semaphore: Arc::new(Semaphore::new(
+                config.proxy_request_concurrency_limit,
+            )),
+            proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
+            proxy_request_queue_total: Arc::new(AtomicU64::new(0)),
+            proxy_request_rejected_total: Arc::new(AtomicU64::new(0)),
+            proxy_raw_async_semaphore: Arc::new(Semaphore::new(
+                DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS,
+            )),
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
             forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
@@ -21146,7 +21159,7 @@ mod tests {
         let http_clients = HttpClients::build(&config).expect("build http clients");
         let (broadcaster, _) = broadcast::channel(8);
         let state = Arc::new(AppState {
-            config,
+            config: config.clone(),
             pool: test_pool().await,
             http_clients,
             broadcaster,
@@ -21160,6 +21173,15 @@ mod tests {
             startup_ready: Arc::new(AtomicBool::new(true)),
             shutdown: CancellationToken::new(),
             semaphore: Arc::new(Semaphore::new(4)),
+            proxy_request_semaphore: Arc::new(Semaphore::new(
+                config.proxy_request_concurrency_limit,
+            )),
+            proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
+            proxy_request_queue_total: Arc::new(AtomicU64::new(0)),
+            proxy_request_rejected_total: Arc::new(AtomicU64::new(0)),
+            proxy_raw_async_semaphore: Arc::new(Semaphore::new(
+                DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS,
+            )),
             proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
             proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
             forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
