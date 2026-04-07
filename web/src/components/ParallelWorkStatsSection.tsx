@@ -172,10 +172,12 @@ function formatParallelWorkAxisBucketLabel(
   localeTag: string,
   showYear: boolean,
   detailed: boolean,
+  timeZone: string,
 ) {
   const value = new Date(raw);
   if (Number.isNaN(value.getTime())) return raw;
   const formatter = new Intl.DateTimeFormat(localeTag, {
+    timeZone,
     year: showYear ? "2-digit" : undefined,
     month: "2-digit",
     day: "2-digit",
@@ -192,6 +194,7 @@ function buildParallelWorkXAxisTicks(
   localeTag: string,
 ) {
   if (window.points.length === 0 || chartPoints.length === 0) return [];
+  const effectiveTimeZone = window.effectiveTimeZone ?? "Asia/Shanghai";
   const candidateIndexes = Array.from(
     new Set([0, Math.floor((window.points.length - 1) / 2), window.points.length - 1]),
   );
@@ -205,6 +208,7 @@ function buildParallelWorkXAxisTicks(
       localeTag,
       showYear,
       false,
+      effectiveTimeZone,
     ),
   );
   const useDetailedLabels =
@@ -223,6 +227,7 @@ function buildParallelWorkXAxisTicks(
       localeTag,
       showYear,
       useDetailedLabels,
+      effectiveTimeZone,
     ),
   }));
 }
@@ -248,6 +253,7 @@ function formatParallelWorkBucketRange(
   endRaw: string,
   bucketSeconds: number,
   localeTag: string,
+  timeZone: string,
 ) {
   const start = new Date(startRaw);
   const end = new Date(endRaw);
@@ -256,6 +262,7 @@ function formatParallelWorkBucketRange(
   }
 
   const formatter = new Intl.DateTimeFormat(localeTag, {
+    timeZone,
     year: bucketSeconds >= 86_400 ? "numeric" : undefined,
     month: "2-digit",
     day: "2-digit",
@@ -273,12 +280,14 @@ function buildParallelWorkTooltipData(
   countLabel: string,
   numberFormatter: Intl.NumberFormat,
 ) {
+  const effectiveTimeZone = window.effectiveTimeZone ?? "Asia/Shanghai";
   return window.points.map<InlineChartTooltipData>((point) => ({
     title: formatParallelWorkBucketRange(
       point.bucketStart,
       point.bucketEnd,
       window.bucketSeconds,
       localeTag,
+      effectiveTimeZone,
     ),
     rows: [
       {
@@ -303,8 +312,9 @@ function buildWindowDetailsTooltipContent(
   title: string,
   description: string,
   samples?: string | null,
+  fallbackNote?: string | null,
 ) {
-  return [title.trim(), description.trim(), samples?.trim()]
+  return [title.trim(), description.trim(), samples?.trim(), fallbackNote?.trim()]
     .filter(Boolean)
     .join(" · ");
 }
@@ -588,6 +598,12 @@ function ParallelWorkWindowCard({
   const { t, locale } = useTranslation();
   const meta = resolveWindowMeta(windowKey);
   const empty = window.completeBucketCount === 0;
+  const effectiveTimeZone = window.effectiveTimeZone ?? "Asia/Shanghai";
+  const timeZoneFallbackNote = window.timeZoneFallback
+    ? t("stats.parallelWork.timeZoneFallback", {
+        timeZone: effectiveTimeZone,
+      })
+    : null;
 
   return (
     <article
@@ -632,15 +648,25 @@ function ParallelWorkWindowCard({
       />
 
       {empty ? (
-        <p className="rounded-2xl border border-dashed border-base-300/75 bg-base-200/20 px-3 py-2 text-sm text-base-content/58">
-          {t("stats.parallelWork.empty")}
-        </p>
+        <div className="space-y-2">
+          <p className="rounded-2xl border border-dashed border-base-300/75 bg-base-200/20 px-3 py-2 text-sm text-base-content/58">
+            {t("stats.parallelWork.empty")}
+          </p>
+          {timeZoneFallbackNote ? (
+            <p className="text-xs text-base-content/50">{timeZoneFallbackNote}</p>
+          ) : null}
+        </div>
       ) : (
-        <div className="text-xs text-base-content/55">
-          {t("stats.parallelWork.rangeSummary", {
-            start: window.rangeStart,
-            end: window.rangeEnd,
-          })}
+        <div className="space-y-1.5 text-xs text-base-content/55">
+          <div>
+            {t("stats.parallelWork.rangeSummary", {
+              start: window.rangeStart,
+              end: window.rangeEnd,
+            })}
+          </div>
+          {timeZoneFallbackNote ? (
+            <div className="text-base-content/50">{timeZoneFallbackNote}</div>
+          ) : null}
         </div>
       )}
     </article>
@@ -714,10 +740,17 @@ export function ParallelWorkStatsSection({
           complete: activeWindow.completeBucketCount,
           active: activeWindow.activeBucketCount,
         });
+  const activeTimeZoneFallbackNote =
+    activeWindow?.timeZoneFallback && activeWindow.effectiveTimeZone
+      ? t("stats.parallelWork.timeZoneFallback", {
+          timeZone: activeWindow.effectiveTimeZone,
+        })
+      : null;
   const activeTooltipContent = buildWindowDetailsTooltipContent(
     activeTitle,
     t(activeMeta.descriptionKey),
     activeSamples,
+    activeTimeZoneFallbackNote,
   );
 
   return (

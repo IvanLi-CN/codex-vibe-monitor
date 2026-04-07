@@ -56,7 +56,7 @@
 - Dashboard 或 Live 页新增同类 section。
 - CRS 外部汇总源并行工作统计（它没有 `promptCacheKey`）。
 - 新增自定义 range / bucket 选择器。
-- 非整点 UTC offset 时区下的历史 rollup 精确重分桶优化。
+- 非整点 UTC offset 时区下的历史 rollup 精确重分桶优化（首版仅做显式降级 / 回退，不做永久 exact query）。
 
 ## 接口与数据口径
 
@@ -83,7 +83,7 @@
   - 若没有任何完整自然日样本，则返回空 `points`，且 `minCount / maxCount / avgCount = null`。
 - 工程取舍：
   - `hour30d` / `dayAll` 优先复用 `prompt_cache_rollup_hourly`，不新增分钟级持久化。
-  - 对非整点 UTC offset 的 reporting time zone，历史 rollup 无法无损重分桶；首版保持与现有 hourly-rollup 统计约束一致。
+  - 对非整点 UTC offset 的 reporting time zone，历史 rollup 无法无损重分桶；首版保持 `minute7d` 继续按请求时区精确计算，`hour30d` / `dayAll` 回退到 `Asia/Shanghai` 对齐并在前端给出显式提示，而不是直接让整个接口失败。
 
 ## 验收标准（Acceptance Criteria）
 
@@ -153,7 +153,7 @@
 ## 风险 / 假设 / 参考
 
 - 风险：`dayAll` 基于 `prompt_cache_rollup_hourly` 做永久历史聚合，数据量增大后接口耗时可能上升；首版通过只读取必要列并按天流式去重控制内存占用。
-- 风险：非整点 UTC offset 时区无法从 hourly rollup 无损重分桶；首版保持现有限制，而不是切回昂贵的永久 exact query。
+- 风险：非整点 UTC offset 时区无法从 hourly rollup 无损重分桶；首版对 `hour30d` / `dayAll` 采用显式 `Asia/Shanghai` 回退并保留提示，而不是切回昂贵的永久 exact query。
 - 假设：`promptCacheKey` 为空或缺失的请求不参与并行工作统计。
 - 假设：默认 reporting time zone fallback 继续沿用 `Asia/Shanghai`。
 - 参考：
@@ -171,4 +171,5 @@
 - 2026-04-07: 按主人反馈把问号图标改为贴在“并行工作”标题右侧并垂直居中对齐，选择器继续留在标题区右上角。
 - 2026-04-07: 按主人反馈去掉 populated 卡片的人工最小高度，收紧底部无意义空白，并刷新 Storybook docs 证据。
 - 2026-04-07: 按主人反馈给趋势图补上 X/Y 轴刻度与辅助网格线，并修正首尾时间刻度避免被边界裁切。
+- 2026-04-07: review-loop follow-up：对非整点 UTC offset 时区保留请求时区的 `minute7d` 精确统计，同时把历史 `hour30d` / `dayAll` 窗口显式回退到 `Asia/Shanghai` 对齐并补前端提示，避免整个接口 400；同时修正 `useParallelWorkStats` 在 hydration 期间收到 SSE open 后未排队补刷新的 stale 问题。
 - 2026-04-07: 刷新 Storybook docs 视觉证据并落盘到 spec 资产目录，当前等待主人确认截图可随提交一起 push 后再进入 PR 收敛。

@@ -3388,22 +3388,43 @@ pub(crate) async fn fetch_parallel_work_stats(
     Query(params): Query<ParallelWorkStatsQuery>,
 ) -> Result<Json<ParallelWorkStatsResponse>, ApiError> {
     ensure_hourly_rollups_caught_up(state.as_ref()).await?;
-    let reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
+    let requested_reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
     let source_scope = resolve_default_source_scope(&state.pool).await?;
     let now = Utc::now();
 
-    let minute7d_window =
-        resolve_complete_parallel_work_window(now, ChronoDuration::days(7), 60, reporting_tz)?;
-    let hour30d_window =
-        resolve_complete_parallel_work_window(now, ChronoDuration::days(30), 3_600, reporting_tz)?;
-
-    ensure_parallel_work_rollup_timezone_supported(reporting_tz, &hour30d_window)?;
+    let minute7d_window = resolve_complete_parallel_work_window(
+        now,
+        ChronoDuration::days(7),
+        60,
+        requested_reporting_tz,
+    )?;
+    let requested_hour30d_window = resolve_complete_parallel_work_window(
+        now,
+        ChronoDuration::days(30),
+        3_600,
+        requested_reporting_tz,
+    )?;
+    let (hour30d_reporting_tz, hour30d_time_zone_fallback) =
+        resolve_parallel_work_rollup_reporting_tz(
+            requested_reporting_tz,
+            &requested_hour30d_window,
+        );
+    let hour30d_window = if hour30d_time_zone_fallback {
+        resolve_complete_parallel_work_window(
+            now,
+            ChronoDuration::days(30),
+            3_600,
+            hour30d_reporting_tz,
+        )?
+    } else {
+        requested_hour30d_window
+    };
 
     let minute7d_counts = query_parallel_work_minute_counts(
         &state.pool,
         minute7d_window.start,
         minute7d_window.end,
-        reporting_tz,
+        requested_reporting_tz,
         source_scope,
     )
     .await?;
@@ -3415,17 +3436,19 @@ pub(crate) async fn fetch_parallel_work_stats(
     )
     .await?;
 
-    let day_all_window =
-        resolve_parallel_work_day_all_window(&state.pool, reporting_tz, source_scope).await?;
-    if let Some(window) = day_all_window.as_ref() {
-        ensure_parallel_work_rollup_timezone_supported(reporting_tz, window)?;
-    }
+    let (day_all_window, day_all_reporting_tz, day_all_time_zone_fallback) =
+        resolve_parallel_work_day_all_window_with_fallback(
+            &state.pool,
+            requested_reporting_tz,
+            source_scope,
+        )
+        .await?;
     let day_all_counts = if let Some(window) = day_all_window.as_ref() {
         query_parallel_work_day_counts_from_hourly_rollups(
             &state.pool,
             window.start,
             window.end,
-            reporting_tz,
+            day_all_reporting_tz,
             source_scope,
         )
         .await?
@@ -3433,34 +3456,47 @@ pub(crate) async fn fetch_parallel_work_stats(
         BTreeMap::new()
     };
 
-    let latest_complete_day_end =
-        local_midnight_utc(now.with_timezone(&reporting_tz).date_naive(), reporting_tz);
+    let latest_complete_day_end = local_midnight_utc(
+        now.with_timezone(&day_all_reporting_tz).date_naive(),
+        day_all_reporting_tz,
+    );
 
     Ok(Json(ParallelWorkStatsResponse {
         minute7d: build_parallel_work_window_response(
             minute7d_window.start,
             minute7d_window.end,
             60,
-            reporting_tz,
+            requested_reporting_tz,
             &minute7d_counts,
+            requested_reporting_tz,
+            false,
         )?,
         hour30d: build_parallel_work_window_response(
             hour30d_window.start,
             hour30d_window.end,
             3_600,
-            reporting_tz,
+            hour30d_reporting_tz,
             &hour30d_counts,
+            hour30d_reporting_tz,
+            hour30d_time_zone_fallback,
         )?,
         day_all: if let Some(window) = day_all_window {
             build_parallel_work_window_response(
                 window.start,
                 window.end,
                 86_400,
-                reporting_tz,
+                day_all_reporting_tz,
                 &day_all_counts,
+                day_all_reporting_tz,
+                day_all_time_zone_fallback,
             )?
         } else {
-            empty_parallel_work_window_response(latest_complete_day_end, 86_400)
+            empty_parallel_work_window_response(
+                latest_complete_day_end,
+                86_400,
+                day_all_reporting_tz,
+                day_all_time_zone_fallback,
+            )
         },
     }))
 }
@@ -3708,16 +3744,14 @@ fn resolve_complete_parallel_work_window(
     })
 }
 
-fn ensure_parallel_work_rollup_timezone_supported(
-    reporting_tz: Tz,
+fn resolve_parallel_work_rollup_reporting_tz(
+    requested_reporting_tz: Tz,
     range_window: &RangeWindow,
-) -> Result<(), ApiError> {
-    if reporting_tz_has_whole_hour_offsets(reporting_tz, range_window) {
-        return Ok(());
+) -> (Tz, bool) {
+    if reporting_tz_has_whole_hour_offsets(requested_reporting_tz, range_window) {
+        return (requested_reporting_tz, false);
     }
-    Err(ApiError::bad_request(anyhow!(
-        "unsupported timeZone for historical parallel-work rollups: {reporting_tz}; hourly-backed windows require whole-hour UTC offsets"
-    )))
+    (Shanghai, true)
 }
 
 fn build_parallel_work_window_response(
@@ -3726,11 +3760,15 @@ fn build_parallel_work_window_response(
     bucket_seconds: i64,
     reporting_tz: Tz,
     counts_by_bucket: &BTreeMap<i64, i64>,
+    effective_time_zone: Tz,
+    time_zone_fallback: bool,
 ) -> Result<ParallelWorkWindowResponse> {
     if range_start >= range_end {
         return Ok(empty_parallel_work_window_response(
             range_end,
             bucket_seconds,
+            effective_time_zone,
+            time_zone_fallback,
         ));
     }
 
@@ -3790,6 +3828,8 @@ fn build_parallel_work_window_response(
         } else {
             None
         },
+        effective_time_zone: effective_time_zone.to_string(),
+        time_zone_fallback,
         points,
     })
 }
@@ -3797,6 +3837,8 @@ fn build_parallel_work_window_response(
 fn empty_parallel_work_window_response(
     boundary: DateTime<Utc>,
     bucket_seconds: i64,
+    effective_time_zone: Tz,
+    time_zone_fallback: bool,
 ) -> ParallelWorkWindowResponse {
     ParallelWorkWindowResponse {
         range_start: format_utc_iso(boundary),
@@ -3807,6 +3849,8 @@ fn empty_parallel_work_window_response(
         min_count: None,
         max_count: None,
         avg_count: None,
+        effective_time_zone: effective_time_zone.to_string(),
+        time_zone_fallback,
         points: Vec::new(),
     }
 }
@@ -3942,6 +3986,26 @@ async fn resolve_parallel_work_day_all_window(
         display_end: latest_complete_day_end,
         duration: latest_complete_day_end.signed_duration_since(start),
     }))
+}
+
+async fn resolve_parallel_work_day_all_window_with_fallback(
+    pool: &Pool<Sqlite>,
+    requested_reporting_tz: Tz,
+    source_scope: InvocationSourceScope,
+) -> Result<(Option<RangeWindow>, Tz, bool)> {
+    let requested_window =
+        resolve_parallel_work_day_all_window(pool, requested_reporting_tz, source_scope).await?;
+    let Some(window) = requested_window.as_ref() else {
+        return Ok((None, requested_reporting_tz, false));
+    };
+    if reporting_tz_has_whole_hour_offsets(requested_reporting_tz, window) {
+        return Ok((requested_window, requested_reporting_tz, false));
+    }
+    Ok((
+        resolve_parallel_work_day_all_window(pool, Shanghai, source_scope).await?,
+        Shanghai,
+        true,
+    ))
 }
 
 async fn query_parallel_work_day_counts_from_hourly_rollups(
@@ -5579,6 +5643,8 @@ pub(crate) struct ParallelWorkWindowResponse {
     pub(crate) min_count: Option<i64>,
     pub(crate) max_count: Option<i64>,
     pub(crate) avg_count: Option<f64>,
+    pub(crate) effective_time_zone: String,
+    pub(crate) time_zone_fallback: bool,
     pub(crate) points: Vec<ParallelWorkPoint>,
 }
 

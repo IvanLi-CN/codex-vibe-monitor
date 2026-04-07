@@ -91,6 +91,9 @@ export function useParallelWorkStats() {
       if (pendingOpenResyncRef.current) {
         pendingOpenResyncRef.current = false
         lastOpenResyncAtRef.current = Date.now()
+        pendingLoadRef.current = {
+          silent: pendingLoadRef.current?.silent ?? true,
+        }
       }
     } catch (err) {
       if (requestSeq !== requestSeqRef.current) {

@@ -614,6 +614,8 @@ export interface ParallelWorkWindowResponse {
   minCount: number | null;
   maxCount: number | null;
   avgCount: number | null;
+  effectiveTimeZone?: string;
+  timeZoneFallback?: boolean;
   points: ParallelWorkPoint[];
 }
 
@@ -1178,6 +1180,11 @@ function normalizeParallelWorkWindowResponse(
 ): ParallelWorkWindowResponse {
   const payload = (raw ?? {}) as Record<string, unknown>;
   const pointsRaw = Array.isArray(payload.points) ? payload.points : [];
+  const effectiveTimeZone =
+    typeof payload.effectiveTimeZone === "string" &&
+    payload.effectiveTimeZone.trim()
+      ? payload.effectiveTimeZone.trim()
+      : "Asia/Shanghai";
   return {
     rangeStart:
       typeof payload.rangeStart === "string" ? payload.rangeStart : "",
@@ -1198,6 +1205,8 @@ function normalizeParallelWorkWindowResponse(
       payload.avgCount == null
         ? null
         : (normalizeFiniteNumber(payload.avgCount) ?? null),
+    effectiveTimeZone,
+    timeZoneFallback: payload.timeZoneFallback === true,
     points: pointsRaw
       .map(normalizeParallelWorkPoint)
       .filter((point): point is ParallelWorkPoint => point != null),

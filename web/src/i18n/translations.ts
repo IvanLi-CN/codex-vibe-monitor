@@ -1294,6 +1294,8 @@ const baseTranslations = {
     "stats.parallelWork.samples":
       "{{complete}} complete buckets · {{active}} active buckets",
     "stats.parallelWork.rangeSummary": "Range: {{start}} → {{end}}",
+    "stats.parallelWork.timeZoneFallback":
+      "Aligned to {{timeZone}} because this window cannot be losslessly re-bucketed from hourly rollups in the current time zone.",
     "stats.parallelWork.metrics.min": "Min",
     "stats.parallelWork.metrics.max": "Max",
     "stats.parallelWork.metrics.avg": "Avg",
@@ -2927,6 +2929,8 @@ const baseTranslations = {
     "stats.parallelWork.samples":
       "{{complete}} 个完整 bucket · {{active}} 个活跃 bucket",
     "stats.parallelWork.rangeSummary": "范围：{{start}} → {{end}}",
+    "stats.parallelWork.timeZoneFallback":
+      "当前窗口按 {{timeZone}} 对齐；这个窗口在当前时区下无法从 hourly rollup 无损重分桶。",
     "stats.parallelWork.metrics.min": "最低",
     "stats.parallelWork.metrics.max": "最高",
     "stats.parallelWork.metrics.avg": "均数",

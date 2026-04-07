@@ -35319,7 +35319,8 @@ async fn parallel_work_stats_minute7d_supports_non_shanghai_reporting_timezones(
     .await;
     let reporting_tz = "UTC".parse::<Tz>().expect("valid utc tz");
     let current_minute_epoch =
-        align_reporting_bucket_epoch(Utc::now().timestamp(), 60, reporting_tz).expect("align minute");
+        align_reporting_bucket_epoch(Utc::now().timestamp(), 60, reporting_tz)
+            .expect("align minute");
     let minute_bucket = Utc
         .timestamp_opt(current_minute_epoch - 3 * 60, 0)
         .single()
@@ -35366,6 +35367,103 @@ async fn parallel_work_stats_minute7d_supports_non_shanghai_reporting_timezones(
     assert_eq!(minute_point.parallel_count, 2);
     assert_eq!(response.minute7d.active_bucket_count, 1);
     assert_eq!(response.minute7d.max_count, Some(2));
+}
+
+#[tokio::test]
+async fn parallel_work_stats_falls_back_historical_windows_for_sub_hour_timezones() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let requested_tz = "Asia/Kolkata"
+        .parse::<Tz>()
+        .expect("valid kolkata reporting tz");
+    let current_minute_epoch =
+        align_reporting_bucket_epoch(Utc::now().timestamp(), 60, requested_tz)
+            .expect("align kolkata minute");
+    let minute_bucket = Utc
+        .timestamp_opt(current_minute_epoch - 3 * 60, 0)
+        .single()
+        .expect("kolkata minute bucket");
+
+    insert_parallel_work_invocation(
+        &state.pool,
+        "parallel-minute-kolkata-1",
+        minute_bucket + ChronoDuration::seconds(10),
+        "pck-kolkata-alpha",
+    )
+    .await;
+    insert_parallel_work_invocation(
+        &state.pool,
+        "parallel-minute-kolkata-2",
+        minute_bucket + ChronoDuration::seconds(20),
+        "pck-kolkata-beta",
+    )
+    .await;
+
+    let current_hour_epoch =
+        align_reporting_bucket_epoch(Utc::now().timestamp(), 3_600, Shanghai).expect("align hour");
+    let previous_hour = Utc
+        .timestamp_opt(current_hour_epoch - 3_600, 0)
+        .single()
+        .expect("previous hour");
+    insert_parallel_work_prompt_cache_rollup_hourly_row(
+        &state.pool,
+        previous_hour,
+        "pck-hour-fallback",
+        1,
+    )
+    .await;
+
+    let current_day_start =
+        local_midnight_utc(Utc::now().with_timezone(&Shanghai).date_naive(), Shanghai);
+    let previous_day_start = current_day_start - ChronoDuration::days(1);
+    insert_parallel_work_prompt_cache_rollup_hourly_row(
+        &state.pool,
+        previous_day_start,
+        "pck-day-fallback",
+        1,
+    )
+    .await;
+
+    let Json(response) = fetch_parallel_work_stats(
+        State(state),
+        Query(ParallelWorkStatsQuery {
+            time_zone: Some("Asia/Kolkata".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch parallel-work stats");
+
+    let minute_point = response
+        .minute7d
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(minute_bucket))
+        .expect("kolkata minute point");
+    let hour_point = response
+        .hour30d
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(previous_hour))
+        .expect("fallback hour point");
+
+    assert_eq!(minute_point.parallel_count, 2);
+    assert_eq!(response.minute7d.effective_time_zone, "Asia/Kolkata");
+    assert!(!response.minute7d.time_zone_fallback);
+
+    assert_eq!(hour_point.parallel_count, 1);
+    assert_eq!(response.hour30d.effective_time_zone, "Asia/Shanghai");
+    assert!(response.hour30d.time_zone_fallback);
+
+    assert_eq!(response.day_all.effective_time_zone, "Asia/Shanghai");
+    assert!(response.day_all.time_zone_fallback);
+    assert_eq!(response.day_all.points.len(), 1);
+    assert_eq!(
+        response.day_all.points[0].bucket_start,
+        format_utc_iso(previous_day_start)
+    );
+    assert_eq!(response.day_all.points[0].parallel_count, 1);
 }
 
 #[tokio::test]

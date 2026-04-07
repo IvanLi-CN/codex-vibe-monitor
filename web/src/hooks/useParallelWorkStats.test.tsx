@@ -226,6 +226,34 @@ describe('useParallelWorkStats', () => {
     expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(3)
   })
 
+  it('queues a follow-up silent refresh when SSE-open arrives during hydration', async () => {
+    let resolveInitialLoad: ((value: ParallelWorkStatsResponse) => void) | null = null
+    apiMocks.fetchParallelWorkStats
+      .mockImplementationOnce(
+        () =>
+          new Promise<ParallelWorkStatsResponse>((resolve) => {
+            resolveInitialLoad = resolve
+          }),
+      )
+      .mockResolvedValueOnce(createStats())
+
+    render(<Probe />)
+    await flushAsync()
+    expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(1)
+
+    act(() => {
+      sseMocks.openListeners.forEach((listener) => listener())
+    })
+
+    await act(async () => {
+      resolveInitialLoad?.(createStats())
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(2)
+  })
+
   it('does not auto-retry permanent client errors', async () => {
     vi.useFakeTimers()
     apiMocks.fetchParallelWorkStats.mockRejectedValue(
