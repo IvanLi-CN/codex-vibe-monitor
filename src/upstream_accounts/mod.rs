@@ -8520,36 +8520,13 @@ async fn sync_oauth_account(
             return Ok(());
         }
     };
-    let refresh_scope = if refresh_due {
-        match load_required_account_forward_proxy_scope_from_group_metadata(
-            state,
-            row.group_name.as_deref(),
-        )
-        .await
-        {
-            Ok(scope) => Some(scope),
-            Err(err) => {
-                record_classified_account_sync_failure(
-                    &state.pool,
-                    row,
-                    sync_source,
-                    &err.to_string(),
-                )
-                .await?;
-                return Ok(());
-            }
-        }
-    } else {
-        None
-    };
+    let refresh_scope = usage_scope.clone();
     set_account_status(&state.pool, row.id, UPSTREAM_ACCOUNT_STATUS_SYNCING, None).await?;
 
     if refresh_due {
         match refresh_oauth_tokens_for_required_scope(
             state,
-            refresh_scope
-                .as_ref()
-                .expect("refresh scope should exist when refresh is due"),
+            &refresh_scope,
             &credentials.refresh_token,
         )
         .await
@@ -8645,16 +8622,6 @@ async fn sync_oauth_account(
     let snapshot = match usage_result {
         Ok(snapshot) => snapshot,
         Err(err) if err.to_string().contains("401") || err.to_string().contains("403") => {
-            let refresh_scope = match refresh_scope {
-                Some(scope) => scope,
-                None => {
-                    load_required_account_forward_proxy_scope_from_group_metadata(
-                        state,
-                        latest_row.group_name.as_deref(),
-                    )
-                    .await?
-                }
-            };
             match refresh_oauth_tokens_for_required_scope(
                 state,
                 &refresh_scope,
@@ -18811,7 +18778,7 @@ mod tests {
         Json, Router,
         extract::State,
         http::{HeaderMap, StatusCode},
-        routing::{get, post},
+        routing::{any, get, post},
     };
     use sqlx::SqlitePool;
     use std::{
@@ -21507,6 +21474,104 @@ mod tests {
         (
             format!("{origin}/backend-api"),
             origin,
+            usage_requests,
+            token_requests,
+            server,
+        )
+    }
+
+    #[derive(Clone)]
+    struct ProxyOnlyOauthSyncServerState {
+        usage_requests: Arc<AtomicUsize>,
+        token_requests: Arc<AtomicUsize>,
+    }
+
+    async fn spawn_proxy_only_oauth_sync_server()
+    -> (String, Arc<AtomicUsize>, Arc<AtomicUsize>, JoinHandle<()>) {
+        async fn handler(
+            State(state): State<ProxyOnlyOauthSyncServerState>,
+            request: axum::extract::Request,
+        ) -> (StatusCode, String) {
+            let uri_text = request.uri().to_string();
+            let path = if uri_text.starts_with("http://") || uri_text.starts_with("https://") {
+                Url::parse(&uri_text)
+                    .map(|value| value.path().to_string())
+                    .unwrap_or_else(|_| request.uri().path().to_string())
+            } else {
+                request.uri().path().to_string()
+            };
+
+            match (request.method().as_str(), path.as_str()) {
+                ("GET", "/backend-api/wham/usage") => {
+                    state.usage_requests.fetch_add(1, Ordering::SeqCst);
+                    (
+                        StatusCode::OK,
+                        json!({
+                            "planType": "team",
+                            "rateLimit": {
+                                "primaryWindow": {
+                                    "usedPercent": 8,
+                                    "windowDurationMins": 300,
+                                    "resetsAt": 1771322400
+                                }
+                            }
+                        })
+                        .to_string(),
+                    )
+                }
+                ("POST", "/oauth/token") => {
+                    state.token_requests.fetch_add(1, Ordering::SeqCst);
+                    (
+                        StatusCode::OK,
+                        json!({
+                            "access_token": "proxy-refreshed-access-token",
+                            "refresh_token": "proxy-refreshed-refresh-token",
+                            "id_token": test_id_token(
+                                "proxy-refresh@example.com",
+                                Some("org_proxy_refresh"),
+                                Some("user_proxy_refresh"),
+                                Some("team"),
+                            ),
+                            "token_type": "Bearer",
+                            "expires_in": 3600
+                        })
+                        .to_string(),
+                    )
+                }
+                _ => (
+                    StatusCode::NOT_FOUND,
+                    json!({
+                        "error": {
+                            "message": format!("unexpected proxy request: {} {}", request.method(), uri_text)
+                        }
+                    })
+                    .to_string(),
+                ),
+            }
+        }
+
+        let usage_requests = Arc::new(AtomicUsize::new(0));
+        let token_requests = Arc::new(AtomicUsize::new(0));
+        let app = Router::new()
+            .fallback(any(handler))
+            .with_state(ProxyOnlyOauthSyncServerState {
+                usage_requests: usage_requests.clone(),
+                token_requests: token_requests.clone(),
+            });
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind proxy-only oauth sync server");
+        let addr = listener
+            .local_addr()
+            .expect("proxy-only oauth sync server addr");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app)
+                .await
+                .expect("serve proxy-only oauth sync server");
+        });
+
+        (
+            format!("http://{addr}"),
             usage_requests,
             token_requests,
             server,
@@ -27165,6 +27230,129 @@ mod tests {
             panic!("expected sync scope to pin the live reserved node");
         };
         assert_eq!(proxy_key, FORWARD_PROXY_DIRECT_KEY);
+    }
+
+    #[tokio::test]
+    async fn oauth_sync_refresh_due_reuses_sync_only_scope_for_token_refresh() {
+        let (proxy_url, usage_requests, token_requests, server) =
+            spawn_proxy_only_oauth_sync_server().await;
+        let state = test_app_state_with_usage_and_oauth_base(
+            "http://unreachable.invalid/backend-api",
+            "http://unreachable.invalid",
+        )
+        .await;
+        let secondary_proxy_key = {
+            let mut manager = state.forward_proxy.lock().await;
+            let mut settings = ForwardProxySettings::default();
+            settings.proxy_urls = vec![proxy_url];
+            manager.apply_settings(settings);
+            manager.bound_group_runtime.insert(
+                "node-shunt-refresh".to_string(),
+                crate::forward_proxy::BoundForwardProxyGroupState {
+                    current_binding_key: Some(FORWARD_PROXY_DIRECT_KEY.to_string()),
+                    consecutive_network_failures: 0,
+                },
+            );
+            manager
+                .binding_nodes()
+                .into_iter()
+                .find(|node| node.key != FORWARD_PROXY_DIRECT_KEY)
+                .map(|node| node.key)
+                .expect("secondary proxy binding key")
+        };
+        let crypto_key = state
+            .upstream_accounts
+            .crypto_key
+            .as_ref()
+            .expect("test crypto key");
+        let account_id = insert_syncable_oauth_account(
+            &state.pool,
+            crypto_key,
+            "Refresh Due Scoped OAuth",
+            "proxy-refresh@example.com",
+            "org_proxy_refresh",
+            "user_proxy_refresh",
+        )
+        .await;
+
+        set_test_account_group_name(&state.pool, account_id, Some("node-shunt-refresh")).await;
+        let mut conn = state.pool.acquire().await.expect("acquire metadata conn");
+        save_group_metadata_record_conn(
+            &mut conn,
+            "node-shunt-refresh",
+            UpstreamAccountGroupMetadata {
+                note: None,
+                bound_proxy_keys: vec![
+                    FORWARD_PROXY_DIRECT_KEY.to_string(),
+                    secondary_proxy_key.clone(),
+                ],
+                node_shunt_enabled: true,
+                upstream_429_retry_enabled: false,
+                upstream_429_max_retries: 0,
+                concurrency_limit: 0,
+            },
+        )
+        .await
+        .expect("save refresh-due node shunt metadata");
+        drop(conn);
+
+        state
+            .pool_routing_reservations
+            .lock()
+            .expect("pool routing reservations mutex poisoned")
+            .insert(
+                "test-node-shunt-refresh-reservation".to_string(),
+                PoolRoutingReservation {
+                    account_id,
+                    proxy_key: Some(secondary_proxy_key),
+                    created_at: Instant::now(),
+                },
+            );
+        set_test_account_token_expires_at(
+            &state.pool,
+            account_id,
+            &format_utc_iso(Utc::now() - ChronoDuration::minutes(5)),
+        )
+        .await;
+
+        let row = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load refresh-due account")
+            .expect("refresh-due account exists");
+        sync_oauth_account(state.as_ref(), &row, SyncCause::Manual)
+            .await
+            .expect("refresh-due sync should reuse the sync-only scoped node for refresh");
+
+        let after = load_upstream_account_row(&state.pool, account_id)
+            .await
+            .expect("load refresh-due account after sync")
+            .expect("refresh-due account still exists");
+        assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
+        assert!(after.last_error.is_none());
+        assert!(after.last_route_failure_kind.is_none());
+        assert!(after.last_successful_sync_at.is_some());
+        assert_eq!(
+            after.last_action.as_deref(),
+            Some(UPSTREAM_ACCOUNT_ACTION_SYNC_SUCCEEDED)
+        );
+        assert_eq!(token_requests.load(Ordering::SeqCst), 1);
+        assert_eq!(usage_requests.load(Ordering::SeqCst), 1);
+
+        let decrypted = decrypt_credentials(
+            crypto_key,
+            after
+                .encrypted_credentials
+                .as_deref()
+                .expect("encrypted oauth credentials"),
+        )
+        .expect("decrypt refreshed credentials");
+        let StoredCredentials::Oauth(credentials) = decrypted else {
+            panic!("unexpected credential kind after refresh-due sync")
+        };
+        assert_eq!(credentials.access_token, "proxy-refreshed-access-token");
+        assert_eq!(credentials.refresh_token, "proxy-refreshed-refresh-token");
+
+        server.abort();
     }
 
     #[tokio::test]
