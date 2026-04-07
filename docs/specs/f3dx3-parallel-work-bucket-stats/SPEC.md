@@ -127,7 +127,7 @@
   submission_gate: pending-owner-approval
   docs_entry_or_title: Stats/ParallelWorkStatsSection
   state: populated
-  evidence_note: 验证 Stats 页并行工作 section 已按项目既有 segmented toggle 习惯切换显示 `minute7d / hour30d / dayAll` 三个窗口，问号图标与选择器同排靠右，当前激活窗口不再单独展示窗口标题或说明，而是把整段窗口元信息都收进问号气泡，并保留全宽趋势图。
+  evidence_note: 验证 Stats 页并行工作 section 已按项目既有 segmented toggle 习惯切换显示 `minute7d / hour30d / dayAll` 三个窗口，问号图标与选择器借用 section 标题区右上角同排显示，卡片内容不再为 controls 预留额外高度；当前激活窗口把整段窗口元信息都收进问号气泡，并保留全宽趋势图。
   image:
   ![并行工作统计 segmented populated docs](./assets/parallel-work-segmented-populated-docs.png)
 
@@ -138,7 +138,7 @@
   submission_gate: pending-owner-approval
   docs_entry_or_title: Stats/ParallelWorkStatsSection
   scenario: gallery
-  evidence_note: 验证同一 docs 入口已覆盖分钟窗口默认态、切换到小时窗口、`dayAll` 空历史、loading 与 error 五类关键状态，且问号图标与选择器在各卡片头部右上角同排显示、窗口元信息统一收敛到问号气泡、每次只显示一个激活窗口。
+  evidence_note: 验证同一 docs 入口已覆盖分钟窗口默认态、切换到小时窗口、`dayAll` 空历史、loading 与 error 五类关键状态，且问号图标与选择器借用 section 标题区右上角同排显示、窗口元信息统一收敛到问号气泡、每次只显示一个激活窗口。
   image:
   ![并行工作统计 segmented docs gallery](./assets/parallel-work-segmented-gallery-docs.png)
 
@@ -167,4 +167,5 @@
 - 2026-04-07: 按主人反馈把窗口选择器移到卡片右上角，并同步刷新 loading / error / empty / populated 布局与 Storybook docs 证据。
 - 2026-04-07: 按主人反馈移除卡片内单独的窗口标题与说明，把整段窗口元信息统一折叠进问号气泡提示，并刷新 Storybook docs 证据。
 - 2026-04-07: 按主人反馈把问号图标继续移动到右上角选择器旁边，同排显示且不再单独占一行，并刷新 Storybook docs 证据。
+- 2026-04-07: 按主人反馈进一步压缩高度，把问号图标与选择器整体上移到 section 标题区右上角，卡片主体直接从指标卡开始渲染，不再浪费额外高度。
 - 2026-04-07: 刷新 Storybook docs 视觉证据并落盘到 spec 资产目录，当前等待主人确认截图可随提交一起 push 后再进入 PR 收敛。

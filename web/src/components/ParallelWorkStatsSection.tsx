@@ -460,46 +460,21 @@ function ParallelWorkSparkline({
 }
 
 function ParallelWorkWindowCard({
-  activeWindowKey,
-  onWindowSelect,
   windowKey,
   window,
 }: {
-  activeWindowKey: ParallelWorkWindowKey;
-  onWindowSelect: (windowKey: ParallelWorkWindowKey) => void;
   windowKey: ParallelWorkWindowKey;
   window: ParallelWorkWindowResponse;
 }) {
   const { t, locale } = useTranslation();
   const meta = resolveWindowMeta(windowKey);
   const empty = window.completeBucketCount === 0;
-  const title = t(meta.titleKey);
-  const samples = t("stats.parallelWork.samples", {
-    complete: window.completeBucketCount,
-    active: window.activeBucketCount,
-  });
-  const tooltipContent = buildWindowDetailsTooltipContent(
-    title,
-    t(meta.descriptionKey),
-    samples,
-  );
 
   return (
     <article
       className="flex min-h-[22rem] flex-col gap-4 rounded-[1.35rem] border border-base-300/75 bg-base-100/82 p-4 shadow-sm"
       data-testid={"parallel-work-card-" + windowKey}
     >
-      <div className="flex justify-end">
-        <ParallelWorkWindowControls
-          activeWindowKey={activeWindowKey}
-          onWindowSelect={onWindowSelect}
-          tooltipContent={tooltipContent}
-          tooltipLabel={t("stats.parallelWork.detailsTooltipLabel", {
-            title,
-          })}
-        />
-      </div>
-
       <div className="grid grid-cols-3 gap-2.5">
         <div className="rounded-2xl border border-base-300/70 bg-base-200/35 px-3 py-2.5">
           <div className="text-[11px] font-medium uppercase tracking-[0.08em] text-base-content/50">
@@ -554,37 +529,17 @@ function ParallelWorkWindowCard({
 }
 
 function ParallelWorkLoadingCard({
-  activeWindowKey,
-  onWindowSelect,
   windowKey,
 }: {
-  activeWindowKey: ParallelWorkWindowKey;
-  onWindowSelect: (windowKey: ParallelWorkWindowKey) => void;
   windowKey: ParallelWorkWindowKey;
 }) {
   const { t } = useTranslation();
-  const meta = resolveWindowMeta(windowKey);
-  const title = t(meta.titleKey);
-  const tooltipContent = buildWindowDetailsTooltipContent(
-    title,
-    t(meta.descriptionKey),
-  );
 
   return (
     <article
       className="flex min-h-[22rem] flex-col gap-4 rounded-[1.35rem] border border-base-300/75 bg-base-100/82 p-4 shadow-sm"
       data-testid={"parallel-work-card-" + windowKey}
     >
-      <div className="flex justify-end">
-        <ParallelWorkWindowControls
-          activeWindowKey={activeWindowKey}
-          onWindowSelect={onWindowSelect}
-          tooltipContent={tooltipContent}
-          tooltipLabel={t("stats.parallelWork.detailsTooltipLabel", {
-            title,
-          })}
-        />
-      </div>
       <div className="grid grid-cols-3 gap-2.5">
         {Array.from({ length: 3 }).map((_, index) => (
           <div
@@ -605,37 +560,17 @@ function ParallelWorkLoadingCard({
 }
 
 function ParallelWorkErrorCard({
-  activeWindowKey,
-  onWindowSelect,
+  windowKey,
   error,
 }: {
-  activeWindowKey: ParallelWorkWindowKey;
-  onWindowSelect: (windowKey: ParallelWorkWindowKey) => void;
+  windowKey: ParallelWorkWindowKey;
   error: string;
 }) {
-  const { t } = useTranslation();
-  const meta = resolveWindowMeta(activeWindowKey);
-  const title = t(meta.titleKey);
-  const tooltipContent = buildWindowDetailsTooltipContent(
-    title,
-    t(meta.descriptionKey),
-  );
-
   return (
     <article
       className="flex min-h-[14rem] flex-col gap-4 rounded-[1.35rem] border border-base-300/75 bg-base-100/82 p-4 shadow-sm"
-      data-testid={"parallel-work-card-" + activeWindowKey}
+      data-testid={"parallel-work-card-" + windowKey}
     >
-      <div className="flex justify-end">
-        <ParallelWorkWindowControls
-          activeWindowKey={activeWindowKey}
-          onWindowSelect={onWindowSelect}
-          tooltipContent={tooltipContent}
-          tooltipLabel={t("stats.parallelWork.detailsTooltipLabel", {
-            title,
-          })}
-        />
-      </div>
       <Alert variant="error">{error}</Alert>
     </article>
   );
@@ -651,35 +586,46 @@ export function ParallelWorkStatsSection({
   const [activeWindowKey, setActiveWindowKey] =
     useState<ParallelWorkWindowKey>(defaultWindowKey);
   const activeWindow = stats?.[activeWindowKey] ?? null;
+  const activeMeta = resolveWindowMeta(activeWindowKey);
+  const activeTitle = t(activeMeta.titleKey);
+  const activeSamples =
+    activeWindow == null
+      ? null
+      : t("stats.parallelWork.samples", {
+          complete: activeWindow.completeBucketCount,
+          active: activeWindow.activeBucketCount,
+        });
+  const activeTooltipContent = buildWindowDetailsTooltipContent(
+    activeTitle,
+    t(activeMeta.descriptionKey),
+    activeSamples,
+  );
 
   return (
     <section className="surface-panel" data-testid="parallel-work-section">
       <div className="surface-panel-body gap-4">
-        <div className="section-heading">
-          <h3 className="section-title">{t("stats.parallelWork.title")}</h3>
-          <p className="section-description">
-            {t("stats.parallelWork.description")}
-          </p>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="section-heading min-w-0 flex-1">
+            <h3 className="section-title">{t("stats.parallelWork.title")}</h3>
+            <p className="section-description">
+              {t("stats.parallelWork.description")}
+            </p>
+          </div>
+          <ParallelWorkWindowControls
+            activeWindowKey={activeWindowKey}
+            onWindowSelect={setActiveWindowKey}
+            tooltipContent={activeTooltipContent}
+            tooltipLabel={t("stats.parallelWork.detailsTooltipLabel", {
+              title: activeTitle,
+            })}
+          />
         </div>
         {error ? (
-          <ParallelWorkErrorCard
-            activeWindowKey={activeWindowKey}
-            onWindowSelect={setActiveWindowKey}
-            error={error}
-          />
+          <ParallelWorkErrorCard windowKey={activeWindowKey} error={error} />
         ) : isLoading || !activeWindow ? (
-          <ParallelWorkLoadingCard
-            activeWindowKey={activeWindowKey}
-            onWindowSelect={setActiveWindowKey}
-            windowKey={activeWindowKey}
-          />
+          <ParallelWorkLoadingCard windowKey={activeWindowKey} />
         ) : (
-          <ParallelWorkWindowCard
-            activeWindowKey={activeWindowKey}
-            onWindowSelect={setActiveWindowKey}
-            windowKey={activeWindowKey}
-            window={activeWindow}
-          />
+          <ParallelWorkWindowCard windowKey={activeWindowKey} window={activeWindow} />
         )}
       </div>
     </section>

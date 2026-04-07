@@ -241,8 +241,8 @@ describe("ParallelWorkStatsSection", () => {
     const chart = host?.querySelector(
       '[data-chart-kind="parallel-work-sparkline"]',
     ) as SVGElement | null;
-    const activeCard = host?.querySelector(
-      '[data-testid="parallel-work-card-minute7d"]',
+    const section = host?.querySelector(
+      '[data-testid="parallel-work-section"]',
     ) as HTMLElement | null;
     const controls = host?.querySelector(
       '[data-testid="parallel-work-controls-minute7d"]',
@@ -255,7 +255,7 @@ describe("ParallelWorkStatsSection", () => {
     ) as HTMLButtonElement | null;
     expect(chart).not.toBeNull();
     expect(chart?.className.baseVal).toContain("w-full");
-    expect(activeCard?.contains(toggle)).toBe(true);
+    expect(section?.contains(toggle)).toBe(true);
     expect(controls).not.toBeNull();
     expect(infoTrigger).not.toBeNull();
     expect(controls?.contains(toggle)).toBe(true);
