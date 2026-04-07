@@ -44,6 +44,7 @@ body,
   --app-bg-orb-1: rgba(37, 99, 235, 0.22);
   --app-bg-orb-2: rgba(20, 184, 166, 0.2);
   --app-grid-color: rgba(100, 116, 139, 0.15);
+  --app-shell-max-width: 1660px;
   --app-surface-bg: rgba(248, 250, 252, 0.82);
   --app-surface-border: rgba(148, 163, 184, 0.34);
   --app-surface-shadow: 0 18px 40px rgba(15, 23, 42, 0.09);
@@ -100,6 +101,7 @@ body,
   --app-bg-orb-1: rgba(56, 189, 248, 0.22);
   --app-bg-orb-2: rgba(45, 212, 191, 0.18);
   --app-grid-color: rgba(148, 163, 184, 0.18);
+  --app-shell-max-width: 1660px;
   --app-surface-bg: rgba(16, 25, 41, 0.8);
   --app-surface-border: rgba(148, 163, 184, 0.38);
   --app-surface-shadow: 0 20px 54px rgba(2, 6, 23, 0.55);
@@ -185,6 +187,25 @@ body {
 }
 
 @layer components {
+  .app-shell-boundary {
+    width: 100%;
+    max-width: var(--app-shell-max-width);
+    margin-inline: auto;
+  }
+
+  .app-shell-banner-boundary {
+    width: calc(100% - 2rem);
+    max-width: calc(var(--app-shell-max-width) - 2rem);
+    margin-inline: auto;
+  }
+
+  @media (min-width: 1660px) {
+    .app-shell-banner-boundary {
+      width: 100%;
+      max-width: var(--app-shell-max-width);
+    }
+  }
+
   .app-link {
     @apply text-primary underline decoration-primary/60 underline-offset-4 transition-colors hover:text-primary/85;
   }

@@ -32,7 +32,7 @@ export default function DashboardPage() {
   }, [upstreamAccountId])
 
   return (
-    <div className="mx-auto flex w-full max-w-[1560px] flex-col gap-6">
+    <div className="mx-auto flex w-full max-w-full flex-col gap-6">
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_max-content] items-start">
         <TodayStatsOverview stats={todaySummary} loading={todaySummaryLoading} error={todaySummaryError} />
         <UsageCalendar />

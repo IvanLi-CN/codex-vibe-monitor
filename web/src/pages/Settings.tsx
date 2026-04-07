@@ -987,7 +987,7 @@ export default function SettingsPage() {
 
   if (isLoading) {
     return (
-      <section className="mx-auto max-w-6xl space-y-4">
+      <section className="mx-auto max-w-full space-y-4">
         <h1 className="text-2xl font-semibold">{t('settings.title')}</h1>
         <p className="text-sm text-base-content/70">{t('settings.loading')}</p>
       </section>
@@ -996,7 +996,7 @@ export default function SettingsPage() {
 
   if (!settings || !currentForwardProxy) {
     return (
-      <section className="mx-auto max-w-6xl space-y-4">
+      <section className="mx-auto max-w-full space-y-4">
         <h1 className="text-2xl font-semibold">{t('settings.title')}</h1>
         <p className="text-sm text-error">{t('settings.loadError', { error: error ?? 'unknown' })}</p>
       </section>
@@ -1005,7 +1005,7 @@ export default function SettingsPage() {
 
   if (!pricingDraft) {
     return (
-      <section className="mx-auto max-w-6xl space-y-4">
+      <section className="mx-auto max-w-full space-y-4">
         <h1 className="text-2xl font-semibold">{t('settings.title')}</h1>
         <p className="text-sm text-base-content/70">{t('settings.loading')}</p>
       </section>
@@ -1013,7 +1013,7 @@ export default function SettingsPage() {
   }
 
   return (
-    <section className="settings-page mx-auto max-w-6xl space-y-6 pb-2">
+    <section className="settings-page mx-auto max-w-full space-y-6 pb-2">
       <div>
         <h1 className="text-2xl font-semibold">{t('settings.title')}</h1>
         <p className="mt-1 text-sm text-base-content/70">{t('settings.description')}</p>

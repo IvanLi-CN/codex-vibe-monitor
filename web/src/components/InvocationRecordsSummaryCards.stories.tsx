@@ -6,7 +6,7 @@ import { createStoryInvocationRecordsSummary } from './invocationRecordsStoryFix
 function StorySurface({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-base-200 px-6 py-6 text-base-content">
-      <div className="mx-auto w-full max-w-[1440px]">{children}</div>
+      <div className="app-shell-boundary">{children}</div>
     </div>
   )
 }

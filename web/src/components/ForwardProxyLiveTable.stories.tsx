@@ -186,7 +186,7 @@ const meta = {
     (Story) => (
       <I18nProvider>
         <div className="min-h-screen bg-base-200 px-4 py-6 text-base-content sm:px-6">
-          <main className="mx-auto w-full max-w-[1200px] space-y-4">
+          <main className="app-shell-boundary space-y-4">
             <h2 className="text-xl font-semibold">代理运行态</h2>
             <Story />
           </main>

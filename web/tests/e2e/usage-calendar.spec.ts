@@ -5,6 +5,7 @@ const VIEWPORTS = [
   { width: 768, height: 900 },
   { width: 1024, height: 900 },
   { width: 1440, height: 900 },
+  { width: 1660, height: 900 },
   // Regression for shrink-on-large screens (reported at ~1873px)
   { width: 1873, height: 900 },
 ]

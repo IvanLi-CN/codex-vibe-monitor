@@ -931,7 +931,7 @@ const meta = {
         <I18nProvider>
           <StorybookPromptCacheAccountMock>
             <div className="min-h-screen bg-base-200 px-4 py-6 text-base-content sm:px-6">
-              <main className="mx-auto w-full max-w-[1200px] space-y-4">
+              <main className="app-shell-boundary space-y-4">
                 <h2 className="text-xl font-semibold">
                   对话
                 </h2>

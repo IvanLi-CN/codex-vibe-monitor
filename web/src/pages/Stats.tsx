@@ -99,7 +99,7 @@ export default function StatsPage() {
   )
 
   return (
-    <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
+    <div className="mx-auto flex w-full max-w-full flex-col gap-6">
       <section className="surface-panel">
         <div className="surface-panel-body gap-4">
           <div className="flex flex-wrap items-start justify-between gap-3">
