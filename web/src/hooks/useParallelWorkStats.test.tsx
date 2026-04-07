@@ -198,7 +198,7 @@ describe('useParallelWorkStats', () => {
     expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(3)
   })
 
-  it('respects the SSE-open cooldown before forcing another refresh', async () => {
+  it('respects the SSE-open cooldown before queueing another refresh', async () => {
     vi.useFakeTimers()
     apiMocks.fetchParallelWorkStats.mockResolvedValue(createStats())
 
@@ -223,6 +223,47 @@ describe('useParallelWorkStats', () => {
       sseMocks.openListeners.forEach((listener) => listener())
     })
     await flushAsync()
+    expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(3)
+  })
+
+  it('queues SSE-open refreshes instead of aborting an in-flight request', async () => {
+    let resolveRefresh: ((value: ParallelWorkStatsResponse) => void) | null = null
+    let refreshSignal: AbortSignal | undefined
+    apiMocks.fetchParallelWorkStats
+      .mockResolvedValueOnce(createStats())
+      .mockImplementationOnce(
+        ({ signal } = {}) =>
+          new Promise<ParallelWorkStatsResponse>((resolve) => {
+            refreshSignal = signal
+            resolveRefresh = resolve
+          }),
+      )
+      .mockResolvedValueOnce(createStats())
+
+    render(<Probe />)
+    await flushAsync()
+    expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(1)
+
+    act(() => {
+      sseMocks.listeners.forEach((listener) => listener({ type: 'records', records: [] }))
+    })
+    await flushAsync()
+    expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(2)
+    expect(refreshSignal?.aborted).toBe(false)
+
+    act(() => {
+      sseMocks.openListeners.forEach((listener) => listener())
+    })
+    await flushAsync()
+    expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(2)
+    expect(refreshSignal?.aborted).toBe(false)
+
+    await act(async () => {
+      resolveRefresh?.(createStats())
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
     expect(apiMocks.fetchParallelWorkStats).toHaveBeenCalledTimes(3)
   })
 

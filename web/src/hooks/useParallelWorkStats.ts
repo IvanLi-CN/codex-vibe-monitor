@@ -170,7 +170,7 @@ export function useParallelWorkStats() {
       return
     }
     lastOpenResyncAtRef.current = now
-    void load({ silent: true, force: true })
+    void load({ silent: true })
   }, [load])
 
   useEffect(() => {

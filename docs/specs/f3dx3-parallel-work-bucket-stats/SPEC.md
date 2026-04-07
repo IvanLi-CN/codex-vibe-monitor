@@ -84,6 +84,7 @@
 - 工程取舍：
   - `hour30d` / `dayAll` 优先复用 `prompt_cache_rollup_hourly`，不新增分钟级持久化。
   - 对非整点 UTC offset 的 reporting time zone，历史 rollup 无法无损重分桶；首版保持 `minute7d` 继续按请求时区精确计算，`hour30d` / `dayAll` 回退到 `Asia/Shanghai` 对齐并在前端给出显式提示，而不是直接让整个接口失败。
+  - 对整点 UTC offset 但存在 DST 的 reporting time zone，固定窗口以 reporting time zone 的本地墙钟对齐首尾边界，而不是简单用 UTC duration 回退，避免最近 30 天窗口在 DST 变更附近错掉首尾本地小时。
 
 ## 验收标准（Acceptance Criteria）
 
@@ -172,4 +173,5 @@
 - 2026-04-07: 按主人反馈去掉 populated 卡片的人工最小高度，收紧底部无意义空白，并刷新 Storybook docs 证据。
 - 2026-04-07: 按主人反馈给趋势图补上 X/Y 轴刻度与辅助网格线，并修正首尾时间刻度避免被边界裁切。
 - 2026-04-07: review-loop follow-up：对非整点 UTC offset 时区保留请求时区的 `minute7d` 精确统计，同时把历史 `hour30d` / `dayAll` 窗口显式回退到 `Asia/Shanghai` 对齐并补前端提示，避免整个接口 400；同时修正 `useParallelWorkStats` 在 hydration 期间收到 SSE open 后未排队补刷新的 stale 问题。
+- 2026-04-07: review-loop follow-up：把固定窗口的起止边界改为按 reporting time zone 的本地墙钟回退，修正 DST 整点时区在最近 30 天窗口上的首尾小时漂移；同时把 `useParallelWorkStats` 的 SSE open 重同步改为排队静默刷新，避免重连抖动时反复打断在途请求。
 - 2026-04-07: 刷新 Storybook docs 视觉证据并落盘到 spec 资产目录，当前等待主人确认截图可随提交一起 push 后再进入 PR 收敛。

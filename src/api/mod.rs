@@ -3724,7 +3724,7 @@ pub(crate) fn next_reporting_bucket_epoch(
     Ok(next_start.timestamp())
 }
 
-fn resolve_complete_parallel_work_window(
+pub(crate) fn resolve_complete_parallel_work_window(
     now: DateTime<Utc>,
     duration: ChronoDuration,
     bucket_seconds: i64,
@@ -3735,7 +3735,10 @@ fn resolve_complete_parallel_work_window(
         .timestamp_opt(end_epoch, 0)
         .single()
         .ok_or_else(|| anyhow!("invalid parallel-work window end epoch"))?;
-    let start = end - duration;
+    let start = local_naive_to_utc(
+        end.with_timezone(&reporting_tz).naive_local() - duration,
+        reporting_tz,
+    );
     Ok(RangeWindow {
         start,
         end,

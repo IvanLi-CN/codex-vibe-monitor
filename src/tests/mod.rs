@@ -10780,6 +10780,40 @@ async fn parallel_work_day_all_fallbacks_when_requested_window_is_missing_in_sub
     ));
 }
 
+#[test]
+fn parallel_work_complete_window_preserves_local_hour_across_dst() {
+    let reporting_tz = chrono_tz::America::New_York;
+    let now = Utc
+        .with_ymd_and_hms(2026, 4, 7, 5, 23, 0)
+        .single()
+        .expect("fixed now");
+
+    let window = resolve_complete_parallel_work_window(
+        now,
+        ChronoDuration::days(30),
+        3_600,
+        reporting_tz,
+    )
+    .expect("resolve window");
+
+    assert_eq!(
+        window.end,
+        Utc.with_ymd_and_hms(2026, 4, 7, 5, 0, 0)
+            .single()
+            .expect("fixed window end")
+    );
+    assert_eq!(
+        window.start,
+        Utc.with_ymd_and_hms(2026, 3, 8, 6, 0, 0)
+            .single()
+            .expect("fixed window start")
+    );
+    assert_eq!(
+        window.end.with_timezone(&reporting_tz).time(),
+        window.start.with_timezone(&reporting_tz).time()
+    );
+}
+
 #[tokio::test]
 async fn upsert_forward_proxy_weight_hourly_bucket_keeps_latest_sample_weight() {
     let state = test_state_with_openai_base(
