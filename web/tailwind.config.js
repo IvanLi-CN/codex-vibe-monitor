@@ -6,6 +6,9 @@ export default {
   content: ['./index.html', './src/**/*.{ts,tsx,js,jsx}'],
   theme: {
     extend: {
+      screens: {
+        desktop1660: '1660px',
+      },
       colors: {
         'base-100': withOpacity('--color-base-100'),
         'base-200': withOpacity('--color-base-200'),

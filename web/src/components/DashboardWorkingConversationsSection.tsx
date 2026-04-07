@@ -721,7 +721,10 @@ export function DashboardWorkingConversationsSection({
         ) : null}
 
         {cards.length > 0 ? (
-          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2 2xl:grid-cols-3">
+          <div
+            data-testid="dashboard-working-conversations-grid"
+            className="grid grid-cols-1 gap-4 xl:grid-cols-2 2xl:grid-cols-3 desktop1660:grid-cols-4"
+          >
             {cards.map((card) => {
               const currentStatusMeta = resolveStatusMeta(
                 card.currentInvocation.tone,

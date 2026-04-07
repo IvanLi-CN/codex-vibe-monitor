@@ -323,4 +323,28 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(placeholder?.className).toContain("working-conversation-slot-surface");
     expect(placeholderLine).not.toBeNull();
   });
+
+  it("keeps the wide-screen grid contract on the conversations section", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-grid-one", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-grid-one",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "completed",
+          }),
+        ]),
+      ]),
+    );
+
+    const grid = host?.querySelector(
+      '[data-testid="dashboard-working-conversations-grid"]',
+    );
+
+    expect(grid).not.toBeNull();
+    expect(grid?.className).toContain("xl:grid-cols-2");
+    expect(grid?.className).toContain("2xl:grid-cols-3");
+    expect(grid?.className).toContain("desktop1660:grid-cols-4");
+  });
 });

@@ -44,6 +44,7 @@ const MAX_BLOCK_SIZE = 20
 const WEEKDAY_LABEL_SPACE = 16
 const MONTH_LABEL_HEIGHT = 18
 const MONTH_LABEL_GAP = 2
+const MONTH_LABEL_EDGE_PADDING = 32
 
 interface CalendarTooltipState {
   x: number
@@ -83,6 +84,7 @@ export function UsageCalendar({
   const [tooltip, setTooltip] = useState<CalendarTooltipState | null>(null)
   // tabs width measurement removed (no longer needed for sizing)
   const [leftOffset, setLeftOffset] = useState(0) // svg.marginLeft introduced by weekday labels
+  const [containerWidth, setContainerWidth] = useState(0)
 
   const legendLabels = useMemo(
     () => ({
@@ -171,6 +173,7 @@ export function UsageCalendar({
 
     const computeByContainer = (width: number) => {
       if (!Number.isFinite(width) || width <= 0) return
+      setContainerWidth((prev) => (Math.abs(prev - width) >= 1 ? width : prev))
       const GAP = 6
       const approxWidth = Math.max(0, width - leftOffset - GAP)
       const cols = Math.max(1, calendarData.weekCount)
@@ -298,6 +301,7 @@ export function UsageCalendar({
                 markers={calendarData.monthMarkers}
                 blockSize={blockSize}
                 blockMargin={BLOCK_MARGIN}
+                containerWidth={containerWidth}
                 offset={leftOffset || WEEKDAY_LABEL_SPACE}
                 formatLabel={formatMonthLabel}
               />
@@ -544,12 +548,14 @@ function MonthLabelOverlay({
   markers,
   blockSize,
   blockMargin,
+  containerWidth,
   offset,
   formatLabel,
 }: {
   markers: MonthMarker[]
   blockSize: number
   blockMargin: number
+  containerWidth: number
   offset: number
   formatLabel: (marker: MonthMarker) => string
 }) {
@@ -563,11 +569,17 @@ function MonthLabelOverlay({
       {markers.map((marker) => {
         const columnWidth = blockSize + blockMargin * 2
         const position = offset + marker.weekIndex * columnWidth + columnWidth / 2
+        const edgePadding = Math.min(MONTH_LABEL_EDGE_PADDING, Math.max(containerWidth / 2, 0))
+        const maxPosition = Math.max(edgePadding, containerWidth - edgePadding)
+        const clampedPosition =
+          containerWidth > 0
+            ? Math.min(Math.max(position, edgePadding), maxPosition)
+            : position
         return (
           <span
             key={`${marker.year}-${marker.month}-${marker.weekIndex}`}
             className="absolute top-0 -translate-x-1/2 transform whitespace-nowrap text-xs font-medium leading-none text-base-content/70"
-            style={{ left: `${position}px` }}
+            style={{ left: `${clampedPosition}px` }}
           >
             {formatLabel(marker)}
           </span>
