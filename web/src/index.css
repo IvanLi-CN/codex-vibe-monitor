@@ -194,9 +194,16 @@ body {
   }
 
   .app-shell-banner-boundary {
-    width: 100%;
-    max-width: var(--app-shell-max-width);
+    width: calc(100% - 2rem);
+    max-width: calc(var(--app-shell-max-width) - 2rem);
     margin-inline: auto;
+  }
+
+  @media (min-width: 1660px) {
+    .app-shell-banner-boundary {
+      width: 100%;
+      max-width: var(--app-shell-max-width);
+    }
   }
 
   .app-link {

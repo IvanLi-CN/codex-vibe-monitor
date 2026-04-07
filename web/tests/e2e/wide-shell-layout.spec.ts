@@ -25,6 +25,7 @@ type ShellMetrics = {
 }
 
 const VIEWPORTS = [
+  { width: 1024, height: 960 },
   { width: 1660, height: 960 },
   { width: 1680, height: 960 },
   { width: 1873, height: 960 },
@@ -138,6 +139,7 @@ test.describe('Wide shell layout contract', () => {
 
         const metrics = await readShellMetrics(page)
         const expectedShellWidth = Math.min(1660, viewport.width)
+        const expectedBannerWidth = viewport.width >= 1660 ? 1660 : viewport.width - 32
         const expectedCenterX = viewport.width / 2
 
         test.info().annotations.push({
@@ -150,12 +152,20 @@ test.describe('Wide shell layout contract', () => {
         expect(Math.abs(metrics.header.width - expectedShellWidth)).toBeLessThanOrEqual(2)
         expect(Math.abs(metrics.main.width - expectedShellWidth)).toBeLessThanOrEqual(2)
         expect(Math.abs(metrics.footer.width - expectedShellWidth)).toBeLessThanOrEqual(2)
-        expect(Math.abs(metrics.banner.width - expectedShellWidth)).toBeLessThanOrEqual(2)
+        expect(Math.abs(metrics.banner.width - expectedBannerWidth)).toBeLessThanOrEqual(2)
 
         expect(Math.abs(metrics.header.centerX - expectedCenterX)).toBeLessThanOrEqual(1)
         expect(Math.abs(metrics.main.centerX - expectedCenterX)).toBeLessThanOrEqual(1)
         expect(Math.abs(metrics.footer.centerX - expectedCenterX)).toBeLessThanOrEqual(1)
         expect(Math.abs(metrics.banner.centerX - expectedCenterX)).toBeLessThanOrEqual(1)
+
+        if (viewport.width < 1660) {
+          expect(Math.abs(metrics.banner.left - 16)).toBeLessThanOrEqual(1)
+          expect(Math.abs(metrics.banner.right - (viewport.width - 16))).toBeLessThanOrEqual(1)
+        } else {
+          expect(Math.abs(metrics.banner.left - metrics.header.left)).toBeLessThanOrEqual(1)
+          expect(Math.abs(metrics.banner.right - metrics.header.right)).toBeLessThanOrEqual(1)
+        }
 
         expect(Math.abs(metrics.pageRootWidth - metrics.mainContentWidth)).toBeLessThanOrEqual(2)
       })
