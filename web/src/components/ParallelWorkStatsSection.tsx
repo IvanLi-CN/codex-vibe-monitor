@@ -225,39 +225,11 @@ function ParallelWorkWindowInfoTrigger({
   tooltipLabel: string;
 }) {
   return (
-    <div className="flex min-h-8 items-center">
+    <div className="flex items-center">
       <InfoTooltip
         content={tooltipContent}
         label={tooltipLabel}
         className="shrink-0 text-base-content/46 transition-colors hover:text-base-content/70"
-      />
-    </div>
-  );
-}
-
-function ParallelWorkWindowControls({
-  activeWindowKey,
-  onWindowSelect,
-  tooltipContent,
-  tooltipLabel,
-}: {
-  activeWindowKey: ParallelWorkWindowKey;
-  onWindowSelect: (windowKey: ParallelWorkWindowKey) => void;
-  tooltipContent: string;
-  tooltipLabel: string;
-}) {
-  return (
-    <div
-      className="flex items-center justify-end gap-2 overflow-x-auto no-scrollbar"
-      data-testid={"parallel-work-controls-" + activeWindowKey}
-    >
-      <ParallelWorkWindowInfoTrigger
-        tooltipContent={tooltipContent}
-        tooltipLabel={tooltipLabel}
-      />
-      <ParallelWorkWindowToggle
-        activeWindowKey={activeWindowKey}
-        onWindowSelect={onWindowSelect}
       />
     </div>
   );
@@ -604,21 +576,33 @@ export function ParallelWorkStatsSection({
   return (
     <section className="surface-panel" data-testid="parallel-work-section">
       <div className="surface-panel-body gap-4">
-        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div className="section-heading min-w-0 flex-1">
-            <h3 className="section-title">{t("stats.parallelWork.title")}</h3>
+        <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+          <div className="section-heading min-w-0">
+            <div
+              className="flex items-center gap-2"
+              data-testid={"parallel-work-heading-" + activeWindowKey}
+            >
+              <h3 className="section-title">{t("stats.parallelWork.title")}</h3>
+              <ParallelWorkWindowInfoTrigger
+                tooltipContent={activeTooltipContent}
+                tooltipLabel={t("stats.parallelWork.detailsTooltipLabel", {
+                  title: activeTitle,
+                })}
+              />
+            </div>
             <p className="section-description">
               {t("stats.parallelWork.description")}
             </p>
           </div>
-          <ParallelWorkWindowControls
-            activeWindowKey={activeWindowKey}
-            onWindowSelect={setActiveWindowKey}
-            tooltipContent={activeTooltipContent}
-            tooltipLabel={t("stats.parallelWork.detailsTooltipLabel", {
-              title: activeTitle,
-            })}
-          />
+          <div
+            className="flex justify-start sm:justify-end"
+            data-testid={"parallel-work-controls-" + activeWindowKey}
+          >
+            <ParallelWorkWindowToggle
+              activeWindowKey={activeWindowKey}
+              onWindowSelect={setActiveWindowKey}
+            />
+          </div>
         </div>
         {error ? (
           <ParallelWorkErrorCard windowKey={activeWindowKey} error={error} />

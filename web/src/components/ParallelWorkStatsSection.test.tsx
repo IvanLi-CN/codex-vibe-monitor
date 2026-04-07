@@ -244,6 +244,9 @@ describe("ParallelWorkStatsSection", () => {
     const section = host?.querySelector(
       '[data-testid="parallel-work-section"]',
     ) as HTMLElement | null;
+    const heading = host?.querySelector(
+      '[data-testid="parallel-work-heading-minute7d"]',
+    ) as HTMLElement | null;
     const controls = host?.querySelector(
       '[data-testid="parallel-work-controls-minute7d"]',
     ) as HTMLElement | null;
@@ -256,10 +259,12 @@ describe("ParallelWorkStatsSection", () => {
     expect(chart).not.toBeNull();
     expect(chart?.className.baseVal).toContain("w-full");
     expect(section?.contains(toggle)).toBe(true);
+    expect(heading).not.toBeNull();
     expect(controls).not.toBeNull();
     expect(infoTrigger).not.toBeNull();
     expect(controls?.contains(toggle)).toBe(true);
-    expect(controls?.contains(infoTrigger)).toBe(true);
+    expect(controls?.contains(infoTrigger)).toBe(false);
+    expect(heading?.contains(infoTrigger)).toBe(true);
   });
 
   it("collapses secondary window copy into a question-mark tooltip", () => {
