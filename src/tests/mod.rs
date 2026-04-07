@@ -23730,6 +23730,161 @@ async fn proxy_openai_v1_via_pool_retries_after_live_body_replay_completes() {
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_via_pool_live_first_attempt_preserves_body_sticky_route() {
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-sticky-live-key").await;
+    let default_id =
+        insert_test_pool_api_key_account(&state, "Default Live Route", "route-default").await;
+    let sticky_id =
+        insert_test_pool_api_key_account(&state, "Sticky Live Route", "route-sticky").await;
+
+    let resolved_without_sticky =
+        match resolve_pool_account_for_request(state.as_ref(), None, &[], &HashSet::new())
+            .await
+            .expect("resolve default live route")
+        {
+            PoolAccountResolution::Resolved(account) => account.account_id,
+            other => panic!("expected resolved default route, got {other:?}"),
+        };
+    let preferred_sticky_account_id = if resolved_without_sticky == default_id {
+        sticky_id
+    } else {
+        default_id
+    };
+    let expected_authorization = if preferred_sticky_account_id == default_id {
+        "Bearer route-default"
+    } else {
+        "Bearer route-sticky"
+    };
+    upsert_test_sticky_route_at(
+        &state.pool,
+        "sticky-live-body-route",
+        preferred_sticky_account_id,
+        &format_test_recent_active_timestamp(Utc::now()),
+    )
+    .await;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    tokio::spawn(async move {
+        let _ = tx
+            .send(Ok(Bytes::from_static(
+                br#"{"model":"gpt-5","messages":[{"role":"user","content":"hello"}],"stickyKey":"sticky-live-body-route","#,
+            )))
+            .await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let _ = tx
+            .send(Ok(Bytes::from_static(br#""temperature":0}"#)))
+            .await;
+    });
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6243,
+        &"/v1/chat/completions".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-sticky-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("live first attempt should honor body sticky route");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read sticky live response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode sticky live response");
+    assert_eq!(payload["authorization"], expected_authorization);
+    assert_eq!(payload["attempt"], 1);
+
+    let attempts = attempts.lock().expect("lock live sticky attempts");
+    assert_eq!(attempts.get(expected_authorization).copied(), Some(1));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn continue_or_retry_pool_live_request_respects_total_timeout_while_waiting_for_replay() {
+    let mut config = test_config();
+    config.pool_upstream_responses_total_timeout = Duration::from_millis(40);
+    let state = test_state_from_config(config, true).await;
+    let original_uri = "/v1/responses".parse::<Uri>().expect("valid responses uri");
+    let account = PoolResolvedAccount {
+        account_id: 91,
+        display_name: "Live Retry Timeout".to_string(),
+        kind: "api_key_codex".to_string(),
+        auth: PoolResolvedAuth::ApiKey {
+            authorization: "Bearer live-retry-timeout".to_string(),
+        },
+        upstream_base_url: Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        routing_source: PoolRoutingSelectionSource::FreshAssignment,
+        group_name: Some(test_required_group_name().to_string()),
+        bound_proxy_keys: test_required_group_bound_proxy_keys(),
+        forward_proxy_scope: ForwardProxyRouteScope::from_group_binding(
+            Some(test_required_group_name()),
+            test_required_group_bound_proxy_keys(),
+        ),
+        group_upstream_429_retry_enabled: false,
+        group_upstream_429_max_retries: 0,
+        fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+    };
+    let (_status_tx, status_rx) = tokio::sync::watch::channel(PoolReplayBodyStatus::Reading);
+    let err = continue_or_retry_pool_live_request(
+        state,
+        7001,
+        Method::POST,
+        &original_uri,
+        &HeaderMap::new(),
+        Duration::from_millis(20),
+        account,
+        None,
+        Some(Instant::now() - Duration::from_millis(50)),
+        &status_rx,
+        &CancellationToken::new(),
+        Duration::from_millis(40),
+        PoolUpstreamError {
+            account: None,
+            status: StatusCode::BAD_GATEWAY,
+            message: "upstream stream error before first chunk".to_string(),
+            failure_kind: PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
+            connect_latency_ms: 0.0,
+            upstream_error_code: None,
+            upstream_error_message: None,
+            upstream_request_id: None,
+            oauth_responses_debug: None,
+            attempt_summary: pool_attempt_summary(1, 1, None),
+            requested_service_tier: None,
+            request_body_for_capture: None,
+        },
+    )
+    .await
+    .expect_err("waiting for replay past total timeout should fail");
+
+    assert_eq!(err.status, StatusCode::GATEWAY_TIMEOUT);
+    assert_eq!(
+        err.message,
+        "pool upstream total timeout exhausted after 40ms"
+    );
+    assert_eq!(err.failure_kind, PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED);
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_header_sticky_stream_prefers_body_timeout_before_pool_wait() {
     let mut config = test_config();
     config.openai_upstream_base_url =

@@ -803,6 +803,12 @@ enum PoolReplayBodyStatus {
     Incomplete,
 }
 
+#[derive(Debug, Clone)]
+enum PoolReplayBodyStickyKeyProbeStatus {
+    Pending,
+    Ready(Option<String>),
+}
+
 struct PoolReplayBodyBuffer {
     proxy_request_id: u64,
     len: usize,
@@ -813,6 +819,7 @@ struct PoolReplayBodyBuffer {
 struct PoolReplayableRequestBody {
     body: reqwest::Body,
     status_rx: watch::Receiver<PoolReplayBodyStatus>,
+    sticky_key_probe_rx: watch::Receiver<PoolReplayBodyStickyKeyProbeStatus>,
     cancel: CancellationToken,
 }
 
@@ -1361,6 +1368,8 @@ fn spawn_pool_replayable_request_body(
 ) -> PoolReplayableRequestBody {
     let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(16);
     let (status_tx, status_rx) = watch::channel(PoolReplayBodyStatus::Reading);
+    let (sticky_key_probe_tx, sticky_key_probe_rx) =
+        watch::channel(PoolReplayBodyStickyKeyProbeStatus::Pending);
     let cancel = CancellationToken::new();
     let cancel_for_task = cancel.clone();
 
@@ -1369,9 +1378,15 @@ fn spawn_pool_replayable_request_body(
         let mut data_len = 0usize;
         let mut stream = body.into_data_stream();
         let read_deadline = Instant::now() + request_read_timeout;
+        let mut live_consumer_open = true;
+        let mut sticky_key_probe = Vec::new();
+        let mut sticky_key_probe_ready = false;
 
         loop {
             if cancel_for_task.is_cancelled() {
+                if !sticky_key_probe_ready {
+                    let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(None));
+                }
                 let _ = status_tx.send(PoolReplayBodyStatus::Incomplete);
                 return;
             }
@@ -1393,6 +1408,9 @@ fn spawn_pool_replayable_request_body(
                     read_bytes = data_len,
                     "openai proxy request body read timed out"
                 );
+                if !sticky_key_probe_ready {
+                    let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(None));
+                }
                 let _ = status_tx.send(PoolReplayBodyStatus::ReadError(read_error.clone()));
                 let _ = tx
                     .send(Err(io::Error::new(
@@ -1405,6 +1423,9 @@ fn spawn_pool_replayable_request_body(
 
             let next_chunk = tokio::select! {
                 _ = cancel_for_task.cancelled() => {
+                    if !sticky_key_probe_ready {
+                        let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(None));
+                    }
                     let _ = status_tx.send(PoolReplayBodyStatus::Incomplete);
                     return;
                 }
@@ -1427,6 +1448,9 @@ fn spawn_pool_replayable_request_body(
                                 read_bytes = data_len,
                                 "openai proxy request body read timed out"
                             );
+                            if !sticky_key_probe_ready {
+                                let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(None));
+                            }
                             let _ = status_tx.send(PoolReplayBodyStatus::ReadError(read_error.clone()));
                             let _ = tx
                                 .send(Err(io::Error::new(
@@ -1441,6 +1465,11 @@ fn spawn_pool_replayable_request_body(
             };
 
             let Some(chunk) = next_chunk else {
+                if !sticky_key_probe_ready {
+                    let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(
+                        best_effort_extract_sticky_key_from_request_body_prefix(&sticky_key_probe),
+                    ));
+                }
                 match buffer.finish().await {
                     Ok(snapshot) => {
                         let _ = status_tx.send(PoolReplayBodyStatus::Complete(snapshot));
@@ -1464,6 +1493,9 @@ fn spawn_pool_replayable_request_body(
                         failure_kind: PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED,
                         partial_body: Vec::new(),
                     };
+                    if !sticky_key_probe_ready {
+                        let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(None));
+                    }
                     let _ = status_tx.send(PoolReplayBodyStatus::ReadError(read_error.clone()));
                     let _ = tx.send(Err(io::Error::other(read_error.message))).await;
                     return;
@@ -1477,6 +1509,9 @@ fn spawn_pool_replayable_request_body(
                     failure_kind: PROXY_FAILURE_BODY_TOO_LARGE,
                     partial_body: Vec::new(),
                 };
+                if !sticky_key_probe_ready {
+                    let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(None));
+                }
                 let _ = status_tx.send(PoolReplayBodyStatus::ReadError(read_error.clone()));
                 let _ = tx.send(Err(io::Error::other(read_error.message))).await;
                 return;
@@ -1485,14 +1520,33 @@ fn spawn_pool_replayable_request_body(
 
             if let Err(err) = buffer.append(&chunk).await {
                 let msg = format!("failed to cache replayable request body: {err}");
+                if !sticky_key_probe_ready {
+                    let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(None));
+                }
                 let _ = tx.send(Err(io::Error::other(msg.clone()))).await;
                 let _ = status_tx.send(PoolReplayBodyStatus::InternalError(msg));
                 return;
             }
 
-            if tx.send(Ok(chunk)).await.is_err() {
-                let _ = status_tx.send(PoolReplayBodyStatus::Incomplete);
-                return;
+            if !sticky_key_probe_ready && sticky_key_probe.len() < HEADER_STICKY_EARLY_STICKY_SCAN_BYTES
+            {
+                let probe_remaining =
+                    HEADER_STICKY_EARLY_STICKY_SCAN_BYTES.saturating_sub(sticky_key_probe.len());
+                sticky_key_probe.extend_from_slice(&chunk[..chunk.len().min(probe_remaining)]);
+                if let Some(sticky_key) =
+                    best_effort_extract_sticky_key_from_request_body_prefix(&sticky_key_probe)
+                {
+                    sticky_key_probe_ready = true;
+                    let _ = sticky_key_probe_tx
+                        .send(PoolReplayBodyStickyKeyProbeStatus::Ready(Some(sticky_key)));
+                } else if sticky_key_probe.len() >= HEADER_STICKY_EARLY_STICKY_SCAN_BYTES {
+                    sticky_key_probe_ready = true;
+                    let _ = sticky_key_probe_tx.send(PoolReplayBodyStickyKeyProbeStatus::Ready(None));
+                }
+            }
+
+            if live_consumer_open && tx.send(Ok(chunk)).await.is_err() {
+                live_consumer_open = false;
             }
         }
     });
@@ -1500,7 +1554,125 @@ fn spawn_pool_replayable_request_body(
     PoolReplayableRequestBody {
         body: reqwest::Body::wrap_stream(ReceiverStream::new(rx)),
         status_rx,
+        sticky_key_probe_rx,
         cancel,
+    }
+}
+
+async fn wait_for_replay_body_sticky_key_probe(
+    sticky_key_probe_rx: &watch::Receiver<PoolReplayBodyStickyKeyProbeStatus>,
+    max_wait: Duration,
+) -> Option<String> {
+    let mut sticky_key_probe_rx = sticky_key_probe_rx.clone();
+    let wait_deadline = Instant::now() + max_wait;
+    loop {
+        match sticky_key_probe_rx.borrow().clone() {
+            PoolReplayBodyStickyKeyProbeStatus::Ready(sticky_key) => return sticky_key,
+            PoolReplayBodyStickyKeyProbeStatus::Pending => {}
+        }
+        let remaining = wait_deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return None;
+        }
+        match timeout(remaining, sticky_key_probe_rx.changed()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) | Err(_) => return None,
+        }
+    }
+}
+
+async fn wait_for_replay_body_snapshot(
+    state: &AppState,
+    original_uri: &Uri,
+    method: &Method,
+    replay_status_rx: &watch::Receiver<PoolReplayBodyStatus>,
+    replay_cancel: &CancellationToken,
+    replay_wait_timeout: Duration,
+    responses_total_timeout_started_at: Option<Instant>,
+) -> Result<PoolReplayBodySnapshot, (StatusCode, String)> {
+    let mut replay_status_rx = replay_status_rx.clone();
+    let responses_total_timeout =
+        pool_upstream_responses_total_timeout(&state.config, original_uri, method);
+    let wait_deadline = Instant::now() + replay_wait_timeout;
+
+    let replay_status = loop {
+        let current = replay_status_rx.borrow().clone();
+        if !matches!(current, PoolReplayBodyStatus::Reading) {
+            break current;
+        }
+
+        let replay_wait_remaining = wait_deadline.saturating_duration_since(Instant::now());
+        if replay_wait_remaining.is_zero() {
+            replay_cancel.cancel();
+            return Err((
+                StatusCode::REQUEST_TIMEOUT,
+                format!(
+                    "request body read timed out after {}ms",
+                    replay_wait_timeout.as_millis()
+                ),
+            ));
+        }
+
+        let wait_budget = if let (Some(total_timeout), Some(started_at)) =
+            (responses_total_timeout, responses_total_timeout_started_at)
+        {
+            let Some(total_wait_remaining) =
+                remaining_timeout_budget(total_timeout, started_at.elapsed())
+            else {
+                replay_cancel.cancel();
+                return Err((
+                    StatusCode::GATEWAY_TIMEOUT,
+                    pool_total_timeout_exhausted_message(total_timeout),
+                ));
+            };
+            replay_wait_remaining.min(total_wait_remaining)
+        } else {
+            replay_wait_remaining
+        };
+
+        match timeout(wait_budget, replay_status_rx.changed()).await {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => break PoolReplayBodyStatus::Incomplete,
+            Err(_) => {
+                replay_cancel.cancel();
+                return if let (Some(total_timeout), Some(started_at)) =
+                    (responses_total_timeout, responses_total_timeout_started_at)
+                {
+                    if pool_total_timeout_exhausted(total_timeout, started_at) {
+                        Err((
+                            StatusCode::GATEWAY_TIMEOUT,
+                            pool_total_timeout_exhausted_message(total_timeout),
+                        ))
+                    } else {
+                        Err((
+                            StatusCode::REQUEST_TIMEOUT,
+                            format!(
+                                "request body read timed out after {}ms",
+                                replay_wait_timeout.as_millis()
+                            ),
+                        ))
+                    }
+                } else {
+                    Err((
+                        StatusCode::REQUEST_TIMEOUT,
+                        format!(
+                            "request body read timed out after {}ms",
+                            replay_wait_timeout.as_millis()
+                        ),
+                    ))
+                };
+            }
+        }
+    };
+
+    match replay_status {
+        PoolReplayBodyStatus::Complete(snapshot) => Ok(snapshot),
+        PoolReplayBodyStatus::ReadError(err) => Err((err.status, err.message)),
+        PoolReplayBodyStatus::InternalError(message) => Err((StatusCode::BAD_GATEWAY, message)),
+        PoolReplayBodyStatus::Reading | PoolReplayBodyStatus::Incomplete => Err((
+            StatusCode::BAD_GATEWAY,
+            "failed to cache replayable request body".to_string(),
+        )),
     }
 }
 
@@ -3747,24 +3919,119 @@ async fn continue_or_retry_pool_live_request(
     responses_total_timeout_started_at: Option<Instant>,
     replay_status_rx: &watch::Receiver<PoolReplayBodyStatus>,
     replay_cancel: &CancellationToken,
+    replay_wait_timeout: Duration,
     first_error: PoolUpstreamError,
 ) -> Result<PoolUpstreamResponse, PoolUpstreamError> {
     let reservation_key = build_pool_routing_reservation_key(proxy_request_id);
     let mut replay_status_rx = replay_status_rx.clone();
+    let responses_total_timeout =
+        pool_upstream_responses_total_timeout(&state.config, original_uri, &method);
+    let replay_wait_deadline = Instant::now() + replay_wait_timeout;
     let replay_status = loop {
         let current = { replay_status_rx.borrow().clone() };
         if !matches!(current, PoolReplayBodyStatus::Reading) {
             break current;
         }
-        if replay_status_rx.changed().await.is_err() {
-            break PoolReplayBodyStatus::Incomplete;
+        let replay_wait_remaining =
+            replay_wait_deadline.saturating_duration_since(Instant::now());
+        if replay_wait_remaining.is_zero() {
+            replay_cancel.cancel();
+            release_pool_routing_reservation(state.as_ref(), &reservation_key);
+            return Err(PoolUpstreamError {
+                account: Some(initial_account),
+                status: StatusCode::REQUEST_TIMEOUT,
+                message: format!(
+                    "request body read timed out after {}ms",
+                    replay_wait_timeout.as_millis()
+                ),
+                failure_kind: PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
+                connect_latency_ms: first_error.connect_latency_ms,
+                upstream_error_code: None,
+                upstream_error_message: None,
+                upstream_request_id: None,
+                oauth_responses_debug: first_error.oauth_responses_debug,
+                attempt_summary: first_error.attempt_summary,
+                requested_service_tier: first_error.requested_service_tier,
+                request_body_for_capture: first_error.request_body_for_capture,
+            });
+        }
+        let changed = if let (Some(total_timeout), Some(started_at)) =
+            (responses_total_timeout, responses_total_timeout_started_at)
+        {
+            let Some(total_timeout_budget) =
+                remaining_timeout_budget(total_timeout, started_at.elapsed())
+            else {
+                replay_cancel.cancel();
+                release_pool_routing_reservation(state.as_ref(), &reservation_key);
+                let attempt_count = first_error.attempt_summary.pool_attempt_count.max(1);
+                let distinct_account_count =
+                    first_error.attempt_summary.pool_distinct_account_count.max(1);
+                return Err(build_pool_total_timeout_exhausted_error(
+                    total_timeout,
+                    Some(first_error),
+                    attempt_count,
+                    distinct_account_count,
+                ));
+            };
+            timeout(
+                replay_wait_remaining.min(total_timeout_budget),
+                replay_status_rx.changed(),
+            )
+            .await
+        } else {
+            timeout(replay_wait_remaining, replay_status_rx.changed()).await
+        };
+        match changed {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => break PoolReplayBodyStatus::Incomplete,
+            Err(_) => {
+                replay_cancel.cancel();
+                release_pool_routing_reservation(state.as_ref(), &reservation_key);
+                if let (Some(total_timeout), Some(started_at)) =
+                    (responses_total_timeout, responses_total_timeout_started_at)
+                    && pool_total_timeout_exhausted(total_timeout, started_at)
+                {
+                    let attempt_count = first_error.attempt_summary.pool_attempt_count.max(1);
+                    let distinct_account_count =
+                        first_error.attempt_summary.pool_distinct_account_count.max(1);
+                    return Err(build_pool_total_timeout_exhausted_error(
+                        total_timeout,
+                        Some(first_error),
+                        attempt_count,
+                        distinct_account_count,
+                    ));
+                }
+                return Err(PoolUpstreamError {
+                    account: Some(initial_account),
+                    status: StatusCode::REQUEST_TIMEOUT,
+                    message: format!(
+                        "request body read timed out after {}ms",
+                        replay_wait_timeout.as_millis()
+                    ),
+                    failure_kind: PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT,
+                    connect_latency_ms: first_error.connect_latency_ms,
+                    upstream_error_code: None,
+                    upstream_error_message: None,
+                    upstream_request_id: None,
+                    oauth_responses_debug: first_error.oauth_responses_debug,
+                    attempt_summary: first_error.attempt_summary,
+                    requested_service_tier: first_error.requested_service_tier,
+                    request_body_for_capture: first_error.request_body_for_capture,
+                });
+            }
         }
     };
     match replay_status {
         PoolReplayBodyStatus::Complete(snapshot) => {
-            let replay_sticky_key = extract_sticky_key_from_replay_snapshot(&snapshot)
-                .await
-                .or(sticky_key);
+            let replay_sticky_key = match &snapshot {
+                PoolReplayBodySnapshot::File { .. } => {
+                    extract_sticky_key_from_replay_snapshot_prefix(&snapshot).await
+                }
+                PoolReplayBodySnapshot::Empty | PoolReplayBodySnapshot::Memory(_) => {
+                    extract_sticky_key_from_replay_snapshot(&snapshot).await
+                }
+            }
+            .or(sticky_key);
             let uses_timeout_route_failover =
                 pool_uses_responses_timeout_failover_policy(original_uri, &method);
             let first_error_is_timeout_shaped = uses_timeout_route_failover
@@ -4600,9 +4867,7 @@ async fn proxy_openai_v1_via_pool(
                 .get(header::CONTENT_TYPE)
                 .and_then(|value| value.to_str().ok())
                 .is_some_and(|value| value.to_ascii_lowercase().starts_with("application/json"))
-            && request_body_size_hint.is_some_and(|value| {
-                value <= body_limit && value <= POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES
-            });
+            && request_body_size_hint.is_some_and(|value| value <= body_limit);
 
         if should_prebuffer_for_body_sticky {
             let request_body_snapshot = read_request_body_snapshot_with_limit(
@@ -5078,9 +5343,31 @@ async fn proxy_openai_v1_via_pool(
                 )
             } else {
                 let mut no_available_wait_deadline = None;
+                let is_json_body = headers
+                    .get(header::CONTENT_TYPE)
+                    .and_then(|value| value.to_str().ok())
+                    .is_some_and(|value| value.to_ascii_lowercase().starts_with("application/json"));
+                let replayable_body = spawn_pool_replayable_request_body(
+                    body,
+                    body_limit,
+                    runtime_timeouts.request_read_timeout,
+                    proxy_request_id,
+                );
+                let replay_status_rx = replayable_body.status_rx.clone();
+                let replay_cancel = replayable_body.cancel.clone();
+                let live_body_sticky_key = if is_json_body {
+                    wait_for_replay_body_sticky_key_probe(
+                        &replayable_body.sticky_key_probe_rx,
+                        runtime_timeouts.request_read_timeout,
+                    )
+                    .await
+                } else {
+                    None
+                };
+
                 let resolution = resolve_pool_account_for_request_with_wait(
                     state.as_ref(),
-                    None,
+                    live_body_sticky_key.as_deref(),
                     &[],
                     &HashSet::new(),
                     true,
@@ -5090,22 +5377,14 @@ async fn proxy_openai_v1_via_pool(
                 .await;
                 let (initial_account, no_available_wait_deadline) =
                     unwrap_initial_pool_account(resolution, no_available_wait_deadline)?;
-                if pool_account_supports_live_request_body(&initial_account, original_uri) {
-                    let replayable_body = spawn_pool_replayable_request_body(
-                        body,
-                        body_limit,
-                        runtime_timeouts.request_read_timeout,
-                        proxy_request_id,
-                    );
-                    let replay_status_rx = replayable_body.status_rx.clone();
-                    let replay_cancel = replayable_body.cancel.clone();
-                    let live_responses_total_timeout_started_at = if no_available_wait_deadline
-                        .is_some()
-                    {
+                let live_responses_total_timeout_started_at =
+                    if no_available_wait_deadline.is_some() {
                         responses_total_timeout_started_at_from_request
                     } else {
                         None
                     };
+
+                if pool_account_supports_live_request_body(&initial_account, original_uri) {
                     let upstream = match send_pool_request_live_first_attempt(
                         state.clone(),
                         proxy_request_id,
@@ -5117,7 +5396,7 @@ async fn proxy_openai_v1_via_pool(
                         handshake_timeout,
                         responses_total_timeout,
                         live_responses_total_timeout_started_at,
-                        None,
+                        live_body_sticky_key.as_deref(),
                         initial_account.clone(),
                         &replay_status_rx,
                     )
@@ -5132,10 +5411,11 @@ async fn proxy_openai_v1_via_pool(
                             &headers,
                             handshake_timeout,
                             initial_account,
-                            None,
+                            live_body_sticky_key.clone(),
                             live_responses_total_timeout_started_at,
                             &replay_status_rx,
                             &replay_cancel,
+                            runtime_timeouts.request_read_timeout,
                             first_error,
                         )
                         .await
@@ -5146,28 +5426,31 @@ async fn proxy_openai_v1_via_pool(
                         proxy_request_id,
                         original_uri,
                         upstream,
-                        None,
+                        live_body_sticky_key,
                         pool_routing_reservation_key,
                         proxy_request_permit,
                     )
                     .await;
                 }
 
-                let request_body_snapshot = read_request_body_snapshot_with_limit(
-                    body,
-                    body_limit,
+                let request_body_snapshot = wait_for_replay_body_snapshot(
+                    state.as_ref(),
+                    original_uri,
+                    &method,
+                    &replay_status_rx,
+                    &replay_cancel,
                     runtime_timeouts.request_read_timeout,
-                    proxy_request_id,
+                    live_responses_total_timeout_started_at,
                 )
-                .await
-                .map_err(|err| (err.status, err.message))?;
+                .await?;
                 let body_sticky_key = if request_body_size_hint
                     .is_some_and(|value| value <= POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES)
                 {
                     extract_sticky_key_from_replay_snapshot(&request_body_snapshot).await
                 } else {
                     extract_sticky_key_from_replay_snapshot_prefix(&request_body_snapshot).await
-                };
+                }
+                .or(live_body_sticky_key);
                 let mut no_available_wait_deadline = None;
                 let resolution = resolve_pool_account_for_request_with_wait(
                     state.as_ref(),

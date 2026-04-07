@@ -2,8 +2,8 @@
 
 ## 状态
 
-- Status: 进行中
-- Note: 本规格收口 `/v1/*` 代理热路径的真实瓶颈：请求级并发背压、request/response raw 异步旁路、大 body sticky/rewrite 降级，以及 records 列表与 summary follow-up 的在线压力削减。
+- Status: 已实现，待 PR / CI / review-proof 收敛
+- Note: `/v1/*` 代理热路径收口已完成：请求级并发背压、request/response raw 异步旁路、大 body sticky/rewrite 降级、records 列表轻量分页与 summary/quota follow-up debounce 已落地；本地 `cargo check --tests` 与 targeted cargo tests 已通过，等待 PR 阶段收敛。
 
 ## 背景 / 问题陈述
 

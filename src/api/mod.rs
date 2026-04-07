@@ -1185,6 +1185,12 @@ pub(crate) async fn list_invocations(
     }
 
     let mut query = build_invocation_select_query();
+    apply_invocation_records_filters(
+        &mut query,
+        &request.filters,
+        source_scope,
+        Some(SnapshotConstraint::UpTo(snapshot_id)),
+    );
     query.push(" AND id IN (");
     {
         let mut separated = query.separated(", ");
