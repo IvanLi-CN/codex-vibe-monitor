@@ -25,10 +25,10 @@ describe('useTimeseries records sync strategy', () => {
     expect(shouldResyncOnRecordsEvent('7d', { bucket: '1h' })).toBe(false)
   })
 
-  it('uses current-day patch policy for dashboard usage calendar', () => {
-    expect(resolveTimeseriesSyncPolicy('90d', { bucket: '1d' }).mode).toBe('current-day-local')
-    expect(shouldPatchCurrentDayBucketOnRecordsEvent('90d', { bucket: '1d' })).toBe(true)
-    expect(shouldResyncOnRecordsEvent('90d', { bucket: '1d' })).toBe(false)
+  it('uses current-day patch policy for dashboard history calendar', () => {
+    expect(resolveTimeseriesSyncPolicy('6mo', { bucket: '1d' }).mode).toBe('current-day-local')
+    expect(shouldPatchCurrentDayBucketOnRecordsEvent('6mo', { bucket: '1d' })).toBe(true)
+    expect(shouldResyncOnRecordsEvent('6mo', { bucket: '1d' })).toBe(false)
   })
 
   it('forces server resync when backend aggregation is preferred', () => {

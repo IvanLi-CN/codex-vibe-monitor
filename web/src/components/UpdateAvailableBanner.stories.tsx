@@ -70,7 +70,7 @@ function BannerScene({
             'radial-gradient(circle at 16% 0%, rgba(56,189,248,0.18), transparent 34%), radial-gradient(circle at 88% 10%, rgba(45,212,191,0.16), transparent 30%)',
         }}
       >
-        <div className={`mx-auto ${compact ? 'max-w-[28rem]' : 'max-w-[1280px]'}`}>
+        <div className={compact ? 'mx-auto max-w-[28rem]' : 'app-shell-boundary'}>
           <UpdateAvailableBanner {...bannerProps} />
           <div className="mt-4">
             <DenseRows />

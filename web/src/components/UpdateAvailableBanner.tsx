@@ -29,7 +29,8 @@ export function UpdateAvailableBanner({
     <div
       ref={setRootElement}
       style={floatingSurfaceStyle('primary', surfaceTheme)}
-      className="sticky top-[70px] z-40 mx-auto mt-2 flex w-[calc(100%-2rem)] max-w-[1200px] items-start gap-2 rounded-[1.15rem] border px-4 py-3 text-base-content"
+      className="app-shell-banner-boundary sticky top-[70px] z-40 mt-2 flex items-start gap-2 rounded-[1.15rem] border px-4 py-3 text-base-content"
+      data-testid="update-available-banner"
       role="status"
       aria-live="polite"
     >

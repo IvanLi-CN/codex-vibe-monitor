@@ -5,6 +5,7 @@ const VIEWPORTS = [
   { width: 768, height: 900 },
   { width: 1024, height: 900 },
   { width: 1440, height: 900 },
+  { width: 1660, height: 900 },
   // Regression for shrink-on-large screens (reported at ~1873px)
   { width: 1873, height: 900 },
 ]
@@ -14,6 +15,7 @@ test.describe('UsageCalendar responsive layout', () => {
     test(`maintains card fit at ${viewport.width}px`, async ({ page }) => {
       await page.setViewportSize(viewport)
       await page.goto('/dashboard')
+      await page.getByRole('tab', { name: /历史|history/i }).click()
 
       const card = page.getByTestId('usage-calendar-card')
       await card.waitFor({ state: 'visible' })
@@ -60,6 +62,7 @@ test.describe('UsageCalendar responsive layout', () => {
   test('does not jitter width at 1873px', async ({ page }) => {
     await page.setViewportSize({ width: 1873, height: 900 })
     await page.goto('/dashboard')
+    await page.getByRole('tab', { name: /历史|history/i }).click()
     const wrapper = page.getByTestId('usage-calendar-wrapper')
     await wrapper.waitFor({ state: 'visible' })
     // wait for calendar body to render
@@ -80,6 +83,7 @@ test.describe('UsageCalendar responsive layout', () => {
   test('centers calendar when stacked at 768px', async ({ page }) => {
     await page.setViewportSize({ width: 768, height: 900 })
     await page.goto('/dashboard')
+    await page.getByRole('tab', { name: /历史|history/i }).click()
     const wrapper = page.getByTestId('usage-calendar-wrapper')
     await wrapper.waitFor({ state: 'visible' })
     await page.waitForTimeout(300)
@@ -98,7 +102,7 @@ test.describe('UsageCalendar responsive layout', () => {
     expect(Math.abs(gaps.leftGap - gaps.rightGap)).toBeLessThanOrEqual(16)
   })
 
-  test('does not shift dashboard top row while 90d timeseries is loading', async ({ page }) => {
+  test('does not shift history view inside activity overview while 6mo timeseries is loading', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 })
 
     let releaseTimeseries: (() => void) | null = null
@@ -110,47 +114,48 @@ test.describe('UsageCalendar responsive layout', () => {
       const requestUrl = new URL(route.request().url())
       const range = requestUrl.searchParams.get('range')
       const bucket = requestUrl.searchParams.get('bucket')
-      if (range === '90d' && bucket === '1d') {
+      if (range === '6mo' && bucket === '1d') {
         await gate
       }
       await route.continue()
     })
 
     await page.goto('/dashboard')
+    const historyTab = page.getByRole('tab', { name: /历史|history/i })
+    await historyTab.click()
 
-    const todayCard = page.getByTestId('today-stats-overview-card')
+    const overviewCard = page.getByTestId('dashboard-activity-overview')
     const usageCard = page.getByTestId('usage-calendar-card')
-    await todayCard.waitFor({ state: 'visible' })
+    await overviewCard.waitFor({ state: 'visible' })
     await usageCard.waitFor({ state: 'visible' })
 
     // Ensure we are measuring the loading skeleton state, not the hydrated state.
     const pulseBefore = await usageCard.locator('rect.animate-pulse').count()
     expect(pulseBefore).toBeGreaterThan(0)
 
-    const todayBefore = await todayCard.boundingBox()
+    const overviewBefore = await overviewCard.boundingBox()
     const usageBefore = await usageCard.boundingBox()
-    expect(todayBefore).not.toBeNull()
+    expect(overviewBefore).not.toBeNull()
     expect(usageBefore).not.toBeNull()
 
-    const todayBox = todayBefore!
+    const overviewBox = overviewBefore!
     const usageBox = usageBefore!
     test.info().annotations.push({
-      type: 'dashboard-top-row-before',
+      type: 'history-overview-before',
       description: JSON.stringify({
-        today: { x: Math.round(todayBox.x), y: Math.round(todayBox.y), w: Math.round(todayBox.width), h: Math.round(todayBox.height) },
+        overview: { x: Math.round(overviewBox.x), y: Math.round(overviewBox.y), w: Math.round(overviewBox.width), h: Math.round(overviewBox.height) },
         usage: { x: Math.round(usageBox.x), y: Math.round(usageBox.y), w: Math.round(usageBox.width), h: Math.round(usageBox.height) },
       }),
     })
 
-    // Two cards should stay on the same row (desktop layout) even during loading.
-    expect(Math.abs(todayBox.y - usageBox.y)).toBeLessThanOrEqual(8)
-    expect(todayBox.x + todayBox.width).toBeLessThan(usageBox.x)
+    expect(usageBox.x).toBeGreaterThanOrEqual(overviewBox.x)
+    expect(usageBox.x + usageBox.width).toBeLessThanOrEqual(overviewBox.x + overviewBox.width + 2)
 
     const waitTimeseries = page.waitForResponse((resp) => {
       if (!resp.url().includes('/api/stats/timeseries')) return false
       try {
         const url = new URL(resp.url())
-        return url.searchParams.get('range') === '90d' && url.searchParams.get('bucket') === '1d'
+        return url.searchParams.get('range') === '6mo' && url.searchParams.get('bucket') === '1d'
       } catch {
         return false
       }
@@ -167,7 +172,7 @@ test.describe('UsageCalendar responsive layout', () => {
     const usageAfterBox = usageAfter!
 
     test.info().annotations.push({
-      type: 'dashboard-top-row-after',
+      type: 'history-overview-after',
       description: JSON.stringify({
         usage: { x: Math.round(usageAfterBox.x), y: Math.round(usageAfterBox.y), w: Math.round(usageAfterBox.width), h: Math.round(usageAfterBox.height) },
       }),
@@ -176,20 +181,20 @@ test.describe('UsageCalendar responsive layout', () => {
     expect(Math.abs(usageAfterBox.x - usageBox.x)).toBeLessThanOrEqual(2)
   })
 
-  test('renders an empty 90d calendar when timeseries returns no points', async ({ page }) => {
+  test('renders an empty 6mo calendar when timeseries returns no points', async ({ page }) => {
     await page.setViewportSize({ width: 1440, height: 900 })
 
     await page.route('**/api/stats/timeseries**', async (route) => {
       const requestUrl = new URL(route.request().url())
       const range = requestUrl.searchParams.get('range')
       const bucket = requestUrl.searchParams.get('bucket')
-      if (range === '90d' && bucket === '1d') {
+      if (range === '6mo' && bucket === '1d') {
         await route.fulfill({
           status: 200,
           contentType: 'application/json',
           body: JSON.stringify({
-            rangeStart: '2026-01-01T00:00:00Z',
-            rangeEnd: '2026-04-01T00:00:00Z',
+            rangeStart: '2025-10-09T00:00:00Z',
+            rangeEnd: '2026-04-08T00:00:00Z',
             bucketSeconds: 86400,
             points: [],
           }),
@@ -200,6 +205,7 @@ test.describe('UsageCalendar responsive layout', () => {
     })
 
     await page.goto('/dashboard')
+    await page.getByRole('tab', { name: /历史|history/i }).click()
 
     const usageCard = page.getByTestId('usage-calendar-card')
     await usageCard.waitFor({ state: 'visible' })
@@ -208,6 +214,6 @@ test.describe('UsageCalendar responsive layout', () => {
 
     // Empty calendar should still render a full grid of blocks (no fallback to library loading skeleton).
     const blockCount = await usageCard.locator('svg rect').count()
-    expect(blockCount).toBeGreaterThanOrEqual(60)
+    expect(blockCount).toBeGreaterThanOrEqual(120)
   })
 })

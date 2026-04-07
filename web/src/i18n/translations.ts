@@ -1231,6 +1231,7 @@ const baseTranslations = {
     "dashboard.activityOverview.title": "Activity Overview",
     "dashboard.activityOverview.range24h": "24 Hours",
     "dashboard.activityOverview.range7d": "7 Days",
+    "dashboard.activityOverview.rangeUsage": "History",
     "dashboard.activityOverview.rangeToggleAria": "Switch activity range",
     "dashboard.section.liveRefreshing": "Live refresh",
     "dashboard.section.workingConversationsTitle": "Working conversations",
@@ -1244,6 +1245,8 @@ const baseTranslations = {
     "dashboard.workingConversations.promptCacheKeyLabel": "Prompt cache key",
     "dashboard.workingConversations.currentInvocation": "Current invocation",
     "dashboard.workingConversations.previousInvocation": "Previous invocation",
+    "dashboard.workingConversations.openInvocation":
+      "Open invocation details",
     "dashboard.workingConversations.placeholderBadge": "Waiting",
     "dashboard.workingConversations.previousPlaceholder":
       "No previous invocation is available for this conversation yet.",
@@ -1254,6 +1257,19 @@ const baseTranslations = {
     "dashboard.workingConversations.totalTokensLabel": "Conversation tokens",
     "dashboard.workingConversations.totalCostLabel": "Conversation cost",
     "dashboard.workingConversations.sortAnchorLabel": "Sort anchor",
+    "dashboard.workingConversations.drawer.close":
+      "Close invocation details",
+    "dashboard.workingConversations.drawer.subtitle":
+      "Working conversation invocation",
+    "dashboard.workingConversations.drawer.title": "Invocation details",
+    "dashboard.workingConversations.drawer.loading":
+      "Loading full invocation record…",
+    "dashboard.workingConversations.drawer.errorTitle":
+      "Failed to load invocation details",
+    "dashboard.workingConversations.drawer.emptyTitle":
+      "Invocation unavailable",
+    "dashboard.workingConversations.drawer.emptyBody":
+      "The full retained record may already be pruned, or this invoke ID is no longer available.",
     "dashboard.today.title": "Today summary",
     "dashboard.today.subtitle": "Accumulated in natural day ({{timezone}})",
     "dashboard.today.dayBadge": "Today",
@@ -1550,7 +1566,7 @@ const baseTranslations = {
     "metric.totalTokens": "Tokens",
     "legend.low": "Low",
     "legend.high": "High",
-    "calendar.title": "Usage activity",
+    "calendar.title": "History",
     "calendar.metricsToggleAria": "Switch metric",
     "calendar.valueSeparator": ": ",
     "calendar.timeZoneLabel": "Timezone",
@@ -1623,6 +1639,8 @@ const baseTranslations = {
     "table.details.httpCompression": "HTTP compression",
     "table.details.requestedServiceTier": "Requested service tier",
     "table.details.serviceTier": "Service tier",
+    "table.details.billingServiceTier": "Billing service tier",
+    "table.details.billingServiceTierUnresolved": "Unresolved",
     "table.details.reasoningEffort": "Reasoning effort",
     "table.details.reasoningTokens": "Reasoning tokens",
     "table.details.proxyWeightDelta": "Proxy weight delta (this call)",
@@ -2866,6 +2884,7 @@ const baseTranslations = {
     "dashboard.activityOverview.title": "活动总览",
     "dashboard.activityOverview.range24h": "24 小时",
     "dashboard.activityOverview.range7d": "7 日",
+    "dashboard.activityOverview.rangeUsage": "历史",
     "dashboard.activityOverview.rangeToggleAria": "时间范围切换",
     "dashboard.section.liveRefreshing": "实时刷新",
     "dashboard.section.workingConversationsTitle": "当前工作中的对话",
@@ -2879,6 +2898,7 @@ const baseTranslations = {
     "dashboard.workingConversations.promptCacheKeyLabel": "Prompt Cache Key",
     "dashboard.workingConversations.currentInvocation": "当前调用",
     "dashboard.workingConversations.previousInvocation": "上一条调用",
+    "dashboard.workingConversations.openInvocation": "打开调用详情",
     "dashboard.workingConversations.placeholderBadge": "占位",
     "dashboard.workingConversations.previousPlaceholder":
       "这条对话还没有可展示的上一条调用。",
@@ -2889,6 +2909,14 @@ const baseTranslations = {
     "dashboard.workingConversations.totalTokensLabel": "对话 Tokens",
     "dashboard.workingConversations.totalCostLabel": "对话成本",
     "dashboard.workingConversations.sortAnchorLabel": "排序锚点",
+    "dashboard.workingConversations.drawer.close": "关闭调用详情",
+    "dashboard.workingConversations.drawer.subtitle": "工作中对话调用",
+    "dashboard.workingConversations.drawer.title": "调用详情",
+    "dashboard.workingConversations.drawer.loading": "正在加载完整调用记录…",
+    "dashboard.workingConversations.drawer.errorTitle": "加载调用详情失败",
+    "dashboard.workingConversations.drawer.emptyTitle": "调用记录不可用",
+    "dashboard.workingConversations.drawer.emptyBody":
+      "这条调用的完整保留记录可能已经被裁剪，或当前 invoke ID 已不再可用。",
     "dashboard.today.title": "今日统计信息",
     "dashboard.today.subtitle": "按 {{timezone}} 自然日累计",
     "dashboard.today.dayBadge": "今日",
@@ -3182,7 +3210,7 @@ const baseTranslations = {
     "metric.totalTokens": "Tokens",
     "legend.low": "低",
     "legend.high": "高",
-    "calendar.title": "使用活动",
+    "calendar.title": "历史",
     "calendar.metricsToggleAria": "统计指标切换",
     "calendar.valueSeparator": "：",
     "calendar.timeZoneLabel": "时区",
@@ -3255,6 +3283,8 @@ const baseTranslations = {
     "table.details.httpCompression": "HTTP 压缩算法",
     "table.details.requestedServiceTier": "Requested service tier",
     "table.details.serviceTier": "Service tier",
+    "table.details.billingServiceTier": "Billing service tier",
+    "table.details.billingServiceTierUnresolved": "未确认",
     "table.details.reasoningEffort": "推理强度",
     "table.details.reasoningTokens": "推理 Tokens",
     "table.details.proxyWeightDelta": "代理权重变化（本次）",

@@ -12,8 +12,7 @@ import { cn } from '../lib/utils'
 import { useTheme } from '../theme'
 import { Alert } from './ui/alert'
 import { SegmentedControl, SegmentedControlItem } from './ui/segmented-control'
-
-type MetricKey = 'totalCount' | 'totalCost' | 'totalTokens'
+import type { MetricKey } from './Last24hTenMinuteHeatmap'
 
 interface MetricOption {
   key: MetricKey
@@ -43,6 +42,9 @@ const DEFAULT_BLOCK_SIZE = 18
 const MIN_BLOCK_SIZE = 8
 const MAX_BLOCK_SIZE = 20
 const WEEKDAY_LABEL_SPACE = 16
+const MONTH_LABEL_HEIGHT = 18
+const MONTH_LABEL_GAP = 2
+const MONTH_LABEL_EDGE_PADDING = 32
 
 interface CalendarTooltipState {
   x: number
@@ -51,18 +53,38 @@ interface CalendarTooltipState {
   valueLabel: string
 }
 
-export function UsageCalendar() {
+export interface UsageCalendarProps {
+  metric?: MetricKey
+  onChangeMetric?: (metric: MetricKey) => void
+  showSurface?: boolean
+  showMetricToggle?: boolean
+  showMeta?: boolean
+}
+
+export const HISTORY_CALENDAR_RANGE = '6mo'
+export const HISTORY_CALENDAR_BUCKET = '1d'
+export const HISTORY_CALENDAR_DAY_COUNT = 180
+
+export function UsageCalendar({
+  metric: controlledMetric,
+  onChangeMetric,
+  showSurface = true,
+  showMetricToggle = true,
+  showMeta = true,
+}: UsageCalendarProps = {}) {
   const { t, locale } = useTranslation()
   const { themeMode } = useTheme()
   const timeZone = getBrowserTimeZone()
-  const [metric, setMetric] = useState<MetricKey>('totalCount')
-  const { data, isLoading, error } = useTimeseries('90d', { bucket: '1d' })
+  const [uncontrolledMetric, setUncontrolledMetric] = useState<MetricKey>('totalCount')
+  const metric = controlledMetric ?? uncontrolledMetric
+  const { data, isLoading, error } = useTimeseries(HISTORY_CALENDAR_RANGE, { bucket: HISTORY_CALENDAR_BUCKET })
   const skeletonMode = isLoading && !data
   const [blockSize, setBlockSize] = useState(DEFAULT_BLOCK_SIZE)
   const containerRef = useRef<HTMLDivElement>(null)
   const [tooltip, setTooltip] = useState<CalendarTooltipState | null>(null)
   // tabs width measurement removed (no longer needed for sizing)
   const [leftOffset, setLeftOffset] = useState(0) // svg.marginLeft introduced by weekday labels
+  const [containerWidth, setContainerWidth] = useState(0)
 
   const legendLabels = useMemo(
     () => ({
@@ -95,6 +117,17 @@ export function UsageCalendar() {
   const metricOptions = useMemo(
     () => METRIC_OPTIONS.map((option) => ({ ...option, label: t(option.labelKey) })),
     [t],
+  )
+
+  const setMetric = useCallback(
+    (nextMetric: MetricKey) => {
+      if (onChangeMetric) {
+        onChangeMetric(nextMetric)
+        return
+      }
+      setUncontrolledMetric(nextMetric)
+    },
+    [onChangeMetric],
   )
 
   const formatMetricValue = useCallback(
@@ -140,6 +173,7 @@ export function UsageCalendar() {
 
     const computeByContainer = (width: number) => {
       if (!Number.isFinite(width) || width <= 0) return
+      setContainerWidth((prev) => (Math.abs(prev - width) >= 1 ? width : prev))
       const GAP = 6
       const approxWidth = Math.max(0, width - leftOffset - GAP)
       const cols = Math.max(1, calendarData.weekCount)
@@ -206,150 +240,176 @@ export function UsageCalendar() {
     [metric],
   )
 
+  const showHeader = showMeta || showMetricToggle
+
+  const header = showHeader ? (
+    <div className="flex items-center justify-between gap-3">
+      {showMeta ? (
+        <div className="section-heading">
+          <h2 className="section-title">{t('calendar.title')}</h2>
+          <p className="section-description">
+            {t('calendar.timeZoneLabel')}{valueSeparator}{timeZone}
+          </p>
+        </div>
+      ) : (
+        <div />
+      )}
+      {showMetricToggle ? (
+        <SegmentedControl size="compact" role="tablist" aria-label={t('calendar.metricsToggleAria')}>
+          {metricOptions.map((option) => {
+            const active = metric === option.key
+            return (
+              <SegmentedControlItem
+                key={option.key}
+                active={active}
+                role="tab"
+                aria-selected={active}
+                aria-current={active ? 'true' : undefined}
+                style={active ? { color: metricAccent(option.key, themeMode) } : undefined}
+                onClick={() => setMetric(option.key)}
+              >
+                {option.label}
+              </SegmentedControlItem>
+            )
+          })}
+        </SegmentedControl>
+      ) : null}
+    </div>
+  ) : null
+
+  const content = (
+    <div className="flex flex-col gap-4">
+      {header}
+
+      {showHeader ? <div className="panel-divider my-1 opacity-40" /> : null}
+
+      {error ? (
+        <Alert variant="error">{error}</Alert>
+      ) : (
+        <div className="grid gap-3">
+          <div className="min-w-0">
+            <div
+              ref={containerRef}
+              className="relative flex w-full justify-center overflow-visible [&>svg]:h-auto"
+              style={{
+                ...(minContainerWidth ? { minWidth: `${minContainerWidth}px` } : undefined),
+                paddingTop: `${MONTH_LABEL_HEIGHT + MONTH_LABEL_GAP}px`,
+              }}
+              data-testid="usage-calendar-wrapper"
+            >
+              <MonthLabelOverlay
+                markers={calendarData.monthMarkers}
+                blockSize={blockSize}
+                blockMargin={BLOCK_MARGIN}
+                containerWidth={containerWidth}
+                offset={leftOffset || WEEKDAY_LABEL_SPACE}
+                formatLabel={formatMonthLabel}
+              />
+              <ActivityCalendar
+                data={calendarData.activities}
+                blockSize={blockSize}
+                // Match the subtle rounding used by the 7-day heatmap.
+                blockRadius={2}
+                blockMargin={BLOCK_MARGIN}
+                weekStart={1}
+                maxLevel={MAX_LEVEL}
+                theme={themeForMetric}
+                colorScheme={themeMode}
+                hideTotalCount
+                hideColorLegend
+                hideMonthLabels
+                labels={{ legend: { less: legendLabels.low, more: legendLabels.high }, weekdays: weekdayLabels }}
+                showWeekdayLabels={WEEKDAY_LABELS}
+                renderBlock={(block, activity) => {
+                  const accessibleBlock = block as AccessibleBlock
+                  const formatted = formatMetricValue(activity.count)
+                  // During skeleton mode, avoid native browser tooltips (title="...") that
+                  // could misleadingly show "0 calls" while loading.
+                  const title = skeletonMode ? undefined : `${activity.date}${valueSeparator}${formatted}`
+                  const handleEnter = (event: ReactMouseEvent<SVGElement>) => {
+                    if (!containerRef.current) return
+                    const target = event.currentTarget as Element
+                    const rect = target.getBoundingClientRect()
+                    const containerRect = containerRef.current.getBoundingClientRect()
+                    const centerXRaw = rect.left + rect.width / 2 - containerRect.left
+                    const y = rect.top - containerRect.top
+                    // Clamp the tooltip center so that even on the first/last column
+                    // the bubble stays fully inside the card.
+                    const margin = 80
+                    const minCenter = margin
+                    const maxCenter = Math.max(margin, containerRect.width - margin)
+                    const x = Math.max(minCenter, Math.min(maxCenter, centerXRaw))
+                    setTooltip({
+                      x,
+                      y,
+                      dateLabel: activity.date,
+                      valueLabel: formatted,
+                    })
+                  }
+                  const handleLeave = () => setTooltip(null)
+                  return cloneElement(accessibleBlock, {
+                    title,
+                    'aria-label': title,
+                    onMouseEnter: skeletonMode ? undefined : handleEnter,
+                    onMouseLeave: skeletonMode ? undefined : handleLeave,
+                    className: cn(accessibleBlock.props?.className, skeletonMode && 'animate-pulse pointer-events-none'),
+                    // Remove default stroke from react-activity-calendar to align
+                    // with the weekly heatmap appearance.
+                    style: { ...(accessibleBlock.props?.style ?? {}), stroke: 'none', strokeWidth: 0 },
+                  })
+                }}
+                renderColorLegend={(block, level) => {
+                  const accessibleBlock = block as AccessibleBlock
+                  if (level === 0)
+                    return cloneElement(accessibleBlock, {
+                      title: legendLabels.low,
+                      'aria-label': legendLabels.low,
+                      style: { ...(accessibleBlock.props?.style ?? {}), stroke: 'none', strokeWidth: 0 },
+                    })
+                  const threshold = calendarData.thresholds[level] ?? calendarData.maxValue
+                  const formatted = formatMetricValue(threshold ?? 0)
+                  const title = `≤ ${formatted}`
+                  return cloneElement(accessibleBlock, {
+                    title,
+                    'aria-label': title,
+                    style: { ...(accessibleBlock.props?.style ?? {}), stroke: 'none', strokeWidth: 0 },
+                  })
+                }}
+              />
+              {tooltip && (
+                <div
+                  className="pointer-events-none absolute z-30 -translate-x-1/2 whitespace-nowrap rounded-md bg-base-100 px-2 py-1 text-[11px] leading-tight text-base-content shadow-md sm:text-xs"
+                  style={{ left: tooltip.x, top: tooltip.y - 8 }}
+                >
+                  <div className="text-[10px] text-base-content/80 sm:text-xs">
+                    {tooltip.dateLabel}
+                  </div>
+                  <div className="mt-0.5 text-center font-mono text-sm font-semibold tracking-tight sm:text-base">
+                    {tooltip.valueLabel}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  )
+
+  if (!showSurface) {
+    return (
+      <div data-testid="usage-calendar-card" className="w-full">
+        {content}
+      </div>
+    )
+  }
+
   return (
     <section
       className="surface-panel h-full w-full max-w-full overflow-visible lg:w-fit"
       data-testid="usage-calendar-card"
     >
-      <div className="surface-panel-body gap-4 lg:w-auto">
-        <div className="flex flex-col gap-4">
-          <div className="flex items-center justify-between gap-3">
-            <div className="section-heading">
-              <h2 className="section-title">{t('calendar.title')}</h2>
-              <p className="section-description">
-                {t('calendar.timeZoneLabel')}{valueSeparator}{timeZone}
-              </p>
-            </div>
-            <SegmentedControl size="compact" role="tablist" aria-label={t('calendar.metricsToggleAria')}>
-              {metricOptions.map((option) => {
-                const active = metric === option.key
-                return (
-                  <SegmentedControlItem
-                    key={option.key}
-                    active={active}
-                    role="tab"
-                    aria-selected={active}
-                    aria-current={active ? 'true' : undefined}
-                    style={active ? { color: metricAccent(option.key, themeMode) } : undefined}
-                    onClick={() => setMetric(option.key)}
-                  >
-                    {option.label}
-                  </SegmentedControlItem>
-                )
-              })}
-            </SegmentedControl>
-          </div>
-
-          <div className="panel-divider my-1 opacity-40" />
-
-          {error ? (
-            <Alert variant="error">{error}</Alert>
-          ) : (
-            <div className="grid gap-3">
-              <div className="min-w-0">
-                <div
-                  ref={containerRef}
-                  className="relative flex w-full justify-center overflow-visible pt-4 [&>svg]:h-auto"
-                  style={minContainerWidth ? { minWidth: `${minContainerWidth}px` } : undefined}
-                  data-testid="usage-calendar-wrapper"
-                >
-                  <MonthLabelOverlay
-                    markers={calendarData.monthMarkers}
-                    blockSize={blockSize}
-                    blockMargin={BLOCK_MARGIN}
-                    offset={leftOffset || WEEKDAY_LABEL_SPACE}
-                    formatLabel={formatMonthLabel}
-                  />
-                  <ActivityCalendar
-                    data={calendarData.activities}
-                    blockSize={blockSize}
-                    // Match the subtle rounding used by the 7-day heatmap.
-                    blockRadius={2}
-                    blockMargin={BLOCK_MARGIN}
-                    weekStart={1}
-                    maxLevel={MAX_LEVEL}
-                    theme={themeForMetric}
-                    colorScheme={themeMode}
-                    hideTotalCount
-                    hideColorLegend
-                    hideMonthLabels
-                    labels={{ legend: { less: legendLabels.low, more: legendLabels.high }, weekdays: weekdayLabels }}
-                    showWeekdayLabels={WEEKDAY_LABELS}
-                    renderBlock={(block, activity) => {
-                      const accessibleBlock = block as AccessibleBlock
-                      const formatted = formatMetricValue(activity.count)
-                      // During skeleton mode, avoid native browser tooltips (title="...") that
-                      // could misleadingly show "0 calls" while loading.
-                      const title = skeletonMode ? undefined : `${activity.date}${valueSeparator}${formatted}`
-                      const handleEnter = (event: ReactMouseEvent<SVGElement>) => {
-                        if (!containerRef.current) return
-                        const target = event.currentTarget as Element
-                        const rect = target.getBoundingClientRect()
-                        const containerRect = containerRef.current.getBoundingClientRect()
-                        const centerXRaw = rect.left + rect.width / 2 - containerRect.left
-                        const y = rect.top - containerRect.top
-                        // Clamp the tooltip center so that even on the first/last column
-                        // the bubble stays fully inside the card.
-                        const margin = 80
-                        const minCenter = margin
-                        const maxCenter = Math.max(margin, containerRect.width - margin)
-                        const x = Math.max(minCenter, Math.min(maxCenter, centerXRaw))
-                        setTooltip({
-                          x,
-                          y,
-                          dateLabel: activity.date,
-                          valueLabel: formatted,
-                        })
-                      }
-                      const handleLeave = () => setTooltip(null)
-                      return cloneElement(accessibleBlock, {
-                        title,
-                        'aria-label': title,
-                        onMouseEnter: skeletonMode ? undefined : handleEnter,
-                        onMouseLeave: skeletonMode ? undefined : handleLeave,
-                        className: cn(accessibleBlock.props?.className, skeletonMode && 'animate-pulse pointer-events-none'),
-                        // Remove default stroke from react-activity-calendar to align
-                        // with the weekly heatmap appearance.
-                        style: { ...(accessibleBlock.props?.style ?? {}), stroke: 'none', strokeWidth: 0 },
-                      })
-                    }}
-                    renderColorLegend={(block, level) => {
-                      const accessibleBlock = block as AccessibleBlock
-                      if (level === 0)
-                        return cloneElement(accessibleBlock, {
-                          title: legendLabels.low,
-                          'aria-label': legendLabels.low,
-                          style: { ...(accessibleBlock.props?.style ?? {}), stroke: 'none', strokeWidth: 0 },
-                        })
-                      const threshold = calendarData.thresholds[level] ?? calendarData.maxValue
-                      const formatted = formatMetricValue(threshold ?? 0)
-                      const title = `≤ ${formatted}`
-                      return cloneElement(accessibleBlock, {
-                        title,
-                        'aria-label': title,
-                        style: { ...(accessibleBlock.props?.style ?? {}), stroke: 'none', strokeWidth: 0 },
-                      })
-                    }}
-                  />
-                  {tooltip && (
-                    <div
-                      className="pointer-events-none absolute z-30 -translate-x-1/2 whitespace-nowrap rounded-md bg-base-100 px-2 py-1 text-[11px] leading-tight text-base-content shadow-md sm:text-xs"
-                      style={{ left: tooltip.x, top: tooltip.y - 8 }}
-                    >
-                      <div className="text-[10px] text-base-content/80 sm:text-xs">
-                        {tooltip.dateLabel}
-                      </div>
-                      <div className="mt-0.5 text-center font-mono text-sm font-semibold tracking-tight sm:text-base">
-                        {tooltip.valueLabel}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
+      <div className="surface-panel-body gap-4 lg:w-auto">{content}</div>
     </section>
   )
 }
@@ -427,7 +487,7 @@ function toLocalISODate(value: string) {
 
 function resolveLocalDateRange(response: TimeseriesResponse | null) {
   // Daily time-series endpoints use [rangeStart, rangeEnd) where rangeEnd is the next local midnight.
-  // We keep the UI stable by always rendering a 90-day calendar, even during the initial load.
+  // We keep the UI stable by always rendering a half-year calendar, even during the initial load.
   const today = startOfLocalDay(new Date())
 
   const rangeStart = response?.rangeStart
@@ -444,7 +504,7 @@ function resolveLocalDateRange(response: TimeseriesResponse | null) {
   }
 
   const endInclusive = today
-  const start = addLocalDays(endInclusive, -89)
+  const start = addLocalDays(endInclusive, -(HISTORY_CALENDAR_DAY_COUNT - 1))
   return { start, endInclusive }
 }
 
@@ -488,26 +548,38 @@ function MonthLabelOverlay({
   markers,
   blockSize,
   blockMargin,
+  containerWidth,
   offset,
   formatLabel,
 }: {
   markers: MonthMarker[]
   blockSize: number
   blockMargin: number
+  containerWidth: number
   offset: number
   formatLabel: (marker: MonthMarker) => string
 }) {
   if (!markers.length) return null
   return (
-    <div className="pointer-events-none absolute left-0 right-0 top-0 h-6" aria-hidden>
+    <div
+      className="pointer-events-none absolute left-0 right-0 top-0"
+      style={{ height: `${MONTH_LABEL_HEIGHT}px` }}
+      aria-hidden
+    >
       {markers.map((marker) => {
         const columnWidth = blockSize + blockMargin * 2
         const position = offset + marker.weekIndex * columnWidth + columnWidth / 2
+        const edgePadding = Math.min(MONTH_LABEL_EDGE_PADDING, Math.max(containerWidth / 2, 0))
+        const maxPosition = Math.max(edgePadding, containerWidth - edgePadding)
+        const clampedPosition =
+          containerWidth > 0
+            ? Math.min(Math.max(position, edgePadding), maxPosition)
+            : position
         return (
           <span
             key={`${marker.year}-${marker.month}-${marker.weekIndex}`}
-            className="absolute top-0 -translate-x-1/2 transform text-xs font-medium text-base-content/70 whitespace-nowrap"
-            style={{ left: `${position}px` }}
+            className="absolute top-0 -translate-x-1/2 transform whitespace-nowrap text-xs font-medium leading-none text-base-content/70"
+            style={{ left: `${clampedPosition}px` }}
           >
             {formatLabel(marker)}
           </span>

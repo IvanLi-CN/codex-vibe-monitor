@@ -22,8 +22,8 @@ import {
 
 function StorySurface({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-screen bg-base-200 px-6 py-6 text-base-content">
-      <div className="mx-auto w-full max-w-[1440px]">{children}</div>
+    <div className="min-h-screen bg-base-200 text-base-content">
+      <div className="app-shell-boundary px-4 py-6">{children}</div>
     </div>
   )
 }
@@ -358,6 +358,7 @@ const meta = {
   component: RecordsPage,
   parameters: {
     layout: 'fullscreen',
+    viewport: { defaultViewport: 'desktop1660' },
   },
   decorators: [
     (Story, context) => {

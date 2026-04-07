@@ -3,6 +3,7 @@ import {
   useEffect,
   useMemo,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from "react";
 import { useTranslation } from "../i18n";
@@ -10,6 +11,7 @@ import type { TranslationKey } from "../i18n";
 import type {
   DashboardWorkingConversationCardModel,
   DashboardWorkingConversationInvocationModel,
+  DashboardWorkingConversationInvocationSelection,
   DashboardWorkingConversationTone,
 } from "../lib/dashboardWorkingConversations";
 import { cn } from "../lib/utils";
@@ -29,6 +31,9 @@ interface DashboardWorkingConversationsSectionProps {
   isLoading: boolean;
   error?: string | null;
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
+  onOpenInvocation?: (
+    selection: DashboardWorkingConversationInvocationSelection,
+  ) => void;
 }
 
 type StatusMeta = {
@@ -268,15 +273,25 @@ function PlaceholderSlot() {
 function InvocationSlot({
   invocation,
   label,
+  slotKind,
+  conversationSequenceId,
+  promptCacheKey,
   nowMs,
   locale,
   onOpenUpstreamAccount,
+  onOpenInvocation,
 }: {
   invocation: DashboardWorkingConversationInvocationModel;
   label: string;
+  slotKind: "current" | "previous";
+  conversationSequenceId: string;
+  promptCacheKey: string;
   nowMs: number;
   locale: "zh" | "en";
   onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void;
+  onOpenInvocation?: (
+    selection: DashboardWorkingConversationInvocationSelection,
+  ) => void;
 }) {
   const { t } = useTranslation();
   const localeTag = locale === "zh" ? "zh-CN" : "en-US";
@@ -339,7 +354,13 @@ function InvocationSlot({
             "inline-flex min-w-0 cursor-pointer appearance-none items-center truncate border-0 bg-transparent p-0 text-left font-inherit text-current no-underline transition-opacity duration-200 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
             className,
           )}
-          onClick={() => onOpenUpstreamAccount?.(accountId, accountLabel)}
+          onClick={(event) => {
+            event.stopPropagation();
+            onOpenUpstreamAccount?.(accountId, accountLabel);
+          }}
+          onKeyDown={(event) => {
+            event.stopPropagation();
+          }}
           title={accountLabel}
         >
           {accountLabel}
@@ -404,9 +425,48 @@ function InvocationSlot({
     ? `$${viewModel.costValue.slice(3)}`
     : viewModel.costValue;
   const compactTimingSummary = `RQ ${formatCompactMilliseconds(invocation.record.tReqReadMs)}/${formatCompactMilliseconds(invocation.record.tReqParseMs)} · UP ${formatCompactMilliseconds(invocation.record.tUpstreamConnectMs)}/${formatCompactMilliseconds(invocation.record.tUpstreamTtfbMs)}/${formatCompactMilliseconds(invocation.record.tUpstreamStreamMs)} · ED ${formatCompactMilliseconds(invocation.record.tRespParseMs)}/${formatCompactMilliseconds(invocation.record.tPersistMs)} · TT ${typeof invocation.record.tTotalMs === "number" && Number.isFinite(invocation.record.tTotalMs) ? `${formatCompactMilliseconds(invocation.record.tTotalMs)}ms` : viewModel.totalLatencyValue}`;
+  const invocationActionLabel = `${t("dashboard.workingConversations.openInvocation")} · ${label} · ${conversationSequenceId} · ${invocation.record.invokeId}`;
+
+  const handleOpenInvocation = useCallback(() => {
+    onOpenInvocation?.({
+      slotKind,
+      conversationSequenceId,
+      promptCacheKey,
+      invocation,
+    });
+  }, [
+    conversationSequenceId,
+    invocation,
+    onOpenInvocation,
+    promptCacheKey,
+    slotKind,
+  ]);
+
+  const handleSlotKeyDown = useCallback(
+    (event: ReactKeyboardEvent<HTMLDivElement>) => {
+      if (event.target !== event.currentTarget) return;
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      handleOpenInvocation();
+    },
+    [handleOpenInvocation],
+  );
 
   return (
-    <div className={cn(SLOT_CLASS_NAME, statusMeta.slotSurfaceClassName)}>
+    <div
+      role="button"
+      tabIndex={0}
+      aria-label={invocationActionLabel}
+      data-testid="dashboard-working-conversation-slot"
+      data-slot-kind={slotKind}
+      className={cn(
+        SLOT_CLASS_NAME,
+        statusMeta.slotSurfaceClassName,
+        "cursor-pointer transition-colors duration-200 hover:bg-base-100/10 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary",
+      )}
+      onClick={handleOpenInvocation}
+      onKeyDown={handleSlotKeyDown}
+    >
       <div className="flex min-h-5 items-start justify-between gap-3">
         <div className="flex min-w-0 items-center gap-1.5">
           <div className="shrink-0 text-[9px] font-semibold uppercase tracking-[0.12em] text-base-content/55">
@@ -466,12 +526,16 @@ function InvocationSlot({
                     <button
                       type="button"
                       className="inline-flex min-w-0 cursor-pointer appearance-none items-center truncate border-0 bg-transparent p-0 text-left font-mono text-[8.5px] font-semibold text-base-content no-underline transition-opacity duration-200 hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
-                      onClick={() =>
+                      onClick={(event) => {
+                        event.stopPropagation();
                         onOpenUpstreamAccount?.(
                           viewModel.accountId ?? 0,
                           viewModel.accountLabel,
-                        )
-                      }
+                        );
+                      }}
+                      onKeyDown={(event) => {
+                        event.stopPropagation();
+                      }}
                       title={viewModel.accountLabel}
                       aria-label={viewModel.accountLabel}
                     >
@@ -546,6 +610,7 @@ export function DashboardWorkingConversationsSection({
   isLoading,
   error,
   onOpenUpstreamAccount,
+  onOpenInvocation,
 }: DashboardWorkingConversationsSectionProps) {
   const { t, locale } = useTranslation();
   const [nowMs, setNowMs] = useState(() => Date.now());
@@ -656,7 +721,10 @@ export function DashboardWorkingConversationsSection({
         ) : null}
 
         {cards.length > 0 ? (
-          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2 2xl:grid-cols-3">
+          <div
+            data-testid="dashboard-working-conversations-grid"
+            className="grid grid-cols-1 gap-4 xl:grid-cols-2 2xl:grid-cols-3 desktop1660:grid-cols-4"
+          >
             {cards.map((card) => {
               const currentStatusMeta = resolveStatusMeta(
                 card.currentInvocation.tone,
@@ -740,9 +808,13 @@ export function DashboardWorkingConversationsSection({
                         label={t(
                           "dashboard.workingConversations.currentInvocation",
                         )}
+                        slotKind="current"
+                        conversationSequenceId={card.conversationSequenceId}
+                        promptCacheKey={card.promptCacheKey}
                         nowMs={nowMs}
                         locale={locale}
                         onOpenUpstreamAccount={onOpenUpstreamAccount}
+                        onOpenInvocation={onOpenInvocation}
                       />
                       {card.previousInvocation ? (
                         <InvocationSlot
@@ -750,9 +822,13 @@ export function DashboardWorkingConversationsSection({
                           label={t(
                             "dashboard.workingConversations.previousInvocation",
                           )}
+                          slotKind="previous"
+                          conversationSequenceId={card.conversationSequenceId}
+                          promptCacheKey={card.promptCacheKey}
                           nowMs={nowMs}
                           locale={locale}
                           onOpenUpstreamAccount={onOpenUpstreamAccount}
+                          onOpenInvocation={onOpenInvocation}
                         />
                       ) : (
                         <PlaceholderSlot />

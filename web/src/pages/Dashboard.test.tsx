@@ -3,6 +3,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import type { DashboardWorkingConversationCardModel } from '../lib/dashboardWorkingConversations'
 import DashboardPage from './Dashboard'
 
 const hookMocks = vi.hoisted(() => ({
@@ -23,7 +24,19 @@ vi.mock('../components/TodayStatsOverview', () => ({
 }))
 
 vi.mock('../components/UsageCalendar', () => ({
-  UsageCalendar: () => <div data-testid="usage-calendar" />,
+  UsageCalendar: ({
+    metric,
+    showSurface,
+    showMetricToggle,
+  }: {
+    metric?: string
+    showSurface?: boolean
+    showMetricToggle?: boolean
+  }) => (
+    <div data-testid="usage-calendar">
+      {`metric:${metric ?? 'unset'};surface:${String(showSurface)};toggle:${String(showMetricToggle)}`}
+    </div>
+  ),
 }))
 
 vi.mock('../components/StatsCards', () => ({
@@ -75,13 +88,98 @@ vi.mock('../components/WeeklyHourlyHeatmap', () => ({
 vi.mock('../components/DashboardWorkingConversationsSection', () => ({
   DashboardWorkingConversationsSection: ({
     cards,
+    onOpenUpstreamAccount,
+    onOpenInvocation,
   }: {
-    cards: Array<{ conversationSequenceId: string }>
+    cards: DashboardWorkingConversationCardModel[]
+    onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void
+    onOpenInvocation?: (selection: {
+      slotKind: 'current' | 'previous'
+      conversationSequenceId: string
+      promptCacheKey: string
+      invocation: { record: { invokeId: string } }
+    }) => void
   }) => (
     <div data-testid="dashboard-working-conversations-section">
       {cards.map((card) => card.conversationSequenceId).join(',')}
+      {cards[0] ? (
+        <>
+          <button
+            type="button"
+            data-testid="dashboard-open-invocation"
+            onClick={() =>
+              onOpenInvocation?.({
+                slotKind: 'current',
+                conversationSequenceId: cards[0].conversationSequenceId,
+                promptCacheKey: cards[0].promptCacheKey,
+                invocation: cards[0].currentInvocation,
+              })
+            }
+          >
+            open invocation
+          </button>
+          <button
+            type="button"
+            data-testid="dashboard-open-account"
+            onClick={() => onOpenUpstreamAccount?.(77, 'section-account@example.com')}
+          >
+            open account
+          </button>
+        </>
+      ) : null}
     </div>
   ),
+}))
+
+vi.mock('../components/DashboardInvocationDetailDrawer', () => ({
+  DashboardInvocationDetailDrawer: ({
+    open,
+    selection,
+    onClose,
+    onOpenUpstreamAccount,
+  }: {
+    open: boolean
+    selection: { invocation: { record: { invokeId: string } } } | null
+    onClose: () => void
+    onOpenUpstreamAccount?: (accountId: number, accountLabel: string) => void
+  }) =>
+    open ? (
+      <div data-testid="dashboard-invocation-detail-drawer-mock">
+        <span data-testid="dashboard-invocation-drawer-selection">
+          {selection?.invocation.record.invokeId ?? 'none'}
+        </span>
+        <button type="button" data-testid="dashboard-invocation-drawer-close" onClick={onClose}>
+          close invocation drawer
+        </button>
+        <button
+          type="button"
+          data-testid="dashboard-invocation-drawer-open-account"
+          onClick={() => onOpenUpstreamAccount?.(88, 'drawer-account@example.com')}
+        >
+          open account from invocation drawer
+        </button>
+      </div>
+    ) : null,
+}))
+
+vi.mock('./account-pool/UpstreamAccounts', () => ({
+  SharedUpstreamAccountDetailDrawer: ({
+    open,
+    accountId,
+    onClose,
+  }: {
+    open: boolean
+    accountId: number | null
+    onClose: () => void
+  }) =>
+    open ? (
+      <div data-testid="shared-upstream-account-detail-drawer-mock">
+        <span data-testid="shared-upstream-account-drawer-account-id">{accountId}</span>
+        <button type="button" data-testid="shared-upstream-account-drawer-close" onClick={onClose}>
+          close account drawer
+        </button>
+      </div>
+    ) : null,
 }))
 
 vi.mock('../theme', () => ({
@@ -96,6 +194,7 @@ vi.mock('../i18n', () => ({
         'dashboard.activityOverview.title': '活动总览',
         'dashboard.activityOverview.range24h': '24 小时',
         'dashboard.activityOverview.range7d': '7 日',
+        'dashboard.activityOverview.rangeUsage': '历史',
         'dashboard.activityOverview.rangeToggleAria': '时间范围切换',
         'dashboard.today.title': '今日统计信息',
         'dashboard.section.workingConversationsTitle': '当前工作中的对话',
@@ -139,22 +238,77 @@ function render(ui: React.ReactNode) {
   })
 }
 
+function installSummaryMocks() {
+  hookMocks.useSummary.mockImplementation((window: string) => {
+    if (window === 'today') {
+      return { summary: { totalCount: 12 }, isLoading: false, error: null }
+    }
+    if (window === '1d') {
+      return { summary: { totalCount: 100 }, isLoading: false, error: null }
+    }
+    if (window === '7d') {
+      return { summary: { totalCount: 700 }, isLoading: false, error: null }
+    }
+    return { summary: null, isLoading: false, error: null }
+  })
+}
+
+function createWorkingConversationCard(): DashboardWorkingConversationCardModel {
+  return {
+    promptCacheKey: 'pck-drawer-switch',
+    normalizedPromptCacheKey: 'pck-drawer-switch',
+    conversationSequenceId: 'WC-ABCD12',
+    currentInvocation: {
+      preview: {
+        id: 101,
+        invokeId: 'invoke-dashboard-current',
+        occurredAt: '2026-04-06T10:20:00Z',
+        status: 'completed',
+        failureClass: null,
+        routeMode: 'forward_proxy',
+        model: 'gpt-5.4',
+        totalTokens: 120,
+        cost: 0.01,
+        proxyDisplayName: 'tokyo-edge-01',
+        upstreamAccountId: 77,
+        upstreamAccountName: 'section-account@example.com',
+        endpoint: '/v1/responses',
+      },
+      record: {
+        id: 101,
+        invokeId: 'invoke-dashboard-current',
+        occurredAt: '2026-04-06T10:20:00Z',
+        createdAt: '2026-04-06T10:20:00Z',
+        status: 'completed',
+        source: 'proxy',
+        routeMode: 'forward_proxy',
+        model: 'gpt-5.4',
+        totalTokens: 120,
+      },
+      displayStatus: 'success',
+      occurredAtEpoch: Date.parse('2026-04-06T10:20:00Z'),
+      isInFlight: false,
+      isTerminal: true,
+      tone: 'success',
+    },
+    previousInvocation: null,
+    hasPreviousPlaceholder: true,
+    createdAtEpoch: Date.parse('2026-04-06T10:20:00Z'),
+    sortAnchorEpoch: Date.parse('2026-04-06T10:20:00Z'),
+    lastTerminalAtEpoch: Date.parse('2026-04-06T10:20:00Z'),
+    lastInFlightAtEpoch: null,
+    tone: 'success',
+    requestCount: 1,
+    totalTokens: 120,
+    totalCost: 0.01,
+  }
+}
+
 describe('DashboardPage', () => {
-  it('merges the 24h and 7d activity sections into a single overview card with per-range metric memory', () => {
-    hookMocks.useSummary.mockImplementation((window: string) => {
-      if (window === 'today') {
-        return { summary: { totalCount: 12 }, isLoading: false, error: null }
-      }
-      if (window === '1d') {
-        return { summary: { totalCount: 100 }, isLoading: false, error: null }
-      }
-      if (window === '7d') {
-        return { summary: { totalCount: 700 }, isLoading: false, error: null }
-      }
-      return { summary: null, isLoading: false, error: null }
-    })
+  it('keeps usage activity inside the shared overview card instead of as a standalone top card', () => {
+    installSummaryMocks()
     hookMocks.useDashboardWorkingConversations.mockReturnValue({
-      cards: [{ conversationSequenceId: 'WC-ABC123' }],
+      cards: [createWorkingConversationCard()],
       isLoading: false,
       error: null,
     })
@@ -164,18 +318,32 @@ describe('DashboardPage', () => {
     expect(host?.textContent).toContain('活动总览')
     expect(host?.querySelectorAll('[data-testid="dashboard-activity-overview"]')).toHaveLength(1)
     expect(host?.querySelector('[data-testid="stats-cards"]')?.textContent).toBe('total:100')
-    expect(host?.querySelector('[data-testid="dashboard-activity-range-1d"]')?.getAttribute('aria-hidden')).toBe('false')
     expect(host?.querySelector('[data-testid="dashboard-activity-range-1d"]')?.getAttribute('data-active')).toBe('true')
-    expect(host?.querySelector('[data-testid="dashboard-activity-range-7d"]')?.getAttribute('aria-hidden')).toBe('true')
-    expect(host?.querySelector('[data-testid="dashboard-activity-range-7d"]')?.className).toContain('invisible')
+    expect(host?.querySelector('[data-testid="usage-calendar"]')).toBeNull()
     expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toContain('metric:totalCount')
     expect(host?.querySelector('[data-testid="dashboard-working-conversations-section"]')?.textContent).toContain(
-      'WC-ABC123',
+      'WC-ABCD12',
     )
     expect(host?.textContent).not.toContain('最近 20 条实况')
 
     const rangeButtons = host?.querySelectorAll('button[role="tab"]')
-    const range7dButton = Array.from(rangeButtons ?? []).find(
+    const usageButton = Array.from(rangeButtons ?? []).find(
+      (button) => button.textContent === '历史',
+    )
+    if (!(usageButton instanceof HTMLButtonElement)) {
+      throw new Error('missing usage range button')
+    }
+
+    act(() => {
+      usageButton.click()
+    })
+
+    expect(host?.querySelector('[data-testid="stats-cards"]')).toBeNull()
+    expect(host?.querySelector('[data-testid="usage-calendar"]')?.textContent).toBe(
+      'metric:totalCount;surface:false;toggle:false',
+    )
+
+    const range7dButton = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
       (button) => button.textContent === '7 日',
     )
     if (!(range7dButton instanceof HTMLButtonElement)) {
@@ -187,62 +355,95 @@ describe('DashboardPage', () => {
     })
 
     expect(host?.querySelector('[data-testid="stats-cards"]')?.textContent).toBe('total:700')
-    expect(host?.querySelector('[data-testid="dashboard-activity-range-1d"]')?.getAttribute('aria-hidden')).toBe('true')
-    expect(host?.querySelector('[data-testid="dashboard-activity-range-1d"]')?.className).toContain('invisible')
-    expect(host?.querySelector('[data-testid="dashboard-activity-range-7d"]')?.getAttribute('aria-hidden')).toBe('false')
     expect(host?.querySelector('[data-testid="dashboard-activity-range-7d"]')?.getAttribute('data-active')).toBe('true')
+    expect(host?.querySelector('[data-testid="dashboard-activity-range-usage"]')?.getAttribute('data-active')).toBe(
+      'false',
+    )
+    expect(host?.querySelector('[data-testid="usage-calendar"]')?.textContent).toBe(
+      'metric:totalCount;surface:false;toggle:false',
+    )
     expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe(
       'metric:totalCount;header:false;surface:false',
     )
 
-    const costButton = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
-      (button) => button.textContent === '金额',
+  })
+
+  it('switches between the invocation drawer and the shared account drawer from dashboard interactions', () => {
+    installSummaryMocks()
+    hookMocks.useDashboardWorkingConversations.mockReturnValue({
+      cards: [createWorkingConversationCard()],
+      isLoading: false,
+      error: null,
+    })
+
+    render(<DashboardPage />)
+
+    const openInvocationButton = host?.querySelector(
+      '[data-testid="dashboard-open-invocation"]',
     )
-    if (!(costButton instanceof HTMLButtonElement)) {
-      throw new Error('missing cost metric button')
+    if (!(openInvocationButton instanceof HTMLButtonElement)) {
+      throw new Error('missing invocation trigger')
     }
 
     act(() => {
-      costButton.click()
+      openInvocationButton.click()
     })
 
-    expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe(
-      'metric:totalCost;header:false;surface:false',
-    )
+    expect(
+      host?.querySelector('[data-testid="dashboard-invocation-detail-drawer-mock"]'),
+    ).not.toBeNull()
+    expect(
+      host?.querySelector('[data-testid="dashboard-invocation-drawer-selection"]')?.textContent,
+    ).toBe('invoke-dashboard-current')
+    expect(
+      host?.querySelector('[data-testid="shared-upstream-account-detail-drawer-mock"]'),
+    ).toBeNull()
 
-    const range24hButton = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
-      (button) => button.textContent === '24 小时',
+    const openAccountFromSectionButton = host?.querySelector(
+      '[data-testid="dashboard-open-account"]',
     )
-    if (!(range24hButton instanceof HTMLButtonElement)) {
-      throw new Error('missing 24h range button')
+    if (!(openAccountFromSectionButton instanceof HTMLButtonElement)) {
+      throw new Error('missing section account trigger')
     }
 
     act(() => {
-      range24hButton.click()
+      openAccountFromSectionButton.click()
     })
 
-    expect(host?.querySelector('[data-testid="stats-cards"]')?.textContent).toBe('total:100')
-    expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toContain('metric:totalCount')
+    expect(
+      host?.querySelector('[data-testid="dashboard-invocation-detail-drawer-mock"]'),
+    ).toBeNull()
+    expect(
+      host?.querySelector('[data-testid="shared-upstream-account-drawer-account-id"]')?.textContent,
+    ).toBe('77')
 
-    const tokensButton = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
-      (button) => button.textContent === 'Tokens',
+    act(() => {
+      openInvocationButton.click()
+    })
+
+    expect(
+      host?.querySelector('[data-testid="shared-upstream-account-detail-drawer-mock"]'),
+    ).toBeNull()
+    expect(
+      host?.querySelector('[data-testid="dashboard-invocation-detail-drawer-mock"]'),
+    ).not.toBeNull()
+
+    const openAccountFromInvocationDrawerButton = host?.querySelector(
+      '[data-testid="dashboard-invocation-drawer-open-account"]',
     )
-    if (!(tokensButton instanceof HTMLButtonElement)) {
-      throw new Error('missing tokens metric button')
+    if (!(openAccountFromInvocationDrawerButton instanceof HTMLButtonElement)) {
+      throw new Error('missing invocation drawer account trigger')
     }
 
     act(() => {
-      tokensButton.click()
+      openAccountFromInvocationDrawerButton.click()
     })
 
-    expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toContain('metric:totalTokens')
-
-    act(() => {
-      range7dButton.click()
-    })
-
-    expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe(
-      'metric:totalCost;header:false;surface:false',
-    )
+    expect(
+      host?.querySelector('[data-testid="dashboard-invocation-detail-drawer-mock"]'),
+    ).toBeNull()
+    expect(
+      host?.querySelector('[data-testid="shared-upstream-account-drawer-account-id"]')?.textContent,
+    ).toBe('88')
   })
 })

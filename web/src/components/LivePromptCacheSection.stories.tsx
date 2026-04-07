@@ -440,7 +440,7 @@ function resolveStats(selection: PromptCacheConversationSelection) {
 function StorySurface({ children }: { children: React.ReactNode }) {
   return (
     <div className="min-h-screen bg-base-200 px-4 py-6 text-base-content sm:px-6">
-      <main className="mx-auto w-full max-w-[1200px]">{children}</main>
+      <main className="app-shell-boundary">{children}</main>
     </div>
   );
 }

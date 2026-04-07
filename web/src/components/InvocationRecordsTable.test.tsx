@@ -95,6 +95,7 @@ function createRecord(overrides: Partial<ApiInvocation> = {}): ApiInvocation {
     promptCacheKey: 'pck-test',
     requestedServiceTier: 'priority',
     serviceTier: 'priority',
+    billingServiceTier: 'priority',
     responseContentEncoding: 'gzip, br',
     tReqReadMs: 12,
     tReqParseMs: 30,
@@ -184,6 +185,29 @@ describe('InvocationRecordsTable', () => {
     expect(text).toContain('table.details.poolAttemptCount')
     expect(text).toContain('table.poolAttempts.notPool')
     expect(text).toContain('success_over_30d')
+  })
+
+  it('shows billing service tier in the expanded detail panel', () => {
+    render(
+      <InvocationRecordsTable
+        focus="token"
+        isLoading={false}
+        records={[
+          createRecord({
+            requestedServiceTier: 'priority',
+            serviceTier: 'default',
+            billingServiceTier: 'priority',
+          }),
+        ]}
+      />,
+    )
+
+    clickFirstToggle()
+
+    const text = host?.textContent ?? ''
+    expect(text).toContain('table.details.requestedServiceTier')
+    expect(text).toContain('table.details.serviceTier')
+    expect(text).toContain('table.details.billingServiceTier')
   })
 
   it('renders abnormal response previews for failed records', async () => {

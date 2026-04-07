@@ -2639,6 +2639,7 @@ struct AccountStickyKeyInvocationPreviewRow {
     response_content_encoding: Option<String>,
     requested_service_tier: Option<String>,
     service_tier: Option<String>,
+    billing_service_tier: Option<String>,
     t_req_read_ms: Option<f64>,
     t_req_parse_ms: Option<f64>,
     t_upstream_connect_ms: Option<f64>,
@@ -17763,6 +17764,7 @@ pub(crate) async fn build_account_sticky_keys_response(
                     response_content_encoding: row.response_content_encoding,
                     requested_service_tier: row.requested_service_tier,
                     service_tier: row.service_tier,
+                    billing_service_tier: row.billing_service_tier,
                     t_req_read_ms: row.t_req_read_ms,
                     t_req_parse_ms: row.t_req_parse_ms,
                     t_upstream_connect_ms: row.t_upstream_connect_ms,
@@ -17928,6 +17930,11 @@ async fn query_account_sticky_key_recent_invocations(
                  THEN json_extract(payload, '$.serviceTier') \
                WHEN json_valid(payload) AND json_type(payload, '$.service_tier') = 'text' \
                  THEN json_extract(payload, '$.service_tier') END AS service_tier, \
+             ",
+        )
+        .push(crate::api::INVOCATION_BILLING_SERVICE_TIER_SQL)
+        .push(
+            " AS billing_service_tier, \
              t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, \
              t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, ",
         )
@@ -17960,7 +17967,7 @@ async fn query_account_sticky_key_recent_invocations(
     }
 
     query
-        .push(")) SELECT sticky_key, id, invoke_id, occurred_at, status, failure_class, route_mode, model, total_tokens, cost, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, reasoning_effort, error_message, failure_kind, is_actionable, proxy_display_name, upstream_account_id, upstream_account_name, response_content_encoding, requested_service_tier, service_tier, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, endpoint FROM ranked WHERE row_number <= ")
+        .push(")) SELECT sticky_key, id, invoke_id, occurred_at, status, failure_class, route_mode, model, total_tokens, cost, source, input_tokens, output_tokens, cache_input_tokens, reasoning_tokens, reasoning_effort, error_message, failure_kind, is_actionable, proxy_display_name, upstream_account_id, upstream_account_name, response_content_encoding, requested_service_tier, service_tier, billing_service_tier, t_req_read_ms, t_req_parse_ms, t_upstream_connect_ms, t_upstream_ttfb_ms, t_upstream_stream_ms, t_resp_parse_ms, t_persist_ms, t_total_ms, endpoint FROM ranked WHERE row_number <= ")
         .push_bind(limit_per_key)
         .push(" ORDER BY sticky_key ASC, occurred_at DESC, id DESC");
 

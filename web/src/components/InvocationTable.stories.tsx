@@ -49,6 +49,7 @@ const records: ApiInvocation[] = [
     promptCacheKey: 'pck_6f35b9b20f0348af',
     requestedServiceTier: 'priority',
     serviceTier: 'priority',
+    billingServiceTier: 'priority',
     proxyWeightDelta: 0.55,
     tReqReadMs: 1.8,
     tReqParseMs: 3.2,
@@ -284,6 +285,7 @@ const fastIndicatorRecords: ApiInvocation[] = [
     status: 'success',
     requestedServiceTier: 'priority',
     serviceTier: 'priority',
+    billingServiceTier: 'priority',
     inputTokens: 1200,
     outputTokens: 240,
     totalTokens: 1440,
@@ -297,12 +299,17 @@ const fastIndicatorRecords: ApiInvocation[] = [
     occurredAt: '2026-02-25T10:31:00Z',
     createdAt: '2026-02-25T10:31:00Z',
     source: 'proxy',
-    proxyDisplayName: 'Fast-requested-auto',
+    routeMode: 'pool',
+    upstreamAccountId: 2568,
+    upstreamAccountName: 'API Keys Pool',
+    proxyDisplayName: 'API Keys requested-tier priority',
     endpoint: '/v1/responses',
     model: 'gpt-5',
     status: 'failed',
     requestedServiceTier: 'priority',
-    serviceTier: 'auto',
+    serviceTier: 'default',
+    billingServiceTier: 'priority',
+    priceVersion: 'openai-standard-2026-02-23@requested-tier',
     inputTokens: 980,
     outputTokens: 0,
     totalTokens: 980,
@@ -340,6 +347,7 @@ const fastIndicatorRecords: ApiInvocation[] = [
     status: 'success',
     requestedServiceTier: 'auto',
     serviceTier: 'priority',
+    billingServiceTier: 'priority',
     inputTokens: 1188,
     outputTokens: 202,
     totalTokens: 1390,
@@ -1151,6 +1159,7 @@ function RunningInvocationLifecyclePreview() {
           cost: 0.0046,
           requestedServiceTier: 'priority',
           serviceTier: 'priority',
+          billingServiceTier: 'priority',
           proxyWeightDelta: 0.42,
           tUpstreamTtfbMs: 184.2,
           tTotalMs: Number(terminalElapsedMs.toFixed(1)),
@@ -1206,6 +1215,7 @@ function buildPoolAttemptLifecycleRecord(
       cost: 0.0046,
       requestedServiceTier: 'priority',
       serviceTier: 'priority',
+      billingServiceTier: 'priority',
       responseContentEncoding: 'gzip',
       tUpstreamConnectMs: 26.4,
       tUpstreamTtfbMs: 148.2,
@@ -1921,7 +1931,7 @@ export const FastIndicatorStates: Story = {
     docs: {
       description: {
         story:
-          'Covers the fast indicator matrix: effective priority, requested-only fallback, requested priority with missing response tier, effective priority despite non-priority request, and a flex request with no lightning icon.',
+          'Covers the fast indicator matrix: effective priority, API Keys requested-tier priority where the response tier is only `default`, requested-only fallback, requested priority with missing response tier, effective priority despite non-priority request, and a flex request with no lightning icon.',
       },
     },
   },
@@ -1929,6 +1939,56 @@ export const FastIndicatorStates: Story = {
     records: fastIndicatorRecords,
     isLoading: false,
     error: null,
+  },
+}
+
+export const ApiKeysRequestedTierPriority: Story = {
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Stable API Keys example: the request asked for `priority`, the upstream response only reported `default`, but billing resolves from the requested-tier strategy and the lightning badge stays effective.',
+      },
+    },
+  },
+  args: {
+    records: [
+      {
+        id: 2101,
+        invokeId: 'inv_api_keys_requested_tier_priority',
+        occurredAt: '2026-04-06T06:28:02Z',
+        createdAt: '2026-04-06T06:28:02Z',
+        source: 'proxy',
+        routeMode: 'pool',
+        upstreamAccountId: 2568,
+        upstreamAccountName: 'API Keys Pool',
+        proxyDisplayName: 'api-keys-requested-tier',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'success',
+        requesterIp: '203.0.113.88',
+        requestedServiceTier: 'priority',
+        serviceTier: 'default',
+        billingServiceTier: 'priority',
+        totalTokens: 4096,
+        cost: 0.1024,
+        priceVersion: 'openai-standard-2026-02-23@requested-tier',
+        tUpstreamTtfbMs: 188.6,
+        tTotalMs: 890.1,
+      },
+    ],
+    isLoading: false,
+    error: null,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const fastBadge = canvasElement.querySelector('[data-fast-state="effective"]')
+    expect(fastBadge).not.toBeNull()
+    await userEvent.click(await canvas.findByRole('button', { name: /展开详情|show details/i }))
+    await expect(documentScope.getByText(/^Requested service tier$/i)).toBeInTheDocument()
+    await expect(documentScope.getByText(/^Service tier$/i)).toBeInTheDocument()
+    await expect(documentScope.getByText(/^Billing service tier$/i)).toBeInTheDocument()
   },
 }
 
