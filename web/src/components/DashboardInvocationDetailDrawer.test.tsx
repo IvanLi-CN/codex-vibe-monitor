@@ -162,6 +162,7 @@ function createRecord(overrides: Partial<ApiInvocation> = {}): ApiInvocation {
     responseContentEncoding: 'gzip',
     requestedServiceTier: 'priority',
     serviceTier: 'priority',
+    billingServiceTier: 'priority',
     tReqReadMs: 14,
     tReqParseMs: 8,
     tUpstreamConnectMs: 136,

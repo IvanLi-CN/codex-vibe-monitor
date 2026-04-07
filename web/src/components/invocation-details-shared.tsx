@@ -358,7 +358,10 @@ export function buildInvocationDetailViewModel({
   const accountClickable = canOpenInvocationAccount(record)
   const requestedServiceTierValue = formatServiceTier(record.requestedServiceTier)
   const serviceTierValue = formatServiceTier(record.serviceTier)
-  const billingServiceTierValue = formatServiceTier(record.billingServiceTier)
+  const billingServiceTierValue = formatServiceTier(
+    record.billingServiceTier,
+    t('table.details.billingServiceTierUnresolved'),
+  )
   const fastIndicatorState = getFastIndicatorState(
     record.requestedServiceTier,
     record.serviceTier,

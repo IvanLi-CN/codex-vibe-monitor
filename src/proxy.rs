@@ -4781,7 +4781,8 @@ async fn proxy_openai_v1_capture_target(
                 &state.pricing_catalog,
                 None,
                 &usage,
-                ProxyPricingMode::Standard,
+                None,
+                ProxyPricingMode::ResponseTier,
             )
             .await;
             let error_message = format!("[{}] {}", read_err.failure_kind, read_err.message);
@@ -5028,13 +5029,19 @@ async fn proxy_openai_v1_capture_target(
                     request_body_for_capture.as_ref(),
                 );
                 let usage = ParsedUsage::default();
-                let billing_service_tier: Option<String> = None;
-                let pricing_mode = ProxyPricingMode::Standard;
+                let (billing_service_tier, pricing_mode) =
+                    resolve_proxy_billing_service_tier_and_pricing_mode_for_account(
+                        None,
+                        request_info.requested_service_tier.as_deref(),
+                        None,
+                        err.account.as_ref(),
+                    );
                 let (cost, cost_estimated, price_version) =
                     estimate_proxy_cost_from_shared_catalog(
                         &state.pricing_catalog,
                         request_info.model.as_deref(),
                         &usage,
+                        billing_service_tier.as_deref(),
                         pricing_mode,
                     )
                     .await;
@@ -5208,13 +5215,19 @@ async fn proxy_openai_v1_capture_target(
                 )
                 .await;
                 let usage = ParsedUsage::default();
-                let billing_service_tier: Option<String> = None;
-                let pricing_mode = ProxyPricingMode::Standard;
+                let (billing_service_tier, pricing_mode) =
+                    resolve_proxy_billing_service_tier_and_pricing_mode(
+                        None,
+                        request_info.requested_service_tier.as_deref(),
+                        None,
+                        None,
+                    );
                 let (cost, cost_estimated, price_version) =
                     estimate_proxy_cost_from_shared_catalog(
                         &state.pricing_catalog,
                         request_info.model.as_deref(),
                         &usage,
+                        billing_service_tier.as_deref(),
                         pricing_mode,
                     )
                     .await;
@@ -5341,12 +5354,18 @@ async fn proxy_openai_v1_capture_target(
                 ForwardProxyAttemptUpdate::default()
             };
             let usage = ParsedUsage::default();
-            let billing_service_tier: Option<String> = None;
-            let pricing_mode = ProxyPricingMode::Standard;
+            let (billing_service_tier, pricing_mode) =
+                resolve_proxy_billing_service_tier_and_pricing_mode_for_account(
+                    None,
+                    request_info.requested_service_tier.as_deref(),
+                    None,
+                    pool_account.as_ref(),
+                );
             let (cost, cost_estimated, price_version) = estimate_proxy_cost_from_shared_catalog(
                 &state.pricing_catalog,
                 request_info.model.as_deref(),
                 &usage,
+                billing_service_tier.as_deref(),
                 pricing_mode,
             )
             .await;
@@ -6020,6 +6039,7 @@ async fn proxy_openai_v1_capture_target(
         }
         let (billing_service_tier, pricing_mode) =
             resolve_proxy_billing_service_tier_and_pricing_mode_for_account(
+                None,
                 request_info_for_task.requested_service_tier.as_deref(),
                 response_info.service_tier.as_deref(),
                 pool_account_for_task.as_ref(),
@@ -6028,6 +6048,7 @@ async fn proxy_openai_v1_capture_target(
             &state_for_task.pricing_catalog,
             response_info.model.as_deref(),
             &response_info.usage,
+            billing_service_tier.as_deref(),
             pricing_mode,
         )
         .await;
@@ -7772,15 +7793,27 @@ fn normalize_service_tier(value: &str) -> Option<String> {
 const AUTO_SERVICE_TIER: &str = "auto";
 const DEFAULT_SERVICE_TIER: &str = "default";
 const PRIORITY_SERVICE_TIER: &str = "priority";
-const RELAY_PRIORITY_BILLING_ACCOUNT_KIND: &str = "api_key_codex";
-const RELAY_PRIORITY_BILLING_UPSTREAM_HOST: &str = "sub2api.nsngc.org";
-const RELAY_PRIORITY_BILLING_PRICE_VERSION_SUFFIX: &str = "+relay-fast-billing-v1";
+const API_KEYS_BILLING_ACCOUNT_KIND: &str = "api_key_codex";
+const REQUESTED_TIER_PRICE_VERSION_SUFFIX: &str = "@requested-tier";
+const RESPONSE_TIER_PRICE_VERSION_SUFFIX: &str = "@response-tier";
+const EXPLICIT_BILLING_PRICE_VERSION_SUFFIX: &str = "@explicit-billing";
 const SERVICE_TIER_STREAM_BACKFILL_VERSION: &str = "stream-terminal-v1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ProxyPricingMode {
-    Standard,
-    RelayFastPriority,
+    ResponseTier,
+    RequestedTier,
+    ExplicitBilling,
+}
+
+impl ProxyPricingMode {
+    fn price_version_suffix(self) -> &'static str {
+        match self {
+            Self::ResponseTier => RESPONSE_TIER_PRICE_VERSION_SUFFIX,
+            Self::RequestedTier => REQUESTED_TIER_PRICE_VERSION_SUFFIX,
+            Self::ExplicitBilling => EXPLICIT_BILLING_PRICE_VERSION_SUFFIX,
+        }
+    }
 }
 
 fn normalize_upstream_base_url_host(raw: &str) -> Option<String> {
@@ -7798,63 +7831,55 @@ fn normalize_upstream_base_url_host(raw: &str) -> Option<String> {
         .filter(|host| !host.is_empty())
 }
 
-fn relay_priority_billing_matches_context(
-    requested_service_tier: Option<&str>,
-    upstream_account_kind: Option<&str>,
-    upstream_base_url_host: Option<&str>,
-) -> bool {
-    requested_service_tier
-        .and_then(normalize_service_tier)
-        .is_some_and(|tier| tier == PRIORITY_SERVICE_TIER)
-        && upstream_account_kind
-            .map(str::trim)
-            .is_some_and(|kind| kind.eq_ignore_ascii_case(RELAY_PRIORITY_BILLING_ACCOUNT_KIND))
-        && upstream_base_url_host
-            .map(str::trim)
-            .is_some_and(|host| host.eq_ignore_ascii_case(RELAY_PRIORITY_BILLING_UPSTREAM_HOST))
+fn api_keys_billing_matches_context(upstream_account_kind: Option<&str>) -> bool {
+    upstream_account_kind
+        .map(str::trim)
+        .is_some_and(|kind| kind.eq_ignore_ascii_case(API_KEYS_BILLING_ACCOUNT_KIND))
 }
 
 fn resolve_proxy_billing_service_tier_and_pricing_mode(
+    explicit_billing_service_tier: Option<&str>,
     requested_service_tier: Option<&str>,
     response_service_tier: Option<&str>,
     upstream_account_kind: Option<&str>,
-    upstream_base_url_host: Option<&str>,
 ) -> (Option<String>, ProxyPricingMode) {
-    let normalized_response_service_tier = response_service_tier.and_then(normalize_service_tier);
-    if relay_priority_billing_matches_context(
-        requested_service_tier,
-        upstream_account_kind,
-        upstream_base_url_host,
-    ) {
-        return match normalized_response_service_tier.as_deref() {
-            Some(AUTO_SERVICE_TIER) | Some(DEFAULT_SERVICE_TIER) => (
-                Some(PRIORITY_SERVICE_TIER.to_string()),
-                ProxyPricingMode::RelayFastPriority,
-            ),
-            Some(PRIORITY_SERVICE_TIER) => (
-                normalized_response_service_tier,
-                ProxyPricingMode::RelayFastPriority,
-            ),
-            _ => (normalized_response_service_tier, ProxyPricingMode::Standard),
-        };
+    if let Some(explicit_billing_service_tier) =
+        explicit_billing_service_tier.and_then(normalize_service_tier)
+    {
+        return (
+            Some(explicit_billing_service_tier),
+            ProxyPricingMode::ExplicitBilling,
+        );
     }
 
-    (normalized_response_service_tier, ProxyPricingMode::Standard)
+    let normalized_requested_service_tier = requested_service_tier.and_then(normalize_service_tier);
+    let normalized_response_service_tier = response_service_tier.and_then(normalize_service_tier);
+    if api_keys_billing_matches_context(upstream_account_kind)
+        && normalized_requested_service_tier.is_some()
+    {
+        return (
+            normalized_requested_service_tier,
+            ProxyPricingMode::RequestedTier,
+        );
+    }
+
+    (
+        normalized_response_service_tier,
+        ProxyPricingMode::ResponseTier,
+    )
 }
 
 fn resolve_proxy_billing_service_tier_and_pricing_mode_for_account(
+    explicit_billing_service_tier: Option<&str>,
     requested_service_tier: Option<&str>,
     response_service_tier: Option<&str>,
     account: Option<&PoolResolvedAccount>,
 ) -> (Option<String>, ProxyPricingMode) {
-    let upstream_base_url_host = account
-        .and_then(|entry| entry.upstream_base_url.host_str())
-        .map(|host| host.trim().to_ascii_lowercase());
     resolve_proxy_billing_service_tier_and_pricing_mode(
+        explicit_billing_service_tier,
         requested_service_tier,
         response_service_tier,
         account.map(|entry| entry.kind.as_str()),
-        upstream_base_url_host.as_deref(),
     )
 }
 
@@ -9483,10 +9508,11 @@ async fn estimate_proxy_cost_from_shared_catalog(
     catalog: &Arc<RwLock<PricingCatalog>>,
     model: Option<&str>,
     usage: &ParsedUsage,
+    billing_service_tier: Option<&str>,
     pricing_mode: ProxyPricingMode,
 ) -> (Option<f64>, bool, Option<String>) {
     let guard = catalog.read().await;
-    estimate_proxy_cost(&guard, model, usage, pricing_mode)
+    estimate_proxy_cost(&guard, model, usage, billing_service_tier, pricing_mode)
 }
 
 fn has_billable_usage(usage: &ParsedUsage) -> bool {
@@ -9536,12 +9562,7 @@ fn is_gpt_5_4_long_context_surcharge_model(model: &str) -> bool {
 }
 
 fn proxy_price_version(catalog_version: &str, pricing_mode: ProxyPricingMode) -> String {
-    match pricing_mode {
-        ProxyPricingMode::Standard => catalog_version.to_string(),
-        ProxyPricingMode::RelayFastPriority => {
-            format!("{catalog_version}{RELAY_PRIORITY_BILLING_PRICE_VERSION_SUFFIX}")
-        }
-    }
+    format!("{catalog_version}{}", pricing_mode.price_version_suffix())
 }
 
 fn pricing_backfill_attempt_version(catalog: &PricingCatalog) -> String {
@@ -9557,15 +9578,14 @@ fn pricing_backfill_attempt_version(catalog: &PricingCatalog) -> String {
     mix_fvn1a(&mut hash, &[0xfc]);
     mix_fvn1a(&mut hash, catalog.version.as_bytes());
     mix_fvn1a(&mut hash, &[0xff]);
-    mix_fvn1a(&mut hash, RELAY_PRIORITY_BILLING_ACCOUNT_KIND.as_bytes());
+    mix_fvn1a(&mut hash, API_KEYS_BILLING_ACCOUNT_KIND.as_bytes());
     mix_fvn1a(&mut hash, &[0xfb]);
-    mix_fvn1a(&mut hash, RELAY_PRIORITY_BILLING_UPSTREAM_HOST.as_bytes());
+    mix_fvn1a(&mut hash, REQUESTED_TIER_PRICE_VERSION_SUFFIX.as_bytes());
     mix_fvn1a(&mut hash, &[0xfa]);
-    mix_fvn1a(
-        &mut hash,
-        RELAY_PRIORITY_BILLING_PRICE_VERSION_SUFFIX.as_bytes(),
-    );
+    mix_fvn1a(&mut hash, RESPONSE_TIER_PRICE_VERSION_SUFFIX.as_bytes());
     mix_fvn1a(&mut hash, &[0xf9]);
+    mix_fvn1a(&mut hash, EXPLICIT_BILLING_PRICE_VERSION_SUFFIX.as_bytes());
+    mix_fvn1a(&mut hash, &[0xf8]);
 
     let mut models = catalog.models.iter().collect::<Vec<_>>();
     models.sort_by(|(a, _), (b, _)| a.cmp(b));
@@ -9599,6 +9619,7 @@ fn estimate_proxy_cost(
     catalog: &PricingCatalog,
     model: Option<&str>,
     usage: &ParsedUsage,
+    billing_service_tier: Option<&str>,
     pricing_mode: ProxyPricingMode,
 ) -> (Option<f64>, bool, Option<String>) {
     let price_version = Some(proxy_price_version(&catalog.version, pricing_mode));
@@ -9618,6 +9639,10 @@ fn estimate_proxy_cost(
 
     let apply_long_context_surcharge = is_gpt_5_4_long_context_surcharge_model(model)
         && input_tokens > GPT_5_4_LONG_CONTEXT_THRESHOLD_TOKENS;
+    let apply_priority_billing_multiplier = billing_service_tier
+        .and_then(normalize_service_tier)
+        .as_deref()
+        .is_some_and(|tier| tier == PRIORITY_SERVICE_TIER);
 
     let billable_cache_tokens = if pricing.cache_input_per_1m.is_some() {
         cache_input_tokens
@@ -9647,7 +9672,7 @@ fn estimate_proxy_cost(
         reasoning_cost *= 1.5;
     }
 
-    if matches!(pricing_mode, ProxyPricingMode::RelayFastPriority) {
+    if apply_priority_billing_multiplier {
         input_cost *= 2.0;
         output_cost *= 2.0;
         reasoning_cost *= 2.0;
@@ -10623,7 +10648,8 @@ async fn run_backfill_with_retry(
 async fn current_proxy_cost_backfill_snapshot_max_id(
     pool: &Pool<Sqlite>,
     attempt_version: &str,
-    relay_priority_price_version: &str,
+    requested_tier_price_version: &str,
+    response_tier_price_version: &str,
 ) -> Result<i64> {
     Ok(sqlx::query_scalar(
         r#"
@@ -10656,65 +10682,7 @@ async fn current_proxy_cost_backfill_snapshot_max_id(
                   WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.upstream_account_kind') = 'text'
                     THEN json_extract(inv.payload, '$.upstream_account_kind')
                 END AS snapshot_upstream_account_kind,
-                CASE
-                  WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.upstreamBaseUrlHost') = 'text'
-                    THEN json_extract(inv.payload, '$.upstreamBaseUrlHost')
-                  WHEN json_valid(inv.payload) AND json_type(inv.payload, '$.upstream_base_url_host') = 'text'
-                    THEN json_extract(inv.payload, '$.upstream_base_url_host')
-                END AS snapshot_upstream_base_url_host,
                 acc.kind AS live_upstream_account_kind,
-                CASE
-                  WHEN acc.upstream_base_url IS NULL OR TRIM(CAST(acc.upstream_base_url AS TEXT)) = '' THEN NULL
-                  ELSE
-                    CASE
-                      WHEN INSTR(
-                        CASE
-                          WHEN INSTR(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/') > 0
-                            THEN SUBSTR(
-                              REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''),
-                              1,
-                              INSTR(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/') - 1
-                            )
-                          ELSE RTRIM(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/')
-                        END,
-                        ':'
-                      ) > 0
-                        THEN SUBSTR(
-                          CASE
-                            WHEN INSTR(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/') > 0
-                              THEN SUBSTR(
-                                REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''),
-                                1,
-                                INSTR(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/') - 1
-                              )
-                            ELSE RTRIM(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/')
-                          END,
-                          1,
-                          INSTR(
-                            CASE
-                              WHEN INSTR(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/') > 0
-                                THEN SUBSTR(
-                                  REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''),
-                                  1,
-                                  INSTR(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/') - 1
-                                )
-                              ELSE RTRIM(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/')
-                            END,
-                            ':'
-                          ) - 1
-                        )
-                      ELSE
-                        CASE
-                          WHEN INSTR(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/') > 0
-                            THEN SUBSTR(
-                              REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''),
-                              1,
-                              INSTR(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/') - 1
-                            )
-                          ELSE RTRIM(REPLACE(REPLACE(LOWER(TRIM(CAST(acc.upstream_base_url AS TEXT))), 'https://', ''), 'http://', ''), '/')
-                        END
-                    END
-                END AS live_upstream_base_url_host,
                 CASE
                   WHEN acc.created_at IS NOT NULL
                     AND TRIM(CAST(acc.created_at AS TEXT)) != ''
@@ -10747,61 +10715,44 @@ async fn current_proxy_cost_backfill_snapshot_max_id(
         ),
         cost_candidates AS (
             SELECT
-                    *,
+                *,
                 CASE
-                  WHEN LOWER(TRIM(COALESCE(requested_service_tier, ''))) = 'priority'
-                    AND LOWER(TRIM(COALESCE(
+                  WHEN LOWER(TRIM(COALESCE(
                         snapshot_upstream_account_kind,
                         CASE WHEN live_upstream_account_snapshot_safe = 1 THEN live_upstream_account_kind END,
                         ''
                     ))) = ?4
-                    AND LOWER(TRIM(COALESCE(service_tier, ''))) IN ('auto', 'default', 'priority')
-                    AND (
-                        LOWER(TRIM(COALESCE(snapshot_upstream_base_url_host, ''))) = ?5
-                        OR (
-                            (snapshot_upstream_base_url_host IS NULL OR TRIM(CAST(snapshot_upstream_base_url_host AS TEXT)) = '')
-                            AND live_upstream_account_snapshot_safe = 1
-                            AND LOWER(TRIM(COALESCE(live_upstream_base_url_host, ''))) = ?5
-                        )
-                    )
+                    AND TRIM(COALESCE(requested_service_tier, '')) != ''
                   THEN 1
                   ELSE 0
-                END AS is_relay_priority_context
+                END AS uses_requested_tier_strategy
             FROM base
         )
         SELECT COALESCE(MAX(id), 0)
         FROM cost_candidates
         WHERE (
-            is_relay_priority_context = 1
+            uses_requested_tier_strategy = 1
             AND (
-                LOWER(TRIM(COALESCE(billing_service_tier, ''))) != 'priority'
-                OR (
-                    cost IS NOT NULL
-                    AND (price_version IS NULL OR price_version != ?3)
-                )
-                OR (
-                    cost IS NULL
-                    AND (price_version IS NULL OR price_version != ?2)
-                )
+                LOWER(TRIM(COALESCE(billing_service_tier, ''))) != LOWER(TRIM(COALESCE(requested_service_tier, '')))
+                OR (cost IS NULL AND (price_version IS NULL OR price_version != ?2))
+                OR (cost IS NOT NULL AND (price_version IS NULL OR price_version != ?3))
             )
         )
         OR (
-            is_relay_priority_context = 0
+            uses_requested_tier_strategy = 0
             AND (
-                (cost IS NULL AND (price_version IS NULL OR price_version != ?2))
-                OR (cost IS NOT NULL AND (price_version IS NULL OR TRIM(price_version) = ''))
-                OR LOWER(TRIM(COALESCE(billing_service_tier, ''))) != LOWER(TRIM(COALESCE(service_tier, '')))
-                OR LOWER(TRIM(COALESCE(billing_service_tier, ''))) = 'priority'
-                OR price_version = ?3
+                LOWER(TRIM(COALESCE(billing_service_tier, ''))) != LOWER(TRIM(COALESCE(service_tier, '')))
+                OR (cost IS NULL AND (price_version IS NULL OR price_version != ?2))
+                OR (cost IS NOT NULL AND (price_version IS NULL OR price_version != ?5))
             )
         )
         "#,
     )
     .bind(SOURCE_PROXY)
     .bind(attempt_version)
-    .bind(relay_priority_price_version)
-    .bind(RELAY_PRIORITY_BILLING_ACCOUNT_KIND)
-    .bind(RELAY_PRIORITY_BILLING_UPSTREAM_HOST)
+    .bind(requested_tier_price_version)
+    .bind(API_KEYS_BILLING_ACCOUNT_KIND)
+    .bind(response_tier_price_version)
     .fetch_one(pool)
     .await?)
 }
@@ -10812,7 +10763,8 @@ async fn backfill_proxy_missing_costs_from_cursor(
     snapshot_max_id: i64,
     catalog: &PricingCatalog,
     attempt_version: &str,
-    relay_priority_price_version: &str,
+    requested_tier_price_version: &str,
+    response_tier_price_version: &str,
     scan_limit: Option<u64>,
     max_elapsed: Option<Duration>,
 ) -> Result<BackfillBatchOutcome<ProxyCostBackfillSummary>> {
@@ -10959,25 +10911,16 @@ async fn backfill_proxy_missing_costs_from_cursor(
             cost_candidates AS (
                 SELECT
                     *,
-                CASE
-                  WHEN LOWER(TRIM(COALESCE(requested_service_tier, ''))) = 'priority'
-                    AND LOWER(TRIM(COALESCE(
-                        snapshot_upstream_account_kind,
-                        CASE WHEN live_upstream_account_snapshot_safe = 1 THEN live_upstream_account_kind END,
-                        ''
-                    ))) = ?6
-                    AND LOWER(TRIM(COALESCE(service_tier, ''))) IN ('auto', 'default', 'priority')
-                    AND (
-                        LOWER(TRIM(COALESCE(snapshot_upstream_base_url_host, ''))) = ?7
-                        OR (
-                            (snapshot_upstream_base_url_host IS NULL OR TRIM(CAST(snapshot_upstream_base_url_host AS TEXT)) = '')
-                            AND live_upstream_account_snapshot_safe = 1
-                            AND LOWER(TRIM(COALESCE(live_upstream_base_url_host, ''))) = ?7
-                        )
-                    )
+                    CASE
+                      WHEN LOWER(TRIM(COALESCE(
+                            snapshot_upstream_account_kind,
+                            CASE WHEN live_upstream_account_snapshot_safe = 1 THEN live_upstream_account_kind END,
+                            ''
+                        ))) = ?6
+                        AND TRIM(COALESCE(requested_service_tier, '')) != ''
                       THEN 1
                       ELSE 0
-                    END AS is_relay_priority_context
+                    END AS uses_requested_tier_strategy
                 FROM base
             )
             SELECT
@@ -10997,27 +10940,19 @@ async fn backfill_proxy_missing_costs_from_cursor(
                 live_upstream_account_snapshot_safe
             FROM cost_candidates
             WHERE (
-                is_relay_priority_context = 1
+                uses_requested_tier_strategy = 1
                 AND (
-                    LOWER(TRIM(COALESCE(billing_service_tier, ''))) != 'priority'
-                    OR (
-                        cost IS NOT NULL
-                        AND (price_version IS NULL OR price_version != ?5)
-                    )
-                    OR (
-                        cost IS NULL
-                        AND (price_version IS NULL OR price_version != ?4)
-                    )
+                    LOWER(TRIM(COALESCE(billing_service_tier, ''))) != LOWER(TRIM(COALESCE(requested_service_tier, '')))
+                    OR (cost IS NULL AND (price_version IS NULL OR price_version != ?4))
+                    OR (cost IS NOT NULL AND (price_version IS NULL OR price_version != ?5))
                 )
             )
             OR (
-                is_relay_priority_context = 0
+                uses_requested_tier_strategy = 0
                 AND (
-                    (cost IS NULL AND (price_version IS NULL OR price_version != ?4))
-                    OR (cost IS NOT NULL AND (price_version IS NULL OR TRIM(price_version) = ''))
-                    OR LOWER(TRIM(COALESCE(billing_service_tier, ''))) != LOWER(TRIM(COALESCE(service_tier, '')))
-                    OR LOWER(TRIM(COALESCE(billing_service_tier, ''))) = 'priority'
-                    OR price_version = ?5
+                    LOWER(TRIM(COALESCE(billing_service_tier, ''))) != LOWER(TRIM(COALESCE(service_tier, '')))
+                    OR (cost IS NULL AND (price_version IS NULL OR price_version != ?4))
+                    OR (cost IS NOT NULL AND (price_version IS NULL OR price_version != ?7))
                 )
             )
             ORDER BY id ASC
@@ -11028,9 +10963,9 @@ async fn backfill_proxy_missing_costs_from_cursor(
         .bind(last_seen_id)
         .bind(snapshot_max_id)
         .bind(attempt_version)
-        .bind(relay_priority_price_version)
-        .bind(RELAY_PRIORITY_BILLING_ACCOUNT_KIND)
-        .bind(RELAY_PRIORITY_BILLING_UPSTREAM_HOST)
+        .bind(requested_tier_price_version)
+        .bind(API_KEYS_BILLING_ACCOUNT_KIND)
+        .bind(response_tier_price_version)
         .bind(startup_backfill_query_limit(summary.scanned, scan_limit))
         .fetch_all(pool)
         .await?;
@@ -11059,17 +10994,15 @@ async fn backfill_proxy_missing_costs_from_cursor(
                 continue;
             }
 
-            let upstream_account_kind = resolve_backfill_upstream_account_kind(
-                candidate.snapshot_upstream_account_kind.as_deref(),
-                candidate.live_upstream_account_kind.as_deref(),
-                allow_live_upstream_account_fallback(Some(
-                    candidate.live_upstream_account_snapshot_safe,
-                )),
-            );
             let allow_live_fallback =
                 allow_live_upstream_account_fallback(Some(
                     candidate.live_upstream_account_snapshot_safe,
                 ));
+            let upstream_account_kind = resolve_backfill_upstream_account_kind(
+                candidate.snapshot_upstream_account_kind.as_deref(),
+                candidate.live_upstream_account_kind.as_deref(),
+                allow_live_fallback,
+            );
             let upstream_base_url_host = resolve_backfill_upstream_base_url_host(
                 candidate.snapshot_upstream_base_url_host.as_deref(),
                 candidate.live_upstream_base_url_host.as_deref(),
@@ -11077,13 +11010,18 @@ async fn backfill_proxy_missing_costs_from_cursor(
             );
             let (billing_service_tier, pricing_mode) =
                 resolve_proxy_billing_service_tier_and_pricing_mode(
+                    None,
                     candidate.requested_service_tier.as_deref(),
                     candidate.service_tier.as_deref(),
                     upstream_account_kind.as_deref(),
-                    upstream_base_url_host.as_deref(),
                 );
-            let (cost, cost_estimated, price_version) =
-                estimate_proxy_cost(catalog, Some(model), &usage, pricing_mode);
+            let (cost, cost_estimated, price_version) = estimate_proxy_cost(
+                catalog,
+                Some(model),
+                &usage,
+                billing_service_tier.as_deref(),
+                pricing_mode,
+            );
             if cost.is_none() || !cost_estimated {
                 summary.skipped_unpriced_model += 1;
                 push_backfill_sample(
@@ -11173,12 +11111,15 @@ async fn backfill_proxy_missing_costs(
     catalog: &PricingCatalog,
 ) -> Result<ProxyCostBackfillSummary> {
     let attempt_version = pricing_backfill_attempt_version(catalog);
-    let relay_priority_price_version =
-        proxy_price_version(&catalog.version, ProxyPricingMode::RelayFastPriority);
+    let requested_tier_price_version =
+        proxy_price_version(&catalog.version, ProxyPricingMode::RequestedTier);
+    let response_tier_price_version =
+        proxy_price_version(&catalog.version, ProxyPricingMode::ResponseTier);
     let snapshot_max_id = current_proxy_cost_backfill_snapshot_max_id(
         pool,
         &attempt_version,
-        &relay_priority_price_version,
+        &requested_tier_price_version,
+        &response_tier_price_version,
     )
     .await?;
     Ok(backfill_proxy_missing_costs_from_cursor(
@@ -11187,7 +11128,8 @@ async fn backfill_proxy_missing_costs(
         snapshot_max_id,
         catalog,
         &attempt_version,
-        &relay_priority_price_version,
+        &requested_tier_price_version,
+        &response_tier_price_version,
         None,
         None,
     )
@@ -11203,15 +11145,18 @@ async fn backfill_proxy_missing_costs_up_to_id(
     catalog: &PricingCatalog,
     attempt_version: &str,
 ) -> Result<ProxyCostBackfillSummary> {
-    let relay_priority_price_version =
-        proxy_price_version(&catalog.version, ProxyPricingMode::RelayFastPriority);
+    let requested_tier_price_version =
+        proxy_price_version(&catalog.version, ProxyPricingMode::RequestedTier);
+    let response_tier_price_version =
+        proxy_price_version(&catalog.version, ProxyPricingMode::ResponseTier);
     Ok(backfill_proxy_missing_costs_from_cursor(
         pool,
         0,
         snapshot_max_id,
         catalog,
         attempt_version,
-        &relay_priority_price_version,
+        &requested_tier_price_version,
+        &response_tier_price_version,
         None,
         None,
     )
