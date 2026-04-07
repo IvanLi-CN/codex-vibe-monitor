@@ -23668,6 +23668,68 @@ async fn proxy_openai_v1_body_only_sticky_stream_waits_only_once_before_503() {
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_via_pool_retries_after_live_body_replay_completes() {
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_retry_upstream(&[("Bearer upstream-live", 1)]).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Live Replay", "upstream-live").await;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    tokio::spawn(async move {
+        let _ = tx
+            .send(Ok(Bytes::from_static(
+                br#"{"model":"gpt-5","messages":[{"role":"user","#,
+            )))
+            .await;
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let _ = tx
+            .send(Ok(Bytes::from_static(br#""content":"hello"}]}"#)))
+            .await;
+    });
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6242,
+        &"/v1/chat/completions".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("via-pool request should succeed after replay retry");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read via-pool response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
+    assert_eq!(payload["authorization"], "Bearer upstream-live");
+    assert_eq!(payload["attempt"], 2);
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-live").copied(), Some(2));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_header_sticky_stream_prefers_body_timeout_before_pool_wait() {
     let mut config = test_config();
     config.openai_upstream_base_url =
