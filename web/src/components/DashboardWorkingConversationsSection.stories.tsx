@@ -310,6 +310,174 @@ const createdAtDescendingOrderResponse = createResponse([
   ),
 ]);
 
+const wideDesktopResponse = createResponse([
+  createConversation("pck-wide-running", [
+    createPreview({
+      id: 81,
+      invokeId: "invoke-wide-running-current",
+      occurredAt: "2026-04-04T10:04:58Z",
+      status: "running",
+      upstreamAccountName: "wide-running@example.com",
+      tTotalMs: null,
+    }),
+    createPreview({
+      id: 80,
+      invokeId: "invoke-wide-running-previous",
+      occurredAt: "2026-04-04T10:02:44Z",
+      status: "completed",
+      upstreamAccountName: "wide-running@example.com",
+      model: "gpt-5.4-mini",
+    }),
+  ]),
+  createConversation("pck-wide-failed", [
+    createPreview({
+      id: 91,
+      invokeId: "invoke-wide-failed-current",
+      occurredAt: "2026-04-04T10:04:42Z",
+      status: "http_502",
+      failureClass: "service_failure",
+      failureKind: "upstream_timeout",
+      errorMessage: "upstream gateway closed before first byte",
+      upstreamAccountId: 77,
+      upstreamAccountName: "wide-failed@example.com",
+      endpoint: "/v1/chat/completions",
+      requestedServiceTier: "auto",
+      serviceTier: "auto",
+      responseContentEncoding: "identity",
+      tUpstreamTtfbMs: null,
+      tUpstreamStreamMs: null,
+      tTotalMs: 30018,
+    }),
+    createPreview({
+      id: 90,
+      invokeId: "invoke-wide-failed-previous",
+      occurredAt: "2026-04-04T10:02:10Z",
+      status: "completed",
+      upstreamAccountId: 77,
+      upstreamAccountName: "wide-failed@example.com",
+      model: "gpt-5.4-mini",
+    }),
+  ]),
+  createConversation("pck-wide-placeholder", [
+    createPreview({
+      id: 101,
+      invokeId: "invoke-wide-placeholder-current",
+      occurredAt: "2026-04-04T10:04:21Z",
+      status: "completed",
+      upstreamAccountName: "wide-placeholder@example.com",
+    }),
+  ]),
+  createConversation("pck-wide-success-a", [
+    createPreview({
+      id: 111,
+      invokeId: "invoke-wide-success-a-current",
+      occurredAt: "2026-04-04T10:04:10Z",
+      status: "completed",
+      upstreamAccountName: "wide-success-a@example.com",
+      totalTokens: 322,
+      cost: 0.0218,
+      inputTokens: 186,
+      outputTokens: 136,
+      cacheInputTokens: 54,
+      reasoningTokens: 28,
+      tTotalMs: 514,
+    }),
+    createPreview({
+      id: 110,
+      invokeId: "invoke-wide-success-a-previous",
+      occurredAt: "2026-04-04T10:01:48Z",
+      status: "completed",
+      upstreamAccountName: "wide-success-a@example.com",
+      model: "gpt-5.4-mini",
+      totalTokens: 248,
+      cost: 0.0164,
+    }),
+  ]),
+  createConversation("pck-wide-pending", [
+    createPreview({
+      id: 121,
+      invokeId: "invoke-wide-pending-current",
+      occurredAt: "2026-04-04T10:03:58Z",
+      status: "pending",
+      upstreamAccountName: "wide-pending@example.com",
+      tTotalMs: null,
+    }),
+    createPreview({
+      id: 120,
+      invokeId: "invoke-wide-pending-previous",
+      occurredAt: "2026-04-04T10:00:58Z",
+      status: "completed",
+      upstreamAccountName: "wide-pending@example.com",
+    }),
+  ]),
+  createConversation("pck-wide-success-b", [
+    createPreview({
+      id: 131,
+      invokeId: "invoke-wide-success-b-current",
+      occurredAt: "2026-04-04T10:03:20Z",
+      status: "completed",
+      upstreamAccountName: "wide-success-b@example.com",
+      totalTokens: 418,
+      cost: 0.0276,
+      inputTokens: 238,
+      outputTokens: 180,
+      cacheInputTokens: 76,
+      reasoningTokens: 34,
+      tTotalMs: 692,
+    }),
+    createPreview({
+      id: 130,
+      invokeId: "invoke-wide-success-b-previous",
+      occurredAt: "2026-04-04T10:00:20Z",
+      status: "completed",
+      upstreamAccountName: "wide-success-b@example.com",
+      model: "gpt-5.4-mini",
+    }),
+  ]),
+  createConversation("pck-wide-running-b", [
+    createPreview({
+      id: 141,
+      invokeId: "invoke-wide-running-b-current",
+      occurredAt: "2026-04-04T10:02:44Z",
+      status: "running",
+      upstreamAccountName: "wide-running-b@example.com",
+      tTotalMs: null,
+    }),
+    createPreview({
+      id: 140,
+      invokeId: "invoke-wide-running-b-previous",
+      occurredAt: "2026-04-04T09:59:12Z",
+      status: "completed",
+      upstreamAccountName: "wide-running-b@example.com",
+      model: "gpt-5.4-mini",
+    }),
+  ]),
+  createConversation("pck-wide-warning", [
+    createPreview({
+      id: 151,
+      invokeId: "invoke-wide-warning-current",
+      occurredAt: "2026-04-04T10:02:06Z",
+      status: "http_429",
+      failureClass: "service_failure",
+      failureKind: "upstream_rate_limit",
+      errorMessage: "upstream rate limit reached for the current account",
+      upstreamAccountName: "wide-warning@example.com",
+      requestedServiceTier: "priority",
+      serviceTier: "priority",
+      tUpstreamTtfbMs: null,
+      tUpstreamStreamMs: null,
+      tTotalMs: 1820,
+    }),
+    createPreview({
+      id: 150,
+      invokeId: "invoke-wide-warning-previous",
+      occurredAt: "2026-04-04T09:58:52Z",
+      status: "completed",
+      upstreamAccountName: "wide-warning@example.com",
+    }),
+  ]),
+]);
+
 function buildCards(response: PromptCacheConversationsResponse) {
   return mapPromptCacheConversationsToDashboardCards(response)
 }
@@ -721,16 +889,26 @@ export const DrawerInteractionFlow: Story = {
 
 export const StateGallery: Story = {
   args: {
-    cards: buildCards(
-      createResponse([
-        ...currentAndPreviousResponse.conversations,
-        ...currentOnlyResponse.conversations,
-        ...runningOnlyResponse.conversations,
-        ...failedClickableResponse.conversations,
-      ]),
-    ),
+    cards: buildCards(wideDesktopResponse),
     isLoading: false,
     error: null,
+  },
+}
+
+export const WideDesktop1660: Story = {
+  args: {
+    cards: buildCards(wideDesktopResponse),
+    isLoading: false,
+    error: null,
+  },
+  parameters: {
+    viewport: { defaultViewport: "desktop1660" },
+    docs: {
+      description: {
+        story:
+          "Wide desktop state gallery proving the 1660px shell now renders the working conversations section in four columns without horizontal overflow.",
+      },
+    },
   },
 }
 
