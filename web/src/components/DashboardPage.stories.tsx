@@ -208,7 +208,7 @@ function createDashboardRequestHandler(scenario: DashboardScenario = 'default') 
   const now = Date.parse('2026-04-06T12:00:00.000Z')
   const range1dStart = now - 24 * 60 * 60 * 1000
   const range7dStart = now - 7 * 24 * 60 * 60 * 1000
-  const range90dStart = now - 90 * 24 * 60 * 60 * 1000
+  const range6moStart = now - 180 * 24 * 60 * 60 * 1000
 
   const responses = {
     today: buildSummary({
@@ -248,13 +248,13 @@ function createDashboardRequestHandler(scenario: DashboardScenario = 'default') 
       availableBuckets: ['1h'],
       points: buildTimeseriesPoints({ count: 7 * 24, bucketSeconds: 3600, startMs: range7dStart, valueOffset: 7 }),
     }),
-    timeseries90d: buildTimeseriesResponse({
-      rangeStart: new Date(range90dStart).toISOString(),
+    timeseries6mo: buildTimeseriesResponse({
+      rangeStart: new Date(range6moStart).toISOString(),
       rangeEnd: new Date(now).toISOString(),
       bucketSeconds: 86400,
       effectiveBucket: '1d',
       availableBuckets: ['1d'],
-      points: buildTimeseriesPoints({ count: 90, bucketSeconds: 86400, startMs: range90dStart, valueOffset: 11 }),
+      points: buildTimeseriesPoints({ count: 180, bucketSeconds: 86400, startMs: range6moStart, valueOffset: 11 }),
     }),
   }
 
@@ -271,7 +271,7 @@ function createDashboardRequestHandler(scenario: DashboardScenario = 'default') 
       const range = url.searchParams.get('range')
       if (range === '1d') return jsonResponse(responses.timeseries1d)
       if (range === '7d') return jsonResponse(responses.timeseries7d)
-      if (range === '90d') return jsonResponse(responses.timeseries90d)
+      if (range === '6mo') return jsonResponse(responses.timeseries6mo)
     }
 
     if (url.pathname === '/api/stats/prompt-cache-conversations') {
@@ -318,9 +318,14 @@ export const Default: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await expect(canvas.getByTestId('today-stats-overview-card')).toBeVisible()
-    await expect(canvas.getByTestId('usage-calendar-card')).toBeVisible()
     await expect(canvas.getByTestId('dashboard-activity-overview')).toBeVisible()
     await expect(canvas.getByTestId('dashboard-working-conversations')).toBeVisible()
+    await expect(canvas.queryByTestId('usage-calendar-card')).toBeNull()
+
+    const historyTab = canvas.getByRole('tab', { name: '历史' })
+    await userEvent.click(historyTab)
+    await expect(historyTab).toHaveAttribute('aria-selected', 'true')
+    await expect(canvas.getByTestId('usage-calendar-card')).toBeVisible()
 
     const range7d = canvas.getByRole('tab', { name: '7 日' })
     await userEvent.click(range7d)

@@ -3,7 +3,6 @@ import { DashboardInvocationDetailDrawer } from '../components/DashboardInvocati
 import { DashboardActivityOverview } from '../components/DashboardActivityOverview'
 import { DashboardWorkingConversationsSection } from '../components/DashboardWorkingConversationsSection'
 import { TodayStatsOverview } from '../components/TodayStatsOverview'
-import { UsageCalendar } from '../components/UsageCalendar'
 import { useDashboardWorkingConversations } from '../hooks/useDashboardWorkingConversations'
 import type { DashboardWorkingConversationInvocationSelection } from '../lib/dashboardWorkingConversations'
 import { useUpstreamAccountDetailRoute } from '../hooks/useUpstreamAccountDetailRoute'
@@ -32,11 +31,8 @@ export default function DashboardPage() {
   }, [upstreamAccountId])
 
   return (
-    <div className="mx-auto flex w-full max-w-full flex-col gap-6">
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_max-content] items-start">
-        <TodayStatsOverview stats={todaySummary} loading={todaySummaryLoading} error={todaySummaryError} />
-        <UsageCalendar />
-      </div>
+    <div className="mx-auto flex w-full max-w-[1560px] flex-col gap-6">
+      <TodayStatsOverview stats={todaySummary} loading={todaySummaryLoading} error={todaySummaryError} />
 
       <DashboardActivityOverview />
 

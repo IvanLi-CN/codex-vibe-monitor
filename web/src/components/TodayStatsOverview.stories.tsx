@@ -15,6 +15,7 @@ const sampleStats: StatsResponse = {
 const meta = {
   title: 'Dashboard/TodayStatsOverview',
   component: TodayStatsOverview,
+  tags: ['autodocs'],
   parameters: {
     layout: 'fullscreen',
   },
@@ -22,7 +23,7 @@ const meta = {
     (Story) => (
       <I18nProvider>
         <div className="min-h-screen bg-base-200 px-6 py-6 text-base-content">
-          <div className="mx-auto w-full max-w-4xl">
+          <div className="mx-auto w-full max-w-[1560px]">
             <Story />
           </div>
         </div>
@@ -40,6 +41,19 @@ export const Populated: Story = {
     stats: sampleStats,
     loading: false,
     error: null,
+  },
+}
+
+export const DesktopSingleRow: Story = {
+  args: {
+    stats: sampleStats,
+    loading: false,
+    error: null,
+  },
+  parameters: {
+    viewport: {
+      defaultViewport: 'desktop1440',
+    },
   },
 }
 
@@ -128,4 +142,49 @@ export const LiveTicker: Story = {
     error: null,
   },
   render: () => <LiveTickerPreview />,
+}
+
+function StateGalleryPreview() {
+  return (
+    <div className="space-y-6">
+      <div className="section-heading">
+        <h2 className="section-title">Today stats states</h2>
+        <p className="section-description">
+          Desktop preview keeps all five KPI tiles on one row while preserving loading and failure states.
+        </p>
+      </div>
+      <div className="grid gap-6">
+        <div className="space-y-3">
+          <div className="text-sm font-semibold text-base-content/70">Populated</div>
+          <TodayStatsOverview stats={sampleStats} loading={false} error={null} />
+        </div>
+        <div className="space-y-3">
+          <div className="text-sm font-semibold text-base-content/70">Loading</div>
+          <TodayStatsOverview stats={null} loading error={null} />
+        </div>
+        <div className="space-y-3">
+          <div className="text-sm font-semibold text-base-content/70">Load error</div>
+          <TodayStatsOverview
+            stats={null}
+            loading={false}
+            error="Request failed: 500 unable to open database file"
+          />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export const StateGallery: Story = {
+  args: {
+    stats: sampleStats,
+    loading: false,
+    error: null,
+  },
+  parameters: {
+    viewport: {
+      defaultViewport: 'desktop1440',
+    },
+  },
+  render: () => <StateGalleryPreview />,
 }

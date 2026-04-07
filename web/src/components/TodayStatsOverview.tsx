@@ -17,32 +17,22 @@ interface MetricTileProps {
   label: string
   value: string
   loading: boolean
-  prominent?: boolean
   toneClass?: string
 }
 
-function MetricTile({ label, value, loading, prominent, toneClass }: MetricTileProps) {
+function MetricTile({ label, value, loading, toneClass }: MetricTileProps) {
   return (
     <div
-      className={cn(
-        'rounded-xl border bg-base-200/60 p-4',
-        prominent && 'sm:col-span-2 border-primary/35 bg-gradient-to-br from-primary/15 via-base-100/55 to-secondary/10',
-        !prominent && 'border-base-300/75',
-      )}
+      data-testid="today-stats-metric-tile"
+      className="rounded-xl border border-base-300/75 bg-base-200/60 p-4"
     >
       <div className="text-xs font-semibold uppercase tracking-[0.14em] text-base-content/65">{label}</div>
       {loading ? (
-        <div
-          className={cn(
-            'mt-2 animate-pulse rounded bg-base-300/65',
-            prominent ? 'h-9 w-40' : 'h-8 w-28',
-          )}
-        />
+        <div className="mt-2 h-8 w-28 animate-pulse rounded bg-base-300/65" />
       ) : (
         <div
           className={cn(
-            'mt-2 font-semibold leading-tight text-base-content',
-            prominent ? 'text-3xl sm:text-[2rem]' : 'text-2xl',
+            'mt-2 text-2xl font-semibold leading-tight text-base-content lg:text-[1.85rem]',
             toneClass,
           )}
         >
@@ -90,12 +80,14 @@ export function TodayStatsOverview({ stats, loading, error }: TodayStatsOverview
         {error ? (
           <Alert variant="error">{t('stats.cards.loadError', { error })}</Alert>
         ) : (
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+          <div
+            data-testid="today-stats-metrics-grid"
+            className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-5"
+          >
             <MetricTile
               label={t('stats.cards.totalCalls')}
               value={countValue}
               loading={loading}
-              prominent
               toneClass="text-primary"
             />
             <MetricTile

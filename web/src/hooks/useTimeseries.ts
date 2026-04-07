@@ -36,6 +36,8 @@ export const TIMESERIES_RECORDS_RESYNC_THROTTLE_MS = 3_000
 export const TIMESERIES_OPEN_RESYNC_COOLDOWN_MS = 3_000
 
 export function resolveTimeseriesSyncPolicy(range: string, options?: UseTimeseriesOptions): TimeseriesSyncPolicy {
+  const rangeSeconds = parseRangeSpec(range)
+
   if (options?.preferServerAggregation) {
     return {
       mode: 'server',
@@ -57,7 +59,7 @@ export function resolveTimeseriesSyncPolicy(range: string, options?: UseTimeseri
     }
   }
 
-  if (range === '90d' && options?.bucket === '1d') {
+  if (options?.bucket === '1d' && rangeSeconds !== null && rangeSeconds >= 90 * 86_400) {
     return {
       mode: 'current-day-local',
       recordsRefreshThrottleMs: 0,
