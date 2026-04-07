@@ -1,17 +1,20 @@
-import type { Meta, StoryObj } from '@storybook/react-vite'
-import { expect, within } from 'storybook/test'
-import { I18nProvider } from '../i18n'
-import type { ParallelWorkStatsResponse, ParallelWorkWindowResponse } from '../lib/api'
-import { ParallelWorkStatsSection } from './ParallelWorkStatsSection'
+import type { Meta, StoryObj } from "@storybook/react-vite";
+import { expect, userEvent, within } from "storybook/test";
+import { I18nProvider } from "../i18n";
+import type {
+  ParallelWorkStatsResponse,
+  ParallelWorkWindowResponse,
+} from "../lib/api";
+import { ParallelWorkStatsSection } from "./ParallelWorkStatsSection";
 
 function buildWindow(
   overrides: Partial<ParallelWorkWindowResponse> & {
-    rangeStart: string
-    rangeEnd: string
-    bucketSeconds: number
-    completeBucketCount: number
-    activeBucketCount: number
-    points: ParallelWorkWindowResponse['points']
+    rangeStart: string;
+    rangeEnd: string;
+    bucketSeconds: number;
+    completeBucketCount: number;
+    activeBucketCount: number;
+    points: ParallelWorkWindowResponse["points"];
   },
 ): ParallelWorkWindowResponse {
   return {
@@ -24,13 +27,13 @@ function buildWindow(
     maxCount: overrides.maxCount ?? 0,
     avgCount: overrides.avgCount ?? 0,
     points: overrides.points,
-  }
+  };
 }
 
 const populatedStats: ParallelWorkStatsResponse = {
   minute7d: buildWindow({
-    rangeStart: '2026-03-01T00:00:00Z',
-    rangeEnd: '2026-03-08T00:00:00Z',
+    rangeStart: "2026-03-01T00:00:00Z",
+    rangeEnd: "2026-03-08T00:00:00Z",
     bucketSeconds: 60,
     completeBucketCount: 10_080,
     activeBucketCount: 4_132,
@@ -40,12 +43,13 @@ const populatedStats: ParallelWorkStatsResponse = {
     points: Array.from({ length: 16 }, (_, index) => ({
       bucketStart: new Date(Date.UTC(2026, 2, 7, 10, index)).toISOString(),
       bucketEnd: new Date(Date.UTC(2026, 2, 7, 10, index + 1)).toISOString(),
-      parallelCount: [1, 3, 2, 5, 7, 10, 8, 9, 12, 11, 15, 14, 13, 9, 6, 4][index] ?? 0,
+      parallelCount:
+        [1, 3, 2, 5, 7, 10, 8, 9, 12, 11, 15, 14, 13, 9, 6, 4][index] ?? 0,
     })),
   }),
   hour30d: buildWindow({
-    rangeStart: '2026-02-06T00:00:00Z',
-    rangeEnd: '2026-03-08T00:00:00Z',
+    rangeStart: "2026-02-06T00:00:00Z",
+    rangeEnd: "2026-03-08T00:00:00Z",
     bucketSeconds: 3600,
     completeBucketCount: 720,
     activeBucketCount: 321,
@@ -59,8 +63,8 @@ const populatedStats: ParallelWorkStatsResponse = {
     })),
   }),
   dayAll: buildWindow({
-    rangeStart: '2026-01-01T00:00:00Z',
-    rangeEnd: '2026-03-08T00:00:00Z',
+    rangeStart: "2026-01-01T00:00:00Z",
+    rangeEnd: "2026-03-08T00:00:00Z",
     bucketSeconds: 86_400,
     completeBucketCount: 67,
     activeBucketCount: 54,
@@ -73,13 +77,13 @@ const populatedStats: ParallelWorkStatsResponse = {
       parallelCount: [1, 2, 3, 5, 4, 4, 6, 5, 3, 2][index] ?? 0,
     })),
   }),
-}
+};
 
 const emptyDayAllStats: ParallelWorkStatsResponse = {
   ...populatedStats,
   dayAll: buildWindow({
-    rangeStart: '2026-03-08T00:00:00Z',
-    rangeEnd: '2026-03-08T00:00:00Z',
+    rangeStart: "2026-03-08T00:00:00Z",
+    rangeEnd: "2026-03-08T00:00:00Z",
     bucketSeconds: 86_400,
     completeBucketCount: 0,
     activeBucketCount: 0,
@@ -88,14 +92,14 @@ const emptyDayAllStats: ParallelWorkStatsResponse = {
     avgCount: null,
     points: [],
   }),
-}
+};
 
 const meta = {
-  title: 'Stats/ParallelWorkStatsSection',
+  title: "Stats/ParallelWorkStatsSection",
   component: ParallelWorkStatsSection,
-  tags: ['autodocs'],
+  tags: ["autodocs"],
   parameters: {
-    layout: 'fullscreen',
+    layout: "fullscreen",
   },
   decorators: [
     (Story) => (
@@ -108,11 +112,11 @@ const meta = {
       </I18nProvider>
     ),
   ],
-} satisfies Meta<typeof ParallelWorkStatsSection>
+} satisfies Meta<typeof ParallelWorkStatsSection>;
 
-export default meta
+export default meta;
 
-type Story = StoryObj<typeof meta>
+type Story = StoryObj<typeof meta>;
 
 export const Populated: Story = {
   args: {
@@ -121,47 +125,64 @@ export const Populated: Story = {
     error: null,
   },
   play: async ({ canvasElement }) => {
-    const canvas = within(canvasElement)
-    await expect(canvas.getByTestId('parallel-work-card-minute7d')).toBeInTheDocument()
-    await expect(canvas.queryByTestId('parallel-work-card-hour30d')).toBeNull()
-    await expect(canvas.queryByTestId('parallel-work-card-dayAll')).toBeNull()
+    const canvas = within(canvasElement);
+    await expect(
+      canvas.getByTestId("parallel-work-card-minute7d"),
+    ).toBeInTheDocument();
+    await expect(canvas.queryByTestId("parallel-work-card-hour30d")).toBeNull();
+    await expect(canvas.queryByTestId("parallel-work-card-dayAll")).toBeNull();
+    const chart = await canvas.findByLabelText(/last 7 days/i);
+    const firstPoint = chart.querySelector('[data-inline-chart-index="0"]');
+    if (
+      !(firstPoint instanceof HTMLElement || firstPoint instanceof SVGElement)
+    ) {
+      throw new Error("missing first parallel-work chart point");
+    }
+    await userEvent.hover(firstPoint);
+    await expect(
+      within(document.body).getByRole("tooltip"),
+    ).toBeInTheDocument();
+    await expect(
+      within(document.body).getByText(/Parallel work/i),
+    ).toBeInTheDocument();
   },
-}
+};
 
 export const Hour30dSelected: Story = {
   args: {
     stats: populatedStats,
     isLoading: false,
     error: null,
-    defaultWindowKey: 'hour30d',
+    defaultWindowKey: "hour30d",
   },
-}
+};
 
 export const DayAllEmpty: Story = {
   args: {
     stats: emptyDayAllStats,
     isLoading: false,
     error: null,
-    defaultWindowKey: 'dayAll',
+    defaultWindowKey: "dayAll",
   },
-}
+};
 
 export const Loading: Story = {
   args: {
     stats: null,
     isLoading: true,
     error: null,
-    defaultWindowKey: 'hour30d',
+    defaultWindowKey: "hour30d",
   },
-}
+};
 
 export const LoadError: Story = {
   args: {
     stats: null,
     isLoading: false,
-    error: 'Request failed: 400 unsupported timeZone for historical parallel-work rollups',
+    error:
+      "Request failed: 400 unsupported timeZone for historical parallel-work rollups",
   },
-}
+};
 
 export const Gallery: Story = {
   args: {
@@ -171,7 +192,11 @@ export const Gallery: Story = {
   },
   render: () => (
     <div className="space-y-6">
-      <ParallelWorkStatsSection stats={populatedStats} isLoading={false} error={null} />
+      <ParallelWorkStatsSection
+        stats={populatedStats}
+        isLoading={false}
+        error={null}
+      />
       <ParallelWorkStatsSection
         stats={populatedStats}
         isLoading={false}
@@ -192,4 +217,4 @@ export const Gallery: Story = {
       />
     </div>
   ),
-}
+};

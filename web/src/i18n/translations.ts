@@ -600,18 +600,15 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.denyCutOut": "Block cut out",
     "accountPool.upstreamAccounts.effectiveRule.allowCutIn": "Allow cut in",
     "accountPool.upstreamAccounts.effectiveRule.denyCutIn": "Block cut in",
-    "accountPool.upstreamAccounts.effectiveRule.priorityPrimary":
-      "Primary",
-    "accountPool.upstreamAccounts.effectiveRule.priorityNormal":
-      "Normal",
+    "accountPool.upstreamAccounts.effectiveRule.priorityPrimary": "Primary",
+    "accountPool.upstreamAccounts.effectiveRule.priorityNormal": "Normal",
     "accountPool.upstreamAccounts.effectiveRule.priorityFallback":
       "Fallback only",
     "accountPool.upstreamAccounts.effectiveRule.fastModeKeepOriginal":
       "Keep original",
     "accountPool.upstreamAccounts.effectiveRule.fastModeFillMissing":
       "Fill when missing",
-    "accountPool.upstreamAccounts.effectiveRule.fastModeForceAdd":
-      "Force add",
+    "accountPool.upstreamAccounts.effectiveRule.fastModeForceAdd": "Force add",
     "accountPool.upstreamAccounts.effectiveRule.fastModeForceRemove":
       "Force remove",
     "accountPool.upstreamAccounts.effectiveRule.sourceTags": "Rule source tags",
@@ -1298,6 +1295,7 @@ const baseTranslations = {
     "stats.parallelWork.metrics.min": "Min",
     "stats.parallelWork.metrics.max": "Max",
     "stats.parallelWork.metrics.avg": "Avg",
+    "stats.parallelWork.tooltip.parallelCount": "Parallel work",
     "stats.parallelWork.windows.minute7d.title": "Last 7 days · by minute",
     "stats.parallelWork.windows.minute7d.toggleLabel": "7d · minute",
     "stats.parallelWork.windows.minute7d.description":
@@ -1646,14 +1644,22 @@ const baseTranslations = {
     "table.responseBody.openFullDetails": "Open full details",
     "table.responseBody.loading": "Loading response body…",
     "table.responseBody.loadError": "Failed to load response body: {{error}}",
-    "table.responseBody.previewTruncated": "Preview truncated. Open the full details drawer for the complete record.",
-    "table.responseBody.unavailable.notAbnormal": "This record does not have an abnormal response body.",
-    "table.responseBody.unavailable.detailPruned": "The full response body is no longer retained online for this record.",
-    "table.responseBody.unavailable.rawFileMissing": "The archived raw response file is no longer available.",
-    "table.responseBody.unavailable.rawFileUnreadable": "The archived raw response file could not be read.",
-    "table.responseBody.unavailable.previewOnly": "Only the retained response preview is available for this record.",
-    "table.responseBody.unavailable.missingBody": "No retained response body is available for this record.",
-    "table.responseBody.unavailable.generic": "The response body is currently unavailable.",
+    "table.responseBody.previewTruncated":
+      "Preview truncated. Open the full details drawer for the complete record.",
+    "table.responseBody.unavailable.notAbnormal":
+      "This record does not have an abnormal response body.",
+    "table.responseBody.unavailable.detailPruned":
+      "The full response body is no longer retained online for this record.",
+    "table.responseBody.unavailable.rawFileMissing":
+      "The archived raw response file is no longer available.",
+    "table.responseBody.unavailable.rawFileUnreadable":
+      "The archived raw response file could not be read.",
+    "table.responseBody.unavailable.previewOnly":
+      "Only the retained response preview is available for this record.",
+    "table.responseBody.unavailable.missingBody":
+      "No retained response body is available for this record.",
+    "table.responseBody.unavailable.generic":
+      "The response body is currently unavailable.",
     "table.details.timingsTitle": "Stage timings",
     "table.details.stage.requestRead": "Request read",
     "table.details.stage.requestParse": "Request parse",
@@ -2914,11 +2920,13 @@ const baseTranslations = {
     "stats.parallelWork.empty": "还没有可统计的完整 bucket。",
     "stats.parallelWork.windowToggleAria": "切换并行工作统计窗口",
     "stats.parallelWork.chartAria": "{{title}} 趋势",
-    "stats.parallelWork.samples": "{{complete}} 个完整 bucket · {{active}} 个活跃 bucket",
+    "stats.parallelWork.samples":
+      "{{complete}} 个完整 bucket · {{active}} 个活跃 bucket",
     "stats.parallelWork.rangeSummary": "范围：{{start}} → {{end}}",
     "stats.parallelWork.metrics.min": "最低",
     "stats.parallelWork.metrics.max": "最高",
     "stats.parallelWork.metrics.avg": "均数",
+    "stats.parallelWork.tooltip.parallelCount": "并行工作数",
     "stats.parallelWork.windows.minute7d.title": "最近 7 天 · 按分钟",
     "stats.parallelWork.windows.minute7d.toggleLabel": "7天 · 分钟",
     "stats.parallelWork.windows.minute7d.description":
@@ -3261,13 +3269,19 @@ const baseTranslations = {
     "table.responseBody.openFullDetails": "查看完整详情",
     "table.responseBody.loading": "正在加载响应体…",
     "table.responseBody.loadError": "加载响应体失败：{{error}}",
-    "table.responseBody.previewTruncated": "当前仅展示节选，可打开完整详情抽屉查看完整记录。",
+    "table.responseBody.previewTruncated":
+      "当前仅展示节选，可打开完整详情抽屉查看完整记录。",
     "table.responseBody.unavailable.notAbnormal": "该记录没有异常响应体。",
-    "table.responseBody.unavailable.detailPruned": "该记录的完整响应体已不再在线保留。",
-    "table.responseBody.unavailable.rawFileMissing": "归档 raw 响应文件已不可用。",
-    "table.responseBody.unavailable.rawFileUnreadable": "归档 raw 响应文件暂时无法读取。",
-    "table.responseBody.unavailable.previewOnly": "该记录当前仅保留响应体节选。",
-    "table.responseBody.unavailable.missingBody": "该记录没有保留可展示的响应体。",
+    "table.responseBody.unavailable.detailPruned":
+      "该记录的完整响应体已不再在线保留。",
+    "table.responseBody.unavailable.rawFileMissing":
+      "归档 raw 响应文件已不可用。",
+    "table.responseBody.unavailable.rawFileUnreadable":
+      "归档 raw 响应文件暂时无法读取。",
+    "table.responseBody.unavailable.previewOnly":
+      "该记录当前仅保留响应体节选。",
+    "table.responseBody.unavailable.missingBody":
+      "该记录没有保留可展示的响应体。",
     "table.responseBody.unavailable.generic": "响应体当前不可用。",
     "table.details.timingsTitle": "阶段耗时",
     "table.details.stage.requestRead": "请求读取",
