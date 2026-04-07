@@ -244,17 +244,22 @@ describe("ParallelWorkStatsSection", () => {
     const activeCard = host?.querySelector(
       '[data-testid="parallel-work-card-minute7d"]',
     ) as HTMLElement | null;
+    const controls = host?.querySelector(
+      '[data-testid="parallel-work-controls-minute7d"]',
+    ) as HTMLElement | null;
     const toggle = host?.querySelector(
       '[data-testid="parallel-work-window-toggle"]',
     ) as HTMLElement | null;
+    const infoTrigger = document.querySelector(
+      'button[aria-label="Explain Last 7 days · by minute details"]',
+    ) as HTMLButtonElement | null;
     expect(chart).not.toBeNull();
     expect(chart?.className.baseVal).toContain("w-full");
     expect(activeCard?.contains(toggle)).toBe(true);
-    expect(
-      document.querySelector(
-        'button[aria-label="Explain Last 7 days · by minute details"]',
-      ),
-    ).not.toBeNull();
+    expect(controls).not.toBeNull();
+    expect(infoTrigger).not.toBeNull();
+    expect(controls?.contains(toggle)).toBe(true);
+    expect(controls?.contains(infoTrigger)).toBe(true);
   });
 
   it("collapses secondary window copy into a question-mark tooltip", () => {

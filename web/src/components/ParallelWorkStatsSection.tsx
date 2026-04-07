@@ -235,6 +235,34 @@ function ParallelWorkWindowInfoTrigger({
   );
 }
 
+function ParallelWorkWindowControls({
+  activeWindowKey,
+  onWindowSelect,
+  tooltipContent,
+  tooltipLabel,
+}: {
+  activeWindowKey: ParallelWorkWindowKey;
+  onWindowSelect: (windowKey: ParallelWorkWindowKey) => void;
+  tooltipContent: string;
+  tooltipLabel: string;
+}) {
+  return (
+    <div
+      className="flex items-center justify-end gap-2 overflow-x-auto no-scrollbar"
+      data-testid={"parallel-work-controls-" + activeWindowKey}
+    >
+      <ParallelWorkWindowInfoTrigger
+        tooltipContent={tooltipContent}
+        tooltipLabel={tooltipLabel}
+      />
+      <ParallelWorkWindowToggle
+        activeWindowKey={activeWindowKey}
+        onWindowSelect={onWindowSelect}
+      />
+    </div>
+  );
+}
+
 function ParallelWorkWindowToggle({
   activeWindowKey,
   onWindowSelect,
@@ -245,7 +273,7 @@ function ParallelWorkWindowToggle({
   const { t } = useTranslation();
 
   return (
-    <div className="flex w-full justify-end overflow-x-auto no-scrollbar sm:w-auto">
+    <div className="flex justify-end">
       <SegmentedControl
         size="compact"
         className="min-w-max"
@@ -461,21 +489,15 @@ function ParallelWorkWindowCard({
       className="flex min-h-[22rem] flex-col gap-4 rounded-[1.35rem] border border-base-300/75 bg-base-100/82 p-4 shadow-sm"
       data-testid={"parallel-work-card-" + windowKey}
     >
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex min-w-0 flex-1 items-center">
-          <ParallelWorkWindowInfoTrigger
-            tooltipContent={tooltipContent}
-            tooltipLabel={t("stats.parallelWork.detailsTooltipLabel", {
-              title,
-            })}
-          />
-        </div>
-        <div className="sm:pl-4">
-          <ParallelWorkWindowToggle
-            activeWindowKey={activeWindowKey}
-            onWindowSelect={onWindowSelect}
-          />
-        </div>
+      <div className="flex justify-end">
+        <ParallelWorkWindowControls
+          activeWindowKey={activeWindowKey}
+          onWindowSelect={onWindowSelect}
+          tooltipContent={tooltipContent}
+          tooltipLabel={t("stats.parallelWork.detailsTooltipLabel", {
+            title,
+          })}
+        />
       </div>
 
       <div className="grid grid-cols-3 gap-2.5">
@@ -553,21 +575,15 @@ function ParallelWorkLoadingCard({
       className="flex min-h-[22rem] flex-col gap-4 rounded-[1.35rem] border border-base-300/75 bg-base-100/82 p-4 shadow-sm"
       data-testid={"parallel-work-card-" + windowKey}
     >
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex min-w-0 flex-1 items-center">
-          <ParallelWorkWindowInfoTrigger
-            tooltipContent={tooltipContent}
-            tooltipLabel={t("stats.parallelWork.detailsTooltipLabel", {
-              title,
-            })}
-          />
-        </div>
-        <div className="sm:pl-4">
-          <ParallelWorkWindowToggle
-            activeWindowKey={activeWindowKey}
-            onWindowSelect={onWindowSelect}
-          />
-        </div>
+      <div className="flex justify-end">
+        <ParallelWorkWindowControls
+          activeWindowKey={activeWindowKey}
+          onWindowSelect={onWindowSelect}
+          tooltipContent={tooltipContent}
+          tooltipLabel={t("stats.parallelWork.detailsTooltipLabel", {
+            title,
+          })}
+        />
       </div>
       <div className="grid grid-cols-3 gap-2.5">
         {Array.from({ length: 3 }).map((_, index) => (
@@ -610,21 +626,15 @@ function ParallelWorkErrorCard({
       className="flex min-h-[14rem] flex-col gap-4 rounded-[1.35rem] border border-base-300/75 bg-base-100/82 p-4 shadow-sm"
       data-testid={"parallel-work-card-" + activeWindowKey}
     >
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-        <div className="flex min-w-0 flex-1 items-center">
-          <ParallelWorkWindowInfoTrigger
-            tooltipContent={tooltipContent}
-            tooltipLabel={t("stats.parallelWork.detailsTooltipLabel", {
-              title,
-            })}
-          />
-        </div>
-        <div className="sm:pl-4">
-          <ParallelWorkWindowToggle
-            activeWindowKey={activeWindowKey}
-            onWindowSelect={onWindowSelect}
-          />
-        </div>
+      <div className="flex justify-end">
+        <ParallelWorkWindowControls
+          activeWindowKey={activeWindowKey}
+          onWindowSelect={onWindowSelect}
+          tooltipContent={tooltipContent}
+          tooltipLabel={t("stats.parallelWork.detailsTooltipLabel", {
+            title,
+          })}
+        />
       </div>
       <Alert variant="error">{error}</Alert>
     </article>
