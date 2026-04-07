@@ -1,14 +1,17 @@
+import { useState } from 'react'
 import type { ParallelWorkStatsResponse, ParallelWorkWindowResponse } from '../lib/api'
 import { Alert } from './ui/alert'
 import { useTranslation } from '../i18n'
+import { SegmentedControl, SegmentedControlItem } from './ui/segmented-control'
 
 interface ParallelWorkStatsSectionProps {
   stats: ParallelWorkStatsResponse | null
   isLoading: boolean
   error: string | null
+  defaultWindowKey?: ParallelWorkWindowKey
 }
 
-type ParallelWorkWindowKey = 'minute7d' | 'hour30d' | 'dayAll'
+export type ParallelWorkWindowKey = 'minute7d' | 'hour30d' | 'dayAll'
 
 const WINDOW_KEYS: ParallelWorkWindowKey[] = ['minute7d', 'hour30d', 'dayAll']
 
@@ -22,16 +25,19 @@ function resolveWindowMeta(key: ParallelWorkWindowKey) {
       return {
         titleKey: 'stats.parallelWork.windows.minute7d.title',
         descriptionKey: 'stats.parallelWork.windows.minute7d.description',
+        toggleLabelKey: 'stats.parallelWork.windows.minute7d.toggleLabel',
       }
     case 'hour30d':
       return {
         titleKey: 'stats.parallelWork.windows.hour30d.title',
         descriptionKey: 'stats.parallelWork.windows.hour30d.description',
+        toggleLabelKey: 'stats.parallelWork.windows.hour30d.toggleLabel',
       }
     case 'dayAll':
       return {
         titleKey: 'stats.parallelWork.windows.dayAll.title',
         descriptionKey: 'stats.parallelWork.windows.dayAll.description',
+        toggleLabelKey: 'stats.parallelWork.windows.dayAll.toggleLabel',
       }
   }
 }
@@ -261,33 +267,53 @@ export function ParallelWorkStatsSection({
   stats,
   isLoading,
   error,
+  defaultWindowKey = 'minute7d',
 }: ParallelWorkStatsSectionProps) {
   const { t } = useTranslation()
+  const [activeWindowKey, setActiveWindowKey] = useState<ParallelWorkWindowKey>(defaultWindowKey)
+  const activeWindow = stats?.[activeWindowKey] ?? null
 
   return (
     <section className="surface-panel" data-testid="parallel-work-section">
       <div className="surface-panel-body gap-4">
-        <div className="section-heading">
-          <h3 className="section-title">{t('stats.parallelWork.title')}</h3>
-          <p className="section-description">{t('stats.parallelWork.description')}</p>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div className="section-heading">
+            <h3 className="section-title">{t('stats.parallelWork.title')}</h3>
+            <p className="section-description">{t('stats.parallelWork.description')}</p>
+          </div>
+          <div className="w-full overflow-x-auto no-scrollbar sm:w-auto">
+            <SegmentedControl
+              size="compact"
+              className="min-w-max"
+              role="tablist"
+              aria-label={t('stats.parallelWork.windowToggleAria')}
+              data-testid="parallel-work-window-toggle"
+            >
+              {WINDOW_KEYS.map((windowKey) => {
+                const meta = resolveWindowMeta(windowKey)
+                const active = windowKey === activeWindowKey
+                return (
+                  <SegmentedControlItem
+                    key={windowKey}
+                    active={active}
+                    role="tab"
+                    aria-selected={active}
+                    onClick={() => setActiveWindowKey(windowKey)}
+                    data-testid={`parallel-work-window-trigger-${windowKey}`}
+                  >
+                    {t(meta.toggleLabelKey)}
+                  </SegmentedControlItem>
+                )
+              })}
+            </SegmentedControl>
+          </div>
         </div>
         {error ? (
           <Alert variant="error">{error}</Alert>
+        ) : isLoading || !activeWindow ? (
+          <ParallelWorkLoadingCard windowKey={activeWindowKey} />
         ) : (
-          <div className="grid gap-4 xl:grid-cols-3">
-            {WINDOW_KEYS.map((windowKey) => {
-              if (isLoading || !stats) {
-                return <ParallelWorkLoadingCard key={windowKey} windowKey={windowKey} />
-              }
-              return (
-                <ParallelWorkWindowCard
-                  key={windowKey}
-                  windowKey={windowKey}
-                  window={stats[windowKey]}
-                />
-              )
-            })}
-          </div>
+          <ParallelWorkWindowCard windowKey={activeWindowKey} window={activeWindow} />
         )}
       </div>
     </section>

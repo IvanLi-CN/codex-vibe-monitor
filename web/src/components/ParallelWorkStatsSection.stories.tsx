@@ -123,8 +123,17 @@ export const Populated: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
     await expect(canvas.getByTestId('parallel-work-card-minute7d')).toBeInTheDocument()
-    await expect(canvas.getByTestId('parallel-work-card-hour30d')).toBeInTheDocument()
-    await expect(canvas.getByTestId('parallel-work-card-dayAll')).toBeInTheDocument()
+    await expect(canvas.queryByTestId('parallel-work-card-hour30d')).toBeNull()
+    await expect(canvas.queryByTestId('parallel-work-card-dayAll')).toBeNull()
+  },
+}
+
+export const Hour30dSelected: Story = {
+  args: {
+    stats: populatedStats,
+    isLoading: false,
+    error: null,
+    defaultWindowKey: 'hour30d',
   },
 }
 
@@ -133,6 +142,7 @@ export const DayAllEmpty: Story = {
     stats: emptyDayAllStats,
     isLoading: false,
     error: null,
+    defaultWindowKey: 'dayAll',
   },
 }
 
@@ -141,6 +151,7 @@ export const Loading: Story = {
     stats: null,
     isLoading: true,
     error: null,
+    defaultWindowKey: 'hour30d',
   },
 }
 
@@ -161,7 +172,18 @@ export const Gallery: Story = {
   render: () => (
     <div className="space-y-6">
       <ParallelWorkStatsSection stats={populatedStats} isLoading={false} error={null} />
-      <ParallelWorkStatsSection stats={emptyDayAllStats} isLoading={false} error={null} />
+      <ParallelWorkStatsSection
+        stats={populatedStats}
+        isLoading={false}
+        error={null}
+        defaultWindowKey="hour30d"
+      />
+      <ParallelWorkStatsSection
+        stats={emptyDayAllStats}
+        isLoading={false}
+        error={null}
+        defaultWindowKey="dayAll"
+      />
       <ParallelWorkStatsSection stats={null} isLoading={true} error={null} />
       <ParallelWorkStatsSection
         stats={null}

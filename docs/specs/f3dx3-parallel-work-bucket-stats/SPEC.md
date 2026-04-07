@@ -20,7 +20,7 @@
 - 新增 `GET /api/stats/parallel-work?timeZone=`，固定返回 `minute7d`、`hour30d`、`dayAll` 三组窗口。
 - `minute7d` 走 `codex_invocations` 精确查询；`hour30d` 与 `dayAll` 复用 `prompt_cache_rollup_hourly`。
 - 每组窗口都返回零填充后的完整 bucket 序列，以及 `minCount / maxCount / avgCount / completeBucketCount / activeBucketCount`。
-- Stats 页新增一个响应式 section，以三张卡片展示三个窗口的 min / max / avg 与紧凑趋势图。
+- Stats 页新增一个响应式 section，按项目既有 segmented toggle 习惯在 `minute7d / hour30d / dayAll` 三个窗口之间切换，每次只显示一个窗口卡片与趋势图。
 - 为新 section 补稳定 Storybook 入口，并将 Storybook docs 作为视觉证据真相源。
 
 ### Non-goals
@@ -92,7 +92,7 @@
 - Given bucket 内没有任何请求，When 返回窗口数据，Then 该 bucket 仍会作为 `parallelCount = 0` 的点出现在结果中。
 - Given 当前分钟 / 小时 / 自然日尚未结束，When 请求统计，Then 当前未结束 bucket 不会进入 points 与 summary。
 - Given `dayAll` 还没有任何完整自然日样本，When 请求统计，Then `dayAll.points = []` 且 `minCount / maxCount / avgCount = null`。
-- Given 打开 Stats 页并行工作 section，When 数据正常返回，Then 页面展示三张卡片，分别对应最近 7 天按分钟、最近 30 天按小时、全历史按天。
+- Given 打开 Stats 页并行工作 section，When 数据正常返回，Then 页面通过 segmented toggle 在最近 7 天按分钟、最近 30 天按小时、全历史按天三个窗口之间切换，且同一时刻只显示一个窗口卡片。
 - Given section 进入 loading / error / empty / populated 任一状态，When 渲染 Storybook，Then 布局稳定且状态文案清晰。
 
 ## 非功能性验收 / 质量门槛
@@ -127,9 +127,9 @@
   submission_gate: pending-owner-approval
   docs_entry_or_title: Stats/ParallelWorkStatsSection
   state: populated
-  evidence_note: 验证 Stats 页新增并行工作 section 已按 `minute7d / hour30d / dayAll` 三窗口渲染三张卡片，并展示最低 / 最高 / 均数与紧凑趋势图。
+  evidence_note: 验证 Stats 页新增并行工作 section 已按项目既有 segmented toggle 习惯切换显示 `minute7d / hour30d / dayAll` 三个窗口，并在当前激活窗口展示最低 / 最高 / 均数与紧凑趋势图。
   image:
-  ![并行工作统计三窗口 populated docs](./assets/parallel-work-populated-docs.png)
+  ![并行工作统计 segmented populated docs](./assets/parallel-work-segmented-populated-docs.png)
 
 - source_type: storybook_docs
   target_program: mock-only
@@ -138,9 +138,9 @@
   submission_gate: pending-owner-approval
   docs_entry_or_title: Stats/ParallelWorkStatsSection
   scenario: gallery
-  evidence_note: 验证同一 docs 入口已覆盖 populated、`dayAll` 空历史、loading 与 error 四类关键状态，便于主人一次性审阅状态矩阵。
+  evidence_note: 验证同一 docs 入口已覆盖分钟窗口默认态、切换到小时窗口、`dayAll` 空历史、loading 与 error 五类关键状态，且每次只显示一个激活窗口。
   image:
-  ![并行工作统计 docs gallery](./assets/parallel-work-gallery-docs.png)
+  ![并行工作统计 segmented docs gallery](./assets/parallel-work-segmented-gallery-docs.png)
 
 ## 实现里程碑（Milestones / Delivery checklist）
 
@@ -162,5 +162,5 @@
 
 ## 变更记录（Change log）
 
-- 2026-04-07: 完成 `GET /api/stats/parallel-work`、固定窗口聚合、Stats 页 section、Storybook docs 与前后端测试；本地 `cargo check --tests`、`cargo test parallel_work -- --nocapture`、`cd web && bun run test`、`cd web && bun run build`、`cd web && bun run build-storybook` 已通过。
+- 2026-04-07: 完成 `GET /api/stats/parallel-work`、固定窗口聚合、Stats 页 section、Storybook docs 与前后端测试；根据主人反馈将并行工作 section 改为按项目既有 segmented toggle 习惯切换窗口显示，同一时刻不再并排展示三个统计。
 - 2026-04-07: 采集 Storybook docs 视觉证据并落盘到 spec 资产目录，当前等待主人确认截图可随提交一起 push 后再进入 PR 收敛。

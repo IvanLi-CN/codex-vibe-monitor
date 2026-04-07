@@ -18,6 +18,7 @@ vi.mock('../i18n', () => ({
         'stats.parallelWork.description': 'Track active prompt-cache conversations.',
         'stats.parallelWork.loading': 'Loading parallel-work buckets…',
         'stats.parallelWork.empty': 'No complete buckets yet.',
+        'stats.parallelWork.windowToggleAria': 'Select parallel-work window',
         'stats.parallelWork.chartAria': `${values?.title ?? ''} trend`,
         'stats.parallelWork.samples': `${values?.complete ?? 0} complete buckets · ${values?.active ?? 0} active buckets`,
         'stats.parallelWork.rangeSummary': `Range: ${values?.start ?? ''} → ${values?.end ?? ''}`,
@@ -25,10 +26,13 @@ vi.mock('../i18n', () => ({
         'stats.parallelWork.metrics.max': 'Max',
         'stats.parallelWork.metrics.avg': 'Avg',
         'stats.parallelWork.windows.minute7d.title': 'Last 7 days · by minute',
+        'stats.parallelWork.windows.minute7d.toggleLabel': '7d · minute',
         'stats.parallelWork.windows.minute7d.description': 'Minute buckets',
         'stats.parallelWork.windows.hour30d.title': 'Last 30 days · by hour',
+        'stats.parallelWork.windows.hour30d.toggleLabel': '30d · hour',
         'stats.parallelWork.windows.hour30d.description': 'Hour buckets',
         'stats.parallelWork.windows.dayAll.title': 'All history · by day',
+        'stats.parallelWork.windows.dayAll.toggleLabel': 'All · day',
         'stats.parallelWork.windows.dayAll.description': 'Day buckets',
       }
       return map[key] ?? key
@@ -115,17 +119,37 @@ const populatedStats: ParallelWorkStatsResponse = {
 }
 
 describe('ParallelWorkStatsSection', () => {
-  it('renders three window cards with formatted metrics', () => {
+  it('renders a single active window card with toggle controls', () => {
     render(
       <ParallelWorkStatsSection stats={populatedStats} isLoading={false} error={null} />,
     )
 
-    expect(host?.querySelectorAll('[data-testid^="parallel-work-card-"]')).toHaveLength(3)
+    expect(host?.querySelector('[data-testid="parallel-work-window-toggle"]')).not.toBeNull()
+    expect(host?.querySelectorAll('[data-testid^="parallel-work-card-"]')).toHaveLength(1)
+    expect(host?.querySelector('[data-testid="parallel-work-card-minute7d"]')).not.toBeNull()
+    expect(host?.querySelector('[data-testid="parallel-work-card-hour30d"]')).toBeNull()
     expect(host?.textContent).toContain('Parallel work')
     expect(host?.textContent).toContain('4.67')
+    expect(host?.querySelectorAll('[data-chart-kind="parallel-work-sparkline"]')).toHaveLength(1)
+  })
+
+  it('switches to the selected window using the segmented toggle', () => {
+    render(
+      <ParallelWorkStatsSection stats={populatedStats} isLoading={false} error={null} />,
+    )
+
+    const hourTrigger = host?.querySelector(
+      '[data-testid="parallel-work-window-trigger-hour30d"]',
+    ) as HTMLButtonElement | null
+    expect(hourTrigger).not.toBeNull()
+
+    act(() => {
+      hourTrigger?.click()
+    })
+
+    expect(host?.querySelector('[data-testid="parallel-work-card-minute7d"]')).toBeNull()
+    expect(host?.querySelector('[data-testid="parallel-work-card-hour30d"]')).not.toBeNull()
     expect(host?.textContent).toContain('2.13')
-    expect(host?.textContent).toContain('2.04')
-    expect(host?.querySelectorAll('[data-chart-kind="parallel-work-sparkline"]')).toHaveLength(3)
   })
 
   it('renders empty day-all state with null summaries', () => {
@@ -144,7 +168,14 @@ describe('ParallelWorkStatsSection', () => {
       },
     }
 
-    render(<ParallelWorkStatsSection stats={emptyDayAll} isLoading={false} error={null} />)
+    render(
+      <ParallelWorkStatsSection
+        stats={emptyDayAll}
+        isLoading={false}
+        error={null}
+        defaultWindowKey="dayAll"
+      />,
+    )
 
     const dayAllCard = host?.querySelector('[data-testid="parallel-work-card-dayAll"]')
     expect(dayAllCard?.textContent).toContain('No complete buckets yet.')
