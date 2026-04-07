@@ -13,7 +13,7 @@ import { DashboardWorkingConversationsSection } from "./DashboardWorkingConversa
 function StorySurface({ children }: { children: ReactNode }) {
   return (
     <div className="min-h-screen bg-base-200 px-4 py-6 text-base-content sm:px-6">
-      <div className="mx-auto w-full max-w-[1560px]">{children}</div>
+      <div className="app-shell-boundary">{children}</div>
     </div>
   );
 }

@@ -1,5 +1,6 @@
-import { useEffect, useRef, type ReactNode } from 'react'
+import { useLayoutEffect, useRef, type ReactNode } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { expect, within } from 'storybook/test'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { AppLayout } from './AppLayout'
 import { I18nProvider } from '../i18n'
@@ -101,7 +102,7 @@ function StorybookAppShellMock({ children }: { children: ReactNode }) {
   const originalFetchRef = useRef<typeof window.fetch | null>(null)
   const originalEventSourceRef = useRef<typeof window.EventSource | null>(null)
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     originalFetchRef.current = window.fetch.bind(window)
     originalEventSourceRef.current = window.EventSource
 
@@ -199,6 +200,7 @@ const meta = {
   ],
   parameters: {
     layout: 'fullscreen',
+    viewport: { defaultViewport: 'desktop1660' },
   },
 } satisfies Meta<typeof AppLayout>
 
@@ -206,4 +208,12 @@ export default meta
 
 type Story = StoryObj<typeof meta>
 
-export const Default: Story = {}
+export const Default: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByTestId('app-header-inner')).toBeVisible()
+    await expect(canvas.getByTestId('app-main')).toBeVisible()
+    await expect(canvas.getByTestId('app-footer-inner')).toBeVisible()
+    await expect(canvas.getByRole('link', { name: '号池' })).toHaveAttribute('aria-current', 'page')
+  },
+}

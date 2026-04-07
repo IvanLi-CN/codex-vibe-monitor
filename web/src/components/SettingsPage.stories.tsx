@@ -1,5 +1,6 @@
 import { useEffect, useRef, type ReactNode } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { expect, within } from 'storybook/test'
 import { I18nProvider } from '../i18n'
 import SettingsPage from '../pages/Settings'
 import type {
@@ -343,8 +344,10 @@ type SettingsStoryParameters = {
 const meta = {
   title: 'Settings/SettingsPage',
   component: SettingsPage,
+  tags: ['autodocs'],
   parameters: {
     layout: 'fullscreen',
+    viewport: { defaultViewport: 'desktop1660' },
   },
   decorators: [
     (Story, context) => {
@@ -356,7 +359,9 @@ const meta = {
             storageKey={`${STORYBOOK_SETTINGS_STORAGE_PREFIX}.${context.id}`}
           >
             <div className="min-h-screen bg-base-200 px-6 py-6 text-base-content">
-              <Story />
+              <div className="app-shell-boundary">
+                <Story />
+              </div>
             </div>
           </StorybookSettingsMock>
         </I18nProvider>
@@ -371,6 +376,12 @@ type Story = StoryObj<typeof meta>
 
 export const Default: Story = {
   render: () => <SettingsPage />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByRole('heading', { name: '设置' })).toBeVisible()
+    await expect(canvas.getByText('正向代理路由')).toBeVisible()
+    await expect(canvas.getByText('价格配置')).toBeVisible()
+  },
 }
 
 export const SubscriptionHeavy: Story = {

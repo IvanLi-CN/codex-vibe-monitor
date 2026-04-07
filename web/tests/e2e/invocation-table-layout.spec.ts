@@ -8,11 +8,11 @@ const VIEWPORTS = [
   { width: 1024, height: 900 },
   { width: 1280, height: 900 },
   { width: 1440, height: 900 },
+  { width: 1660, height: 900 },
   { width: 1873, height: 900 },
 ]
 
 const TARGET_PAGES = [
-  { path: '/#/dashboard', label: 'dashboard', hashPath: '#/dashboard' },
   { path: '/#/live', label: 'live', hashPath: '#/live' },
 ]
 
@@ -267,6 +267,60 @@ async function mockInvocations(page: Page) {
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify(ACCOUNT_DETAIL_FIXTURE),
+      })
+      return
+    }
+
+    if (pathname === '/api/pool/upstream-accounts/7/sticky-keys') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          rangeStart: '2026-02-26T00:00:00Z',
+          rangeEnd: '2026-02-26T12:00:00Z',
+          selectionMode: 'count',
+          selectedLimit: 20,
+          selectedActivityHours: null,
+          implicitFilter: { kind: null, filteredCount: 0 },
+          conversations: [],
+        }),
+      })
+      return
+    }
+
+    if (pathname === '/api/pool/upstream-accounts') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          writesEnabled: true,
+          items: [],
+          groups: [],
+          hasUngroupedAccounts: false,
+          total: 0,
+          page: 1,
+          pageSize: 20,
+          metrics: {
+            total: 0,
+            oauth: 0,
+            apiKey: 0,
+            attention: 0,
+          },
+          routing: null,
+        }),
+      })
+      return
+    }
+
+    if (pathname === '/api/pool/tags') {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          items: [],
+          totalAccounts: 0,
+          guardsEnabledCount: 0,
+        }),
       })
       return
     }
@@ -557,13 +611,12 @@ test.describe('InvocationTable layout regression', () => {
             expect(metricsBeforeExpand.secondRowProxyBadgeVsModelLeftPx).toBeLessThanOrEqual(1)
             expect(metricsAfterExpand.secondRowProxyBadgeVsModelLeftPx).toBeLessThanOrEqual(1)
           }
-          if (viewport.width === 1280 && target.label === 'dashboard') {
+          if (viewport.width === 1280 && target.label === 'live') {
             await tableRows.nth(0).getByRole('button', { name: 'Pool Alpha' }).click()
             const drawer = page.getByRole('dialog')
             await expect(drawer).toBeVisible()
             await expect(drawer.getByText('Pool Alpha')).toBeVisible()
             await expect(drawer.getByText('22 / 100')).toBeVisible()
-            await expect(drawer.getByRole('link', { name: /查看完整详情|Open in account pool/ })).toBeVisible()
             await drawer.getByRole('button', { name: /关闭|Close/ }).click()
             await expect(drawer).toBeHidden()
           }

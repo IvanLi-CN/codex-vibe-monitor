@@ -17,7 +17,7 @@ export default function AccountPoolLayout() {
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-6xl flex-col gap-6">
+    <div className="mx-auto flex w-full max-w-full flex-col gap-6">
       <section className="surface-panel overflow-hidden">
         <div className="surface-panel-body gap-5">
           <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">

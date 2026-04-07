@@ -1,4 +1,5 @@
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { expect, within } from 'storybook/test'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { I18nProvider } from '../i18n'
 import AccountPoolLayout from '../pages/account-pool/AccountPoolLayout'
@@ -40,18 +41,23 @@ const meta = {
   decorators: [
     (Story) => (
       <I18nProvider>
-        <MemoryRouter initialEntries={['/account-pool/upstream-accounts']}>
-          <Routes>
-            <Route path="/account-pool" element={<Story />}>
-              <Route path="upstream-accounts" element={<MockModuleContent />} />
-            </Route>
-          </Routes>
-        </MemoryRouter>
+        <div className="min-h-screen bg-base-200 px-6 py-6 text-base-content">
+          <div className="app-shell-boundary">
+            <MemoryRouter initialEntries={['/account-pool/upstream-accounts']}>
+              <Routes>
+                <Route path="/account-pool" element={<Story />}>
+                  <Route path="upstream-accounts" element={<MockModuleContent />} />
+                </Route>
+              </Routes>
+            </MemoryRouter>
+          </div>
+        </div>
       </I18nProvider>
     ),
   ],
   parameters: {
     layout: 'fullscreen',
+    viewport: { defaultViewport: 'desktop1660' },
   },
 } satisfies Meta<typeof AccountPoolLayout>
 
@@ -59,4 +65,11 @@ export default meta
 
 type Story = StoryObj<typeof meta>
 
-export const Default: Story = {}
+export const Default: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await expect(canvas.getByRole('heading', { name: '号池' })).toBeVisible()
+    await expect(canvas.getByRole('link', { name: '上游账号' })).toHaveAttribute('aria-current', 'page')
+    await expect(canvas.getByRole('link', { name: '标签' })).toBeVisible()
+  },
+}
