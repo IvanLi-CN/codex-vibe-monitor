@@ -258,6 +258,8 @@ describe("ParallelWorkStatsSection", () => {
     ) as HTMLButtonElement | null;
     expect(chart).not.toBeNull();
     expect(chart?.className.baseVal).toContain("w-full");
+    expect(chart?.querySelectorAll('[data-axis="y-tick"]')).toHaveLength(3);
+    expect(chart?.querySelectorAll('[data-axis="x-tick"]')).toHaveLength(3);
     expect(section?.contains(toggle)).toBe(true);
     expect(heading).not.toBeNull();
     expect(controls).not.toBeNull();

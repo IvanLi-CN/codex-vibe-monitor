@@ -24,9 +24,13 @@ export type ParallelWorkWindowKey = "minute7d" | "hour30d" | "dayAll";
 const WINDOW_KEYS: ParallelWorkWindowKey[] = ["minute7d", "hour30d", "dayAll"];
 
 const CHART_WIDTH = 640;
-const CHART_HEIGHT = 132;
-const CHART_PADDING_X = 16;
-const CHART_PADDING_Y = 14;
+const CHART_HEIGHT = 176;
+const CHART_MARGIN_LEFT = 42;
+const CHART_MARGIN_RIGHT = 16;
+const CHART_MARGIN_TOP = 14;
+const CHART_MARGIN_BOTTOM = 28;
+const CHART_PLOT_WIDTH = CHART_WIDTH - CHART_MARGIN_LEFT - CHART_MARGIN_RIGHT;
+const CHART_PLOT_HEIGHT = CHART_HEIGHT - CHART_MARGIN_TOP - CHART_MARGIN_BOTTOM;
 
 type ParallelWorkChartPoint = ParallelWorkWindowResponse["points"][number] & {
   x: number;
@@ -58,8 +62,11 @@ function resolveWindowMeta(key: ParallelWorkWindowKey) {
   }
 }
 
-function buildSparklineGeometry(points: ParallelWorkWindowResponse["points"]) {
-  const baselineY = CHART_HEIGHT - CHART_PADDING_Y;
+function buildSparklineGeometry(
+  points: ParallelWorkWindowResponse["points"],
+  scaleMaxCount: number,
+) {
+  const baselineY = CHART_HEIGHT - CHART_MARGIN_BOTTOM;
 
   if (points.length === 0) {
     return {
@@ -70,26 +77,24 @@ function buildSparklineGeometry(points: ParallelWorkWindowResponse["points"]) {
     };
   }
 
-  const usableWidth = CHART_WIDTH - CHART_PADDING_X * 2;
-  const usableHeight = CHART_HEIGHT - CHART_PADDING_Y * 2;
-  const maxCount = Math.max(...points.map((point) => point.parallelCount), 0);
   const projectedPoints = points.map((point, index) => {
     const x =
       points.length === 1
-        ? CHART_WIDTH / 2
-        : CHART_PADDING_X + (usableWidth * index) / (points.length - 1);
-    const ratio = maxCount <= 0 ? 0 : point.parallelCount / maxCount;
-    const y = baselineY - ratio * usableHeight;
+        ? CHART_MARGIN_LEFT + CHART_PLOT_WIDTH / 2
+        : CHART_MARGIN_LEFT + (CHART_PLOT_WIDTH * index) / (points.length - 1);
+    const ratio = scaleMaxCount <= 0 ? 0 : point.parallelCount / scaleMaxCount;
+    const y = baselineY - ratio * CHART_PLOT_HEIGHT;
     return { ...point, x, y };
   });
   const chartPoints = projectedPoints.map((point, index) => {
-    const previousX = projectedPoints[index - 1]?.x ?? CHART_PADDING_X;
+    const previousX = projectedPoints[index - 1]?.x ?? CHART_MARGIN_LEFT;
     const nextX =
-      projectedPoints[index + 1]?.x ?? CHART_WIDTH - CHART_PADDING_X;
-    const hitStartX = index === 0 ? CHART_PADDING_X : (previousX + point.x) / 2;
+      projectedPoints[index + 1]?.x ?? CHART_WIDTH - CHART_MARGIN_RIGHT;
+    const hitStartX =
+      index === 0 ? CHART_MARGIN_LEFT : (previousX + point.x) / 2;
     const hitEndX =
       index === projectedPoints.length - 1
-        ? CHART_WIDTH - CHART_PADDING_X
+        ? CHART_WIDTH - CHART_MARGIN_RIGHT
         : (point.x + nextX) / 2;
 
     return {
@@ -133,6 +138,93 @@ function buildSparklineGeometry(points: ParallelWorkWindowResponse["points"]) {
     baselineY,
     chartPoints,
   };
+}
+
+function buildParallelWorkYAxisTicks(
+  scaleMaxCount: number,
+  localeTag: string,
+): Array<{ value: number; y: number; label: string }> {
+  const formatter = new Intl.NumberFormat(localeTag, {
+    maximumFractionDigits: 0,
+  });
+  const values = Array.from(
+    new Set(
+      [0, Math.ceil(scaleMaxCount / 2), scaleMaxCount].filter(
+        (value) => value >= 0,
+      ),
+    ),
+  ).sort((left, right) => left - right);
+
+  return values.reverse().map((value) => ({
+    value,
+    y:
+      scaleMaxCount <= 0
+        ? CHART_HEIGHT - CHART_MARGIN_BOTTOM
+        : CHART_HEIGHT -
+          CHART_MARGIN_BOTTOM -
+          (value / scaleMaxCount) * CHART_PLOT_HEIGHT,
+    label: formatter.format(value),
+  }));
+}
+
+function formatParallelWorkAxisBucketLabel(
+  raw: string,
+  localeTag: string,
+  showYear: boolean,
+  detailed: boolean,
+) {
+  const value = new Date(raw);
+  if (Number.isNaN(value.getTime())) return raw;
+  const formatter = new Intl.DateTimeFormat(localeTag, {
+    year: showYear ? "2-digit" : undefined,
+    month: "2-digit",
+    day: "2-digit",
+    hour: detailed ? "2-digit" : undefined,
+    minute: detailed ? "2-digit" : undefined,
+    hour12: false,
+  });
+  return formatter.format(value);
+}
+
+function buildParallelWorkXAxisTicks(
+  window: ParallelWorkWindowResponse,
+  chartPoints: ParallelWorkChartPoint[],
+  localeTag: string,
+) {
+  if (window.points.length === 0 || chartPoints.length === 0) return [];
+  const candidateIndexes = Array.from(
+    new Set([0, Math.floor((window.points.length - 1) / 2), window.points.length - 1]),
+  );
+  const years = new Set(
+    window.points.map((point) => new Date(point.bucketStart).getFullYear()),
+  );
+  const showYear = years.size > 1;
+  const baseLabels = candidateIndexes.map((index) =>
+    formatParallelWorkAxisBucketLabel(
+      window.points[index]?.bucketStart ?? "",
+      localeTag,
+      showYear,
+      false,
+    ),
+  );
+  const useDetailedLabels =
+    new Set(baseLabels).size !== baseLabels.length && window.bucketSeconds < 86_400;
+
+  return candidateIndexes.map((index) => ({
+    anchor:
+      index === 0
+        ? ("start" as const)
+        : index === window.points.length - 1
+          ? ("end" as const)
+          : ("middle" as const),
+    x: chartPoints[index]?.x ?? CHART_MARGIN_LEFT,
+    label: formatParallelWorkAxisBucketLabel(
+      window.points[index]?.bucketStart ?? "",
+      localeTag,
+      showYear,
+      useDetailedLabels,
+    ),
+  }));
 }
 
 function formatAverageCount(value: number | null, locale: string) {
@@ -307,9 +399,26 @@ function ParallelWorkSparkline({
     () => resolveParallelWorkDefaultIndex(window.points),
     [window.points],
   );
+  const scaleMaxCount = useMemo(
+    () =>
+      Math.max(
+        window.maxCount ?? 0,
+        ...window.points.map((point) => point.parallelCount),
+        0,
+      ),
+    [window.maxCount, window.points],
+  );
   const { linePath, areaPath, baselineY, chartPoints } = useMemo(
-    () => buildSparklineGeometry(window.points),
-    [window.points],
+    () => buildSparklineGeometry(window.points, scaleMaxCount),
+    [scaleMaxCount, window.points],
+  );
+  const yAxisTicks = useMemo(
+    () => buildParallelWorkYAxisTicks(scaleMaxCount, localeTag),
+    [localeTag, scaleMaxCount],
+  );
+  const xAxisTicks = useMemo(
+    () => buildParallelWorkXAxisTicks(window, chartPoints, localeTag),
+    [chartPoints, localeTag, window],
   );
   const gradientId = useId().replace(/:/g, "");
 
@@ -339,7 +448,7 @@ function ParallelWorkSparkline({
         return (
           <svg
             viewBox={"0 0 " + CHART_WIDTH + " " + CHART_HEIGHT}
-            className="h-32 w-full rounded-2xl border border-base-300/75 bg-base-100/75"
+            className="h-44 w-full rounded-2xl border border-base-300/75 bg-base-100/75"
             preserveAspectRatio="none"
             aria-hidden="true"
             data-chart-kind="parallel-work-sparkline"
@@ -356,18 +465,34 @@ function ParallelWorkSparkline({
                 />
               </linearGradient>
             </defs>
-            <line
-              x1={CHART_PADDING_X}
-              y1={baselineY}
-              x2={CHART_WIDTH - CHART_PADDING_X}
-              y2={baselineY}
-              stroke="oklch(var(--color-base-content) / 0.14)"
-              strokeWidth="1"
-            />
+            {yAxisTicks.map((tick) => (
+              <g key={"y-" + tick.value}>
+                <line
+                  x1={CHART_MARGIN_LEFT}
+                  y1={tick.y}
+                  x2={CHART_WIDTH - CHART_MARGIN_RIGHT}
+                  y2={tick.y}
+                  stroke="oklch(var(--color-base-content) / 0.12)"
+                  strokeWidth="1"
+                  strokeDasharray={tick.value === 0 ? undefined : "4 4"}
+                />
+                <text
+                  x={CHART_MARGIN_LEFT - 8}
+                  y={tick.y}
+                  dy="0.32em"
+                  textAnchor="end"
+                  fontSize="11"
+                  fill="oklch(var(--color-base-content) / 0.5)"
+                  data-axis="y-tick"
+                >
+                  {tick.label}
+                </text>
+              </g>
+            ))}
             {activePoint ? (
               <line
                 x1={activePoint.x}
-                y1={CHART_PADDING_Y}
+                y1={CHART_MARGIN_TOP}
                 x2={activePoint.x}
                 y2={baselineY}
                 stroke="oklch(var(--color-primary) / 0.4)"
@@ -410,9 +535,9 @@ function ParallelWorkSparkline({
                   <rect
                     ref={ref}
                     x={point.hitStartX}
-                    y={0}
+                    y={CHART_MARGIN_TOP}
                     width={point.hitWidth}
-                    height={CHART_HEIGHT}
+                    height={CHART_PLOT_HEIGHT}
                     fill="transparent"
                     className="cursor-pointer"
                     {...restItemProps}
@@ -424,6 +549,28 @@ function ParallelWorkSparkline({
                 </g>
               );
             })}
+            {xAxisTicks.map((tick) => (
+              <g key={"x-" + tick.x + "-" + tick.label}>
+                <line
+                  x1={tick.x}
+                  y1={baselineY}
+                  x2={tick.x}
+                  y2={baselineY + 5}
+                  stroke="oklch(var(--color-base-content) / 0.18)"
+                  strokeWidth="1"
+                />
+                <text
+                  x={tick.x}
+                  y={CHART_HEIGHT - 8}
+                  textAnchor={tick.anchor}
+                  fontSize="11"
+                  fill="oklch(var(--color-base-content) / 0.5)"
+                  data-axis="x-tick"
+                >
+                  {tick.label}
+                </text>
+              </g>
+            ))}
           </svg>
         );
       }}
