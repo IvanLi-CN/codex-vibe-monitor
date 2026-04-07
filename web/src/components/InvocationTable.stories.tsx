@@ -297,12 +297,17 @@ const fastIndicatorRecords: ApiInvocation[] = [
     occurredAt: '2026-02-25T10:31:00Z',
     createdAt: '2026-02-25T10:31:00Z',
     source: 'proxy',
-    proxyDisplayName: 'Fast-requested-auto',
+    routeMode: 'pool',
+    upstreamAccountId: 2568,
+    upstreamAccountName: 'SUB2API',
+    proxyDisplayName: 'Fast-relay-billed-priority',
     endpoint: '/v1/responses',
     model: 'gpt-5',
     status: 'failed',
     requestedServiceTier: 'priority',
-    serviceTier: 'auto',
+    serviceTier: 'default',
+    billingServiceTier: 'priority',
+    priceVersion: 'openai-standard-2026-02-23+relay-fast-billing-v1',
     inputTokens: 980,
     outputTokens: 0,
     totalTokens: 980,
@@ -1921,7 +1926,7 @@ export const FastIndicatorStates: Story = {
     docs: {
       description: {
         story:
-          'Covers the fast indicator matrix: effective priority, requested-only fallback, requested priority with missing response tier, effective priority despite non-priority request, and a flex request with no lightning icon.',
+          'Covers the fast indicator matrix: effective priority, relay-billed priority where the response tier is only `default`, requested-only fallback, requested priority with missing response tier, effective priority despite non-priority request, and a flex request with no lightning icon.',
       },
     },
   },
@@ -1929,6 +1934,56 @@ export const FastIndicatorStates: Story = {
     records: fastIndicatorRecords,
     isLoading: false,
     error: null,
+  },
+}
+
+export const RelayFastBillingPriority: Story = {
+  parameters: {
+    docs: {
+      description: {
+        story:
+          'Stable relay-billing example: the request asked for `priority`, the upstream response only reported `default`, but billing still resolves to fast priority and the lightning badge stays effective.',
+      },
+    },
+  },
+  args: {
+    records: [
+      {
+        id: 2101,
+        invokeId: 'inv_relay_fast_billing_priority',
+        occurredAt: '2026-04-06T06:28:02Z',
+        createdAt: '2026-04-06T06:28:02Z',
+        source: 'proxy',
+        routeMode: 'pool',
+        upstreamAccountId: 2568,
+        upstreamAccountName: 'SUB2API',
+        proxyDisplayName: 'sub2api-relay-fast',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'success',
+        requesterIp: '203.0.113.88',
+        requestedServiceTier: 'priority',
+        serviceTier: 'default',
+        billingServiceTier: 'priority',
+        totalTokens: 4096,
+        cost: 0.1024,
+        priceVersion: 'openai-standard-2026-02-23+relay-fast-billing-v1',
+        tUpstreamTtfbMs: 188.6,
+        tTotalMs: 890.1,
+      },
+    ],
+    isLoading: false,
+    error: null,
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const documentScope = within(canvasElement.ownerDocument.body)
+    const fastBadge = canvasElement.querySelector('[data-fast-state="effective"]')
+    expect(fastBadge).not.toBeNull()
+    await userEvent.click(await canvas.findByRole('button', { name: /展开详情|show details/i }))
+    await expect(documentScope.getByText(/^Requested service tier$/i)).toBeInTheDocument()
+    await expect(documentScope.getByText(/^Service tier$/i)).toBeInTheDocument()
+    await expect(documentScope.getByText(/^Billing service tier$/i)).toBeInTheDocument()
   },
 }
 

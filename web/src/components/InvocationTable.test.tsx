@@ -224,6 +224,7 @@ describe('service tier helpers', () => {
 
   it('resolves fast indicator states from requested and effective tiers', () => {
     expect(getFastIndicatorState('priority', 'priority')).toBe('effective')
+    expect(getFastIndicatorState('priority', 'default', 'priority')).toBe('effective')
     expect(getFastIndicatorState('priority', 'auto')).toBe('requested_only')
     expect(getFastIndicatorState('priority', undefined)).toBe('requested_only')
     expect(getFastIndicatorState('auto', 'priority')).toBe('effective')
@@ -610,6 +611,38 @@ describe('InvocationTable', () => {
     expect(html).toContain('阶段耗时')
     expect(html).toContain('上游首字节')
     expect(html).toContain('总耗时')
+  })
+
+  it('shows requested, response, and billing service tiers in request details', () => {
+    const record: ApiInvocation = {
+      id: 35,
+      invokeId: 'invocation-detail-billing-service-tier',
+      occurredAt: '2026-03-24T06:49:52Z',
+      createdAt: '2026-03-24T06:49:52Z',
+      source: 'proxy',
+      routeMode: 'pool',
+      upstreamAccountId: 17,
+      upstreamAccountName: 'SUB2API',
+      proxyDisplayName: 'sub2api-relay',
+      endpoint: '/v1/responses',
+      model: 'gpt-5.4',
+      status: 'success',
+      requestedServiceTier: 'priority',
+      serviceTier: 'default',
+      billingServiceTier: 'priority',
+      totalTokens: 4096,
+      cost: 0.1024,
+    }
+
+    const html = renderToStaticMarkup(
+      <I18nProvider>
+        <InvocationDetailProbe record={record} />
+      </I18nProvider>,
+    )
+
+    expect(html).toContain('Requested service tier')
+    expect(html).toContain('Service tier')
+    expect(html).toContain('Billing service tier')
   })
 
   it('lazy-loads pool attempts inside expanded details', async () => {
@@ -1763,7 +1796,8 @@ describe('InvocationTable', () => {
         model: 'gpt-5.4',
         status: 'success',
         requestedServiceTier: 'priority',
-        serviceTier: 'auto',
+        serviceTier: 'default',
+        billingServiceTier: 'priority',
         totalTokens: 43,
       },
       {
@@ -1808,8 +1842,8 @@ describe('InvocationTable', () => {
       },
     ])
 
-    expect(html.match(/data-fast-state="effective"/g)?.length ?? 0).toBe(4)
-    expect(html.match(/data-fast-state="requested_only"/g)?.length ?? 0).toBe(4)
+    expect(html.match(/data-fast-state="effective"/g)?.length ?? 0).toBe(6)
+    expect(html.match(/data-fast-state="requested_only"/g)?.length ?? 0).toBe(2)
     expect(html).toContain('Fast 模式（Priority processing）')
     expect(html).toContain('请求想要 Fast，但实际未命中 Priority processing')
   })

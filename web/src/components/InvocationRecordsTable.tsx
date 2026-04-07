@@ -53,6 +53,7 @@ interface InvocationRecordsRowViewModel {
   modelValue: string
   requestedServiceTierValue: string
   serviceTierValue: string
+  billingServiceTierValue: string
   fastIndicatorState: ReturnType<typeof buildInvocationDetailViewModel>['fastIndicatorState']
   costValue: string
   inputTokensValue: string

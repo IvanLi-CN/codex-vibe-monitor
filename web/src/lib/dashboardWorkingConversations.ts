@@ -49,6 +49,13 @@ export interface DashboardWorkingConversationCardModel {
   totalCost: number;
 }
 
+export interface DashboardWorkingConversationInvocationSelection {
+  slotKind: "current" | "previous";
+  conversationSequenceId: string;
+  promptCacheKey: string;
+  invocation: DashboardWorkingConversationInvocationModel;
+}
+
 interface DashboardWorkingConversationSequenceOptions {
   hashFn?: (value: string) => string;
   collisionHashFn?: (value: string) => string;

@@ -2,9 +2,9 @@
 
 ## 状态
 
-- Status: 已实现，待截图提交授权 / PR 收敛
+- Status: 已完成（5/5，PR #298）
 - Created: 2026-04-06
-- Last: 2026-04-06
+- Last: 2026-04-07
 
 ## 背景 / 问题陈述
 
@@ -167,7 +167,7 @@ None
 - [x] M2: 建立共享宽屏布局真相源，统一 Header / Main / Footer / Update banner 与顶层页面容器。
 - [x] M3: 补齐页面级 Storybook 宽屏入口，并让关键页面 stories 在 `desktop1660` 下稳定渲染。
 - [x] M4: 新增 / 扩展宽屏 Playwright 回归，覆盖 `1660` 与 `1873` 的壳层对齐与无横向滚动断言。
-- [ ] M5: 完成 build / test / Storybook build / Playwright 验证，回填视觉证据并推进到 PR merge-ready。
+- [x] M5: 完成 build / test / Storybook build / Playwright 验证，回填视觉证据并推进到 PR merge-ready。
 
 ## 方案概述（Approach, high-level）
 
@@ -185,6 +185,8 @@ None
 
 - 2026-04-06: 新建 spec，冻结 1660 宽屏 shell 契约、路由覆盖范围、Storybook / Playwright 验收门槛与视觉证据归档路径。
 - 2026-04-06: 本地实现完成：共享壳层宽度契约落地到 AppLayout / Update banner / 顶层路由；Storybook 页面级宽屏入口、`wide-shell-layout` E2E 与最终视觉证据已补齐，本地 `build + test + build-storybook + targeted e2e` 通过，等待截图提交授权后进入 PR 收敛。
+- 2026-04-07: 主人已确认视觉结果可继续，`gpt-5.4` review-loop 未发现可执行阻塞项；本地 `build + test + build-storybook + targeted e2e` 维持通过，PR #298 已打 `type:minor` + `channel:stable` 并收敛到 merge-ready。
+- 2026-04-07: 为清除 PR freshness gate，同步 `origin/main` 并重新生成 Storybook 宽屏截图；最新工作树在同步后再次通过 `build + test + build-storybook + targeted e2e`，视觉证据已刷新到当前待推送 head。
 
 ## 参考（References）
 
