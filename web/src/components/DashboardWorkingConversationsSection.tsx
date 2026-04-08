@@ -216,11 +216,11 @@ function resolveStatusMeta(
 
 function SummaryMetric({ label, value }: { label: string; value: ReactNode }) {
   return (
-    <div className="flex min-w-0 items-baseline gap-1.5 rounded-[0.65rem] bg-base-100/4 px-2 py-1">
-      <span className="truncate text-[8px] uppercase tracking-[0.14em] text-base-content/42">
+    <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] items-baseline gap-1 rounded-[0.65rem] bg-base-100/4 px-1.5 py-1 sm:px-2">
+      <span className="truncate text-[7px] font-semibold text-base-content/48 sm:text-[7.5px]">
         {label}
       </span>
-      <span className="truncate font-mono text-[10px] font-semibold text-base-content">
+      <span className="min-w-0 truncate text-right font-mono text-[9.5px] font-semibold text-base-content sm:text-[10px]">
         {value}
       </span>
     </div>

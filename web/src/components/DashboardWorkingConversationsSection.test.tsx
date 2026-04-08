@@ -172,6 +172,12 @@ describe("DashboardWorkingConversationsSection", () => {
 
     expect(card.textContent).toContain("运行中");
     expect(card.textContent).toContain(expectedSortAnchorLabel);
+    expect(card.textContent).toContain("请求");
+    expect(card.textContent).toContain("Token");
+    expect(card.textContent).toContain("成本");
+    expect(card.textContent).not.toContain("累计请求");
+    expect(card.textContent).not.toContain("对话 Tokens");
+    expect(card.textContent).not.toContain("对话成本");
     expect(card.textContent).toContain(
       cards[0]?.conversationSequenceId.replace(/^WC-/, "") ?? "",
     );

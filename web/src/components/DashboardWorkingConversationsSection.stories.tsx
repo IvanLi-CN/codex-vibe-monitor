@@ -360,25 +360,33 @@ const createdAtDescendingOrderResponse = createResponse([
 ]);
 
 const wideDesktopResponse = createResponse([
-  createConversation("pck-wide-running", [
-    createPreview({
-      id: 81,
-      invokeId: "invoke-wide-running-current",
-      occurredAt: "2026-04-04T10:04:58Z",
-      status: "running",
-      reasoningEffort: "medium",
-      upstreamAccountName: "wide-running@example.com",
-      tTotalMs: null,
-    }),
-    createPreview({
-      id: 80,
-      invokeId: "invoke-wide-running-previous",
-      occurredAt: "2026-04-04T10:02:44Z",
-      status: "completed",
-      upstreamAccountName: "wide-running@example.com",
-      model: "gpt-5.4-mini",
-    }),
-  ]),
+  createConversation(
+    "pck-wide-running",
+    [
+      createPreview({
+        id: 81,
+        invokeId: "invoke-wide-running-current",
+        occurredAt: "2026-04-04T10:04:58Z",
+        status: "running",
+        reasoningEffort: "medium",
+        upstreamAccountName: "wide-running@example.com",
+        tTotalMs: null,
+      }),
+      createPreview({
+        id: 80,
+        invokeId: "invoke-wide-running-previous",
+        occurredAt: "2026-04-04T10:02:44Z",
+        status: "completed",
+        upstreamAccountName: "wide-running@example.com",
+        model: "gpt-5.4-mini",
+      }),
+    ],
+    {
+      requestCount: 245,
+      totalTokens: 34089123,
+      totalCost: 32.1987,
+    },
+  ),
   createConversation("pck-wide-failed", [
     createPreview({
       id: 91,
