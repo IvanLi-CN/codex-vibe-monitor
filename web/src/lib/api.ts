@@ -23,6 +23,28 @@ type ZonedDateParts = {
 
 const withBase = (path: string) => `${API_BASE}${path}`;
 
+export class ApiRequestError extends Error {
+  readonly status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "ApiRequestError";
+    this.status = status;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+function buildRequestError(response: Response, rawText: string): ApiRequestError {
+  const compactText = rawText.replace(/\s+/g, " ").trim();
+  const detail = (compactText || response.statusText || "").slice(0, 220);
+  return new ApiRequestError(
+    response.status,
+    detail
+      ? `Request failed: ${response.status} ${detail}`
+      : `Request failed: ${response.status}`,
+  );
+}
+
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(withBase(path), {
     headers: {
@@ -33,13 +55,7 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const rawText = await response.text();
-    const compactText = rawText.replace(/\s+/g, " ").trim();
-    const detail = (compactText || response.statusText || "").slice(0, 220);
-    throw new Error(
-      detail
-        ? `Request failed: ${response.status} ${detail}`
-        : `Request failed: ${response.status}`,
-    );
+    throw buildRequestError(response, rawText);
   }
 
   if (response.status === 204) {
@@ -60,13 +76,7 @@ async function ensureJsonRequestOk(response: Response): Promise<void> {
   }
 
   const rawText = await response.text();
-  const compactText = rawText.replace(/\s+/g, " ").trim();
-  const detail = (compactText || response.statusText || "").slice(0, 220);
-  throw new Error(
-    detail
-      ? `Request failed: ${response.status} ${detail}`
-      : `Request failed: ${response.status}`,
-  );
+  throw buildRequestError(response, rawText);
 }
 
 function parseForwardProxyHistoryRangeSeconds(range: string): number | null {
@@ -588,6 +598,32 @@ export interface TimeseriesResponse {
   availableBuckets?: string[];
   bucketLimitedToDaily?: boolean;
   points: TimeseriesPoint[];
+}
+
+export interface ParallelWorkPoint {
+  bucketStart: string;
+  bucketEnd: string;
+  parallelCount: number;
+}
+
+export interface ParallelWorkWindowResponse {
+  rangeStart: string;
+  rangeEnd: string;
+  bucketSeconds: number;
+  completeBucketCount: number;
+  activeBucketCount: number;
+  minCount: number | null;
+  maxCount: number | null;
+  avgCount: number | null;
+  effectiveTimeZone?: string;
+  timeZoneFallback?: boolean;
+  points: ParallelWorkPoint[];
+}
+
+export interface ParallelWorkStatsResponse {
+  minute7d: ParallelWorkWindowResponse;
+  hour30d: ParallelWorkWindowResponse;
+  dayAll: ParallelWorkWindowResponse;
 }
 
 export interface ErrorDistributionItem {
@@ -1124,6 +1160,69 @@ function normalizeTimeseriesResponse(raw: unknown): TimeseriesResponse {
     points: pointsRaw
       .map(normalizeTimeseriesPoint)
       .filter((point): point is TimeseriesPoint => point != null),
+  };
+}
+
+function normalizeParallelWorkPoint(raw: unknown): ParallelWorkPoint | null {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const bucketStart =
+    typeof payload.bucketStart === "string" ? payload.bucketStart : "";
+  const bucketEnd =
+    typeof payload.bucketEnd === "string" ? payload.bucketEnd : "";
+  if (!bucketStart || !bucketEnd) return null;
+  return {
+    bucketStart,
+    bucketEnd,
+    parallelCount: normalizeFiniteNumber(payload.parallelCount) ?? 0,
+  };
+}
+
+function normalizeParallelWorkWindowResponse(
+  raw: unknown,
+): ParallelWorkWindowResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  const pointsRaw = Array.isArray(payload.points) ? payload.points : [];
+  const effectiveTimeZone =
+    typeof payload.effectiveTimeZone === "string" &&
+    payload.effectiveTimeZone.trim()
+      ? payload.effectiveTimeZone.trim()
+      : "Asia/Shanghai";
+  return {
+    rangeStart:
+      typeof payload.rangeStart === "string" ? payload.rangeStart : "",
+    rangeEnd: typeof payload.rangeEnd === "string" ? payload.rangeEnd : "",
+    bucketSeconds: normalizeFiniteNumber(payload.bucketSeconds) ?? 0,
+    completeBucketCount:
+      normalizeFiniteNumber(payload.completeBucketCount) ?? 0,
+    activeBucketCount: normalizeFiniteNumber(payload.activeBucketCount) ?? 0,
+    minCount:
+      payload.minCount == null
+        ? null
+        : (normalizeFiniteNumber(payload.minCount) ?? null),
+    maxCount:
+      payload.maxCount == null
+        ? null
+        : (normalizeFiniteNumber(payload.maxCount) ?? null),
+    avgCount:
+      payload.avgCount == null
+        ? null
+        : (normalizeFiniteNumber(payload.avgCount) ?? null),
+    effectiveTimeZone,
+    timeZoneFallback: payload.timeZoneFallback === true,
+    points: pointsRaw
+      .map(normalizeParallelWorkPoint)
+      .filter((point): point is ParallelWorkPoint => point != null),
+  };
+}
+
+function normalizeParallelWorkStatsResponse(
+  raw: unknown,
+): ParallelWorkStatsResponse {
+  const payload = (raw ?? {}) as Record<string, unknown>;
+  return {
+    minute7d: normalizeParallelWorkWindowResponse(payload.minute7d),
+    hour30d: normalizeParallelWorkWindowResponse(payload.hour30d),
+    dayAll: normalizeParallelWorkWindowResponse(payload.dayAll),
   };
 }
 
@@ -3605,6 +3704,19 @@ export async function fetchTimeseries(
     { signal: params?.signal },
   );
   return normalizeTimeseriesResponse(response);
+}
+
+export async function fetchParallelWorkStats(params?: {
+  timeZone?: string;
+  signal?: AbortSignal;
+}) {
+  const search = new URLSearchParams();
+  search.set("timeZone", params?.timeZone ?? getBrowserTimeZone());
+  const response = await fetchJson<unknown>(
+    `/api/stats/parallel-work?${search.toString()}`,
+    { signal: params?.signal },
+  );
+  return normalizeParallelWorkStatsResponse(response);
 }
 
 export async function fetchErrorDistribution(

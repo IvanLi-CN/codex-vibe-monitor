@@ -10,6 +10,7 @@ const hookMocks = vi.hoisted(() => ({
   useTimeseries: vi.fn(),
   useErrorDistribution: vi.fn(),
   useFailureSummary: vi.fn(),
+  useParallelWorkStats: vi.fn(),
 }))
 
 vi.mock('../hooks/useStats', () => ({
@@ -28,6 +29,10 @@ vi.mock('../hooks/useFailureSummary', () => ({
   useFailureSummary: hookMocks.useFailureSummary,
 }))
 
+vi.mock('../hooks/useParallelWorkStats', () => ({
+  useParallelWorkStats: hookMocks.useParallelWorkStats,
+}))
+
 vi.mock('../components/StatsCards', () => ({
   StatsCards: () => <div data-testid="stats-cards" />,
 }))
@@ -42,6 +47,10 @@ vi.mock('../components/SuccessFailureChart', () => ({
 
 vi.mock('../components/ErrorReasonPieChart', () => ({
   ErrorReasonPieChart: () => <div data-testid="error-reason-pie-chart" />,
+}))
+
+vi.mock('../components/ParallelWorkStatsSection', () => ({
+  ParallelWorkStatsSection: () => <div data-testid="parallel-work-section" />,
 }))
 
 vi.mock('../components/ui/alert', () => ({
@@ -148,6 +157,11 @@ describe('StatsPage', () => {
       isLoading: false,
       error: null,
     })
+    hookMocks.useParallelWorkStats.mockReturnValue({
+      data: null,
+      isLoading: false,
+      error: null,
+    })
 
     render(<StatsPage />)
 
@@ -155,6 +169,7 @@ describe('StatsPage', () => {
     expect(document.querySelectorAll('button[role="combobox"]')).toHaveLength(3)
     expect(host?.querySelector('[data-testid="stats-range-select-trigger"]')?.textContent).toContain('今日')
     expect(host?.querySelector('[data-testid="stats-bucket-select-trigger"]')?.textContent).toContain('每 15 分钟')
+    expect(host?.querySelector('[data-testid="parallel-work-section"]')).toBeTruthy()
   })
 
   it('offers a 24-hour bucket for the past 7 days range', () => {
