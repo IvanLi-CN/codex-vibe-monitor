@@ -140,6 +140,107 @@ function renderSection(
 }
 
 describe("DashboardWorkingConversationsSection", () => {
+  it("shows a bare hash in the card header while keeping the raw prompt cache key non-visible", () => {
+    const cards = renderSection(
+      createResponse([
+        createConversation("019d68a9-9c32-7482-a353-71e4b6265f09", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-header",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "running",
+          }),
+        ]),
+      ]),
+    );
+
+    const card = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-card"]',
+    );
+    if (!(card instanceof HTMLElement)) {
+      throw new Error("missing working conversation card");
+    }
+
+    const expectedSortAnchorLabel = new Intl.DateTimeFormat("zh-CN", {
+      month: "2-digit",
+      day: "2-digit",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hour12: false,
+    }).format(new Date("2026-04-04T10:04:00Z"));
+
+    expect(card.textContent).toContain("运行中");
+    expect(card.textContent).toContain(expectedSortAnchorLabel);
+    expect(card.textContent).toContain("请求");
+    expect(card.textContent).toContain("Token");
+    expect(card.textContent).toContain("成本");
+    expect(card.textContent).not.toContain("累计请求");
+    expect(card.textContent).not.toContain("对话 Tokens");
+    expect(card.textContent).not.toContain("对话成本");
+    expect(card.textContent).toContain(
+      cards[0]?.conversationSequenceId.replace(/^WC-/, "") ?? "",
+    );
+    expect(card.textContent).not.toContain("WC-");
+    expect(card.textContent).not.toContain("019d68a9-9c32-7482-a353-71e4b6265f09");
+    expect(card.getAttribute("data-prompt-cache-key")).toBeNull();
+    expect(card.getAttribute("data-conversation-sequence-id")).toBe(
+      cards[0]?.conversationSequenceId.replace(/^WC-/, ""),
+    );
+  });
+
+  it("places reasoning effort between the model name and service-tier indicator", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-reasoning-layout", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-reasoning-layout",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "completed",
+            reasoningEffort: "medium",
+            requestedServiceTier: "priority",
+            serviceTier: "priority",
+          }),
+        ]),
+      ]),
+    );
+
+    const currentSlot = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"]',
+    );
+    if (!(currentSlot instanceof HTMLDivElement)) {
+      throw new Error("missing current invocation slot");
+    }
+
+    const modelName = currentSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-model-name"]',
+    );
+    const reasoningEffort = currentSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-reasoning-effort"]',
+    );
+    const fastIcon = currentSlot.querySelector(
+      '[data-testid="invocation-fast-icon"]',
+    );
+    if (
+      !(modelName instanceof HTMLElement) ||
+      !(reasoningEffort instanceof HTMLElement) ||
+      !(fastIcon instanceof HTMLElement)
+    ) {
+      throw new Error("missing model/reasoning/service-tier markers");
+    }
+
+    expect(reasoningEffort.textContent).toContain("medium");
+    expect(
+      modelName.compareDocumentPosition(reasoningEffort) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+    expect(
+      reasoningEffort.compareDocumentPosition(fastIcon) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+  });
+
   it("renders a fixed previous-invocation placeholder when a conversation has only one call", () => {
     renderSection(
       createResponse([
@@ -308,6 +409,11 @@ describe("DashboardWorkingConversationsSection", () => {
     if (!(currentSlot instanceof HTMLDivElement)) {
       throw new Error("missing current invocation slot");
     }
+
+    expect(currentSlot.getAttribute("aria-label")).toContain(
+      cards[0]?.conversationSequenceId.replace(/^WC-/, "") ?? "",
+    );
+    expect(currentSlot.getAttribute("aria-label")).not.toContain("WC-");
 
     act(() => {
       currentSlot.click();

@@ -4,7 +4,10 @@ import type {
   PromptCacheConversationInvocationPreview,
   PromptCacheConversationsResponse,
 } from "./api";
-import { mapPromptCacheConversationsToDashboardCards } from "./dashboardWorkingConversations";
+import {
+  formatDashboardWorkingConversationSequenceId,
+  mapPromptCacheConversationsToDashboardCards,
+} from "./dashboardWorkingConversations";
 
 function createPreview(
   overrides: Partial<PromptCacheConversationInvocationPreview> & {
@@ -87,6 +90,14 @@ function createResponse(
 }
 
 describe("mapPromptCacheConversationsToDashboardCards", () => {
+  it("strips the WC prefix from the display sequence id without changing the raw id", () => {
+    expect(formatDashboardWorkingConversationSequenceId("WC-ABCDEF")).toBe("ABCDEF");
+    expect(formatDashboardWorkingConversationSequenceId("WC-ABCDEF-11")).toBe(
+      "ABCDEF-11",
+    );
+    expect(formatDashboardWorkingConversationSequenceId("ABCDEF")).toBe("ABCDEF");
+  });
+
   it("builds stable WC short sequence ids from prompt cache keys", () => {
     const response = createResponse([
       createConversation("pck-alpha", [

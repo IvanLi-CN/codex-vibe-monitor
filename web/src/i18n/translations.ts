@@ -1253,9 +1253,9 @@ const baseTranslations = {
     "dashboard.workingConversations.previousPlaceholderHint":
       "The slot stays reserved so card height and scan rhythm remain stable while the conversation is still warming up.",
     "dashboard.workingConversations.modelLabel": "Model",
-    "dashboard.workingConversations.requestCountLabel": "Requests",
-    "dashboard.workingConversations.totalTokensLabel": "Conversation tokens",
-    "dashboard.workingConversations.totalCostLabel": "Conversation cost",
+    "dashboard.workingConversations.requestCountLabel": "Request",
+    "dashboard.workingConversations.totalTokensLabel": "Token",
+    "dashboard.workingConversations.totalCostLabel": "Cost",
     "dashboard.workingConversations.sortAnchorLabel": "Sort anchor",
     "dashboard.workingConversations.drawer.close": "Close invocation details",
     "dashboard.workingConversations.drawer.subtitle":
@@ -2907,9 +2907,9 @@ const baseTranslations = {
     "dashboard.workingConversations.previousPlaceholderHint":
       "这里会保持等高占位，避免对话刚开始时卡片高度跳变。",
     "dashboard.workingConversations.modelLabel": "模型",
-    "dashboard.workingConversations.requestCountLabel": "累计请求",
-    "dashboard.workingConversations.totalTokensLabel": "对话 Tokens",
-    "dashboard.workingConversations.totalCostLabel": "对话成本",
+    "dashboard.workingConversations.requestCountLabel": "请求",
+    "dashboard.workingConversations.totalTokensLabel": "Token",
+    "dashboard.workingConversations.totalCostLabel": "成本",
     "dashboard.workingConversations.sortAnchorLabel": "排序锚点",
     "dashboard.workingConversations.drawer.close": "关闭调用详情",
     "dashboard.workingConversations.drawer.subtitle": "工作中对话调用",
