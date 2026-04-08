@@ -1031,7 +1031,64 @@ async fn acquire_proxy_request_concurrency_permit_times_out_when_limit_is_reache
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_via_pool_releases_concurrency_slot_before_downstream_stream_finishes() {
+async fn proxy_openai_v1_via_pool_acquires_concurrency_slot_before_reading_request_body() {
+    let mut config = test_config();
+    config.proxy_request_concurrency_limit = 1;
+    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(50);
+    let state = test_state_from_config(config, true).await;
+    let uri = "/v1/chat/completions"
+        .parse::<Uri>()
+        .expect("valid proxy uri");
+    let held_permit =
+        acquire_proxy_request_concurrency_permit(state.as_ref(), 1003, &Method::POST, &uri)
+            .await
+            .expect("first request should acquire concurrency slot");
+    let body_poll_count = Arc::new(AtomicUsize::new(0));
+    let body_poll_count_for_stream = body_poll_count.clone();
+    let body = Body::from_stream(stream::poll_fn(move |_cx| {
+        let poll_index = body_poll_count_for_stream.fetch_add(1, Ordering::AcqRel);
+        if poll_index == 0 {
+            std::task::Poll::Ready(Some(Ok::<Bytes, io::Error>(Bytes::from_static(
+                br#"{"model":"gpt-5","messages":[]}"#,
+            ))))
+        } else {
+            std::task::Poll::Ready(None)
+        }
+    }));
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let (status, message) = proxy_openai_v1_via_pool(
+        state.clone(),
+        1004,
+        &uri,
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )]),
+        body,
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect_err("second request should time out before reading request body");
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(message, PROXY_CONCURRENCY_LIMIT_MESSAGE);
+    assert_eq!(
+        body_poll_count.load(Ordering::Acquire),
+        0,
+        "body stream should not be polled before admission control succeeds"
+    );
+
+    drop(held_permit);
+    assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 0);
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_via_pool_holds_concurrency_slot_until_downstream_stream_finishes() {
     let app = Router::new().route(
         "/v1/responses",
         post(|| async move {
@@ -1096,11 +1153,24 @@ async fn proxy_openai_v1_via_pool_releases_concurrency_slot_before_downstream_st
     assert_eq!(response.status(), StatusCode::OK);
     assert_eq!(
         state.proxy_request_in_flight.load(Ordering::Acquire),
-        0,
-        "proxy concurrency slot should be released once upstream response is ready"
+        1,
+        "proxy concurrency slot should remain held until downstream streaming finishes"
     );
 
-    drop(response);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read streaming via-pool response");
+    assert_eq!(
+        body,
+        Bytes::from_static(br#"{"phase":"streaming","done":true}"#)
+    );
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(
+        state.proxy_request_in_flight.load(Ordering::Acquire),
+        0,
+        "proxy concurrency slot should release after downstream streaming completes"
+    );
+
     upstream_handle.abort();
 }
 
