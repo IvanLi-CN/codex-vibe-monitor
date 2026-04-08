@@ -2,7 +2,7 @@
 
 ## 状态
 
-- Status: 部分完成（4/5）
+- Status: 已完成（5/5）
 - Created: 2026-04-08
 - Last: 2026-04-08
 
@@ -86,7 +86,7 @@
 - [x] M2: 工作中对话卡片头部压成单行，bare hash formatter 复用到卡片与抽屉 header。
 - [x] M3: 补齐 Vitest 与 Storybook 覆盖，锁定“无 raw key 可见文本、无 `WC-` 前缀、交互不回退”。
 - [x] M4: 完成 lint / targeted Vitest / build / Storybook build，并生成本地视觉证据。
-- [ ] M5: 在主人确认截图可提交后，把最终视觉证据写回 spec，并继续推进 PR 到 merge-ready。
+- [x] M5: 在主人确认截图可提交后，把最终视觉证据写回 spec，并继续推进 PR 到 merge-ready。
 
 ## 方案概述（Approach, high-level）
 
@@ -104,4 +104,10 @@
 
 ## Visual Evidence
 
-- 待主人确认当前本地 Storybook 截图后补入本节；在确认前，图片只做聊天回图，不写入仓库资产。
+- Storybook canvas / `WideDesktop1660`：摘要标签压缩为 `请求 / Token / 成本`，并验证长数值仍可留在单行摘要区域。
+
+  ![Wide desktop summary metrics](./assets/wide-desktop-summary-metrics.png)
+
+- Storybook canvas / summary focus crop：聚焦长数值卡片，验证 `245 / 34,089,123 / US$32.1987` 与 `gpt-5.4 · medium · ⚡` 共存时仍保持可读。
+
+  ![Summary metrics focus](./assets/summary-metrics-focus.png)
