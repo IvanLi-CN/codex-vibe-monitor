@@ -585,6 +585,7 @@ struct PoolFailoverProgress {
     attempt_count: usize,
     last_error: Option<PoolUpstreamError>,
     preserve_sticky_owner_terminal_error: bool,
+    overload_required_upstream_route_key: Option<String>,
     timeout_route_failover_pending: bool,
     responses_total_timeout_started_at: Option<Instant>,
     no_available_wait_deadline: Option<Instant>,
@@ -1373,6 +1374,7 @@ async fn resolve_pool_account_for_request_with_wait(
     sticky_key: Option<&str>,
     excluded_ids: &[i64],
     excluded_upstream_route_keys: &HashSet<String>,
+    required_upstream_route_key: Option<&str>,
     wait_for_no_available: bool,
     wait_deadline: &mut Option<Instant>,
     total_timeout_deadline: Option<Instant>,
@@ -1383,11 +1385,12 @@ async fn resolve_pool_account_for_request_with_wait(
         if total_timeout_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
             return Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired);
         }
-        let resolution = resolve_pool_account_for_request(
+        let resolution = resolve_pool_account_for_request_with_route_requirement(
             state,
             sticky_key,
             excluded_ids,
             excluded_upstream_route_keys,
+            required_upstream_route_key,
         )
         .await?;
         if total_timeout_deadline.is_some_and(|deadline| Instant::now() >= deadline) {
@@ -1489,6 +1492,8 @@ async fn send_pool_request_with_failover(
     let mut preserve_sticky_owner_terminal_error =
         failover_progress.preserve_sticky_owner_terminal_error
             || pool_upstream_error_preserves_existing_sticky_owner(last_error.as_ref());
+    let mut overload_required_upstream_route_key =
+        failover_progress.overload_required_upstream_route_key;
     let mut attempted_account_ids = excluded_ids.iter().copied().collect::<HashSet<_>>();
     if let Some(account_id) = last_error
         .as_ref()
@@ -1668,11 +1673,14 @@ async fn send_pool_request_with_failover(
                         None
                     }
                 });
+            let route_scoped_overload_selection =
+                overload_required_upstream_route_key.clone();
             match resolve_pool_account_for_request_with_wait(
                 state.as_ref(),
                 sticky_key,
                 &excluded_ids,
                 &excluded_upstream_route_keys,
+                route_scoped_overload_selection.as_deref(),
                 wait_for_no_available,
                 &mut no_available_wait_deadline,
                 total_timeout_deadline,
@@ -1682,6 +1690,15 @@ async fn send_pool_request_with_failover(
                 Ok(PoolAccountResolutionWithWait::Resolution(PoolAccountResolution::Resolved(
                     account,
                 ))) => account,
+                Ok(PoolAccountResolutionWithWait::Resolution(_))
+                    if route_scoped_overload_selection.is_some() =>
+                {
+                    let exhausted_route_key = overload_required_upstream_route_key
+                        .take()
+                        .expect("route-scoped overload selection should be present");
+                    excluded_upstream_route_keys.insert(exhausted_route_key);
+                    continue 'account_loop;
+                }
                 Ok(PoolAccountResolutionWithWait::TotalTimeoutExpired) => {
                     let final_error = build_pool_total_timeout_exhausted_error(
                         responses_total_timeout.expect("responses total timeout should be present"),
@@ -2047,9 +2064,15 @@ async fn send_pool_request_with_failover(
             distinct_account_count,
             initial_same_account_attempts,
         );
+        let overload_same_account_attempt_budget = pool_overload_same_account_attempt_budget(
+            original_uri,
+            &method,
+            distinct_account_count,
+            same_account_attempt_budget,
+        );
         let group_upstream_429_max_retries = account.effective_group_upstream_429_max_retries();
-        let same_account_attempt_loop_budget =
-            same_account_attempt_budget.saturating_add(group_upstream_429_max_retries);
+        let same_account_attempt_loop_budget = overload_same_account_attempt_budget
+            .saturating_add(group_upstream_429_max_retries);
         let mut group_upstream_429_retry_count = 0_u8;
         let mut first_response_attempt_started_at = None;
 
@@ -2439,6 +2462,7 @@ async fn send_pool_request_with_failover(
                             exhausted_accounts_all_rate_limited = false;
                             if should_timeout_route_failover {
                                 excluded_upstream_route_keys.insert(upstream_route_key.clone());
+                                overload_required_upstream_route_key = None;
                                 timeout_route_failover_pending = true;
                             }
                             continue 'account_loop;
@@ -2612,6 +2636,7 @@ async fn send_pool_request_with_failover(
                             exhausted_accounts_all_rate_limited = false;
                             if should_timeout_route_failover {
                                 excluded_upstream_route_keys.insert(upstream_route_key.clone());
+                                overload_required_upstream_route_key = None;
                                 timeout_route_failover_pending = true;
                             }
                             continue 'account_loop;
@@ -3046,6 +3071,7 @@ async fn send_pool_request_with_failover(
                 exhausted_accounts_all_rate_limited &= status == StatusCode::TOO_MANY_REQUESTS;
                 if should_timeout_route_failover {
                     excluded_upstream_route_keys.insert(upstream_route_key.clone());
+                    overload_required_upstream_route_key = None;
                     timeout_route_failover_pending = true;
                 }
                 continue 'account_loop;
@@ -3229,6 +3255,7 @@ async fn send_pool_request_with_failover(
                     exhausted_accounts_all_rate_limited = false;
                     if should_timeout_route_failover {
                         excluded_upstream_route_keys.insert(upstream_route_key.clone());
+                        overload_required_upstream_route_key = None;
                         timeout_route_failover_pending = true;
                     }
                     continue 'account_loop;
@@ -3241,190 +3268,200 @@ async fn send_pool_request_with_failover(
                 .get(header::CONTENT_TYPE)
                 .and_then(|value| value.to_str().ok())
                 .is_some_and(|value| value.starts_with("text/event-stream"));
-            let (response, first_chunk) = if original_uri.path() == "/v1/responses"
+            let initial_gate_outcome = if original_uri.path() == "/v1/responses"
                 && status == StatusCode::OK
                 && response_is_event_stream
             {
-                match gate_pool_initial_response_stream(
+                gate_pool_initial_response_stream(
                     response,
                     first_chunk,
                     attempt_pre_first_byte_timeout,
                     connect_started,
                 )
                 .await
-                {
-                    Ok(PoolInitialSseGateOutcome::Forward {
+            } else if original_uri.path() == "/v1/responses/compact" && status == StatusCode::OK {
+                Ok(gate_pool_initial_compact_response(status, response.headers(), first_chunk.as_ref())
+                    .unwrap_or(PoolInitialResponseGateOutcome::Forward {
                         response,
-                        prefetched_bytes,
-                    }) => (response, prefetched_bytes),
-                    Ok(PoolInitialSseGateOutcome::RetrySameAccount {
-                        message,
+                        prefetched_bytes: first_chunk,
+                    }))
+            } else {
+                Ok(PoolInitialResponseGateOutcome::Forward {
+                    response,
+                    prefetched_bytes: first_chunk,
+                })
+            };
+            let (response, first_chunk) = match initial_gate_outcome {
+                Ok(PoolInitialResponseGateOutcome::Forward {
+                    response,
+                    prefetched_bytes,
+                }) => (response, prefetched_bytes),
+                Ok(PoolInitialResponseGateOutcome::RetrySameAccount {
+                    message,
+                    upstream_error_code,
+                    upstream_error_message,
+                    upstream_request_id,
+                }) => {
+                    let finished_at = shanghai_now_string();
+                    if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                        && let Err(record_err) = finalize_pool_upstream_request_attempt(
+                            &state.pool,
+                            pending_attempt_record,
+                            finished_at.as_str(),
+                            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
+                            Some(status),
+                            Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED),
+                            Some(message.as_str()),
+                            Some(connect_latency_ms),
+                            Some(first_byte_latency_ms),
+                            None,
+                            upstream_request_id.as_deref(),
+                            None,
+                            None,
+                        )
+                        .await
+                    {
+                        warn!(
+                            invoke_id = pending_attempt_record.invoke_id,
+                            error = %record_err,
+                            "failed to persist pool retryable response.failed attempt"
+                        );
+                    }
+                    if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                        && let Err(err) = broadcast_pool_upstream_attempts_snapshot(
+                            state.as_ref(),
+                            &pending_attempt_record.invoke_id,
+                        )
+                        .await
+                    {
+                        warn!(
+                            invoke_id = pending_attempt_record.invoke_id,
+                            error = %err,
+                            "failed to broadcast retryable response.failed snapshot"
+                        );
+                    }
+
+                    let has_retry_budget =
+                        same_account_attempt + 1 < overload_same_account_attempt_budget;
+                    if has_retry_budget {
+                        let retry_delay =
+                            fallback_proxy_429_retry_delay(u32::from(same_account_attempt) + 1);
+                        info!(
+                            account_id = account.account_id,
+                            retry_index = same_account_attempt + 1,
+                            max_same_account_attempts = overload_same_account_attempt_budget,
+                            retry_after_ms = retry_delay.as_millis(),
+                            "pool upstream reported retryable response.failed before forwarding; retrying same account"
+                        );
+                        sleep(retry_delay).await;
+                        continue;
+                    }
+
+                    if let Err(route_err) = record_pool_route_retryable_overload_failure(
+                        &state.pool,
+                        account.account_id,
+                        sticky_key,
+                        &message,
+                        trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                    )
+                    .await
+                    {
+                        warn!(account_id = account.account_id, error = %route_err, "failed to record retryable response.failed route state");
+                    }
+                    store_pool_failover_error(
+                        &mut last_error,
+                        &mut preserve_sticky_owner_terminal_error,
+                        PoolUpstreamError {
+                        account: Some(account.clone()),
+                        status,
+                        message: message.clone(),
+                        failure_kind: PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED,
+                        connect_latency_ms,
                         upstream_error_code,
                         upstream_error_message,
                         upstream_request_id,
-                    }) => {
-                        let finished_at = shanghai_now_string();
-                        if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
-                            && let Err(record_err) = finalize_pool_upstream_request_attempt(
-                                &state.pool,
-                                pending_attempt_record,
-                                finished_at.as_str(),
-                                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE,
-                                Some(status),
-                                Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED),
-                                Some(message.as_str()),
-                                Some(connect_latency_ms),
-                                Some(first_byte_latency_ms),
-                                None,
-                                upstream_request_id.as_deref(),
-                                None,
-                                None,
-                            )
-                            .await
-                        {
-                            warn!(
-                                invoke_id = pending_attempt_record.invoke_id,
-                                error = %record_err,
-                                "failed to persist pool retryable response.failed attempt"
-                            );
-                        }
-                        if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
-                            && let Err(err) = broadcast_pool_upstream_attempts_snapshot(
-                                state.as_ref(),
-                                &pending_attempt_record.invoke_id,
-                            )
-                            .await
-                        {
-                            warn!(
-                                invoke_id = pending_attempt_record.invoke_id,
-                                error = %err,
-                                "failed to broadcast retryable response.failed snapshot"
-                            );
-                        }
-
-                        let has_retry_budget =
-                            same_account_attempt + 1 < same_account_attempt_budget;
-                        if has_retry_budget {
-                            let retry_delay =
-                                fallback_proxy_429_retry_delay(u32::from(same_account_attempt) + 1);
-                            info!(
-                                account_id = account.account_id,
-                                retry_index = same_account_attempt + 1,
-                                max_same_account_attempts = same_account_attempt_budget,
-                                retry_after_ms = retry_delay.as_millis(),
-                                "pool upstream reported retryable response.failed before forwarding; retrying same account"
-                            );
-                            sleep(retry_delay).await;
-                            continue;
-                        }
-
-                        if let Err(route_err) = record_pool_route_retryable_overload_failure(
-                            &state.pool,
-                            account.account_id,
-                            sticky_key,
-                            &message,
-                            trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
-                        )
-                        .await
-                        {
-                            warn!(account_id = account.account_id, error = %route_err, "failed to record retryable response.failed route state");
-                        }
-                        store_pool_failover_error(
-                            &mut last_error,
-                            &mut preserve_sticky_owner_terminal_error,
-                            PoolUpstreamError {
-                            account: Some(account.clone()),
-                            status,
-                            message: message.clone(),
-                            failure_kind: PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED,
-                            connect_latency_ms,
-                            upstream_error_code,
-                            upstream_error_message,
-                            upstream_request_id,
-                            oauth_responses_debug: oauth_responses_debug.clone(),
-                            attempt_summary: PoolAttemptSummary::default(),
-                            requested_service_tier: attempted_requested_service_tier.clone(),
-                            request_body_for_capture: attempted_request_body_for_capture.clone(),
-                            },
-                        );
-                        exhausted_accounts_all_rate_limited = false;
-                        continue 'account_loop;
-                    }
-                    Err(err) => {
-                        let message = format!("failed to gate first response event: {err}");
-                        let finished_at = shanghai_now_string();
-                        if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
-                            && let Err(record_err) = finalize_pool_upstream_request_attempt(
-                                &state.pool,
-                                pending_attempt_record,
-                                finished_at.as_str(),
-                                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
-                                None,
-                                Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
-                                Some(message.as_str()),
-                                Some(connect_latency_ms),
-                                Some(first_byte_latency_ms),
-                                None,
-                                None,
-                                None,
-                                None,
-                            )
-                            .await
-                        {
-                            warn!(
-                                invoke_id = pending_attempt_record.invoke_id,
-                                error = %record_err,
-                                "failed to persist first-event gate failure attempt"
-                            );
-                        }
-                        if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
-                            && let Err(err) = broadcast_pool_upstream_attempts_snapshot(
-                                state.as_ref(),
-                                &pending_attempt_record.invoke_id,
-                            )
-                            .await
-                        {
-                            warn!(
-                                invoke_id = pending_attempt_record.invoke_id,
-                                error = %err,
-                                "failed to broadcast first-event gate failure snapshot"
-                            );
-                        }
-                        if let Err(route_err) = record_pool_route_transport_failure(
-                            &state.pool,
-                            account.account_id,
-                            sticky_key,
-                            &message,
-                            trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
-                        )
-                        .await
-                        {
-                            warn!(account_id = account.account_id, error = %route_err, "failed to record first-event gate transport failure");
-                        }
-                        store_pool_failover_error(
-                            &mut last_error,
-                            &mut preserve_sticky_owner_terminal_error,
-                            PoolUpstreamError {
-                            account: Some(account.clone()),
-                            status: StatusCode::BAD_GATEWAY,
-                            message: message.clone(),
-                            failure_kind: PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
-                            connect_latency_ms,
-                            upstream_error_code: None,
-                            upstream_error_message: None,
-                            upstream_request_id: None,
-                            oauth_responses_debug: oauth_responses_debug.clone(),
-                            attempt_summary: PoolAttemptSummary::default(),
-                            requested_service_tier: attempted_requested_service_tier.clone(),
-                            request_body_for_capture: attempted_request_body_for_capture.clone(),
-                            },
-                        );
-                        exhausted_accounts_all_rate_limited = false;
-                        continue 'account_loop;
-                    }
+                        oauth_responses_debug: oauth_responses_debug.clone(),
+                        attempt_summary: PoolAttemptSummary::default(),
+                        requested_service_tier: attempted_requested_service_tier.clone(),
+                        request_body_for_capture: attempted_request_body_for_capture.clone(),
+                        },
+                    );
+                    exhausted_accounts_all_rate_limited = false;
+                    overload_required_upstream_route_key = Some(upstream_route_key.clone());
+                    continue 'account_loop;
                 }
-            } else {
-                (response, first_chunk)
+                Err(err) => {
+                    let message = format!("failed to gate initial upstream response: {err}");
+                    let finished_at = shanghai_now_string();
+                    if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                        && let Err(record_err) = finalize_pool_upstream_request_attempt(
+                            &state.pool,
+                            pending_attempt_record,
+                            finished_at.as_str(),
+                            POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE,
+                            None,
+                            Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR),
+                            Some(message.as_str()),
+                            Some(connect_latency_ms),
+                            Some(first_byte_latency_ms),
+                            None,
+                            None,
+                            None,
+                            None,
+                        )
+                        .await
+                    {
+                        warn!(
+                            invoke_id = pending_attempt_record.invoke_id,
+                            error = %record_err,
+                            "failed to persist first-event gate failure attempt"
+                        );
+                    }
+                    if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
+                        && let Err(err) = broadcast_pool_upstream_attempts_snapshot(
+                            state.as_ref(),
+                            &pending_attempt_record.invoke_id,
+                        )
+                        .await
+                    {
+                        warn!(
+                            invoke_id = pending_attempt_record.invoke_id,
+                            error = %err,
+                            "failed to broadcast first-event gate failure snapshot"
+                        );
+                    }
+                    if let Err(route_err) = record_pool_route_transport_failure(
+                        &state.pool,
+                        account.account_id,
+                        sticky_key,
+                        &message,
+                        trace_context.as_ref().map(|trace| trace.invoke_id.as_str()),
+                    )
+                    .await
+                    {
+                        warn!(account_id = account.account_id, error = %route_err, "failed to record first-event gate transport failure");
+                    }
+                    store_pool_failover_error(
+                        &mut last_error,
+                        &mut preserve_sticky_owner_terminal_error,
+                        PoolUpstreamError {
+                        account: Some(account.clone()),
+                        status: StatusCode::BAD_GATEWAY,
+                        message: message.clone(),
+                        failure_kind: PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
+                        connect_latency_ms,
+                        upstream_error_code: None,
+                        upstream_error_message: None,
+                        upstream_request_id: None,
+                        oauth_responses_debug: oauth_responses_debug.clone(),
+                        attempt_summary: PoolAttemptSummary::default(),
+                        requested_service_tier: attempted_requested_service_tier.clone(),
+                        request_body_for_capture: attempted_request_body_for_capture.clone(),
+                        },
+                    );
+                    exhausted_accounts_all_rate_limited = false;
+                    continue 'account_loop;
+                }
             };
 
             if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
@@ -3573,6 +3610,7 @@ async fn continue_or_retry_pool_live_request(
                             attempt_count: 1,
                             last_error: Some(first_error),
                             preserve_sticky_owner_terminal_error,
+                            overload_required_upstream_route_key: None,
                             timeout_route_failover_pending: true,
                             responses_total_timeout_started_at,
                             no_available_wait_deadline: None,
@@ -4174,6 +4212,7 @@ async fn proxy_openai_v1_via_pool(
                             body_sticky_key.as_deref(),
                             &[],
                             &HashSet::new(),
+                            None,
                             true,
                             &mut no_available_wait_deadline,
                             pre_attempt_total_timeout_deadline,
@@ -4190,6 +4229,7 @@ async fn proxy_openai_v1_via_pool(
                         body_sticky_key.as_deref(),
                         &[],
                         &HashSet::new(),
+                        None,
                         true,
                         &mut no_available_wait_deadline,
                         pre_attempt_total_timeout_deadline,
@@ -4226,6 +4266,7 @@ async fn proxy_openai_v1_via_pool(
                     body_sticky_key.as_deref(),
                     &[],
                     &HashSet::new(),
+                    None,
                     true,
                     &mut no_available_wait_deadline,
                     pre_attempt_total_timeout_deadline,
@@ -6705,6 +6746,23 @@ fn pool_same_account_attempt_budget(
     }
 }
 
+const POOL_RESPONSES_FAMILY_INITIAL_OVERLOAD_ATTEMPT_BUDGET: u8 = 4;
+
+fn pool_overload_same_account_attempt_budget(
+    original_uri: &Uri,
+    method: &Method,
+    distinct_account_count: usize,
+    same_account_attempt_budget: u8,
+) -> u8 {
+    if pool_uses_responses_family_retry_budget_policy(original_uri, method)
+        && distinct_account_count <= 1
+    {
+        same_account_attempt_budget.max(POOL_RESPONSES_FAMILY_INITIAL_OVERLOAD_ATTEMPT_BUDGET)
+    } else {
+        same_account_attempt_budget
+    }
+}
+
 fn pool_error_message_indicates_proxy_timeout(message: &str) -> bool {
     let message_lower = message.trim().to_ascii_lowercase();
     message_lower.contains("request timed out after")
@@ -7524,6 +7582,98 @@ fn find_first_sse_event_boundary(bytes: &[u8]) -> Option<usize> {
     None
 }
 
+fn initial_sse_event_kind(bytes: &[u8]) -> Option<String> {
+    let mut event_name = None;
+    let mut data_lines = Vec::new();
+    for line in String::from_utf8_lossy(bytes).lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with(':') {
+            continue;
+        }
+        if trimmed.starts_with("event:") {
+            let candidate = trimmed.trim_start_matches("event:").trim();
+            if !candidate.is_empty() {
+                event_name = Some(candidate.to_string());
+            }
+            continue;
+        }
+        if trimmed.starts_with("data:") {
+            let payload = trimmed.trim_start_matches("data:").trim();
+            if !payload.is_empty() {
+                data_lines.push(payload.to_string());
+            }
+        }
+    }
+
+    if data_lines.is_empty() {
+        return event_name;
+    }
+
+    let payload = data_lines.join("\n");
+    if payload == "[DONE]" {
+        return Some("[DONE]".to_string());
+    }
+
+    serde_json::from_str::<Value>(&payload)
+        .ok()
+        .and_then(|value| event_name.clone().or_else(|| extract_stream_payload_type(&value)))
+        .or(event_name)
+}
+
+fn build_retryable_overload_gate_outcome(
+    upstream_error_code: Option<String>,
+    upstream_error_message: Option<String>,
+    upstream_request_id: Option<String>,
+) -> PoolInitialResponseGateOutcome {
+    let response_info = ResponseCaptureInfo {
+        model: None,
+        usage: ParsedUsage::default(),
+        usage_missing_reason: Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED.to_string()),
+        service_tier: None,
+        stream_terminal_event: Some("response.failed".to_string()),
+        upstream_error_code: upstream_error_code.clone(),
+        upstream_error_message: upstream_error_message.clone(),
+        upstream_request_id: upstream_request_id.clone(),
+    };
+    PoolInitialResponseGateOutcome::RetrySameAccount {
+        message: format_upstream_response_failed_message(&response_info),
+        upstream_error_code,
+        upstream_error_message,
+        upstream_request_id,
+    }
+}
+
+enum PoolInitialResponsesSseEventDecision {
+    ContinueMetadata,
+    Forward,
+    RetrySameAccount {
+        upstream_error_code: Option<String>,
+        upstream_error_message: Option<String>,
+        upstream_request_id: Option<String>,
+    },
+}
+
+fn classify_pool_initial_responses_sse_event(
+    status: StatusCode,
+    event_bytes: &[u8],
+) -> PoolInitialResponsesSseEventDecision {
+    let response_info = parse_stream_response_payload(event_bytes);
+    if response_info_is_retryable_server_overloaded(status, &response_info) {
+        return PoolInitialResponsesSseEventDecision::RetrySameAccount {
+            upstream_error_code: response_info.upstream_error_code,
+            upstream_error_message: response_info.upstream_error_message,
+            upstream_request_id: response_info.upstream_request_id,
+        };
+    }
+
+    match initial_sse_event_kind(event_bytes).as_deref() {
+        None | Some("response.created" | "response.in_progress") => {
+            PoolInitialResponsesSseEventDecision::ContinueMetadata
+        }
+        _ => PoolInitialResponsesSseEventDecision::Forward,
+    }
+}
+
 fn rebuild_proxy_upstream_response_stream(
     status: StatusCode,
     headers: &HeaderMap,
@@ -7539,7 +7689,7 @@ fn rebuild_proxy_upstream_response_stream(
         .map_err(|err| format!("failed to rebuild upstream response stream: {err}"))
 }
 
-enum PoolInitialSseGateOutcome {
+enum PoolInitialResponseGateOutcome {
     Forward {
         response: ProxyUpstreamResponseBody,
         prefetched_bytes: Option<Bytes>,
@@ -7557,27 +7707,44 @@ async fn gate_pool_initial_response_stream(
     prefetched_first_chunk: Option<Bytes>,
     total_timeout: Duration,
     started: Instant,
-) -> Result<PoolInitialSseGateOutcome, String> {
+) -> Result<PoolInitialResponseGateOutcome, String> {
     let status = response.status();
     let headers = response.headers().clone();
     let mut stream = response.into_bytes_stream();
     let mut buffered = Vec::new();
+    let mut scanned_bytes = 0usize;
+    let mut saw_non_metadata_event = false;
     if let Some(chunk) = prefetched_first_chunk {
         buffered.extend_from_slice(&chunk);
     }
 
     let mut gate_stream_error: Option<io::Error> = None;
     loop {
-        if let Some(event_end) = find_first_sse_event_boundary(&buffered) {
-            let response_info = parse_stream_response_payload(&buffered[..event_end]);
-            if response_info_is_retryable_server_overloaded(status, &response_info) {
-                return Ok(PoolInitialSseGateOutcome::RetrySameAccount {
-                    message: format_upstream_response_failed_message(&response_info),
-                    upstream_error_code: response_info.upstream_error_code,
-                    upstream_error_message: response_info.upstream_error_message,
-                    upstream_request_id: response_info.upstream_request_id,
-                });
+        while let Some(relative_event_end) = find_first_sse_event_boundary(&buffered[scanned_bytes..]) {
+            let event_end = scanned_bytes + relative_event_end;
+            match classify_pool_initial_responses_sse_event(status, &buffered[scanned_bytes..event_end]) {
+                PoolInitialResponsesSseEventDecision::ContinueMetadata => {
+                    scanned_bytes = event_end;
+                }
+                PoolInitialResponsesSseEventDecision::Forward => {
+                    scanned_bytes = event_end;
+                    saw_non_metadata_event = true;
+                    break;
+                }
+                PoolInitialResponsesSseEventDecision::RetrySameAccount {
+                    upstream_error_code,
+                    upstream_error_message,
+                    upstream_request_id,
+                } => {
+                    return Ok(build_retryable_overload_gate_outcome(
+                        upstream_error_code,
+                        upstream_error_message,
+                        upstream_request_id,
+                    ));
+                }
             }
+        }
+        if saw_non_metadata_event {
             break;
         }
         if buffered.len() >= RAW_RESPONSE_PREVIEW_LIMIT {
@@ -7613,10 +7780,46 @@ async fn gate_pool_initial_response_stream(
     };
     let rebuilt_response =
         rebuild_proxy_upstream_response_stream(status, &headers, remaining_stream)?;
-    Ok(PoolInitialSseGateOutcome::Forward {
+    Ok(PoolInitialResponseGateOutcome::Forward {
         response: rebuilt_response,
         prefetched_bytes: (!buffered.is_empty()).then_some(Bytes::from(buffered)),
     })
+}
+
+fn gate_pool_initial_compact_response(
+    status: StatusCode,
+    headers: &HeaderMap,
+    prefetched_first_chunk: Option<&Bytes>,
+) -> Option<PoolInitialResponseGateOutcome> {
+    if status != StatusCode::OK {
+        return None;
+    }
+
+    let first_chunk = prefetched_first_chunk?;
+    if first_chunk.is_empty() {
+        return None;
+    }
+
+    let content_encoding = headers
+        .get(header::CONTENT_ENCODING)
+        .and_then(|value| value.to_str().ok());
+    let (decoded_first_chunk, _) =
+        decode_response_payload_for_preview_parse(first_chunk.as_ref(), content_encoding);
+    let value = serde_json::from_slice::<Value>(decoded_first_chunk.as_ref()).ok()?;
+    let error_object = extract_upstream_error_object(&value)?;
+    let upstream_error_code = error_object
+        .get("code")
+        .and_then(|entry| entry.as_str())
+        .map(str::to_string);
+    if !upstream_error_code_is_server_overloaded(upstream_error_code.as_deref()) {
+        return None;
+    }
+
+    Some(build_retryable_overload_gate_outcome(
+        upstream_error_code,
+        extract_upstream_error_message(&value),
+        extract_upstream_request_id(&value),
+    ))
 }
 
 fn extract_request_id_from_message(message: &str) -> Option<String> {
