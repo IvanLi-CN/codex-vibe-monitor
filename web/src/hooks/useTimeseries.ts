@@ -94,6 +94,27 @@ export function mergePendingTimeseriesSilentOption(existingSilent: boolean | nul
   return (existingSilent ?? true) && incomingSilent
 }
 
+export function getLocalDayStartEpoch(nowEpochSeconds = Math.floor(Date.now() / 1000)) {
+  const value = new Date(nowEpochSeconds * 1000)
+  value.setHours(0, 0, 0, 0)
+  return Math.floor(value.getTime() / 1000)
+}
+
+export function getNextLocalDayStartEpoch(nowEpochSeconds = Math.floor(Date.now() / 1000)) {
+  const value = new Date(nowEpochSeconds * 1000)
+  value.setHours(24, 0, 0, 0)
+  return Math.floor(value.getTime() / 1000)
+}
+
+function getRangeStartEpoch(range: string, rangeEndEpoch: number) {
+  if (range === 'today') {
+    return getLocalDayStartEpoch(rangeEndEpoch)
+  }
+
+  const rangeSeconds = parseRangeSpec(range)
+  return rangeSeconds != null ? rangeEndEpoch - rangeSeconds : null
+}
+
 function resolvePendingLoad(pending: PendingLoad | null) {
   if (!pending) return
   pending.waiters.forEach((resolve) => resolve())
@@ -101,10 +122,10 @@ function resolvePendingLoad(pending: PendingLoad | null) {
 
 function createSeededTimeseries(range: string, bucket?: string) {
   const bucketSeconds = guessBucketSeconds(bucket) ?? defaultBucketSecondsForRange(range)
-  const now = Date.now()
-  const rangeSeconds = parseRangeSpec(range) ?? 86_400
-  const start = formatEpochToIso(Math.floor((now - rangeSeconds * 1000) / 1000))
-  const end = formatEpochToIso(Math.floor(now / 1000))
+  const nowEpochSeconds = Math.floor(Date.now() / 1000)
+  const rangeStartEpoch = getRangeStartEpoch(range, nowEpochSeconds) ?? nowEpochSeconds - 86_400
+  const start = formatEpochToIso(rangeStartEpoch)
+  const end = formatEpochToIso(nowEpochSeconds)
   return { rangeStart: start, rangeEnd: end, bucketSeconds, points: [] satisfies TimeseriesPoint[] }
 }
 
@@ -382,11 +403,11 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
     if (typeof document === 'undefined') return
     const onVisibilityChange = () => {
       if (document.visibilityState !== 'visible') return
-      triggerOpenResync(syncPolicy.mode === 'current-day-local')
+      triggerOpenResync(range === 'today' || syncPolicy.mode === 'current-day-local')
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
     return () => document.removeEventListener('visibilitychange', onVisibilityChange)
-  }, [syncPolicy.mode, triggerOpenResync])
+  }, [range, syncPolicy.mode, triggerOpenResync])
 
   useEffect(() => {
     const unsubscribe = subscribeToSseOpen(() => {
@@ -397,19 +418,22 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
 
   useEffect(() => {
     clearDayRolloverTimer()
-    if (syncPolicy.mode !== 'current-day-local') {
+    if (range !== 'today' && syncPolicy.mode !== 'current-day-local') {
       return
     }
-    const currentBucketEndEpoch = getCurrentDayBucketEndEpoch(data)
-    if (currentBucketEndEpoch == null) {
+    const refreshEpoch =
+      range === 'today'
+        ? getNextLocalDayStartEpoch()
+        : getCurrentDayBucketEndEpoch(data)
+    if (refreshEpoch == null) {
       return
     }
-    const delay = Math.max(0, currentBucketEndEpoch * 1000 - Date.now() + 50)
+    const delay = Math.max(0, refreshEpoch * 1000 - Date.now() + 50)
     dayRolloverTimerRef.current = setTimeout(() => {
       void load({ silent: true, force: true })
     }, delay)
     return clearDayRolloverTimer
-  }, [clearDayRolloverTimer, data, load, syncPolicy.mode])
+  }, [clearDayRolloverTimer, data, load, range, syncPolicy.mode])
 
   useEffect(
     () => () => {
@@ -529,7 +553,6 @@ export function applyRecordsToTimeseries(
   }
 
   const offsetSeconds = bucketSeconds >= 86_400 ? (context.settlementHour ?? 0) * 3_600 : 0
-  const rangeSeconds = parseRangeSpec(context.range)
   const points = new Map<string, TimeseriesPoint>()
   for (const point of current.points) {
     points.set(point.bucketStart, { ...point })
@@ -546,9 +569,9 @@ export function applyRecordsToTimeseries(
       latestRangeEndEpoch = occurredEpoch + bucketSeconds
     }
 
-    if (rangeSeconds != null && latestRangeEndEpoch != null) {
-      const earliestAllowed = latestRangeEndEpoch - rangeSeconds
-      if (occurredEpoch < earliestAllowed) {
+    if (latestRangeEndEpoch != null) {
+      const earliestAllowed = getRangeStartEpoch(context.range, latestRangeEndEpoch)
+      if (earliestAllowed != null && occurredEpoch < earliestAllowed) {
         continue
       }
     }
@@ -598,9 +621,9 @@ export function applyRecordsToTimeseries(
     return aEpoch - bEpoch
   })
 
-  if (rangeSeconds != null && latestRangeEndEpoch != null) {
-    const earliestAllowed = latestRangeEndEpoch - rangeSeconds
-    while (sortedPoints.length > 0) {
+  if (latestRangeEndEpoch != null) {
+    const earliestAllowed = getRangeStartEpoch(context.range, latestRangeEndEpoch)
+    while (earliestAllowed != null && sortedPoints.length > 0) {
       const first = sortedPoints[0]
       const firstEndEpoch = parseIsoEpoch(first.bucketEnd)
       if (firstEndEpoch != null && firstEndEpoch <= earliestAllowed) {
@@ -613,10 +636,9 @@ export function applyRecordsToTimeseries(
 
   const nextRangeEndEpoch = latestRangeEndEpoch ?? parseIsoEpoch(current.rangeEnd)
   const nextRangeEnd = nextRangeEndEpoch != null ? formatEpochToIso(nextRangeEndEpoch) : current.rangeEnd
-  const nextRangeStart =
-    rangeSeconds != null && nextRangeEndEpoch != null
-      ? formatEpochToIso(nextRangeEndEpoch - rangeSeconds)
-      : current.rangeStart
+  const nextRangeStartEpoch =
+    nextRangeEndEpoch != null ? getRangeStartEpoch(context.range, nextRangeEndEpoch) : null
+  const nextRangeStart = nextRangeStartEpoch != null ? formatEpochToIso(nextRangeStartEpoch) : current.rangeStart
 
   return {
     ...current,
