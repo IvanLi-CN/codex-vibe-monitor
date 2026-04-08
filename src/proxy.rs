@@ -54,38 +54,6 @@ async fn proxy_openai_v1_common(
     let request_may_have_body = request_may_have_body(&method, &headers);
     let method_for_log = method.clone();
     let uri_for_log = original_uri.clone();
-    let pool_route_active = match request_matches_pool_route(state.as_ref(), &headers).await {
-        Ok(active) => active,
-        Err(err) => {
-            return build_proxy_error_response(
-                ProxyErrorResponse {
-                    status: StatusCode::INTERNAL_SERVER_ERROR,
-                    message: format!("failed to resolve pool routing settings: {err}"),
-                    cvm_id: None,
-                    retry_after_secs: None,
-                    queue_wait_ms: None,
-                },
-                &invoke_id,
-            );
-        }
-    };
-    let runtime_timeouts = match resolve_proxy_request_timeouts(state.as_ref(), pool_route_active).await
-    {
-        Ok(timeouts) => timeouts,
-        Err(err) => {
-            return build_proxy_error_response(
-                ProxyErrorResponse {
-                    status: StatusCode::INTERNAL_SERVER_ERROR,
-                    message: format!("failed to resolve pool routing timeouts: {err}"),
-                    cvm_id: None,
-                    retry_after_secs: None,
-                    queue_wait_ms: None,
-                },
-                &invoke_id,
-            );
-        }
-    };
-
     info!(
         proxy_request_id,
         method = %method_for_log,
@@ -135,6 +103,14 @@ async fn proxy_openai_v1_common(
             return build_proxy_error_response(err, &invoke_id);
         }
     };
+    let (pool_route_active, runtime_timeouts) = resolve_proxy_route_context_after_admission(
+        state.as_ref(),
+        proxy_request_id,
+        &method_for_log,
+        &uri_for_log,
+        &headers,
+    )
+    .await;
 
     match proxy_openai_v1_inner(
         state,
@@ -476,6 +452,47 @@ async fn take_or_acquire_proxy_request_concurrency_permit(
         None => {
             acquire_proxy_request_concurrency_permit(state, proxy_request_id, method, original_uri)
                 .await
+        }
+    }
+}
+
+async fn resolve_proxy_route_context_after_admission(
+    state: &AppState,
+    proxy_request_id: u64,
+    method: &Method,
+    original_uri: &Uri,
+    headers: &HeaderMap,
+) -> (bool, PoolRoutingTimeoutSettingsResolved) {
+    let direct_timeouts = pool_routing_timeouts_from_config(&state.config);
+    let pool_route_active = match request_matches_pool_route(state, headers).await {
+        Ok(active) => active,
+        Err(err) => {
+            warn!(
+                proxy_request_id,
+                method = %method,
+                uri = %original_uri,
+                error = %err,
+                "failed to resolve pool route; falling back to direct proxy route"
+            );
+            return (false, direct_timeouts);
+        }
+    };
+
+    if !pool_route_active {
+        return (false, direct_timeouts);
+    }
+
+    match resolve_proxy_request_timeouts(state, true).await {
+        Ok(timeouts) => (true, timeouts),
+        Err(err) => {
+            warn!(
+                proxy_request_id,
+                method = %method,
+                uri = %original_uri,
+                error = %err,
+                "failed to resolve pool routing timeouts; falling back to config defaults"
+            );
+            (true, direct_timeouts)
         }
     }
 }

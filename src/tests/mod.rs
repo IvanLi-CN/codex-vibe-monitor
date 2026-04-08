@@ -1272,6 +1272,102 @@ async fn proxy_openai_v1_non_pool_capture_targets_preserve_forward_proxy_routing
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_non_pool_bearer_capture_targets_fall_back_when_pool_route_lookup_fails() {
+    let (upstream_base, _captured_requests, upstream_handle) =
+        spawn_capture_target_body_upstream().await;
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    let state = test_state_from_config(config, true).await;
+    sqlx::query("DROP TABLE pool_routing_settings")
+        .execute(&state.pool)
+        .await
+        .expect("drop pool routing settings to force lookup failure");
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/responses".parse::<Uri>().expect("valid proxy uri")),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer upstream-direct-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hello"}"#)),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read direct fallback response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode direct fallback response");
+    assert_eq!(payload["id"].as_str(), Some("resp_test"));
+    assert_eq!(payload["received"]["input"].as_str(), Some("hello"));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_rejects_before_pool_route_lookup_when_concurrency_is_exhausted() {
+    let mut config = test_config();
+    config.proxy_request_concurrency_limit = 1;
+    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(50);
+    let state = test_state_from_config(config, true).await;
+    let uri = "/v1/responses".parse::<Uri>().expect("valid proxy uri");
+
+    let held_permit =
+        acquire_proxy_request_concurrency_permit(state.as_ref(), 1005, &Method::POST, &uri)
+            .await
+            .expect("first request should acquire concurrency slot");
+    sqlx::query("DROP TABLE pool_routing_settings")
+        .execute(&state.pool)
+        .await
+        .expect("drop pool routing settings to force lookup failure");
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(uri),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer upstream-direct-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hello"}"#)),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read concurrency-limit response body");
+    let payload: Value =
+        serde_json::from_slice(&body).expect("decode concurrency-limit response body");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some(PROXY_CONCURRENCY_LIMIT_MESSAGE)
+    );
+    assert!(
+        payload["error"]
+            .as_str()
+            .is_some_and(|message| !message.contains("failed to resolve pool routing settings"))
+    );
+
+    drop(held_permit);
+    assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 0);
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_via_pool_acquires_concurrency_slot_before_reading_request_body() {
     let mut config = test_config();
     config.proxy_request_concurrency_limit = 1;
