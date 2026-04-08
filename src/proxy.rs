@@ -4290,6 +4290,10 @@ async fn continue_or_retry_pool_live_request(
     let mut replay_status_rx = replay_status_rx.clone();
     let responses_total_timeout =
         pool_upstream_responses_total_timeout(&state.config, original_uri, &method);
+    let wait_for_replay_completion_before_total_timeout =
+        pool_uses_responses_timeout_failover_policy(original_uri, &method)
+            && first_error.failure_kind == PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT
+            && pool_error_message_indicates_proxy_timeout(&first_error.message);
     let replay_wait_deadline = Instant::now() + replay_wait_timeout;
     let replay_status = loop {
         let current = { replay_status_rx.borrow().clone() };
@@ -4322,26 +4326,30 @@ async fn continue_or_retry_pool_live_request(
         let changed = if let (Some(total_timeout), Some(started_at)) =
             (responses_total_timeout, responses_total_timeout_started_at)
         {
-            let Some(total_timeout_budget) =
-                remaining_timeout_budget(total_timeout, started_at.elapsed())
-            else {
-                replay_cancel.cancel();
-                release_pool_routing_reservation(state.as_ref(), &reservation_key);
-                let attempt_count = first_error.attempt_summary.pool_attempt_count.max(1);
-                let distinct_account_count =
-                    first_error.attempt_summary.pool_distinct_account_count.max(1);
-                return Err(build_pool_total_timeout_exhausted_error(
-                    total_timeout,
-                    Some(first_error),
-                    attempt_count,
-                    distinct_account_count,
-                ));
-            };
-            timeout(
-                replay_wait_remaining.min(total_timeout_budget),
-                replay_status_rx.changed(),
-            )
-            .await
+            if wait_for_replay_completion_before_total_timeout {
+                timeout(replay_wait_remaining, replay_status_rx.changed()).await
+            } else {
+                let Some(total_timeout_budget) =
+                    remaining_timeout_budget(total_timeout, started_at.elapsed())
+                else {
+                    replay_cancel.cancel();
+                    release_pool_routing_reservation(state.as_ref(), &reservation_key);
+                    let attempt_count = first_error.attempt_summary.pool_attempt_count.max(1);
+                    let distinct_account_count =
+                        first_error.attempt_summary.pool_distinct_account_count.max(1);
+                    return Err(build_pool_total_timeout_exhausted_error(
+                        total_timeout,
+                        Some(first_error),
+                        attempt_count,
+                        distinct_account_count,
+                    ));
+                };
+                timeout(
+                    replay_wait_remaining.min(total_timeout_budget),
+                    replay_status_rx.changed(),
+                )
+                .await
+            }
         } else {
             timeout(replay_wait_remaining, replay_status_rx.changed()).await
         };
@@ -4351,7 +4359,8 @@ async fn continue_or_retry_pool_live_request(
             Err(_) => {
                 replay_cancel.cancel();
                 release_pool_routing_reservation(state.as_ref(), &reservation_key);
-                if let (Some(total_timeout), Some(started_at)) =
+                if !wait_for_replay_completion_before_total_timeout
+                    && let (Some(total_timeout), Some(started_at)) =
                     (responses_total_timeout, responses_total_timeout_started_at)
                     && pool_total_timeout_exhausted(total_timeout, started_at)
                 {
@@ -4387,6 +4396,23 @@ async fn continue_or_retry_pool_live_request(
     };
     match replay_status {
         PoolReplayBodyStatus::Complete(snapshot) => {
+            if wait_for_replay_completion_before_total_timeout
+                && let (Some(total_timeout), Some(started_at)) =
+                    (responses_total_timeout, responses_total_timeout_started_at)
+                && pool_total_timeout_exhausted(total_timeout, started_at)
+            {
+                let attempt_count = first_error.attempt_summary.pool_attempt_count.max(1);
+                let distinct_account_count =
+                    first_error.attempt_summary.pool_distinct_account_count.max(1);
+                replay_cancel.cancel();
+                release_pool_routing_reservation(state.as_ref(), &reservation_key);
+                return Err(build_pool_total_timeout_exhausted_error(
+                    total_timeout,
+                    Some(first_error),
+                    attempt_count,
+                    distinct_account_count,
+                ));
+            }
             let replay_sticky_key =
                 extract_sticky_key_from_replay_snapshot(&snapshot).await.or(sticky_key);
             let uses_timeout_route_failover =
@@ -5741,6 +5767,7 @@ async fn proxy_openai_v1_via_pool(
                     live_body_sticky_key.as_deref(),
                     &[],
                     &HashSet::new(),
+                    None,
                     true,
                     &mut no_available_wait_deadline,
                     pre_attempt_total_timeout_deadline,
