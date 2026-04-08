@@ -17150,12 +17150,30 @@ pub(crate) async fn resolve_pool_account_for_request(
     excluded_ids: &[i64],
     excluded_upstream_route_keys: &HashSet<String>,
 ) -> Result<PoolAccountResolution> {
+    resolve_pool_account_for_request_with_route_requirement(
+        state,
+        sticky_key,
+        excluded_ids,
+        excluded_upstream_route_keys,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn resolve_pool_account_for_request_with_route_requirement(
+    state: &AppState,
+    sticky_key: Option<&str>,
+    excluded_ids: &[i64],
+    excluded_upstream_route_keys: &HashSet<String>,
+    required_upstream_route_key: Option<&str>,
+) -> Result<PoolAccountResolution> {
     let now = Utc::now();
     let mut tried = excluded_ids.iter().copied().collect::<HashSet<_>>();
     let mut saw_rate_limited_candidate = false;
     let mut saw_degraded_candidate = false;
     let mut saw_other_non_rate_limited_routing_candidate = false;
     let mut saw_excluded_route_candidate = false;
+    let mut saw_non_required_route_candidate = false;
     let mut saw_non_routing_candidate = false;
     let mut sticky_route_excluded_by_route_key = false;
     let mut sticky_route_still_reusable = false;
@@ -17185,14 +17203,31 @@ pub(crate) async fn resolve_pool_account_for_request(
             let sticky_snapshot_exhausted = sticky_candidate
                 .as_ref()
                 .is_some_and(routing_candidate_snapshot_is_exhausted);
-            let sticky_route_is_excluded_by_route_key = resolve_pool_account_upstream_base_url(
+            let sticky_route_key = resolve_pool_account_upstream_base_url(
                 &row,
                 &state.config.openai_upstream_base_url,
             )
             .ok()
-            .map(|url| canonical_pool_upstream_route_key(&url))
-            .is_some_and(|route_key| excluded_upstream_route_keys.contains(&route_key));
-            if is_account_selectable_for_sticky_reuse(&row, sticky_snapshot_exhausted, now) {
+            .map(|url| canonical_pool_upstream_route_key(&url));
+            let sticky_route_matches_required =
+                required_upstream_route_key.is_none_or(|required| {
+                    sticky_route_key
+                        .as_deref()
+                        .is_some_and(|route_key| route_key == required)
+                });
+            let sticky_route_is_excluded_by_route_key = sticky_route_key
+                .as_deref()
+                .is_some_and(|route_key| excluded_upstream_route_keys.contains(route_key));
+            if !sticky_route_matches_required {
+                if is_account_rate_limited_for_routing(&row, sticky_snapshot_exhausted)
+                    || is_account_degraded_for_routing(&row, sticky_snapshot_exhausted, now)
+                    || is_routing_eligible_account(&row)
+                {
+                    saw_non_required_route_candidate = true;
+                } else if is_pool_account_routing_candidate(&row) {
+                    saw_non_routing_candidate = true;
+                }
+            } else if is_account_selectable_for_sticky_reuse(&row, sticky_snapshot_exhausted, now) {
                 sticky_route_still_reusable = true;
                 let mut sticky_route_was_excluded = false;
                 match resolve_pool_account_group_proxy_routing_readiness(
@@ -17338,13 +17373,32 @@ pub(crate) async fn resolve_pool_account_for_request(
                 continue;
             };
             let snapshot_exhausted = routing_candidate_snapshot_is_exhausted(&candidate);
-            let candidate_route_is_excluded_by_route_key = resolve_pool_account_upstream_base_url(
+            let candidate_route_key = resolve_pool_account_upstream_base_url(
                 &row,
                 &state.config.openai_upstream_base_url,
             )
             .ok()
-            .map(|url| canonical_pool_upstream_route_key(&url))
-            .is_some_and(|route_key| excluded_upstream_route_keys.contains(&route_key));
+            .map(|url| canonical_pool_upstream_route_key(&url));
+            let candidate_route_matches_required =
+                required_upstream_route_key.is_none_or(|required| {
+                    candidate_route_key
+                        .as_deref()
+                        .is_some_and(|route_key| route_key == required)
+                });
+            let candidate_route_is_excluded_by_route_key = candidate_route_key
+                .as_deref()
+                .is_some_and(|route_key| excluded_upstream_route_keys.contains(route_key));
+            if !candidate_route_matches_required {
+                if is_account_rate_limited_for_routing(&row, snapshot_exhausted)
+                    || is_account_degraded_for_routing(&row, snapshot_exhausted, now)
+                    || is_routing_eligible_account(&row)
+                {
+                    saw_non_required_route_candidate = true;
+                } else {
+                    saw_non_routing_candidate = true;
+                }
+                continue;
+            }
             if !is_account_selectable_for_fresh_assignment(&row, snapshot_exhausted, now) {
                 if candidate_route_is_excluded_by_route_key
                     && (is_account_rate_limited_for_routing(&row, snapshot_exhausted)
@@ -17462,6 +17516,7 @@ pub(crate) async fn resolve_pool_account_for_request(
         return Ok(PoolAccountResolution::DegradedOnly);
     }
     if saw_other_non_rate_limited_routing_candidate
+        || saw_non_required_route_candidate
         || saw_excluded_route_candidate
         || saw_non_routing_candidate
         || (saw_rate_limited_candidate && saw_degraded_candidate)
