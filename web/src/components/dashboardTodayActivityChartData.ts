@@ -94,8 +94,8 @@ export function buildTodayMinuteChartData(
     data.push({
       index,
       epochMs,
-      label: timeFormatter.format(currentDate),
-      tooltipLabel: tooltipFormatter.format(currentDate),
+      label: normalizeFormattedMidnight(timeFormatter.format(currentDate)),
+      tooltipLabel: normalizeFormattedMidnight(tooltipFormatter.format(currentDate)),
       successCount,
       failureCount,
       failureCountNegative: failureCount > 0 ? -failureCount : 0,
@@ -120,6 +120,10 @@ function floorToMinute(date: Date) {
   const next = new Date(date)
   next.setSeconds(0, 0)
   return next
+}
+
+function normalizeFormattedMidnight(value: string) {
+  return value.replace(/(^|\D)24:(\d{2})/g, (_match, prefix: string, minutes: string) => `${prefix}00:${minutes}`)
 }
 
 function parseDateInput(value?: string | null) {
