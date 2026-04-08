@@ -1003,6 +1003,7 @@ enum PoolReplayBodySnapshot {
     File {
         temp_file: Arc<PoolReplayTempFile>,
         size: usize,
+        sticky_key: Option<String>,
     },
 }
 
@@ -1021,11 +1022,27 @@ enum PoolReplayBodyStickyKeyProbeStatus {
     Ready(Option<String>),
 }
 
+#[derive(Debug, Default)]
+struct StreamingStickyKeyExtractor {
+    state: StreamingStickyKeyExtractorState,
+    pattern_progress: [usize; STREAMING_STICKY_KEY_PATTERN_COUNT],
+    found: Option<String>,
+}
+
+#[derive(Debug, Default)]
+enum StreamingStickyKeyExtractorState {
+    #[default]
+    Searching,
+    AfterPattern { saw_colon: bool },
+    ReadingValue { escaped: bool, value: String },
+}
+
 struct PoolReplayBodyBuffer {
     proxy_request_id: u64,
     len: usize,
     memory: Vec<u8>,
     file: Option<(Arc<PoolReplayTempFile>, tokio::fs::File)>,
+    sticky_key_extractor: StreamingStickyKeyExtractor,
 }
 
 struct PoolReplayableRequestBody {
@@ -1033,6 +1050,124 @@ struct PoolReplayableRequestBody {
     status_rx: watch::Receiver<PoolReplayBodyStatus>,
     sticky_key_probe_rx: watch::Receiver<PoolReplayBodyStickyKeyProbeStatus>,
     cancel: CancellationToken,
+}
+
+const STREAMING_STICKY_KEY_PATTERNS: [&[u8]; 4] = [
+    br#""sticky_key""#,
+    br#""stickyKey""#,
+    br#""prompt_cache_key""#,
+    br#""promptCacheKey""#,
+];
+const STREAMING_STICKY_KEY_PATTERN_COUNT: usize = STREAMING_STICKY_KEY_PATTERNS.len();
+
+impl StreamingStickyKeyExtractor {
+    fn ingest(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            if self.found.is_some() {
+                return;
+            }
+            self.ingest_byte(byte);
+        }
+    }
+
+    fn finish(self) -> Option<String> {
+        self.found
+    }
+
+    fn ingest_byte(&mut self, byte: u8) {
+        match &mut self.state {
+            StreamingStickyKeyExtractorState::Searching => self.search_byte(byte),
+            StreamingStickyKeyExtractorState::AfterPattern { saw_colon } => {
+                if byte.is_ascii_whitespace() {
+                    return;
+                }
+                if !*saw_colon {
+                    if byte == b':' {
+                        *saw_colon = true;
+                    } else {
+                        self.reset_to_search(byte);
+                    }
+                    return;
+                }
+                if byte == b'"' {
+                    self.state = StreamingStickyKeyExtractorState::ReadingValue {
+                        escaped: false,
+                        value: String::new(),
+                    };
+                } else {
+                    self.reset_to_search(byte);
+                }
+            }
+            StreamingStickyKeyExtractorState::ReadingValue { escaped, value } => {
+                let mut next_state = None;
+                if *escaped {
+                    match byte {
+                        b'"' | b'\\' | b'/' => value.push(byte as char),
+                        b'b' => value.push('\u{0008}'),
+                        b'f' => value.push('\u{000C}'),
+                        b'n' => value.push('\n'),
+                        b'r' => value.push('\r'),
+                        b't' => value.push('\t'),
+                        b'u' => {
+                            next_state = Some(StreamingStickyKeyExtractorState::Searching);
+                        }
+                        _ => {
+                            next_state = Some(StreamingStickyKeyExtractorState::Searching);
+                        }
+                    }
+                    *escaped = false;
+                    if let Some(state) = next_state {
+                        self.state = state;
+                    }
+                    return;
+                }
+                match byte {
+                    b'"' => {
+                        let normalized = value.trim();
+                        if !normalized.is_empty() {
+                            self.found = Some(normalized.to_string());
+                        } else {
+                            next_state = Some(StreamingStickyKeyExtractorState::Searching);
+                        }
+                    }
+                    b'\\' => *escaped = true,
+                    byte if byte.is_ascii_control() => {
+                        next_state = Some(StreamingStickyKeyExtractorState::Searching);
+                    }
+                    byte if byte.is_ascii() => value.push(byte as char),
+                    _ => {
+                        next_state = Some(StreamingStickyKeyExtractorState::Searching);
+                    }
+                }
+                if let Some(state) = next_state {
+                    self.state = state;
+                }
+            }
+        }
+    }
+
+    fn reset_to_search(&mut self, byte: u8) {
+        self.state = StreamingStickyKeyExtractorState::Searching;
+        self.search_byte(byte);
+    }
+
+    fn search_byte(&mut self, byte: u8) {
+        for (index, pattern) in STREAMING_STICKY_KEY_PATTERNS.iter().enumerate() {
+            let progress = &mut self.pattern_progress[index];
+            *progress = if byte == pattern[*progress] {
+                *progress + 1
+            } else if byte == pattern[0] {
+                1
+            } else {
+                0
+            };
+            if *progress == pattern.len() {
+                self.pattern_progress.fill(0);
+                self.state = StreamingStickyKeyExtractorState::AfterPattern { saw_colon: false };
+                break;
+            }
+        }
+    }
 }
 
 fn proxy_forward_response_status_is_success(status: StatusCode, stream_error: bool) -> bool {
@@ -1331,11 +1466,13 @@ impl PoolReplayBodyBuffer {
             len: 0,
             memory: Vec::new(),
             file: None,
+            sticky_key_extractor: StreamingStickyKeyExtractor::default(),
         }
     }
 
     async fn append(&mut self, chunk: &[u8]) -> io::Result<()> {
         self.len = self.len.saturating_add(chunk.len());
+        self.sticky_key_extractor.ingest(chunk);
         if let Some((_, file)) = self.file.as_mut() {
             file.write_all(chunk).await?;
             return Ok(());
@@ -1362,11 +1499,13 @@ impl PoolReplayBodyBuffer {
     }
 
     async fn finish(mut self) -> io::Result<PoolReplayBodySnapshot> {
+        let sticky_key = self.sticky_key_extractor.finish();
         if let Some((temp_file, mut file)) = self.file.take() {
             file.flush().await?;
             return Ok(PoolReplayBodySnapshot::File {
                 temp_file,
                 size: self.len,
+                sticky_key,
             });
         }
 
@@ -1383,7 +1522,9 @@ impl PoolReplayBodySnapshot {
         match self {
             Self::Empty => reqwest::Body::from(Bytes::new()),
             Self::Memory(bytes) => reqwest::Body::from(bytes.clone()),
-            Self::File { temp_file, size } => {
+            Self::File {
+                temp_file, size, ..
+            } => {
                 let path = temp_file.path.clone();
                 let expected_size = *size;
                 let stream = stream::unfold(
@@ -1509,7 +1650,7 @@ async fn prepare_pool_request_body_for_account(
         });
     }
 
-    if pool_request_snapshot_body_bytes(&snapshot) > POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES {
+    if matches!(snapshot, PoolReplayBodySnapshot::File { .. }) {
         return Ok(PreparedPoolRequestBody {
             snapshot,
             request_body_for_capture: None,
@@ -4167,8 +4308,12 @@ async fn extract_sticky_key_from_replay_snapshot(
         PoolReplayBodySnapshot::Memory(bytes) => {
             extract_sticky_key_from_request_body_projection(bytes.as_ref())
         }
-        PoolReplayBodySnapshot::File { .. } => {
-            extract_sticky_key_from_replay_snapshot_prefix(snapshot).await
+        PoolReplayBodySnapshot::File { sticky_key, .. } => {
+            if let Some(sticky_key) = sticky_key.clone() {
+                Some(sticky_key)
+            } else {
+                extract_sticky_key_from_replay_snapshot_prefix(snapshot).await
+            }
         }
     }
 }
@@ -5007,13 +5152,14 @@ async fn proxy_pool_upstream_response_to_downstream(
         let stream_started_at = Instant::now();
         let mut stream_error_message: Option<String> = None;
         let mut downstream_closed = false;
-        let _proxy_request_permit_for_task = proxy_request_permit_for_task;
+        let mut proxy_request_permit_for_task = Some(proxy_request_permit_for_task);
 
         if let Some(chunk) = first_chunk {
             forwarded_chunks = forwarded_chunks.saturating_add(1);
             forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
             if tx.send(Ok(chunk)).await.is_err() {
                 downstream_closed = true;
+                let _ = proxy_request_permit_for_task.take();
             }
         }
 
@@ -5029,6 +5175,7 @@ async fn proxy_pool_upstream_response_to_downstream(
                     forwarded_chunks = forwarded_chunks.saturating_add(1);
                     forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
                     if tx.send(Ok(chunk)).await.is_err() {
+                        let _ = proxy_request_permit_for_task.take();
                         break;
                     }
                 }
@@ -5146,7 +5293,9 @@ async fn proxy_openai_v1_via_pool(
                 .get(header::CONTENT_TYPE)
                 .and_then(|value| value.to_str().ok())
                 .is_some_and(|value| value.to_ascii_lowercase().starts_with("application/json"))
-            && request_body_size_hint.is_some_and(|value| value <= body_limit);
+            && request_body_size_hint.is_some_and(|value| {
+                value <= body_limit && value <= POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES
+            });
 
         if should_prebuffer_for_body_sticky {
             let request_body_snapshot = read_request_body_snapshot_with_limit(
@@ -6953,7 +7102,7 @@ async fn proxy_openai_v1_capture_target(
         let mut stream = upstream_response.into_bytes_stream();
         let ttfb_started = Instant::now();
         let stream_started = Instant::now();
-        let _proxy_request_permit_for_task = proxy_request_permit_for_task;
+        let mut proxy_request_permit_for_task = Some(proxy_request_permit_for_task);
         let mut t_upstream_ttfb_ms = prefetched_ttfb_ms_for_task;
         let mut stream_started_at: Option<Instant> = None;
         let mut response_preview = RawResponsePreviewBuffer::default();
@@ -6980,6 +7129,7 @@ async fn proxy_openai_v1_capture_target(
             stream_started_at = Some(Instant::now());
             if !downstream_closed && tx.send(Ok(chunk)).await.is_err() {
                 downstream_closed = true;
+                let _ = proxy_request_permit_for_task.take();
             }
             response_raw_writer.append(chunk_for_raw.as_ref()).await;
         }
@@ -7124,6 +7274,7 @@ async fn proxy_openai_v1_capture_target(
                     forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
                     if !downstream_closed && tx.send(Ok(chunk)).await.is_err() {
                         downstream_closed = true;
+                        let _ = proxy_request_permit_for_task.take();
                     }
                     response_raw_writer.append(chunk_for_raw.as_ref()).await;
                 }

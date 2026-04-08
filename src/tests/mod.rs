@@ -23554,6 +23554,7 @@ async fn pool_route_oauth_passthrough_replays_large_file_backed_body() {
         Some(PoolReplayBodySnapshot::File {
             temp_file: temp_file.clone(),
             size: body.len(),
+            sticky_key: None,
         }),
         Duration::from_secs(5),
         None,
@@ -26725,6 +26726,7 @@ async fn pool_route_large_oauth_responses_falls_back_to_api_key_account() {
         Some(PoolReplayBodySnapshot::File {
             temp_file,
             size: body.len(),
+            sticky_key: None,
         }),
         Duration::from_secs(5),
         None,
@@ -26896,6 +26898,7 @@ async fn pool_route_oauth_responses_rejects_large_file_backed_rewrite_body() {
         Some(PoolReplayBodySnapshot::File {
             temp_file,
             size: body.len(),
+            sticky_key: None,
         }),
         Duration::from_secs(5),
         None,
@@ -26937,6 +26940,7 @@ async fn extract_sticky_key_from_large_file_backed_replay_snapshot() {
     let snapshot = PoolReplayBodySnapshot::File {
         temp_file,
         size: sticky_body.len(),
+        sticky_key: Some("sticky-large-file".to_string()),
     };
 
     assert_eq!(
@@ -26966,6 +26970,7 @@ async fn extract_sticky_key_from_large_file_backed_replay_snapshot_prefix() {
     let snapshot = PoolReplayBodySnapshot::File {
         temp_file,
         size: sticky_body.len(),
+        sticky_key: None,
     };
 
     assert_eq!(
@@ -28953,6 +28958,7 @@ fn pool_request_snapshot_preserves_content_length_only_for_file_backed_replays()
                 path: PathBuf::from("/tmp/cvm-pool-replay-test.bin"),
             }),
             size: 2,
+            sticky_key: None,
         }
     ));
 }
@@ -29009,6 +29015,7 @@ async fn prepare_pool_request_body_for_account_skips_fast_mode_rewrite_for_large
         Some(&PoolReplayBodySnapshot::File {
             temp_file: temp_file.clone(),
             size: original_body.len(),
+            sticky_key: Some("sticky-large-body".to_string()),
         }),
         &"/v1/responses".parse().expect("valid responses uri"),
         &Method::POST,
@@ -29021,9 +29028,11 @@ async fn prepare_pool_request_body_for_account_skips_fast_mode_rewrite_for_large
         PoolReplayBodySnapshot::File {
             temp_file: actual,
             size,
+            sticky_key,
         } => {
             assert_eq!(actual.path, temp_file.path);
             assert_eq!(size, original_body.len());
+            assert_eq!(sticky_key.as_deref(), Some("sticky-large-body"));
         }
         other => panic!("expected file-backed snapshot, got {other:?}"),
     }
