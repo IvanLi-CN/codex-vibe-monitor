@@ -1,7 +1,8 @@
 import type { ReactNode } from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
-import { DashboardTodayActivityChart, buildTodayMinuteChartData } from './DashboardTodayActivityChart'
+import { DashboardTodayActivityChart } from './DashboardTodayActivityChart'
+import { buildTodayMinuteChartData } from './dashboardTodayActivityChartData'
 
 vi.mock('recharts', () => ({
   ResponsiveContainer: ({ children }: { children: ReactNode }) => <div data-testid="responsive">{children}</div>,
