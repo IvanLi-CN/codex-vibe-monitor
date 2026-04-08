@@ -115,13 +115,13 @@ describe('DashboardTodayActivityChart', () => {
         ],
       },
       {
-        now: new Date('2026-04-08T08:03:00+08:00'),
+        now: new Date(2026, 3, 8, 8, 3, 0),
         localeTag: 'en-US',
       },
     )
 
     expect(data[0]?.label).toBe('00:00')
-    expect(data[0]?.epochMs).toBe(new Date('2026-04-08T00:00:00+08:00').getTime())
+    expect(data[0]?.epochMs).toBe(new Date(2026, 3, 8, 0, 0, 0, 0).getTime())
     expect(data.at(-1)?.label).toBe('08:03')
   })
 
