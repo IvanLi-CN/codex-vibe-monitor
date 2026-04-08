@@ -1020,27 +1020,12 @@ enum PoolReplayBodyStickyKeyProbeStatus {
     Ready(Option<String>),
 }
 
-#[derive(Debug, Default)]
-struct StreamingStickyKeyExtractor {
-    state: StreamingStickyKeyExtractorState,
-    pattern_progress: [usize; STREAMING_STICKY_KEY_PATTERN_COUNT],
-    found: Option<String>,
-}
-
-#[derive(Debug, Default)]
-enum StreamingStickyKeyExtractorState {
-    #[default]
-    Searching,
-    AfterPattern { saw_colon: bool },
-    ReadingValue { escaped: bool, value: String },
-}
-
 struct PoolReplayBodyBuffer {
     proxy_request_id: u64,
     len: usize,
     memory: Vec<u8>,
     file: Option<(Arc<PoolReplayTempFile>, tokio::fs::File)>,
-    sticky_key_extractor: StreamingStickyKeyExtractor,
+    sticky_key_prefix_probe: Vec<u8>,
 }
 
 struct PoolReplayableRequestBody {
@@ -1048,124 +1033,6 @@ struct PoolReplayableRequestBody {
     status_rx: watch::Receiver<PoolReplayBodyStatus>,
     sticky_key_probe_rx: watch::Receiver<PoolReplayBodyStickyKeyProbeStatus>,
     cancel: CancellationToken,
-}
-
-const STREAMING_STICKY_KEY_PATTERNS: [&[u8]; 4] = [
-    br#""sticky_key""#,
-    br#""stickyKey""#,
-    br#""prompt_cache_key""#,
-    br#""promptCacheKey""#,
-];
-const STREAMING_STICKY_KEY_PATTERN_COUNT: usize = STREAMING_STICKY_KEY_PATTERNS.len();
-
-impl StreamingStickyKeyExtractor {
-    fn ingest(&mut self, bytes: &[u8]) {
-        for &byte in bytes {
-            if self.found.is_some() {
-                return;
-            }
-            self.ingest_byte(byte);
-        }
-    }
-
-    fn finish(self) -> Option<String> {
-        self.found
-    }
-
-    fn ingest_byte(&mut self, byte: u8) {
-        match &mut self.state {
-            StreamingStickyKeyExtractorState::Searching => self.search_byte(byte),
-            StreamingStickyKeyExtractorState::AfterPattern { saw_colon } => {
-                if byte.is_ascii_whitespace() {
-                    return;
-                }
-                if !*saw_colon {
-                    if byte == b':' {
-                        *saw_colon = true;
-                    } else {
-                        self.reset_to_search(byte);
-                    }
-                    return;
-                }
-                if byte == b'"' {
-                    self.state = StreamingStickyKeyExtractorState::ReadingValue {
-                        escaped: false,
-                        value: String::new(),
-                    };
-                } else {
-                    self.reset_to_search(byte);
-                }
-            }
-            StreamingStickyKeyExtractorState::ReadingValue { escaped, value } => {
-                let mut next_state = None;
-                if *escaped {
-                    match byte {
-                        b'"' | b'\\' | b'/' => value.push(byte as char),
-                        b'b' => value.push('\u{0008}'),
-                        b'f' => value.push('\u{000C}'),
-                        b'n' => value.push('\n'),
-                        b'r' => value.push('\r'),
-                        b't' => value.push('\t'),
-                        b'u' => {
-                            next_state = Some(StreamingStickyKeyExtractorState::Searching);
-                        }
-                        _ => {
-                            next_state = Some(StreamingStickyKeyExtractorState::Searching);
-                        }
-                    }
-                    *escaped = false;
-                    if let Some(state) = next_state {
-                        self.state = state;
-                    }
-                    return;
-                }
-                match byte {
-                    b'"' => {
-                        let normalized = value.trim();
-                        if !normalized.is_empty() {
-                            self.found = Some(normalized.to_string());
-                        } else {
-                            next_state = Some(StreamingStickyKeyExtractorState::Searching);
-                        }
-                    }
-                    b'\\' => *escaped = true,
-                    byte if byte.is_ascii_control() => {
-                        next_state = Some(StreamingStickyKeyExtractorState::Searching);
-                    }
-                    byte if byte.is_ascii() => value.push(byte as char),
-                    _ => {
-                        next_state = Some(StreamingStickyKeyExtractorState::Searching);
-                    }
-                }
-                if let Some(state) = next_state {
-                    self.state = state;
-                }
-            }
-        }
-    }
-
-    fn reset_to_search(&mut self, byte: u8) {
-        self.state = StreamingStickyKeyExtractorState::Searching;
-        self.search_byte(byte);
-    }
-
-    fn search_byte(&mut self, byte: u8) {
-        for (index, pattern) in STREAMING_STICKY_KEY_PATTERNS.iter().enumerate() {
-            let progress = &mut self.pattern_progress[index];
-            *progress = if byte == pattern[*progress] {
-                *progress + 1
-            } else if byte == pattern[0] {
-                1
-            } else {
-                0
-            };
-            if *progress == pattern.len() {
-                self.pattern_progress.fill(0);
-                self.state = StreamingStickyKeyExtractorState::AfterPattern { saw_colon: false };
-                break;
-            }
-        }
-    }
 }
 
 fn proxy_forward_response_status_is_success(status: StatusCode, stream_error: bool) -> bool {
@@ -1464,13 +1331,18 @@ impl PoolReplayBodyBuffer {
             len: 0,
             memory: Vec::new(),
             file: None,
-            sticky_key_extractor: StreamingStickyKeyExtractor::default(),
+            sticky_key_prefix_probe: Vec::new(),
         }
     }
 
     async fn append(&mut self, chunk: &[u8]) -> io::Result<()> {
         self.len = self.len.saturating_add(chunk.len());
-        self.sticky_key_extractor.ingest(chunk);
+        if self.sticky_key_prefix_probe.len() < HEADER_STICKY_EARLY_STICKY_SCAN_BYTES {
+            let probe_remaining = HEADER_STICKY_EARLY_STICKY_SCAN_BYTES
+                .saturating_sub(self.sticky_key_prefix_probe.len());
+            self.sticky_key_prefix_probe
+                .extend_from_slice(&chunk[..chunk.len().min(probe_remaining)]);
+        }
         if let Some((_, file)) = self.file.as_mut() {
             file.write_all(chunk).await?;
             return Ok(());
@@ -1497,13 +1369,14 @@ impl PoolReplayBodyBuffer {
     }
 
     async fn finish(mut self) -> io::Result<PoolReplayBodySnapshot> {
-        let sticky_key = self.sticky_key_extractor.finish();
         if let Some((temp_file, mut file)) = self.file.take() {
             file.flush().await?;
             return Ok(PoolReplayBodySnapshot::File {
                 temp_file,
                 size: self.len,
-                sticky_key,
+                sticky_key: best_effort_extract_sticky_key_from_request_body_prefix(
+                    &self.sticky_key_prefix_probe,
+                ),
             });
         }
 

@@ -24552,6 +24552,170 @@ async fn proxy_openai_v1_via_pool_large_prebuffered_body_does_not_reread_for_lat
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_via_pool_live_retry_ignores_late_file_backed_sticky_route() {
+    let request_body = format!(
+        r#"{{"model":"gpt-5","input":"{}","stickyKey":"sticky-large-late-route"}}"#,
+        "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 128)
+    );
+    let first_chunk_end = request_body
+        .find(r#"","stickyKey":"#)
+        .expect("large request should contain late sticky key marker");
+    let first_chunk = request_body[..first_chunk_end].as_bytes().to_vec();
+    let second_chunk = request_body[first_chunk_end..].as_bytes().to_vec();
+
+    let probe_state =
+        test_state_with_openai_base(Url::parse("http://127.0.0.1:1").expect("valid dummy url"))
+            .await;
+    seed_pool_routing_api_key(&probe_state, "pool-large-live-retry-key").await;
+    let probe_default_id = insert_test_pool_api_key_account(
+        &probe_state,
+        "Default Large Retry Route",
+        "route-large-retry-default",
+    )
+    .await;
+    let probe_sticky_id = insert_test_pool_api_key_account(
+        &probe_state,
+        "Sticky Large Retry Route",
+        "route-large-retry-sticky",
+    )
+    .await;
+
+    let resolved_without_sticky =
+        match resolve_pool_account_for_request(probe_state.as_ref(), None, &[], &HashSet::new())
+            .await
+            .expect("resolve default retry route")
+        {
+            PoolAccountResolution::Resolved(account) => account.account_id,
+            other => panic!("expected resolved default retry route, got {other:?}"),
+        };
+    let expected_default_authorization = if resolved_without_sticky == probe_default_id {
+        "Bearer route-large-retry-default"
+    } else {
+        "Bearer route-large-retry-sticky"
+    };
+    let _ = probe_sticky_id;
+    drop(probe_state);
+
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_retry_upstream(&[(expected_default_authorization, 1)]).await;
+
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-large-live-retry-key").await;
+    let default_id = insert_test_pool_api_key_account(
+        &state,
+        "Default Large Retry Route",
+        "route-large-retry-default",
+    )
+    .await;
+    let sticky_id = insert_test_pool_api_key_account(
+        &state,
+        "Sticky Large Retry Route",
+        "route-large-retry-sticky",
+    )
+    .await;
+
+    let resolved_without_sticky =
+        match resolve_pool_account_for_request(state.as_ref(), None, &[], &HashSet::new())
+            .await
+            .expect("resolve default retry route")
+        {
+            PoolAccountResolution::Resolved(account) => account.account_id,
+            other => panic!("expected resolved default retry route, got {other:?}"),
+        };
+    let preferred_sticky_account_id = if resolved_without_sticky == default_id {
+        sticky_id
+    } else {
+        default_id
+    };
+    let expected_default_authorization = if resolved_without_sticky == default_id {
+        "Bearer route-large-retry-default"
+    } else {
+        "Bearer route-large-retry-sticky"
+    };
+    let unexpected_late_sticky_authorization = if preferred_sticky_account_id == default_id {
+        "Bearer route-large-retry-default"
+    } else {
+        "Bearer route-large-retry-sticky"
+    };
+    upsert_test_sticky_route_at(
+        &state.pool,
+        "sticky-large-late-route",
+        preferred_sticky_account_id,
+        &format_test_recent_active_timestamp(Utc::now()),
+    )
+    .await;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    tokio::spawn(async move {
+        let _ = tx.send(Ok(Bytes::from(first_chunk))).await;
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let _ = tx.send(Ok(Bytes::from(second_chunk))).await;
+    });
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6247,
+        &"/v1/responses".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-large-live-retry-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("live retry should ignore late sticky key from file-backed replay");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read large live retry response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode large live retry response");
+    assert_eq!(payload["authorization"], expected_default_authorization);
+    assert_ne!(
+        payload["authorization"].as_str(),
+        Some(unexpected_late_sticky_authorization)
+    );
+    assert!(
+        payload["attempt"]
+            .as_i64()
+            .is_some_and(|attempt| attempt >= 2),
+        "expected the default route to be retried after the first live attempt failed"
+    );
+
+    let attempts = attempts.lock().expect("lock large live retry attempts");
+    assert!(
+        attempts
+            .get(expected_default_authorization)
+            .copied()
+            .is_some_and(|count| count >= 2),
+        "default route should receive the retry attempts"
+    );
+    assert_eq!(
+        attempts
+            .get(unexpected_late_sticky_authorization)
+            .copied()
+            .unwrap_or_default(),
+        0
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn continue_or_retry_pool_live_request_respects_total_timeout_while_waiting_for_replay() {
     let mut config = test_config();
     config.pool_upstream_responses_total_timeout = Duration::from_millis(40);
