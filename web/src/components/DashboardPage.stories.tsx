@@ -1,3 +1,4 @@
+import { useLayoutEffect, type ReactNode } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
 import { expect, userEvent, within } from 'storybook/test'
 import { MemoryRouter } from 'react-router-dom'
@@ -11,6 +12,7 @@ import type {
   TimeseriesResponse,
 } from '../lib/api'
 import DashboardPage from '../pages/Dashboard'
+import { DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY } from './DashboardActivityOverview'
 import { FullPageStorySurface, StorybookPageEnvironment } from './storybookPageHelpers'
 import { jsonResponse } from './storybookResponse'
 
@@ -18,6 +20,23 @@ type DashboardScenario = 'default' | 'degraded'
 
 type DashboardStoryParameters = {
   scenario?: DashboardScenario
+}
+
+function DashboardRangeStorageReset({ children }: { children: ReactNode }) {
+  useLayoutEffect(() => {
+    const previousValue = window.localStorage.getItem(DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY)
+    window.localStorage.removeItem(DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY)
+
+    return () => {
+      if (previousValue === null) {
+        window.localStorage.removeItem(DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY)
+      } else {
+        window.localStorage.setItem(DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY, previousValue)
+      }
+    }
+  }, [])
+
+  return <>{children}</>
 }
 
 function buildSummary(overrides: Partial<StatsResponse>): StatsResponse {
@@ -200,128 +219,13 @@ function buildWorkingConversationsResponse(empty = false): PromptCacheConversati
               upstreamAccountName: 'pool-beta@example.com',
             }),
           ]),
-          createConversation('wc-current-3', [
-            createPreview({
-              id: 5,
-              invokeId: 'wc-3-a',
-              occurredAt: '2026-04-06T11:58:40.000Z',
-              status: 'completed',
-              upstreamAccountName: 'pool-gamma@example.com',
-              totalTokens: 364,
-              cost: 0.0204,
-              inputTokens: 218,
-              outputTokens: 146,
-              cacheInputTokens: 68,
-            }),
-          ]),
-          createConversation('wc-current-4', [
-            createPreview({
-              id: 6,
-              invokeId: 'wc-4-a',
-              occurredAt: '2026-04-06T11:58:02.000Z',
-              status: 'pending',
-              upstreamAccountName: 'pool-delta@example.com',
-              tTotalMs: null,
-            }),
-            createPreview({
-              id: 7,
-              invokeId: 'wc-4-b',
-              occurredAt: '2026-04-06T11:54:32.000Z',
-              status: 'success',
-              upstreamAccountName: 'pool-delta@example.com',
-            }),
-          ]),
-          createConversation('wc-current-5', [
-            createPreview({
-              id: 8,
-              invokeId: 'wc-5-a',
-              occurredAt: '2026-04-06T11:57:24.000Z',
-              status: 'completed',
-              upstreamAccountName: 'pool-epsilon@example.com',
-              totalTokens: 412,
-              cost: 0.0236,
-              inputTokens: 244,
-              outputTokens: 168,
-              cacheInputTokens: 72,
-            }),
-            createPreview({
-              id: 9,
-              invokeId: 'wc-5-b',
-              occurredAt: '2026-04-06T11:53:50.000Z',
-              status: 'success',
-              upstreamAccountName: 'pool-epsilon@example.com',
-              model: 'gpt-5.4-mini',
-            }),
-          ]),
-          createConversation('wc-current-6', [
-            createPreview({
-              id: 10,
-              invokeId: 'wc-6-a',
-              occurredAt: '2026-04-06T11:56:48.000Z',
-              status: 'running',
-              upstreamAccountName: 'pool-zeta@example.com',
-              tTotalMs: null,
-            }),
-            createPreview({
-              id: 11,
-              invokeId: 'wc-6-b',
-              occurredAt: '2026-04-06T11:52:18.000Z',
-              status: 'success',
-              upstreamAccountName: 'pool-zeta@example.com',
-            }),
-          ]),
-          createConversation('wc-current-7', [
-            createPreview({
-              id: 12,
-              invokeId: 'wc-7-a',
-              occurredAt: '2026-04-06T11:56:06.000Z',
-              status: 'http_429',
-              failureClass: 'service_failure',
-              failureKind: 'upstream_rate_limit',
-              errorMessage: 'upstream rate limit reached for the current account',
-              upstreamAccountName: 'pool-eta@example.com',
-              requestedServiceTier: 'priority',
-              serviceTier: 'priority',
-              tUpstreamTtfbMs: null,
-              tUpstreamStreamMs: null,
-              tTotalMs: 1820,
-            }),
-            createPreview({
-              id: 13,
-              invokeId: 'wc-7-b',
-              occurredAt: '2026-04-06T11:51:12.000Z',
-              status: 'success',
-              upstreamAccountName: 'pool-eta@example.com',
-            }),
-          ]),
-          createConversation('wc-current-8', [
-            createPreview({
-              id: 14,
-              invokeId: 'wc-8-a',
-              occurredAt: '2026-04-06T11:55:20.000Z',
-              status: 'completed',
-              upstreamAccountName: 'pool-theta@example.com',
-              totalTokens: 396,
-              cost: 0.0228,
-              inputTokens: 228,
-              outputTokens: 168,
-              cacheInputTokens: 66,
-            }),
-            createPreview({
-              id: 15,
-              invokeId: 'wc-8-b',
-              occurredAt: '2026-04-06T11:50:20.000Z',
-              status: 'success',
-              upstreamAccountName: 'pool-theta@example.com',
-              model: 'gpt-5.4-mini',
-            }),
-          ]),
         ],
   }
 }
 
 function createDashboardRequestHandler(scenario: DashboardScenario = 'default') {
-  const now = Date.parse('2026-04-06T12:00:00.000Z')
+  const now = Date.parse('2026-04-08T12:24:00.000Z')
+  const rangeTodayStart = Date.parse('2026-04-08T00:00:00+08:00')
   const range1dStart = now - 24 * 60 * 60 * 1000
   const range7dStart = now - 7 * 24 * 60 * 60 * 1000
   const range6moStart = now - 180 * 24 * 60 * 60 * 1000
@@ -347,6 +251,19 @@ function createDashboardRequestHandler(scenario: DashboardScenario = 'default') 
       failureCount: 6306,
       totalCost: 3128.74,
       totalTokens: 8764311220,
+    }),
+    timeseriesToday: buildTimeseriesResponse({
+      rangeStart: new Date(rangeTodayStart).toISOString(),
+      rangeEnd: new Date(now).toISOString(),
+      bucketSeconds: 60,
+      effectiveBucket: '1m',
+      availableBuckets: ['1m'],
+      points: buildTimeseriesPoints({
+        count: Math.floor((now - rangeTodayStart) / 60_000) + 1,
+        bucketSeconds: 60,
+        startMs: rangeTodayStart,
+        valueOffset: 5,
+      }),
     }),
     timeseries1d: buildTimeseriesResponse({
       rangeStart: new Date(range1dStart).toISOString(),
@@ -385,6 +302,7 @@ function createDashboardRequestHandler(scenario: DashboardScenario = 'default') 
 
     if (url.pathname === '/api/stats/timeseries') {
       const range = url.searchParams.get('range')
+      if (range === 'today') return jsonResponse(responses.timeseriesToday)
       if (range === '1d') return jsonResponse(responses.timeseries1d)
       if (range === '7d') return jsonResponse(responses.timeseries7d)
       if (range === '6mo') return jsonResponse(responses.timeseries6mo)
@@ -415,7 +333,9 @@ const meta = {
           <StorybookPageEnvironment onRequest={createDashboardRequestHandler(scenario)}>
             <MemoryRouter initialEntries={['/dashboard']}>
               <FullPageStorySurface>
-                <Story />
+                <DashboardRangeStorageReset>
+                  <Story />
+                </DashboardRangeStorageReset>
               </FullPageStorySurface>
             </MemoryRouter>
           </StorybookPageEnvironment>
@@ -433,9 +353,10 @@ export const Default: Story = {
   render: () => <DashboardPage />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
-    await expect(canvas.getByTestId('today-stats-overview-card')).toBeVisible()
     await expect(canvas.getByTestId('dashboard-activity-overview')).toBeVisible()
     await expect(canvas.getByTestId('dashboard-working-conversations')).toBeVisible()
+    await expect(canvas.getByTestId('dashboard-activity-range-today')).toHaveAttribute('data-active', 'true')
+    await expect(canvas.getByTestId('dashboard-today-activity-chart')).toBeVisible()
     await expect(canvas.queryByTestId('usage-calendar-card')).toBeNull()
 
     const historyTab = canvas.getByRole('tab', { name: '历史' })
@@ -446,6 +367,11 @@ export const Default: Story = {
     const range7d = canvas.getByRole('tab', { name: '7 日' })
     await userEvent.click(range7d)
     await expect(range7d).toHaveAttribute('aria-selected', 'true')
+
+    const todayTab = canvas.getByRole('tab', { name: '今日' })
+    await userEvent.click(todayTab)
+    await expect(todayTab).toHaveAttribute('aria-selected', 'true')
+    await expect(canvas.getByTestId('dashboard-activity-range-today')).toHaveAttribute('data-active', 'true')
   },
 }
 
@@ -456,7 +382,7 @@ export const Degraded: Story = {
   render: () => <DashboardPage />,
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement)
-    await expect(canvas.getByTestId('today-stats-overview-card')).toBeVisible()
+    await expect(canvas.getByTestId('dashboard-activity-overview')).toBeVisible()
     await expect(canvas.getByTestId('dashboard-working-conversations')).toBeVisible()
     await expect(canvas.getAllByRole('alert').at(0)).toBeVisible()
     await expect(canvas.queryAllByTestId('dashboard-working-conversation-card')).toHaveLength(0)

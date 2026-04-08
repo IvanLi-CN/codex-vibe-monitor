@@ -2,14 +2,22 @@
 import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
-import { DashboardActivityOverview } from './DashboardActivityOverview'
+import {
+  DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY,
+  DashboardActivityOverview,
+} from './DashboardActivityOverview'
 
 const hookMocks = vi.hoisted(() => ({
   useSummary: vi.fn(),
+  useTimeseries: vi.fn(),
 }))
 
 vi.mock('../hooks/useStats', () => ({
   useSummary: hookMocks.useSummary,
+}))
+
+vi.mock('../hooks/useTimeseries', () => ({
+  useTimeseries: hookMocks.useTimeseries,
 }))
 
 vi.mock('../theme', () => ({
@@ -22,6 +30,7 @@ vi.mock('../i18n', () => ({
     t: (key: string) => {
       const map: Record<string, string> = {
         'dashboard.activityOverview.title': 'Activity Overview',
+        'dashboard.activityOverview.rangeToday': 'Today',
         'dashboard.activityOverview.range24h': '24 Hours',
         'dashboard.activityOverview.range7d': '7 Days',
         'dashboard.activityOverview.rangeUsage': 'History',
@@ -36,16 +45,22 @@ vi.mock('../i18n', () => ({
   }),
 }))
 
+vi.mock('./TodayStatsOverview', () => ({
+  TodayStatsOverview: ({ showSurface, showHeader, showDayBadge }: { showSurface?: boolean; showHeader?: boolean; showDayBadge?: boolean }) => (
+    <div data-testid="today-stats-overview-mock">
+      {`surface:${String(showSurface)};header:${String(showHeader)};badge:${String(showDayBadge)}`}
+    </div>
+  ),
+}))
+
+vi.mock('./DashboardTodayActivityChart', () => ({
+  DashboardTodayActivityChart: ({ metric }: { metric?: string }) => (
+    <div data-testid="dashboard-today-activity-chart-mock">{`metric:${metric ?? 'unset'}`}</div>
+  ),
+}))
+
 vi.mock('./StatsCards', () => ({
-  StatsCards: ({
-    stats,
-    loading,
-    error,
-  }: {
-    stats: { totalCount?: number } | null
-    loading: boolean
-    error?: string | null
-  }) => (
+  StatsCards: ({ stats, loading, error }: { stats: { totalCount?: number } | null; loading: boolean; error?: string | null }) => (
     <div data-testid="stats-cards">
       {loading ? 'loading' : error ? `error:${error}` : `total:${stats?.totalCount ?? 0}`}
     </div>
@@ -76,14 +91,34 @@ vi.mock('./UsageCalendar', () => ({
     showMetricToggle?: boolean
     showMeta?: boolean
   }) => (
-    <div data-testid="usage-calendar">{`metric:${metric ?? 'unset'};surface:${String(showSurface)};toggle:${String(showMetricToggle)};meta:${String(showMeta)}`}</div>
+    <div data-testid="usage-calendar">
+      {`metric:${metric ?? 'unset'};surface:${String(showSurface)};toggle:${String(showMetricToggle)};meta:${String(showMeta)}`}
+    </div>
   ),
 }))
+
+const storage = new Map<string, string>()
+const localStorageMock = {
+  getItem: (key: string) => storage.get(key) ?? null,
+  setItem: (key: string, value: string) => {
+    storage.set(key, value)
+  },
+  removeItem: (key: string) => {
+    storage.delete(key)
+  },
+  clear: () => {
+    storage.clear()
+  },
+}
 
 let host: HTMLDivElement | null = null
 let root: Root | null = null
 
 beforeAll(() => {
+  Object.defineProperty(window, 'localStorage', {
+    configurable: true,
+    value: localStorageMock,
+  })
   Object.defineProperty(globalThis, 'IS_REACT_ACT_ENVIRONMENT', {
     configurable: true,
     writable: true,
@@ -98,6 +133,7 @@ afterEach(() => {
   host?.remove()
   host = null
   root = null
+  window.localStorage.clear()
   vi.clearAllMocks()
 })
 
@@ -112,6 +148,13 @@ function render(ui: React.ReactNode) {
 
 function installSummaryMocks() {
   hookMocks.useSummary.mockImplementation((window: string) => {
+    if (window === 'today') {
+      return {
+        summary: { totalCount: 12, successCount: 10, failureCount: 2, totalCost: 0.52, totalTokens: 2048 },
+        isLoading: false,
+        error: null,
+      }
+    }
     if (window === '1d') {
       return { summary: { totalCount: 100 }, isLoading: false, error: null }
     }
@@ -120,105 +163,100 @@ function installSummaryMocks() {
     }
     return { summary: null, isLoading: false, error: null }
   })
+
+  hookMocks.useTimeseries.mockReturnValue({
+    data: { rangeStart: '2026-04-08T00:00:00.000Z', rangeEnd: '2026-04-08T00:03:00.000Z', bucketSeconds: 60, points: [] },
+    isLoading: false,
+    error: null,
+  })
+}
+
+function clickTab(label: string) {
+  const button = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
+    (candidate) => candidate.textContent === label,
+  )
+  if (!(button instanceof HTMLButtonElement)) {
+    throw new Error(`missing tab button: ${label}`)
+  }
+  act(() => {
+    button.click()
+  })
 }
 
 describe('DashboardActivityOverview', () => {
-  it('switches among 24h, 7d, and usage views while keeping per-view metric memory', () => {
+  it('defaults to the today range and keeps per-range metric memory across all four tabs', () => {
     installSummaryMocks()
 
     render(<DashboardActivityOverview />)
 
     expect(host?.textContent).toContain('Activity Overview')
-    expect(host?.querySelector('[data-testid="stats-cards"]')?.textContent).toBe('total:100')
-    expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toBe('metric:totalCount')
-    expect(host?.querySelector('[data-testid="dashboard-activity-range-usage"]')).toBeNull()
-
-    const buttons = Array.from(host?.querySelectorAll('button[role="tab"]') ?? [])
-    const usageButton = buttons.find((button) => button.textContent === 'History')
-    if (!(usageButton instanceof HTMLButtonElement)) {
-      throw new Error('missing usage activity button')
-    }
-
-    act(() => {
-      usageButton.click()
-    })
-
+    expect(host?.querySelector('[data-testid="dashboard-activity-range-today"]')?.getAttribute('data-active')).toBe('true')
+    expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toBe(
+      'surface:false;header:false;badge:false',
+    )
+    expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent).toBe(
+      'metric:totalCount',
+    )
     expect(host?.querySelector('[data-testid="stats-cards"]')).toBeNull()
+
+    clickTab('Cost')
+    expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent).toBe(
+      'metric:totalCost',
+    )
+
+    clickTab('History')
     expect(host?.querySelector('[data-testid="usage-calendar"]')?.textContent).toBe(
       'metric:totalCount;surface:false;toggle:false;meta:false',
     )
-
-    const costButton = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
-      (button) => button.textContent === 'Cost',
-    )
-    if (!(costButton instanceof HTMLButtonElement)) {
-      throw new Error('missing cost button')
-    }
-
-    act(() => {
-      costButton.click()
-    })
-
+    clickTab('Tokens')
     expect(host?.querySelector('[data-testid="usage-calendar"]')?.textContent).toBe(
-      'metric:totalCost;surface:false;toggle:false;meta:false',
+      'metric:totalTokens;surface:false;toggle:false;meta:false',
     )
 
-    const range7dButton = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
-      (button) => button.textContent === '7 Days',
-    )
-    if (!(range7dButton instanceof HTMLButtonElement)) {
-      throw new Error('missing 7d button')
-    }
-
-    act(() => {
-      range7dButton.click()
-    })
-
+    clickTab('7 Days')
     expect(host?.querySelector('[data-testid="stats-cards"]')?.textContent).toBe('total:700')
     expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe('metric:totalCount')
-    expect(host?.querySelector('[data-testid="dashboard-activity-range-usage"]')?.getAttribute('data-active')).toBe(
-      'false',
-    )
-    expect(host?.querySelector('[data-testid="usage-calendar"]')?.textContent).toBe(
-      'metric:totalCost;surface:false;toggle:false;meta:false',
-    )
+    clickTab('Cost')
+    expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe('metric:totalCost')
 
-    const tokensButton = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
-      (button) => button.textContent === 'Tokens',
-    )
-    if (!(tokensButton instanceof HTMLButtonElement)) {
-      throw new Error('missing tokens button')
-    }
-
-    act(() => {
-      tokensButton.click()
-    })
-
-    expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe('metric:totalTokens')
-
-    act(() => {
-      usageButton.click()
-    })
-
-    expect(host?.querySelector('[data-testid="usage-calendar"]')?.textContent).toBe(
-      'metric:totalCost;surface:false;toggle:false;meta:false',
-    )
-
-    const range24hButton = Array.from(host?.querySelectorAll('button[role="tab"]') ?? []).find(
-      (button) => button.textContent === '24 Hours',
-    )
-    if (!(range24hButton instanceof HTMLButtonElement)) {
-      throw new Error('missing 24h button')
-    }
-
-    act(() => {
-      range24hButton.click()
-    })
-
+    clickTab('24 Hours')
     expect(host?.querySelector('[data-testid="stats-cards"]')?.textContent).toBe('total:100')
     expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toBe('metric:totalCount')
-    expect(host?.querySelector('[data-testid="dashboard-activity-range-7d"]')?.getAttribute('data-active')).toBe(
-      'false',
+    clickTab('Tokens')
+    expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toBe('metric:totalTokens')
+
+    clickTab('Today')
+    expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent).toBe(
+      'metric:totalCost',
     )
+    clickTab('History')
+    expect(host?.querySelector('[data-testid="usage-calendar"]')?.textContent).toBe(
+      'metric:totalTokens;surface:false;toggle:false;meta:false',
+    )
+    clickTab('7 Days')
+    expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe('metric:totalCost')
+    clickTab('24 Hours')
+    expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toBe('metric:totalTokens')
+  })
+
+  it('restores the last active range from localStorage and falls back to today on invalid values', () => {
+    installSummaryMocks()
+    window.localStorage.setItem(DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY, 'usage')
+
+    render(<DashboardActivityOverview />)
+
+    expect(host?.querySelector('[data-testid="dashboard-activity-range-usage"]')?.getAttribute('data-active')).toBe('true')
+    expect(host?.querySelector('[data-testid="usage-calendar"]')).not.toBeNull()
+
+    act(() => {
+      root?.unmount()
+    })
+    host?.remove()
+    host = null
+    root = null
+
+    window.localStorage.setItem(DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY, 'bogus')
+    render(<DashboardActivityOverview />)
+    expect(document.body.querySelector('[data-testid="dashboard-activity-range-today"]')?.getAttribute('data-active')).toBe('true')
   })
 })

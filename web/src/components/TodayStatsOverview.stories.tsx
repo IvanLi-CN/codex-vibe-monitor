@@ -57,6 +57,22 @@ export const DesktopSingleRow: Story = {
   },
 }
 
+export const EmbeddedTodayTab: Story = {
+  args: {
+    stats: sampleStats,
+    loading: false,
+    error: null,
+    showSurface: false,
+    showHeader: false,
+    showDayBadge: false,
+  },
+  parameters: {
+    viewport: {
+      defaultViewport: 'desktop1440',
+    },
+  },
+}
+
 export const Loading: Story = {
   args: {
     stats: null,
