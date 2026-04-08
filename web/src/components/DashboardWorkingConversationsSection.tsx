@@ -458,6 +458,8 @@ function InvocationSlot({
   const compactAccountLabel = formatCompactAccountLabel(viewModel.accountLabel);
   const lineLabels = resolveInvocationLineLabels(locale);
   const fastIndicator = renderFastIndicator(viewModel.fastIndicatorState, t);
+  const displayConversationSequenceId =
+    formatDashboardWorkingConversationSequenceId(conversationSequenceId);
   const requestReadValue = viewModel.timingPairs[0]?.value ?? FALLBACK_CELL;
   const requestParseValue = viewModel.timingPairs[1]?.value ?? FALLBACK_CELL;
   const upstreamConnectValue = viewModel.timingPairs[2]?.value ?? FALLBACK_CELL;
@@ -469,7 +471,7 @@ function InvocationSlot({
     ? `$${viewModel.costValue.slice(3)}`
     : viewModel.costValue;
   const compactTimingSummary = `RQ ${formatCompactMilliseconds(invocation.record.tReqReadMs)}/${formatCompactMilliseconds(invocation.record.tReqParseMs)} · UP ${formatCompactMilliseconds(invocation.record.tUpstreamConnectMs)}/${formatCompactMilliseconds(invocation.record.tUpstreamTtfbMs)}/${formatCompactMilliseconds(invocation.record.tUpstreamStreamMs)} · ED ${formatCompactMilliseconds(invocation.record.tRespParseMs)}/${formatCompactMilliseconds(invocation.record.tPersistMs)} · TT ${typeof invocation.record.tTotalMs === "number" && Number.isFinite(invocation.record.tTotalMs) ? `${formatCompactMilliseconds(invocation.record.tTotalMs)}ms` : viewModel.totalLatencyValue}`;
-  const invocationActionLabel = `${t("dashboard.workingConversations.openInvocation")} · ${label} · ${conversationSequenceId} · ${invocation.record.invokeId}`;
+  const invocationActionLabel = `${t("dashboard.workingConversations.openInvocation")} · ${label} · ${displayConversationSequenceId} · ${invocation.record.invokeId}`;
 
   const handleOpenInvocation = useCallback(() => {
     onOpenInvocation?.({

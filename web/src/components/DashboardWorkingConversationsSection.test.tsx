@@ -410,6 +410,11 @@ describe("DashboardWorkingConversationsSection", () => {
       throw new Error("missing current invocation slot");
     }
 
+    expect(currentSlot.getAttribute("aria-label")).toContain(
+      cards[0]?.conversationSequenceId.replace(/^WC-/, "") ?? "",
+    );
+    expect(currentSlot.getAttribute("aria-label")).not.toContain("WC-");
+
     act(() => {
       currentSlot.click();
     });
