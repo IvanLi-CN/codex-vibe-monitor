@@ -1030,6 +1030,26 @@ async fn acquire_proxy_request_concurrency_permit_times_out_when_limit_is_reache
     assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 0);
 }
 
+#[test]
+fn retry_after_secs_for_proxy_error_uses_configured_concurrency_timeout() {
+    assert_eq!(
+        retry_after_secs_for_proxy_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            PROXY_CONCURRENCY_LIMIT_MESSAGE,
+            Some(Duration::from_millis(2_500)),
+        ),
+        Some(3)
+    );
+    assert_eq!(
+        retry_after_secs_for_proxy_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            POOL_NO_AVAILABLE_ACCOUNT_MESSAGE,
+            Some(Duration::from_millis(2_500)),
+        ),
+        Some(DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS)
+    );
+}
+
 #[tokio::test]
 async fn proxy_openai_v1_persists_concurrency_limit_rejections_for_capture_targets() {
     let mut config = test_config();
@@ -1064,6 +1084,29 @@ async fn proxy_openai_v1_persists_concurrency_limit_rejections_for_capture_targe
     .await;
 
     assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let retry_after = response
+        .headers()
+        .get(http_header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .expect("retry-after header should be present");
+    assert_eq!(retry_after, "1");
+    let cvm_id = response
+        .headers()
+        .get(CVM_INVOKE_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+        .expect("cvm id header should be present for capture target rejections");
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read concurrency-limit response body");
+    let response_payload: Value =
+        serde_json::from_slice(&body).expect("decode concurrency-limit response body");
+    assert_eq!(response_payload["cvmId"].as_str(), Some(cvm_id.as_str()));
+    assert_eq!(
+        response_payload["error"].as_str(),
+        Some(PROXY_CONCURRENCY_LIMIT_MESSAGE)
+    );
+
     wait_for_codex_invocations(&state.pool, 1).await;
 
     #[derive(Debug, sqlx::FromRow)]
@@ -24131,6 +24174,72 @@ async fn proxy_openai_v1_via_pool_live_first_attempt_preserves_body_sticky_route
 
     let attempts = attempts.lock().expect("lock live sticky attempts");
     assert_eq!(attempts.get(expected_authorization).copied(), Some(1));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_via_pool_live_first_attempt_does_not_wait_for_eof_without_early_body_sticky()
+ {
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-no-sticky-live-key").await;
+    insert_test_pool_api_key_account(&state, "No Sticky Live Route", "route-no-sticky").await;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    tokio::spawn(async move {
+        let _ = tx
+            .send(Ok(Bytes::from_static(
+                br#"{"model":"gpt-5","input":[{"role":"user","content":"hello"}],"#,
+            )))
+            .await;
+        tokio::time::sleep(Duration::from_millis(180)).await;
+        let _ = tx
+            .send(Ok(Bytes::from_static(br#""temperature":0}"#)))
+            .await;
+    });
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = tokio::time::timeout(
+        Duration::from_millis(120),
+        proxy_openai_v1_via_pool(
+            state.clone(),
+            6246,
+            &"/v1/responses".parse().expect("valid uri"),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-no-sticky-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+            runtime_timeouts,
+            None,
+        ),
+    )
+    .await
+    .expect("live first attempt should not wait for body EOF without early sticky key")
+    .expect("live first attempt should succeed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read no-sticky live response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode no-sticky live response");
+    assert_eq!(payload["authorization"], "Bearer route-no-sticky");
+    assert_eq!(payload["attempt"], 1);
+
+    let attempts = attempts.lock().expect("lock no-sticky live attempts");
+    assert_eq!(attempts.get("Bearer route-no-sticky").copied(), Some(1));
 
     upstream_handle.abort();
 }

@@ -74,7 +74,10 @@ async fn proxy_openai_v1_common(
     .await
     {
         Ok(permit) => Some(permit),
-        Err(err) => {
+        Err(mut err) => {
+            if capture_target_for_request(uri_for_log.path(), &method_for_log).is_some() {
+                err.cvm_id = Some(invoke_id.clone());
+            }
             warn!(
                 proxy_request_id,
                 method = %method_for_log,
@@ -154,6 +157,7 @@ const PROXY_CONCURRENCY_LIMIT_MESSAGE: &str = "proxy concurrency limit reached; 
 const RAW_PAYLOAD_TRUNCATED_REASON_ASYNC_BACKPRESSURE_DROPPED: &str =
     "async_backpressure_dropped";
 const ASYNC_STREAMING_RAW_WRITER_QUEUE_CAPACITY: usize = 8;
+const LIVE_BODY_STICKY_KEY_PROBE_WAIT_TIMEOUT_MS: u64 = 30;
 
 fn build_proxy_error_response(err: ProxyErrorResponse, invoke_id: &str) -> Response {
     match err.cvm_id {
@@ -362,6 +366,7 @@ async fn acquire_proxy_request_concurrency_permit(
                 retry_after_secs: retry_after_secs_for_proxy_error(
                     StatusCode::SERVICE_UNAVAILABLE,
                     PROXY_CONCURRENCY_LIMIT_MESSAGE,
+                    Some(state.config.proxy_request_concurrency_wait_timeout),
                 ),
             });
         }
@@ -389,6 +394,7 @@ async fn acquire_proxy_request_concurrency_permit(
                 retry_after_secs: retry_after_secs_for_proxy_error(
                     StatusCode::SERVICE_UNAVAILABLE,
                     PROXY_CONCURRENCY_LIMIT_MESSAGE,
+                    Some(state.config.proxy_request_concurrency_wait_timeout),
                 ),
             });
         }
@@ -719,7 +725,17 @@ fn build_pool_no_available_account_error(
     }
 }
 
-fn retry_after_secs_for_proxy_error(status: StatusCode, message: &str) -> Option<u64> {
+fn proxy_request_concurrency_retry_after_secs(wait_timeout: Duration) -> u64 {
+    let wait_timeout_ms = wait_timeout.as_millis();
+    let rounded_up_secs = wait_timeout_ms.saturating_add(999) / 1_000;
+    u64::try_from(rounded_up_secs).unwrap_or(u64::MAX).max(1)
+}
+
+fn retry_after_secs_for_proxy_error(
+    status: StatusCode,
+    message: &str,
+    proxy_request_concurrency_wait_timeout: Option<Duration>,
+) -> Option<u64> {
     if status != StatusCode::SERVICE_UNAVAILABLE {
         return None;
     }
@@ -727,8 +743,11 @@ fn retry_after_secs_for_proxy_error(status: StatusCode, message: &str) -> Option
         return Some(DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS);
     }
     if message == PROXY_CONCURRENCY_LIMIT_MESSAGE {
-        let retry_after_secs =
-            (DEFAULT_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS / 1_000).max(1);
+        let retry_after_secs = proxy_request_concurrency_retry_after_secs(
+            proxy_request_concurrency_wait_timeout.unwrap_or(Duration::from_millis(
+                DEFAULT_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS,
+            )),
+        );
         return Some(retry_after_secs);
     }
     None
@@ -1729,6 +1748,19 @@ async fn wait_for_replay_body_sticky_key_probe(
             Ok(Ok(())) => {}
             Ok(Err(_)) | Err(_) => return None,
         }
+    }
+}
+
+fn live_body_sticky_key_probe_wait_timeout(
+    request_read_timeout: Duration,
+    pre_attempt_total_timeout_deadline: Option<Instant>,
+) -> Duration {
+    let capped_wait = request_read_timeout.min(Duration::from_millis(
+        LIVE_BODY_STICKY_KEY_PROBE_WAIT_TIMEOUT_MS,
+    ));
+    match pre_attempt_total_timeout_deadline {
+        Some(deadline) => capped_wait.min(deadline.saturating_duration_since(Instant::now())),
+        None => capped_wait,
     }
 }
 
@@ -5556,9 +5588,13 @@ async fn proxy_openai_v1_via_pool(
                 let replay_status_rx = replayable_body.status_rx.clone();
                 let replay_cancel = replayable_body.cancel.clone();
                 let live_body_sticky_key = if is_json_body {
+                    let sticky_key_probe_wait_timeout = live_body_sticky_key_probe_wait_timeout(
+                        runtime_timeouts.request_read_timeout,
+                        pre_attempt_total_timeout_deadline,
+                    );
                     wait_for_replay_body_sticky_key_probe(
                         &replayable_body.sticky_key_probe_rx,
-                        runtime_timeouts.request_read_timeout,
+                        sticky_key_probe_wait_timeout,
                     )
                     .await
                 } else {
@@ -5885,6 +5921,8 @@ async fn proxy_openai_v1_inner(
     peer_ip: Option<IpAddr>,
     mut proxy_request_permit: Option<ProxyRequestConcurrencyPermit>,
 ) -> Result<Response, ProxyErrorResponse> {
+    let proxy_request_concurrency_wait_timeout =
+        state.config.proxy_request_concurrency_wait_timeout;
     let pool_route_active = request_matches_pool_route(state.as_ref(), &headers)
         .await
         .map_err(|err| ProxyErrorResponse {
@@ -5944,7 +5982,11 @@ async fn proxy_openai_v1_inner(
         )
         .await
         .map_err(|(status, message)| ProxyErrorResponse {
-            retry_after_secs: retry_after_secs_for_proxy_error(status, &message),
+            retry_after_secs: retry_after_secs_for_proxy_error(
+                status,
+                &message,
+                Some(proxy_request_concurrency_wait_timeout),
+            ),
             status,
             message,
             cvm_id: None,
@@ -5969,7 +6011,11 @@ async fn proxy_openai_v1_inner(
         )
         .await
         .map_err(|(status, message)| ProxyErrorResponse {
-            retry_after_secs: retry_after_secs_for_proxy_error(status, &message),
+            retry_after_secs: retry_after_secs_for_proxy_error(
+                status,
+                &message,
+                Some(proxy_request_concurrency_wait_timeout),
+            ),
             status,
             message,
             cvm_id: Some(tracked_invoke_id),
@@ -5988,7 +6034,11 @@ async fn proxy_openai_v1_inner(
     )
     .await
     .map_err(|(status, message)| ProxyErrorResponse {
-        retry_after_secs: retry_after_secs_for_proxy_error(status, &message),
+        retry_after_secs: retry_after_secs_for_proxy_error(
+            status,
+            &message,
+            Some(proxy_request_concurrency_wait_timeout),
+        ),
         status,
         message,
         cvm_id: None,
