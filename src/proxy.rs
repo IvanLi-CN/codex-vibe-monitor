@@ -8947,6 +8947,18 @@ async fn load_persisted_api_invocation_tx(
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamAccountName') END AS upstream_account_name,
             CASE WHEN json_valid(payload) THEN json_extract(payload, '$.responseContentEncoding') END AS response_content_encoding,
             CASE
+              WHEN json_valid(payload) AND json_type(payload, '$.poolAttemptCount') IN ('integer', 'real')
+                THEN json_extract(payload, '$.poolAttemptCount')
+            END AS pool_attempt_count,
+            CASE
+              WHEN json_valid(payload) AND json_type(payload, '$.poolDistinctAccountCount') IN ('integer', 'real')
+                THEN json_extract(payload, '$.poolDistinctAccountCount')
+            END AS pool_distinct_account_count,
+            CASE
+              WHEN json_valid(payload) AND json_type(payload, '$.poolAttemptTerminalReason') = 'text'
+                THEN json_extract(payload, '$.poolAttemptTerminalReason')
+            END AS pool_attempt_terminal_reason,
+            CASE
               WHEN json_valid(payload) AND json_type(payload, '$.requestedServiceTier') = 'text'
                 THEN json_extract(payload, '$.requestedServiceTier')
               WHEN json_valid(payload) AND json_type(payload, '$.requested_service_tier') = 'text'

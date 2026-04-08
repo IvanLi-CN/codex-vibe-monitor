@@ -6509,8 +6509,8 @@ async fn persist_and_broadcast_proxy_capture_runtime_snapshot_emits_queryable_ru
         Some("api_key_codex"),
         Some("api-keys.vendor.invalid"),
         Some("jp-relay-01"),
-        None,
-        None,
+        Some(3),
+        Some(2),
         None,
         Some("gzip"),
         22.0,
@@ -6555,6 +6555,9 @@ async fn persist_and_broadcast_proxy_capture_runtime_snapshot_emits_queryable_ru
         broadcast_record.response_content_encoding.as_deref(),
         Some("gzip")
     );
+    assert_eq!(broadcast_record.pool_attempt_count, Some(3));
+    assert_eq!(broadcast_record.pool_distinct_account_count, Some(2));
+    assert_eq!(broadcast_record.pool_attempt_terminal_reason, None);
     assert_eq!(
         broadcast_record.prompt_cache_key.as_deref(),
         Some("pck-running")
@@ -6581,6 +6584,9 @@ async fn persist_and_broadcast_proxy_capture_runtime_snapshot_emits_queryable_ru
     assert_eq!(response.records.len(), 1);
     assert_eq!(response.records[0].id, broadcast_record.id);
     assert_eq!(response.records[0].status.as_deref(), Some("running"));
+    assert_eq!(response.records[0].pool_attempt_count, Some(3));
+    assert_eq!(response.records[0].pool_distinct_account_count, Some(2));
+    assert_eq!(response.records[0].pool_attempt_terminal_reason, None);
 }
 
 #[tokio::test]
