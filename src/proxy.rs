@@ -89,17 +89,16 @@ async fn proxy_openai_v1_common(
                 rejected_total = state.proxy_request_rejected_total.load(Ordering::Acquire),
                 "openai proxy request rejected before upstream dispatch"
             );
-            persist_proxy_request_rejection_if_observable(
-                state.as_ref(),
+            spawn_persist_proxy_request_rejection_if_observable(
+                state.clone(),
                 started_at,
-                &invoke_id,
-                &uri_for_log,
-                &method_for_log,
-                &headers,
+                invoke_id.clone(),
+                uri_for_log.clone(),
+                method_for_log.clone(),
+                headers.clone(),
                 peer_ip,
-                &err,
-            )
-            .await;
+                err.clone(),
+            );
             return build_proxy_error_response(err, &invoke_id);
         }
     };
@@ -172,7 +171,7 @@ async fn proxy_openai_v1_common(
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ProxyErrorResponse {
     status: StatusCode,
     message: String,
@@ -222,6 +221,31 @@ fn build_proxy_error_response(err: ProxyErrorResponse, invoke_id: &str) -> Respo
             response
         }
     }
+}
+
+fn spawn_persist_proxy_request_rejection_if_observable(
+    state: Arc<AppState>,
+    capture_started: Instant,
+    invoke_id: String,
+    original_uri: Uri,
+    method: Method,
+    headers: HeaderMap,
+    peer_ip: Option<IpAddr>,
+    err: ProxyErrorResponse,
+) {
+    tokio::spawn(async move {
+        persist_proxy_request_rejection_if_observable(
+            state.as_ref(),
+            capture_started,
+            &invoke_id,
+            &original_uri,
+            &method,
+            &headers,
+            peer_ip,
+            &err,
+        )
+        .await;
+    });
 }
 
 async fn persist_proxy_request_rejection_if_observable(
@@ -6210,6 +6234,7 @@ async fn proxy_openai_v1_capture_target(
         Err(read_err) => {
             let t_req_read_ms = elapsed_ms(req_read_started);
             let request_info = RequestCaptureInfo::default();
+            drop(proxy_request_permit);
             let req_raw = spawn_raw_payload_file_write(
                 state.as_ref(),
                 &invoke_id,
@@ -6467,6 +6492,7 @@ async fn proxy_openai_v1_capture_target(
                     .request_body_for_capture
                     .clone()
                     .unwrap_or_else(|| base_request_bytes_for_capture.clone());
+                drop(proxy_request_permit);
                 let req_raw = spawn_raw_payload_file_write(
                     state.as_ref(),
                     &invoke_id,
@@ -6646,6 +6672,7 @@ async fn proxy_openai_v1_capture_target(
                 response.response,
             ),
             Err(err) => {
+                drop(proxy_request_permit);
                 let req_raw = spawn_raw_payload_file_write(
                     state.as_ref(),
                     &invoke_id,
@@ -6818,6 +6845,7 @@ async fn proxy_openai_v1_capture_target(
             )
             .await;
             let proxy_display_name = resolve_invocation_proxy_display_name(selected_proxy.as_ref());
+            drop(proxy_request_permit);
             let req_raw = req_raw_pending
                 .take()
                 .expect("request raw capture should be pending before redirect normalization")
@@ -11249,7 +11277,6 @@ impl AsyncStreamingRawPayloadWriter {
         self.local_truncated = true;
         self.local_truncated_reason
             .get_or_insert_with(|| RAW_PAYLOAD_TRUNCATED_REASON_ASYNC_BACKPRESSURE_DROPPED.to_string());
-        self.tx = None;
     }
 
     fn mark_writer_closed(&mut self, message: String) {

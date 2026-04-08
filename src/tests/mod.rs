@@ -1183,6 +1183,62 @@ async fn proxy_openai_v1_persists_concurrency_limit_rejections_for_capture_targe
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_concurrency_rejections_fail_fast_before_persist_finishes() {
+    let mut config = test_config();
+    config.proxy_request_concurrency_limit = 1;
+    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(50);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-limit-key").await;
+    let uri = "/v1/responses".parse::<Uri>().expect("valid proxy uri");
+
+    let held_permit =
+        acquire_proxy_request_concurrency_permit(state.as_ref(), 1006, &Method::POST, &uri)
+            .await
+            .expect("first request should acquire concurrency slot");
+
+    let mut lock_conn = state
+        .pool
+        .acquire()
+        .await
+        .expect("acquire sqlite lock connection");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *lock_conn)
+        .await
+        .expect("acquire sqlite write lock");
+
+    let response = tokio::time::timeout(
+        Duration::from_millis(200),
+        proxy_openai_v1(
+            State(state.clone()),
+            OriginalUri(uri),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-limit-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hello"}"#)),
+        ),
+    )
+    .await
+    .expect("concurrency rejection should return before persistence lock clears");
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    sqlx::query("ROLLBACK")
+        .execute(&mut *lock_conn)
+        .await
+        .expect("rollback sqlite write lock");
+    drop(lock_conn);
+    drop(held_permit);
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_non_pool_requests_still_use_proxy_concurrency_slots() {
     let mut config = test_config();
     config.proxy_request_concurrency_limit = 1;
@@ -3700,6 +3756,42 @@ async fn async_streaming_raw_payload_writer_drops_when_async_writer_pool_is_satu
     );
 
     drop(permit);
+}
+
+#[tokio::test]
+async fn async_streaming_raw_payload_writer_keeps_accepting_chunks_after_single_queue_overflow() {
+    let (tx, mut rx) = mpsc::channel::<Bytes>(1);
+    tx.try_send(Bytes::from_static(br#"{"queued":0}"#))
+        .expect("seed full queue");
+
+    let mut writer = AsyncStreamingRawPayloadWriter {
+        tx: Some(tx),
+        meta_rx: None,
+        observed_size_bytes: 0,
+        local_truncated_reason: None,
+        local_truncated: false,
+    };
+
+    writer.append(br#"{"chunk":1}"#).await;
+    assert!(
+        writer.tx.is_some(),
+        "writer should stay open after one full queue event"
+    );
+    assert!(
+        writer.local_truncated,
+        "overflow should still mark the capture truncated"
+    );
+    assert_eq!(
+        writer.local_truncated_reason.as_deref(),
+        Some(RAW_PAYLOAD_TRUNCATED_REASON_ASYNC_BACKPRESSURE_DROPPED)
+    );
+
+    let first = rx.recv().await.expect("receive seeded chunk");
+    assert_eq!(first, Bytes::from_static(br#"{"queued":0}"#));
+
+    writer.append(br#"{"chunk":2}"#).await;
+    let second = rx.recv().await.expect("receive chunk after queue drains");
+    assert_eq!(second, Bytes::from_static(br#"{"chunk":2}"#));
 }
 
 #[test]
