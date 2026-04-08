@@ -145,6 +145,7 @@ async fn proxy_openai_v1_common(
         headers,
         body,
         peer_ip,
+        pool_route_active,
         runtime_timeouts,
         proxy_request_permit,
     )
@@ -6108,6 +6109,7 @@ async fn proxy_openai_v1_inner(
     headers: HeaderMap,
     body: Body,
     peer_ip: Option<IpAddr>,
+    pool_route_active: bool,
     runtime_timeouts: PoolRoutingTimeoutSettingsResolved,
     mut proxy_request_permit: Option<ProxyRequestConcurrencyPermit>,
 ) -> Result<Response, ProxyErrorResponse> {
@@ -6173,7 +6175,7 @@ async fn proxy_openai_v1_inner(
             target,
             target_url,
             peer_ip,
-            true,
+            pool_route_active,
             runtime_timeouts,
             proxy_request_permit.take(),
         )

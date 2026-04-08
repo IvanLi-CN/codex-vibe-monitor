@@ -1236,6 +1236,42 @@ async fn proxy_openai_v1_non_pool_requests_still_use_proxy_concurrency_slots() {
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_non_pool_capture_targets_preserve_forward_proxy_routing() {
+    let (upstream_base, _captured_requests, upstream_handle) =
+        spawn_capture_target_body_upstream().await;
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    let state = test_state_from_config(config, true).await;
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/responses".parse::<Uri>().expect("valid proxy uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )]),
+        Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hello"}"#)),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read non-pool capture-target response body");
+    let payload: Value =
+        serde_json::from_slice(&body).expect("decode non-pool capture-target response body");
+    assert_eq!(payload["id"].as_str(), Some("resp_test"));
+    assert_eq!(
+        payload["received"]["input"].as_str(),
+        Some("hello"),
+        "non-pool capture target should still dispatch through the direct upstream path"
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_via_pool_acquires_concurrency_slot_before_reading_request_body() {
     let mut config = test_config();
     config.proxy_request_concurrency_limit = 1;
