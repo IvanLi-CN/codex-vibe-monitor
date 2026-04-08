@@ -1,17 +1,24 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useSummary } from '../hooks/useStats'
+import { useTimeseries } from '../hooks/useTimeseries'
 import { useTranslation } from '../i18n'
 import { metricAccent } from '../lib/chartTheme'
 import { useTheme } from '../theme'
+import { DashboardTodayActivityChart } from './DashboardTodayActivityChart'
 import { Last24hTenMinuteHeatmap, type MetricKey } from './Last24hTenMinuteHeatmap'
 import { StatsCards } from './StatsCards'
+import { TodayStatsOverview } from './TodayStatsOverview'
 import { SegmentedControl, SegmentedControlItem } from './ui/segmented-control'
 import { UsageCalendar } from './UsageCalendar'
 import { WeeklyHourlyHeatmap } from './WeeklyHourlyHeatmap'
 
-type RangeKey = '1d' | '7d' | 'usage'
+type RangeKey = 'today' | '1d' | '7d' | 'usage'
 
+export const DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY = 'dashboard.activityOverview.activeRange.v1'
+
+const DEFAULT_RANGE: RangeKey = 'today'
 const RANGE_OPTIONS: Array<{ key: RangeKey; labelKey: string }> = [
+  { key: 'today', labelKey: 'dashboard.activityOverview.rangeToday' },
   { key: '1d', labelKey: 'dashboard.activityOverview.range24h' },
   { key: '7d', labelKey: 'dashboard.activityOverview.range7d' },
   { key: 'usage', labelKey: 'dashboard.activityOverview.rangeUsage' },
@@ -23,18 +30,89 @@ const METRIC_OPTIONS: Array<{ key: MetricKey; labelKey: string }> = [
   { key: 'totalTokens', labelKey: 'metric.totalTokens' },
 ]
 
+function isRangeKey(value: string | null): value is RangeKey {
+  return value === 'today' || value === '1d' || value === '7d' || value === 'usage'
+}
+
+function readPersistedRange(): RangeKey {
+  if (typeof window === 'undefined') return DEFAULT_RANGE
+  try {
+    const cached = window.localStorage.getItem(DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY)
+    return isRangeKey(cached) ? cached : DEFAULT_RANGE
+  } catch {
+    return DEFAULT_RANGE
+  }
+}
+
+function persistRange(range: RangeKey) {
+  if (typeof window === 'undefined') return
+  try {
+    window.localStorage.setItem(DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY, range)
+  } catch {
+    // Ignore storage write failures and keep the UI responsive.
+  }
+}
+
+function createVisitedRanges(activeRange: RangeKey): Record<RangeKey, boolean> {
+  return {
+    today: activeRange === 'today',
+    '1d': activeRange === '1d',
+    '7d': activeRange === '7d',
+    usage: activeRange === 'usage',
+  }
+}
+
+interface DashboardTodayRangePanelProps {
+  metric: MetricKey
+  summary: ReturnType<typeof useSummary>['summary']
+  summaryLoading: boolean
+  summaryError: string | null
+}
+
+function DashboardTodayRangePanel({
+  metric,
+  summary,
+  summaryLoading,
+  summaryError,
+}: DashboardTodayRangePanelProps) {
+  const { data, isLoading, error } = useTimeseries('today', { bucket: '1m' })
+
+  return (
+    <div className="flex flex-col gap-5">
+      <TodayStatsOverview
+        stats={summary}
+        loading={summaryLoading}
+        error={summaryError}
+        showSurface={false}
+        showHeader={false}
+        showDayBadge={false}
+      />
+      <DashboardTodayActivityChart
+        response={data}
+        loading={isLoading}
+        error={error}
+        metric={metric}
+      />
+    </div>
+  )
+}
+
 export function DashboardActivityOverview() {
   const { t } = useTranslation()
   const { themeMode } = useTheme()
-  const [activeRange, setActiveRange] = useState<RangeKey>('1d')
-  const [visitedRanges, setVisitedRanges] = useState<Record<RangeKey, boolean>>({
-    '1d': true,
-    '7d': false,
-    usage: false,
-  })
+  const [activeRange, setActiveRange] = useState<RangeKey>(() => readPersistedRange())
+  const [visitedRanges, setVisitedRanges] = useState<Record<RangeKey, boolean>>(() =>
+    createVisitedRanges(readPersistedRange()),
+  )
+  const [metricToday, setMetricToday] = useState<MetricKey>('totalCount')
   const [metric24h, setMetric24h] = useState<MetricKey>('totalCount')
   const [metric7d, setMetric7d] = useState<MetricKey>('totalCount')
   const [metricUsage, setMetricUsage] = useState<MetricKey>('totalCount')
+  const {
+    summary: summaryToday,
+    isLoading: summaryTodayLoading,
+    error: summaryTodayError,
+  } = useSummary('today')
   const {
     summary: summary24h,
     isLoading: summary24hLoading,
@@ -56,7 +134,13 @@ export function DashboardActivityOverview() {
   )
 
   const activeMetric =
-    activeRange === '1d' ? metric24h : activeRange === '7d' ? metric7d : metricUsage
+    activeRange === 'today'
+      ? metricToday
+      : activeRange === '1d'
+        ? metric24h
+        : activeRange === '7d'
+          ? metric7d
+          : metricUsage
   const activeSummary = activeRange === '1d' ? summary24h : activeRange === '7d' ? summary7d : null
   const activeSummaryLoading =
     activeRange === '1d' ? summary24hLoading : activeRange === '7d' ? summary7dLoading : false
@@ -64,6 +148,7 @@ export function DashboardActivityOverview() {
     activeRange === '1d' ? summary24hError : activeRange === '7d' ? summary7dError : null
 
   useEffect(() => {
+    persistRange(activeRange)
     setVisitedRanges((current) =>
       current[activeRange]
         ? current
@@ -75,6 +160,10 @@ export function DashboardActivityOverview() {
   }, [activeRange])
 
   const setActiveMetric = (metric: MetricKey) => {
+    if (activeRange === 'today') {
+      setMetricToday(metric)
+      return
+    }
     if (activeRange === '1d') {
       setMetric24h(metric)
       return
@@ -130,9 +219,25 @@ export function DashboardActivityOverview() {
           </SegmentedControl>
         </div>
 
-        {activeRange === 'usage' ? null : (
+        {activeRange === 'today' || activeRange === 'usage' ? null : (
           <StatsCards stats={activeSummary} loading={activeSummaryLoading} error={activeSummaryError} />
         )}
+
+        {visitedRanges.today ? (
+          <div
+            data-testid="dashboard-activity-range-today"
+            data-active={activeRange === 'today'}
+            hidden={activeRange !== 'today'}
+            aria-hidden={activeRange !== 'today'}
+          >
+            <DashboardTodayRangePanel
+              metric={metricToday}
+              summary={summaryToday}
+              summaryLoading={summaryTodayLoading}
+              summaryError={summaryTodayError}
+            />
+          </div>
+        ) : null}
 
         {visitedRanges['1d'] ? (
           <div

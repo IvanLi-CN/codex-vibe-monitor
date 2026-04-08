@@ -75,4 +75,49 @@ describe('TodayStatsOverview', () => {
     expect(host?.textContent).toContain('Today summary')
     expect(host?.innerHTML).not.toContain('sm:col-span-2')
   })
+
+  it('supports embedded mode without rendering the outer surface panel', () => {
+    render(
+      <TodayStatsOverview
+        stats={{
+          totalCount: 32,
+          successCount: 30,
+          failureCount: 2,
+          totalCost: 1.28,
+          totalTokens: 4096,
+        }}
+        loading={false}
+        error={null}
+        showSurface={false}
+      />,
+    )
+
+    expect(host?.querySelector('.surface-panel')).toBeNull()
+    expect(host?.querySelector('[data-testid="today-stats-overview-card"]')).not.toBeNull()
+    expect(host?.querySelectorAll('[data-testid="today-stats-metric-tile"]')).toHaveLength(5)
+  })
+
+  it('hides the heading block when used inside the overview today tab', () => {
+    render(
+      <TodayStatsOverview
+        stats={{
+          totalCount: 12,
+          successCount: 10,
+          failureCount: 2,
+          totalCost: 0.52,
+          totalTokens: 2080,
+        }}
+        loading={false}
+        error={null}
+        showSurface={false}
+        showHeader={false}
+        showDayBadge={false}
+      />,
+    )
+
+    expect(host?.textContent).not.toContain('Today summary')
+    expect(host?.textContent).not.toContain('Accumulated in natural day')
+    expect(host?.textContent).not.toContain('Today')
+    expect(host?.querySelectorAll('[data-testid="today-stats-metric-tile"]')).toHaveLength(5)
+  })
 })
