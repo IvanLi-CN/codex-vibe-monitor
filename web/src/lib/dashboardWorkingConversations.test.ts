@@ -26,7 +26,8 @@ function createPreview(
     cost: overrides.cost ?? 0.012,
     proxyDisplayName: overrides.proxyDisplayName ?? "tokyo-edge-01",
     upstreamAccountId: overrides.upstreamAccountId ?? 17,
-    upstreamAccountName: overrides.upstreamAccountName ?? "pool-alpha@example.com",
+    upstreamAccountName:
+      overrides.upstreamAccountName ?? "pool-alpha@example.com",
     endpoint: overrides.endpoint ?? "/v1/responses",
     inputTokens: overrides.inputTokens ?? 64,
     outputTokens: overrides.outputTokens ?? 56,
@@ -56,8 +57,14 @@ function createConversation(
     requestCount: overrides.requestCount ?? recentInvocations.length,
     totalTokens: overrides.totalTokens ?? 1000,
     totalCost: overrides.totalCost ?? 0.048,
-    createdAt: overrides.createdAt ?? recentInvocations[recentInvocations.length - 1]?.occurredAt ?? "2026-04-04T10:00:00Z",
-    lastActivityAt: overrides.lastActivityAt ?? recentInvocations[0]?.occurredAt ?? "2026-04-04T10:00:00Z",
+    createdAt:
+      overrides.createdAt ??
+      recentInvocations[recentInvocations.length - 1]?.occurredAt ??
+      "2026-04-04T10:00:00Z",
+    lastActivityAt:
+      overrides.lastActivityAt ??
+      recentInvocations[0]?.occurredAt ??
+      "2026-04-04T10:00:00Z",
     upstreamAccounts: overrides.upstreamAccounts ?? [],
     recentInvocations,
     last24hRequests: overrides.last24hRequests ?? [],
@@ -96,7 +103,9 @@ describe("mapPromptCacheConversationsToDashboardCards", () => {
     const second = mapPromptCacheConversationsToDashboardCards(response);
 
     expect(first[0]?.conversationSequenceId).toMatch(/^WC-[A-F0-9]{6}$/);
-    expect(first[0]?.conversationSequenceId).toBe(second[0]?.conversationSequenceId);
+    expect(first[0]?.conversationSequenceId).toBe(
+      second[0]?.conversationSequenceId,
+    );
     expect(first[0]?.hasPreviousPlaceholder).toBe(true);
   });
 
@@ -238,8 +247,12 @@ describe("mapPromptCacheConversationsToDashboardCards", () => {
     const cards = mapPromptCacheConversationsToDashboardCards(response);
 
     expect(cards).toHaveLength(20);
-    expect(cards.map((card) => card.promptCacheKey)).toContain("pck-old-running");
-    expect(cards.map((card) => card.promptCacheKey)).not.toContain("pck-base-00");
+    expect(cards.map((card) => card.promptCacheKey)).toContain(
+      "pck-old-running",
+    );
+    expect(cards.map((card) => card.promptCacheKey)).not.toContain(
+      "pck-base-00",
+    );
     expect(cards.at(-1)?.promptCacheKey).toBe("pck-old-running");
   });
 
@@ -303,6 +316,8 @@ describe("mapPromptCacheConversationsToDashboardCards", () => {
 
     expect(cards).toHaveLength(20);
     expect(cards.map((card) => card.promptCacheKey)).toContain("pck-tie-newer");
-    expect(cards.map((card) => card.promptCacheKey)).not.toContain("pck-tie-older");
+    expect(cards.map((card) => card.promptCacheKey)).not.toContain(
+      "pck-tie-older",
+    );
   });
 });

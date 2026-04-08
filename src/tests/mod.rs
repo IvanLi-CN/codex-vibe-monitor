@@ -6478,8 +6478,13 @@ fn test_proxy_capture_record(invoke_id: &str, occurred_at: &str) -> ProxyCapture
     }
 }
 
-#[test]
-fn runtime_api_invocation_from_running_proxy_capture_record_uses_transient_shape() {
+#[tokio::test]
+async fn persist_and_broadcast_proxy_capture_runtime_snapshot_emits_queryable_running_record() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let mut rx = state.broadcaster.subscribe();
     let request_info = RequestCaptureInfo {
         model: Some("gpt-5.4".to_string()),
         prompt_cache_key: Some("pck-running".to_string()),
@@ -6488,9 +6493,11 @@ fn runtime_api_invocation_from_running_proxy_capture_record_uses_transient_shape
         is_stream: true,
         ..RequestCaptureInfo::default()
     };
+    let invoke_id = "invoke-running";
+    let occurred_at = "2026-03-17 18:13:34";
     let record = build_running_proxy_capture_record(
-        "invoke-running",
-        "2026-03-17 18:13:34",
+        invoke_id,
+        occurred_at,
         ProxyCaptureTarget::Responses,
         &request_info,
         Some("198.51.100.88"),
@@ -6502,8 +6509,8 @@ fn runtime_api_invocation_from_running_proxy_capture_record_uses_transient_shape
         Some("api_key_codex"),
         Some("api-keys.vendor.invalid"),
         Some("jp-relay-01"),
-        None,
-        None,
+        Some(3),
+        Some(2),
         None,
         Some("gzip"),
         22.0,
@@ -6512,50 +6519,92 @@ fn runtime_api_invocation_from_running_proxy_capture_record_uses_transient_shape
         120.0,
     );
 
-    let api_record = runtime_api_invocation_from_proxy_capture_record(&record);
+    persist_and_broadcast_proxy_capture_runtime_snapshot(&state, record)
+        .await
+        .expect("runtime snapshot should persist and broadcast");
+
+    let payload = rx
+        .recv()
+        .await
+        .expect("runtime snapshot payload should arrive");
+    let broadcast_record = match payload {
+        BroadcastPayload::Records { records } => {
+            assert_eq!(records.len(), 1);
+            records.into_iter().next().expect("single running record")
+        }
+        other => panic!("expected records payload, got {other:?}"),
+    };
+
     assert!(
-        api_record.id < 0,
-        "running snapshots should use transient ids"
+        broadcast_record.id > 0,
+        "running snapshot should use persisted row id"
     );
-    assert_eq!(api_record.status.as_deref(), Some("running"));
-    assert_eq!(api_record.model.as_deref(), Some("gpt-5.4"));
-    assert_eq!(api_record.endpoint.as_deref(), Some("/v1/responses"));
+    assert_eq!(broadcast_record.status.as_deref(), Some("running"));
+    assert_eq!(broadcast_record.model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(broadcast_record.endpoint.as_deref(), Some("/v1/responses"));
     assert_eq!(
-        api_record.proxy_display_name.as_deref(),
+        broadcast_record.proxy_display_name.as_deref(),
         Some("jp-relay-01")
     );
-    assert_eq!(api_record.upstream_account_id, Some(17));
+    assert_eq!(broadcast_record.upstream_account_id, Some(17));
     assert_eq!(
-        api_record.upstream_account_name.as_deref(),
+        broadcast_record.upstream_account_name.as_deref(),
         Some("pool-account-17")
     );
     assert_eq!(
-        api_record.response_content_encoding.as_deref(),
+        broadcast_record.response_content_encoding.as_deref(),
         Some("gzip")
     );
-    assert_eq!(api_record.prompt_cache_key.as_deref(), Some("pck-running"));
-    assert_eq!(api_record.billing_service_tier, None);
+    assert_eq!(broadcast_record.pool_attempt_count, Some(3));
+    assert_eq!(broadcast_record.pool_distinct_account_count, Some(2));
+    assert_eq!(broadcast_record.pool_attempt_terminal_reason, None);
     assert_eq!(
-        api_record.t_total_ms, None,
-        "running snapshots should not freeze total time"
+        broadcast_record.prompt_cache_key.as_deref(),
+        Some("pck-running")
     );
-    assert_eq!(api_record.t_req_read_ms, Some(22.0));
-    assert_eq!(api_record.t_req_parse_ms, Some(4.0));
-    assert_eq!(api_record.t_upstream_connect_ms, Some(330.0));
-    assert_eq!(api_record.t_upstream_ttfb_ms, Some(120.0));
+    assert_eq!(broadcast_record.billing_service_tier, None);
+    assert_eq!(broadcast_record.t_total_ms, None);
+    assert_eq!(broadcast_record.t_req_read_ms, Some(22.0));
+    assert_eq!(broadcast_record.t_req_parse_ms, Some(4.0));
+    assert_eq!(broadcast_record.t_upstream_connect_ms, Some(330.0));
+    assert_eq!(broadcast_record.t_upstream_ttfb_ms, Some(120.0));
+
+    let Json(response) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            request_id: Some(invoke_id.to_string()),
+            page_size: Some(1),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("running invocation should be queryable immediately");
+
+    assert_eq!(response.total, 1);
+    assert_eq!(response.records.len(), 1);
+    assert_eq!(response.records[0].id, broadcast_record.id);
+    assert_eq!(response.records[0].status.as_deref(), Some("running"));
+    assert_eq!(response.records[0].pool_attempt_count, Some(3));
+    assert_eq!(response.records[0].pool_distinct_account_count, Some(2));
+    assert_eq!(response.records[0].pool_attempt_terminal_reason, None);
 }
 
 #[tokio::test]
-async fn broadcast_proxy_capture_runtime_snapshot_emits_records_payload() {
-    let (tx, mut rx) = broadcast::channel(4);
+async fn persist_proxy_capture_record_finalizes_existing_running_row_in_place() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
     let request_info = RequestCaptureInfo {
         model: Some("gpt-5.4".to_string()),
         is_stream: false,
         ..RequestCaptureInfo::default()
     };
-    let record = build_running_proxy_capture_record(
-        "invoke-runtime-broadcast",
-        "2026-03-17 18:13:34",
+    let invoke_id = "invoke-runtime-broadcast";
+    let occurred_at = "2026-03-17 18:13:34";
+    let running_record = build_running_proxy_capture_record(
+        invoke_id,
+        occurred_at,
         ProxyCaptureTarget::Responses,
         &request_info,
         Some("198.51.100.88"),
@@ -6577,25 +6626,37 @@ async fn broadcast_proxy_capture_runtime_snapshot_emits_records_payload() {
         0.0,
     );
 
-    assert!(
-        broadcast_proxy_capture_runtime_snapshot(&tx, &record)
-            .expect("runtime snapshot broadcast should succeed")
-    );
-
-    let payload = rx
-        .recv()
+    let running = persist_proxy_capture_runtime_record(&state.pool, running_record)
         .await
-        .expect("runtime snapshot payload should arrive");
-    match payload {
-        BroadcastPayload::Records { records } => {
-            assert_eq!(records.len(), 1);
-            let record = &records[0];
-            assert_eq!(record.status.as_deref(), Some("running"));
-            assert_eq!(record.proxy_display_name.as_deref(), Some("edge-runtime"));
-            assert!(record.id < 0);
-        }
-        other => panic!("expected records payload, got {other:?}"),
-    }
+        .expect("persist running record")
+        .expect("running record should be inserted");
+    assert!(running.id > 0);
+    assert_eq!(running.status.as_deref(), Some("running"));
+
+    let finalized = persist_proxy_capture_record(
+        &state.pool,
+        Instant::now(),
+        test_proxy_capture_record(invoke_id, occurred_at),
+    )
+    .await
+    .expect("finalize record")
+    .expect("terminal update should reuse running row");
+
+    assert_eq!(finalized.id, running.id);
+    assert_eq!(finalized.status.as_deref(), Some("success"));
+    let duplicate_count = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM codex_invocations
+        WHERE invoke_id = ?1 AND occurred_at = ?2
+        "#,
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count invocation rows");
+    assert_eq!(duplicate_count, 1);
 }
 
 async fn seed_quota_snapshot(pool: &SqlitePool, captured_at: &str) {
@@ -6974,16 +7035,30 @@ async fn count_codex_invocations(pool: &SqlitePool) -> i64 {
         .expect("count codex invocations")
 }
 
+async fn count_in_flight_codex_invocations(pool: &SqlitePool) -> i64 {
+    sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM codex_invocations
+        WHERE LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
+        "#,
+    )
+    .fetch_one(pool)
+    .await
+    .expect("count in-flight codex invocations")
+}
+
 async fn wait_for_codex_invocations(pool: &SqlitePool, expected_min_count: i64) {
     let started = Instant::now();
     loop {
         let count = count_codex_invocations(pool).await;
-        if count >= expected_min_count {
+        let in_flight = count_in_flight_codex_invocations(pool).await;
+        if count >= expected_min_count && in_flight == 0 {
             return;
         }
         assert!(
             started.elapsed() < Duration::from_secs(5),
-            "timed out waiting for codex invocations; expected at least {expected_min_count}, got {count}"
+            "timed out waiting for codex invocations; expected at least {expected_min_count}, got {count}, in_flight={in_flight}"
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }
@@ -30118,6 +30193,7 @@ async fn list_invocations_status_failed_matches_http_failure_statuses() {
         ("status-success", "success"),
         ("status-running", "running"),
         ("status-pending", "pending"),
+        ("status-interrupted", "interrupted"),
         ("status-failed", "failed"),
         ("status-http401", "http_401"),
         ("status-http502", "http_502"),
@@ -30193,7 +30269,7 @@ async fn list_invocations_status_failed_matches_http_failure_statuses() {
     assert_eq!(actual, expected);
 
     let Json(running_filtered) = list_invocations(
-        State(state),
+        State(state.clone()),
         Query(ListQuery {
             status: Some("running".to_string()),
             ..Default::default()
@@ -30204,6 +30280,22 @@ async fn list_invocations_status_failed_matches_http_failure_statuses() {
 
     assert_eq!(running_filtered.total, 1);
     assert_eq!(running_filtered.records[0].invoke_id, "status-running");
+
+    let Json(interrupted_filtered) = list_invocations(
+        State(state),
+        Query(ListQuery {
+            status: Some("interrupted".to_string()),
+            ..Default::default()
+        }),
+    )
+    .await
+    .expect("interrupted status filter should use exact match");
+
+    assert_eq!(interrupted_filtered.total, 1);
+    assert_eq!(
+        interrupted_filtered.records[0].invoke_id,
+        "status-interrupted"
+    );
 }
 
 #[tokio::test]
@@ -46255,4 +46347,113 @@ async fn recover_orphaned_pool_upstream_request_attempts_marks_pending_rows_term
         recovered_row.4.as_deref(),
         Some(POOL_ATTEMPT_INTERRUPTED_MESSAGE)
     );
+}
+
+#[tokio::test]
+async fn recover_orphaned_proxy_invocations_marks_running_rows_interrupted() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            error_message,
+            raw_response,
+            payload
+        )
+        VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6)
+        "#,
+    )
+    .bind("recovered-running-invocation")
+    .bind("2026-03-23 21:01:02")
+    .bind(SOURCE_PROXY)
+    .bind(INVOCATION_STATUS_RUNNING)
+    .bind("{}")
+    .bind("{\"endpoint\":\"/v1/responses\"}")
+    .execute(&state.pool)
+    .await
+    .expect("insert running invocation");
+
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            error_message,
+            raw_response,
+            payload
+        )
+        VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6)
+        "#,
+    )
+    .bind("xy-running-invocation")
+    .bind("2026-03-23 21:01:03")
+    .bind(SOURCE_XY)
+    .bind(INVOCATION_STATUS_RUNNING)
+    .bind("{}")
+    .bind("{\"endpoint\":\"/v1/chat/completions\"}")
+    .execute(&state.pool)
+    .await
+    .expect("insert non-proxy running invocation");
+
+    let affected = recover_orphaned_proxy_invocations(&state.pool)
+        .await
+        .expect("recover orphaned invocations");
+    assert_eq!(affected, 1);
+
+    let recovered = sqlx::query_as::<
+        _,
+        (
+            String,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Option<i64>,
+        ),
+    >(
+        r#"
+        SELECT status, error_message, failure_kind, failure_class, is_actionable
+        FROM codex_invocations
+        WHERE invoke_id = ?1
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind("recovered-running-invocation")
+    .fetch_one(&state.pool)
+    .await
+    .expect("load recovered invocation");
+
+    assert_eq!(recovered.0, INVOCATION_STATUS_INTERRUPTED);
+    assert_eq!(recovered.1.as_deref(), Some(INVOCATION_INTERRUPTED_MESSAGE));
+    assert_eq!(
+        recovered.2.as_deref(),
+        Some(PROXY_FAILURE_INVOCATION_INTERRUPTED)
+    );
+    assert_eq!(recovered.3.as_deref(), Some(FAILURE_CLASS_SERVICE));
+    assert_eq!(recovered.4, Some(1));
+
+    let xy_row = sqlx::query_as::<_, (String, Option<String>)>(
+        r#"
+        SELECT status, error_message
+        FROM codex_invocations
+        WHERE invoke_id = ?1
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind("xy-running-invocation")
+    .fetch_one(&state.pool)
+    .await
+    .expect("load non-proxy invocation");
+
+    assert_eq!(xy_row.0, INVOCATION_STATUS_RUNNING);
+    assert_eq!(xy_row.1, None);
 }

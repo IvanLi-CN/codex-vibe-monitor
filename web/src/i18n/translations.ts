@@ -1246,8 +1246,7 @@ const baseTranslations = {
     "dashboard.workingConversations.promptCacheKeyLabel": "Prompt cache key",
     "dashboard.workingConversations.currentInvocation": "Current invocation",
     "dashboard.workingConversations.previousInvocation": "Previous invocation",
-    "dashboard.workingConversations.openInvocation":
-      "Open invocation details",
+    "dashboard.workingConversations.openInvocation": "Open invocation details",
     "dashboard.workingConversations.placeholderBadge": "Waiting",
     "dashboard.workingConversations.previousPlaceholder":
       "No previous invocation is available for this conversation yet.",
@@ -1258,8 +1257,7 @@ const baseTranslations = {
     "dashboard.workingConversations.totalTokensLabel": "Conversation tokens",
     "dashboard.workingConversations.totalCostLabel": "Conversation cost",
     "dashboard.workingConversations.sortAnchorLabel": "Sort anchor",
-    "dashboard.workingConversations.drawer.close":
-      "Close invocation details",
+    "dashboard.workingConversations.drawer.close": "Close invocation details",
     "dashboard.workingConversations.drawer.subtitle":
       "Working conversation invocation",
     "dashboard.workingConversations.drawer.title": "Invocation details",
@@ -1463,6 +1461,7 @@ const baseTranslations = {
     "records.filters.status.all": "All statuses",
     "records.filters.status.success": "Success",
     "records.filters.status.failed": "Failed",
+    "records.filters.status.interrupted": "Interrupted",
     "records.filters.status.running": "Running",
     "records.filters.status.pending": "Pending",
     "records.filters.any": "All",
@@ -1619,6 +1618,7 @@ const baseTranslations = {
     "table.account.poolAccountUnavailable": "Pool account unavailable",
     "table.status.success": "Success",
     "table.status.failed": "Failed",
+    "table.status.interrupted": "Interrupted",
     "table.status.running": "Running",
     "table.status.pending": "Pending",
     "table.status.unknown": "Unknown",
@@ -3108,6 +3108,7 @@ const baseTranslations = {
     "records.filters.status.all": "全部状态",
     "records.filters.status.success": "成功",
     "records.filters.status.failed": "失败",
+    "records.filters.status.interrupted": "已中断",
     "records.filters.status.running": "运行中",
     "records.filters.status.pending": "排队中",
     "records.filters.any": "全部",
@@ -3264,6 +3265,7 @@ const baseTranslations = {
     "table.account.poolAccountUnavailable": "号池账号未知",
     "table.status.success": "成功",
     "table.status.failed": "失败",
+    "table.status.interrupted": "已中断",
     "table.status.running": "运行中",
     "table.status.pending": "排队中",
     "table.status.unknown": "未知",

@@ -152,6 +152,14 @@ function resolveStatusMeta(
 ): StatusMeta {
   const base = STATUS_META[tone];
   const normalized = status.trim().toLowerCase();
+  if (normalized === "interrupted") {
+    return {
+      ...base,
+      badgeVariant: "error",
+      icon: "alert-circle-outline",
+      labelKey: "table.status.interrupted",
+    };
+  }
   if (normalized.startsWith("http_4")) {
     return {
       ...base,

@@ -27,6 +27,13 @@ pub(crate) async fn run() -> Result<()> {
     ensure_schema(&pool).await?;
     log_startup_phase("schema", schema_started_at);
     if should_recover_pending_pool_attempts_on_startup(&cli) {
+        let recovered_running_invocations = recover_orphaned_proxy_invocations(&pool).await?;
+        if recovered_running_invocations > 0 {
+            warn!(
+                recovered_running_invocations,
+                "recovered orphaned running invocation rows at startup"
+            );
+        }
         let recovered_pending_pool_attempts =
             recover_orphaned_pool_upstream_request_attempts(&pool).await?;
         if recovered_pending_pool_attempts > 0 {

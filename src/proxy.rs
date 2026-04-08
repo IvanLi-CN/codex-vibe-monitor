@@ -4935,8 +4935,11 @@ async fn proxy_openai_v1_capture_target(
         0.0,
         0.0,
     );
-    if let Err(err) =
-        broadcast_proxy_capture_runtime_snapshot(&state.broadcaster, &initial_running_record)
+    if let Err(err) = persist_and_broadcast_proxy_capture_runtime_snapshot(
+        state.as_ref(),
+        initial_running_record,
+    )
+    .await
     {
         warn!(
             ?err,
@@ -5521,8 +5524,11 @@ async fn proxy_openai_v1_capture_target(
         t_upstream_connect_ms,
         prefetched_ttfb_ms,
     );
-    if let Err(err) =
-        broadcast_proxy_capture_runtime_snapshot(&state.broadcaster, &response_running_record)
+    if let Err(err) = persist_and_broadcast_proxy_capture_runtime_snapshot(
+        state.as_ref(),
+        response_running_record,
+    )
+    .await
     {
         warn!(
             ?err,
@@ -5720,10 +5726,12 @@ async fn proxy_openai_v1_capture_target(
                             t_upstream_connect_ms,
                             t_upstream_ttfb_ms,
                         );
-                        if let Err(err) = broadcast_proxy_capture_runtime_snapshot(
-                            &state_for_task.broadcaster,
-                            &running_record,
-                        ) {
+                        if let Err(err) = persist_and_broadcast_proxy_capture_runtime_snapshot(
+                            state_for_task.as_ref(),
+                            running_record,
+                        )
+                        .await
+                        {
                             warn!(
                                 ?err,
                                 invoke_id = %invoke_id_for_task,
@@ -8280,6 +8288,64 @@ async fn recover_orphaned_pool_upstream_request_attempts(pool: &Pool<Sqlite>) ->
     Ok(result.rows_affected())
 }
 
+async fn recover_orphaned_proxy_invocations(pool: &Pool<Sqlite>) -> Result<u64> {
+    let mut tx = pool.begin().await?;
+    let rows = sqlx::query_as::<_, PersistedInvocationIdentityRow>(
+        r#"
+        SELECT id, status
+        FROM codex_invocations
+        WHERE source = ?1
+          AND LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
+        ORDER BY id ASC
+        "#,
+    )
+    .bind(SOURCE_PROXY)
+    .fetch_all(tx.as_mut())
+    .await?;
+
+    if rows.is_empty() {
+        tx.commit().await?;
+        return Ok(0);
+    }
+
+    let affected = sqlx::query(
+        r#"
+        UPDATE codex_invocations
+        SET status = ?1,
+            error_message = ?2,
+            failure_kind = ?3,
+            failure_class = ?4,
+            is_actionable = 1
+        WHERE source = ?5
+          AND LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
+        "#,
+    )
+    .bind(INVOCATION_STATUS_INTERRUPTED)
+    .bind(INVOCATION_INTERRUPTED_MESSAGE)
+    .bind(PROXY_FAILURE_INVOCATION_INTERRUPTED)
+    .bind(FAILURE_CLASS_SERVICE)
+    .bind(SOURCE_PROXY)
+    .execute(tx.as_mut())
+    .await?
+    .rows_affected();
+
+    if affected > 0 {
+        let updated_ids: Vec<i64> = rows.iter().map(|row| row.id).collect();
+        recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &updated_ids).await?;
+        if let Some(max_id) = updated_ids.iter().copied().max() {
+            save_hourly_rollup_live_progress_tx(
+                tx.as_mut(),
+                HOURLY_ROLLUP_DATASET_INVOCATIONS,
+                max_id,
+            )
+            .await?;
+        }
+    }
+
+    tx.commit().await?;
+    Ok(affected)
+}
+
 async fn broadcast_pool_upstream_attempts_snapshot(
     state: &AppState,
     invoke_id: &str,
@@ -8332,7 +8398,8 @@ async fn broadcast_pool_attempt_started_runtime_snapshot(
         0.0,
         0.0,
     );
-    if let Err(err) = broadcast_proxy_capture_runtime_snapshot(&state.broadcaster, &running_record)
+    if let Err(err) =
+        persist_and_broadcast_proxy_capture_runtime_snapshot(state, running_record).await
     {
         warn!(
             ?err,
@@ -8800,170 +8867,478 @@ fn build_proxy_payload_summary(summary: ProxyPayloadSummary<'_>) -> String {
     serde_json::to_string(&payload).unwrap_or_else(|_| "{}".to_string())
 }
 
-fn temporary_invocation_id(invoke_id: &str, occurred_at: &str) -> i64 {
-    let mut hasher = DefaultHasher::new();
-    invoke_id.hash(&mut hasher);
-    occurred_at.hash(&mut hasher);
-    -((hasher.finish() & (i64::MAX as u64)) as i64) - 1
+fn invocation_status_is_in_flight(status: Option<&str>) -> bool {
+    matches!(
+        status
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        INVOCATION_STATUS_RUNNING | INVOCATION_STATUS_PENDING
+    )
 }
 
-fn runtime_invocation_iso_from_local_occurred_at(value: &str) -> String {
-    parse_shanghai_local_naive(value)
-        .map(|naive| format_utc_iso(local_naive_to_utc(naive, Shanghai)))
-        .unwrap_or_else(|_| value.to_string())
-}
-
-fn runtime_payload_text(payload: Option<&Value>, key: &str) -> Option<String> {
-    payload
-        .and_then(|value| value.get(key))
-        .and_then(|value| value.as_str())
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-}
-
-fn runtime_payload_i64(payload: Option<&Value>, key: &str) -> Option<i64> {
-    payload
-        .and_then(|value| value.get(key))
-        .and_then(json_value_to_i64)
-}
-
-fn runtime_payload_f64(payload: Option<&Value>, key: &str) -> Option<f64> {
-    payload
-        .and_then(|value| value.get(key))
-        .and_then(|value| {
-            value
-                .as_f64()
-                .or_else(|| value.as_str()?.parse::<f64>().ok())
-        })
-        .filter(|value| value.is_finite())
-}
-
-fn runtime_timing_value(value: f64) -> Option<f64> {
+fn nullable_runtime_timing_value(value: f64) -> Option<f64> {
     (value.is_finite() && value > 0.0).then_some(value)
 }
 
-fn runtime_api_invocation_from_proxy_capture_record(record: &ProxyCaptureRecord) -> ApiInvocation {
-    let payload = record
-        .payload
+#[derive(Debug, FromRow)]
+struct PersistedInvocationIdentityRow {
+    id: i64,
+    status: Option<String>,
+}
+
+async fn load_persisted_invocation_identity_tx(
+    tx: &mut SqliteConnection,
+    invoke_id: &str,
+    occurred_at: &str,
+) -> Result<Option<PersistedInvocationIdentityRow>> {
+    sqlx::query_as::<_, PersistedInvocationIdentityRow>(
+        r#"
+        SELECT id, status
+        FROM codex_invocations
+        WHERE invoke_id = ?1 AND occurred_at = ?2
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .fetch_optional(&mut *tx)
+    .await
+    .map_err(Into::into)
+}
+
+async fn load_persisted_api_invocation_tx(
+    tx: &mut SqliteConnection,
+    invoke_id: &str,
+    occurred_at: &str,
+) -> Result<ApiInvocation> {
+    sqlx::query_as::<_, ApiInvocation>(
+        r#"
+        SELECT
+            id,
+            invoke_id,
+            occurred_at,
+            source,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.proxyDisplayName') END AS proxy_display_name,
+            model,
+            input_tokens,
+            output_tokens,
+            cache_input_tokens,
+            reasoning_tokens,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.reasoningEffort') END AS reasoning_effort,
+            total_tokens,
+            cost,
+            status,
+            error_message,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.endpoint') END AS endpoint,
+            COALESCE(CASE WHEN json_valid(payload) THEN json_extract(payload, '$.failureKind') END, failure_kind) AS failure_kind,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.streamTerminalEvent') END AS stream_terminal_event,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamErrorCode') END AS upstream_error_code,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamErrorMessage') END AS upstream_error_message,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamRequestId') END AS upstream_request_id,
+            failure_class,
+            is_actionable,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.requesterIp') END AS requester_ip,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.promptCacheKey') END AS prompt_cache_key,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.routeMode') END AS route_mode,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamAccountId') END AS upstream_account_id,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamAccountName') END AS upstream_account_name,
+            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.responseContentEncoding') END AS response_content_encoding,
+            CASE
+              WHEN json_valid(payload) AND json_type(payload, '$.poolAttemptCount') IN ('integer', 'real')
+                THEN json_extract(payload, '$.poolAttemptCount')
+            END AS pool_attempt_count,
+            CASE
+              WHEN json_valid(payload) AND json_type(payload, '$.poolDistinctAccountCount') IN ('integer', 'real')
+                THEN json_extract(payload, '$.poolDistinctAccountCount')
+            END AS pool_distinct_account_count,
+            CASE
+              WHEN json_valid(payload) AND json_type(payload, '$.poolAttemptTerminalReason') = 'text'
+                THEN json_extract(payload, '$.poolAttemptTerminalReason')
+            END AS pool_attempt_terminal_reason,
+            CASE
+              WHEN json_valid(payload) AND json_type(payload, '$.requestedServiceTier') = 'text'
+                THEN json_extract(payload, '$.requestedServiceTier')
+              WHEN json_valid(payload) AND json_type(payload, '$.requested_service_tier') = 'text'
+                THEN json_extract(payload, '$.requested_service_tier') END AS requested_service_tier,
+            CASE
+              WHEN json_valid(payload) AND json_type(payload, '$.serviceTier') = 'text'
+                THEN json_extract(payload, '$.serviceTier')
+              WHEN json_valid(payload) AND json_type(payload, '$.service_tier') = 'text'
+                THEN json_extract(payload, '$.service_tier') END AS service_tier,
+            CASE
+              WHEN json_valid(payload) AND json_type(payload, '$.billingServiceTier') = 'text'
+                THEN json_extract(payload, '$.billingServiceTier')
+              WHEN json_valid(payload) AND json_type(payload, '$.billing_service_tier') = 'text'
+                THEN json_extract(payload, '$.billing_service_tier') END AS billing_service_tier,
+            CASE WHEN json_valid(payload)
+              AND json_type(payload, '$.proxyWeightDelta') IN ('integer', 'real')
+              THEN json_extract(payload, '$.proxyWeightDelta') END AS proxy_weight_delta,
+            cost_estimated,
+            price_version,
+            request_raw_path,
+            request_raw_size,
+            request_raw_truncated,
+            request_raw_truncated_reason,
+            response_raw_path,
+            response_raw_size,
+            response_raw_truncated,
+            response_raw_truncated_reason,
+            detail_level,
+            detail_pruned_at,
+            detail_prune_reason,
+            t_total_ms,
+            t_req_read_ms,
+            t_req_parse_ms,
+            t_upstream_connect_ms,
+            t_upstream_ttfb_ms,
+            t_upstream_stream_ms,
+            t_resp_parse_ms,
+            t_persist_ms,
+            created_at
+        FROM codex_invocations
+        WHERE invoke_id = ?1 AND occurred_at = ?2
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .fetch_one(&mut *tx)
+    .await
+    .map_err(Into::into)
+}
+
+async fn touch_invocation_upstream_account_last_activity_tx(
+    tx: &mut SqliteConnection,
+    occurred_at: &str,
+    payload: Option<&str>,
+) -> Result<()> {
+    if let Some(upstream_account_id) = upstream_account_id_from_payload(payload) {
+        sqlx::query(
+            r#"
+            UPDATE pool_upstream_accounts
+            SET last_activity_at = CASE
+                WHEN last_activity_at IS NULL OR last_activity_at < ?1 THEN ?1
+                ELSE last_activity_at
+            END
+            WHERE id = ?2
+            "#,
+        )
+        .bind(occurred_at)
+        .bind(upstream_account_id)
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn persist_and_broadcast_proxy_capture_runtime_snapshot(
+    state: &AppState,
+    record: ProxyCaptureRecord,
+) -> Result<()> {
+    let persisted = persist_proxy_capture_runtime_record(&state.pool, record).await?;
+    let Some(persisted_record) = persisted else {
+        return Ok(());
+    };
+
+    if persisted_record
+        .prompt_cache_key
         .as_deref()
-        .and_then(|raw| serde_json::from_str::<Value>(raw).ok());
+        .is_some_and(|key| !key.trim().is_empty())
+    {
+        invalidate_prompt_cache_conversations_cache(&state.prompt_cache_conversation_cache).await;
+    }
+
+    if state.broadcaster.receiver_count() == 0 {
+        return Ok(());
+    }
+
+    let invoke_id = persisted_record.invoke_id.clone();
+    if let Err(err) = state.broadcaster.send(BroadcastPayload::Records {
+        records: vec![persisted_record],
+    }) {
+        warn!(
+            ?err,
+            invoke_id = %invoke_id,
+            "failed to broadcast runtime proxy capture snapshot"
+        );
+    }
+
+    Ok(())
+}
+
+async fn persist_proxy_capture_runtime_record(
+    pool: &Pool<Sqlite>,
+    record: ProxyCaptureRecord,
+) -> Result<Option<ApiInvocation>> {
     let failure = classify_invocation_failure(
         Some(record.status.as_str()),
         record.error_message.as_deref(),
     );
-    let occurred_at = runtime_invocation_iso_from_local_occurred_at(&record.occurred_at);
-    let created_at = occurred_at.clone();
-    let is_running = matches!(
-        record.status.trim().to_ascii_lowercase().as_str(),
-        "running" | "pending"
-    );
+    let failure_kind = record
+        .failure_kind
+        .clone()
+        .or_else(|| failure.failure_kind.clone());
+    let t_req_read_ms = nullable_runtime_timing_value(record.timings.t_req_read_ms);
+    let t_req_parse_ms = nullable_runtime_timing_value(record.timings.t_req_parse_ms);
+    let t_upstream_connect_ms = nullable_runtime_timing_value(record.timings.t_upstream_connect_ms);
+    let t_upstream_ttfb_ms = nullable_runtime_timing_value(record.timings.t_upstream_ttfb_ms);
+    let mut tx = pool.begin().await?;
+    let insert_result = sqlx::query(
+        r#"
+        INSERT OR IGNORE INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            model,
+            input_tokens,
+            output_tokens,
+            cache_input_tokens,
+            reasoning_tokens,
+            total_tokens,
+            cost,
+            cost_estimated,
+            price_version,
+            status,
+            error_message,
+            failure_kind,
+            failure_class,
+            is_actionable,
+            payload,
+            raw_response,
+            request_raw_path,
+            request_raw_size,
+            request_raw_truncated,
+            request_raw_truncated_reason,
+            response_raw_path,
+            response_raw_size,
+            response_raw_truncated,
+            response_raw_truncated_reason,
+            t_total_ms,
+            t_req_read_ms,
+            t_req_parse_ms,
+            t_upstream_connect_ms,
+            t_upstream_ttfb_ms,
+            t_upstream_stream_ms,
+            t_resp_parse_ms,
+            t_persist_ms
+        )
+        VALUES (
+            ?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19,
+            ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35
+        )
+        "#,
+    )
+    .bind(&record.invoke_id)
+    .bind(&record.occurred_at)
+    .bind(SOURCE_PROXY)
+    .bind(&record.model)
+    .bind(record.usage.input_tokens)
+    .bind(record.usage.output_tokens)
+    .bind(record.usage.cache_input_tokens)
+    .bind(record.usage.reasoning_tokens)
+    .bind(record.usage.total_tokens)
+    .bind(record.cost)
+    .bind(record.cost_estimated as i64)
+    .bind(record.price_version.as_deref())
+    .bind(&record.status)
+    .bind(record.error_message.as_deref())
+    .bind(failure_kind.as_deref())
+    .bind(failure.failure_class.as_str())
+    .bind(failure.is_actionable as i64)
+    .bind(record.payload.as_deref())
+    .bind(&record.raw_response)
+    .bind(record.req_raw.path.as_deref())
+    .bind(record.req_raw.path.as_ref().map(|_| record.req_raw.size_bytes))
+    .bind(record.req_raw.truncated as i64)
+    .bind(record.req_raw.truncated_reason.as_deref())
+    .bind(record.resp_raw.path.as_deref())
+    .bind(record.resp_raw.path.as_ref().map(|_| record.resp_raw.size_bytes))
+    .bind(record.resp_raw.truncated as i64)
+    .bind(record.resp_raw.truncated_reason.as_deref())
+    .bind(None::<f64>)
+    .bind(t_req_read_ms)
+    .bind(t_req_parse_ms)
+    .bind(t_upstream_connect_ms)
+    .bind(t_upstream_ttfb_ms)
+    .bind(None::<f64>)
+    .bind(None::<f64>)
+    .bind(None::<f64>)
+    .execute(tx.as_mut())
+    .await?;
 
-    ApiInvocation {
-        id: temporary_invocation_id(&record.invoke_id, &record.occurred_at),
-        invoke_id: record.invoke_id.clone(),
-        occurred_at,
-        source: SOURCE_PROXY.to_string(),
-        proxy_display_name: runtime_payload_text(payload.as_ref(), "proxyDisplayName"),
-        model: record.model.clone(),
-        input_tokens: record.usage.input_tokens,
-        output_tokens: record.usage.output_tokens,
-        cache_input_tokens: record.usage.cache_input_tokens,
-        reasoning_tokens: record.usage.reasoning_tokens,
-        reasoning_effort: runtime_payload_text(payload.as_ref(), "reasoningEffort"),
-        total_tokens: record.usage.total_tokens,
-        cost: record.cost,
-        status: Some(record.status.clone()),
-        error_message: record.error_message.clone(),
-        failure_kind: record
-            .failure_kind
-            .clone()
-            .or_else(|| runtime_payload_text(payload.as_ref(), "failureKind")),
-        stream_terminal_event: runtime_payload_text(payload.as_ref(), "streamTerminalEvent"),
-        upstream_error_code: runtime_payload_text(payload.as_ref(), "upstreamErrorCode"),
-        upstream_error_message: runtime_payload_text(payload.as_ref(), "upstreamErrorMessage"),
-        upstream_request_id: runtime_payload_text(payload.as_ref(), "upstreamRequestId"),
-        failure_class: Some(failure.failure_class.as_str().to_string()),
-        is_actionable: Some(failure.is_actionable),
-        endpoint: runtime_payload_text(payload.as_ref(), "endpoint"),
-        requester_ip: runtime_payload_text(payload.as_ref(), "requesterIp"),
-        prompt_cache_key: runtime_payload_text(payload.as_ref(), "promptCacheKey"),
-        route_mode: runtime_payload_text(payload.as_ref(), "routeMode"),
-        upstream_account_id: runtime_payload_i64(payload.as_ref(), "upstreamAccountId"),
-        upstream_account_name: runtime_payload_text(payload.as_ref(), "upstreamAccountName"),
-        response_content_encoding: runtime_payload_text(
-            payload.as_ref(),
-            "responseContentEncoding",
-        ),
-        pool_attempt_count: runtime_payload_i64(payload.as_ref(), "poolAttemptCount"),
-        pool_distinct_account_count: runtime_payload_i64(
-            payload.as_ref(),
-            "poolDistinctAccountCount",
-        ),
-        pool_attempt_terminal_reason: runtime_payload_text(
-            payload.as_ref(),
-            "poolAttemptTerminalReason",
-        ),
-        requested_service_tier: runtime_payload_text(payload.as_ref(), "requestedServiceTier"),
-        service_tier: runtime_payload_text(payload.as_ref(), "serviceTier"),
-        billing_service_tier: runtime_payload_text(payload.as_ref(), "billingServiceTier"),
-        proxy_weight_delta: runtime_payload_f64(payload.as_ref(), "proxyWeightDelta"),
-        cost_estimated: Some(i64::from(record.cost_estimated)),
-        price_version: record.price_version.clone(),
-        request_raw_path: None,
-        request_raw_size: None,
-        request_raw_truncated: None,
-        request_raw_truncated_reason: None,
-        response_raw_path: None,
-        response_raw_size: None,
-        response_raw_truncated: None,
-        response_raw_truncated_reason: None,
-        detail_level: "full".to_string(),
-        detail_pruned_at: None,
-        detail_prune_reason: None,
-        t_total_ms: if is_running {
-            None
-        } else {
-            runtime_timing_value(record.timings.t_total_ms)
-        },
-        t_req_read_ms: runtime_timing_value(record.timings.t_req_read_ms),
-        t_req_parse_ms: runtime_timing_value(record.timings.t_req_parse_ms),
-        t_upstream_connect_ms: runtime_timing_value(record.timings.t_upstream_connect_ms),
-        t_upstream_ttfb_ms: runtime_timing_value(record.timings.t_upstream_ttfb_ms),
-        t_upstream_stream_ms: if is_running {
-            None
-        } else {
-            runtime_timing_value(record.timings.t_upstream_stream_ms)
-        },
-        t_resp_parse_ms: if is_running {
-            None
-        } else {
-            runtime_timing_value(record.timings.t_resp_parse_ms)
-        },
-        t_persist_ms: if is_running {
-            None
-        } else {
-            runtime_timing_value(record.timings.t_persist_ms)
-        },
-        created_at,
-    }
+    let invocation_id = if insert_result.rows_affected() > 0 {
+        let inserted_id = insert_result.last_insert_rowid();
+        upsert_invocation_hourly_rollups_tx(
+            tx.as_mut(),
+            &[InvocationHourlySourceRecord {
+                id: inserted_id,
+                occurred_at: record.occurred_at.clone(),
+                source: SOURCE_PROXY.to_string(),
+                status: Some(record.status.clone()),
+                detail_level: DETAIL_LEVEL_FULL.to_string(),
+                total_tokens: record.usage.total_tokens,
+                cost: record.cost,
+                error_message: record.error_message.clone(),
+                failure_kind: failure_kind.clone(),
+                failure_class: Some(failure.failure_class.as_str().to_string()),
+                is_actionable: Some(failure.is_actionable as i64),
+                payload: record.payload.clone(),
+                t_total_ms: None,
+                t_req_read_ms,
+                t_req_parse_ms,
+                t_upstream_connect_ms,
+                t_upstream_ttfb_ms,
+                t_upstream_stream_ms: None,
+                t_resp_parse_ms: None,
+                t_persist_ms: None,
+            }],
+            &INVOCATION_HOURLY_ROLLUP_TARGETS,
+        )
+        .await?;
+        save_hourly_rollup_live_progress_tx(
+            tx.as_mut(),
+            HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            inserted_id,
+        )
+        .await?;
+        touch_invocation_upstream_account_last_activity_tx(
+            tx.as_mut(),
+            &record.occurred_at,
+            record.payload.as_deref(),
+        )
+        .await?;
+        inserted_id
+    } else {
+        let Some(existing) = load_persisted_invocation_identity_tx(
+            tx.as_mut(),
+            &record.invoke_id,
+            &record.occurred_at,
+        )
+        .await?
+        else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+        if !invocation_status_is_in_flight(existing.status.as_deref()) {
+            tx.commit().await?;
+            return Ok(None);
+        }
+
+        let affected = sqlx::query(
+            r#"
+            UPDATE codex_invocations
+            SET source = ?2,
+                model = ?3,
+                input_tokens = ?4,
+                output_tokens = ?5,
+                cache_input_tokens = ?6,
+                reasoning_tokens = ?7,
+                total_tokens = ?8,
+                cost = ?9,
+                cost_estimated = ?10,
+                price_version = ?11,
+                status = ?12,
+                error_message = ?13,
+                failure_kind = ?14,
+                failure_class = ?15,
+                is_actionable = ?16,
+                payload = ?17,
+                raw_response = ?18,
+                request_raw_path = ?19,
+                request_raw_size = ?20,
+                request_raw_truncated = ?21,
+                request_raw_truncated_reason = ?22,
+                response_raw_path = ?23,
+                response_raw_size = ?24,
+                response_raw_truncated = ?25,
+                response_raw_truncated_reason = ?26,
+                t_total_ms = ?27,
+                t_req_read_ms = ?28,
+                t_req_parse_ms = ?29,
+                t_upstream_connect_ms = ?30,
+                t_upstream_ttfb_ms = ?31,
+                t_upstream_stream_ms = ?32,
+                t_resp_parse_ms = ?33,
+                t_persist_ms = ?34
+            WHERE id = ?1
+              AND LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
+            "#,
+        )
+        .bind(existing.id)
+        .bind(SOURCE_PROXY)
+        .bind(&record.model)
+        .bind(record.usage.input_tokens)
+        .bind(record.usage.output_tokens)
+        .bind(record.usage.cache_input_tokens)
+        .bind(record.usage.reasoning_tokens)
+        .bind(record.usage.total_tokens)
+        .bind(record.cost)
+        .bind(record.cost_estimated as i64)
+        .bind(record.price_version.as_deref())
+        .bind(&record.status)
+        .bind(record.error_message.as_deref())
+        .bind(failure_kind.as_deref())
+        .bind(failure.failure_class.as_str())
+        .bind(failure.is_actionable as i64)
+        .bind(record.payload.as_deref())
+        .bind(&record.raw_response)
+        .bind(record.req_raw.path.as_deref())
+        .bind(record.req_raw.path.as_ref().map(|_| record.req_raw.size_bytes))
+        .bind(record.req_raw.truncated as i64)
+        .bind(record.req_raw.truncated_reason.as_deref())
+        .bind(record.resp_raw.path.as_deref())
+        .bind(record.resp_raw.path.as_ref().map(|_| record.resp_raw.size_bytes))
+        .bind(record.resp_raw.truncated as i64)
+        .bind(record.resp_raw.truncated_reason.as_deref())
+        .bind(None::<f64>)
+        .bind(t_req_read_ms)
+        .bind(t_req_parse_ms)
+        .bind(t_upstream_connect_ms)
+        .bind(t_upstream_ttfb_ms)
+        .bind(None::<f64>)
+        .bind(None::<f64>)
+        .bind(None::<f64>)
+        .execute(tx.as_mut())
+        .await?
+        .rows_affected();
+        if affected == 0 {
+            tx.commit().await?;
+            return Ok(None);
+        }
+        recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &[existing.id]).await?;
+        save_hourly_rollup_live_progress_tx(
+            tx.as_mut(),
+            HOURLY_ROLLUP_DATASET_INVOCATIONS,
+            existing.id,
+        )
+        .await?;
+        touch_invocation_upstream_account_last_activity_tx(
+            tx.as_mut(),
+            &record.occurred_at,
+            record.payload.as_deref(),
+        )
+        .await?;
+        existing.id
+    };
+
+    let persisted = load_persisted_api_invocation_tx(tx.as_mut(), &record.invoke_id, &record.occurred_at)
+        .await?;
+    save_hourly_rollup_live_progress_tx(
+        tx.as_mut(),
+        HOURLY_ROLLUP_DATASET_INVOCATIONS,
+        invocation_id,
+    )
+    .await?;
+    tx.commit().await?;
+
+    Ok(Some(persisted))
 }
 
-fn broadcast_proxy_capture_runtime_snapshot(
-    broadcaster: &broadcast::Sender<BroadcastPayload>,
-    record: &ProxyCaptureRecord,
-) -> Result<bool, broadcast::error::SendError<BroadcastPayload>> {
-    if broadcaster.receiver_count() == 0 {
-        return Ok(false);
-    }
-
-    broadcaster.send(BroadcastPayload::Records {
-        records: vec![runtime_api_invocation_from_proxy_capture_record(record)],
-    })?;
-    Ok(true)
-}
-
-#[allow(clippy::too_many_arguments)]
 fn build_running_proxy_capture_record(
     invoke_id: &str,
     occurred_at: &str,
@@ -10126,9 +10501,10 @@ async fn persist_proxy_capture_record(
     );
     let failure_kind = record
         .failure_kind
-        .as_deref()
-        .or(failure.failure_kind.as_deref());
+        .clone()
+        .or_else(|| failure.failure_kind.clone());
     let persist_started = Instant::now();
+
     let mut tx = pool.begin().await?;
     let insert_result = sqlx::query(
         r#"
@@ -10189,194 +10565,204 @@ async fn persist_proxy_capture_record(
     .bind(record.price_version.as_deref())
     .bind(&record.status)
     .bind(record.error_message.as_deref())
-    .bind(failure_kind)
+    .bind(failure_kind.as_deref())
     .bind(failure.failure_class.as_str())
     .bind(failure.is_actionable as i64)
     .bind(record.payload.as_deref())
     .bind(&record.raw_response)
     .bind(record.req_raw.path.as_deref())
-    .bind(record.req_raw.size_bytes)
+    .bind(record.req_raw.path.as_ref().map(|_| record.req_raw.size_bytes))
     .bind(record.req_raw.truncated as i64)
     .bind(record.req_raw.truncated_reason.as_deref())
     .bind(record.resp_raw.path.as_deref())
-    .bind(record.resp_raw.size_bytes)
+    .bind(record.resp_raw.path.as_ref().map(|_| record.resp_raw.size_bytes))
     .bind(record.resp_raw.truncated as i64)
     .bind(record.resp_raw.truncated_reason.as_deref())
-    .bind(record.timings.t_total_ms)
+    .bind(None::<f64>)
     .bind(record.timings.t_req_read_ms)
     .bind(record.timings.t_req_parse_ms)
     .bind(record.timings.t_upstream_connect_ms)
     .bind(record.timings.t_upstream_ttfb_ms)
     .bind(record.timings.t_upstream_stream_ms)
     .bind(record.timings.t_resp_parse_ms)
-    .bind(record.timings.t_persist_ms)
+    .bind(None::<f64>)
     .execute(tx.as_mut())
     .await?;
 
-    let t_persist_ms = elapsed_ms(persist_started);
-    let t_total_ms = elapsed_ms(capture_started);
-    record.timings.t_persist_ms = t_persist_ms;
-    record.timings.t_total_ms = t_total_ms;
+    let (invocation_id, inserted_new_row) = if insert_result.rows_affected() > 0 {
+        (insert_result.last_insert_rowid(), true)
+    } else {
+        let Some(existing) = load_persisted_invocation_identity_tx(
+            tx.as_mut(),
+            &record.invoke_id,
+            &record.occurred_at,
+        )
+        .await?
+        else {
+            tx.commit().await?;
+            return Ok(None);
+        };
+        if !invocation_status_is_in_flight(existing.status.as_deref()) {
+            tx.commit().await?;
+            return Ok(None);
+        }
+
+        let affected = sqlx::query(
+            r#"
+            UPDATE codex_invocations
+            SET source = ?2,
+                model = ?3,
+                input_tokens = ?4,
+                output_tokens = ?5,
+                cache_input_tokens = ?6,
+                reasoning_tokens = ?7,
+                total_tokens = ?8,
+                cost = ?9,
+                cost_estimated = ?10,
+                price_version = ?11,
+                status = ?12,
+                error_message = ?13,
+                failure_kind = ?14,
+                failure_class = ?15,
+                is_actionable = ?16,
+                payload = ?17,
+                raw_response = ?18,
+                request_raw_path = ?19,
+                request_raw_size = ?20,
+                request_raw_truncated = ?21,
+                request_raw_truncated_reason = ?22,
+                response_raw_path = ?23,
+                response_raw_size = ?24,
+                response_raw_truncated = ?25,
+                response_raw_truncated_reason = ?26,
+                t_total_ms = ?27,
+                t_req_read_ms = ?28,
+                t_req_parse_ms = ?29,
+                t_upstream_connect_ms = ?30,
+                t_upstream_ttfb_ms = ?31,
+                t_upstream_stream_ms = ?32,
+                t_resp_parse_ms = ?33,
+                t_persist_ms = ?34
+            WHERE id = ?1
+              AND LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
+            "#,
+        )
+        .bind(existing.id)
+        .bind(SOURCE_PROXY)
+        .bind(&record.model)
+        .bind(record.usage.input_tokens)
+        .bind(record.usage.output_tokens)
+        .bind(record.usage.cache_input_tokens)
+        .bind(record.usage.reasoning_tokens)
+        .bind(record.usage.total_tokens)
+        .bind(record.cost)
+        .bind(record.cost_estimated as i64)
+        .bind(record.price_version.as_deref())
+        .bind(&record.status)
+        .bind(record.error_message.as_deref())
+        .bind(failure_kind.as_deref())
+        .bind(failure.failure_class.as_str())
+        .bind(failure.is_actionable as i64)
+        .bind(record.payload.as_deref())
+        .bind(&record.raw_response)
+        .bind(record.req_raw.path.as_deref())
+        .bind(record.req_raw.path.as_ref().map(|_| record.req_raw.size_bytes))
+        .bind(record.req_raw.truncated as i64)
+        .bind(record.req_raw.truncated_reason.as_deref())
+        .bind(record.resp_raw.path.as_deref())
+        .bind(record.resp_raw.path.as_ref().map(|_| record.resp_raw.size_bytes))
+        .bind(record.resp_raw.truncated as i64)
+        .bind(record.resp_raw.truncated_reason.as_deref())
+        .bind(None::<f64>)
+        .bind(record.timings.t_req_read_ms)
+        .bind(record.timings.t_req_parse_ms)
+        .bind(record.timings.t_upstream_connect_ms)
+        .bind(record.timings.t_upstream_ttfb_ms)
+        .bind(record.timings.t_upstream_stream_ms)
+        .bind(record.timings.t_resp_parse_ms)
+        .bind(None::<f64>)
+        .execute(tx.as_mut())
+        .await?
+        .rows_affected();
+        if affected == 0 {
+            tx.commit().await?;
+            return Ok(None);
+        }
+
+        (existing.id, false)
+    };
+
+    touch_invocation_upstream_account_last_activity_tx(
+        tx.as_mut(),
+        &record.occurred_at,
+        record.payload.as_deref(),
+    )
+    .await?;
+
+    if inserted_new_row {
+        upsert_invocation_hourly_rollups_tx(
+            tx.as_mut(),
+            &[InvocationHourlySourceRecord {
+                id: invocation_id,
+                occurred_at: record.occurred_at.clone(),
+                source: SOURCE_PROXY.to_string(),
+                status: Some(record.status.clone()),
+                detail_level: DETAIL_LEVEL_FULL.to_string(),
+                total_tokens: record.usage.total_tokens,
+                cost: record.cost,
+                error_message: record.error_message.clone(),
+                failure_kind: failure_kind.clone(),
+                failure_class: Some(failure.failure_class.as_str().to_string()),
+                is_actionable: Some(failure.is_actionable as i64),
+                payload: record.payload.clone(),
+                t_total_ms: None,
+                t_req_read_ms: Some(record.timings.t_req_read_ms),
+                t_req_parse_ms: Some(record.timings.t_req_parse_ms),
+                t_upstream_connect_ms: Some(record.timings.t_upstream_connect_ms),
+                t_upstream_ttfb_ms: Some(record.timings.t_upstream_ttfb_ms),
+                t_upstream_stream_ms: Some(record.timings.t_upstream_stream_ms),
+                t_resp_parse_ms: Some(record.timings.t_resp_parse_ms),
+                t_persist_ms: None,
+            }],
+            &INVOCATION_HOURLY_ROLLUP_TARGETS,
+        )
+        .await?;
+    } else {
+        recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &[invocation_id]).await?;
+    }
+
+    save_hourly_rollup_live_progress_tx(
+        tx.as_mut(),
+        HOURLY_ROLLUP_DATASET_INVOCATIONS,
+        invocation_id,
+    )
+    .await?;
+
+    record.timings.t_persist_ms = elapsed_ms(persist_started);
+    record.timings.t_total_ms = elapsed_ms(capture_started);
 
     sqlx::query(
         r#"
         UPDATE codex_invocations
-        SET t_total_ms = ?1,
-            t_persist_ms = ?2
-        WHERE invoke_id = ?3 AND occurred_at = ?4
+        SET t_total_ms = ?2,
+            t_persist_ms = ?3
+        WHERE id = ?1
         "#,
     )
+    .bind(invocation_id)
     .bind(record.timings.t_total_ms)
     .bind(record.timings.t_persist_ms)
-    .bind(&record.invoke_id)
-    .bind(&record.occurred_at)
     .execute(tx.as_mut())
     .await?;
 
-    if insert_result.rows_affected() == 0 {
-        tx.commit().await?;
-        return Ok(None);
-    }
+    recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &[invocation_id]).await?;
 
-    let inserted_id = insert_result.last_insert_rowid();
-
-    upsert_invocation_hourly_rollups_tx(
-        tx.as_mut(),
-        &[InvocationHourlySourceRecord {
-            id: inserted_id,
-            occurred_at: record.occurred_at.clone(),
-            source: SOURCE_PROXY.to_string(),
-            status: Some(record.status.clone()),
-            detail_level: DETAIL_LEVEL_FULL.to_string(),
-            total_tokens: record.usage.total_tokens,
-            cost: record.cost,
-            error_message: record.error_message.clone(),
-            failure_kind: failure_kind.map(ToOwned::to_owned),
-            failure_class: Some(failure.failure_class.as_str().to_string()),
-            is_actionable: Some(failure.is_actionable as i64),
-            payload: record.payload.clone(),
-            t_total_ms: Some(record.timings.t_total_ms),
-            t_req_read_ms: Some(record.timings.t_req_read_ms),
-            t_req_parse_ms: Some(record.timings.t_req_parse_ms),
-            t_upstream_connect_ms: Some(record.timings.t_upstream_connect_ms),
-            t_upstream_ttfb_ms: Some(record.timings.t_upstream_ttfb_ms),
-            t_upstream_stream_ms: Some(record.timings.t_upstream_stream_ms),
-            t_resp_parse_ms: Some(record.timings.t_resp_parse_ms),
-            t_persist_ms: Some(record.timings.t_persist_ms),
-        }],
-        &INVOCATION_HOURLY_ROLLUP_TARGETS,
-    )
-    .await?;
-    save_hourly_rollup_live_progress_tx(
-        tx.as_mut(),
-        HOURLY_ROLLUP_DATASET_INVOCATIONS,
-        inserted_id,
-    )
-    .await?;
-
-    if let Some(upstream_account_id) = upstream_account_id_from_payload(record.payload.as_deref()) {
-        sqlx::query(
-            r#"
-            UPDATE pool_upstream_accounts
-            SET last_activity_at = CASE
-                WHEN last_activity_at IS NULL OR last_activity_at < ?1 THEN ?1
-                ELSE last_activity_at
-            END
-            WHERE id = ?2
-            "#,
-        )
-        .bind(&record.occurred_at)
-        .bind(upstream_account_id)
-        .execute(tx.as_mut())
-        .await?;
-    }
-
-    let inserted = sqlx::query_as::<_, ApiInvocation>(
-        r#"
-        SELECT
-            id,
-            invoke_id,
-            occurred_at,
-            source,
-            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.proxyDisplayName') END AS proxy_display_name,
-            model,
-            input_tokens,
-            output_tokens,
-            cache_input_tokens,
-            reasoning_tokens,
-            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.reasoningEffort') END AS reasoning_effort,
-            total_tokens,
-            cost,
-            status,
-            error_message,
-            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.endpoint') END AS endpoint,
-            COALESCE(CASE WHEN json_valid(payload) THEN json_extract(payload, '$.failureKind') END, failure_kind) AS failure_kind,
-            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.streamTerminalEvent') END AS stream_terminal_event,
-            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamErrorCode') END AS upstream_error_code,
-            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamErrorMessage') END AS upstream_error_message,
-            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamRequestId') END AS upstream_request_id,
-            failure_class,
-            is_actionable,
-            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.requesterIp') END AS requester_ip,
-            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.promptCacheKey') END AS prompt_cache_key,
-            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.routeMode') END AS route_mode,
-            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamAccountId') END AS upstream_account_id,
-            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.upstreamAccountName') END AS upstream_account_name,
-            CASE WHEN json_valid(payload) THEN json_extract(payload, '$.responseContentEncoding') END AS response_content_encoding,
-            CASE
-              WHEN json_valid(payload) AND json_type(payload, '$.requestedServiceTier') = 'text'
-                THEN json_extract(payload, '$.requestedServiceTier')
-              WHEN json_valid(payload) AND json_type(payload, '$.requested_service_tier') = 'text'
-                THEN json_extract(payload, '$.requested_service_tier') END AS requested_service_tier,
-            CASE
-              WHEN json_valid(payload) AND json_type(payload, '$.serviceTier') = 'text'
-                THEN json_extract(payload, '$.serviceTier')
-              WHEN json_valid(payload) AND json_type(payload, '$.service_tier') = 'text'
-                THEN json_extract(payload, '$.service_tier') END AS service_tier,
-            CASE
-              WHEN json_valid(payload) AND json_type(payload, '$.billingServiceTier') = 'text'
-                THEN json_extract(payload, '$.billingServiceTier')
-              WHEN json_valid(payload) AND json_type(payload, '$.billing_service_tier') = 'text'
-                THEN json_extract(payload, '$.billing_service_tier') END AS billing_service_tier,
-            CASE WHEN json_valid(payload)
-              AND json_type(payload, '$.proxyWeightDelta') IN ('integer', 'real')
-              THEN json_extract(payload, '$.proxyWeightDelta') END AS proxy_weight_delta,
-            cost_estimated,
-            price_version,
-            request_raw_path,
-            request_raw_size,
-            request_raw_truncated,
-            request_raw_truncated_reason,
-            response_raw_path,
-            response_raw_size,
-            response_raw_truncated,
-            response_raw_truncated_reason,
-            detail_level,
-            detail_pruned_at,
-            detail_prune_reason,
-            t_total_ms,
-            t_req_read_ms,
-            t_req_parse_ms,
-            t_upstream_connect_ms,
-            t_upstream_ttfb_ms,
-            t_upstream_stream_ms,
-            t_resp_parse_ms,
-            t_persist_ms,
-            created_at
-        FROM codex_invocations
-        WHERE invoke_id = ?1 AND occurred_at = ?2
-        ORDER BY id DESC
-        LIMIT 1
-        "#,
-    )
-    .bind(&record.invoke_id)
-    .bind(&record.occurred_at)
-    .fetch_one(tx.as_mut())
-    .await?;
-
+    let persisted =
+        load_persisted_api_invocation_tx(tx.as_mut(), &record.invoke_id, &record.occurred_at)
+            .await?;
     tx.commit().await?;
 
-    Ok(Some(inserted))
+    Ok(Some(persisted))
 }
 
 fn read_proxy_raw_bytes(path: &str, fallback_root: Option<&Path>) -> io::Result<Vec<u8>> {
