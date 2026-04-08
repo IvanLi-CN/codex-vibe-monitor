@@ -379,10 +379,6 @@ export function DashboardInvocationDetailDrawer({
       }
     : (recordDetail?.abnormalResponseBody ?? null);
   const displaySequenceId = selection
-    ? formatDashboardWorkingConversationSequenceId(selection.conversationSequenceId)
-    : null
-    : (recordDetail?.abnormalResponseBody ?? null);
-  const displaySequenceId = selection
     ? formatDashboardWorkingConversationSequenceId(
         selection.conversationSequenceId,
       )
