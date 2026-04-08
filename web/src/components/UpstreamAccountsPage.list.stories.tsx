@@ -715,6 +715,7 @@ export const UpstreamRejected402: Story = {
 
     await expect(row).toHaveTextContent(/上游拒绝|Upstream rejected/i)
     await expect(row).not.toHaveTextContent(/其它异常|Other error/i)
+    await expect(row).not.toHaveTextContent(/限流|Rate limited/i)
     await expect(row).toHaveTextContent(/HTTP 402/i)
 
     await userEvent.click(row)
@@ -723,6 +724,7 @@ export const UpstreamRejected402: Story = {
       name: /Workspace deactivated 402 routing state/i,
     })
     await expect(await within(dialog).findByText(/^Unavailable$/i)).toBeInTheDocument()
+    await expect(dialog).not.toHaveTextContent(/限流|Rate limited/i)
     await expect(
       await documentScope.findByText(/^上游拒绝$|^Upstream rejected$/i),
     ).toBeInTheDocument()
@@ -733,6 +735,9 @@ export const UpstreamRejected402: Story = {
     ).toBeInTheDocument()
     await expect(
       await documentScope.findByText(/deactivated_workspace/i),
+    ).toBeInTheDocument()
+    await expect(
+      await documentScope.findByText(/Weekly cap exhausted on the previous routing attempt/i),
     ).toBeInTheDocument()
   },
 }

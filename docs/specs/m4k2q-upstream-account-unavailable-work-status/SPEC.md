@@ -4,7 +4,7 @@
 
 - Status: 已实现，待 PR / CI 收敛
 - Created: 2026-03-27
-- Last: 2026-03-27
+- Last: 2026-04-08
 
 ## 背景 / 问题陈述
 
@@ -18,6 +18,7 @@
 
 - 新增 `workStatus=unavailable`，用于表达“账号启用、同步空闲，但当前不可调度”的统一工作态。
 - 保持 `rate_limited` 的独立语义：配额耗尽或 429 cooldown 仍只落到 `rate_limited`，不得并入 `unavailable`。
+- 当维护同步命中 `401/402/403` 这类 hard-unavailable 时，即使历史里残留旧 quota / 429 marker，也必须优先落到 `unavailable`，不得被回拉成 `rate_limited`。
 - 保留 `healthStatus` / `displayStatus` 对具体异常原因的细分，列表行继续优先展示具体健康 badge，详情头部同时展示 `不可用 + 具体健康态`。
 - 让 `GET /api/pool/upstream-accounts`、前端筛选、Storybook 与回归测试全部接受并消费 `workStatus=unavailable`。
 
@@ -54,6 +55,7 @@
 
 - 后端读模型必须新增 `UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE`，并允许列表 query 使用 `workStatus=unavailable`。
 - 当账号满足 `enableStatus=enabled`、`syncState=idle`、`healthStatus!=normal` 且当前不属于 `rate_limited` 时，summary/detail 导出的 `workStatus` 必须为 `unavailable`，不再回退为 `idle`。
+- 当账号最近一次维护同步属于 `sync_failed + upstream_http_401|402|403` 时，旧 quota / 429 route marker 不得再让 summary/detail 导出 `rate_limited`；该类账号必须显示为 `unavailable`。
 - `upstream_http_429_quota_exhausted`、`quota_still_exhausted` 与 cooldown 中的 429 账号必须继续导出为 `rate_limited`，不得被这次改动吞成 `unavailable`。
 - 前端详情头部必须显示 `不可用` 工作态与具体健康态并存；列表行继续只显示具体健康态，不额外叠加泛化“不可用” badge。
 - Storybook 至少覆盖 `needs_reauth`、`upstream_unavailable`、`upstream_rejected` 三类 `unavailable` 示例，并验证工作状态筛选命中它们、不会误收 `rate_limited`。
@@ -81,6 +83,7 @@
 
 - Given 账号最近状态为 `upstream_rejected`、`needs_reauth`、`upstream_unavailable` 或 `error_other`，When summary/detail 导出，Then `workStatus=unavailable`。
 - Given quota exhausted / 429 cooldown 账号，When summary/detail 导出，Then `workStatus=rate_limited` 且不出现 `unavailable`。
+- Given 账号历史里残留旧 quota / 429 route marker，When 新的维护同步记录 `sync_failed + upstream_http_401|402|403`，Then summary/detail 仍导出 `workStatus=unavailable`，不会回退到 `rate_limited`。
 - Given 用户在账号列表选择 `workStatus=unavailable`，When 请求列表，Then 能命中不可调度账号，并继续与 `enableStatus` / `healthStatus` / `tagIds` / `groupSearch` 共同按 AND 收口。
 - Given 列表展示异常账号，When 渲染 roster row，Then 行内仍以具体健康 badge 表达原因，不新增泛化“不可用” badge。
 - Given 打开异常账号详情，When 查看头部状态，Then 同时可见“不可用”工作态与具体健康态。
@@ -90,7 +93,8 @@
 - `cargo test list_query_deserializes_repeated_status_filters`
 - `cargo test route_triggered_402_summary_and_detail_export_as_upstream_rejected`
 - `cargo test sync_triggered_402_summary_and_detail_export_as_upstream_rejected`
-- `cargo test stale_quota_route_failure_does_not_hide_newer_sync_error`
+- `cargo test stale_quota_route_failure_does_not_hide_newer_sync_402_error`
+- `cargo test classified_sync_hard_unavailable_replaces_stale_quota_marker_from_current_syncing_row`
 - `cargo test blocked_api_key_manual_recovery_does_not_export_as_active_rate_limited`
 - `cargo test oauth_sync_retry_after_refresh_settles_to_needs_reauth_without_stale_syncing`
 - `cd web && bunx vitest run src/components/UpstreamAccountsTable.test.tsx src/pages/account-pool/UpstreamAccounts.test.tsx src/lib/api.test.ts`
@@ -132,10 +136,10 @@
   target_program: mock-only
   capture_scope: element
   sensitive_exclusion: N/A
-  submission_gate: pending-owner-approval
+  submission_gate: owner-approved-and-submitted
   story_id_or_title: Account Pool/Pages/Upstream Accounts/List — Upstream Rejected 402
   state: zh-CN / detail drawer header
-  evidence_note: 验证上游 402 / rejected 异常在详情抽屉头部仍保留“上游拒绝”具体健康态，同时工作态统一落到“不可用”。
+  evidence_note: 验证旧 quota 历史存在时，新的上游 402 / rejected 异常在详情抽屉头部仍保留“上游拒绝”具体健康态，同时工作态统一落到“不可用”。
   image:
   ![不可用详情头部（上游拒绝）](./assets/unavailable-detail-upstream-rejected.png)
 
@@ -146,3 +150,7 @@
 - [x] M3: 前端筛选、详情头部、翻译与 Storybook mock 统一到 `unavailable`。
 - [x] M4: Storybook 覆盖 `unavailable` 三类异常并完成视觉证据。
 - [ ] M5: 验证、review-loop 与 PR 收敛到 merge-ready。
+
+## 变更记录（Change log）
+
+- 2026-04-08: 回填 sync-classified hard-unavailable follow-up；旧 quota / 429 marker 不得再把 `401/402/403` 维护同步导回 `rate_limited`，新增后端回归与 Storybook stale-quota 402 场景。

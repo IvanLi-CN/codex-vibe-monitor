@@ -8563,6 +8563,7 @@ async fn sync_oauth_account(
                     None,
                     PROXY_FAILURE_UPSTREAM_HTTP_AUTH,
                     None,
+                    false,
                 )
                 .await?;
                 return Ok(());
@@ -8579,6 +8580,11 @@ async fn sync_oauth_account(
                         UPSTREAM_ACCOUNT_STATUS_ACTIVE
                     }
                 };
+                let route_failure_kind = match disposition {
+                    UpstreamAccountFailureDisposition::HardUnavailable => Some(failure_kind),
+                    UpstreamAccountFailureDisposition::RateLimited
+                    | UpstreamAccountFailureDisposition::Retryable => None,
+                };
                 record_account_sync_failure(
                     &state.pool,
                     row.id,
@@ -8588,7 +8594,8 @@ async fn sync_oauth_account(
                     reason_code,
                     http_status,
                     failure_kind,
-                    None,
+                    route_failure_kind,
+                    disposition == UpstreamAccountFailureDisposition::HardUnavailable,
                 )
                 .await?;
                 return Ok(());
@@ -8686,6 +8693,7 @@ async fn sync_oauth_account(
                         None,
                         PROXY_FAILURE_UPSTREAM_HTTP_AUTH,
                         None,
+                        false,
                     )
                     .await?;
                     return Ok(());
@@ -14636,19 +14644,21 @@ fn account_reason_overrides_current_route_failure(
     raw_status: &str,
     reason_code: Option<&str>,
 ) -> bool {
-    matches!(
-        reason_code,
-        Some(
-            UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED
-                | UPSTREAM_ACCOUNT_ACTION_REASON_RECOVERY_UNCONFIRMED_MANUAL_REQUIRED
+    account_reason_is_upstream_rejected(reason_code)
+        || matches!(
+            reason_code,
+            Some(
+                UPSTREAM_ACCOUNT_ACTION_REASON_REAUTH_REQUIRED
+                    | UPSTREAM_ACCOUNT_ACTION_REASON_RECOVERY_UNCONFIRMED_MANUAL_REQUIRED
+            )
         )
-    ) || (matches!(
-        reason_code,
-        Some(
-            UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR
-                | UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE
-        )
-    ) && !status_preserves_current_route_failure(raw_status))
+        || (matches!(
+            reason_code,
+            Some(
+                UPSTREAM_ACCOUNT_ACTION_REASON_SYNC_ERROR
+                    | UPSTREAM_ACCOUNT_ACTION_REASON_TRANSPORT_FAILURE
+            )
+        ) && !status_preserves_current_route_failure(raw_status))
 }
 
 fn route_failure_kind_is_rate_limited(failure_kind: Option<&str>) -> bool {
@@ -15087,6 +15097,7 @@ async fn record_account_sync_failure(
     http_status: Option<StatusCode>,
     failure_kind: &'static str,
     preserved_route_failure_kind: Option<&str>,
+    clear_transient_route_failure_state: bool,
 ) -> Result<()> {
     let now_iso = format_utc_iso(Utc::now());
     sqlx::query(
@@ -15096,8 +15107,20 @@ async fn record_account_sync_failure(
             last_synced_at = ?3,
             last_error = ?4,
             last_error_at = ?3,
-            last_route_failure_at = CASE WHEN ?5 IS NULL THEN last_route_failure_at ELSE ?3 END,
-            last_route_failure_kind = COALESCE(?5, last_route_failure_kind),
+            last_route_failure_at = CASE
+                WHEN ?6 = 1 AND ?5 IS NULL THEN NULL
+                WHEN ?5 IS NULL THEN last_route_failure_at
+                ELSE ?3
+            END,
+            last_route_failure_kind = CASE
+                WHEN ?6 = 1 AND ?5 IS NULL THEN NULL
+                ELSE COALESCE(?5, last_route_failure_kind)
+            END,
+            cooldown_until = CASE WHEN ?6 = 1 THEN NULL ELSE cooldown_until END,
+            temporary_route_failure_streak_started_at = CASE
+                WHEN ?6 = 1 THEN NULL
+                ELSE temporary_route_failure_streak_started_at
+            END,
             updated_at = ?3
         WHERE id = ?1
         "#,
@@ -15107,6 +15130,7 @@ async fn record_account_sync_failure(
     .bind(&now_iso)
     .bind(error_message)
     .bind(preserved_route_failure_kind)
+    .bind(clear_transient_route_failure_state)
     .execute(pool)
     .await?;
     record_upstream_account_action(
@@ -15143,16 +15167,25 @@ async fn record_classified_account_sync_failure(
         UpstreamAccountFailureDisposition::RateLimited
         | UpstreamAccountFailureDisposition::Retryable => UPSTREAM_ACCOUNT_STATUS_ACTIVE,
     };
-    let preserved_route_failure_kind = row.last_route_failure_kind.as_deref().filter(|_| {
-        status_preserves_current_route_failure(&row.status)
-            && (upstream_account_quota_exhausted_state_is_current(
-                &row.status,
-                row.last_error_at.as_deref(),
-                row.last_route_failure_at.as_deref(),
-                row.last_route_failure_kind.as_deref(),
-                row.last_action_reason_code.as_deref(),
-            ) || route_failure_kind_is_temporary(row.last_route_failure_kind.as_deref()))
-    });
+    let (preserved_route_failure_kind, clear_transient_route_failure_state) = match disposition {
+        UpstreamAccountFailureDisposition::HardUnavailable => (Some(failure_kind), true),
+        UpstreamAccountFailureDisposition::RateLimited
+        | UpstreamAccountFailureDisposition::Retryable => (
+            row.last_route_failure_kind.as_deref().filter(|_| {
+                status_preserves_current_route_failure(&row.status)
+                    && (upstream_account_quota_exhausted_state_is_current(
+                        &row.status,
+                        row.last_error_at.as_deref(),
+                        row.last_route_failure_at.as_deref(),
+                        row.last_route_failure_kind.as_deref(),
+                        row.last_action_reason_code.as_deref(),
+                    ) || route_failure_kind_is_temporary(
+                        row.last_route_failure_kind.as_deref(),
+                    ))
+            }),
+            false,
+        ),
+    };
     record_account_sync_failure(
         pool,
         row.id,
@@ -15163,6 +15196,7 @@ async fn record_classified_account_sync_failure(
         http_status,
         failure_kind,
         preserved_route_failure_kind,
+        clear_transient_route_failure_state,
     )
     .await
 }
@@ -26503,6 +26537,7 @@ mod tests {
             None,
             PROXY_FAILURE_FAILED_CONTACT_UPSTREAM,
             None,
+            false,
         )
         .await
         .expect("record newer sync failure");
@@ -26558,6 +26593,96 @@ mod tests {
         assert_eq!(
             detail.summary.work_status,
             UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE
+        );
+    }
+
+    #[tokio::test]
+    async fn stale_quota_route_failure_does_not_hide_newer_sync_402_error() {
+        let pool = test_pool().await;
+        let account_id = insert_oauth_account(&pool, "Stale quota marker 402 OAuth").await;
+
+        record_pool_route_http_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_KIND_OAUTH_CODEX,
+            Some("sticky-stale-quota"),
+            StatusCode::TOO_MANY_REQUESTS,
+            "oauth_upstream_rejected_request: pool upstream responded with 429: The usage limit has been reached",
+            Some("invk_stale_quota"),
+        )
+        .await
+        .expect("record stale wrapped 429 route failure");
+
+        record_account_sync_failure(
+            &pool,
+            account_id,
+            UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
+            UPSTREAM_ACCOUNT_STATUS_ERROR,
+            "initial usage snapshot attempt with configured user agent failed: usage endpoint returned 402 Payment Required: {\"detail\":{\"code\":\"deactivated_workspace\"}}",
+            "upstream_http_402",
+            Some(StatusCode::PAYMENT_REQUIRED),
+            PROXY_FAILURE_UPSTREAM_HTTP_402,
+            None,
+            false,
+        )
+        .await
+        .expect("record legacy-style 402 sync failure");
+
+        let row = load_upstream_account_row(&pool, account_id)
+            .await
+            .expect("load updated 402 row")
+            .expect("updated 402 row exists");
+        assert_eq!(
+            row.last_route_failure_kind.as_deref(),
+            Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED)
+        );
+
+        let summary = build_summary_from_row(
+            &row,
+            None,
+            row.last_activity_at.clone(),
+            vec![],
+            None,
+            0,
+            Utc::now(),
+        );
+        assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
+        assert_eq!(
+            summary.display_status,
+            UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
+        );
+        assert_eq!(
+            summary.health_status,
+            UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
+        );
+        assert_eq!(
+            summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE
+        );
+        assert_eq!(
+            summary.last_action_reason_code.as_deref(),
+            Some("upstream_http_402")
+        );
+
+        let detail = load_upstream_account_detail(&pool, account_id)
+            .await
+            .expect("load updated 402 detail")
+            .expect("updated 402 detail exists");
+        assert_eq!(
+            detail.summary.display_status,
+            UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
+        );
+        assert_eq!(
+            detail.summary.health_status,
+            UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
+        );
+        assert_eq!(
+            detail.summary.work_status,
+            UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE
+        );
+        assert_eq!(
+            detail.summary.last_action_reason_code.as_deref(),
+            Some("upstream_http_402")
         );
     }
 
@@ -29102,6 +29227,104 @@ mod tests {
         assert_eq!(summary.display_status, UPSTREAM_ACCOUNT_STATUS_ACTIVE);
         assert_eq!(summary.work_status, UPSTREAM_ACCOUNT_WORK_STATUS_DEGRADED);
         assert_eq!(summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
+    }
+
+    #[tokio::test]
+    async fn classified_sync_hard_unavailable_replaces_stale_quota_marker_from_current_syncing_row()
+    {
+        let pool = test_pool().await;
+
+        for (reason_code, http_status, failure_kind, error_message) in [
+            (
+                "upstream_http_401",
+                StatusCode::UNAUTHORIZED,
+                PROXY_FAILURE_UPSTREAM_HTTP_AUTH,
+                "usage endpoint returned 401 Unauthorized: Missing scopes: api.responses.write",
+            ),
+            (
+                "upstream_http_402",
+                StatusCode::PAYMENT_REQUIRED,
+                PROXY_FAILURE_UPSTREAM_HTTP_402,
+                "usage endpoint returned 402 Payment Required: {\"detail\":{\"code\":\"deactivated_workspace\"}}",
+            ),
+            (
+                "upstream_http_403",
+                StatusCode::FORBIDDEN,
+                PROXY_FAILURE_UPSTREAM_HTTP_AUTH,
+                "usage endpoint returned 403 Forbidden: You have insufficient permissions for this operation.",
+            ),
+        ] {
+            let account_id =
+                insert_oauth_account(&pool, &format!("Syncing hard unavailable {reason_code}"))
+                    .await;
+
+            seed_hard_unavailable_route_failure(
+                &pool,
+                account_id,
+                UPSTREAM_ACCOUNT_STATUS_ERROR,
+                FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+                UPSTREAM_ACCOUNT_ACTION_REASON_UPSTREAM_HTTP_429_QUOTA_EXHAUSTED,
+                Some(429),
+            )
+            .await;
+            set_account_status(&pool, account_id, UPSTREAM_ACCOUNT_STATUS_SYNCING, None)
+                .await
+                .expect("mark row syncing");
+
+            let current_row = load_upstream_account_row(&pool, account_id)
+                .await
+                .expect("load current syncing row")
+                .expect("current syncing row exists");
+            assert_eq!(current_row.status, UPSTREAM_ACCOUNT_STATUS_SYNCING);
+
+            record_classified_account_sync_failure(
+                &pool,
+                &current_row,
+                UPSTREAM_ACCOUNT_ACTION_SOURCE_SYNC_MAINTENANCE,
+                error_message,
+            )
+            .await
+            .expect("record hard unavailable failure against syncing row");
+
+            let after = load_upstream_account_row(&pool, account_id)
+                .await
+                .expect("load syncing row after hard unavailable failure")
+                .expect("syncing row after hard unavailable failure exists");
+            assert_eq!(after.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
+            assert_eq!(after.last_action_reason_code.as_deref(), Some(reason_code));
+            assert_eq!(
+                after.last_action_http_status,
+                Some(http_status.as_u16() as i64)
+            );
+            assert_eq!(after.last_route_failure_kind.as_deref(), Some(failure_kind));
+            assert_eq!(after.last_route_failure_at, after.last_error_at);
+            assert_eq!(after.cooldown_until, None);
+            assert_eq!(after.temporary_route_failure_streak_started_at, None);
+
+            let summary = build_summary_from_row(
+                &after,
+                None,
+                after.last_activity_at.clone(),
+                vec![],
+                None,
+                0,
+                Utc::now(),
+            );
+            assert_eq!(summary.status, UPSTREAM_ACCOUNT_STATUS_ERROR);
+            assert_eq!(
+                summary.display_status,
+                UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
+            );
+            assert_eq!(
+                summary.health_status,
+                UPSTREAM_ACCOUNT_DISPLAY_STATUS_UPSTREAM_REJECTED
+            );
+            assert_eq!(
+                summary.work_status,
+                UPSTREAM_ACCOUNT_WORK_STATUS_UNAVAILABLE
+            );
+            assert_eq!(summary.sync_state, UPSTREAM_ACCOUNT_SYNC_STATE_IDLE);
+        }
     }
 
     #[tokio::test]
