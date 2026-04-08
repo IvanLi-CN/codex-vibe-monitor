@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.44.0",
+  "base_stable_version": "1.43.1",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-08T01:42:59Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.44.0",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "433e2baf7af9df4dac51a04bdae578aa9078acac",
+  "pr_number": 301,
+  "pr_title": "feat(stats): add parallel work bucket panel",
+  "registry": "ghcr.io",
+  "release_bump": "minor",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.44.0",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.44.0",
+  "target_sha": "28d5e2c4be72fe7929fa0be838475094e983c1a2",
+  "type_label": "type:minor"
+}
