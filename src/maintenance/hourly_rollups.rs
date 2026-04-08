@@ -897,6 +897,7 @@ async fn spawn_http_server(state: Arc<AppState>) -> Result<(SocketAddr, JoinHand
             get(fetch_forward_proxy_timeseries),
         )
         .route("/api/stats/timeseries", get(fetch_timeseries))
+        .route("/api/stats/parallel-work", get(fetch_parallel_work_stats))
         .route("/api/stats/perf", get(fetch_perf_stats))
         .route("/api/stats/errors", get(fetch_error_distribution))
         .route("/api/stats/failures/summary", get(fetch_failure_summary))
