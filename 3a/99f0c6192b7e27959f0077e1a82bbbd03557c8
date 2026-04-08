@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.45.4",
+  "base_stable_version": "1.45.3",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-08T18:01:58Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.45.4",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "098fed6ba75766f3cddb0b523099b45914d7ce8f",
+  "pr_number": 309,
+  "pr_title": "feat(web): compact dashboard working conversation headers",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.45.4",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.45.4",
+  "target_sha": "3a99f0c6192b7e27959f0077e1a82bbbd03557c8",
+  "type_label": "type:patch"
+}
