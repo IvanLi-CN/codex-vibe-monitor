@@ -54,6 +54,35 @@ async fn proxy_openai_v1_common(
     let request_may_have_body = request_may_have_body(&method, &headers);
     let method_for_log = method.clone();
     let uri_for_log = original_uri.clone();
+    let pool_route_active = match request_matches_pool_route(state.as_ref(), &headers).await {
+        Ok(active) => active,
+        Err(err) => {
+            return build_proxy_error_response(
+                ProxyErrorResponse {
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                    message: format!("failed to resolve pool routing settings: {err}"),
+                    cvm_id: None,
+                    retry_after_secs: None,
+                },
+                &invoke_id,
+            );
+        }
+    };
+    let runtime_timeouts = match resolve_proxy_request_timeouts(state.as_ref(), pool_route_active).await
+    {
+        Ok(timeouts) => timeouts,
+        Err(err) => {
+            return build_proxy_error_response(
+                ProxyErrorResponse {
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                    message: format!("failed to resolve pool routing timeouts: {err}"),
+                    cvm_id: None,
+                    retry_after_secs: None,
+                },
+                &invoke_id,
+            );
+        }
+    };
 
     info!(
         proxy_request_id,
@@ -64,6 +93,18 @@ async fn proxy_openai_v1_common(
         peer_ip = ?peer_ip,
         "openai proxy request started"
     );
+
+    if !pool_route_active {
+        return build_proxy_error_response(
+            ProxyErrorResponse {
+                status: StatusCode::UNAUTHORIZED,
+                message: "pool route key missing or invalid".to_string(),
+                cvm_id: None,
+                retry_after_secs: None,
+            },
+            &invoke_id,
+        );
+    }
 
     let proxy_request_permit = match acquire_proxy_request_concurrency_permit(
         state.as_ref(),
@@ -114,6 +155,7 @@ async fn proxy_openai_v1_common(
         headers,
         body,
         peer_ip,
+        runtime_timeouts,
         proxy_request_permit,
     )
     .await
@@ -5919,34 +5961,11 @@ async fn proxy_openai_v1_inner(
     headers: HeaderMap,
     body: Body,
     peer_ip: Option<IpAddr>,
+    runtime_timeouts: PoolRoutingTimeoutSettingsResolved,
     mut proxy_request_permit: Option<ProxyRequestConcurrencyPermit>,
 ) -> Result<Response, ProxyErrorResponse> {
     let proxy_request_concurrency_wait_timeout =
         state.config.proxy_request_concurrency_wait_timeout;
-    let pool_route_active = request_matches_pool_route(state.as_ref(), &headers)
-        .await
-        .map_err(|err| ProxyErrorResponse {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: format!("failed to resolve pool routing settings: {err}"),
-            cvm_id: None,
-            retry_after_secs: None,
-        })?;
-    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), pool_route_active)
-        .await
-        .map_err(|err| ProxyErrorResponse {
-            status: StatusCode::INTERNAL_SERVER_ERROR,
-            message: format!("failed to resolve pool routing timeouts: {err}"),
-            cvm_id: None,
-            retry_after_secs: None,
-        })?;
-    if !pool_route_active {
-        return Err(ProxyErrorResponse {
-            status: StatusCode::UNAUTHORIZED,
-            message: "pool route key missing or invalid".to_string(),
-            cvm_id: None,
-            retry_after_secs: None,
-        });
-    }
     let target_url =
         build_proxy_upstream_url(&state.config.openai_upstream_base_url, &original_uri).map_err(
             |err| {
@@ -6005,7 +6024,7 @@ async fn proxy_openai_v1_inner(
             target,
             target_url,
             peer_ip,
-            pool_route_active,
+            true,
             runtime_timeouts,
             proxy_request_permit.take(),
         )

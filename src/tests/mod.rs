@@ -1178,6 +1178,58 @@ async fn proxy_openai_v1_persists_concurrency_limit_rejections_for_capture_targe
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_unauthorized_requests_do_not_consume_proxy_concurrency_slots() {
+    let mut config = test_config();
+    config.proxy_request_concurrency_limit = 1;
+    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(50);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-valid-key").await;
+    let uri = "/v1/responses".parse::<Uri>().expect("valid proxy uri");
+
+    let held_permit =
+        acquire_proxy_request_concurrency_permit(state.as_ref(), 1004, &Method::POST, &uri)
+            .await
+            .expect("first request should acquire concurrency slot");
+    assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 1);
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(uri),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-invalid-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hello"}"#)),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read unauthorized response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode unauthorized payload");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some("pool route key missing or invalid")
+    );
+    assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 1);
+    assert_eq!(
+        state.proxy_request_rejected_total.load(Ordering::Acquire),
+        0
+    );
+
+    drop(held_permit);
+    assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 0);
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_via_pool_acquires_concurrency_slot_before_reading_request_body() {
     let mut config = test_config();
     config.proxy_request_concurrency_limit = 1;

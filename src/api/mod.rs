@@ -1141,9 +1141,10 @@ pub(crate) async fn list_invocations(
         source_scope,
         Some(SnapshotConstraint::UpTo(snapshot_id)),
     );
+    let mut tx = state.pool.begin().await?;
     let total = count_query
         .build_query_as::<CountRow>()
-        .fetch_one(&state.pool)
+        .fetch_one(&mut *tx)
         .await?
         .total;
 
@@ -1168,7 +1169,7 @@ pub(crate) async fn list_invocations(
         .push_bind(offset);
     let page_ids = page_id_query
         .build_query_as::<PageIdRow>()
-        .fetch_all(&state.pool)
+        .fetch_all(&mut *tx)
         .await?
         .into_iter()
         .map(|row| row.id)
@@ -1202,7 +1203,7 @@ pub(crate) async fn list_invocations(
 
     let mut records = query
         .build_query_as::<ApiInvocation>()
-        .fetch_all(&state.pool)
+        .fetch_all(&mut *tx)
         .await?;
     let page_positions = page_ids
         .into_iter()
