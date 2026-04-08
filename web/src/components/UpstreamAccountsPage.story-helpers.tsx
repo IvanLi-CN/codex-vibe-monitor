@@ -1861,7 +1861,7 @@ function createStore(): StoryStore {
           status: 'error',
           displayStatus: 'upstream_rejected',
           enableStatus: 'enabled',
-          workStatus: 'idle',
+          workStatus: 'unavailable',
           healthStatus: 'upstream_rejected',
           syncState: 'idle',
           planType: 'team',
@@ -1896,7 +1896,7 @@ function createStore(): StoryStore {
             '2026-04-02T00:00:00.000Z',
           ),
           tags: pickStoryTags('vip', 'prodApac'),
-          note: 'Workspace was deactivated upstream; the account should show upstream rejected while preserving the 402 context.',
+          note: 'A stale quota event exists in history, but the current 402 workspace deactivation must still render as upstream rejected + unavailable.',
           recentActions: [
             buildRecentAction(
               9301,
@@ -1910,6 +1910,16 @@ function createStore(): StoryStore {
             ),
             buildRecentAction(
               9300,
+              '2026-03-26T08:01:12.000Z',
+              'route_hard_unavailable',
+              'call',
+              'upstream_http_429_quota_exhausted',
+              'Weekly cap exhausted on the previous routing attempt before maintenance retried the account.',
+              'upstream_http_429_quota_exhausted',
+              429,
+            ),
+            buildRecentAction(
+              9299,
               '2026-03-26T07:59:42.000Z',
               'sync_succeeded',
               'sync_manual',

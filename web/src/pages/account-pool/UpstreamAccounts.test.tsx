@@ -4056,7 +4056,7 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
     );
   });
 
-  it("shows upstream rejected details for structured 402 workspace deactivation failures", async () => {
+  it("shows upstream rejected details for structured 402 workspace deactivation failures even when older quota events remain in history", async () => {
     mockAccountsPage({
       selectedSummary: {
         status: "error",
@@ -4102,6 +4102,20 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
             stickyKey: null,
             createdAt: "2026-03-26T08:11:47.000Z",
           },
+          {
+            id: 72,
+            occurredAt: "2026-03-26T08:01:12.000Z",
+            action: "route_hard_unavailable",
+            source: "call",
+            reasonCode: "upstream_http_429_quota_exhausted",
+            reasonMessage:
+              "Weekly cap exhausted on the previous routing attempt before maintenance retried the account.",
+            httpStatus: 429,
+            failureKind: "upstream_http_429_quota_exhausted",
+            invokeId: "invk_workspace_429",
+            stickyKey: "sticky_workspace_429",
+            createdAt: "2026-03-26T08:01:12.000Z",
+          },
         ],
       },
     });
@@ -4117,6 +4131,9 @@ describe("UpstreamAccountsPage oauth recovery hints", () => {
     expect(document.body.textContent).toContain("Upstream rejected");
     expect(document.body.textContent).toContain(
       "Plan or billing rejected upstream access (402)",
+    );
+    expect(document.body.textContent).toContain(
+      "Weekly cap exhausted on the previous routing attempt before maintenance retried the account.",
     );
     expect(document.body.textContent).toContain("HTTP 402");
     expect(document.body.textContent).toContain("deactivated_workspace");
