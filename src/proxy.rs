@@ -103,14 +103,32 @@ async fn proxy_openai_v1_common(
             return build_proxy_error_response(err, &invoke_id);
         }
     };
-    let (pool_route_active, runtime_timeouts) = resolve_proxy_route_context_after_admission(
+    let (pool_route_active, runtime_timeouts) = match resolve_proxy_route_context_after_admission(
         state.as_ref(),
         proxy_request_id,
         &method_for_log,
         &uri_for_log,
         &headers,
     )
-    .await;
+    .await
+    {
+        Ok(route_context) => route_context,
+        Err(mut err) => {
+            if capture_target_for_request(uri_for_log.path(), &method_for_log).is_some() {
+                err.cvm_id = Some(invoke_id.clone());
+            }
+            warn!(
+                proxy_request_id,
+                method = %method_for_log,
+                uri = %uri_for_log,
+                status = %err.status,
+                error = %err.message,
+                elapsed_ms = started_at.elapsed().as_millis(),
+                "openai proxy request failed during route admission"
+            );
+            return build_proxy_error_response(err, &invoke_id);
+        }
+    };
 
     match proxy_openai_v1_inner(
         state,
@@ -164,6 +182,7 @@ struct ProxyErrorResponse {
 }
 
 const PROXY_CONCURRENCY_LIMIT_MESSAGE: &str = "proxy concurrency limit reached; retry later";
+const PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE: &str = "pool route key missing or invalid";
 const RAW_PAYLOAD_TRUNCATED_REASON_ASYNC_BACKPRESSURE_DROPPED: &str =
     "async_backpressure_dropped";
 const ASYNC_STREAMING_RAW_WRITER_QUEUE_CAPACITY: usize = 8;
@@ -462,7 +481,7 @@ async fn resolve_proxy_route_context_after_admission(
     method: &Method,
     original_uri: &Uri,
     headers: &HeaderMap,
-) -> (bool, PoolRoutingTimeoutSettingsResolved) {
+) -> Result<(bool, PoolRoutingTimeoutSettingsResolved), ProxyErrorResponse> {
     let direct_timeouts = pool_routing_timeouts_from_config(&state.config);
     let pool_route_active = match request_matches_pool_route(state, headers).await {
         Ok(active) => active,
@@ -472,27 +491,39 @@ async fn resolve_proxy_route_context_after_admission(
                 method = %method,
                 uri = %original_uri,
                 error = %err,
-                "failed to resolve pool route; falling back to direct proxy route"
+                "failed to resolve pool route"
             );
-            return (false, direct_timeouts);
+            return Err(ProxyErrorResponse {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: format!("failed to resolve pool routing settings: {err}"),
+                cvm_id: None,
+                retry_after_secs: None,
+                queue_wait_ms: None,
+            });
         }
     };
 
     if !pool_route_active {
-        return (false, direct_timeouts);
+        return Ok((false, direct_timeouts));
     }
 
     match resolve_proxy_request_timeouts(state, true).await {
-        Ok(timeouts) => (true, timeouts),
+        Ok(timeouts) => Ok((true, timeouts)),
         Err(err) => {
             warn!(
                 proxy_request_id,
                 method = %method,
                 uri = %original_uri,
                 error = %err,
-                "failed to resolve pool routing timeouts; falling back to config defaults"
+                "failed to resolve pool routing timeouts"
             );
-            (true, direct_timeouts)
+            Err(ProxyErrorResponse {
+                status: StatusCode::INTERNAL_SERVER_ERROR,
+                message: format!("failed to resolve pool routing timeouts: {err}"),
+                cvm_id: None,
+                retry_after_secs: None,
+                queue_wait_ms: None,
+            })
         }
     }
 }
@@ -6005,6 +6036,13 @@ async fn proxy_openai_v1_inner(
 ) -> Result<Response, ProxyErrorResponse> {
     let proxy_request_concurrency_wait_timeout =
         state.config.proxy_request_concurrency_wait_timeout;
+    let pool_route_missing_error = || ProxyErrorResponse {
+        status: StatusCode::UNAUTHORIZED,
+        message: PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE.to_string(),
+        cvm_id: None,
+        retry_after_secs: None,
+        queue_wait_ms: None,
+    };
     let target_url =
         build_proxy_upstream_url(&state.config.openai_upstream_base_url, &original_uri).map_err(
             |err| {
@@ -6029,6 +6067,9 @@ async fn proxy_openai_v1_inner(
         )?;
 
     if method == Method::GET && is_models_list_path(original_uri.path()) {
+        if !pool_route_active {
+            return Err(pool_route_missing_error());
+        }
         return proxy_openai_v1_via_pool(
             state,
             proxy_request_id,
@@ -6081,6 +6122,10 @@ async fn proxy_openai_v1_inner(
             cvm_id: Some(tracked_invoke_id),
             queue_wait_ms: None,
         });
+    }
+
+    if !pool_route_active {
+        return Err(pool_route_missing_error());
     }
 
     return proxy_openai_v1_via_pool(

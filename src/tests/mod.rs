@@ -1272,8 +1272,8 @@ async fn proxy_openai_v1_non_pool_capture_targets_preserve_forward_proxy_routing
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_non_pool_bearer_capture_targets_fall_back_when_pool_route_lookup_fails() {
-    let (upstream_base, _captured_requests, upstream_handle) =
+async fn proxy_openai_v1_bearer_capture_targets_fail_closed_when_pool_route_lookup_fails() {
+    let (upstream_base, captured_requests, upstream_handle) =
         spawn_capture_target_body_upstream().await;
     let mut config = test_config();
     config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
@@ -1301,15 +1301,85 @@ async fn proxy_openai_v1_non_pool_bearer_capture_targets_fall_back_when_pool_rou
     )
     .await;
 
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
-        .expect("read direct fallback response body");
-    let payload: Value = serde_json::from_slice(&body).expect("decode direct fallback response");
-    assert_eq!(payload["id"].as_str(), Some("resp_test"));
-    assert_eq!(payload["received"]["input"].as_str(), Some("hello"));
+        .expect("read route lookup failure body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode route lookup failure body");
+    assert!(
+        payload["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("failed to resolve pool routing settings"))
+    );
+    assert!(
+        captured_requests.lock().await.is_empty(),
+        "route lookup failures should not leak bearer credentials upstream"
+    );
 
     upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_models_require_pool_route_key() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/models".parse::<Uri>().expect("valid proxy uri")),
+        Method::GET,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer invalid-pool-key"),
+        )]),
+        Body::empty(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read unauthorized models response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode unauthorized models body");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some(PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE)
+    );
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_non_capture_routes_require_pool_route_key() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/echo".parse::<Uri>().expect("valid proxy uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer invalid-pool-key"),
+        )]),
+        Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hello"}"#)),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read unauthorized non-capture response body");
+    let payload: Value =
+        serde_json::from_slice(&body).expect("decode unauthorized non-capture body");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some(PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE)
+    );
 }
 
 #[tokio::test]
