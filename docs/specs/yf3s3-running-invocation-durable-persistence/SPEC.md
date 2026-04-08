@@ -97,7 +97,7 @@
 - capture_scope: browser-viewport
 - story_id_or_title: Dashboard/WorkingConversationsSection / InterruptedRecoveryDrawerOpen
 - state: interrupted drawer open
-- evidence_note: 证明 Dashboard 工作中对话里的中断调用已经能直接打开详情抽屉，并显示 `interrupted / proxy_interrupted`，不再落到“调用记录不可用”空态。
+- evidence_note: 证明 Dashboard 工作中对话里的中断调用已经能直接打开详情抽屉，并显示 `interrupted / proxy_interrupted`，不再落到“调用记录不可用”空态；该证据已获批准并归档。
 
 ![Dashboard interrupted invocation drawer](./assets/dashboard-interrupted-drawer-open.png)
 
