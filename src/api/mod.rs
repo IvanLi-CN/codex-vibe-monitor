@@ -3398,6 +3398,124 @@ pub(crate) async fn fetch_timeseries(
     Ok(Json(response))
 }
 
+pub(crate) async fn fetch_parallel_work_stats(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<ParallelWorkStatsQuery>,
+) -> Result<Json<ParallelWorkStatsResponse>, ApiError> {
+    ensure_hourly_rollups_caught_up(state.as_ref()).await?;
+    let requested_reporting_tz = parse_reporting_tz(params.time_zone.as_deref())?;
+    let source_scope = resolve_default_source_scope(&state.pool).await?;
+    let now = Utc::now();
+
+    let minute7d_window = resolve_complete_parallel_work_window(
+        now,
+        ChronoDuration::days(7),
+        60,
+        requested_reporting_tz,
+    )?;
+    let requested_hour30d_window = resolve_complete_parallel_work_window(
+        now,
+        ChronoDuration::days(30),
+        3_600,
+        requested_reporting_tz,
+    )?;
+    let (hour30d_reporting_tz, hour30d_time_zone_fallback) =
+        resolve_parallel_work_rollup_reporting_tz(
+            requested_reporting_tz,
+            &requested_hour30d_window,
+        );
+    let hour30d_window = if hour30d_time_zone_fallback {
+        resolve_complete_parallel_work_window(
+            now,
+            ChronoDuration::days(30),
+            3_600,
+            hour30d_reporting_tz,
+        )?
+    } else {
+        requested_hour30d_window
+    };
+
+    let minute7d_counts = query_parallel_work_minute_counts(
+        &state.pool,
+        minute7d_window.start,
+        minute7d_window.end,
+        requested_reporting_tz,
+        source_scope,
+    )
+    .await?;
+    let hour30d_counts = query_parallel_work_hourly_counts(
+        &state.pool,
+        hour30d_window.start,
+        hour30d_window.end,
+        source_scope,
+    )
+    .await?;
+
+    let (day_all_window, day_all_reporting_tz, day_all_time_zone_fallback) =
+        resolve_parallel_work_day_all_window_with_fallback(
+            &state.pool,
+            requested_reporting_tz,
+            source_scope,
+        )
+        .await?;
+    let day_all_counts = if let Some(window) = day_all_window.as_ref() {
+        query_parallel_work_day_counts_from_hourly_rollups(
+            &state.pool,
+            window.start,
+            window.end,
+            day_all_reporting_tz,
+            source_scope,
+        )
+        .await?
+    } else {
+        BTreeMap::new()
+    };
+
+    let latest_complete_day_end = local_midnight_utc(
+        now.with_timezone(&day_all_reporting_tz).date_naive(),
+        day_all_reporting_tz,
+    );
+
+    Ok(Json(ParallelWorkStatsResponse {
+        minute7d: build_parallel_work_window_response(
+            minute7d_window.start,
+            minute7d_window.end,
+            60,
+            requested_reporting_tz,
+            &minute7d_counts,
+            requested_reporting_tz,
+            false,
+        )?,
+        hour30d: build_parallel_work_window_response(
+            hour30d_window.start,
+            hour30d_window.end,
+            3_600,
+            hour30d_reporting_tz,
+            &hour30d_counts,
+            hour30d_reporting_tz,
+            hour30d_time_zone_fallback,
+        )?,
+        day_all: if let Some(window) = day_all_window {
+            build_parallel_work_window_response(
+                window.start,
+                window.end,
+                86_400,
+                day_all_reporting_tz,
+                &day_all_counts,
+                day_all_reporting_tz,
+                day_all_time_zone_fallback,
+            )?
+        } else {
+            empty_parallel_work_window_response(
+                latest_complete_day_end,
+                86_400,
+                day_all_reporting_tz,
+                day_all_time_zone_fallback,
+            )
+        },
+    }))
+}
+
 pub(crate) async fn fetch_timeseries_from_hourly_rollups(
     state: Arc<AppState>,
     _params: TimeseriesQuery,
@@ -3619,6 +3737,371 @@ pub(crate) fn next_reporting_bucket_epoch(
         ));
     }
     Ok(next_start.timestamp())
+}
+
+pub(crate) fn resolve_complete_parallel_work_window(
+    now: DateTime<Utc>,
+    duration: ChronoDuration,
+    bucket_seconds: i64,
+    reporting_tz: Tz,
+) -> Result<RangeWindow> {
+    let end_epoch = align_reporting_bucket_epoch(now.timestamp(), bucket_seconds, reporting_tz)?;
+    let end = Utc
+        .timestamp_opt(end_epoch, 0)
+        .single()
+        .ok_or_else(|| anyhow!("invalid parallel-work window end epoch"))?;
+    let start = local_naive_to_utc(
+        end.with_timezone(&reporting_tz).naive_local() - duration,
+        reporting_tz,
+    );
+    Ok(RangeWindow {
+        start,
+        end,
+        display_end: end,
+        duration,
+    })
+}
+
+fn resolve_parallel_work_rollup_reporting_tz(
+    requested_reporting_tz: Tz,
+    range_window: &RangeWindow,
+) -> (Tz, bool) {
+    if reporting_tz_has_whole_hour_offsets(requested_reporting_tz, range_window) {
+        return (requested_reporting_tz, false);
+    }
+    (Shanghai, true)
+}
+
+fn build_parallel_work_window_response(
+    range_start: DateTime<Utc>,
+    range_end: DateTime<Utc>,
+    bucket_seconds: i64,
+    reporting_tz: Tz,
+    counts_by_bucket: &BTreeMap<i64, i64>,
+    effective_time_zone: Tz,
+    time_zone_fallback: bool,
+) -> Result<ParallelWorkWindowResponse> {
+    if range_start >= range_end {
+        return Ok(empty_parallel_work_window_response(
+            range_end,
+            bucket_seconds,
+            effective_time_zone,
+            time_zone_fallback,
+        ));
+    }
+
+    let mut points = Vec::new();
+    let mut cursor = range_start.timestamp();
+    let end_epoch = range_end.timestamp();
+    let mut min_count: Option<i64> = None;
+    let mut max_count: Option<i64> = None;
+    let mut active_bucket_count = 0_i64;
+    let mut total = 0_f64;
+
+    while cursor < end_epoch {
+        let next = next_reporting_bucket_epoch(cursor, bucket_seconds, reporting_tz)?;
+        if next > end_epoch {
+            break;
+        }
+        let parallel_count = counts_by_bucket.get(&cursor).copied().unwrap_or_default();
+        if parallel_count > 0 {
+            active_bucket_count += 1;
+        }
+        min_count = Some(match min_count {
+            Some(current) => current.min(parallel_count),
+            None => parallel_count,
+        });
+        max_count = Some(match max_count {
+            Some(current) => current.max(parallel_count),
+            None => parallel_count,
+        });
+        total += parallel_count as f64;
+        points.push(ParallelWorkPoint {
+            bucket_start: format_utc_iso(
+                Utc.timestamp_opt(cursor, 0)
+                    .single()
+                    .ok_or_else(|| anyhow!("invalid parallel-work bucket start epoch"))?,
+            ),
+            bucket_end: format_utc_iso(
+                Utc.timestamp_opt(next, 0)
+                    .single()
+                    .ok_or_else(|| anyhow!("invalid parallel-work bucket end epoch"))?,
+            ),
+            parallel_count,
+        });
+        cursor = next;
+    }
+
+    let complete_bucket_count = points.len() as i64;
+    Ok(ParallelWorkWindowResponse {
+        range_start: format_utc_iso(range_start),
+        range_end: format_utc_iso(range_end),
+        bucket_seconds,
+        complete_bucket_count,
+        active_bucket_count,
+        min_count,
+        max_count,
+        avg_count: if complete_bucket_count > 0 {
+            Some(total / complete_bucket_count as f64)
+        } else {
+            None
+        },
+        effective_time_zone: effective_time_zone.to_string(),
+        time_zone_fallback,
+        points,
+    })
+}
+
+fn empty_parallel_work_window_response(
+    boundary: DateTime<Utc>,
+    bucket_seconds: i64,
+    effective_time_zone: Tz,
+    time_zone_fallback: bool,
+) -> ParallelWorkWindowResponse {
+    ParallelWorkWindowResponse {
+        range_start: format_utc_iso(boundary),
+        range_end: format_utc_iso(boundary),
+        bucket_seconds,
+        complete_bucket_count: 0,
+        active_bucket_count: 0,
+        min_count: None,
+        max_count: None,
+        avg_count: None,
+        effective_time_zone: effective_time_zone.to_string(),
+        time_zone_fallback,
+        points: Vec::new(),
+    }
+}
+
+async fn query_parallel_work_minute_counts(
+    pool: &Pool<Sqlite>,
+    range_start: DateTime<Utc>,
+    range_end: DateTime<Utc>,
+    reporting_tz: Tz,
+    source_scope: InvocationSourceScope,
+) -> Result<BTreeMap<i64, i64>> {
+    let mut query = QueryBuilder::new("SELECT occurred_at, ");
+    query
+        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
+        .push(" AS prompt_cache_key FROM codex_invocations WHERE occurred_at >= ")
+        .push_bind(db_occurred_at_lower_bound(range_start))
+        .push(" AND occurred_at < ")
+        .push_bind(db_occurred_at_lower_bound(range_end))
+        .push(" AND ")
+        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
+        .push(" IS NOT NULL AND ")
+        .push(INVOCATION_PROMPT_CACHE_KEY_SQL)
+        .push(" != ''");
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push(" ORDER BY occurred_at ASC, prompt_cache_key ASC");
+
+    let rows = query
+        .build_query_as::<ParallelWorkExactInvocationRow>()
+        .fetch_all(pool)
+        .await?;
+    let mut bucket_keys: BTreeMap<i64, HashSet<String>> = BTreeMap::new();
+    for row in rows {
+        let Some(occurred_at) = parse_to_utc_datetime(&row.occurred_at) else {
+            continue;
+        };
+        let bucket_start_epoch =
+            align_reporting_bucket_epoch(occurred_at.timestamp(), 60, reporting_tz)?;
+        bucket_keys
+            .entry(bucket_start_epoch)
+            .or_default()
+            .insert(row.prompt_cache_key);
+    }
+    Ok(bucket_keys
+        .into_iter()
+        .map(|(bucket_start_epoch, prompt_cache_keys)| {
+            (bucket_start_epoch, prompt_cache_keys.len() as i64)
+        })
+        .collect())
+}
+
+async fn query_parallel_work_hourly_counts(
+    pool: &Pool<Sqlite>,
+    range_start: DateTime<Utc>,
+    range_end: DateTime<Utc>,
+    source_scope: InvocationSourceScope,
+) -> Result<BTreeMap<i64, i64>> {
+    let mut query = QueryBuilder::new(
+        "SELECT bucket_start_epoch, COUNT(DISTINCT prompt_cache_key) AS parallel_count \
+         FROM prompt_cache_rollup_hourly \
+         WHERE bucket_start_epoch >= ",
+    );
+    query
+        .push_bind(range_start.timestamp())
+        .push(" AND bucket_start_epoch < ")
+        .push_bind(range_end.timestamp())
+        .push(" AND prompt_cache_key != ''");
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push(" GROUP BY bucket_start_epoch ORDER BY bucket_start_epoch ASC");
+
+    let rows = query
+        .build_query_as::<ParallelWorkBucketCountRow>()
+        .fetch_all(pool)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|row| (row.bucket_start_epoch, row.parallel_count.max(0)))
+        .collect())
+}
+
+async fn resolve_parallel_work_day_all_window(
+    pool: &Pool<Sqlite>,
+    reporting_tz: Tz,
+    source_scope: InvocationSourceScope,
+) -> Result<Option<RangeWindow>> {
+    let now = Utc::now();
+    let latest_complete_day_end =
+        local_midnight_utc(now.with_timezone(&reporting_tz).date_naive(), reporting_tz);
+
+    let earliest_bucket_epoch = if source_scope == InvocationSourceScope::ProxyOnly {
+        sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT MIN(bucket_start_epoch) FROM prompt_cache_rollup_hourly WHERE source = ?1 AND prompt_cache_key != ''",
+        )
+        .bind(SOURCE_PROXY)
+        .fetch_one(pool)
+        .await?
+    } else {
+        sqlx::query_scalar::<_, Option<i64>>(
+            "SELECT MIN(bucket_start_epoch) FROM prompt_cache_rollup_hourly WHERE prompt_cache_key != ''",
+        )
+        .fetch_one(pool)
+        .await?
+    };
+
+    let Some(earliest_bucket_epoch) = earliest_bucket_epoch else {
+        return Ok(None);
+    };
+    let earliest_bucket = Utc
+        .timestamp_opt(earliest_bucket_epoch, 0)
+        .single()
+        .ok_or_else(|| anyhow!("invalid earliest prompt-cache rollup bucket"))?;
+    let earliest_local_date = earliest_bucket.with_timezone(&reporting_tz).date_naive();
+    let first_day_start = local_midnight_utc(earliest_local_date, reporting_tz);
+    let start = if first_day_start == earliest_bucket {
+        first_day_start
+    } else {
+        let next_date = earliest_local_date
+            .succ_opt()
+            .unwrap_or(earliest_local_date + ChronoDuration::days(1));
+        local_midnight_utc(next_date, reporting_tz)
+    };
+
+    if start >= latest_complete_day_end {
+        return Ok(None);
+    }
+
+    Ok(Some(RangeWindow {
+        start,
+        end: latest_complete_day_end,
+        display_end: latest_complete_day_end,
+        duration: latest_complete_day_end.signed_duration_since(start),
+    }))
+}
+
+async fn resolve_parallel_work_day_all_window_with_fallback(
+    pool: &Pool<Sqlite>,
+    requested_reporting_tz: Tz,
+    source_scope: InvocationSourceScope,
+) -> Result<(Option<RangeWindow>, Tz, bool)> {
+    let requested_window =
+        resolve_parallel_work_day_all_window(pool, requested_reporting_tz, source_scope).await?;
+    if !should_fallback_parallel_work_day_all_window(
+        requested_reporting_tz,
+        requested_window.as_ref(),
+        Utc::now(),
+    ) {
+        return Ok((requested_window, requested_reporting_tz, false));
+    }
+    Ok((
+        resolve_parallel_work_day_all_window(pool, Shanghai, source_scope).await?,
+        Shanghai,
+        true,
+    ))
+}
+
+pub(crate) fn should_fallback_parallel_work_day_all_window(
+    requested_reporting_tz: Tz,
+    requested_window: Option<&RangeWindow>,
+    now: DateTime<Utc>,
+) -> bool {
+    if let Some(window) = requested_window {
+        return !reporting_tz_has_whole_hour_offsets(requested_reporting_tz, window);
+    }
+
+    let latest_complete_day_end = local_midnight_utc(
+        now.with_timezone(&requested_reporting_tz).date_naive(),
+        requested_reporting_tz,
+    );
+    let probe_start = latest_complete_day_end - ChronoDuration::days(1);
+    let probe_window = RangeWindow {
+        start: probe_start,
+        end: latest_complete_day_end,
+        display_end: latest_complete_day_end,
+        duration: ChronoDuration::days(1),
+    };
+    !reporting_tz_has_whole_hour_offsets(requested_reporting_tz, &probe_window)
+}
+
+async fn query_parallel_work_day_counts_from_hourly_rollups(
+    pool: &Pool<Sqlite>,
+    range_start: DateTime<Utc>,
+    range_end: DateTime<Utc>,
+    reporting_tz: Tz,
+    source_scope: InvocationSourceScope,
+) -> Result<BTreeMap<i64, i64>> {
+    let mut query = QueryBuilder::new(
+        "SELECT bucket_start_epoch, prompt_cache_key FROM prompt_cache_rollup_hourly \
+         WHERE bucket_start_epoch >= ",
+    );
+    query
+        .push_bind(range_start.timestamp())
+        .push(" AND bucket_start_epoch < ")
+        .push_bind(range_end.timestamp())
+        .push(" AND prompt_cache_key != ''");
+    if source_scope == InvocationSourceScope::ProxyOnly {
+        query.push(" AND source = ").push_bind(SOURCE_PROXY);
+    }
+    query.push(" ORDER BY bucket_start_epoch ASC, prompt_cache_key ASC");
+
+    let mut rows = query
+        .build_query_as::<ParallelWorkDayRollupRow>()
+        .fetch(pool);
+    let mut counts = BTreeMap::new();
+    let mut current_day_epoch = None;
+    let mut current_keys = HashSet::new();
+
+    while let Some(row) = rows.try_next().await? {
+        let day_epoch = align_reporting_bucket_epoch(row.bucket_start_epoch, 86_400, reporting_tz)?;
+        match current_day_epoch {
+            Some(epoch) if epoch == day_epoch => {
+                current_keys.insert(row.prompt_cache_key);
+            }
+            Some(epoch) => {
+                counts.insert(epoch, current_keys.len() as i64);
+                current_keys.clear();
+                current_keys.insert(row.prompt_cache_key);
+                current_day_epoch = Some(day_epoch);
+            }
+            None => {
+                current_keys.insert(row.prompt_cache_key);
+                current_day_epoch = Some(day_epoch);
+            }
+        }
+    }
+
+    if let Some(epoch) = current_day_epoch {
+        counts.insert(epoch, current_keys.len() as i64);
+    }
+
+    Ok(counts)
 }
 
 fn local_naive_to_utc_not_after_reference(
@@ -5185,6 +5668,38 @@ pub(crate) struct TimeseriesResponse {
     pub(crate) points: Vec<TimeseriesPoint>,
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ParallelWorkStatsResponse {
+    pub(crate) minute7d: ParallelWorkWindowResponse,
+    pub(crate) hour30d: ParallelWorkWindowResponse,
+    pub(crate) day_all: ParallelWorkWindowResponse,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ParallelWorkWindowResponse {
+    pub(crate) range_start: String,
+    pub(crate) range_end: String,
+    pub(crate) bucket_seconds: i64,
+    pub(crate) complete_bucket_count: i64,
+    pub(crate) active_bucket_count: i64,
+    pub(crate) min_count: Option<i64>,
+    pub(crate) max_count: Option<i64>,
+    pub(crate) avg_count: Option<f64>,
+    pub(crate) effective_time_zone: String,
+    pub(crate) time_zone_fallback: bool,
+    pub(crate) points: Vec<ParallelWorkPoint>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ParallelWorkPoint {
+    pub(crate) bucket_start: String,
+    pub(crate) bucket_end: String,
+    pub(crate) parallel_count: i64,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct TimeseriesBucketSelection {
     pub(crate) bucket_seconds: i64,
@@ -6006,6 +6521,24 @@ pub(crate) struct PromptCacheConversationUpstreamAccountSummaryRow {
     pub(crate) last_activity_at: String,
 }
 
+#[derive(Debug, FromRow)]
+pub(crate) struct ParallelWorkExactInvocationRow {
+    pub(crate) occurred_at: String,
+    pub(crate) prompt_cache_key: String,
+}
+
+#[derive(Debug, FromRow)]
+pub(crate) struct ParallelWorkBucketCountRow {
+    pub(crate) bucket_start_epoch: i64,
+    pub(crate) parallel_count: i64,
+}
+
+#[derive(Debug, FromRow)]
+pub(crate) struct ParallelWorkDayRollupRow {
+    pub(crate) bucket_start_epoch: i64,
+    pub(crate) prompt_cache_key: String,
+}
+
 #[derive(Debug, Deserialize, Default, Clone)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ListQuery {
@@ -6067,6 +6600,12 @@ pub(crate) struct TimeseriesQuery {
     pub(crate) bucket: Option<String>,
     #[allow(dead_code)]
     pub(crate) settlement_hour: Option<u8>,
+    pub(crate) time_zone: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ParallelWorkStatsQuery {
     pub(crate) time_zone: Option<String>,
 }
 

@@ -1296,6 +1296,36 @@ const baseTranslations = {
     "stats.successFailure.tooltip.successRate": "Success rate",
     "stats.successFailure.tooltip.firstByteAvg": "System to first byte avg",
     "stats.successFailure.tooltip.firstByteP95": "System to first byte P95",
+    "stats.parallelWork.title": "Parallel work",
+    "stats.parallelWork.description":
+      "Track how many distinct Prompt Cache conversations were active per bucket across short-, mid-, and long-term windows.",
+    "stats.parallelWork.loading": "Loading parallel-work buckets…",
+    "stats.parallelWork.empty": "No complete buckets yet.",
+    "stats.parallelWork.windowToggleAria": "Select parallel-work window",
+    "stats.parallelWork.detailsTooltipLabel":
+      "Explain {{title}} details",
+    "stats.parallelWork.chartAria": "{{title}} trend",
+    "stats.parallelWork.samples":
+      "{{complete}} complete buckets · {{active}} active buckets",
+    "stats.parallelWork.rangeSummary": "Range: {{start}} → {{end}}",
+    "stats.parallelWork.timeZoneFallback":
+      "Aligned to {{timeZone}} because this window cannot be losslessly re-bucketed from hourly rollups in the current time zone.",
+    "stats.parallelWork.metrics.min": "Min",
+    "stats.parallelWork.metrics.max": "Max",
+    "stats.parallelWork.metrics.avg": "Avg",
+    "stats.parallelWork.tooltip.parallelCount": "Parallel work",
+    "stats.parallelWork.windows.minute7d.title": "Last 7 days · by minute",
+    "stats.parallelWork.windows.minute7d.toggleLabel": "7d · minute",
+    "stats.parallelWork.windows.minute7d.description":
+      "Exact minute buckets from live invocations; zeros are included.",
+    "stats.parallelWork.windows.hour30d.title": "Last 30 days · by hour",
+    "stats.parallelWork.windows.hour30d.toggleLabel": "30d · hour",
+    "stats.parallelWork.windows.hour30d.description":
+      "Hourly rollups show sustained working-conversation pressure.",
+    "stats.parallelWork.windows.dayAll.title": "All history · by day",
+    "stats.parallelWork.windows.dayAll.toggleLabel": "All · day",
+    "stats.parallelWork.windows.dayAll.description":
+      "Natural-day rollups start from the first fully covered day.",
     "stats.errors.title": "Error reasons",
     "stats.errors.scope.label": "Failure scope",
     "stats.errors.scope.service": "Service failures",
@@ -2915,6 +2945,36 @@ const baseTranslations = {
     "stats.successFailure.tooltip.successRate": "成功率",
     "stats.successFailure.tooltip.firstByteAvg": "首字总耗时均值",
     "stats.successFailure.tooltip.firstByteP95": "首字总耗时 P95",
+    "stats.parallelWork.title": "并行工作",
+    "stats.parallelWork.description":
+      "按 bucket 观察实际活跃的 Prompt Cache 对话数，覆盖近端分钟、中期小时与全历史天级窗口。",
+    "stats.parallelWork.loading": "正在加载并行工作 bucket…",
+    "stats.parallelWork.empty": "还没有可统计的完整 bucket。",
+    "stats.parallelWork.windowToggleAria": "切换并行工作统计窗口",
+    "stats.parallelWork.detailsTooltipLabel":
+      "查看“{{title}}”说明",
+    "stats.parallelWork.chartAria": "{{title}} 趋势",
+    "stats.parallelWork.samples":
+      "{{complete}} 个完整 bucket · {{active}} 个活跃 bucket",
+    "stats.parallelWork.rangeSummary": "范围：{{start}} → {{end}}",
+    "stats.parallelWork.timeZoneFallback":
+      "当前窗口按 {{timeZone}} 对齐；这个窗口在当前时区下无法从 hourly rollup 无损重分桶。",
+    "stats.parallelWork.metrics.min": "最低",
+    "stats.parallelWork.metrics.max": "最高",
+    "stats.parallelWork.metrics.avg": "均数",
+    "stats.parallelWork.tooltip.parallelCount": "并行工作数",
+    "stats.parallelWork.windows.minute7d.title": "最近 7 天 · 按分钟",
+    "stats.parallelWork.windows.minute7d.toggleLabel": "7天 · 分钟",
+    "stats.parallelWork.windows.minute7d.description":
+      "直接基于 live invocation 精确聚合，并保留 0 bucket。",
+    "stats.parallelWork.windows.hour30d.title": "最近 30 天 · 按小时",
+    "stats.parallelWork.windows.hour30d.toggleLabel": "30天 · 小时",
+    "stats.parallelWork.windows.hour30d.description":
+      "复用 hourly rollup 观察持续的工作对话压力。",
+    "stats.parallelWork.windows.dayAll.title": "全历史 · 按天",
+    "stats.parallelWork.windows.dayAll.toggleLabel": "全历史 · 天",
+    "stats.parallelWork.windows.dayAll.description":
+      "按自然日聚合，从首个可完整覆盖的日期开始。",
     "stats.errors.title": "错误原因分布",
     "stats.errors.scope.label": "失败范围",
     "stats.errors.scope.service": "服务端故障",

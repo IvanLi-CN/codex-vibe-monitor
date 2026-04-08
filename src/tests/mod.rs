@@ -10873,6 +10873,54 @@ async fn reporting_tz_hour_alignment_rejects_sub_hour_dst_transition_windows() {
 }
 
 #[tokio::test]
+async fn parallel_work_day_all_fallbacks_when_requested_window_is_missing_in_sub_hour_zone() {
+    let now = Utc
+        .with_ymd_and_hms(2026, 4, 7, 12, 0, 0)
+        .single()
+        .expect("fixed now");
+    assert!(should_fallback_parallel_work_day_all_window(
+        "Asia/Kolkata".parse::<Tz>().expect("valid kolkata tz"),
+        None,
+        now,
+    ));
+    assert!(!should_fallback_parallel_work_day_all_window(
+        "UTC".parse::<Tz>().expect("valid utc tz"),
+        None,
+        now,
+    ));
+}
+
+#[test]
+fn parallel_work_complete_window_preserves_local_hour_across_dst() {
+    let reporting_tz = chrono_tz::America::New_York;
+    let now = Utc
+        .with_ymd_and_hms(2026, 4, 7, 5, 23, 0)
+        .single()
+        .expect("fixed now");
+
+    let window =
+        resolve_complete_parallel_work_window(now, ChronoDuration::days(30), 3_600, reporting_tz)
+            .expect("resolve window");
+
+    assert_eq!(
+        window.end,
+        Utc.with_ymd_and_hms(2026, 4, 7, 5, 0, 0)
+            .single()
+            .expect("fixed window end")
+    );
+    assert_eq!(
+        window.start,
+        Utc.with_ymd_and_hms(2026, 3, 8, 6, 0, 0)
+            .single()
+            .expect("fixed window start")
+    );
+    assert_eq!(
+        window.end.with_timezone(&reporting_tz).time(),
+        window.start.with_timezone(&reporting_tz).time()
+    );
+}
+
+#[tokio::test]
 async fn upsert_forward_proxy_weight_hourly_bucket_keeps_latest_sample_weight() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.example.com/").expect("valid upstream base url"),
@@ -36287,6 +36335,42 @@ async fn insert_timeseries_invocation_with_stages(
     .expect("insert timeseries invocation");
 }
 
+async fn insert_parallel_work_invocation(
+    pool: &SqlitePool,
+    invoke_id: &str,
+    occurred_at: DateTime<Utc>,
+    prompt_cache_key: &str,
+) {
+    sqlx::query(
+        r#"
+        INSERT INTO codex_invocations (
+            invoke_id,
+            occurred_at,
+            source,
+            status,
+            total_tokens,
+            cost,
+            payload,
+            raw_response
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "#,
+    )
+    .bind(invoke_id)
+    .bind(format_naive(
+        occurred_at.with_timezone(&Shanghai).naive_local(),
+    ))
+    .bind(SOURCE_PROXY)
+    .bind("success")
+    .bind(10_i64)
+    .bind(0.01_f64)
+    .bind(json!({ "promptCacheKey": prompt_cache_key }).to_string())
+    .bind("{}")
+    .execute(pool)
+    .await
+    .expect("insert parallel-work invocation");
+}
+
 async fn insert_invocation_rollup(
     pool: &SqlitePool,
     stats_date: NaiveDate,
@@ -36503,6 +36587,51 @@ async fn insert_invocation_hourly_rollup_bucket_with_latency_samples(
     .expect("insert invocation hourly rollup bucket");
 }
 
+async fn insert_parallel_work_prompt_cache_rollup_hourly_row(
+    pool: &SqlitePool,
+    bucket_start: DateTime<Utc>,
+    prompt_cache_key: &str,
+    request_count: i64,
+) {
+    let first_seen_at = format_naive(bucket_start.with_timezone(&Shanghai).naive_local());
+    let last_seen_at = format_naive(
+        (bucket_start + ChronoDuration::minutes(30))
+            .with_timezone(&Shanghai)
+            .naive_local(),
+    );
+    sqlx::query(
+        r#"
+        INSERT INTO prompt_cache_rollup_hourly (
+            bucket_start_epoch,
+            source,
+            prompt_cache_key,
+            request_count,
+            success_count,
+            failure_count,
+            total_tokens,
+            total_cost,
+            first_seen_at,
+            last_seen_at,
+            updated_at
+        )
+        VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, datetime('now'))
+        "#,
+    )
+    .bind(bucket_start.timestamp())
+    .bind(SOURCE_PROXY)
+    .bind(prompt_cache_key)
+    .bind(request_count)
+    .bind(request_count)
+    .bind(0_i64)
+    .bind(request_count * 10)
+    .bind(request_count as f64 * 0.01)
+    .bind(first_seen_at)
+    .bind(last_seen_at)
+    .execute(pool)
+    .await
+    .expect("insert prompt cache hourly rollup row");
+}
+
 async fn seed_invocation_archive_batch(
     pool: &SqlitePool,
     config: &AppConfig,
@@ -36637,6 +36766,445 @@ fn assert_f64_close(actual: f64, expected: f64) {
     assert!(
         diff < 1e-6,
         "expected {expected}, got {actual}, diff={diff}"
+    );
+}
+
+#[tokio::test]
+async fn parallel_work_stats_counts_distinct_prompt_cache_keys_per_bucket() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let current_minute_epoch =
+        align_reporting_bucket_epoch(Utc::now().timestamp(), 60, Shanghai).expect("align minute");
+    let minute_a = Utc
+        .timestamp_opt(current_minute_epoch - 3 * 60, 0)
+        .single()
+        .expect("minute a");
+    let minute_b = minute_a + ChronoDuration::minutes(1);
+
+    insert_parallel_work_invocation(
+        &state.pool,
+        "parallel-minute-a-1",
+        minute_a + ChronoDuration::seconds(10),
+        "pck-alpha",
+    )
+    .await;
+    insert_parallel_work_invocation(
+        &state.pool,
+        "parallel-minute-a-2",
+        minute_a + ChronoDuration::seconds(20),
+        "pck-alpha",
+    )
+    .await;
+    insert_parallel_work_invocation(
+        &state.pool,
+        "parallel-minute-a-3",
+        minute_a + ChronoDuration::seconds(30),
+        "pck-beta",
+    )
+    .await;
+    insert_parallel_work_invocation(
+        &state.pool,
+        "parallel-minute-b-1",
+        minute_b + ChronoDuration::seconds(10),
+        "pck-alpha",
+    )
+    .await;
+
+    let Json(response) = fetch_parallel_work_stats(
+        State(state),
+        Query(ParallelWorkStatsQuery {
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch parallel-work stats");
+
+    let minute_a_point = response
+        .minute7d
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(minute_a))
+        .expect("minute a point");
+    let minute_b_point = response
+        .minute7d
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(minute_b))
+        .expect("minute b point");
+
+    assert_eq!(minute_a_point.parallel_count, 2);
+    assert_eq!(minute_b_point.parallel_count, 1);
+    assert_eq!(response.minute7d.active_bucket_count, 2);
+    assert_eq!(response.minute7d.max_count, Some(2));
+    assert_eq!(response.minute7d.min_count, Some(0));
+}
+
+#[tokio::test]
+async fn parallel_work_stats_minute7d_supports_non_shanghai_reporting_timezones() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let reporting_tz = "UTC".parse::<Tz>().expect("valid utc tz");
+    let current_minute_epoch =
+        align_reporting_bucket_epoch(Utc::now().timestamp(), 60, reporting_tz)
+            .expect("align minute");
+    let minute_bucket = Utc
+        .timestamp_opt(current_minute_epoch - 3 * 60, 0)
+        .single()
+        .expect("minute bucket");
+
+    insert_parallel_work_invocation(
+        &state.pool,
+        "parallel-minute-utc-1",
+        minute_bucket + ChronoDuration::seconds(10),
+        "pck-utc-alpha",
+    )
+    .await;
+    insert_parallel_work_invocation(
+        &state.pool,
+        "parallel-minute-utc-2",
+        minute_bucket + ChronoDuration::seconds(20),
+        "pck-utc-alpha",
+    )
+    .await;
+    insert_parallel_work_invocation(
+        &state.pool,
+        "parallel-minute-utc-3",
+        minute_bucket + ChronoDuration::seconds(30),
+        "pck-utc-beta",
+    )
+    .await;
+
+    let Json(response) = fetch_parallel_work_stats(
+        State(state),
+        Query(ParallelWorkStatsQuery {
+            time_zone: Some("UTC".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch parallel-work stats");
+
+    let minute_point = response
+        .minute7d
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(minute_bucket))
+        .expect("utc minute point");
+
+    assert_eq!(minute_point.parallel_count, 2);
+    assert_eq!(response.minute7d.active_bucket_count, 1);
+    assert_eq!(response.minute7d.max_count, Some(2));
+}
+
+#[tokio::test]
+async fn parallel_work_stats_falls_back_historical_windows_for_sub_hour_timezones() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let requested_tz = "Asia/Kolkata"
+        .parse::<Tz>()
+        .expect("valid kolkata reporting tz");
+    let current_minute_epoch =
+        align_reporting_bucket_epoch(Utc::now().timestamp(), 60, requested_tz)
+            .expect("align kolkata minute");
+    let minute_bucket = Utc
+        .timestamp_opt(current_minute_epoch - 3 * 60, 0)
+        .single()
+        .expect("kolkata minute bucket");
+
+    insert_parallel_work_invocation(
+        &state.pool,
+        "parallel-minute-kolkata-1",
+        minute_bucket + ChronoDuration::seconds(10),
+        "pck-kolkata-alpha",
+    )
+    .await;
+    insert_parallel_work_invocation(
+        &state.pool,
+        "parallel-minute-kolkata-2",
+        minute_bucket + ChronoDuration::seconds(20),
+        "pck-kolkata-beta",
+    )
+    .await;
+
+    let current_hour_epoch =
+        align_reporting_bucket_epoch(Utc::now().timestamp(), 3_600, Shanghai).expect("align hour");
+    let fallback_hour = Utc
+        .timestamp_opt(current_hour_epoch - 6 * 3_600, 0)
+        .single()
+        .expect("fallback hour");
+    let fallback_prompt_cache_key = "pck-shanghai-fallback";
+    insert_parallel_work_prompt_cache_rollup_hourly_row(
+        &state.pool,
+        fallback_hour,
+        fallback_prompt_cache_key,
+        1,
+    )
+    .await;
+
+    let current_day_start =
+        local_midnight_utc(Utc::now().with_timezone(&Shanghai).date_naive(), Shanghai);
+    let previous_day_start = current_day_start - ChronoDuration::days(1);
+    insert_parallel_work_prompt_cache_rollup_hourly_row(
+        &state.pool,
+        previous_day_start,
+        fallback_prompt_cache_key,
+        1,
+    )
+    .await;
+
+    let Json(response) = fetch_parallel_work_stats(
+        State(state),
+        Query(ParallelWorkStatsQuery {
+            time_zone: Some("Asia/Kolkata".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch parallel-work stats");
+
+    let minute_point = response
+        .minute7d
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(minute_bucket))
+        .expect("kolkata minute point");
+    let hour_point = response
+        .hour30d
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(fallback_hour))
+        .expect("fallback hour point");
+
+    assert_eq!(minute_point.parallel_count, 2);
+    assert_eq!(response.minute7d.effective_time_zone, "Asia/Kolkata");
+    assert!(!response.minute7d.time_zone_fallback);
+
+    assert_eq!(hour_point.parallel_count, 1);
+    assert_eq!(response.hour30d.effective_time_zone, "Asia/Shanghai");
+    assert!(response.hour30d.time_zone_fallback);
+
+    assert_eq!(response.day_all.effective_time_zone, "Asia/Shanghai");
+    assert!(response.day_all.time_zone_fallback);
+    assert_eq!(response.day_all.points.len(), 1);
+    assert_eq!(
+        response.day_all.points[0].bucket_start,
+        format_utc_iso(previous_day_start)
+    );
+    assert_eq!(response.day_all.points[0].parallel_count, 1);
+}
+
+#[tokio::test]
+async fn parallel_work_stats_zero_fill_and_exclude_current_minute_and_hour() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let now = Utc::now();
+    let current_minute_epoch =
+        align_reporting_bucket_epoch(now.timestamp(), 60, Shanghai).expect("align minute");
+    let current_minute = Utc
+        .timestamp_opt(current_minute_epoch, 0)
+        .single()
+        .expect("current minute");
+    let previous_minute = current_minute - ChronoDuration::minutes(1);
+    let empty_minute = current_minute - ChronoDuration::minutes(2);
+
+    insert_parallel_work_invocation(
+        &state.pool,
+        "parallel-prev-minute",
+        previous_minute + ChronoDuration::seconds(10),
+        "pck-prev-minute",
+    )
+    .await;
+    insert_parallel_work_invocation(
+        &state.pool,
+        "parallel-current-minute",
+        current_minute + ChronoDuration::seconds(10),
+        "pck-current-minute",
+    )
+    .await;
+
+    let current_hour_epoch =
+        align_reporting_bucket_epoch(now.timestamp(), 3_600, Shanghai).expect("align hour");
+    let current_hour = Utc
+        .timestamp_opt(current_hour_epoch, 0)
+        .single()
+        .expect("current hour");
+    let previous_hour = current_hour - ChronoDuration::hours(1);
+    let empty_hour = current_hour - ChronoDuration::hours(2);
+
+    insert_parallel_work_prompt_cache_rollup_hourly_row(
+        &state.pool,
+        previous_hour,
+        "pck-prev-hour",
+        2,
+    )
+    .await;
+    insert_parallel_work_prompt_cache_rollup_hourly_row(
+        &state.pool,
+        current_hour,
+        "pck-current-hour",
+        2,
+    )
+    .await;
+
+    let Json(response) = fetch_parallel_work_stats(
+        State(state),
+        Query(ParallelWorkStatsQuery {
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch parallel-work stats");
+
+    let previous_minute_point = response
+        .minute7d
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(previous_minute))
+        .expect("previous minute point");
+    let empty_minute_point = response
+        .minute7d
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(empty_minute))
+        .expect("empty minute point");
+    assert_eq!(previous_minute_point.parallel_count, 1);
+    assert_eq!(empty_minute_point.parallel_count, 0);
+    assert!(
+        response
+            .minute7d
+            .points
+            .iter()
+            .all(|point| point.bucket_start != format_utc_iso(current_minute))
+    );
+
+    let previous_hour_point = response
+        .hour30d
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(previous_hour))
+        .expect("previous hour point");
+    let empty_hour_point = response
+        .hour30d
+        .points
+        .iter()
+        .find(|point| point.bucket_start == format_utc_iso(empty_hour))
+        .expect("empty hour point");
+    assert_eq!(previous_hour_point.parallel_count, 1);
+    assert_eq!(empty_hour_point.parallel_count, 0);
+    assert!(
+        response
+            .hour30d
+            .points
+            .iter()
+            .all(|point| point.bucket_start != format_utc_iso(current_hour))
+    );
+}
+
+#[tokio::test]
+async fn parallel_work_stats_day_all_aggregates_distinct_keys_per_day() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let current_day_start =
+        local_midnight_utc(Utc::now().with_timezone(&Shanghai).date_naive(), Shanghai);
+    let previous_day_start = current_day_start - ChronoDuration::days(1);
+
+    insert_parallel_work_prompt_cache_rollup_hourly_row(
+        &state.pool,
+        previous_day_start,
+        "pck-day-alpha",
+        1,
+    )
+    .await;
+    insert_parallel_work_prompt_cache_rollup_hourly_row(
+        &state.pool,
+        previous_day_start + ChronoDuration::hours(5),
+        "pck-day-alpha",
+        2,
+    )
+    .await;
+    insert_parallel_work_prompt_cache_rollup_hourly_row(
+        &state.pool,
+        previous_day_start + ChronoDuration::hours(8),
+        "pck-day-beta",
+        1,
+    )
+    .await;
+    insert_parallel_work_prompt_cache_rollup_hourly_row(
+        &state.pool,
+        current_day_start + ChronoDuration::hours(1),
+        "pck-current-day",
+        1,
+    )
+    .await;
+
+    let Json(response) = fetch_parallel_work_stats(
+        State(state),
+        Query(ParallelWorkStatsQuery {
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch parallel-work stats");
+
+    assert_eq!(response.day_all.complete_bucket_count, 1);
+    assert_eq!(response.day_all.active_bucket_count, 1);
+    assert_eq!(response.day_all.min_count, Some(2));
+    assert_eq!(response.day_all.max_count, Some(2));
+    assert_eq!(response.day_all.avg_count, Some(2.0));
+    assert_eq!(response.day_all.points.len(), 1);
+    assert_eq!(
+        response.day_all.points[0].bucket_start,
+        format_utc_iso(previous_day_start)
+    );
+    assert_eq!(response.day_all.points[0].parallel_count, 2);
+}
+
+#[tokio::test]
+async fn parallel_work_stats_day_all_returns_null_summary_without_complete_days() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let current_day_start =
+        local_midnight_utc(Utc::now().with_timezone(&Shanghai).date_naive(), Shanghai);
+    insert_parallel_work_prompt_cache_rollup_hourly_row(
+        &state.pool,
+        current_day_start + ChronoDuration::hours(2),
+        "pck-today-only",
+        1,
+    )
+    .await;
+
+    let Json(response) = fetch_parallel_work_stats(
+        State(state),
+        Query(ParallelWorkStatsQuery {
+            time_zone: Some("Asia/Shanghai".to_string()),
+        }),
+    )
+    .await
+    .expect("fetch parallel-work stats");
+
+    assert!(response.day_all.points.is_empty());
+    assert_eq!(response.day_all.complete_bucket_count, 0);
+    assert_eq!(response.day_all.active_bucket_count, 0);
+    assert_eq!(response.day_all.min_count, None);
+    assert_eq!(response.day_all.max_count, None);
+    assert_eq!(response.day_all.avg_count, None);
+    assert_eq!(
+        response.day_all.range_start,
+        format_utc_iso(current_day_start)
+    );
+    assert_eq!(
+        response.day_all.range_end,
+        format_utc_iso(current_day_start)
     );
 }
 

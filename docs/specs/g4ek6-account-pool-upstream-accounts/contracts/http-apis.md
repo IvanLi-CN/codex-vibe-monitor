@@ -207,7 +207,8 @@ Query:
 - API Key：刷新本地状态时间戳。
 - 成功返回同步后的 `UpstreamAccountDetail`。
 - 同账号存在运行中或排队中的后台维护时，该同步请求必须排队执行；后台维护不得阻塞无关账号的 `PATCH enabled` / `PATCH disabled`。
-- 若账号因分组 `nodeShuntEnabled` 未排到有效节点，则该请求直接失败，错误消息为 `分组节点分流策略控制，未排节点`。
+- 对启用 `nodeShuntEnabled` 的 OAuth 分组，同步请求会优先复用当前账号已有 pinned node；若当前账号没有独占槽位，则回退到该分组 selectable `boundProxyKeys` 的 shared probe。`group_node_shunt_unassigned` 只保留为调用期读模型阻断原因，不再单独拦截 OAuth sync。
+- 对启用 `nodeShuntEnabled` 的 API Key 账号，同步仍沿用调用期独占槽位约束；未排到有效节点时，请求会失败，错误消息为 `分组节点分流策略控制，未排节点`。
 
 ## `PUT /api/pool/upstream-account-groups/:groupName`
 
