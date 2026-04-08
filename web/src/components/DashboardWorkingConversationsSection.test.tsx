@@ -177,12 +177,62 @@ describe("DashboardWorkingConversationsSection", () => {
     );
     expect(card.textContent).not.toContain("WC-");
     expect(card.textContent).not.toContain("019d68a9-9c32-7482-a353-71e4b6265f09");
-    expect(card.getAttribute("data-prompt-cache-key")).toBe(
-      "019d68a9-9c32-7482-a353-71e4b6265f09",
-    );
+    expect(card.getAttribute("data-prompt-cache-key")).toBeNull();
     expect(card.getAttribute("data-conversation-sequence-id")).toBe(
       cards[0]?.conversationSequenceId.replace(/^WC-/, ""),
     );
+  });
+
+  it("places reasoning effort between the model name and service-tier indicator", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-reasoning-layout", [
+          createPreview({
+            id: 1,
+            invokeId: "invoke-reasoning-layout",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "completed",
+            reasoningEffort: "medium",
+            requestedServiceTier: "priority",
+            serviceTier: "priority",
+          }),
+        ]),
+      ]),
+    );
+
+    const currentSlot = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-slot"][data-slot-kind="current"]',
+    );
+    if (!(currentSlot instanceof HTMLDivElement)) {
+      throw new Error("missing current invocation slot");
+    }
+
+    const modelName = currentSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-model-name"]',
+    );
+    const reasoningEffort = currentSlot.querySelector(
+      '[data-testid="dashboard-working-conversation-reasoning-effort"]',
+    );
+    const fastIcon = currentSlot.querySelector(
+      '[data-testid="invocation-fast-icon"]',
+    );
+    if (
+      !(modelName instanceof HTMLElement) ||
+      !(reasoningEffort instanceof HTMLElement) ||
+      !(fastIcon instanceof HTMLElement)
+    ) {
+      throw new Error("missing model/reasoning/service-tier markers");
+    }
+
+    expect(reasoningEffort.textContent).toContain("medium");
+    expect(
+      modelName.compareDocumentPosition(reasoningEffort) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+    expect(
+      reasoningEffort.compareDocumentPosition(fastIcon) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
   });
 
   it("renders a fixed previous-invocation placeholder when a conversation has only one call", () => {

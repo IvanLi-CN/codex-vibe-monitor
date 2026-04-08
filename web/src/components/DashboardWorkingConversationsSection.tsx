@@ -17,6 +17,10 @@ import type {
 import { formatDashboardWorkingConversationSequenceId } from "../lib/dashboardWorkingConversations";
 import { cn } from "../lib/utils";
 import { AppIcon } from "./AppIcon";
+import {
+  getReasoningEffortTone,
+  REASONING_EFFORT_TONE_CLASSNAMES,
+} from "./invocation-table-reasoning";
 import { Alert } from "./ui/alert";
 import { Badge } from "./ui/badge";
 import { Spinner } from "./ui/spinner";
@@ -138,6 +142,36 @@ function formatCompactAccountLabel(accountLabel: string) {
   const atIndex = normalized.indexOf("@");
   const base = atIndex > 0 ? normalized.slice(0, atIndex) : normalized;
   return base.length > 20 ? `${base.slice(0, 20)}…` : base;
+}
+
+function CompactReasoningEffortBadge({ value }: { value: string }) {
+  if (value === FALLBACK_CELL) {
+    return (
+      <span
+        data-testid="dashboard-working-conversation-reasoning-effort"
+        className="inline-flex shrink-0 items-center font-mono text-[7.5px] font-semibold text-base-content/48"
+        title={value}
+      >
+        {value}
+      </span>
+    );
+  }
+
+  const tone = getReasoningEffortTone(value);
+
+  return (
+    <span
+      data-testid="dashboard-working-conversation-reasoning-effort"
+      data-reasoning-effort-tone={tone}
+      className={cn(
+        "inline-flex max-w-[5rem] shrink-0 items-center rounded-full border px-1.5 py-0.5 text-[7px] font-semibold leading-none tracking-[0.01em]",
+        REASONING_EFFORT_TONE_CLASSNAMES[tone],
+      )}
+      title={value}
+    >
+      <span className="truncate whitespace-nowrap">{value}</span>
+    </span>
+  );
 }
 
 function formatCompactMilliseconds(value: number | null | undefined) {
@@ -423,6 +457,7 @@ function InvocationSlot({
 
   const compactAccountLabel = formatCompactAccountLabel(viewModel.accountLabel);
   const lineLabels = resolveInvocationLineLabels(locale);
+  const fastIndicator = renderFastIndicator(viewModel.fastIndicatorState, t);
   const requestReadValue = viewModel.timingPairs[0]?.value ?? FALLBACK_CELL;
   const requestParseValue = viewModel.timingPairs[1]?.value ?? FALLBACK_CELL;
   const upstreamConnectValue = viewModel.timingPairs[2]?.value ?? FALLBACK_CELL;
@@ -560,12 +595,24 @@ function InvocationSlot({
               <span className="shrink-0 text-base-content/28">·</span>
               <div
                 className="flex min-w-0 items-center gap-1 text-base-content/70"
-                title={`${viewModel.modelValue} · ${viewModel.proxyDisplayName}`}
+                title={`${viewModel.modelValue} · ${viewModel.reasoningEffortValue} · ${viewModel.serviceTierValue} · ${viewModel.proxyDisplayName}`}
               >
-                <span className="min-w-0 truncate font-mono">
+                <span
+                  data-testid="dashboard-working-conversation-model-name"
+                  className="min-w-0 truncate font-mono"
+                >
                   {viewModel.modelValue}
                 </span>
-                {renderFastIndicator(viewModel.fastIndicatorState, t)}
+                <span className="shrink-0 text-base-content/28">·</span>
+                <CompactReasoningEffortBadge
+                  value={viewModel.reasoningEffortValue}
+                />
+                {fastIndicator ? (
+                  <>
+                    <span className="shrink-0 text-base-content/28">·</span>
+                    {fastIndicator}
+                  </>
+                ) : null}
               </div>
             </div>
           }
@@ -573,7 +620,7 @@ function InvocationSlot({
 
         <InvocationMetaLine
           label={lineLabels.usage}
-          title={`${t("table.column.inputTokens")}: ${viewModel.inputTokensValue} · ${t("table.column.cacheInputTokens")}: ${viewModel.cacheInputTokensValue} · ${t("table.column.outputTokens")}: ${viewModel.outputTokensValue} · ${t("table.column.totalTokens")}: ${viewModel.totalTokensValue} · ${t("table.column.costUsd")}: ${viewModel.costValue} · ${t("table.column.reasoningEffort")}: ${viewModel.reasoningEffortValue} · ${t("table.details.reasoningTokens")}: ${viewModel.reasoningTokensValue}`}
+          title={`${t("table.column.inputTokens")}: ${viewModel.inputTokensValue} · ${t("table.column.cacheInputTokens")}: ${viewModel.cacheInputTokensValue} · ${t("table.column.outputTokens")}: ${viewModel.outputTokensValue} · ${t("table.column.totalTokens")}: ${viewModel.totalTokensValue} · ${t("table.column.costUsd")}: ${viewModel.costValue} · ${t("table.details.reasoningTokens")}: ${viewModel.reasoningTokensValue}`}
           value={
             <div className="flex min-w-0 flex-wrap items-center gap-x-1 gap-y-0.5">
               <span>IN {viewModel.inputTokensValue}</span>
@@ -585,8 +632,6 @@ function InvocationSlot({
               <span>T {viewModel.totalTokensValue}</span>
               <span className="text-base-content/28">·</span>
               <span>{compactCostValue}</span>
-              <span className="text-base-content/28">·</span>
-              <span>{viewModel.reasoningEffortValue}</span>
             </div>
           }
         />
@@ -754,7 +799,6 @@ export function DashboardWorkingConversationsSection({
                 <article
                   key={card.promptCacheKey}
                   data-testid="dashboard-working-conversation-card"
-                  data-prompt-cache-key={card.promptCacheKey}
                   data-conversation-sequence-id={displaySequenceId}
                   className={cn(
                     CARD_CLASS_NAME,

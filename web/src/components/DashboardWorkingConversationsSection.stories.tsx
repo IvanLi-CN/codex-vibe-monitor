@@ -188,6 +188,7 @@ const currentAndPreviousResponse = createResponse([
       occurredAt: "2026-04-04T10:04:20Z",
       status: "completed",
       upstreamAccountName: "growth-alpha@example.com",
+      reasoningEffort: "medium",
     }),
     createPreview({
       id: 11,
@@ -222,6 +223,7 @@ const runningOnlyResponse = createResponse([
       occurredAt: "2026-04-04T10:04:58Z",
       status: "running",
       upstreamAccountName: "watch-alpha@example.com",
+      reasoningEffort: "medium",
       tTotalMs: null,
     }),
     createPreview({
@@ -245,6 +247,7 @@ const failedClickableResponse = createResponse([
       failureClass: "service_failure",
       errorMessage: "upstream gateway closed before first byte",
       failureKind: "upstream_timeout",
+      reasoningEffort: "medium",
       upstreamAccountId: 77,
       upstreamAccountName: "pool-account-77@example.com",
       endpoint: "/v1/chat/completions",
@@ -363,6 +366,7 @@ const wideDesktopResponse = createResponse([
       invokeId: "invoke-wide-running-current",
       occurredAt: "2026-04-04T10:04:58Z",
       status: "running",
+      reasoningEffort: "medium",
       upstreamAccountName: "wide-running@example.com",
       tTotalMs: null,
     }),
