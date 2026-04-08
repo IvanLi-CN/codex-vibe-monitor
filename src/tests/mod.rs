@@ -1031,6 +1031,110 @@ async fn acquire_proxy_request_concurrency_permit_times_out_when_limit_is_reache
 }
 
 #[tokio::test]
+async fn proxy_openai_v1_persists_concurrency_limit_rejections_for_capture_targets() {
+    let mut config = test_config();
+    config.proxy_request_concurrency_limit = 1;
+    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(50);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-limit-key").await;
+    let mut rx = state.broadcaster.subscribe();
+    let uri = "/v1/responses".parse::<Uri>().expect("valid proxy uri");
+
+    let held_permit =
+        acquire_proxy_request_concurrency_permit(state.as_ref(), 1003, &Method::POST, &uri)
+            .await
+            .expect("first request should acquire concurrency slot");
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(uri),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-limit-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hello"}"#)),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    wait_for_codex_invocations(&state.pool, 1).await;
+
+    #[derive(Debug, sqlx::FromRow)]
+    struct PersistedRow {
+        status: Option<String>,
+        error_message: Option<String>,
+        failure_kind: Option<String>,
+        payload: Option<String>,
+    }
+
+    let row = sqlx::query_as::<_, PersistedRow>(
+        r#"
+        SELECT status, error_message, failure_kind, payload
+        FROM codex_invocations
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load persisted concurrency-limit rejection");
+
+    assert_eq!(row.status.as_deref(), Some("http_503"));
+    assert_eq!(
+        row.failure_kind.as_deref(),
+        Some(PROXY_FAILURE_PROXY_CONCURRENCY_LIMIT)
+    );
+    assert!(
+        row.error_message
+            .as_deref()
+            .is_some_and(|message| message.contains(PROXY_CONCURRENCY_LIMIT_MESSAGE))
+    );
+    let payload: Value = serde_json::from_str(
+        row.payload
+            .as_deref()
+            .expect("rejection payload should be persisted"),
+    )
+    .expect("decode rejection payload");
+    assert_eq!(payload["endpoint"].as_str(), Some("/v1/responses"));
+    assert_eq!(
+        payload["routeMode"].as_str(),
+        Some(INVOCATION_ROUTE_MODE_POOL)
+    );
+    assert_eq!(
+        payload["failureKind"].as_str(),
+        Some(PROXY_FAILURE_PROXY_CONCURRENCY_LIMIT)
+    );
+
+    let mut saw_record = false;
+    for _ in 0..8 {
+        let payload = tokio::time::timeout(Duration::from_secs(1), rx.recv())
+            .await
+            .expect("timed out waiting for rejection broadcast")
+            .expect("broadcast channel should stay open");
+        if let BroadcastPayload::Records { records } = payload
+            && records.into_iter().any(|record| {
+                record.failure_kind.as_deref() == Some(PROXY_FAILURE_PROXY_CONCURRENCY_LIMIT)
+                    && record.endpoint.as_deref() == Some("/v1/responses")
+            })
+        {
+            saw_record = true;
+            break;
+        }
+    }
+    assert!(saw_record, "expected rejection broadcast record");
+
+    drop(held_permit);
+    assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 0);
+}
+
+#[tokio::test]
 async fn proxy_openai_v1_via_pool_acquires_concurrency_slot_before_reading_request_body() {
     let mut config = test_config();
     config.proxy_request_concurrency_limit = 1;
@@ -24032,7 +24136,7 @@ async fn proxy_openai_v1_via_pool_live_first_attempt_preserves_body_sticky_route
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_via_pool_large_prebuffered_body_preserves_late_sticky_route() {
+async fn proxy_openai_v1_via_pool_large_prebuffered_body_does_not_reread_for_late_sticky_route() {
     let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
     let state =
         test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
@@ -24057,7 +24161,12 @@ async fn proxy_openai_v1_via_pool_large_prebuffered_body_preserves_late_sticky_r
     } else {
         default_id
     };
-    let expected_authorization = if preferred_sticky_account_id == default_id {
+    let expected_default_authorization = if resolved_without_sticky == default_id {
+        "Bearer route-large-default"
+    } else {
+        "Bearer route-large-sticky"
+    };
+    let unexpected_late_sticky_authorization = if preferred_sticky_account_id == default_id {
         "Bearer route-large-default"
     } else {
         "Bearer route-large-sticky"
@@ -24097,18 +24206,40 @@ async fn proxy_openai_v1_via_pool_large_prebuffered_body_preserves_late_sticky_r
         None,
     )
     .await
-    .expect("large prebuffered request should honor late sticky route");
+    .expect("large prebuffered request should fall back without rereading the full file");
 
     assert_eq!(response.status(), StatusCode::OK);
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read large sticky response body");
     let payload: Value = serde_json::from_slice(&body).expect("decode large sticky response");
-    assert_eq!(payload["authorization"], expected_authorization);
-    assert_eq!(payload["attempt"], 1);
+    assert_eq!(payload["authorization"], expected_default_authorization);
+    assert_ne!(
+        payload["authorization"].as_str(),
+        Some(unexpected_late_sticky_authorization)
+    );
+    assert!(
+        payload["attempt"]
+            .as_i64()
+            .is_some_and(|attempt| attempt >= 1),
+        "expected at least one upstream attempt"
+    );
 
     let attempts = attempts.lock().expect("lock large sticky attempts");
-    assert_eq!(attempts.get(expected_authorization).copied(), Some(1));
+    assert!(
+        attempts
+            .get(expected_default_authorization)
+            .copied()
+            .is_some_and(|count| count >= 1),
+        "default route should receive at least one attempt"
+    );
+    assert_eq!(
+        attempts
+            .get(unexpected_late_sticky_authorization)
+            .copied()
+            .unwrap_or_default(),
+        0
+    );
 
     upstream_handle.abort();
 }

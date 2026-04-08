@@ -87,6 +87,17 @@ async fn proxy_openai_v1_common(
                 rejected_total = state.proxy_request_rejected_total.load(Ordering::Acquire),
                 "openai proxy request rejected before upstream dispatch"
             );
+            persist_proxy_request_rejection_if_observable(
+                state.as_ref(),
+                started_at,
+                &invoke_id,
+                &uri_for_log,
+                &method_for_log,
+                &headers,
+                peer_ip,
+                &err,
+            )
+            .await;
             return build_proxy_error_response(err, &invoke_id);
         }
     };
@@ -177,6 +188,130 @@ fn build_proxy_error_response(err: ProxyErrorResponse, invoke_id: &str) -> Respo
             }
             response
         }
+    }
+}
+
+async fn persist_proxy_request_rejection_if_observable(
+    state: &AppState,
+    capture_started: Instant,
+    invoke_id: &str,
+    original_uri: &Uri,
+    method: &Method,
+    headers: &HeaderMap,
+    peer_ip: Option<IpAddr>,
+    err: &ProxyErrorResponse,
+) {
+    let Some(target) = capture_target_for_request(original_uri.path(), method) else {
+        return;
+    };
+
+    let occurred_at_utc = Utc::now();
+    let occurred_at = format_naive(occurred_at_utc.with_timezone(&Shanghai).naive_local());
+    let requester_ip = extract_requester_ip(headers, peer_ip);
+    let sticky_key = extract_sticky_key_from_headers(headers);
+    let prompt_cache_key = extract_prompt_cache_key_from_headers(headers);
+    let pool_route_active = match request_matches_pool_route(state, headers).await {
+        Ok(active) => active,
+        Err(route_err) => {
+            warn!(
+                invoke_id = %invoke_id,
+                uri = %original_uri,
+                error = %route_err,
+                "failed to resolve route mode while persisting proxy rejection"
+            );
+            false
+        }
+    };
+    let error_message = format!("[{}] {}", PROXY_FAILURE_PROXY_CONCURRENCY_LIMIT, err.message);
+    let record = ProxyCaptureRecord {
+        invoke_id: invoke_id.to_string(),
+        occurred_at,
+        model: None,
+        usage: ParsedUsage::default(),
+        cost: None,
+        cost_estimated: false,
+        price_version: None,
+        status: if err.status.is_server_error() {
+            format!("http_{}", err.status.as_u16())
+        } else {
+            "failed".to_string()
+        },
+        error_message: Some(error_message),
+        failure_kind: Some(PROXY_FAILURE_PROXY_CONCURRENCY_LIMIT.to_string()),
+        payload: Some(build_proxy_payload_summary(ProxyPayloadSummary {
+            target,
+            status: err.status,
+            is_stream: false,
+            request_model: None,
+            requested_service_tier: None,
+            billing_service_tier: None,
+            reasoning_effort: None,
+            response_model: None,
+            usage_missing_reason: None,
+            request_parse_error: None,
+            failure_kind: Some(PROXY_FAILURE_PROXY_CONCURRENCY_LIMIT),
+            requester_ip: requester_ip.as_deref(),
+            upstream_scope: if pool_route_active {
+                INVOCATION_UPSTREAM_SCOPE_INTERNAL
+            } else {
+                INVOCATION_UPSTREAM_SCOPE_EXTERNAL
+            },
+            route_mode: if pool_route_active {
+                INVOCATION_ROUTE_MODE_POOL
+            } else {
+                INVOCATION_ROUTE_MODE_FORWARD_PROXY
+            },
+            sticky_key: sticky_key.as_deref(),
+            prompt_cache_key: prompt_cache_key.as_deref(),
+            upstream_account_id: None,
+            upstream_account_name: None,
+            upstream_account_kind: None,
+            upstream_base_url_host: None,
+            oauth_account_header_attached: None,
+            oauth_account_id_shape: None,
+            oauth_forwarded_header_count: None,
+            oauth_forwarded_header_names: None,
+            oauth_fingerprint_version: None,
+            oauth_forwarded_header_fingerprints: None,
+            oauth_prompt_cache_header_forwarded: None,
+            oauth_request_body_prefix_fingerprint: None,
+            oauth_request_body_prefix_bytes: None,
+            oauth_responses_rewrite: None,
+            service_tier: None,
+            stream_terminal_event: None,
+            upstream_error_code: None,
+            upstream_error_message: None,
+            upstream_request_id: None,
+            response_content_encoding: None,
+            proxy_display_name: None,
+            proxy_weight_delta: None,
+            pool_attempt_count: None,
+            pool_distinct_account_count: None,
+            pool_attempt_terminal_reason: None,
+        })),
+        raw_response: "{}".to_string(),
+        req_raw: RawPayloadMeta::default(),
+        resp_raw: RawPayloadMeta::default(),
+        timings: StageTimings {
+            t_total_ms: 0.0,
+            t_req_read_ms: 0.0,
+            t_req_parse_ms: 0.0,
+            t_upstream_connect_ms: 0.0,
+            t_upstream_ttfb_ms: 0.0,
+            t_upstream_stream_ms: 0.0,
+            t_resp_parse_ms: 0.0,
+            t_persist_ms: 0.0,
+        },
+    };
+
+    if let Err(persist_err) = persist_and_broadcast_proxy_capture(state, capture_started, record).await
+    {
+        warn!(
+            invoke_id = %invoke_id,
+            uri = %original_uri,
+            error = %persist_err,
+            "failed to persist proxy rejection record"
+        );
     }
 }
 
@@ -3958,17 +4093,8 @@ async fn extract_sticky_key_from_replay_snapshot(
         PoolReplayBodySnapshot::Memory(bytes) => {
             extract_sticky_key_from_request_body_projection(bytes.as_ref())
         }
-        PoolReplayBodySnapshot::File { temp_file, .. } => {
-            let path = temp_file.path.clone();
-            tokio::task::spawn_blocking(move || {
-                let file = fs::File::open(path).ok()?;
-                serde_json::from_reader::<_, StickyKeyProjection>(file)
-                    .ok()
-                    .and_then(StickyKeyProjection::into_sticky_key)
-            })
-            .await
-            .ok()
-            .flatten()
+        PoolReplayBodySnapshot::File { .. } => {
+            extract_sticky_key_from_replay_snapshot_prefix(snapshot).await
         }
     }
 }
