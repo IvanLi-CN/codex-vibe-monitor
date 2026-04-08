@@ -4,7 +4,10 @@ import {
   TIMESERIES_OPEN_RESYNC_COOLDOWN_MS,
   TIMESERIES_RECORDS_RESYNC_THROTTLE_MS,
   applyRecordsToCurrentDayBucket,
+  applyRecordsToTimeseries,
   getCurrentDayBucketEndEpoch,
+  getLocalDayStartEpoch,
+  getNextLocalDayStartEpoch,
   getTimeseriesRecordsResyncDelay,
   mergePendingTimeseriesSilentOption,
   resolveTimeseriesSyncPolicy,
@@ -44,6 +47,16 @@ describe('useTimeseries records sync strategy', () => {
         preferServerAggregation: true,
       }),
     ).toBe(true)
+  })
+
+  it('derives local-day boundaries for the today dashboard range', () => {
+    const noonEpoch = Math.floor(new Date(2026, 3, 8, 12, 34, 56).getTime() / 1000)
+    expect(getLocalDayStartEpoch(noonEpoch)).toBe(
+      Math.floor(new Date(2026, 3, 8, 0, 0, 0).getTime() / 1000),
+    )
+    expect(getNextLocalDayStartEpoch(noonEpoch)).toBe(
+      Math.floor(new Date(2026, 3, 9, 0, 0, 0).getTime() / 1000),
+    )
   })
 
   it('falls back to server resync for other daily buckets', () => {
@@ -135,6 +148,71 @@ describe('useTimeseries current-day bucket patching', () => {
         Math.floor(Date.parse('2026-03-06T12:00:00Z') / 1000),
       ),
     ).toBe(true)
+  })
+})
+
+
+describe('useTimeseries natural-day range patching', () => {
+  it('keeps today-scoped local patches inside the current local day', () => {
+    const now = new Date(2026, 3, 8, 12, 0, 0)
+    const currentDayStart = new Date(2026, 3, 8, 0, 0, 0)
+    const previousDayStart = new Date(2026, 3, 7, 0, 0, 0)
+    const current: TimeseriesResponse = {
+      rangeStart: currentDayStart.toISOString().replace(/\.\d{3}Z$/, 'Z'),
+      rangeEnd: now.toISOString().replace(/\.\d{3}Z$/, 'Z'),
+      bucketSeconds: 60,
+      points: [
+        {
+          bucketStart: new Date(2026, 3, 7, 23, 59, 0).toISOString().replace(/\.\d{3}Z$/, 'Z'),
+          bucketEnd: new Date(2026, 3, 8, 0, 0, 0).toISOString().replace(/\.\d{3}Z$/, 'Z'),
+          totalCount: 1,
+          successCount: 1,
+          failureCount: 0,
+          totalTokens: 10,
+          totalCost: 0.1,
+        },
+      ],
+    }
+
+    const next = applyRecordsToTimeseries(
+      current,
+      [
+        {
+          id: 1,
+          invokeId: 'yesterday',
+          occurredAt: new Date(2026, 3, 7, 23, 59, 30).toISOString().replace(/\.\d{3}Z$/, 'Z'),
+          status: 'success',
+          totalTokens: 10,
+          cost: 0.1,
+          createdAt: new Date(2026, 3, 7, 23, 59, 30).toISOString().replace(/\.\d{3}Z$/, 'Z'),
+        },
+        {
+          id: 2,
+          invokeId: 'today',
+          occurredAt: new Date(2026, 3, 8, 0, 1, 15).toISOString().replace(/\.\d{3}Z$/, 'Z'),
+          status: 'failed',
+          totalTokens: 25,
+          cost: 0.2,
+          createdAt: new Date(2026, 3, 8, 0, 1, 15).toISOString().replace(/\.\d{3}Z$/, 'Z'),
+        },
+      ],
+      {
+        range: 'today',
+        bucketSeconds: 60,
+      },
+    )
+
+    expect(next?.rangeStart).toBe(currentDayStart.toISOString().replace(/\.\d{3}Z$/, 'Z'))
+    expect(next?.points).toHaveLength(1)
+    expect(next?.points[0]).toMatchObject({
+      bucketStart: new Date(2026, 3, 8, 0, 1, 0).toISOString().replace(/\.\d{3}Z$/, 'Z'),
+      totalCount: 1,
+      successCount: 0,
+      failureCount: 1,
+      totalTokens: 25,
+      totalCost: 0.2,
+    })
+    expect(previousDayStart.getTime()).toBeLessThan(currentDayStart.getTime())
   })
 })
 
