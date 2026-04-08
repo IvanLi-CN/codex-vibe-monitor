@@ -1178,12 +1178,11 @@ async fn proxy_openai_v1_persists_concurrency_limit_rejections_for_capture_targe
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_unauthorized_requests_do_not_consume_proxy_concurrency_slots() {
+async fn proxy_openai_v1_non_pool_requests_still_use_proxy_concurrency_slots() {
     let mut config = test_config();
     config.proxy_request_concurrency_limit = 1;
     config.proxy_request_concurrency_wait_timeout = Duration::from_millis(50);
     let state = test_state_from_config(config, true).await;
-    seed_pool_routing_api_key(&state, "pool-valid-key").await;
     let uri = "/v1/responses".parse::<Uri>().expect("valid proxy uri");
 
     let held_permit =
@@ -1199,7 +1198,7 @@ async fn proxy_openai_v1_unauthorized_requests_do_not_consume_proxy_concurrency_
         HeaderMap::from_iter([
             (
                 http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer pool-invalid-key"),
+                HeaderValue::from_static("Bearer upstream-direct-key"),
             ),
             (
                 http_header::CONTENT_TYPE,
@@ -1210,20 +1209,22 @@ async fn proxy_openai_v1_unauthorized_requests_do_not_consume_proxy_concurrency_
     )
     .await;
 
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
-        .expect("read unauthorized response body");
-    let payload: Value = serde_json::from_slice(&body).expect("decode unauthorized payload");
+        .expect("read concurrency rejection body");
+    let payload: Value =
+        serde_json::from_slice(&body).expect("decode concurrency rejection payload");
     assert_eq!(
         payload["error"].as_str(),
-        Some("pool route key missing or invalid")
+        Some(PROXY_CONCURRENCY_LIMIT_MESSAGE)
     );
     assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 1);
     assert_eq!(
         state.proxy_request_rejected_total.load(Ordering::Acquire),
-        0
+        1
     );
+    assert!(payload.get("cvmId").is_some());
 
     drop(held_permit);
     assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 0);

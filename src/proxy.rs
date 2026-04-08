@@ -94,18 +94,6 @@ async fn proxy_openai_v1_common(
         "openai proxy request started"
     );
 
-    if !pool_route_active {
-        return build_proxy_error_response(
-            ProxyErrorResponse {
-                status: StatusCode::UNAUTHORIZED,
-                message: "pool route key missing or invalid".to_string(),
-                cvm_id: None,
-                retry_after_secs: None,
-            },
-            &invoke_id,
-        );
-    }
-
     let proxy_request_permit = match acquire_proxy_request_concurrency_permit(
         state.as_ref(),
         proxy_request_id,
