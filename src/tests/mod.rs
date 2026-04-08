@@ -7029,16 +7029,30 @@ async fn count_codex_invocations(pool: &SqlitePool) -> i64 {
         .expect("count codex invocations")
 }
 
+async fn count_in_flight_codex_invocations(pool: &SqlitePool) -> i64 {
+    sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM codex_invocations
+        WHERE LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
+        "#,
+    )
+    .fetch_one(pool)
+    .await
+    .expect("count in-flight codex invocations")
+}
+
 async fn wait_for_codex_invocations(pool: &SqlitePool, expected_min_count: i64) {
     let started = Instant::now();
     loop {
         let count = count_codex_invocations(pool).await;
-        if count >= expected_min_count {
+        let in_flight = count_in_flight_codex_invocations(pool).await;
+        if count >= expected_min_count && in_flight == 0 {
             return;
         }
         assert!(
             started.elapsed() < Duration::from_secs(5),
-            "timed out waiting for codex invocations; expected at least {expected_min_count}, got {count}"
+            "timed out waiting for codex invocations; expected at least {expected_min_count}, got {count}, in_flight={in_flight}"
         );
         tokio::time::sleep(Duration::from_millis(25)).await;
     }

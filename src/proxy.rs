@@ -10743,37 +10743,7 @@ async fn persist_proxy_capture_record(
     .execute(tx.as_mut())
     .await?;
 
-    if inserted_new_row {
-        upsert_invocation_hourly_rollups_tx(
-            tx.as_mut(),
-            &[InvocationHourlySourceRecord {
-                id: invocation_id,
-                occurred_at: record.occurred_at.clone(),
-                source: SOURCE_PROXY.to_string(),
-                status: Some(record.status.clone()),
-                detail_level: DETAIL_LEVEL_FULL.to_string(),
-                total_tokens: record.usage.total_tokens,
-                cost: record.cost,
-                error_message: record.error_message.clone(),
-                failure_kind: failure_kind.clone(),
-                failure_class: Some(failure.failure_class.as_str().to_string()),
-                is_actionable: Some(failure.is_actionable as i64),
-                payload: record.payload.clone(),
-                t_total_ms: Some(record.timings.t_total_ms),
-                t_req_read_ms: Some(record.timings.t_req_read_ms),
-                t_req_parse_ms: Some(record.timings.t_req_parse_ms),
-                t_upstream_connect_ms: Some(record.timings.t_upstream_connect_ms),
-                t_upstream_ttfb_ms: Some(record.timings.t_upstream_ttfb_ms),
-                t_upstream_stream_ms: Some(record.timings.t_upstream_stream_ms),
-                t_resp_parse_ms: Some(record.timings.t_resp_parse_ms),
-                t_persist_ms: Some(record.timings.t_persist_ms),
-            }],
-            &INVOCATION_HOURLY_ROLLUP_TARGETS,
-        )
-        .await?;
-    } else {
-        recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &[invocation_id]).await?;
-    }
+    recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &[invocation_id]).await?;
 
     let persisted =
         load_persisted_api_invocation_tx(tx.as_mut(), &record.invoke_id, &record.occurred_at)
