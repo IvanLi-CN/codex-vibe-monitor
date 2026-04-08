@@ -7023,7 +7023,6 @@ async fn proxy_openai_v1_capture_target(
             stream_started_at = Some(Instant::now());
             if !downstream_closed && tx.send(Ok(chunk)).await.is_err() {
                 downstream_closed = true;
-                let _ = proxy_request_permit_for_task.take();
             }
             response_raw_writer.append(chunk_for_raw.as_ref()).await;
         }
@@ -7168,7 +7167,6 @@ async fn proxy_openai_v1_capture_target(
                     forwarded_bytes = forwarded_bytes.saturating_add(chunk.len());
                     if !downstream_closed && tx.send(Ok(chunk)).await.is_err() {
                         downstream_closed = true;
-                        let _ = proxy_request_permit_for_task.take();
                     }
                     response_raw_writer.append(chunk_for_raw.as_ref()).await;
                 }

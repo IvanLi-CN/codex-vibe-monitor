@@ -1614,6 +1614,114 @@ async fn proxy_openai_v1_capture_target_releases_concurrency_slot_before_persist
     upstream_handle.abort();
 }
 
+#[tokio::test]
+async fn proxy_openai_v1_capture_target_keeps_concurrency_slot_while_draining_cancelled_stream() {
+    let app = Router::new().route(
+        "/v1/responses",
+        post(|| async move {
+            let stream = stream::once(async {
+                Ok::<Bytes, Infallible>(Bytes::from_static(br#"{"phase":"streaming""#))
+            })
+            .chain(stream::once(async move {
+                tokio::time::sleep(Duration::from_millis(60)).await;
+                Ok::<Bytes, Infallible>(Bytes::from_static(br#","mid":true"#))
+            }))
+            .chain(stream::once(async move {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                Ok::<Bytes, Infallible>(Bytes::from_static(br#","done":true}"#))
+            }));
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(http_header::CONTENT_TYPE, "application/json")
+                .body(Body::from_stream(stream))
+                .expect("build streaming response")
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind streaming upstream");
+    let addr = listener.local_addr().expect("streaming upstream addr");
+    let upstream_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("streaming upstream should run");
+    });
+
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse(&format!("http://{addr}")).expect("valid streaming upstream base url");
+    config.proxy_request_concurrency_limit = 1;
+    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(50);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-stream-slot-key").await;
+    insert_test_pool_api_key_account(&state, "Streaming Slot", "route-stream-slot").await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid proxy uri")),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-stream-slot-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hi"}"#)),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        state.proxy_request_in_flight.load(Ordering::Acquire),
+        1,
+        "proxy concurrency slot should remain held while downstream body is still open"
+    );
+
+    let mut lock_conn = state
+        .pool
+        .acquire()
+        .await
+        .expect("acquire sqlite lock connection");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *lock_conn)
+        .await
+        .expect("acquire sqlite write lock");
+
+    drop(response);
+
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    assert_eq!(
+        state.proxy_request_in_flight.load(Ordering::Acquire),
+        1,
+        "proxy concurrency slot should remain held while cancelled capture keeps draining upstream"
+    );
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if state.proxy_request_in_flight.load(Ordering::Acquire) == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("proxy concurrency slot should release after cancelled capture finishes draining");
+
+    sqlx::query("ROLLBACK")
+        .execute(&mut *lock_conn)
+        .await
+        .expect("rollback sqlite write lock");
+    drop(lock_conn);
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+
+    upstream_handle.abort();
+}
+
 #[test]
 fn validation_probe_reachable_status_accepts_success_auth_and_not_found() {
     for status in [
