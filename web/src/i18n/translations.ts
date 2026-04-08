@@ -600,18 +600,15 @@ const baseTranslations = {
     "accountPool.upstreamAccounts.effectiveRule.denyCutOut": "Block cut out",
     "accountPool.upstreamAccounts.effectiveRule.allowCutIn": "Allow cut in",
     "accountPool.upstreamAccounts.effectiveRule.denyCutIn": "Block cut in",
-    "accountPool.upstreamAccounts.effectiveRule.priorityPrimary":
-      "Primary",
-    "accountPool.upstreamAccounts.effectiveRule.priorityNormal":
-      "Normal",
+    "accountPool.upstreamAccounts.effectiveRule.priorityPrimary": "Primary",
+    "accountPool.upstreamAccounts.effectiveRule.priorityNormal": "Normal",
     "accountPool.upstreamAccounts.effectiveRule.priorityFallback":
       "Fallback only",
     "accountPool.upstreamAccounts.effectiveRule.fastModeKeepOriginal":
       "Keep original",
     "accountPool.upstreamAccounts.effectiveRule.fastModeFillMissing":
       "Fill when missing",
-    "accountPool.upstreamAccounts.effectiveRule.fastModeForceAdd":
-      "Force add",
+    "accountPool.upstreamAccounts.effectiveRule.fastModeForceAdd": "Force add",
     "accountPool.upstreamAccounts.effectiveRule.fastModeForceRemove":
       "Force remove",
     "accountPool.upstreamAccounts.effectiveRule.sourceTags": "Rule source tags",
@@ -1248,8 +1245,7 @@ const baseTranslations = {
     "dashboard.workingConversations.promptCacheKeyLabel": "Prompt cache key",
     "dashboard.workingConversations.currentInvocation": "Current invocation",
     "dashboard.workingConversations.previousInvocation": "Previous invocation",
-    "dashboard.workingConversations.openInvocation":
-      "Open invocation details",
+    "dashboard.workingConversations.openInvocation": "Open invocation details",
     "dashboard.workingConversations.placeholderBadge": "Waiting",
     "dashboard.workingConversations.previousPlaceholder":
       "No previous invocation is available for this conversation yet.",
@@ -1260,8 +1256,7 @@ const baseTranslations = {
     "dashboard.workingConversations.totalTokensLabel": "Conversation tokens",
     "dashboard.workingConversations.totalCostLabel": "Conversation cost",
     "dashboard.workingConversations.sortAnchorLabel": "Sort anchor",
-    "dashboard.workingConversations.drawer.close":
-      "Close invocation details",
+    "dashboard.workingConversations.drawer.close": "Close invocation details",
     "dashboard.workingConversations.drawer.subtitle":
       "Working conversation invocation",
     "dashboard.workingConversations.drawer.title": "Invocation details",
@@ -1435,6 +1430,7 @@ const baseTranslations = {
     "records.filters.status.all": "All statuses",
     "records.filters.status.success": "Success",
     "records.filters.status.failed": "Failed",
+    "records.filters.status.interrupted": "Interrupted",
     "records.filters.status.running": "Running",
     "records.filters.status.pending": "Pending",
     "records.filters.any": "All",
@@ -1591,6 +1587,7 @@ const baseTranslations = {
     "table.account.poolAccountUnavailable": "Pool account unavailable",
     "table.status.success": "Success",
     "table.status.failed": "Failed",
+    "table.status.interrupted": "Interrupted",
     "table.status.running": "Running",
     "table.status.pending": "Pending",
     "table.status.unknown": "Unknown",
@@ -1639,14 +1636,22 @@ const baseTranslations = {
     "table.responseBody.openFullDetails": "Open full details",
     "table.responseBody.loading": "Loading response body…",
     "table.responseBody.loadError": "Failed to load response body: {{error}}",
-    "table.responseBody.previewTruncated": "Preview truncated. Open the full details drawer for the complete record.",
-    "table.responseBody.unavailable.notAbnormal": "This record does not have an abnormal response body.",
-    "table.responseBody.unavailable.detailPruned": "The full response body is no longer retained online for this record.",
-    "table.responseBody.unavailable.rawFileMissing": "The archived raw response file is no longer available.",
-    "table.responseBody.unavailable.rawFileUnreadable": "The archived raw response file could not be read.",
-    "table.responseBody.unavailable.previewOnly": "Only the retained response preview is available for this record.",
-    "table.responseBody.unavailable.missingBody": "No retained response body is available for this record.",
-    "table.responseBody.unavailable.generic": "The response body is currently unavailable.",
+    "table.responseBody.previewTruncated":
+      "Preview truncated. Open the full details drawer for the complete record.",
+    "table.responseBody.unavailable.notAbnormal":
+      "This record does not have an abnormal response body.",
+    "table.responseBody.unavailable.detailPruned":
+      "The full response body is no longer retained online for this record.",
+    "table.responseBody.unavailable.rawFileMissing":
+      "The archived raw response file is no longer available.",
+    "table.responseBody.unavailable.rawFileUnreadable":
+      "The archived raw response file could not be read.",
+    "table.responseBody.unavailable.previewOnly":
+      "Only the retained response preview is available for this record.",
+    "table.responseBody.unavailable.missingBody":
+      "No retained response body is available for this record.",
+    "table.responseBody.unavailable.generic":
+      "The response body is currently unavailable.",
     "table.details.timingsTitle": "Stage timings",
     "table.details.stage.requestRead": "Request read",
     "table.details.stage.requestParse": "Request parse",
@@ -3041,6 +3046,7 @@ const baseTranslations = {
     "records.filters.status.all": "全部状态",
     "records.filters.status.success": "成功",
     "records.filters.status.failed": "失败",
+    "records.filters.status.interrupted": "已中断",
     "records.filters.status.running": "运行中",
     "records.filters.status.pending": "排队中",
     "records.filters.any": "全部",
@@ -3197,6 +3203,7 @@ const baseTranslations = {
     "table.account.poolAccountUnavailable": "号池账号未知",
     "table.status.success": "成功",
     "table.status.failed": "失败",
+    "table.status.interrupted": "已中断",
     "table.status.running": "运行中",
     "table.status.pending": "排队中",
     "table.status.unknown": "未知",
@@ -3242,13 +3249,19 @@ const baseTranslations = {
     "table.responseBody.openFullDetails": "查看完整详情",
     "table.responseBody.loading": "正在加载响应体…",
     "table.responseBody.loadError": "加载响应体失败：{{error}}",
-    "table.responseBody.previewTruncated": "当前仅展示节选，可打开完整详情抽屉查看完整记录。",
+    "table.responseBody.previewTruncated":
+      "当前仅展示节选，可打开完整详情抽屉查看完整记录。",
     "table.responseBody.unavailable.notAbnormal": "该记录没有异常响应体。",
-    "table.responseBody.unavailable.detailPruned": "该记录的完整响应体已不再在线保留。",
-    "table.responseBody.unavailable.rawFileMissing": "归档 raw 响应文件已不可用。",
-    "table.responseBody.unavailable.rawFileUnreadable": "归档 raw 响应文件暂时无法读取。",
-    "table.responseBody.unavailable.previewOnly": "该记录当前仅保留响应体节选。",
-    "table.responseBody.unavailable.missingBody": "该记录没有保留可展示的响应体。",
+    "table.responseBody.unavailable.detailPruned":
+      "该记录的完整响应体已不再在线保留。",
+    "table.responseBody.unavailable.rawFileMissing":
+      "归档 raw 响应文件已不可用。",
+    "table.responseBody.unavailable.rawFileUnreadable":
+      "归档 raw 响应文件暂时无法读取。",
+    "table.responseBody.unavailable.previewOnly":
+      "该记录当前仅保留响应体节选。",
+    "table.responseBody.unavailable.missingBody":
+      "该记录没有保留可展示的响应体。",
     "table.responseBody.unavailable.generic": "响应体当前不可用。",
     "table.details.timingsTitle": "阶段耗时",
     "table.details.stage.requestRead": "请求读取",

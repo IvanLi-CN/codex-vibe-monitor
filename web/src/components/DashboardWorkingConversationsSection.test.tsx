@@ -31,7 +31,8 @@ function createPreview(
     cost: overrides.cost ?? 0.02,
     proxyDisplayName: overrides.proxyDisplayName ?? "tokyo-edge-01",
     upstreamAccountId: overrides.upstreamAccountId ?? 42,
-    upstreamAccountName: overrides.upstreamAccountName ?? "pool-alpha@example.com",
+    upstreamAccountName:
+      overrides.upstreamAccountName ?? "pool-alpha@example.com",
     endpoint: overrides.endpoint ?? "/v1/responses",
     inputTokens: overrides.inputTokens ?? 120,
     outputTokens: overrides.outputTokens ?? 80,
@@ -60,7 +61,9 @@ function createConversation(
     requestCount: recentInvocations.length,
     totalTokens: 200,
     totalCost: 0.02,
-    createdAt: recentInvocations[recentInvocations.length - 1]?.occurredAt ?? "2026-04-04T10:00:00Z",
+    createdAt:
+      recentInvocations[recentInvocations.length - 1]?.occurredAt ??
+      "2026-04-04T10:00:00Z",
     lastActivityAt: recentInvocations[0]?.occurredAt ?? "2026-04-04T10:00:00Z",
     upstreamAccounts: [],
     recentInvocations,
@@ -195,6 +198,35 @@ describe("DashboardWorkingConversationsSection", () => {
     expect(onOpenInvocation).not.toHaveBeenCalled();
   });
 
+  it("renders interrupted slots with the dedicated interrupted label", () => {
+    renderSection(
+      createResponse([
+        createConversation("pck-interrupted", [
+          createPreview({
+            id: 2,
+            invokeId: "invoke-interrupted",
+            occurredAt: "2026-04-04T10:04:00Z",
+            status: "interrupted",
+            failureClass: "service_failure",
+            failureKind: "proxy_interrupted",
+            errorMessage:
+              "proxy request was interrupted before completion and was recovered on startup",
+          }),
+          createPreview({
+            id: 1,
+            invokeId: "invoke-interrupted-old",
+            occurredAt: "2026-04-04T10:02:00Z",
+            status: "completed",
+          }),
+        ]),
+      ]),
+    );
+
+    const text = host?.textContent ?? "";
+    expect(text).toContain("已中断");
+    expect(text).not.toContain("失败");
+  });
+
   it("keeps upstream account buttons interactive so the shared drawer can open", () => {
     const onOpenUpstreamAccount = vi.fn();
     const onOpenInvocation = vi.fn();
@@ -225,11 +257,14 @@ describe("DashboardWorkingConversationsSection", () => {
       },
     );
 
-    const accountButton = Array.from(host?.querySelectorAll("button") ?? []).find((button) => {
+    const accountButton = Array.from(
+      host?.querySelectorAll("button") ?? [],
+    ).find((button) => {
       const text = button.textContent ?? "";
       const title = button.getAttribute("title") ?? "";
       return (
-        text.includes("pool-account-77") || title.includes("pool-account-77@example.com")
+        text.includes("pool-account-77") ||
+        title.includes("pool-account-77@example.com")
       );
     });
     if (!(accountButton instanceof HTMLButtonElement)) {
@@ -285,9 +320,9 @@ describe("DashboardWorkingConversationsSection", () => {
         promptCacheKey: "pck-slot-open",
       }),
     );
-    expect(onOpenInvocation.mock.calls[0]?.[0]?.invocation?.record?.invokeId).toBe(
-      "invoke-slot-current",
-    );
+    expect(
+      onOpenInvocation.mock.calls[0]?.[0]?.invocation?.record?.invokeId,
+    ).toBe("invoke-slot-current");
 
     act(() => {
       currentSlot.dispatchEvent(
@@ -312,15 +347,21 @@ describe("DashboardWorkingConversationsSection", () => {
       ]),
     );
 
-    const card = host?.querySelector('[data-testid="dashboard-working-conversation-card"]');
+    const card = host?.querySelector(
+      '[data-testid="dashboard-working-conversation-card"]',
+    );
     const placeholder = host?.querySelector(
       '[data-testid="dashboard-working-conversation-placeholder"]',
     );
-    const placeholderLine = host?.querySelector(".working-conversation-placeholder-line");
+    const placeholderLine = host?.querySelector(
+      ".working-conversation-placeholder-line",
+    );
 
     expect(card?.className).toContain("working-conversation-card-surface");
     expect(card?.className).not.toContain("bg-[linear-gradient");
-    expect(placeholder?.className).toContain("working-conversation-slot-surface");
+    expect(placeholder?.className).toContain(
+      "working-conversation-slot-surface",
+    );
     expect(placeholderLine).not.toBeNull();
   });
 

@@ -169,7 +169,7 @@ impl InvocationSortBy {
 
 pub(crate) fn invocation_display_status_sql() -> String {
     format!(
-        "CASE WHEN {resolved_failure} IN ('service_failure', 'client_failure', 'client_abort') THEN 'failed' WHEN {status_norm} = '' THEN 'unknown' ELSE {status_norm} END",
+        "CASE WHEN {status_norm} = 'interrupted' THEN 'interrupted' WHEN {resolved_failure} IN ('service_failure', 'client_failure', 'client_abort') THEN 'failed' WHEN {status_norm} = '' THEN 'unknown' ELSE {status_norm} END",
         resolved_failure = INVOCATION_RESOLVED_FAILURE_CLASS_SQL,
         status_norm = INVOCATION_STATUS_NORMALIZED_SQL,
     )
@@ -573,6 +573,9 @@ fn apply_invocation_records_filters(
             query.push(" AND ");
             query.push(INVOCATION_RESOLVED_FAILURE_CLASS_SQL);
             query.push(" IN ('service_failure', 'client_failure', 'client_abort')");
+            query.push(" AND ");
+            query.push(INVOCATION_STATUS_NORMALIZED_SQL);
+            query.push(" != 'interrupted'");
         } else if normalized_status.eq_ignore_ascii_case("success") {
             // Keep the success filter symmetric with the resolved failure-class logic so legacy rows
             // that still carry `status='success'` but classify as failures do not leak into success.

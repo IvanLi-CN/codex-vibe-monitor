@@ -306,6 +306,7 @@ const PROXY_FAILURE_REQUEST_BODY_STREAM_ERROR_CLIENT_CLOSED: &str =
 const PROXY_FAILURE_FAILED_CONTACT_UPSTREAM: &str = "failed_contact_upstream";
 const PROXY_FAILURE_UPSTREAM_HANDSHAKE_TIMEOUT: &str = "upstream_handshake_timeout";
 const PROXY_FAILURE_UPSTREAM_STREAM_ERROR: &str = "upstream_stream_error";
+const PROXY_FAILURE_INVOCATION_INTERRUPTED: &str = "proxy_interrupted";
 const PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED: &str = "pool_attempt_interrupted";
 const PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED: &str = "upstream_response_failed";
 const UPSTREAM_ERROR_CODE_SERVER_IS_OVERLOADED: &str = "server_is_overloaded";
@@ -325,6 +326,11 @@ const INVOCATION_UPSTREAM_SCOPE_EXTERNAL: &str = "external";
 const INVOCATION_UPSTREAM_SCOPE_INTERNAL: &str = "internal";
 const INVOCATION_ROUTE_MODE_FORWARD_PROXY: &str = "forward_proxy";
 const INVOCATION_ROUTE_MODE_POOL: &str = "pool";
+const INVOCATION_STATUS_RUNNING: &str = "running";
+const INVOCATION_STATUS_PENDING: &str = "pending";
+const INVOCATION_STATUS_INTERRUPTED: &str = "interrupted";
+const INVOCATION_INTERRUPTED_MESSAGE: &str =
+    "proxy request was interrupted before completion and was recovered on startup";
 const POOL_ATTEMPT_INTERRUPTED_MESSAGE: &str =
     "pool attempt was interrupted before completion and was recovered on startup";
 const FAILURE_CLASS_NONE: &str = "none";
