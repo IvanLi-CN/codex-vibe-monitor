@@ -63,6 +63,7 @@ async fn proxy_openai_v1_common(
                     message: format!("failed to resolve pool routing settings: {err}"),
                     cvm_id: None,
                     retry_after_secs: None,
+                    queue_wait_ms: None,
                 },
                 &invoke_id,
             );
@@ -78,6 +79,7 @@ async fn proxy_openai_v1_common(
                     message: format!("failed to resolve pool routing timeouts: {err}"),
                     cvm_id: None,
                     retry_after_secs: None,
+                    queue_wait_ms: None,
                 },
                 &invoke_id,
             );
@@ -181,6 +183,7 @@ struct ProxyErrorResponse {
     message: String,
     cvm_id: Option<String>,
     retry_after_secs: Option<u64>,
+    queue_wait_ms: Option<f64>,
 }
 
 const PROXY_CONCURRENCY_LIMIT_MESSAGE: &str = "proxy concurrency limit reached; retry later";
@@ -257,6 +260,9 @@ async fn persist_proxy_request_rejection_if_observable(
         }
     };
     let error_message = format!("[{}] {}", PROXY_FAILURE_PROXY_CONCURRENCY_LIMIT, err.message);
+    let queue_wait_ms = err
+        .queue_wait_ms
+        .unwrap_or_else(|| elapsed_ms(capture_started));
     let record = ProxyCaptureRecord {
         invoke_id: invoke_id.to_string(),
         occurred_at,
@@ -327,8 +333,8 @@ async fn persist_proxy_request_rejection_if_observable(
         req_raw: RawPayloadMeta::default(),
         resp_raw: RawPayloadMeta::default(),
         timings: StageTimings {
-            t_total_ms: 0.0,
-            t_req_read_ms: 0.0,
+            t_total_ms: queue_wait_ms,
+            t_req_read_ms: queue_wait_ms,
             t_req_parse_ms: 0.0,
             t_upstream_connect_ms: 0.0,
             t_upstream_ttfb_ms: 0.0,
@@ -398,9 +404,11 @@ async fn acquire_proxy_request_concurrency_permit(
                     PROXY_CONCURRENCY_LIMIT_MESSAGE,
                     Some(state.config.proxy_request_concurrency_wait_timeout),
                 ),
+                queue_wait_ms: Some(elapsed_ms(wait_started_at)),
             });
         }
         Err(_) => {
+            let queue_wait_ms = elapsed_ms(wait_started_at);
             let rejected_total = state
                 .proxy_request_rejected_total
                 .fetch_add(1, Ordering::Relaxed)
@@ -426,6 +434,7 @@ async fn acquire_proxy_request_concurrency_permit(
                     PROXY_CONCURRENCY_LIMIT_MESSAGE,
                     Some(state.config.proxy_request_concurrency_wait_timeout),
                 ),
+                queue_wait_ms: Some(queue_wait_ms),
             });
         }
     };
@@ -5175,6 +5184,7 @@ async fn proxy_pool_upstream_response_to_downstream(
                 }
             }
         }
+        drop(proxy_request_permit_for_task.take());
 
         if let Some(message) = stream_error_message.as_deref() {
             release_pool_routing_reservation(
@@ -6121,6 +6131,7 @@ async fn proxy_openai_v1_inner(
                     message: format!("failed to build upstream url: {err}"),
                     cvm_id: None,
                     retry_after_secs: None,
+                    queue_wait_ms: None,
                 }
             },
         )?;
@@ -6146,6 +6157,7 @@ async fn proxy_openai_v1_inner(
             status,
             message,
             cvm_id: None,
+            queue_wait_ms: None,
         });
     }
 
@@ -6175,6 +6187,7 @@ async fn proxy_openai_v1_inner(
             status,
             message,
             cvm_id: Some(tracked_invoke_id),
+            queue_wait_ms: None,
         });
     }
 
@@ -6198,6 +6211,7 @@ async fn proxy_openai_v1_inner(
         status,
         message,
         cvm_id: None,
+        queue_wait_ms: None,
     });
 }
 
@@ -7277,6 +7291,7 @@ async fn proxy_openai_v1_capture_target(
             }
         }
         drop(tx);
+        drop(proxy_request_permit_for_task.take());
 
         let terminal_state = if stream_error.is_some() {
             PROXY_STREAM_TERMINAL_ERROR

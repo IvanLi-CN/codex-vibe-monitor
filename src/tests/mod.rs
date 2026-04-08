@@ -1020,6 +1020,7 @@ async fn acquire_proxy_request_concurrency_permit_times_out_when_limit_is_reache
 
     assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(err.message, PROXY_CONCURRENCY_LIMIT_MESSAGE);
+    assert!(err.queue_wait_ms.is_some_and(|value| value > 0.0));
     assert_eq!(state.proxy_request_queue_total.load(Ordering::Acquire), 1);
     assert_eq!(
         state.proxy_request_rejected_total.load(Ordering::Acquire),
@@ -1115,11 +1116,13 @@ async fn proxy_openai_v1_persists_concurrency_limit_rejections_for_capture_targe
         error_message: Option<String>,
         failure_kind: Option<String>,
         payload: Option<String>,
+        t_total_ms: Option<f64>,
+        t_req_read_ms: Option<f64>,
     }
 
     let row = sqlx::query_as::<_, PersistedRow>(
         r#"
-        SELECT status, error_message, failure_kind, payload
+        SELECT status, error_message, failure_kind, payload, t_total_ms, t_req_read_ms
         FROM codex_invocations
         ORDER BY id DESC
         LIMIT 1
@@ -1154,6 +1157,8 @@ async fn proxy_openai_v1_persists_concurrency_limit_rejections_for_capture_targe
         payload["failureKind"].as_str(),
         Some(PROXY_FAILURE_PROXY_CONCURRENCY_LIMIT)
     );
+    assert!(row.t_total_ms.is_some_and(|value| value > 0.0));
+    assert!(row.t_req_read_ms.is_some_and(|value| value > 0.0));
 
     let mut saw_record = false;
     for _ in 0..8 {
@@ -1370,6 +1375,109 @@ async fn proxy_openai_v1_via_pool_holds_concurrency_slot_until_downstream_stream
         0,
         "proxy concurrency slot should release after downstream streaming completes"
     );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_capture_target_releases_concurrency_slot_before_persist_follow_up() {
+    let app = Router::new().route(
+        "/v1/responses",
+        post(|| async move {
+            let stream = stream::once(async {
+                Ok::<Bytes, Infallible>(Bytes::from_static(br#"{"phase":"streaming""#))
+            })
+            .chain(stream::once(async move {
+                tokio::time::sleep(Duration::from_millis(120)).await;
+                Ok::<Bytes, Infallible>(Bytes::from_static(br#","done":true}"#))
+            }));
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(http_header::CONTENT_TYPE, "application/json")
+                .body(Body::from_stream(stream))
+                .expect("build streaming response")
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind streaming upstream");
+    let addr = listener.local_addr().expect("streaming upstream addr");
+    let upstream_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("streaming upstream should run");
+    });
+
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse(&format!("http://{addr}")).expect("valid streaming upstream base url");
+    config.proxy_request_concurrency_limit = 1;
+    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(50);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-stream-slot-key").await;
+    insert_test_pool_api_key_account(&state, "Streaming Slot", "route-stream-slot").await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid proxy uri")),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-stream-slot-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hi"}"#)),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        state.proxy_request_in_flight.load(Ordering::Acquire),
+        1,
+        "proxy concurrency slot should remain held while downstream body is still open"
+    );
+
+    let mut lock_conn = state
+        .pool
+        .acquire()
+        .await
+        .expect("acquire sqlite lock connection");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *lock_conn)
+        .await
+        .expect("acquire sqlite write lock");
+
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read capture-target response body");
+    assert_eq!(
+        body,
+        Bytes::from_static(br#"{"phase":"streaming","done":true}"#)
+    );
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if state.proxy_request_in_flight.load(Ordering::Acquire) == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("proxy concurrency slot should release before persist follow-up completes");
+
+    sqlx::query("ROLLBACK")
+        .execute(&mut *lock_conn)
+        .await
+        .expect("rollback sqlite write lock");
+    drop(lock_conn);
+
+    wait_for_codex_invocations(&state.pool, 1).await;
 
     upstream_handle.abort();
 }
