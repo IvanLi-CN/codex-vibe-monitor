@@ -707,6 +707,14 @@ impl Drop for PoolEarlyPhaseOrphanCleanupGuard {
         });
     }
 }
+
+fn disarm_pool_early_phase_cleanup_guard(
+    guard: &mut Option<PoolEarlyPhaseOrphanCleanupGuard>,
+) {
+    if let Some(guard) = guard.as_mut() {
+        guard.disarm();
+    }
+}
 const POOL_UPSTREAM_MAX_DISTINCT_ACCOUNTS: usize = 3;
 const POOL_UPSTREAM_RESPONSES_MAX_TIMEOUT_ROUTE_KEYS: usize = 3;
 
@@ -2513,6 +2521,9 @@ async fn send_pool_request_with_failover(
                                     retry_after_ms = retry_delay.as_millis(),
                                     "pool upstream transport failure; retrying same account"
                                 );
+                                disarm_pool_early_phase_cleanup_guard(
+                                    &mut early_phase_cleanup_guard,
+                                );
                                 sleep(retry_delay).await;
                                 continue;
                             }
@@ -2552,6 +2563,7 @@ async fn send_pool_request_with_failover(
                                 overload_required_upstream_route_key = None;
                                 timeout_route_failover_pending = true;
                             }
+                            disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
                             continue 'account_loop;
                         }
                         Err(_) => {
@@ -2672,6 +2684,9 @@ async fn send_pool_request_with_failover(
                                         "failed to persist pool total-timeout exhaustion attempt"
                                     );
                                 }
+                                disarm_pool_early_phase_cleanup_guard(
+                                    &mut early_phase_cleanup_guard,
+                                );
                                 return Err(final_error);
                             }
                             let has_retry_budget =
@@ -2686,6 +2701,9 @@ async fn send_pool_request_with_failover(
                                     max_same_account_attempts = same_account_attempt_budget,
                                     retry_after_ms = retry_delay.as_millis(),
                                     "pool upstream handshake timeout; retrying same account"
+                                );
+                                disarm_pool_early_phase_cleanup_guard(
+                                    &mut early_phase_cleanup_guard,
                                 );
                                 sleep(retry_delay).await;
                                 continue;
@@ -2726,6 +2744,7 @@ async fn send_pool_request_with_failover(
                                 overload_required_upstream_route_key = None;
                                 timeout_route_failover_pending = true;
                             }
+                            disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
                             continue 'account_loop;
                         }
                     }
@@ -3083,10 +3102,10 @@ async fn send_pool_request_with_failover(
                         "failed to broadcast pool http failure snapshot"
                     );
                 }
-                if has_group_upstream_429_retry_budget {
-                    let retry_delay = pool_group_upstream_429_retry_delay(state.as_ref());
-                    let group_retry_index = group_upstream_429_retry_count + 1;
-                    info!(
+                    if has_group_upstream_429_retry_budget {
+                        let retry_delay = pool_group_upstream_429_retry_delay(state.as_ref());
+                        let group_retry_index = group_upstream_429_retry_count + 1;
+                        info!(
                         account_id = account.account_id,
                         status = status.as_u16(),
                         retry_index = same_account_attempt + 1,
@@ -3094,24 +3113,26 @@ async fn send_pool_request_with_failover(
                         max_same_account_attempts = same_account_attempt_loop_budget,
                         group_upstream_429_max_retries,
                         retry_after_ms = retry_delay.as_millis(),
-                        "pool upstream responded with group retryable 429; retrying same account"
-                    );
-                    group_upstream_429_retry_count += 1;
-                    sleep(retry_delay).await;
-                    continue;
-                }
-                if let Some(retry_delay) = retry_delay {
+                            "pool upstream responded with group retryable 429; retrying same account"
+                        );
+                        group_upstream_429_retry_count += 1;
+                        disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
+                        sleep(retry_delay).await;
+                        continue;
+                    }
+                    if let Some(retry_delay) = retry_delay {
                     info!(
                         account_id = account.account_id,
                         status = status.as_u16(),
                         retry_index = same_account_attempt + 1,
                         max_same_account_attempts = same_account_attempt_budget,
-                        retry_after_ms = retry_delay.as_millis(),
-                        "pool upstream responded with retryable status; retrying same account"
-                    );
-                    sleep(retry_delay).await;
-                    continue;
-                }
+                            retry_after_ms = retry_delay.as_millis(),
+                            "pool upstream responded with retryable status; retrying same account"
+                        );
+                        disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
+                        sleep(retry_delay).await;
+                        continue;
+                    }
                 if let Err(route_err) = record_pool_route_http_failure(
                     &state.pool,
                     account.account_id,
@@ -3164,6 +3185,7 @@ async fn send_pool_request_with_failover(
                     overload_required_upstream_route_key = None;
                     timeout_route_failover_pending = true;
                 }
+                disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
                 continue 'account_loop;
             }
 
@@ -3297,6 +3319,7 @@ async fn send_pool_request_with_failover(
                                 "failed to persist pool total-timeout exhaustion attempt"
                             );
                         }
+                        disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
                         return Err(final_error);
                     }
                     let has_retry_budget = same_account_attempt + 1 < same_account_attempt_budget;
@@ -3310,6 +3333,7 @@ async fn send_pool_request_with_failover(
                             retry_after_ms = retry_delay.as_millis(),
                             "pool upstream first chunk failed; retrying same account"
                         );
+                        disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
                         sleep(retry_delay).await;
                         continue;
                     }
@@ -3348,6 +3372,7 @@ async fn send_pool_request_with_failover(
                         overload_required_upstream_route_key = None;
                         timeout_route_failover_pending = true;
                     }
+                    disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
                     continue 'account_loop;
                 }
             };
@@ -3443,6 +3468,7 @@ async fn send_pool_request_with_failover(
                             retry_after_ms = retry_delay.as_millis(),
                             "pool upstream reported retryable response.failed before forwarding; retrying same account"
                         );
+                        disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
                         sleep(retry_delay).await;
                         continue;
                     }
@@ -3478,6 +3504,7 @@ async fn send_pool_request_with_failover(
                     );
                     exhausted_accounts_all_rate_limited = false;
                     overload_required_upstream_route_key = Some(upstream_route_key.clone());
+                    disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
                     continue 'account_loop;
                 }
                 Err(err) => {
@@ -3550,6 +3577,7 @@ async fn send_pool_request_with_failover(
                         },
                     );
                     exhausted_accounts_all_rate_limited = false;
+                    disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
                     continue 'account_loop;
                 }
             };
@@ -3596,9 +3624,7 @@ async fn send_pool_request_with_failover(
                 )
                 .await;
             }
-            if let Some(guard) = early_phase_cleanup_guard.as_mut() {
-                guard.disarm();
-            }
+            disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
             reservation_guard.disarm();
             return Ok(PoolUpstreamResponse {
                 account: account.clone(),
@@ -8918,27 +8944,12 @@ async fn recover_guard_dropped_pool_early_phase_orphan(
         None => Vec::new(),
     };
 
-    let recovered_invocations = if pending_attempt_record.attempt_id.is_none() {
-        warn!(
-            invoke_id = %pending_attempt_record.invoke_id,
-            occurred_at = %pending_attempt_record.occurred_at,
-            recovery_trigger = "drop_guard",
-            "skipping guard-based invocation recovery because no pending pool attempt row was persisted"
-        );
-        Vec::new()
-    } else if recovered_attempts.is_empty() {
-        Vec::new()
-    } else {
-        let selectors: Vec<_> = recovered_attempts
-            .iter()
-            .map(|row| InvocationRecoverySelector::new(row.invoke_id.clone(), row.occurred_at.clone()))
-            .collect();
-        recover_proxy_invocations_with_scope(
-            &state.pool,
-            ProxyInvocationRecoveryScope::Selectors(&selectors),
-        )
-        .await?
-    };
+    let selector = InvocationRecoverySelector::from(&pending_attempt_record);
+    let recovered_invocations = recover_proxy_invocations_with_scope(
+        &state.pool,
+        ProxyInvocationRecoveryScope::Selectors(std::slice::from_ref(&selector)),
+    )
+    .await?;
 
     if recovered_attempts.is_empty() && recovered_invocations.is_empty() {
         return Ok(());

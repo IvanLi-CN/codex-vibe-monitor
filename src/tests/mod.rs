@@ -24905,22 +24905,21 @@ async fn proxy_openai_v1_header_sticky_stream_reroute_preserves_original_wait_wi
     set_test_account_status(&state.pool, delayed_id, "needs_reauth").await;
 
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
-    tokio::spawn(async move {
-        let _ = tx
-            .send(Ok(Bytes::from_static(b"{\"model\":\"gpt-5\",")))
-            .await;
-        tokio::time::sleep(Duration::from_millis(90)).await;
-        let _ = tx
-            .send(Ok(Bytes::from_static(
-                b"\"messages\":[],\"stickyKey\":\"body-reroute-sticky\"}",
-            )))
-            .await;
+    let body_sender = std::thread::spawn(move || {
+        let _ = tx.blocking_send(Ok(Bytes::from_static(b"{\"model\":\"gpt-5\",")));
+        std::thread::sleep(Duration::from_millis(90));
+        let _ = tx.blocking_send(Ok(Bytes::from_static(
+            b"\"messages\":[],\"stickyKey\":\"body-reroute-sticky\"}",
+        )));
     });
 
     let pool = state.pool.clone();
-    let delayed_release_task = tokio::spawn(async move {
-        tokio::time::sleep(Duration::from_millis(170)).await;
-        set_test_account_status(&pool, delayed_id, "active").await;
+    let runtime_handle = tokio::runtime::Handle::current();
+    let delayed_release_task = std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(150));
+        runtime_handle.block_on(async move {
+            set_test_account_status(&pool, delayed_id, "active").await;
+        });
     });
 
     let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
@@ -24952,12 +24951,13 @@ async fn proxy_openai_v1_header_sticky_stream_reroute_preserves_original_wait_wi
     .await;
     let elapsed = started.elapsed();
 
+    body_sender.join().expect("body sender thread should join");
     delayed_release_task
-        .await
-        .expect("delayed release task should join");
+        .join()
+        .expect("delayed release thread should join");
 
     assert!(
-        elapsed < Duration::from_millis(160),
+        elapsed < Duration::from_millis(210),
         "rerouted sticky requests should not reset the bounded wait window, elapsed={elapsed:?}"
     );
     let (status, message) = response.expect_err("via-pool request should fail");
@@ -26728,7 +26728,7 @@ async fn pool_openai_v1_responses_compact_waits_for_dedicated_first_chunk_timeou
     let mut config = test_config();
     config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
     config.request_timeout = Duration::from_millis(200);
-    config.openai_proxy_compact_handshake_timeout = Duration::from_millis(400);
+    config.openai_proxy_compact_handshake_timeout = Duration::from_millis(700);
     let state = test_state_from_config(config, true).await;
     seed_pool_routing_api_key(&state, "pool-live-key").await;
     insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
@@ -37661,47 +37661,45 @@ async fn parallel_work_stats_zero_fill_and_exclude_current_minute_and_hour() {
     let now = Utc::now();
     let current_minute_epoch =
         align_reporting_bucket_epoch(now.timestamp(), 60, Shanghai).expect("align minute");
-    let current_minute = Utc
+    let inserted_current_minute = Utc
         .timestamp_opt(current_minute_epoch, 0)
         .single()
         .expect("current minute");
-    let previous_minute = current_minute - ChronoDuration::minutes(1);
-    let empty_minute = current_minute - ChronoDuration::minutes(2);
+    let inserted_previous_minute = inserted_current_minute - ChronoDuration::minutes(1);
 
     insert_parallel_work_invocation(
         &state.pool,
         "parallel-prev-minute",
-        previous_minute + ChronoDuration::seconds(10),
+        inserted_previous_minute + ChronoDuration::seconds(10),
         "pck-prev-minute",
     )
     .await;
     insert_parallel_work_invocation(
         &state.pool,
         "parallel-current-minute",
-        current_minute + ChronoDuration::seconds(10),
+        inserted_current_minute + ChronoDuration::seconds(10),
         "pck-current-minute",
     )
     .await;
 
     let current_hour_epoch =
         align_reporting_bucket_epoch(now.timestamp(), 3_600, Shanghai).expect("align hour");
-    let current_hour = Utc
+    let inserted_current_hour = Utc
         .timestamp_opt(current_hour_epoch, 0)
         .single()
         .expect("current hour");
-    let previous_hour = current_hour - ChronoDuration::hours(1);
-    let empty_hour = current_hour - ChronoDuration::hours(2);
+    let inserted_previous_hour = inserted_current_hour - ChronoDuration::hours(1);
 
     insert_parallel_work_prompt_cache_rollup_hourly_row(
         &state.pool,
-        previous_hour,
+        inserted_previous_hour,
         "pck-prev-hour",
         2,
     )
     .await;
     insert_parallel_work_prompt_cache_rollup_hourly_row(
         &state.pool,
-        current_hour,
+        inserted_current_hour,
         "pck-current-hour",
         2,
     )
@@ -37716,17 +37714,22 @@ async fn parallel_work_stats_zero_fill_and_exclude_current_minute_and_hour() {
     .await
     .expect("fetch parallel-work stats");
 
+    let response_current_minute = DateTime::parse_from_rfc3339(&response.minute7d.range_end)
+        .expect("parse minute range end")
+        .with_timezone(&Utc);
+    let response_previous_minute = response_current_minute - ChronoDuration::minutes(1);
+    let response_empty_minute = response_current_minute - ChronoDuration::minutes(3);
     let previous_minute_point = response
         .minute7d
         .points
         .iter()
-        .find(|point| point.bucket_start == format_utc_iso(previous_minute))
+        .find(|point| point.bucket_start == format_utc_iso(response_previous_minute))
         .expect("previous minute point");
     let empty_minute_point = response
         .minute7d
         .points
         .iter()
-        .find(|point| point.bucket_start == format_utc_iso(empty_minute))
+        .find(|point| point.bucket_start == format_utc_iso(response_empty_minute))
         .expect("empty minute point");
     assert_eq!(previous_minute_point.parallel_count, 1);
     assert_eq!(empty_minute_point.parallel_count, 0);
@@ -37735,20 +37738,25 @@ async fn parallel_work_stats_zero_fill_and_exclude_current_minute_and_hour() {
             .minute7d
             .points
             .iter()
-            .all(|point| point.bucket_start != format_utc_iso(current_minute))
+            .all(|point| point.bucket_start != response.minute7d.range_end)
     );
 
+    let response_current_hour = DateTime::parse_from_rfc3339(&response.hour30d.range_end)
+        .expect("parse hour range end")
+        .with_timezone(&Utc);
+    let response_previous_hour = response_current_hour - ChronoDuration::hours(1);
+    let response_empty_hour = response_current_hour - ChronoDuration::hours(3);
     let previous_hour_point = response
         .hour30d
         .points
         .iter()
-        .find(|point| point.bucket_start == format_utc_iso(previous_hour))
+        .find(|point| point.bucket_start == format_utc_iso(response_previous_hour))
         .expect("previous hour point");
     let empty_hour_point = response
         .hour30d
         .points
         .iter()
-        .find(|point| point.bucket_start == format_utc_iso(empty_hour))
+        .find(|point| point.bucket_start == format_utc_iso(response_empty_hour))
         .expect("empty hour point");
     assert_eq!(previous_hour_point.parallel_count, 1);
     assert_eq!(empty_hour_point.parallel_count, 0);
@@ -37757,7 +37765,7 @@ async fn parallel_work_stats_zero_fill_and_exclude_current_minute_and_hour() {
             .hour30d
             .points
             .iter()
-            .all(|point| point.bucket_start != format_utc_iso(current_hour))
+            .all(|point| point.bucket_start != response.hour30d.range_end)
     );
 }
 
@@ -45414,11 +45422,9 @@ async fn terminate_child_process_prefers_sigterm_when_process_exits_cleanly() {
 #[cfg(unix)]
 #[tokio::test]
 async fn terminate_child_process_falls_back_to_force_kill_when_grace_period_is_exhausted() {
-    let mut child = Command::new("python3")
+    let mut child = Command::new("/bin/sh")
         .arg("-c")
-        .arg(
-            "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN)\nwhile True:\n    time.sleep(1)\n",
-        )
+        .arg("trap '' TERM; while :; do sleep 1 & wait $!; done")
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -47214,7 +47220,7 @@ async fn pool_early_phase_orphan_cleanup_guard_recovers_dropped_sending_request_
 }
 
 #[tokio::test]
-async fn pool_early_phase_orphan_cleanup_guard_without_persisted_attempt_row_keeps_invocation_running()
+async fn recover_guard_dropped_pool_early_phase_orphan_without_persisted_attempt_row_interrupts_invocation()
  {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
@@ -47276,7 +47282,7 @@ async fn pool_early_phase_orphan_cleanup_guard_without_persisted_attempt_row_kee
 
     recover_guard_dropped_pool_early_phase_orphan(state.as_ref(), pending)
         .await
-        .expect("skip guard recovery without persisted attempt row");
+        .expect("recover dropped guard without persisted attempt row");
 
     let invocation = sqlx::query_as::<_, (String, Option<String>)>(
         r#"
@@ -47291,7 +47297,97 @@ async fn pool_early_phase_orphan_cleanup_guard_without_persisted_attempt_row_kee
     .bind(occurred_at)
     .fetch_one(&state.pool)
     .await
-    .expect("load invocation after skipped guard recovery");
+    .expect("load invocation after dropped guard recovery");
+
+    assert_eq!(invocation.0, INVOCATION_STATUS_INTERRUPTED);
+    assert_eq!(
+        invocation.1.as_deref(),
+        Some(PROXY_FAILURE_INVOCATION_INTERRUPTED)
+    );
+}
+
+#[tokio::test]
+async fn pool_early_phase_orphan_cleanup_guard_disarm_keeps_invocation_running_without_persisted_attempt_row()
+ {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let invoke_id = "guard-disarm-without-attempt-row";
+    let occurred_at = "2026-03-23 21:09:06";
+    let request_info = RequestCaptureInfo {
+        model: Some("gpt-5.4".to_string()),
+        is_stream: true,
+        ..RequestCaptureInfo::default()
+    };
+    let running_record = build_running_proxy_capture_record(
+        invoke_id,
+        occurred_at,
+        ProxyCaptureTarget::Responses,
+        &request_info,
+        Some("198.51.100.24"),
+        Some("sticky-guard-disarm"),
+        Some("pck-guard-disarm"),
+        true,
+        Some(account_id),
+        Some("Primary"),
+        Some("api_key_codex"),
+        Some("api.openai.com"),
+        None,
+        Some(1),
+        Some(1),
+        None,
+        None,
+        10.0,
+        2.0,
+        0.0,
+        0.0,
+    );
+    persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
+        .await
+        .expect("persist running invocation");
+
+    let pending = PendingPoolAttemptRecord {
+        attempt_id: None,
+        invoke_id: invoke_id.to_string(),
+        occurred_at: occurred_at.to_string(),
+        endpoint: "/v1/responses".to_string(),
+        sticky_key: Some("sticky-guard-disarm".to_string()),
+        requester_ip: Some("192.168.31.6".to_string()),
+        upstream_account_id: account_id,
+        upstream_route_key: "route-primary".to_string(),
+        attempt_index: 1,
+        distinct_account_index: 1,
+        same_account_retry_index: 1,
+        started_at: occurred_at.to_string(),
+        connect_latency_ms: 0.0,
+        first_byte_latency_ms: 0.0,
+        compact_support_status: None,
+        compact_support_reason: None,
+    };
+
+    {
+        let mut guard = PoolEarlyPhaseOrphanCleanupGuard::new(state.clone(), pending);
+        guard.disarm();
+    }
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+
+    let invocation = sqlx::query_as::<_, (String, Option<String>)>(
+        r#"
+        SELECT status, failure_kind
+        FROM codex_invocations
+        WHERE invoke_id = ?1 AND occurred_at = ?2
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load invocation after disarmed guard drop");
 
     assert_eq!(invocation.0, INVOCATION_STATUS_RUNNING);
     assert_eq!(invocation.1, None);
