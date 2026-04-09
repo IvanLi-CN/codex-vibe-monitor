@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 use tokio::time::{Instant, timeout};
-use tracing::info;
+use tracing::{info, warn};
 
 #[cfg(test)]
 use once_cell::sync::Lazy;
@@ -501,8 +501,24 @@ async fn oauth_responses(
     );
     let request_started = Instant::now();
     let upstream = match timeout(response_timeout, request.send()).await {
-        Ok(Ok(response)) => response,
+        Ok(Ok(response)) => {
+            info!(
+                account_id,
+                path = "/v1/responses",
+                upstream_status = %response.status(),
+                elapsed_ms = request_started.elapsed().as_millis() as u64,
+                "oauth responses request send returned upstream response"
+            );
+            response
+        }
         Ok(Err(err)) => {
+            warn!(
+                account_id,
+                path = "/v1/responses",
+                elapsed_ms = request_started.elapsed().as_millis() as u64,
+                error = %err,
+                "oauth responses request send returned upstream transport error"
+            );
             let mut response = error_response(
                 StatusCode::BAD_GATEWAY,
                 &format!("failed to contact oauth codex upstream: {err}"),
@@ -518,6 +534,13 @@ async fn oauth_responses(
             };
         }
         Err(_) => {
+            warn!(
+                account_id,
+                path = "/v1/responses",
+                timeout_ms = response_timeout.as_millis() as u64,
+                elapsed_ms = request_started.elapsed().as_millis() as u64,
+                "oauth responses request send timed out before upstream response"
+            );
             let message = format!(
                 "oauth codex upstream handshake timed out after {}ms",
                 response_timeout.as_millis()

@@ -153,6 +153,8 @@ pub(crate) async fn run() -> Result<()> {
     .await
 }
 
+const POOL_EARLY_PHASE_ORPHAN_RECOVERY_INTERVAL: Duration = Duration::from_secs(60);
+
 fn begin_runtime_shutdown_if_requested<F>(
     shutdown_signal: &Shared<F>,
     cancel: &CancellationToken,
@@ -262,6 +264,7 @@ async fn drain_runtime_after_pending_shutdown(
     poller_handle: Option<JoinHandle<()>>,
     upstream_accounts_handle: Option<JoinHandle<()>>,
     forward_proxy_handle: Option<JoinHandle<()>>,
+    pool_orphan_recovery_handle: Option<JoinHandle<()>>,
     retention_handle: Option<JoinHandle<()>>,
     startup_backfill_handle: Option<JoinHandle<()>>,
 ) -> Result<()> {
@@ -279,6 +282,7 @@ async fn drain_runtime_after_pending_shutdown(
         poller_handle,
         upstream_accounts_handle,
         forward_proxy_handle,
+        pool_orphan_recovery_handle,
         retention_handle,
         startup_backfill_handle,
     )
@@ -305,6 +309,7 @@ where
     let mut poller_handle = None;
     let mut upstream_accounts_handle = None;
     let mut forward_proxy_handle = None;
+    let mut pool_orphan_recovery_handle = None;
     let mut retention_handle = None;
     let mut server_handle = None;
     let mut startup_backfill_handle = None;
@@ -324,6 +329,7 @@ where
                 poller_handle,
                 upstream_accounts_handle,
                 forward_proxy_handle,
+                pool_orphan_recovery_handle,
                 retention_handle,
                 startup_backfill_handle,
             )
@@ -348,6 +354,7 @@ where
             poller_handle,
             upstream_accounts_handle,
             forward_proxy_handle,
+            pool_orphan_recovery_handle,
             retention_handle,
             startup_backfill_handle,
         )
@@ -372,6 +379,7 @@ where
                 poller_handle,
                 upstream_accounts_handle,
                 forward_proxy_handle,
+                pool_orphan_recovery_handle,
                 retention_handle,
                 startup_backfill_handle,
             )
@@ -393,6 +401,7 @@ where
             poller_handle,
             upstream_accounts_handle,
             forward_proxy_handle,
+            pool_orphan_recovery_handle,
             retention_handle,
             startup_backfill_handle,
         )
@@ -416,6 +425,7 @@ where
                 poller_handle,
                 upstream_accounts_handle,
                 forward_proxy_handle,
+                pool_orphan_recovery_handle,
                 retention_handle,
                 startup_backfill_handle,
             )
@@ -437,6 +447,7 @@ where
             poller_handle,
             upstream_accounts_handle,
             forward_proxy_handle,
+            pool_orphan_recovery_handle,
             retention_handle,
             startup_backfill_handle,
         )
@@ -459,6 +470,7 @@ where
                 poller_handle,
                 upstream_accounts_handle,
                 forward_proxy_handle,
+                pool_orphan_recovery_handle,
                 retention_handle,
                 startup_backfill_handle,
             )
@@ -480,6 +492,7 @@ where
             poller_handle,
             upstream_accounts_handle,
             forward_proxy_handle,
+            pool_orphan_recovery_handle,
             retention_handle,
             startup_backfill_handle,
         )
@@ -502,6 +515,7 @@ where
                 poller_handle,
                 upstream_accounts_handle,
                 forward_proxy_handle,
+                pool_orphan_recovery_handle,
                 retention_handle,
                 startup_backfill_handle,
             )
@@ -523,11 +537,59 @@ where
             poller_handle,
             upstream_accounts_handle,
             forward_proxy_handle,
+            pool_orphan_recovery_handle,
             retention_handle,
             startup_backfill_handle,
         )
         .await;
     }
+
+    let pool_orphan_recovery_stage =
+        run_startup_stage_until_shutdown(&shutdown_signal, &cancel, async {
+            Some(spawn_pool_orphan_recovery_maintenance(
+                state.clone(),
+                cancel.clone(),
+            ))
+        })
+        .await;
+    let pool_orphan_recovery_shutdown_requested = match pool_orphan_recovery_stage {
+        StartupStageOutcome::SkippedByShutdown => {
+            return drain_runtime_after_pending_shutdown(
+                state,
+                shutdown_watcher,
+                server_handle,
+                poller_handle,
+                upstream_accounts_handle,
+                forward_proxy_handle,
+                pool_orphan_recovery_handle,
+                retention_handle,
+                startup_backfill_handle,
+            )
+            .await;
+        }
+        StartupStageOutcome::Completed {
+            result,
+            shutdown_requested,
+        } => {
+            pool_orphan_recovery_handle = result;
+            shutdown_requested
+        }
+    };
+    if pool_orphan_recovery_shutdown_requested {
+        return drain_runtime_after_pending_shutdown(
+            state,
+            shutdown_watcher,
+            server_handle,
+            poller_handle,
+            upstream_accounts_handle,
+            forward_proxy_handle,
+            pool_orphan_recovery_handle,
+            retention_handle,
+            startup_backfill_handle,
+        )
+        .await;
+    }
+
     let http_ready_started_at = Instant::now();
     let http_stage = run_startup_stage_until_shutdown(
         &shutdown_signal,
@@ -544,6 +606,7 @@ where
                 poller_handle,
                 upstream_accounts_handle,
                 forward_proxy_handle,
+                pool_orphan_recovery_handle,
                 retention_handle,
                 startup_backfill_handle,
             )
@@ -566,6 +629,7 @@ where
             poller_handle,
             upstream_accounts_handle,
             forward_proxy_handle,
+            pool_orphan_recovery_handle,
             retention_handle,
             startup_backfill_handle,
         )
@@ -589,6 +653,7 @@ where
                 poller_handle,
                 upstream_accounts_handle,
                 forward_proxy_handle,
+                pool_orphan_recovery_handle,
                 retention_handle,
                 startup_backfill_handle,
             )
@@ -610,6 +675,7 @@ where
             poller_handle,
             upstream_accounts_handle,
             forward_proxy_handle,
+            pool_orphan_recovery_handle,
             retention_handle,
             startup_backfill_handle,
         )
@@ -636,6 +702,7 @@ where
         poller_handle,
         upstream_accounts_handle,
         forward_proxy_handle,
+        pool_orphan_recovery_handle,
         retention_handle,
         startup_backfill_handle,
     )
@@ -662,6 +729,7 @@ async fn drain_runtime_after_shutdown(
     poller_handle: Option<JoinHandle<()>>,
     upstream_accounts_handle: Option<JoinHandle<()>>,
     forward_proxy_handle: Option<JoinHandle<()>>,
+    pool_orphan_recovery_handle: Option<JoinHandle<()>>,
     retention_handle: Option<JoinHandle<()>>,
     startup_backfill_handle: Option<JoinHandle<()>>,
 ) -> Result<()> {
@@ -694,6 +762,14 @@ async fn drain_runtime_after_shutdown(
         error!(
             ?err,
             "forward proxy maintenance task terminated unexpectedly"
+        );
+    }
+    if let Some(pool_orphan_recovery_handle) = pool_orphan_recovery_handle
+        && let Err(err) = pool_orphan_recovery_handle.await
+    {
+        error!(
+            ?err,
+            "pool orphan recovery maintenance task terminated unexpectedly"
         );
     }
     if let Some(retention_handle) = retention_handle
@@ -831,6 +907,40 @@ fn spawn_forward_proxy_maintenance(
                 _ = ticker.tick() => {
                     if let Err(err) = refresh_forward_proxy_subscriptions(state.clone(), false, None).await {
                         warn!(error = %err, "failed to refresh forward proxy subscriptions");
+                    }
+                }
+            }
+        }
+    })
+}
+
+fn spawn_pool_orphan_recovery_maintenance(
+    state: Arc<AppState>,
+    cancel: CancellationToken,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = interval(POOL_EARLY_PHASE_ORPHAN_RECOVERY_INTERVAL);
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        loop {
+            tokio::select! {
+                _ = cancel.cancelled() => {
+                    info!("pool orphan recovery maintenance received shutdown");
+                    break;
+                }
+                _ = ticker.tick() => {
+                    match recover_stale_pool_early_phase_orphans_runtime(state.as_ref()).await {
+                        Ok(outcome) => {
+                            if outcome.recovered_attempts > 0 || outcome.recovered_invocations > 0 {
+                                warn!(
+                                    recovered_attempts = outcome.recovered_attempts,
+                                    recovered_invocations = outcome.recovered_invocations,
+                                    "runtime pool orphan recovery swept stale early-phase rows"
+                                );
+                            }
+                        }
+                        Err(err) => {
+                            warn!(error = %err, "failed to recover stale pool early-phase orphans at runtime");
+                        }
                     }
                 }
             }
