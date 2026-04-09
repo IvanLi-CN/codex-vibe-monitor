@@ -33,25 +33,45 @@ function createSummary(totalCount: number, successCount: number, failureCount: n
   return { totalCount, successCount, failureCount, totalCost, totalTokens }
 }
 
-function buildTodayMinutePoints() {
-  const rangeStart = new Date('2026-04-08T00:00:00+08:00')
-  const rangeEnd = new Date('2026-04-08T12:24:00+08:00')
-  const points: Array<Record<string, number | string>> = []
+const TODAY_SUMMARY_FIXTURE = createSummary(12474, 9949, 2525, 539.42, 1314275579)
 
-  for (let minute = 0; minute <= 12 * 60 + 24; minute += 1) {
+function buildTodayMinutePoints(summary = TODAY_SUMMARY_FIXTURE) {
+  const rangeStart = new Date('2026-04-09T00:00:00+08:00')
+  const rangeEnd = new Date('2026-04-09T12:24:00+08:00')
+  const points: Array<Record<string, number | string>> = []
+  const minuteCount = Math.floor((rangeEnd.getTime() - rangeStart.getTime()) / 60_000) + 1
+  const minuteIndexes = Array.from({ length: minuteCount }, (_, index) => index)
+  const successCounts = distributeInteger(
+    summary.successCount,
+    minuteIndexes.map((index) => buildActivityWeight(index, 'success')),
+  )
+  const failureCounts = distributeInteger(
+    summary.failureCount,
+    minuteIndexes.map((index) => buildActivityWeight(index, 'failure')),
+  )
+  const totalTokens = distributeInteger(
+    summary.totalTokens,
+    minuteIndexes.map((index) => buildUsageWeight(successCounts[index] + failureCounts[index], index, 'tokens')),
+  )
+  const totalCostCents = distributeInteger(
+    Math.round(summary.totalCost * 100),
+    minuteIndexes.map((index) => buildUsageWeight(successCounts[index] + failureCounts[index], index, 'cost')),
+  )
+
+  for (let minute = 0; minute < minuteCount; minute += 1) {
     const bucketStart = new Date(rangeStart.getTime() + minute * 60_000)
     const bucketEnd = new Date(bucketStart.getTime() + 60_000)
-    const totalCount = minute % 11 === 0 ? 0 : (minute % 4) + (minute % 9 === 0 ? 2 : 0)
-    const failureCount = totalCount > 0 && minute % 13 === 0 ? 1 : 0
-    const successCount = Math.max(totalCount - failureCount, 0)
+    const successCount = successCounts[minute] ?? 0
+    const failureCount = failureCounts[minute] ?? 0
+    const totalCount = successCount + failureCount
     points.push({
       bucketStart: bucketStart.toISOString(),
       bucketEnd: bucketEnd.toISOString(),
       totalCount,
       successCount,
       failureCount,
-      totalTokens: totalCount * 420,
-      totalCost: Number((totalCount * 0.0195).toFixed(4)),
+      totalTokens: totalTokens[minute] ?? 0,
+      totalCost: Number(((totalCostCents[minute] ?? 0) / 100).toFixed(2)),
     })
   }
 
@@ -64,7 +84,7 @@ function buildTodayMinutePoints() {
 }
 
 function build24HourPoints() {
-  const end = new Date('2026-04-08T12:20:00+08:00')
+  const end = new Date('2026-04-09T12:20:00+08:00')
   const start = new Date(end.getTime() - 24 * 60 * 60_000)
   const points: Array<Record<string, number | string>> = []
   for (let index = 0; index < 24 * 60; index += 1) {
@@ -92,7 +112,7 @@ function build24HourPoints() {
 }
 
 function buildHourlyPoints() {
-  const end = new Date('2026-04-08T00:00:00+08:00')
+  const end = new Date('2026-04-09T00:00:00+08:00')
   const start = new Date(end.getTime() - 7 * 24 * 60 * 60_000)
   const points: Array<Record<string, number | string>> = []
   for (let index = 0; index < 7 * 24; index += 1) {
@@ -150,7 +170,7 @@ function buildDailyPoints() {
 }
 
 const SUMMARY_FIXTURES: Record<SummaryKey, ReturnType<typeof createSummary>> = {
-  today: createSummary(12474, 9949, 2525, 539.42, 1314275579),
+  today: TODAY_SUMMARY_FIXTURE,
   '1d': createSummary(76421, 70115, 6306, 3128.74, 8764311220),
   '7d': createSummary(182904, 171240, 11664, 8422.18, 21640351742),
 }
@@ -160,6 +180,55 @@ const TIMESERIES_FIXTURES: Record<TimeseriesKey, ReturnType<typeof buildTodayMin
   '1d:1m': build24HourPoints(),
   '7d:1h': buildHourlyPoints(),
   '6mo:1d': buildDailyPoints(),
+}
+
+function buildActivityWeight(index: number, mode: 'success' | 'failure') {
+  const hour = Math.floor(index / 60)
+  const minute = index % 60
+  const rush = hour < 6 ? 2 : hour < 9 ? 5 : hour < 12 ? 9 : 4
+  const pulse = (index % 11) + 1
+  const boundaryBoost = minute % 15 === 0 ? 4 : minute % 5 === 0 ? 2 : 0
+  const failureBias = mode === 'failure' ? (hour >= 9 && hour <= 11 ? 6 : 3) : 0
+  return rush + pulse + boundaryBoost + failureBias
+}
+
+function buildUsageWeight(totalCount: number, index: number, mode: 'tokens' | 'cost') {
+  const base = Math.max(totalCount, 1)
+  if (mode === 'tokens') {
+    return base * (14 + (index % 17)) + ((index % 7) + 1) * 19
+  }
+  return base * (6 + (index % 9)) + ((index % 5) + 1) * 7
+}
+
+function distributeInteger(total: number, weights: number[]) {
+  if (weights.length === 0) return []
+  const sanitizedWeights = weights.map((weight) => (Number.isFinite(weight) && weight > 0 ? weight : 1))
+  const weightSum = sanitizedWeights.reduce((sum, weight) => sum + weight, 0)
+  if (weightSum <= 0) {
+    const evenShare = Math.floor(total / weights.length)
+    const remainder = total - evenShare * weights.length
+    return weights.map((_, index) => evenShare + (index < remainder ? 1 : 0))
+  }
+
+  const rawAllocations = sanitizedWeights.map((weight) => (total * weight) / weightSum)
+  const allocations = rawAllocations.map((value) => Math.floor(value))
+  let remainder = total - allocations.reduce((sum, value) => sum + value, 0)
+
+  if (remainder > 0) {
+    const remainders = rawAllocations
+      .map((value, index) => ({ index, fraction: value - Math.floor(value), weight: sanitizedWeights[index] }))
+      .sort((left, right) => {
+        if (right.fraction !== left.fraction) return right.fraction - left.fraction
+        if (right.weight !== left.weight) return right.weight - left.weight
+        return left.index - right.index
+      })
+
+    for (let cursor = 0; cursor < remainders.length && remainder > 0; cursor += 1, remainder -= 1) {
+      allocations[remainders[cursor].index] += 1
+    }
+  }
+
+  return allocations
 }
 
 function DashboardOverviewMockApi({ children }: { children: ReactNode }) {

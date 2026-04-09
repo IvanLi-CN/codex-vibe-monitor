@@ -80,6 +80,100 @@ function buildTimeseriesPoints({
   })
 }
 
+function buildTodayTimeseriesPoints({
+  startMs,
+  endMs,
+  summary,
+}: {
+  startMs: number
+  endMs: number
+  summary: StatsResponse
+}) {
+  const count = Math.floor((endMs - startMs) / 60_000) + 1
+  const minuteIndexes = Array.from({ length: count }, (_, index) => index)
+  const successCounts = distributeInteger(
+    summary.successCount,
+    minuteIndexes.map((index) => buildActivityWeight(index, 'success')),
+  )
+  const failureCounts = distributeInteger(
+    summary.failureCount,
+    minuteIndexes.map((index) => buildActivityWeight(index, 'failure')),
+  )
+  const tokenTotals = distributeInteger(
+    summary.totalTokens,
+    minuteIndexes.map((index) => buildUsageWeight(successCounts[index] + failureCounts[index], index, 'tokens')),
+  )
+  const costCents = distributeInteger(
+    Math.round(summary.totalCost * 100),
+    minuteIndexes.map((index) => buildUsageWeight(successCounts[index] + failureCounts[index], index, 'cost')),
+  )
+
+  return minuteIndexes.map((index) => {
+    const bucketStartMs = startMs + index * 60_000
+    const bucketEndMs = bucketStartMs + 60_000
+    const successCount = successCounts[index] ?? 0
+    const failureCount = failureCounts[index] ?? 0
+    return {
+      bucketStart: new Date(bucketStartMs).toISOString(),
+      bucketEnd: new Date(bucketEndMs).toISOString(),
+      totalCount: successCount + failureCount,
+      successCount,
+      failureCount,
+      totalTokens: tokenTotals[index] ?? 0,
+      totalCost: Number(((costCents[index] ?? 0) / 100).toFixed(2)),
+    } satisfies TimeseriesPoint
+  })
+}
+
+function buildActivityWeight(index: number, mode: 'success' | 'failure') {
+  const hour = Math.floor(index / 60)
+  const minute = index % 60
+  const rush = hour < 6 ? 2 : hour < 9 ? 5 : hour < 12 ? 9 : 4
+  const pulse = (index % 11) + 1
+  const boundaryBoost = minute % 15 === 0 ? 4 : minute % 5 === 0 ? 2 : 0
+  const failureBias = mode === 'failure' ? (hour >= 9 && hour <= 11 ? 6 : 3) : 0
+  return rush + pulse + boundaryBoost + failureBias
+}
+
+function buildUsageWeight(totalCount: number, index: number, mode: 'tokens' | 'cost') {
+  const base = Math.max(totalCount, 1)
+  if (mode === 'tokens') {
+    return base * (14 + (index % 17)) + ((index % 7) + 1) * 19
+  }
+  return base * (6 + (index % 9)) + ((index % 5) + 1) * 7
+}
+
+function distributeInteger(total: number, weights: number[]) {
+  if (weights.length === 0) return []
+  const sanitizedWeights = weights.map((weight) => (Number.isFinite(weight) && weight > 0 ? weight : 1))
+  const weightSum = sanitizedWeights.reduce((sum, weight) => sum + weight, 0)
+  if (weightSum <= 0) {
+    const evenShare = Math.floor(total / weights.length)
+    const remainder = total - evenShare * weights.length
+    return weights.map((_, index) => evenShare + (index < remainder ? 1 : 0))
+  }
+
+  const rawAllocations = sanitizedWeights.map((weight) => (total * weight) / weightSum)
+  const allocations = rawAllocations.map((value) => Math.floor(value))
+  let remainder = total - allocations.reduce((sum, value) => sum + value, 0)
+
+  if (remainder > 0) {
+    const remainders = rawAllocations
+      .map((value, index) => ({ index, fraction: value - Math.floor(value), weight: sanitizedWeights[index] }))
+      .sort((left, right) => {
+        if (right.fraction !== left.fraction) return right.fraction - left.fraction
+        if (right.weight !== left.weight) return right.weight - left.weight
+        return left.index - right.index
+      })
+
+    for (let cursor = 0; cursor < remainders.length && remainder > 0; cursor += 1, remainder -= 1) {
+      allocations[remainders[cursor].index] += 1
+    }
+  }
+
+  return allocations
+}
+
 function buildTimeseriesResponse(options: {
   rangeStart: string
   rangeEnd: string
@@ -224,20 +318,22 @@ function buildWorkingConversationsResponse(empty = false): PromptCacheConversati
 }
 
 function createDashboardRequestHandler(scenario: DashboardScenario = 'default') {
-  const now = Date.parse('2026-04-08T12:24:00.000Z')
-  const rangeTodayStart = Date.parse('2026-04-08T00:00:00+08:00')
+  const now = Date.parse('2026-04-09T12:24:00+08:00')
+  const rangeTodayStart = Date.parse('2026-04-09T00:00:00+08:00')
   const range1dStart = now - 24 * 60 * 60 * 1000
   const range7dStart = now - 7 * 24 * 60 * 60 * 1000
   const range6moStart = now - 180 * 24 * 60 * 60 * 1000
 
+  const todaySummary = buildSummary({
+    totalCount: 12474,
+    successCount: 9949,
+    failureCount: 2525,
+    totalCost: 539.42,
+    totalTokens: 1314275579,
+  })
+
   const responses = {
-    today: buildSummary({
-      totalCount: 12474,
-      successCount: 9949,
-      failureCount: 2525,
-      totalCost: 539.42,
-      totalTokens: 1314275579,
-    }),
+    today: todaySummary,
     '1d': buildSummary({
       totalCount: 13564,
       successCount: 10948,
@@ -258,11 +354,10 @@ function createDashboardRequestHandler(scenario: DashboardScenario = 'default') 
       bucketSeconds: 60,
       effectiveBucket: '1m',
       availableBuckets: ['1m'],
-      points: buildTimeseriesPoints({
-        count: Math.floor((now - rangeTodayStart) / 60_000) + 1,
-        bucketSeconds: 60,
+      points: buildTodayTimeseriesPoints({
         startMs: rangeTodayStart,
-        valueOffset: 5,
+        endMs: now,
+        summary: todaySummary,
       }),
     }),
     timeseries1d: buildTimeseriesResponse({

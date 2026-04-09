@@ -132,6 +132,7 @@
 - 2026-04-09: 为 Dashboard 长时间放置崩溃问题补充前端性能硬化：`DashboardActivityOverview` 改为按需挂载 / 按需请求非激活范围，`usePromptCacheConversations` 与 prompt-cache history 改成仅保留当前工作集，并补齐高 churn / selection 切换回归测试。
 - 2026-04-09: 修复 Dashboard KPI 数值溢出；当卡片宽度不足以容纳完整值时，前端会自动切换到紧凑记数法（如 `1.31B`），并保留完整值 tooltip。
 - 2026-04-09: 修正 `今日` 页签分钟图的时间语义：保留“今日”自然日范围，但将横轴扩展为当天完整 24 小时；当前时刻之后的未来分钟不渲染，从而避免图表只占用 `00:00 -> 当前时间` 的前半段宽度。
+- 2026-04-09: 刷新 Storybook 证据夹具与截图，确保 `今日 / 金额` 图的累计终值与 KPI 总成本一致，不再出现 `US$539.42` KPI 对应 `US$58` 曲线终点的错图。
 
 ## Visual Evidence
 
@@ -146,18 +147,22 @@
 
 ![活动总览：今日 / 金额累计](./assets/dashboard-activity-overview-today-cost.png)
 
-### 3. 活动总览：历史
+### 3. KPI 溢出紧凑记数法
+
+![KPI 溢出紧凑记数法](./assets/today-stats-overflow.png)
+
+### 4. 活动总览：历史
 
 ![活动总览：历史](./assets/dashboard-activity-overview-history.png)
 
-### 4. Dashboard 页面默认态
+### 5. Dashboard 页面默认态
 
 ![Dashboard 页面默认态](./assets/dashboard-page-default.png)
 
-### 5. 活动总览：按需加载后的今日默认态
+### 6. 活动总览：按需加载后的今日默认态
 
 ![活动总览：按需加载后的今日默认态](./assets/dashboard-activity-overview-lazy-today.png)
 
-### 6. 活动总览：按需加载后的 7 日态
+### 7. 活动总览：按需加载后的 7 日态
 
 ![活动总览：按需加载后的 7 日态](./assets/dashboard-activity-overview-lazy-7d.png)
