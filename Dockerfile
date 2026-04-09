@@ -50,7 +50,11 @@ RUN apt-get update \
         arm64) XRAY_ZIP="Xray-linux-arm64-v8a.zip" ;; \
         *) echo "Unsupported TARGETARCH=${TARGETARCH} resolved_arch=${ARCH} for Xray-core" >&2; exit 1 ;; \
       esac \
-    && curl -fsSL -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/download/v${XRAY_CORE_VERSION}/${XRAY_ZIP}" \
+    && XRAY_PRIMARY_URL="https://github.com/XTLS/Xray-core/releases/download/v${XRAY_CORE_VERSION}/${XRAY_ZIP}" \
+    && XRAY_FALLBACK_URL="https://downloads.sourceforge.net/project/xray-core.mirror/v${XRAY_CORE_VERSION}/${XRAY_ZIP}" \
+    && if ! curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL -o /tmp/xray.zip "${XRAY_PRIMARY_URL}"; then \
+         curl --retry 5 --retry-all-errors --retry-delay 2 -fsSL -o /tmp/xray.zip "${XRAY_FALLBACK_URL}"; \
+       fi \
     && unzip -q /tmp/xray.zip -d /tmp/xray \
     && install -m 0755 /tmp/xray/xray /usr/local/bin/xray \
     && install -d /usr/local/share/licenses/xray-core \
