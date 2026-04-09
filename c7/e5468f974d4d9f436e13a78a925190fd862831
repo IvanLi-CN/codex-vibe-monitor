@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.45.9",
+  "base_stable_version": "1.45.8",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-09T20:22:08Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.45.9",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "2ef81a4ed890423d73117f345dfbff1feea2f8e3",
+  "pr_number": 315,
+  "pr_title": "fix(web): harden dashboard today overview",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.45.9",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.45.9",
+  "target_sha": "c7e5468f974d4d9f436e13a78a925190fd862831",
+  "type_label": "type:patch"
+}
