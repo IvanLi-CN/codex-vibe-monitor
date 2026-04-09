@@ -1,0 +1,999 @@
+describe("UpstreamAccountCreatePage batch oauth", () => {
+  it("does not resend failed local metadata edits during later completed-row auto-saves", async () => {
+    let displayNameFailed = false;
+    const saveAccount = vi
+      .fn()
+      .mockImplementation(
+        async (accountId: number, payload: Record<string, unknown>) => {
+          if (
+            !displayNameFailed &&
+            typeof payload.displayName === "string" &&
+            payload.displayName === "Row One Draft"
+          ) {
+            displayNameFailed = true;
+            throw new Error("Display save failed");
+          }
+          return {
+            id: accountId,
+            kind: "oauth_codex",
+            provider: "codex",
+            displayName:
+              typeof payload.displayName === "string"
+                ? payload.displayName
+                : "Row One",
+            groupName: "prod",
+            isMother: payload.isMother === true,
+            status: "active",
+            enabled: true,
+            duplicateInfo: null,
+            history: [],
+            note: "Seed note",
+            tags: Array.isArray(payload.tagIds)
+              ? payload.tagIds.map((tagId) => ({
+                  id: Number(tagId),
+                  name: tagId === 1 ? "vip" : `tag-${tagId}`,
+                  routingRule: {
+                    guardEnabled: false,
+                    allowCutOut: true,
+                    allowCutIn: true,
+                  },
+                }))
+              : [],
+            effectiveRoutingRule: {
+              guardEnabled: false,
+              allowCutOut: true,
+              allowCutIn: true,
+              sourceTagIds: [],
+              sourceTagNames: [],
+              guardRules: [],
+            },
+          };
+        },
+      );
+    mockUpstreamAccounts({ saveAccount });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            rows: [
+              buildCompletedBatchOauthRow({
+                displayName: "Row One",
+                metadataPersisted: {
+                  displayName: "Row One",
+                  groupName: "prod",
+                  note: "Seed note",
+                  isMother: false,
+                  tagIds: [],
+                },
+              }),
+            ],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    setInputValue('input[name="batchOauthDisplayName-row-1"]', "Row One Draft");
+    blurField('input[name="batchOauthDisplayName-row-1"]');
+    await flushAsync();
+
+    clickButton(/Add tag/i);
+    await flushAsync();
+    const vipOption = Array.from(
+      document.body.querySelectorAll("[cmdk-item]"),
+    ).find((candidate) => (candidate.textContent || "").includes("vip"));
+    if (!(vipOption instanceof HTMLElement)) {
+      throw new Error("missing vip tag option");
+    }
+    act(() => {
+      vipOption.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+
+    expect(saveAccount).toHaveBeenNthCalledWith(
+      2,
+      41,
+      expect.objectContaining({
+        tagIds: [1],
+      }),
+    );
+    const secondPayload = saveAccount.mock.calls[1]?.[1] as Record<
+      string,
+      unknown
+    >;
+    expect("displayName" in secondPayload).toBe(false);
+  }, 10_000);
+
+  it("retries completed-row shared tag sync after a transient save failure", async () => {
+    let firstRowFailures = 0;
+    const saveAccount = vi
+      .fn()
+      .mockImplementation(
+        async (accountId: number, payload: Record<string, unknown>) => {
+          if (
+            accountId === 41 &&
+            Array.isArray(payload.tagIds) &&
+            payload.tagIds.length === 1 &&
+            payload.tagIds[0] === 1 &&
+            firstRowFailures === 0
+          ) {
+            firstRowFailures += 1;
+            throw new Error("Transient tag sync failure");
+          }
+          return {
+            id: accountId,
+            kind: "oauth_codex",
+            provider: "codex",
+            displayName: accountId === 41 ? "Row One" : "Row Two",
+            groupName: "prod",
+            isMother: false,
+            status: "active",
+            enabled: true,
+            duplicateInfo: null,
+            history: [],
+            note: null,
+            tags: Array.isArray(payload.tagIds)
+              ? payload.tagIds.map((tagId) => ({
+                  id: Number(tagId),
+                  name: tagId === 1 ? "vip" : `tag-${tagId}`,
+                  routingRule: {
+                    guardEnabled: false,
+                    allowCutOut: true,
+                    allowCutIn: true,
+                  },
+                }))
+              : [],
+            effectiveRoutingRule: {
+              guardEnabled: false,
+              allowCutOut: true,
+              allowCutIn: true,
+              sourceTagIds: [],
+              sourceTagNames: [],
+              guardRules: [],
+            },
+          };
+        },
+      );
+    mockUpstreamAccounts({ saveAccount });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            rows: [
+              buildCompletedBatchOauthRow({
+                displayName: "Row One",
+                metadataPersisted: {
+                  displayName: "Row One",
+                  groupName: "prod",
+                  note: "Seed note",
+                  isMother: false,
+                  tagIds: [],
+                },
+              }),
+              buildCompletedBatchOauthRow({
+                id: "row-2",
+                displayName: "Row Two",
+                session: {
+                  loginId: "login-2",
+                  status: "completed",
+                  authUrl: null,
+                  redirectUri: null,
+                  expiresAt: "2026-03-13T10:00:00.000Z",
+                  accountId: 42,
+                  error: null,
+                },
+                metadataPersisted: {
+                  displayName: "Row Two",
+                  groupName: "prod",
+                  note: "Seed note",
+                  isMother: false,
+                  tagIds: [],
+                },
+              }),
+            ],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    clickButton(/Add tag/i);
+    await flushAsync();
+    const vipOption = Array.from(
+      document.body.querySelectorAll("[cmdk-item]"),
+    ).find((candidate) => (candidate.textContent || "").includes("vip"));
+    if (!(vipOption instanceof HTMLElement)) {
+      throw new Error("missing vip tag option");
+    }
+    act(() => {
+      vipOption.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushAsync();
+    await flushAsync();
+
+    expect(
+      saveAccount.mock.calls.filter(([accountId]) => accountId === 41),
+    ).toHaveLength(2);
+    expect(
+      saveAccount.mock.calls.filter(([accountId]) => accountId === 42),
+    ).toHaveLength(1);
+    expect(pageTextContent()).not.toContain("Transient tag sync failure");
+  }, 10_000);
+
+  it("keeps the mother toggle reverted when completed-row persistence fails", async () => {
+    const saveAccount = vi
+      .fn()
+      .mockRejectedValue(new Error("Mother save failed"));
+    mockUpstreamAccounts({ saveAccount });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            rows: [buildCompletedBatchOauthRow()],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    const motherToggleBefore = findButton(/Toggle mother account/i);
+    expect(motherToggleBefore?.getAttribute("aria-pressed")).toBe("false");
+
+    clickButton(/Toggle mother account/i);
+    await flushAsync();
+
+    expect(saveAccount).toHaveBeenCalledWith(
+      41,
+      expect.objectContaining({ isMother: true }),
+    );
+    expect(
+      findButton(/Toggle mother account/i)?.getAttribute("aria-pressed"),
+    ).toBe("false");
+    expect(pageTextContent()).toContain("Mother save failed");
+  }, 10_000);
+
+  it("keeps completed-row save failures isolated to the failing row", async () => {
+    const saveAccount = vi
+      .fn()
+      .mockImplementation(
+        async (accountId: number, payload: Record<string, unknown>) => {
+          if (accountId === 41) {
+            throw new Error("Save failed for row one");
+          }
+          return {
+            id: accountId,
+            kind: "oauth_codex",
+            provider: "codex",
+            displayName:
+              typeof payload.displayName === "string"
+                ? payload.displayName
+                : "Row Two",
+            groupName: "prod",
+            isMother: false,
+            status: "active",
+            enabled: true,
+            duplicateInfo: null,
+            history: [],
+            note: null,
+            tags: [],
+            effectiveRoutingRule: {
+              guardEnabled: false,
+              allowCutOut: true,
+              allowCutIn: true,
+              sourceTagIds: [],
+              sourceTagNames: [],
+              guardRules: [],
+            },
+          };
+        },
+      );
+    mockUpstreamAccounts({ saveAccount });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            rows: [
+              buildCompletedBatchOauthRow({
+                id: "row-1",
+                session: {
+                  loginId: "login-1",
+                  status: "completed",
+                  authUrl: null,
+                  redirectUri: null,
+                  expiresAt: "2026-03-13T10:00:00.000Z",
+                  accountId: 41,
+                  error: null,
+                },
+              }),
+              buildCompletedBatchOauthRow({
+                id: "row-2",
+                displayName: "Row Two",
+                session: {
+                  loginId: "login-2",
+                  status: "completed",
+                  authUrl: null,
+                  redirectUri: null,
+                  expiresAt: "2026-03-13T10:00:00.000Z",
+                  accountId: 42,
+                  error: null,
+                },
+                metadataPersisted: {
+                  displayName: "Row Two",
+                  groupName: "prod",
+                  note: "Seed note",
+                  isMother: false,
+                  tagIds: [],
+                },
+              }),
+            ],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    setInputValue(
+      'input[name="batchOauthDisplayName-row-1"]',
+      "Row One Broken",
+    );
+    blurField('input[name="batchOauthDisplayName-row-1"]');
+    await flushAsync();
+
+    expect(pageTextContent()).toContain("Save failed for row one");
+
+    setInputValue('input[name="batchOauthDisplayName-row-2"]', "Row Two Saved");
+    blurField('input[name="batchOauthDisplayName-row-2"]');
+    await flushAsync();
+
+    expect(saveAccount).toHaveBeenCalledTimes(2);
+    expect(saveAccount).toHaveBeenNthCalledWith(
+      2,
+      42,
+      expect.objectContaining({ displayName: "Row Two Saved" }),
+    );
+    expect(
+      host?.querySelector('input[name="batchOauthDisplayName-row-2"]'),
+    ).toHaveProperty("value", "Row Two Saved");
+  }, 10_000);
+
+  it("completes one row without leaving the batch page", async () => {
+    const beginOauthLogin = vi
+      .fn()
+      .mockResolvedValueOnce({
+        loginId: "login-1",
+        status: "pending",
+        authUrl: "https://auth.openai.com/authorize?login=1",
+        redirectUri: "http://localhost:1455/oauth/callback",
+        expiresAt: "2026-03-13T10:00:00.000Z",
+        accountId: null,
+        error: null,
+      })
+      .mockResolvedValueOnce({
+        loginId: "login-2",
+        status: "pending",
+        authUrl: "https://auth.openai.com/authorize?login=2",
+        redirectUri: "http://localhost:1455/oauth/callback",
+        expiresAt: "2026-03-13T10:00:00.000Z",
+        accountId: null,
+        error: null,
+      });
+    const completeOauthLogin = vi
+      .fn()
+      .mockResolvedValue({ id: 41, displayName: "Row One" });
+    mockUpstreamAccounts({ beginOauthLogin, completeOauthLogin });
+    render("/account-pool/upstream-accounts/new?mode=batchOauth");
+
+    clickButton(/Add row/i);
+    expect(getBatchRows()).toHaveLength(6);
+
+    const displayNames =
+      host?.querySelectorAll('input[name^="batchOauthDisplayName-"]') ?? [];
+    const inputSetter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    if (!inputSetter) throw new Error("missing native input setter");
+    act(() => {
+      inputSetter.call(displayNames[0], "Row One");
+      displayNames[0]?.dispatchEvent(new Event("input", { bubbles: true }));
+      displayNames[0]?.dispatchEvent(new Event("change", { bubbles: true }));
+      inputSetter.call(displayNames[1], "Row Two");
+      displayNames[1]?.dispatchEvent(new Event("input", { bubbles: true }));
+      displayNames[1]?.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flushAsync();
+
+    const firstRowButtons = Array.from(
+      getBatchRows()[0]?.querySelectorAll("button") ?? [],
+    );
+    const firstGenerateButton = firstRowButtons.find((button) =>
+      /Generate OAuth URL/.test(
+        button.textContent ||
+          button.getAttribute("aria-label") ||
+          button.getAttribute("title") ||
+          "",
+      ),
+    );
+    act(() => {
+      firstGenerateButton?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await flushAsync();
+    const secondGenerateButton = Array.from(
+      getBatchRows()[1]?.querySelectorAll("button") ?? [],
+    ).find((button) =>
+      /Generate OAuth URL/.test(
+        button.textContent ||
+          button.getAttribute("aria-label") ||
+          button.getAttribute("title") ||
+          "",
+      ),
+    );
+    act(() => {
+      secondGenerateButton?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await flushAsync();
+
+    const callbackInputs =
+      host?.querySelectorAll('input[name^="batchOauthCallbackUrl-"]') ?? [];
+    act(() => {
+      inputSetter.call(
+        callbackInputs[0],
+        "http://localhost:1455/oauth/callback?code=row-one",
+      );
+      callbackInputs[0]?.dispatchEvent(new Event("input", { bubbles: true }));
+      callbackInputs[0]?.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flushAsync();
+
+    const completeButtons = Array.from(
+      host?.querySelectorAll("button") ?? [],
+    ).filter((button) =>
+      /Complete OAuth login/.test(
+        button.textContent ||
+          button.getAttribute("aria-label") ||
+          button.getAttribute("title") ||
+          "",
+      ),
+    );
+    act(() => {
+      completeButtons[0]?.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await flushAsync();
+
+    expect(completeOauthLogin).toHaveBeenCalledWith("login-1", {
+      callbackUrl: "http://localhost:1455/oauth/callback?code=row-one",
+    });
+    expect(host?.textContent).toContain(
+      "Row One is ready. Continue with the remaining rows when you are done here.",
+    );
+    expect(getBatchRows()).toHaveLength(6);
+    expect(navigateMock).not.toHaveBeenCalled();
+  }, 20_000);
+
+  it("blocks completing a batch row when another draft row reuses the same display name", async () => {
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    mockUpstreamAccounts({ beginOauthLogin });
+    render("/account-pool/upstream-accounts/new?mode=batchOauth");
+
+    const displayNames =
+      host?.querySelectorAll('input[name^="batchOauthDisplayName-"]') ?? [];
+    const inputSetter = Object.getOwnPropertyDescriptor(
+      HTMLInputElement.prototype,
+      "value",
+    )?.set;
+    if (!inputSetter) throw new Error("missing native input setter");
+    act(() => {
+      inputSetter.call(displayNames[0], "Shared Name");
+      displayNames[0]?.dispatchEvent(new Event("input", { bubbles: true }));
+      displayNames[0]?.dispatchEvent(new Event("change", { bubbles: true }));
+      inputSetter.call(displayNames[1], " shared name ");
+      displayNames[1]?.dispatchEvent(new Event("input", { bubbles: true }));
+      displayNames[1]?.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flushAsync();
+
+    expect(pageTextContent()).toContain("Display name must be unique.");
+  });
+
+  it("attaches a supported mailbox from the batch popover editor", async () => {
+    const beginOauthMailboxSessionForAddress = vi.fn().mockResolvedValue({
+      supported: true,
+      sessionId: "mailbox-attached-row-1",
+      emailAddress: "edited-batch@mail-tw.707079.xyz",
+      expiresAt: "2026-04-13T10:00:00.000Z",
+      source: "attached",
+    });
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-batch-mailbox",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=batch-mailbox",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    mockUpstreamAccounts({
+      beginOauthMailboxSessionForAddress,
+      beginOauthLogin,
+    });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            rows: [
+              {
+                id: "row-1",
+                displayName: "Batch Row",
+                groupName: "prod",
+                mailboxSession: {
+                  supported: true,
+                  sessionId: "mailbox-original-row-1",
+                  emailAddress: "original-batch@mail-tw.707079.xyz",
+                  expiresAt: "2026-04-13T10:00:00.000Z",
+                  source: "generated",
+                },
+                mailboxInput: "original-batch@mail-tw.707079.xyz",
+              },
+            ],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    const mailboxChip = findBodyButton(/Copy mailbox/i);
+    expect(mailboxChip).toBeInstanceOf(HTMLButtonElement);
+    act(() => {
+      mailboxChip?.dispatchEvent(
+        new MouseEvent("mouseenter", { bubbles: true }),
+      );
+      mailboxChip?.dispatchEvent(
+        new MouseEvent("mouseover", { bubbles: true }),
+      );
+    });
+    await flushAsync();
+
+    const editMailboxButton = document.body.querySelector(
+      'button[title="Edit mailbox"]',
+    );
+    if (!(editMailboxButton instanceof HTMLButtonElement)) {
+      throw new Error("missing edit mailbox button");
+    }
+    act(() => {
+      editMailboxButton.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await flushAsync();
+    setBodyInputValue(
+      'input[name="batchOauthMailboxEditor-row-1"]',
+      "edited-batch@mail-tw.707079.xyz",
+    );
+    clickBodyButton(/Submit mailbox/i);
+    await flushAsync();
+
+    expect(beginOauthMailboxSessionForAddress).toHaveBeenCalledWith(
+      "edited-batch@mail-tw.707079.xyz",
+    );
+    expect(host?.textContent).toContain("edited-batch@mail-tw.707079.xyz");
+
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+
+    expect(beginOauthLogin).toHaveBeenCalledWith({
+      displayName: "Batch Row",
+      ...expectedGroupSelection(),
+      note: undefined,
+      tagIds: [],
+      groupNote: undefined,
+      isMother: false,
+      mailboxSessionId: "mailbox-attached-row-1",
+      mailboxAddress: "edited-batch@mail-tw.707079.xyz",
+    });
+  }, 15_000);
+
+  it("auto-creates a supported mailbox from the batch popover editor when moemail is missing it", async () => {
+    const beginOauthMailboxSessionForAddress = vi.fn().mockResolvedValue({
+      supported: true,
+      sessionId: "mailbox-generated-row-1",
+      emailAddress: "finance.lab.d5r@mail-tw.707079.xyz",
+      expiresAt: "2026-04-13T10:00:00.000Z",
+      source: "generated",
+    });
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-batch-generated-mailbox",
+      status: "pending",
+      authUrl:
+        "https://auth.openai.com/authorize?login=batch-generated-mailbox",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    mockUpstreamAccounts({
+      beginOauthMailboxSessionForAddress,
+      beginOauthLogin,
+    });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            rows: [
+              {
+                id: "row-1",
+                displayName: "Batch Row",
+                groupName: "prod",
+                mailboxSession: {
+                  supported: true,
+                  sessionId: "mailbox-original-row-1",
+                  emailAddress: "original-batch@mail-tw.707079.xyz",
+                  expiresAt: "2026-04-13T10:00:00.000Z",
+                  source: "generated",
+                },
+                mailboxInput: "original-batch@mail-tw.707079.xyz",
+              },
+            ],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    const mailboxChip = findBodyButton(/Copy mailbox/i);
+    expect(mailboxChip).toBeInstanceOf(HTMLButtonElement);
+    act(() => {
+      mailboxChip?.dispatchEvent(
+        new MouseEvent("mouseenter", { bubbles: true }),
+      );
+      mailboxChip?.dispatchEvent(
+        new MouseEvent("mouseover", { bubbles: true }),
+      );
+    });
+    await flushAsync();
+
+    const editMailboxButton = document.body.querySelector(
+      'button[title="Edit mailbox"]',
+    );
+    if (!(editMailboxButton instanceof HTMLButtonElement)) {
+      throw new Error("missing edit mailbox button");
+    }
+    act(() => {
+      editMailboxButton.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await flushAsync();
+    setBodyInputValue(
+      'input[name="batchOauthMailboxEditor-row-1"]',
+      "finance.lab.d5r@mail-tw.707079.xyz",
+    );
+    clickBodyButton(/Submit mailbox/i);
+    await flushAsync();
+
+    expect(beginOauthMailboxSessionForAddress).toHaveBeenCalledWith(
+      "finance.lab.d5r@mail-tw.707079.xyz",
+    );
+    expect(host?.textContent).toContain("finance.lab.d5r@mail-tw.707079.xyz");
+    expect(host?.textContent).toContain("Generated mailbox");
+
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+
+    expect(beginOauthLogin).toHaveBeenCalledWith({
+      displayName: "Batch Row",
+      ...expectedGroupSelection(),
+      note: undefined,
+      tagIds: [],
+      groupNote: undefined,
+      isMother: false,
+      mailboxSessionId: "mailbox-generated-row-1",
+      mailboxAddress: "finance.lab.d5r@mail-tw.707079.xyz",
+    });
+  });
+
+  it("keeps batch oauth actions available when the edited mailbox is unsupported", async () => {
+    const beginOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-batch-unsupported",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=batch-unsupported",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    const beginOauthMailboxSessionForAddress = vi.fn().mockResolvedValue({
+      supported: false,
+      emailAddress: "unsupported@example.com",
+      reason: "not_readable",
+    });
+    mockUpstreamAccounts({
+      beginOauthLogin,
+      beginOauthMailboxSessionForAddress,
+    });
+    render("/account-pool/upstream-accounts/new?mode=batchOauth");
+    await flushAsync();
+
+    setInputValue('input[name^="batchOauthDisplayName-"]', "Batch Unsupported");
+    await flushAsync();
+    clickButton(/Generate OAuth URL/i);
+    await flushAsync();
+
+    const mailboxChip = findBodyButton(/Edit mailbox/i);
+    expect(mailboxChip).toBeInstanceOf(HTMLButtonElement);
+    act(() => {
+      mailboxChip?.dispatchEvent(
+        new MouseEvent("mouseenter", { bubbles: true }),
+      );
+      mailboxChip?.dispatchEvent(
+        new MouseEvent("mouseover", { bubbles: true }),
+      );
+    });
+    await flushAsync();
+
+    const editMailboxButton = document.body.querySelector(
+      'button[title="Edit mailbox"]',
+    );
+    if (!(editMailboxButton instanceof HTMLButtonElement)) {
+      throw new Error("missing edit mailbox button");
+    }
+    act(() => {
+      editMailboxButton.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await flushAsync();
+    setBodyInputValue(
+      'input[name^="batchOauthMailboxEditor-"]',
+      "unsupported@example.com",
+    );
+    clickBodyButton(/Submit mailbox/i);
+    await flushAsync();
+
+    expect(beginOauthMailboxSessionForAddress).toHaveBeenCalledWith(
+      "unsupported@example.com",
+    );
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
+    expect(host?.textContent).toContain(
+      "This mailbox is not readable through the current MoeMail integration, so mailbox enhancements stay disabled.",
+    );
+  }, 15_000);
+
+  it("validates the batch mailbox editor before attaching", async () => {
+    const beginOauthMailboxSessionForAddress = vi.fn();
+    mockUpstreamAccounts({ beginOauthMailboxSessionForAddress });
+    render("/account-pool/upstream-accounts/new?mode=batchOauth");
+    await flushAsync();
+
+    const mailboxChip = findBodyButton(/Edit mailbox/i);
+    expect(mailboxChip).toBeInstanceOf(HTMLButtonElement);
+    act(() => {
+      mailboxChip?.dispatchEvent(
+        new MouseEvent("mouseenter", { bubbles: true }),
+      );
+      mailboxChip?.dispatchEvent(
+        new MouseEvent("mouseover", { bubbles: true }),
+      );
+    });
+    await flushAsync();
+
+    const editMailboxButton = document.body.querySelector(
+      'button[title="Edit mailbox"]',
+    );
+    if (!(editMailboxButton instanceof HTMLButtonElement)) {
+      throw new Error("missing edit mailbox button");
+    }
+    act(() => {
+      editMailboxButton.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await flushAsync();
+
+    setBodyInputValue(
+      'input[name^="batchOauthMailboxEditor-"]',
+      "not-an-email",
+    );
+    clickBodyButton(/Submit mailbox/i);
+    await flushAsync();
+
+    expect(beginOauthMailboxSessionForAddress).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain(
+      "Enter a valid email address before attaching it.",
+    );
+  });
+
+  it("cancels batch mailbox editing without mutating the row mailbox value", async () => {
+    mockUpstreamAccounts();
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            rows: [
+              {
+                id: "row-1",
+                displayName: "Batch Row",
+                mailboxSession: {
+                  supported: true,
+                  sessionId: "mailbox-original-row-1",
+                  emailAddress: "original-batch@mail-tw.707079.xyz",
+                  expiresAt: "2026-04-13T10:00:00.000Z",
+                  source: "generated",
+                },
+                mailboxInput: "original-batch@mail-tw.707079.xyz",
+              },
+            ],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    const mailboxChip = findBodyButton(/Copy mailbox/i);
+    expect(mailboxChip).toBeInstanceOf(HTMLButtonElement);
+    act(() => {
+      mailboxChip?.dispatchEvent(
+        new MouseEvent("mouseenter", { bubbles: true }),
+      );
+      mailboxChip?.dispatchEvent(
+        new MouseEvent("mouseover", { bubbles: true }),
+      );
+    });
+    await flushAsync();
+
+    const editMailboxButton = document.body.querySelector(
+      'button[title="Edit mailbox"]',
+    );
+    if (!(editMailboxButton instanceof HTMLButtonElement)) {
+      throw new Error("missing edit mailbox button");
+    }
+    act(() => {
+      editMailboxButton.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await flushAsync();
+    setBodyInputValue(
+      'input[name="batchOauthMailboxEditor-row-1"]',
+      "edited-batch@mail-tw.707079.xyz",
+    );
+    clickBodyButton(/Cancel mailbox edit/i);
+    await flushAsync();
+
+    expect(host?.textContent).toContain("original-batch@mail-tw.707079.xyz");
+    expect(host?.textContent).not.toContain("edited-batch@mail-tw.707079.xyz");
+  });
+
+  it("keeps an existing batch oauth URL after attaching a new supported mailbox", async () => {
+    vi.useFakeTimers();
+    const beginOauthMailboxSessionForAddress = vi.fn().mockResolvedValue({
+      supported: true,
+      sessionId: "mailbox-attached-row-1",
+      emailAddress: "edited-batch@mail-tw.707079.xyz",
+      expiresAt: "2026-04-13T10:00:00.000Z",
+      source: "attached",
+    });
+    const updateOauthLogin = vi.fn().mockResolvedValue({
+      loginId: "login-existing-row-1",
+      status: "pending",
+      authUrl: "https://auth.openai.com/authorize?login=existing-row-1",
+      redirectUri: "http://localhost:1455/oauth/callback",
+      expiresAt: "2026-03-13T10:00:00.000Z",
+      accountId: null,
+      error: null,
+    });
+    mockUpstreamAccounts({
+      beginOauthMailboxSessionForAddress,
+      updateOauthLogin,
+    });
+    render({
+      pathname: "/account-pool/upstream-accounts/new",
+      search: "?mode=batchOauth",
+      state: {
+        draft: {
+          batchOauth: {
+            rows: [
+              {
+                id: "row-1",
+                displayName: "Batch Row",
+                mailboxSession: {
+                  supported: true,
+                  sessionId: "mailbox-original-row-1",
+                  emailAddress: "original-batch@mail-tw.707079.xyz",
+                  expiresAt: "2026-04-13T10:00:00.000Z",
+                  source: "generated",
+                },
+                mailboxInput: "original-batch@mail-tw.707079.xyz",
+                session: {
+                  loginId: "login-existing-row-1",
+                  status: "pending",
+                  authUrl:
+                    "https://auth.openai.com/authorize?login=existing-row-1",
+                  redirectUri: "http://localhost:1455/oauth/callback",
+                  expiresAt: "2026-03-13T10:00:00.000Z",
+                  accountId: null,
+                  error: null,
+                },
+                sessionHint: "OAuth URL ready",
+              },
+            ],
+          },
+        },
+      },
+    });
+    await flushAsync();
+
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
+
+    const mailboxChip = findBodyButton(/Copy mailbox/i);
+    expect(mailboxChip).toBeInstanceOf(HTMLButtonElement);
+    act(() => {
+      mailboxChip?.dispatchEvent(
+        new MouseEvent("mouseenter", { bubbles: true }),
+      );
+      mailboxChip?.dispatchEvent(
+        new MouseEvent("mouseover", { bubbles: true }),
+      );
+    });
+    await flushAsync();
+
+    const editMailboxButton = document.body.querySelector(
+      'button[title="Edit mailbox"]',
+    );
+    if (!(editMailboxButton instanceof HTMLButtonElement)) {
+      throw new Error("missing edit mailbox button");
+    }
+    act(() => {
+      editMailboxButton.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await flushAsync();
+    setBodyInputValue(
+      'input[name="batchOauthMailboxEditor-row-1"]',
+      "edited-batch@mail-tw.707079.xyz",
+    );
+    clickBodyButton(/Submit mailbox/i);
+    await flushAsync();
+    await flushSessionSyncDebounce();
+
+    expect(findButton(/Copy OAuth URL/i)?.disabled).toBe(false);
+    expect(updateOauthLogin).toHaveBeenCalledWith("login-existing-row-1", {
+      displayName: "Batch Row",
+      ...expectedGroupSelection(),
+      note: "",
+      tagIds: [],
+      isMother: false,
+      mailboxSessionId: "mailbox-attached-row-1",
+      mailboxAddress: "edited-batch@mail-tw.707079.xyz",
+    });
+    expect(updateOauthLogin.mock.lastCall?.[1]).not.toHaveProperty("groupNote");
+  });
+});

@@ -1,0 +1,314 @@
+describe("UpstreamAccountsPage oauth recovery hints", () => {
+  it("shows the bridge exchange hint for oauth accounts whose bridge token registration fails", () => {
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 5,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Scope OAuth",
+          groupName: "prod",
+          isMother: false,
+          status: "error",
+          displayStatus: "error_other",
+          enabled: true,
+          lastError:
+            "oauth bridge token exchange failed: oauth bridge responded with 502",
+        },
+      ],
+      writesEnabled: true,
+      selectedId: 5,
+      selectedSummary: {
+        id: 5,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Scope OAuth",
+        groupName: "prod",
+        isMother: false,
+        status: "error",
+        displayStatus: "error_other",
+        enabled: true,
+        lastError:
+          "oauth bridge token exchange failed: oauth bridge responded with 502",
+      },
+      detail: {
+        id: 5,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Scope OAuth",
+        groupName: "prod",
+        isMother: false,
+        status: "error",
+        displayStatus: "error_other",
+        enabled: true,
+        lastError:
+          "oauth bridge token exchange failed: oauth bridge responded with 502",
+        history: [],
+      },
+      isLoading: false,
+      isDetailLoading: false,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting: vi.fn(),
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: false, maskedApiKey: null },
+      groups: [],
+    });
+
+    render("/account-pool/upstream-accounts");
+
+    clickFirstRosterRow();
+    clickTab(/Health & events/i);
+    expect(document.body.textContent).toContain(
+      "This OAuth account still shows a legacy bridge error",
+    );
+    expect(document.body.textContent).toContain(
+      "The stored last_error came from the removed OAuth bridge path",
+    );
+    expect(document.body.textContent).toContain("Other error");
+    expect(document.body.textContent).not.toContain(
+      "This OAuth account needs a fresh sign-in",
+    );
+  });
+
+  it("shows the re-auth hint only for explicit oauth invalidation", () => {
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 6,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Expired OAuth",
+          groupName: "prod",
+          isMother: false,
+          status: "needs_reauth",
+          displayStatus: "needs_reauth",
+          enabled: true,
+          lastError: "OAuth token endpoint returned 400: invalid_grant",
+        },
+      ],
+      writesEnabled: true,
+      selectedId: 6,
+      selectedSummary: {
+        id: 6,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Expired OAuth",
+        groupName: "prod",
+        isMother: false,
+        status: "needs_reauth",
+        displayStatus: "needs_reauth",
+        enabled: true,
+        lastError: "OAuth token endpoint returned 400: invalid_grant",
+      },
+      detail: {
+        id: 6,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Expired OAuth",
+        groupName: "prod",
+        isMother: false,
+        status: "needs_reauth",
+        displayStatus: "needs_reauth",
+        enabled: true,
+        lastError: "OAuth token endpoint returned 400: invalid_grant",
+        history: [],
+      },
+      isLoading: false,
+      isDetailLoading: false,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting: vi.fn(),
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: false, maskedApiKey: null },
+      groups: [],
+    });
+
+    render("/account-pool/upstream-accounts");
+
+    clickFirstRosterRow();
+    clickTab(/Health & events/i);
+    expect(document.body.textContent).toContain(
+      "This OAuth account needs a fresh sign-in",
+    );
+    expect(document.body.textContent).toContain("Needs re-auth");
+  });
+
+  it("prefers the bridge upstream hint over stale needs-reauth status when the last error is from the bridge data plane", () => {
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 7,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Legacy Scope OAuth",
+          groupName: "prod",
+          isMother: false,
+          status: "needs_reauth",
+          displayStatus: "upstream_rejected",
+          enabled: true,
+          lastError: "oauth bridge upstream rejected request: 403 forbidden",
+        },
+      ],
+      writesEnabled: true,
+      selectedId: 7,
+      selectedSummary: {
+        id: 7,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Legacy Scope OAuth",
+        groupName: "prod",
+        isMother: false,
+        status: "needs_reauth",
+        displayStatus: "upstream_rejected",
+        enabled: true,
+        lastError: "oauth bridge upstream rejected request: 403 forbidden",
+      },
+      detail: {
+        id: 7,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Legacy Scope OAuth",
+        groupName: "prod",
+        isMother: false,
+        status: "needs_reauth",
+        displayStatus: "upstream_rejected",
+        enabled: true,
+        lastError: "oauth bridge upstream rejected request: 403 forbidden",
+        history: [],
+      },
+      isLoading: false,
+      isDetailLoading: false,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting: vi.fn(),
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: false, maskedApiKey: null },
+      groups: [],
+    });
+
+    render("/account-pool/upstream-accounts");
+
+    clickFirstRosterRow();
+    expect(document.body.textContent).toContain("Unavailable");
+    clickTab(/Health & events/i);
+    expect(document.body.textContent).toContain(
+      "The OAuth data plane rejected this request",
+    );
+    expect(document.body.textContent).toContain("Upstream rejected");
+    expect(document.body.textContent).not.toContain(
+      "This OAuth account needs a fresh sign-in",
+    );
+  });
+
+  it("shows upstream rejected details for structured 402 workspace deactivation failures even when older quota events remain in history", async () => {
+    mockAccountsPage({
+      selectedSummary: {
+        status: "error",
+        displayStatus: "upstream_rejected",
+        healthStatus: "upstream_rejected",
+        workStatus: "unavailable",
+        lastAction: "sync_hard_unavailable",
+        lastActionSource: "sync_maintenance",
+        lastActionReasonCode: "upstream_http_402",
+        lastActionReasonMessage:
+          'initial usage snapshot attempt with configured user agent failed: usage endpoint returned 402 Payment Required: {"detail":{"code":"deactivated_workspace"}}',
+        lastActionHttpStatus: 402,
+        lastActionInvokeId: "invk_workspace_402",
+        lastError:
+          'initial usage snapshot attempt with configured user agent failed: usage endpoint returned 402 Payment Required: {"detail":{"code":"deactivated_workspace"}}',
+      },
+      detail: {
+        status: "error",
+        displayStatus: "upstream_rejected",
+        healthStatus: "upstream_rejected",
+        workStatus: "unavailable",
+        lastAction: "sync_hard_unavailable",
+        lastActionSource: "sync_maintenance",
+        lastActionReasonCode: "upstream_http_402",
+        lastActionReasonMessage:
+          'initial usage snapshot attempt with configured user agent failed: usage endpoint returned 402 Payment Required: {"detail":{"code":"deactivated_workspace"}}',
+        lastActionHttpStatus: 402,
+        lastActionInvokeId: "invk_workspace_402",
+        lastError:
+          'initial usage snapshot attempt with configured user agent failed: usage endpoint returned 402 Payment Required: {"detail":{"code":"deactivated_workspace"}}',
+        recentActions: [
+          {
+            id: 73,
+            occurredAt: "2026-03-26T08:11:47.000Z",
+            action: "sync_hard_unavailable",
+            source: "sync_maintenance",
+            reasonCode: "upstream_http_402",
+            reasonMessage:
+              'initial usage snapshot attempt with configured user agent failed: usage endpoint returned 402 Payment Required: {"detail":{"code":"deactivated_workspace"}}',
+            httpStatus: 402,
+            failureKind: "upstream_http_402",
+            invokeId: "invk_workspace_402",
+            stickyKey: null,
+            createdAt: "2026-03-26T08:11:47.000Z",
+          },
+          {
+            id: 72,
+            occurredAt: "2026-03-26T08:01:12.000Z",
+            action: "route_hard_unavailable",
+            source: "call",
+            reasonCode: "upstream_http_429_quota_exhausted",
+            reasonMessage:
+              "Weekly cap exhausted on the previous routing attempt before maintenance retried the account.",
+            httpStatus: 429,
+            failureKind: "upstream_http_429_quota_exhausted",
+            invokeId: "invk_workspace_429",
+            stickyKey: "sticky_workspace_429",
+            createdAt: "2026-03-26T08:01:12.000Z",
+          },
+        ],
+      },
+    });
+
+    render("/account-pool/upstream-accounts");
+
+    clickFirstRosterRow();
+    await flushAsync();
+    expect(document.body.textContent).toContain("Unavailable");
+    clickTab(/Health & events/i);
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Upstream rejected");
+    expect(document.body.textContent).toContain(
+      "Plan or billing rejected upstream access (402)",
+    );
+    expect(document.body.textContent).toContain(
+      "Weekly cap exhausted on the previous routing attempt before maintenance retried the account.",
+    );
+    expect(document.body.textContent).toContain("HTTP 402");
+    expect(document.body.textContent).toContain("deactivated_workspace");
+    expect(document.body.textContent).not.toContain("Other error");
+  });
+});

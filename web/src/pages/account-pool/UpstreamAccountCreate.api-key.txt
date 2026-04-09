@@ -1,0 +1,203 @@
+describe("UpstreamAccountCreatePage api key", () => {
+  it("submits upstreamBaseUrl for API key accounts", async () => {
+    const createApiKeyAccount = vi.fn().mockResolvedValue({
+      id: 42,
+      kind: "api_key_codex",
+      provider: "codex",
+      displayName: "Gateway Key",
+      groupName: null,
+      isMother: false,
+      status: "active",
+      enabled: true,
+      history: [],
+    });
+    mockUpstreamAccounts({ createApiKeyAccount });
+    render("/account-pool/upstream-accounts/new?mode=apiKey");
+
+    setInputValue('input[name="apiKeyDisplayName"]', "Gateway Key");
+    setInputValue('input[name="apiKeyValue"]', "sk-gateway");
+    setInputValue(
+      'input[name="apiKeyUpstreamBaseUrl"]',
+      "https://proxy.example.com/gateway",
+    );
+
+    clickButton(/Create API Key account/i);
+    await flushAsync();
+
+    expect(createApiKeyAccount).toHaveBeenCalledWith(
+      expect.objectContaining({
+        displayName: "Gateway Key",
+        apiKey: "sk-gateway",
+        upstreamBaseUrl: "https://proxy.example.com/gateway",
+      }),
+    );
+  });
+
+  it("blocks api key creation when upstreamBaseUrl is not a valid absolute URL", () => {
+    const createApiKeyAccount = vi.fn().mockResolvedValue({
+      id: 42,
+      kind: "api_key_codex",
+      provider: "codex",
+      displayName: "Gateway Key",
+      groupName: null,
+      isMother: false,
+      status: "active",
+      enabled: true,
+      history: [],
+    });
+    mockUpstreamAccounts({ createApiKeyAccount });
+    render("/account-pool/upstream-accounts/new?mode=apiKey");
+
+    setInputValue('input[name="apiKeyDisplayName"]', "Gateway Key");
+    setInputValue('input[name="apiKeyValue"]', "sk-gateway");
+    setInputValue(
+      'input[name="apiKeyUpstreamBaseUrl"]',
+      "proxy.example.com/gateway",
+    );
+
+    expect(document.body.textContent).toContain("Use an absolute http(s) URL");
+    expect(findButton(/Create API Key account/i)?.disabled).toBe(true);
+    expect(createApiKeyAccount).not.toHaveBeenCalled();
+  });
+
+  it("navigates with a warning when account creation succeeds but draft group settings fail to persist", async () => {
+    const createApiKeyAccount = vi.fn().mockResolvedValue({
+      id: 42,
+      kind: "api_key_codex",
+      provider: "codex",
+      displayName: "Gateway Key",
+      groupName: "latam-draft",
+      isMother: false,
+      status: "active",
+      enabled: true,
+      history: [],
+    });
+    const saveGroupNote = vi
+      .fn()
+      .mockRejectedValue(
+        new Error("Request failed: 500 group metadata locked"),
+      );
+    mockUpstreamAccounts({
+      createApiKeyAccount,
+      saveGroupNote,
+      forwardProxyNodes: [
+        {
+          key: "__direct__",
+          displayName: "Direct",
+          protocolLabel: "DIRECT",
+          source: "direct",
+          penalized: false,
+          selectable: true,
+          last24h: [],
+        },
+        {
+          key: "jp-edge-01",
+          displayName: "JP Edge 01",
+          protocolLabel: "HTTP",
+          source: "inventory",
+          penalized: false,
+          selectable: true,
+          last24h: [],
+        },
+        {
+          key: "ss://2022-blake3-aes-128-gcm:fixture-passphrase@fixture-ss-edge.example.invalid:443#Ivan-hinet-ss2022-01KF87EBR50MM9JKM9R9BCA9WZ",
+          displayName: "Ivan-hinet-ss2022-01KF87EBR50MM9JKM9R9BCA9WZ",
+          protocolLabel: "SS",
+          source: "subscription",
+          penalized: false,
+          selectable: true,
+          last24h: [],
+        },
+      ],
+    });
+    render("/account-pool/upstream-accounts/new?mode=apiKey");
+
+    setInputValue('input[name="apiKeyDisplayName"]', "Gateway Key");
+    setInputValue('input[name="apiKeyValue"]', "sk-gateway");
+    setComboboxValue('input[name="apiKeyGroupName"]', "latam-draft");
+    await flushAsync();
+
+    clickButton(/Edit group settings|Edit group note/i);
+    await flushAsync();
+
+    const dialogStack = Array.from(
+      document.body.querySelectorAll('[role="dialog"]'),
+    );
+    const groupSettingsDialog = dialogStack[dialogStack.length - 1];
+    if (!(groupSettingsDialog instanceof HTMLElement)) {
+      throw new Error("missing group settings dialog");
+    }
+    expect(groupSettingsDialog.textContent || "").toContain(
+      "Bound proxy nodes",
+    );
+    expect(groupSettingsDialog.textContent || "").toContain(
+      "Upstream 429 retry",
+    );
+    expect(groupSettingsDialog.textContent || "").toContain("Direct");
+    expect(groupSettingsDialog.textContent || "").toContain("DIRECT");
+    expect(groupSettingsDialog.textContent || "").toContain("SS");
+    expect(groupSettingsDialog.textContent || "").not.toContain("ss://");
+
+    const groupNoteField = groupSettingsDialog.querySelector("textarea");
+    if (!(groupNoteField instanceof HTMLTextAreaElement)) {
+      throw new Error("missing group note textarea");
+    }
+    setFieldValue(groupNoteField, "LATAM draft note");
+
+    const proxyOption = Array.from(
+      groupSettingsDialog.querySelectorAll("button"),
+    ).find((candidate) => /JP Edge 01/i.test(candidate.textContent || ""));
+    if (!(proxyOption instanceof HTMLButtonElement)) {
+      throw new Error("missing proxy binding option");
+    }
+    act(() => {
+      proxyOption.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+    const saveDialogButton = Array.from(
+      groupSettingsDialog.querySelectorAll("button"),
+    ).find((candidate) => /Save changes/i.test(candidate.textContent || ""));
+    if (!(saveDialogButton instanceof HTMLButtonElement)) {
+      throw new Error("missing group settings save button");
+    }
+    act(() => {
+      saveDialogButton.dispatchEvent(
+        new MouseEvent("click", { bubbles: true }),
+      );
+    });
+    await flushAsync();
+
+    clickButton(/Create API Key account/i);
+    await flushAsync();
+
+    expect(createApiKeyAccount).toHaveBeenCalledWith(
+      expect.objectContaining({
+        displayName: "Gateway Key",
+        apiKey: "sk-gateway",
+        groupName: "latam-draft",
+        groupBoundProxyKeys: ["jp-edge-01"],
+        groupNote: "LATAM draft note",
+      }),
+    );
+    expect(saveGroupNote).toHaveBeenCalledWith("latam-draft", {
+      note: "LATAM draft note",
+      boundProxyKeys: ["jp-edge-01"],
+      concurrencyLimit: 0,
+      nodeShuntEnabled: false,
+      upstream429RetryEnabled: false,
+      upstream429MaxRetries: 0,
+    });
+    expect(navigateMock).toHaveBeenCalledWith(
+      "/account-pool/upstream-accounts",
+      {
+        state: expect.objectContaining({
+          selectedAccountId: 42,
+          openDetail: true,
+          postCreateWarning: expect.stringContaining(
+            "The account was created, but saving the draft group settings failed",
+          ),
+        }),
+      },
+    );
+  });
+});

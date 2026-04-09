@@ -1,5 +1,8 @@
 import { expect, test, type Page } from '@playwright/test'
 
+const isBackendEventsRequest = (url: URL): boolean => url.pathname === '/events'
+const isBackendApiRequest = (url: URL): boolean => url.pathname.startsWith('/api/')
+
 const LONG_PROXY_NAME = 'ivan-hkl-vless-vision-01KFXRNYWYXKN4JHCF3CCV78GD'
 
 const VIEWPORTS = [
@@ -229,7 +232,7 @@ interface TableMetrics {
 }
 
 async function mockInvocations(page: Page) {
-  await page.route('**/events', async (route) => {
+  await page.route(isBackendEventsRequest, async (route) => {
     await route.fulfill({
       status: 204,
       headers: {
@@ -240,7 +243,7 @@ async function mockInvocations(page: Page) {
     })
   })
 
-  await page.route('**/api/**', async (route) => {
+  await page.route(isBackendApiRequest, async (route) => {
     const requestUrl = new URL(route.request().url())
     const pathname = requestUrl.pathname
 
