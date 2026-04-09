@@ -1429,7 +1429,7 @@ async fn proxy_openai_v1_non_capture_routes_require_pool_route_key() {
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_route_lookup_failures_do_not_consume_proxy_concurrency_slots() {
+async fn proxy_openai_v1_route_lookup_failures_respect_proxy_concurrency_slots() {
     let mut config = test_config();
     config.proxy_request_concurrency_limit = 1;
     config.proxy_request_concurrency_wait_timeout = Duration::from_millis(50);
@@ -1463,19 +1463,19 @@ async fn proxy_openai_v1_route_lookup_failures_do_not_consume_proxy_concurrency_
     )
     .await;
 
-    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read route lookup failure body");
-    let payload: Value = serde_json::from_slice(&body).expect("decode route lookup failure body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode concurrency rejection body");
     assert!(
         payload["error"]
             .as_str()
-            .is_some_and(|message| message.contains("failed to resolve pool routing settings"))
+            .is_some_and(|message| message.contains(PROXY_CONCURRENCY_LIMIT_MESSAGE))
     );
     assert_eq!(
         state.proxy_request_rejected_total.load(Ordering::Acquire),
-        0
+        1
     );
 
     drop(held_permit);
