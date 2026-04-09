@@ -1096,8 +1096,7 @@ async fn proxy_openai_v1_via_pool(
         &method,
         original_uri,
     )
-    .await
-    .map_err(|err| (err.status, err.message))?;
+    .await;
     let body_size_hint_exact = body
         .size_hint()
         .exact()

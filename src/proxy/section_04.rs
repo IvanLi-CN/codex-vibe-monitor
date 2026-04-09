@@ -19,7 +19,6 @@ async fn proxy_openai_v1_inner(
         message: PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE.to_string(),
         cvm_id: None,
         retry_after_secs: None,
-        queue_wait_ms: None,
     };
 
     if method == Method::GET && is_models_list_path(original_uri.path()) {
@@ -46,7 +45,6 @@ async fn proxy_openai_v1_inner(
             status,
             message,
             cvm_id: None,
-            queue_wait_ms: None,
         });
     }
 
@@ -79,7 +77,6 @@ async fn proxy_openai_v1_inner(
             status,
             message,
             cvm_id: Some(tracked_invoke_id),
-            queue_wait_ms: None,
         });
     }
 
@@ -107,7 +104,6 @@ async fn proxy_openai_v1_inner(
         status,
         message,
         cvm_id: None,
-        queue_wait_ms: None,
     });
 }
 
@@ -146,8 +142,7 @@ async fn proxy_openai_v1_capture_target(
         &Method::POST,
         original_uri,
     )
-    .await
-    .map_err(|err| (err.status, err.message))?;
+    .await;
     let pool_routing_reservation_key = build_pool_routing_reservation_key(proxy_request_id);
     let occurred_at_utc = Utc::now();
     let occurred_at = format_naive(occurred_at_utc.with_timezone(&Shanghai).naive_local());

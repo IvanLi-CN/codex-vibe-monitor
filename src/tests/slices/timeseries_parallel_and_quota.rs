@@ -95,10 +95,7 @@ async fn proxy_openai_v1_allows_slow_upload_with_short_timeout() {
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
-        proxy_request_semaphore: Arc::new(Semaphore::new(config.proxy_request_concurrency_limit)),
         proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
-        proxy_request_queue_total: Arc::new(AtomicU64::new(0)),
-        proxy_request_rejected_total: Arc::new(AtomicU64::new(0)),
         proxy_raw_async_semaphore: Arc::new(Semaphore::new(
             DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS,
         )),

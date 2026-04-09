@@ -59,7 +59,7 @@ use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
     process::{Child, Command},
-    sync::{Mutex, OwnedSemaphorePermit, RwLock, Semaphore, broadcast, mpsc, oneshot, watch},
+    sync::{Mutex, RwLock, Semaphore, broadcast, mpsc, oneshot, watch},
     task::JoinHandle,
     time::{MissedTickBehavior, interval, sleep, timeout},
 };
