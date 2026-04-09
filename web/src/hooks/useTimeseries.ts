@@ -408,9 +408,7 @@ export function useTimeseries(range: string, options?: UseTimeseriesOptions) {
       void load({ force: true })
       return
     }
-    if (!shouldReuseTimeseriesRemountCache(cachedTimeseries.cachedAt, Date.now())) {
-      void load({ silent: true, force: true })
-    }
+    void load({ silent: true, force: true })
   }, [clearDayRolloverTimer, clearPendingLoad, clearPendingRefreshTimer, load, options?.bucket, options?.preferServerAggregation, options?.settlementHour, range])
 
   useEffect(() => {

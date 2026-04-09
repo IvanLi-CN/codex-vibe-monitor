@@ -352,9 +352,7 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
       void load({ force: true })
       return
     }
-    if (!shouldReuseSummaryRemountCache(cachedSummary.cachedAt, Date.now())) {
-      void load({ silent: true, force: true })
-    }
+    void load({ silent: true, force: true })
   }, [clearPendingLoad, clearPendingRefreshTimer, load, options?.limit, window])
 
   useEffect(() => {
