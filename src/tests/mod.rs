@@ -25224,7 +25224,10 @@ async fn proxy_openai_v1_via_pool_live_retry_ignores_late_file_backed_sticky_rou
         .await
         .expect("read large live retry response body");
     let payload: Value = serde_json::from_slice(&body).expect("decode large live retry response");
-    assert_eq!(payload["authorization"], expected_default_authorization);
+    assert_eq!(
+        payload["authorization"].as_str(),
+        Some(expected_default_authorization)
+    );
     assert_ne!(
         payload["authorization"].as_str(),
         Some(unexpected_late_sticky_authorization)
