@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.45.6",
+  "base_stable_version": "1.45.5",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-09T11:40:23Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.45.6",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "9ebeced82bc7872d0f343984654fecdec2262804",
+  "pr_number": 312,
+  "pr_title": "test(proxy): stabilize live retry file-backed route regression",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.45.6",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.45.6",
+  "target_sha": "8979f3e35cfd3f0b2c71e40685b22439e26fa7f7",
+  "type_label": "type:patch"
+}
