@@ -225,6 +225,7 @@ function buildWorkingConversationsResponse(empty = false): PromptCacheConversati
 
 function createDashboardRequestHandler(scenario: DashboardScenario = 'default') {
   const now = Date.parse('2026-04-08T12:24:00.000Z')
+  const rangeTodayStart = Date.parse('2026-04-08T00:00:00+08:00')
   const range1dStart = now - 24 * 60 * 60 * 1000
   const range7dStart = now - 7 * 24 * 60 * 60 * 1000
   const range6moStart = now - 180 * 24 * 60 * 60 * 1000
@@ -250,6 +251,19 @@ function createDashboardRequestHandler(scenario: DashboardScenario = 'default') 
       failureCount: 6306,
       totalCost: 3128.74,
       totalTokens: 8764311220,
+    }),
+    timeseriesToday: buildTimeseriesResponse({
+      rangeStart: new Date(rangeTodayStart).toISOString(),
+      rangeEnd: new Date(now).toISOString(),
+      bucketSeconds: 60,
+      effectiveBucket: '1m',
+      availableBuckets: ['1m'],
+      points: buildTimeseriesPoints({
+        count: Math.floor((now - rangeTodayStart) / 60_000) + 1,
+        bucketSeconds: 60,
+        startMs: rangeTodayStart,
+        valueOffset: 5,
+      }),
     }),
     timeseries1d: buildTimeseriesResponse({
       rangeStart: new Date(range1dStart).toISOString(),
@@ -288,6 +302,7 @@ function createDashboardRequestHandler(scenario: DashboardScenario = 'default') 
 
     if (url.pathname === '/api/stats/timeseries') {
       const range = url.searchParams.get('range')
+      if (range === 'today') return jsonResponse(responses.timeseriesToday)
       if (range === '1d') return jsonResponse(responses.timeseries1d)
       if (range === '7d') return jsonResponse(responses.timeseries7d)
       if (range === '6mo') return jsonResponse(responses.timeseries6mo)

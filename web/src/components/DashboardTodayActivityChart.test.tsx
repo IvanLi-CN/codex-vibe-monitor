@@ -64,14 +64,18 @@ describe('DashboardTodayActivityChart', () => {
       localeTag: 'en-US',
     })
 
-    expect(data).toHaveLength(4)
+    expect(data).toHaveLength(24 * 60)
     expect(data[0]).toMatchObject({
       successCount: 2,
       failureCount: 1,
       failureCountNegative: -1,
+      chartSuccessCount: 2,
+      chartFailureCountNegative: -1,
       totalCount: 3,
       cumulativeCost: 0.5,
       cumulativeTokens: 120,
+      chartCumulativeCost: 0.5,
+      chartCumulativeTokens: 120,
     })
     expect(data[1]).toMatchObject({
       successCount: 0,
@@ -79,6 +83,10 @@ describe('DashboardTodayActivityChart', () => {
       totalCount: 0,
       cumulativeCost: 0.5,
       cumulativeTokens: 120,
+      chartSuccessCount: 0,
+      chartFailureCountNegative: 0,
+      chartCumulativeCost: 0.5,
+      chartCumulativeTokens: 120,
     })
     expect(data[2]).toMatchObject({
       successCount: 4,
@@ -86,6 +94,10 @@ describe('DashboardTodayActivityChart', () => {
       totalCount: 4,
       cumulativeCost: 1.25,
       cumulativeTokens: 320,
+      chartSuccessCount: 4,
+      chartFailureCountNegative: 0,
+      chartCumulativeCost: 1.25,
+      chartCumulativeTokens: 320,
     })
     expect(data[3]).toMatchObject({
       successCount: 0,
@@ -93,10 +105,23 @@ describe('DashboardTodayActivityChart', () => {
       totalCount: 0,
       cumulativeCost: 1.25,
       cumulativeTokens: 320,
+      chartSuccessCount: 0,
+      chartFailureCountNegative: 0,
+      chartCumulativeCost: 1.25,
+      chartCumulativeTokens: 320,
+    })
+    expect(data.at(-1)).toMatchObject({
+      label: '23:59',
+      chartSuccessCount: null,
+      chartFailureCountNegative: null,
+      chartCumulativeCost: null,
+      chartCumulativeTokens: null,
+      cumulativeCost: 1.25,
+      cumulativeTokens: 320,
     })
   })
 
-  it('preserves the explicit rolling 24-hour range instead of forcing local midnight expansion', () => {
+  it('clamps a 24-hour response to the local today window and keeps the rest of today empty', () => {
     const data = buildTodayMinuteChartData(
       {
         rangeStart: '2026-04-07T00:03:00.000Z',
@@ -120,20 +145,22 @@ describe('DashboardTodayActivityChart', () => {
       },
     )
 
-    const explicitRangeStart = new Date('2026-04-07T00:03:00.000Z')
-    const localRangeEnd = new Date('2026-04-08T00:03:00.000Z')
+    const localRangeStart = new Date(2026, 3, 8, 0, 0, 0)
+    const localRangeEnd = new Date(2026, 3, 8, 23, 59, 0)
     const labelFormatter = new Intl.DateTimeFormat('en-US', {
       hour: '2-digit',
       minute: '2-digit',
       hour12: false,
       hourCycle: 'h23',
     })
-    const expectedHeadLabel = labelFormatter.format(explicitRangeStart).replace(/(^|\D)24:(\d{2})/g, '$100:$2')
+    const expectedHeadLabel = labelFormatter.format(localRangeStart).replace(/(^|\D)24:(\d{2})/g, '$100:$2')
     const expectedTailLabel = labelFormatter.format(localRangeEnd).replace(/(^|\D)24:(\d{2})/g, '$100:$2')
 
     expect(data[0]?.label).toBe(expectedHeadLabel)
-    expect(data[0]?.epochMs).toBe(explicitRangeStart.getTime())
+    expect(data[0]?.epochMs).toBe(localRangeStart.getTime())
     expect(data.at(-1)?.label).toBe(expectedTailLabel)
+    expect(data).toHaveLength(24 * 60)
+    expect(data.at(-1)?.chartCumulativeCost).toBeNull()
   })
 
   it('renders count mode as a composed chart with split success and failure bars', () => {

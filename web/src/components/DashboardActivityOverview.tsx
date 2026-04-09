@@ -59,7 +59,7 @@ function DashboardTodayRangePanel({ metric }: { metric: MetricKey }) {
     isLoading: summaryLoading,
     error: summaryError,
   } = useSummary('today')
-  const { data, isLoading, error } = useTimeseries('1d', { bucket: '1m' })
+  const { data, isLoading, error } = useTimeseries('today', { bucket: '1m' })
 
   return (
     <div

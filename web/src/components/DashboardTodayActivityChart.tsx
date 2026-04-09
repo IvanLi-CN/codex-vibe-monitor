@@ -239,14 +239,14 @@ export function DashboardTodayActivityChart({ response, loading, error, metric }
               <Legend wrapperStyle={{ color: chartColors.axisText }} />
               <ReferenceLine y={0} stroke={chartColors.gridLine} />
               <Bar
-                dataKey="successCount"
+                dataKey="chartSuccessCount"
                 name={countSeriesNames.success}
                 fill={chartColors.success}
                 radius={[3, 3, 0, 0]}
                 isAnimationActive={animate}
               />
               <Bar
-                dataKey="failureCountNegative"
+                dataKey="chartFailureCountNegative"
                 name={countSeriesNames.failures}
                 fill={chartColors.failure}
                 radius={[0, 0, 3, 3]}
@@ -297,7 +297,7 @@ export function DashboardTodayActivityChart({ response, loading, error, metric }
               />
               <Area
                 type="monotone"
-                dataKey={metric === 'totalCost' ? 'cumulativeCost' : 'cumulativeTokens'}
+                dataKey={metric === 'totalCost' ? 'chartCumulativeCost' : 'chartCumulativeTokens'}
                 name={areaSeriesName}
                 stroke={chartColors.accent}
                 fill={chartColors.accentFill}
