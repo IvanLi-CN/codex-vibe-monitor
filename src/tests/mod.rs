@@ -1091,18 +1091,16 @@ async fn proxy_openai_v1_does_not_persist_concurrency_limit_rejections_for_captu
         .and_then(|value| value.to_str().ok())
         .expect("retry-after header should be present");
     assert_eq!(retry_after, "1");
-    let cvm_id = response
-        .headers()
-        .get(CVM_INVOKE_ID_HEADER)
-        .and_then(|value| value.to_str().ok())
-        .map(str::to_string)
-        .expect("cvm id header should be present for capture target rejections");
+    assert!(
+        response.headers().get(CVM_INVOKE_ID_HEADER).is_none(),
+        "pre-admission overload rejections should not expose unresolved invocation ids"
+    );
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
         .expect("read concurrency-limit response body");
     let response_payload: Value =
         serde_json::from_slice(&body).expect("decode concurrency-limit response body");
-    assert_eq!(response_payload["cvmId"].as_str(), Some(cvm_id.as_str()));
+    assert!(response_payload.get("cvmId").is_none());
     assert_eq!(
         response_payload["error"].as_str(),
         Some(PROXY_CONCURRENCY_LIMIT_MESSAGE)

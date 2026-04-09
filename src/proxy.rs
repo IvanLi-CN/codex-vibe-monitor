@@ -139,10 +139,7 @@ async fn proxy_openai_v1_common(
     .await
     {
         Ok(permit) => Some(permit),
-        Err(mut err) => {
-            if capture_target_for_request(uri_for_log.path(), &method_for_log).is_some() {
-                err.cvm_id = Some(invoke_id.clone());
-            }
+        Err(err) => {
             warn!(
                 proxy_request_id,
                 method = %method_for_log,
@@ -4190,7 +4187,11 @@ async fn extract_sticky_key_from_replay_snapshot(
             if let Some(sticky_key) = sticky_key.clone() {
                 Some(sticky_key)
             } else {
-                extract_sticky_key_from_replay_snapshot_prefix(snapshot).await
+                snapshot
+                    .to_bytes()
+                    .await
+                    .ok()
+                    .and_then(|bytes| extract_sticky_key_from_request_body_projection(bytes.as_ref()))
             }
         }
     }
