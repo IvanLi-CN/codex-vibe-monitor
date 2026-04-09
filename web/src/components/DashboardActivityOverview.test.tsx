@@ -183,14 +183,30 @@ function clickTab(label: string) {
   })
 }
 
+function getFirstSeenSummaryWindows() {
+  const seen = new Set<string>()
+  const ordered: string[] = []
+  for (const [window] of hookMocks.useSummary.mock.calls) {
+    if (typeof window !== 'string' || seen.has(window)) continue
+    seen.add(window)
+    ordered.push(window)
+  }
+  return ordered
+}
+
 describe('DashboardActivityOverview', () => {
-  it('defaults to the today range and keeps per-range metric memory across all four tabs', () => {
+  it('loads only the active range and keeps per-range metric memory across all four tabs', () => {
     installSummaryMocks()
 
     render(<DashboardActivityOverview />)
 
     expect(host?.textContent).toContain('Activity Overview')
+    expect(hookMocks.useSummary.mock.calls.every(([window]) => window === 'today')).toBe(true)
+    expect(hookMocks.useTimeseries.mock.calls.every(([window]) => window === 'today')).toBe(true)
     expect(host?.querySelector('[data-testid="dashboard-activity-range-today"]')?.getAttribute('data-active')).toBe('true')
+    expect(host?.querySelector('[data-testid="dashboard-activity-range-1d"]')).toBeNull()
+    expect(host?.querySelector('[data-testid="dashboard-activity-range-7d"]')).toBeNull()
+    expect(host?.querySelector('[data-testid="dashboard-activity-range-usage"]')).toBeNull()
     expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toBe(
       'surface:false;header:false;badge:false',
     )
@@ -205,6 +221,8 @@ describe('DashboardActivityOverview', () => {
     )
 
     clickTab('History')
+    expect(hookMocks.useSummary.mock.calls.every(([window]) => window === 'today')).toBe(true)
+    expect(hookMocks.useTimeseries.mock.calls.every(([window]) => window === 'today')).toBe(true)
     expect(host?.querySelector('[data-testid="usage-calendar"]')?.textContent).toBe(
       'metric:totalCount;surface:false;toggle:false;meta:false',
     )
@@ -247,6 +265,8 @@ describe('DashboardActivityOverview', () => {
 
     expect(host?.querySelector('[data-testid="dashboard-activity-range-usage"]')?.getAttribute('data-active')).toBe('true')
     expect(host?.querySelector('[data-testid="usage-calendar"]')).not.toBeNull()
+    expect(hookMocks.useSummary).not.toHaveBeenCalled()
+    expect(hookMocks.useTimeseries).not.toHaveBeenCalled()
 
     act(() => {
       root?.unmount()
@@ -258,5 +278,22 @@ describe('DashboardActivityOverview', () => {
     window.localStorage.setItem(DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY, 'bogus')
     render(<DashboardActivityOverview />)
     expect(document.body.querySelector('[data-testid="dashboard-activity-range-today"]')?.getAttribute('data-active')).toBe('true')
+    expect(hookMocks.useSummary).toHaveBeenCalledWith('today')
+  })
+
+  it('loads each summary only after its range is selected', () => {
+    installSummaryMocks()
+
+    render(<DashboardActivityOverview />)
+    expect(getFirstSeenSummaryWindows()).toEqual(['today'])
+
+    clickTab('7 Days')
+    expect(getFirstSeenSummaryWindows()).toEqual(['today', '7d'])
+
+    clickTab('24 Hours')
+    expect(getFirstSeenSummaryWindows()).toEqual(['today', '7d', '1d'])
+
+    clickTab('History')
+    expect(getFirstSeenSummaryWindows()).toEqual(['today', '7d', '1d'])
   })
 })

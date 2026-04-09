@@ -1,21 +1,32 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   CALENDAR_SUMMARY_RECORDS_REFRESH_THROTTLE_MS,
+  clearSummaryRemountCache,
   CURRENT_SUMMARY_MAX_RETRY_ATTEMPTS,
   CURRENT_SUMMARY_OPEN_RESYNC_COOLDOWN_MS,
   CURRENT_SUMMARY_RECORDS_REFRESH_THROTTLE_MS,
   CURRENT_SUMMARY_RETRY_DELAY_MS,
   createUnsupportedRefreshGate,
+  getSummaryRemountCacheKey,
   getCurrentSummarySseRefreshDelay,
   isCalendarSummaryWindow,
   mergePendingSummarySilentOption,
+  readSummaryRemountCache,
   runCalendarSummaryRefresh,
   runUnsupportedSummaryRefresh,
+  shouldEnableSummaryRemountCache,
+  shouldReuseSummaryRemountCache,
   shouldTriggerCurrentSummaryOpenResync,
   shouldRetryCurrentSummaryError,
   shouldHandleUnsupportedSummaryRefresh,
+  SUMMARY_REMOUNT_CACHE_TTL_MS,
   UNSUPPORTED_SSE_REFRESH_INTERVAL_MS,
+  writeSummaryRemountCache,
 } from './useStats'
+
+afterEach(() => {
+  clearSummaryRemountCache()
+})
 
 describe('useSummary unsupported window fallback', () => {
   it('throttles summary event storms for unsupported windows', async () => {
@@ -135,5 +146,67 @@ describe('useSummary unsupported window fallback', () => {
   it('keeps retry policy bounded by defaults', () => {
     expect(CURRENT_SUMMARY_RETRY_DELAY_MS).toBe(2_000)
     expect(CURRENT_SUMMARY_MAX_RETRY_ATTEMPTS).toBeGreaterThan(0)
+  })
+
+  it('stores remount cache entries by window and limit', () => {
+    const summary = {
+      totalCount: 12,
+      successCount: 10,
+      failureCount: 2,
+      totalCost: 0.5,
+      totalTokens: 120,
+    }
+
+    writeSummaryRemountCache('7d', undefined, summary, 1_000)
+
+    expect(getSummaryRemountCacheKey('7d')).toBe('7d::default')
+    expect(readSummaryRemountCache('7d', undefined, 1_001)).toEqual({
+      stats: summary,
+      cachedAt: 1_000,
+    })
+  })
+
+  it('disables remount caching for current and calendar summary windows', () => {
+    expect(shouldEnableSummaryRemountCache('current')).toBe(false)
+    expect(shouldEnableSummaryRemountCache('today')).toBe(false)
+    writeSummaryRemountCache(
+      'current',
+      undefined,
+      {
+        totalCount: 1,
+        successCount: 1,
+        failureCount: 0,
+        totalCost: 0,
+        totalTokens: 1,
+      },
+      1_000,
+    )
+    expect(readSummaryRemountCache('current', undefined, 1_001)).toBeNull()
+    writeSummaryRemountCache('today', undefined, {
+      totalCount: 2,
+      successCount: 2,
+      failureCount: 0,
+      totalCost: 0,
+      totalTokens: 2,
+    }, 1_000)
+    expect(readSummaryRemountCache('today', undefined, 1_001)).toBeNull()
+  })
+
+  it('treats remount cache as reusable only inside the ttl window', () => {
+    expect(shouldReuseSummaryRemountCache(10_000, 10_000 + SUMMARY_REMOUNT_CACHE_TTL_MS - 1)).toBe(true)
+    expect(shouldReuseSummaryRemountCache(10_000, 10_000 + SUMMARY_REMOUNT_CACHE_TTL_MS)).toBe(false)
+  })
+
+  it('does not hydrate from stale summary remount cache entries', () => {
+    const summary = {
+      totalCount: 12,
+      successCount: 10,
+      failureCount: 2,
+      totalCost: 0.5,
+      totalTokens: 120,
+    }
+    writeSummaryRemountCache('7d', undefined, summary, 1_000)
+
+    expect(readSummaryRemountCache('7d', undefined, 1_000 + SUMMARY_REMOUNT_CACHE_TTL_MS)).toBeNull()
   })
 })
