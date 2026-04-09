@@ -558,6 +558,57 @@ describe("SharedUpstreamAccountDetailDrawer edit drafts", () => {
     expect((displayNameInput as HTMLInputElement).value).toBe("Reopened draft")
   })
 
+  it("keeps a reopened pristine session on its original baseline when the older save response arrives later", async () => {
+    const saveRequest = deferred<any>()
+    const saveAccount = vi.fn().mockImplementation(() => saveRequest.promise)
+    let state = createApiKeyHookState({
+      items: [createApiKeyItem(8, "Gateway Key")],
+      selectedId: 8,
+      detail: createApiKeyDetail(createApiKeyItem(8, "Gateway Key"), {
+        note: "Original note",
+      }),
+      saveAccount,
+    })
+    hookMocks.useUpstreamAccounts.mockImplementation(() => state)
+
+    renderDetailDrawer(8)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+    setInputValue('input[name="detailDisplayName"]', "Pending save draft")
+    clickButton(/Save changes/i)
+    await flushAsync()
+
+    rerenderDetailDrawer(8, { open: false })
+    await flushAsync()
+    rerenderDetailDrawer(8)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+
+    const savedDetail = createApiKeyDetail(createApiKeyItem(8, "Saved Gateway Key"), {
+      note: "Saved note",
+    })
+    await act(async () => {
+      saveRequest.resolve(savedDetail)
+      await Promise.resolve()
+      state = {
+        ...state,
+        detail: savedDetail,
+      }
+      rerenderDetailDrawer(8)
+      await Promise.resolve()
+    })
+    await flushAsync()
+
+    const displayNameInput = document.body.querySelector(
+      'input[name="detailDisplayName"]',
+    )
+    const noteInput = document.body.querySelector('textarea[name="detailNote"]')
+    expect((displayNameInput as HTMLInputElement).value).toBe("Gateway Key")
+    expect((noteInput as HTMLTextAreaElement).value).toBe("Original note")
+  })
+
   it("invalidates the reopened draft session before passive effects flush", async () => {
     const saveRequest = deferred<any>()
     const saveAccount = vi.fn().mockImplementation(() => saveRequest.promise)

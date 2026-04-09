@@ -1401,7 +1401,7 @@ export function SharedUpstreamAccountDetailDrawer({
       recentSaveResponseGuard != null &&
       recentSaveResponseGuard.accountId === accountId &&
       recentSaveResponseGuard.sessionKey !== activeDraftSessionKey &&
-      hasAcceptedFresherServerDraft &&
+      (hasAcceptedFresherServerDraft || !shouldSeedDraft) &&
       areAccountDraftsEqual(nextBaseline, recentSaveResponseGuard.draft);
     if (shouldIgnoreRecentSaveResponse) {
       clearTimeout(recentSaveResponseGuard.timeoutId);
