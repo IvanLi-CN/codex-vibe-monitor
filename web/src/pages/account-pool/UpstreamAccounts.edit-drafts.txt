@@ -647,7 +647,121 @@ describe("SharedUpstreamAccountDetailDrawer edit drafts", () => {
     const displayNameInput = document.body.querySelector(
       'input[name="detailDisplayName"]',
     )
-    expect((displayNameInput as HTMLInputElement).value).toBe("Gateway Key")
+    expect((displayNameInput as HTMLInputElement).value).toBe("Saved Gateway Key")
+  })
+
+  it("keeps same-account edits when the route key changes without closing the drawer", async () => {
+    const state = createApiKeyHookState({
+      items: [createApiKeyItem(8, "Gateway Key")],
+      selectedId: 8,
+      detail: createApiKeyDetail(createApiKeyItem(8, "Gateway Key"), {
+        note: "Original note",
+      }),
+    })
+    hookMocks.useUpstreamAccounts.mockReturnValue(state)
+
+    function RoutedDetailDrawer() {
+      return (
+        <SharedUpstreamAccountDetailDrawer
+          accountId={8}
+          open
+          onClose={() => undefined}
+        />
+      )
+    }
+
+    const router = createMemoryRouter(
+      [
+        {
+          path: "/",
+          element: <RoutedDetailDrawer />,
+        },
+      ],
+      {
+        initialEntries: ["/?step=initial"],
+      },
+    )
+
+    host = document.createElement("div")
+    document.body.appendChild(host)
+    root = createRoot(host)
+    act(() => {
+      root?.render(
+        <I18nProvider>
+          <SystemNotificationProvider>
+            <RouterProvider router={router} />
+          </SystemNotificationProvider>
+        </I18nProvider>,
+      )
+    })
+
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+    setInputValue('input[name="detailDisplayName"]', "Edited after route replace")
+
+    await act(async () => {
+      await router.navigate("/?step=replaced", { replace: true })
+    })
+    await flushAsync()
+
+    const displayNameInput = document.body.querySelector(
+      'input[name="detailDisplayName"]',
+    )
+    expect((displayNameInput as HTMLInputElement).value).toBe(
+      "Edited after route replace",
+    )
+  })
+
+  it("filters pending fallback tags before reseeding a reopened session", async () => {
+    const saveRequest = deferred<any>()
+    const saveAccount = vi.fn().mockImplementation(() => saveRequest.promise)
+    const tagVip = defaultPoolTags[0]
+    const tagBurstSafe = defaultPoolTags[1]
+    let poolTagsState = {
+      items: [tagVip, tagBurstSafe],
+      writesEnabled: true,
+      isLoading: false,
+      error: null,
+      query: {},
+      refresh: vi.fn(),
+      updateQuery: vi.fn(),
+      createTag: vi.fn(),
+      updateTag: vi.fn(),
+      deleteTag: vi.fn(),
+    }
+    hookMocks.usePoolTags.mockImplementation(() => poolTagsState)
+    hookMocks.useUpstreamAccounts.mockReturnValue(
+      createApiKeyHookState({
+        items: [createApiKeyItem(8, "Gateway Key")],
+        selectedId: 8,
+        detail: createApiKeyDetail(createApiKeyItem(8, "Gateway Key"), {
+          tags: [tagVip, tagBurstSafe],
+        }),
+        saveAccount,
+      }),
+    )
+
+    renderDetailDrawer(8)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+    clickButton(/Save changes/i)
+    await flushAsync()
+
+    poolTagsState = {
+      ...poolTagsState,
+      items: [tagVip],
+    }
+    rerenderDetailDrawer(8, { open: false })
+    await flushAsync()
+    rerenderDetailDrawer(8)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+
+    expect(document.body.textContent).toContain("vip")
+    expect(document.body.textContent).not.toContain("burst-safe")
   })
 
   it("reopens with the saved detail after the save completes while the drawer is closed", async () => {

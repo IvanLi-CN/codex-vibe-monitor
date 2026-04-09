@@ -11,7 +11,7 @@ import {
 } from "react";
 import { AppIcon, type AppIconName } from "../../components/AppIcon";
 import { AccountDetailDrawerShell } from "../../components/AccountDetailDrawerShell";
-import { Link, useLocation, useNavigate } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { Alert } from "../../components/ui/alert";
 import { Badge } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
@@ -1184,7 +1184,6 @@ export function SharedUpstreamAccountDetailDrawer({
   onClose,
 }: SharedUpstreamAccountDetailDrawerProps) {
   const { t, locale } = useTranslation();
-  const location = useLocation();
   const navigate = useNavigate();
   const { openUpstreamAccount } = useUpstreamAccountDetailRoute();
   const {
@@ -1295,14 +1294,12 @@ export function SharedUpstreamAccountDetailDrawer({
   const draftSessionSnapshotRef = useRef({
     open,
     accountId,
-    locationKey: location.key,
     version: 0,
   });
   let draftSessionVersion = draftSessionSnapshotRef.current.version;
   if (
     draftSessionSnapshotRef.current.open !== open ||
-    draftSessionSnapshotRef.current.accountId !== accountId ||
-    draftSessionSnapshotRef.current.locationKey !== location.key
+    draftSessionSnapshotRef.current.accountId !== accountId
   ) {
     const closedActiveSession =
       draftSessionSnapshotRef.current.open && !open;
@@ -1312,20 +1309,16 @@ export function SharedUpstreamAccountDetailDrawer({
       draftSessionSnapshotRef.current.open &&
       open &&
       draftSessionSnapshotRef.current.accountId !== accountId;
-    const navigatedVisibleSession =
-      open && draftSessionSnapshotRef.current.locationKey !== location.key;
     if (
       closedActiveSession ||
       openedVisibleSession ||
-      switchedVisibleAccount ||
-      navigatedVisibleSession
+      switchedVisibleAccount
     ) {
       draftSessionVersion += 1;
     }
     draftSessionSnapshotRef.current = {
       open,
       accountId,
-      locationKey: location.key,
       version: draftSessionVersion,
     };
   }
@@ -1385,16 +1378,25 @@ export function SharedUpstreamAccountDetailDrawer({
       areAccountDraftsEqual(nextBaseline, pendingSaveSession.fallbackDraft);
 
     const recentSaveResponseGuard = recentSaveResponseGuardRef.current;
+    const hasAcceptedFresherServerDraft =
+      recentSaveResponseGuard != null &&
+      !areAccountDraftsEqual(
+        previousLatestServerDraft,
+        recentSaveResponseGuard.fallbackDraft,
+      );
     const shouldIgnoreRecentSaveResponse =
       recentSaveResponseGuard != null &&
       recentSaveResponseGuard.accountId === accountId &&
       recentSaveResponseGuard.sessionKey !== activeDraftSessionKey &&
+      hasAcceptedFresherServerDraft &&
       areAccountDraftsEqual(nextBaseline, recentSaveResponseGuard.draft);
     if (shouldIgnoreRecentSaveResponse) {
       clearTimeout(recentSaveResponseGuard.timeoutId);
       recentSaveResponseGuardRef.current = null;
+      draftBaselineRef.current = previousLatestServerDraft;
+      latestServerDraftRef.current = previousLatestServerDraft;
       if (shouldSeedDraft) {
-        setDraft(recentSaveResponseGuard.fallbackDraft);
+        setDraft(previousLatestServerDraft);
       }
       return;
     }
@@ -1493,6 +1495,24 @@ export function SharedUpstreamAccountDetailDrawer({
 
   useEffect(() => {
     const validTagIds = new Set(tagItems.map((tag) => tag.id));
+    const pendingSaveSession = pendingSaveSessionRef.current;
+    if (pendingSaveSession != null) {
+      pendingSaveSession.fallbackDraft = filterAccountDraftTagIds(
+        pendingSaveSession.fallbackDraft,
+        validTagIds,
+      );
+    }
+    const recentSaveResponseGuard = recentSaveResponseGuardRef.current;
+    if (recentSaveResponseGuard != null) {
+      recentSaveResponseGuard.draft = filterAccountDraftTagIds(
+        recentSaveResponseGuard.draft,
+        validTagIds,
+      );
+      recentSaveResponseGuard.fallbackDraft = filterAccountDraftTagIds(
+        recentSaveResponseGuard.fallbackDraft,
+        validTagIds,
+      );
+    }
     draftBaselineRef.current = filterAccountDraftTagIds(
       draftBaselineRef.current,
       validTagIds,
