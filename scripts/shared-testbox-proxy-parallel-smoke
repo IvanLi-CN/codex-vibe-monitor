@@ -1,0 +1,469 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: scripts/shared-testbox-proxy-parallel-smoke [options]
+
+Build the current repo on codex-testbox and run a 100-parallel proxy smoke test that verifies:
+- `/v1/*` no longer returns local admission 503s when 100 requests are in flight
+- deprecated PROXY_REQUEST_CONCURRENCY_* envs are ignored for /v1/* admission
+- raw async capture and large-body paths do not regress under mixed `/v1/responses` + `/v1/responses/compact`
+
+Options:
+  --testbox HOST       SSH host alias (default: codex-testbox)
+  --reuse-image TAG    Skip docker build and reuse an existing remote image tag
+  --cleanup            Remove this run directory and image after success
+  -h, --help           Show this help message
+USAGE
+}
+
+TESTBOX="codex-testbox"
+REUSE_IMAGE_TAG=""
+CLEANUP=0
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --testbox)
+      TESTBOX="$2"
+      shift 2
+      ;;
+    --reuse-image)
+      REUSE_IMAGE_TAG="$2"
+      shift 2
+      ;;
+    --cleanup)
+      CLEANUP=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+if REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null)"; then
+  :
+else
+  REPO_ROOT="$(pwd)"
+fi
+REPO_ROOT="$(python3 - <<'PY' "$REPO_ROOT"
+import os, sys
+print(os.path.realpath(sys.argv[1]))
+PY
+)"
+REPO_NAME="$(basename "$REPO_ROOT")"
+PATH_HASH8="$(python3 - <<'PY' "$REPO_ROOT"
+import hashlib, os, sys
+print(hashlib.sha256(os.path.realpath(sys.argv[1]).encode()).hexdigest()[:8])
+PY
+)"
+GIT_SHA="$(git -C "$REPO_ROOT" rev-parse --short HEAD 2>/dev/null || echo nogit)"
+RUN_ID="$(date +%Y%m%d_%H%M%S)_proxy_parallel_${GIT_SHA}"
+REMOTE_BASE="/srv/codex/workspaces/$USER"
+WORKSPACE_SLUG="${REPO_NAME}__${PATH_HASH8}"
+REMOTE_WORKSPACE="${REMOTE_BASE}/${WORKSPACE_SLUG}"
+REMOTE_RUN="${REMOTE_WORKSPACE}/runs/${RUN_ID}"
+COMPOSE_PROJECT_RAW="codex_${WORKSPACE_SLUG}_${RUN_ID}"
+COMPOSE_PROJECT="$(python3 - <<'PY' "$COMPOSE_PROJECT_RAW"
+import re, sys
+value = re.sub(r'[^a-z0-9_-]+', '_', sys.argv[1].lower()).strip('_')
+print(value[:63])
+PY
+)"
+IMAGE_TAG="${REUSE_IMAGE_TAG}"
+if [ -z "$IMAGE_TAG" ]; then
+  IMAGE_TAG_RAW="codex_${WORKSPACE_SLUG}_${RUN_ID}"
+  IMAGE_TAG="$(python3 - <<'PY' "$IMAGE_TAG_RAW"
+import re, sys
+value = re.sub(r'[^a-z0-9_.-]+', '_', sys.argv[1].lower()).strip('._-')
+print(value[:120])
+PY
+)"
+fi
+
+printf '== local repo ==\n%s\n' "$REPO_ROOT"
+printf '== remote run ==\n%s\n' "$REMOTE_RUN"
+printf '== image tag ==\n%s\n' "$IMAGE_TAG"
+printf '== compose project ==\n%s\n' "$COMPOSE_PROJECT"
+
+ssh -o BatchMode=yes "$TESTBOX" "mkdir -p '$REMOTE_RUN'"
+rsync -az --delete \
+  --exclude '.git/' \
+  --exclude 'node_modules/' \
+  --exclude 'target/' \
+  --exclude 'web/node_modules/' \
+  --exclude 'web/dist/' \
+  --exclude 'data/' \
+  "$REPO_ROOT/" "$TESTBOX:$REMOTE_RUN/"
+
+ssh -o BatchMode=yes "$TESTBOX" env \
+  REMOTE_RUN="$REMOTE_RUN" \
+  IMAGE_TAG="$IMAGE_TAG" \
+  REUSE_IMAGE_TAG="$REUSE_IMAGE_TAG" \
+  CLEANUP="$CLEANUP" \
+  COMPOSE_PROJECT="$COMPOSE_PROJECT" \
+  GIT_SHA="$GIT_SHA" \
+  bash -s <<'REMOTE'
+set -euo pipefail
+export TZ=Asia/Shanghai
+
+COMPOSE_FILE="$REMOTE_RUN/.codex-proxy-parallel.compose.yaml"
+CAPS_OVERRIDE="$REMOTE_RUN/.codex.caps-compat.yaml"
+MOCK_SCRIPT="$REMOTE_RUN/.codex-mock-upstream.py"
+LOADGEN_SCRIPT="$REMOTE_RUN/.codex-loadgen.py"
+DATA_DIR="$REMOTE_RUN/data"
+LOG_DIR="$REMOTE_RUN/logs"
+APP_LOG="$LOG_DIR/app.log"
+TOKEN="pool-shared-testbox-key"
+ACCOUNT_KEY="upstream-primary-key"
+ENCRYPTION_SECRET="shared-testbox-encryption-secret"
+
+mkdir -p "$DATA_DIR" "$LOG_DIR"
+chmod 0777 "$DATA_DIR"
+
+cleanup_remote() {
+  set +e
+  if [ -f "$COMPOSE_FILE" ]; then
+    docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" down -v --remove-orphans >/dev/null 2>&1 || true
+  fi
+  rm -f "$MOCK_SCRIPT" "$LOADGEN_SCRIPT" "$COMPOSE_FILE" "$CAPS_OVERRIDE"
+  if [ "$CLEANUP" = "1" ]; then
+    if [ -z "$REUSE_IMAGE_TAG" ]; then
+      docker image rm -f "$IMAGE_TAG" >/dev/null 2>&1 || true
+    fi
+    rm -rf "$REMOTE_RUN"
+  fi
+}
+trap cleanup_remote EXIT
+
+cat > "$MOCK_SCRIPT" <<'PY'
+#!/usr/bin/env python3
+import json
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+class Handler(BaseHTTPRequestHandler):
+    protocol_version = 'HTTP/1.1'
+
+    def log_message(self, fmt, *args):
+        print('mock-upstream', self.address_string(), fmt % args, flush=True)
+
+    def do_POST(self):
+        length = int(self.headers.get('Content-Length', '0') or '0')
+        remaining = length
+        while remaining > 0:
+            chunk = self.rfile.read(min(65536, remaining))
+            if not chunk:
+                break
+            remaining -= len(chunk)
+
+        if self.path not in ('/v1/responses', '/v1/responses/compact'):
+            body = json.dumps({'error': 'unsupported path', 'path': self.path}).encode()
+            self.send_response(404)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            self.wfile.flush()
+            return
+
+        delay = 1.2 if self.path == '/v1/responses' else 0.8
+        body = json.dumps({'ok': True, 'path': self.path}).encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.flush()
+        time.sleep(delay)
+        self.wfile.write(body)
+        self.wfile.flush()
+
+server = ThreadingHTTPServer(('0.0.0.0', 18080), Handler)
+server.serve_forever()
+PY
+chmod +x "$MOCK_SCRIPT"
+
+cat > "$LOADGEN_SCRIPT" <<'PY'
+#!/usr/bin/env python3
+import json
+import sys
+import threading
+import time
+import urllib.error
+import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+
+BASE_URL = 'http://app:8080'
+TOKEN = 'pool-shared-testbox-key'
+ACCOUNT_KEY = 'upstream-primary-key'
+DIRECT_PROXY_KEY = '__direct__'
+GROUP_NAME = 'shared-testbox-group'
+
+
+def request_json(method, path, payload=None, timeout=30):
+    data = None if payload is None else json.dumps(payload).encode()
+    req = urllib.request.Request(
+        BASE_URL + path,
+        data=data,
+        method=method,
+        headers={'Content-Type': 'application/json'},
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.status, json.loads(resp.read().decode() or '{}')
+
+
+def wait_health():
+    deadline = time.time() + 120
+    last_error = None
+    while time.time() < deadline:
+        try:
+            req = urllib.request.Request(BASE_URL + '/health', method='GET')
+            with urllib.request.urlopen(req, timeout=5) as resp:
+                body = resp.read().decode()
+                if resp.status == 200 and body == 'ok':
+                    print(json.dumps({'phase': 'wait-health', 'status': 'ok'}))
+                    return
+        except Exception as exc:
+            last_error = str(exc)
+        time.sleep(1)
+    raise SystemExit(f'healthcheck timed out: {last_error}')
+
+
+def seed():
+    status, payload = request_json('PUT', '/api/pool/routing-settings', {'apiKey': TOKEN})
+    if status != 200:
+        raise SystemExit(f'failed to seed pool routing settings: status={status} payload={payload}')
+    create_payload = {
+        'displayName': 'Shared Testbox Primary',
+        'apiKey': ACCOUNT_KEY,
+        'groupName': GROUP_NAME,
+        'groupBoundProxyKeys': [DIRECT_PROXY_KEY],
+        'upstreamBaseUrl': 'http://mock-upstream:18080/',
+    }
+    status, payload = request_json('POST', '/api/pool/upstream-accounts/api-keys', create_payload)
+    if status != 200:
+        raise SystemExit(f'failed to create api-key account: status={status} payload={payload}')
+    print(json.dumps({'phase': 'seed', 'status': 'ok'}))
+
+
+def run_stage(stage_name, requests):
+    start_barrier = threading.Barrier(len(requests) + 1)
+    results = []
+    lock = threading.Lock()
+
+    def worker(item):
+        payload = item['payload'].encode()
+        req = urllib.request.Request(
+            BASE_URL + item['path'],
+            data=payload,
+            method='POST',
+            headers={
+                'Authorization': f'Bearer {TOKEN}',
+                'Content-Type': 'application/json',
+                'Content-Length': str(len(payload)),
+            },
+        )
+        start_barrier.wait()
+        try:
+            with urllib.request.urlopen(req, timeout=90) as resp:
+                body = resp.read().decode(errors='replace')
+                result = {
+                    'path': item['path'],
+                    'status': resp.status,
+                    'body': body,
+                }
+        except urllib.error.HTTPError as err:
+            result = {
+                'path': item['path'],
+                'status': err.code,
+                'body': err.read().decode(errors='replace'),
+            }
+        except Exception as exc:
+            result = {
+                'path': item['path'],
+                'status': 'exception',
+                'body': str(exc),
+            }
+        with lock:
+            results.append(result)
+
+    with ThreadPoolExecutor(max_workers=len(requests)) as executor:
+        for item in requests:
+            executor.submit(worker, item)
+        start_barrier.wait()
+
+    bad = [
+        item for item in results
+        if item['status'] != 200
+        or 'proxy concurrency limit reached; retry later' in item['body']
+        or 'proxy request concurrency wait timed out' in item['body']
+    ]
+    summary = {
+        'phase': stage_name,
+        'request_count': len(results),
+        'bad_count': len(bad),
+        'bad_examples': bad[:5],
+    }
+    print(json.dumps(summary, ensure_ascii=False))
+    if bad:
+        raise SystemExit(f'{stage_name} failed with {len(bad)} bad responses')
+
+
+def stage_a():
+    requests = [
+        {
+            'path': '/v1/responses',
+            'payload': json.dumps({'model': 'gpt-5', 'input': f'stage-a-{idx}'}),
+        }
+        for idx in range(100)
+    ]
+    run_stage('stage-a', requests)
+
+
+def stage_b():
+    large_input = 'x' * (2 * 1024 * 1024)
+    requests = []
+    for idx in range(100):
+        path = '/v1/responses' if idx % 2 == 0 else '/v1/responses/compact'
+        input_payload = f'stage-b-{idx}' if idx % 4 else large_input
+        requests.append({
+            'path': path,
+            'payload': json.dumps({'model': 'gpt-5', 'input': input_payload}),
+        })
+    run_stage('stage-b', requests)
+
+
+COMMANDS = {
+    'wait-health': wait_health,
+    'seed': seed,
+    'stage-a': stage_a,
+    'stage-b': stage_b,
+}
+
+if len(sys.argv) != 2 or sys.argv[1] not in COMMANDS:
+    raise SystemExit(f'usage: {sys.argv[0]} <{"|".join(sorted(COMMANDS))}>')
+
+COMMANDS[sys.argv[1]]()
+PY
+chmod +x "$LOADGEN_SCRIPT"
+
+cat > "$COMPOSE_FILE" <<YAML
+services:
+  app:
+    image: "$IMAGE_TAG"
+    environment:
+      DATABASE_PATH: /srv/app/data/codex_vibe_monitor.db
+      HTTP_BIND: 0.0.0.0:8080
+      OPENAI_UPSTREAM_BASE_URL: http://mock-upstream:18080/
+      RUST_LOG: info
+      PROXY_RAW_MAX_BYTES: "65536"
+      UPSTREAM_ACCOUNTS_ENCRYPTION_SECRET: "$ENCRYPTION_SECRET"
+      PROXY_REQUEST_CONCURRENCY_LIMIT: "12"
+      PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS: "2000"
+    volumes:
+      - "$DATA_DIR:/srv/app/data"
+  mock-upstream:
+    image: python:3.12-alpine
+    command: ["python", "/work/mock_upstream.py"]
+    volumes:
+      - "$MOCK_SCRIPT:/work/mock_upstream.py:ro"
+  loadgen:
+    image: python:3.12-alpine
+    command: ["sh", "-lc", "sleep infinity"]
+    volumes:
+      - "$LOADGEN_SCRIPT:/work/loadgen.py:ro"
+YAML
+
+services=$(docker compose -f "$COMPOSE_FILE" config --services)
+{
+  echo 'services:'
+  for service in $services; do
+    cat <<YAML
+  $service:
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FSETID
+      - FOWNER
+      - MKNOD
+      - NET_RAW
+      - SETGID
+      - SETUID
+      - SETPCAP
+      - NET_BIND_SERVICE
+      - SYS_CHROOT
+      - KILL
+      - AUDIT_WRITE
+YAML
+  done
+} > "$CAPS_OVERRIDE"
+
+if [ -z "$REUSE_IMAGE_TAG" ]; then
+  printf '== build image ==\n'
+  docker build -t "$IMAGE_TAG" --build-arg APP_EFFECTIVE_VERSION="shared-testbox-parallel-$GIT_SHA" "$REMOTE_RUN"
+else
+  printf '== reuse image ==\n%s\n' "$IMAGE_TAG"
+  docker image inspect "$IMAGE_TAG" >/dev/null
+fi
+
+printf '== compose up ==\n'
+docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" up -d app mock-upstream
+
+docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/loadgen.py wait-health </dev/null
+printf '== seed pool route + account ==\n'
+docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/loadgen.py seed </dev/null
+printf '== stage A ==\n'
+docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/loadgen.py stage-a </dev/null
+printf '== stage B ==\n'
+docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" run --rm -T loadgen python /work/loadgen.py stage-b </dev/null
+
+printf '== collect logs ==\n'
+docker compose -p "$COMPOSE_PROJECT" -f "$COMPOSE_FILE" -f "$CAPS_OVERRIDE" logs app > "$APP_LOG"
+python3 - <<'PY' "$APP_LOG"
+import pathlib
+import re
+import sys
+
+log_path = pathlib.Path(sys.argv[1])
+text = log_path.read_text()
+text = re.sub(r'\x1b\[[0-9;]*m', '', text)
+required = [
+    'PROXY_REQUEST_CONCURRENCY_LIMIT is deprecated and ignored for /v1/* admission',
+    'PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS is deprecated and ignored for /v1/* admission',
+]
+for needle in required:
+    if needle not in text:
+        raise SystemExit(f'missing expected deprecation warning: {needle}')
+for needle in [
+    'proxy request concurrency wait timed out',
+    'proxy concurrency limit reached; retry later',
+]:
+    if needle in text:
+        raise SystemExit(f'unexpected local admission gate evidence: {needle}')
+started = text.count('openai proxy request started')
+if started < 200:
+    raise SystemExit(f'expected at least 200 started requests, got {started}')
+max_in_flight = 0
+for line in text.splitlines():
+    if 'proxy request admitted' not in line:
+        continue
+    match = re.search(r'in_flight=(\d+)', line)
+    if match:
+        max_in_flight = max(max_in_flight, int(match.group(1)))
+if max_in_flight < 100:
+    raise SystemExit(f'expected max in_flight >= 100, got {max_in_flight}')
+print({'started': started, 'max_in_flight': max_in_flight})
+PY
+
+printf '== shared testbox proxy parallel smoke ok ==\nrun=%s\nimage=%s\nproject=%s\nlog=%s\n' \
+  "$REMOTE_RUN" "$IMAGE_TAG" "$COMPOSE_PROJECT" "$APP_LOG"
+REMOTE

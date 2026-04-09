@@ -1094,8 +1094,7 @@ async fn proxy_openai_v1_via_pool(
         &method,
         original_uri,
     )
-    .await
-    .map_err(|err| (err.status, err.message))?;
+    .await;
     let body_size_hint_exact = body
         .size_hint()
         .exact()
@@ -1920,4 +1919,3 @@ pub(crate) async fn send_forward_proxy_request_with_429_retry(
 
     unreachable!("429 retry loop should always return a response or error")
 }
-
