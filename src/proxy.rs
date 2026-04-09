@@ -104,6 +104,32 @@ async fn proxy_openai_v1_common(
         );
     }
 
+    let pool_route_active_hint = match request_matches_pool_route(state.as_ref(), &headers).await {
+        Ok(true) => Some(true),
+        Ok(false) => {
+            return build_proxy_error_response(
+                ProxyErrorResponse {
+                    status: StatusCode::UNAUTHORIZED,
+                    message: PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE.to_string(),
+                    cvm_id: None,
+                    retry_after_secs: None,
+                    queue_wait_ms: None,
+                },
+                &invoke_id,
+            );
+        }
+        Err(err) => {
+            warn!(
+                proxy_request_id,
+                method = %method_for_log,
+                uri = %uri_for_log,
+                error = %err,
+                "failed to pre-resolve pool route before admission; deferring to admitted path"
+            );
+            None
+        }
+    };
+
     let proxy_request_permit = match acquire_proxy_request_concurrency_permit(
         state.as_ref(),
         proxy_request_id,
@@ -139,6 +165,7 @@ async fn proxy_openai_v1_common(
         &method_for_log,
         &uri_for_log,
         &headers,
+        pool_route_active_hint,
     )
     .await
     {
@@ -382,26 +409,30 @@ async fn resolve_proxy_route_context_after_admission(
     method: &Method,
     original_uri: &Uri,
     headers: &HeaderMap,
+    pool_route_active_hint: Option<bool>,
 ) -> Result<(bool, PoolRoutingTimeoutSettingsResolved), ProxyErrorResponse> {
     let direct_timeouts = pool_routing_timeouts_from_config(&state.config);
-    let pool_route_active = match request_matches_pool_route(state, headers).await {
-        Ok(active) => active,
-        Err(err) => {
-            warn!(
-                proxy_request_id,
-                method = %method,
-                uri = %original_uri,
-                error = %err,
-                "failed to resolve pool route"
-            );
-            return Err(ProxyErrorResponse {
-                status: StatusCode::INTERNAL_SERVER_ERROR,
-                message: format!("failed to resolve pool routing settings: {err}"),
-                cvm_id: None,
-                retry_after_secs: None,
-                queue_wait_ms: None,
-            });
-        }
+    let pool_route_active = match pool_route_active_hint {
+        Some(active) => active,
+        None => match request_matches_pool_route(state, headers).await {
+            Ok(active) => active,
+            Err(err) => {
+                warn!(
+                    proxy_request_id,
+                    method = %method,
+                    uri = %original_uri,
+                    error = %err,
+                    "failed to resolve pool route"
+                );
+                return Err(ProxyErrorResponse {
+                    status: StatusCode::INTERNAL_SERVER_ERROR,
+                    message: format!("failed to resolve pool routing settings: {err}"),
+                    cvm_id: None,
+                    retry_after_secs: None,
+                    queue_wait_ms: None,
+                });
+            }
+        },
     };
 
     if !pool_route_active {
