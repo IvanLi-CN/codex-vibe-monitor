@@ -1052,7 +1052,7 @@ fn retry_after_secs_for_proxy_error_uses_configured_concurrency_timeout() {
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_persists_concurrency_limit_rejections_for_capture_targets() {
+async fn proxy_openai_v1_does_not_persist_concurrency_limit_rejections_for_capture_targets() {
     let mut config = test_config();
     config.proxy_request_concurrency_limit = 1;
     config.proxy_request_concurrency_wait_timeout = Duration::from_millis(50);
@@ -1108,75 +1108,22 @@ async fn proxy_openai_v1_persists_concurrency_limit_rejections_for_capture_targe
         Some(PROXY_CONCURRENCY_LIMIT_MESSAGE)
     );
 
-    wait_for_codex_invocations(&state.pool, 1).await;
+    tokio::time::sleep(Duration::from_millis(150)).await;
 
-    #[derive(Debug, sqlx::FromRow)]
-    struct PersistedRow {
-        status: Option<String>,
-        error_message: Option<String>,
-        failure_kind: Option<String>,
-        payload: Option<String>,
-        t_total_ms: Option<f64>,
-        t_req_read_ms: Option<f64>,
-    }
-
-    let row = sqlx::query_as::<_, PersistedRow>(
-        r#"
-        SELECT status, error_message, failure_kind, payload, t_total_ms, t_req_read_ms
-        FROM codex_invocations
-        ORDER BY id DESC
-        LIMIT 1
-        "#,
-    )
-    .fetch_one(&state.pool)
-    .await
-    .expect("load persisted concurrency-limit rejection");
-
-    assert_eq!(row.status.as_deref(), Some("http_503"));
+    let persisted_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations")
+        .fetch_one(&state.pool)
+        .await
+        .expect("load codex invocation count after overload rejection");
     assert_eq!(
-        row.failure_kind.as_deref(),
-        Some(PROXY_FAILURE_PROXY_CONCURRENCY_LIMIT)
+        persisted_count, 0,
+        "overload rejection should shed load instead of persisting proxy capture rows"
     );
+
+    let broadcast = tokio::time::timeout(Duration::from_millis(200), rx.recv()).await;
     assert!(
-        row.error_message
-            .as_deref()
-            .is_some_and(|message| message.contains(PROXY_CONCURRENCY_LIMIT_MESSAGE))
+        broadcast.is_err(),
+        "overload rejection should not enqueue follow-up broadcasts"
     );
-    let payload: Value = serde_json::from_str(
-        row.payload
-            .as_deref()
-            .expect("rejection payload should be persisted"),
-    )
-    .expect("decode rejection payload");
-    assert_eq!(payload["endpoint"].as_str(), Some("/v1/responses"));
-    assert_eq!(
-        payload["routeMode"].as_str(),
-        Some(INVOCATION_ROUTE_MODE_POOL)
-    );
-    assert_eq!(
-        payload["failureKind"].as_str(),
-        Some(PROXY_FAILURE_PROXY_CONCURRENCY_LIMIT)
-    );
-    assert!(row.t_total_ms.is_some_and(|value| value > 0.0));
-    assert!(row.t_req_read_ms.is_some_and(|value| value > 0.0));
-
-    let mut saw_record = false;
-    for _ in 0..8 {
-        let payload = tokio::time::timeout(Duration::from_secs(1), rx.recv())
-            .await
-            .expect("timed out waiting for rejection broadcast")
-            .expect("broadcast channel should stay open");
-        if let BroadcastPayload::Records { records } = payload
-            && records.into_iter().any(|record| {
-                record.failure_kind.as_deref() == Some(PROXY_FAILURE_PROXY_CONCURRENCY_LIMIT)
-                    && record.endpoint.as_deref() == Some("/v1/responses")
-            })
-        {
-            saw_record = true;
-            break;
-        }
-    }
-    assert!(saw_record, "expected rejection broadcast record");
 
     drop(held_permit);
     assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 0);
