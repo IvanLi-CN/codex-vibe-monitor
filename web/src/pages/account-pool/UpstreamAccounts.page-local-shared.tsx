@@ -1282,6 +1282,10 @@ export function SharedUpstreamAccountDetailDrawer({
   const [detailDrawerPortalContainer, setDetailDrawerPortalContainer] =
     useState<HTMLElement | null>(null);
   const [detailTab, setDetailTab] = useState<AccountDetailTab>("overview");
+  const validTagIds = useMemo(
+    () => new Set(tagItems.map((tag) => tag.id)),
+    [tagItems],
+  );
   const deleteConfirmCancelRef = useRef<HTMLButtonElement | null>(null);
   const detailDrawerTitleId = "upstream-account-detail-title";
   const detailDrawerTabsBaseId = useId();
@@ -1294,12 +1298,14 @@ export function SharedUpstreamAccountDetailDrawer({
   const activeDraftSessionKeyRef = useRef<string | null>(null);
   const draftBaselineRef = useRef<AccountDraft>(buildDraft(null));
   const latestServerDraftRef = useRef<AccountDraft>(buildDraft(null));
+  const validTagIdsRef = useRef(validTagIds);
   const pendingSaveSessionsRef = useRef<Map<number, PendingSaveSession>>(
     new Map(),
   );
   const recentSaveResponseGuardsRef = useRef<
     Map<number, RecentSaveResponseGuard>
   >(new Map());
+  validTagIdsRef.current = validTagIds;
   const draftSessionSnapshotRef = useRef({
     open,
     accountId,
@@ -1364,7 +1370,10 @@ export function SharedUpstreamAccountDetailDrawer({
   }, [accountId, missingDetailAccountId, onClose, open]);
 
   useEffect(() => {
-    const nextBaseline = buildDraft(detail?.id === accountId ? detail : null);
+    const nextBaseline = filterAccountDraftTagIds(
+      buildDraft(detail?.id === accountId ? detail : null),
+      validTagIdsRef.current,
+    );
     if (activeDraftSessionKey == null) {
       draftSessionKeyRef.current = null;
       draftBaselineRef.current = nextBaseline;
@@ -1507,7 +1516,6 @@ export function SharedUpstreamAccountDetailDrawer({
   }, [groups]);
 
   useEffect(() => {
-    const validTagIds = new Set(tagItems.map((tag) => tag.id));
     for (const pendingSaveSession of pendingSaveSessionsRef.current.values()) {
       pendingSaveSession.fallbackDraft = filterAccountDraftTagIds(
         pendingSaveSession.fallbackDraft,
@@ -1537,7 +1545,7 @@ export function SharedUpstreamAccountDetailDrawer({
       validTagIds,
     );
     setDraft((current) => filterAccountDraftTagIds(current, validTagIds));
-  }, [tagItems]);
+  }, [validTagIds]);
 
   const availableGroups = useMemo(() => {
     const draftNames = Object.fromEntries([
@@ -2380,9 +2388,17 @@ export function SharedUpstreamAccountDetailDrawer({
           );
         }
         notifyMotherChange(response);
+        const responseFallbackDraft = filterAccountDraftTagIds(
+          pendingSaveSession.fallbackDraft,
+          validTagIdsRef.current,
+        );
+        const retainedServerDraft = filterAccountDraftTagIds(
+          latestServerDraftRef.current,
+          validTagIdsRef.current,
+        );
         const responseDraft = filterAccountDraftTagIds(
           buildDraft(response),
-          new Set(tagItems.map((tag) => tag.id)),
+          validTagIdsRef.current,
         );
         if (
           selectedIdRef.current === source.id &&
@@ -2397,8 +2413,8 @@ export function SharedUpstreamAccountDetailDrawer({
             accountId: source.id,
             sessionKey: saveDraftSessionKey,
             draft: responseDraft,
-            fallbackDraft: pendingSaveSession.fallbackDraft,
-            retainedDraft: latestServerDraftRef.current,
+            fallbackDraft: responseFallbackDraft,
+            retainedDraft: retainedServerDraft,
             timeoutId: setTimeout(() => {
               if (
                 recentSaveResponseGuardsRef.current.get(source.id) ===

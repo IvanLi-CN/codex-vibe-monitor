@@ -815,11 +815,18 @@ describe("SharedUpstreamAccountDetailDrawer edit drafts", () => {
     expect(document.body.textContent).not.toContain("burst-safe")
   })
 
-  it("filters deleted tag ids out of late save responses", async () => {
+  it("filters deleted tag ids out of late save responses even after reopen", async () => {
     const saveRequest = deferred<any>()
-    const saveAccount = vi.fn().mockImplementation(() => saveRequest.promise)
     const tagVip = defaultPoolTags[0]
     const tagBurstSafe = defaultPoolTags[1]
+    const saveAccount = vi
+      .fn()
+      .mockImplementationOnce(() => saveRequest.promise)
+      .mockResolvedValue(
+        createApiKeyDetail(createApiKeyItem(8, "Gateway Key"), {
+          tags: [tagVip],
+        }),
+      )
     let poolTagsState = {
       items: [tagVip, tagBurstSafe],
       writesEnabled: true,
@@ -865,8 +872,24 @@ describe("SharedUpstreamAccountDetailDrawer edit drafts", () => {
     )
     await flushAsync()
 
+    rerenderDetailDrawer(8, { open: false })
+    await flushAsync()
+    rerenderDetailDrawer(8)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+    clickButton(/Save changes/i)
+    await flushAsync()
+
     expect(document.body.textContent).toContain("vip")
     expect(document.body.textContent).not.toContain("burst-safe")
+    expect(saveAccount).toHaveBeenNthCalledWith(
+      2,
+      8,
+      expect.objectContaining({
+        tagIds: [tagVip.id],
+      }),
+    )
   })
 
   it("reopens with the saved detail after the save completes while the drawer is closed", async () => {
