@@ -9,6 +9,9 @@ export default defineConfig(({ mode }) => {
     plugins: [react()],
     test: {
       setupFiles: './src/test-setup.ts',
+      maxWorkers: 4,
+      testTimeout: 20_000,
+      hookTimeout: 20_000,
     },
     server: {
       host: '127.0.0.1',

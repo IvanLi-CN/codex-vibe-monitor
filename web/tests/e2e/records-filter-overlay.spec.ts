@@ -1,5 +1,8 @@
 import { expect, test, type Page } from '@playwright/test'
 
+const isBackendEventsRequest = (url: URL): boolean => url.pathname === '/events'
+const isBackendApiRequest = (url: URL): boolean => url.pathname.startsWith('/api/')
+
 const RECORDS_FIXTURE = {
   snapshotId: 901,
   total: 2,
@@ -96,7 +99,7 @@ const SUGGESTIONS_FIXTURE = {
 }
 
 async function mockRecordsPageApis(page: Page) {
-  await page.route('**/events', async (route) => {
+  await page.route(isBackendEventsRequest, async (route) => {
     await route.fulfill({
       status: 204,
       headers: {
@@ -107,7 +110,7 @@ async function mockRecordsPageApis(page: Page) {
     })
   })
 
-  await page.route('**/api/**', async (route) => {
+  await page.route(isBackendApiRequest, async (route) => {
     const requestUrl = new URL(route.request().url())
     const { pathname } = requestUrl
 

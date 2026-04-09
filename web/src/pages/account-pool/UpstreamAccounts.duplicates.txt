@@ -1,0 +1,1696 @@
+describe("UpstreamAccountsPage duplicates", () => {
+  it("renders the compact roster header and folded metadata chips", () => {
+    mockAccountsPage();
+    render("/account-pool/upstream-accounts");
+
+    const headerCells = Array.from(
+      document.body.querySelectorAll("thead th"),
+    ).map((cell) => cell.textContent?.trim() || "");
+    expect(headerCells).toEqual(["", "Account", "Sync / Call", "Windows", ""]);
+    expect(document.body.textContent).toContain("vip");
+    expect(document.body.textContent).toContain("+1");
+    expect(document.body.textContent).toContain("team");
+  });
+
+  it("shows action-first roster summaries and keeps the concrete failure message in hover text", () => {
+    mockAccountsPage();
+    render("/account-pool/upstream-accounts");
+
+    const firstRow = document.body.querySelector('tbody tr[role="button"]');
+    if (!(firstRow instanceof HTMLTableRowElement)) {
+      throw new Error("missing roster row");
+    }
+
+    expect(firstRow.textContent).toContain("Hard unavailable");
+    expect(firstRow.textContent).toContain(
+      "Upstream quota or weekly cap was exhausted",
+    );
+    expect(firstRow.textContent).toContain("HTTP 429");
+    expect(
+      document.body.querySelector(
+        '[title*="Weekly cap exhausted for this account"]',
+      ),
+    ).not.toBeNull();
+  });
+
+  it("shows latest account action details and recent events in the drawer", async () => {
+    mockAccountsPage();
+    render("/account-pool/upstream-accounts");
+
+    clickFirstRosterRow();
+    await flushAsync();
+    clickTab(/Health & events/i);
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Latest account action");
+    expect(document.body.textContent).toContain("Hard unavailable");
+    expect(document.body.textContent).toContain(
+      "Weekly cap exhausted for this account",
+    );
+    expect(document.body.textContent).toContain("Recent account events");
+    expect(document.body.textContent).toContain("invk_action_001");
+  });
+
+  it("renders retryable upstream overload actions without cooldown wording", async () => {
+    mockAccountsPage({
+      selectedSummary: {
+        status: "active",
+        displayStatus: "active",
+        healthStatus: "normal",
+        workStatus: "working",
+        lastAction: "route_retryable_failure",
+        lastActionSource: "call",
+        lastActionReasonCode: "upstream_server_overloaded",
+        lastActionReasonMessage:
+          "[upstream_response_failed] server_is_overloaded: Our servers are currently overloaded. Please try again later.",
+        lastActionHttpStatus: 200,
+      },
+      detail: {
+        status: "active",
+        displayStatus: "active",
+        healthStatus: "normal",
+        workStatus: "working",
+        lastAction: "route_retryable_failure",
+        lastActionSource: "call",
+        lastActionReasonCode: "upstream_server_overloaded",
+        lastActionReasonMessage:
+          "[upstream_response_failed] server_is_overloaded: Our servers are currently overloaded. Please try again later.",
+        lastActionHttpStatus: 200,
+        recentActions: [
+          {
+            id: 73,
+            occurredAt: "2026-03-27T07:06:29.000Z",
+            action: "route_retryable_failure",
+            source: "call",
+            reasonCode: "upstream_server_overloaded",
+            reasonMessage:
+              "[upstream_response_failed] server_is_overloaded: Our servers are currently overloaded. Please try again later.",
+            httpStatus: 200,
+            failureKind: "upstream_response_failed",
+            invokeId: "invk_overloaded_001",
+            stickyKey: "sticky-overloaded-001",
+            createdAt: "2026-03-27T07:06:29.000Z",
+          },
+        ],
+      },
+    });
+    render("/account-pool/upstream-accounts");
+
+    clickFirstRosterRow();
+    await flushAsync();
+    clickTab(/Health & events/i);
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Temporary upstream failure");
+    expect(document.body.textContent).toContain(
+      "Upstream is temporarily overloaded",
+    );
+    expect(document.body.textContent).toContain("HTTP 200");
+    expect(document.body.textContent).not.toContain("Route cooldown");
+  });
+
+  it("renders blocked recovery actions with translated source and reason labels", async () => {
+    mockAccountsPage({
+      selectedSummary: {
+        status: "error",
+        displayStatus: "error_other",
+        healthStatus: "error_other",
+        lastAction: "sync_recovery_blocked",
+        lastActionSource: "sync_maintenance",
+        lastActionReasonCode: "quota_still_exhausted",
+        lastActionReasonMessage:
+          "latest usage snapshot still shows an exhausted upstream usage limit window",
+        lastActionHttpStatus: null,
+      },
+      detail: {
+        status: "error",
+        displayStatus: "error_other",
+        healthStatus: "error_other",
+        lastAction: "sync_recovery_blocked",
+        lastActionSource: "sync_maintenance",
+        lastActionReasonCode: "quota_still_exhausted",
+        lastActionReasonMessage:
+          "latest usage snapshot still shows an exhausted upstream usage limit window",
+        lastActionHttpStatus: null,
+        recentActions: [
+          {
+            id: 72,
+            occurredAt: "2026-03-16T03:10:00.000Z",
+            action: "sync_recovery_blocked",
+            source: "sync_maintenance",
+            reasonCode: "quota_still_exhausted",
+            reasonMessage:
+              "latest usage snapshot still shows an exhausted upstream usage limit window",
+            httpStatus: null,
+            failureKind: "upstream_http_429_quota_exhausted",
+            invokeId: null,
+            stickyKey: null,
+            createdAt: "2026-03-16T03:10:00.000Z",
+          },
+        ],
+      },
+    });
+    render("/account-pool/upstream-accounts");
+
+    clickFirstRosterRow();
+    await flushAsync();
+    clickTab(/Health & events/i);
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Recovery still blocked");
+    expect(document.body.textContent).toContain("Maintenance sync");
+    expect(document.body.textContent).toContain(
+      "Fresh usage snapshot still shows an exhausted limit window",
+    );
+  });
+
+  it("renders proactive sync hard-unavailable actions with translated reason labels", async () => {
+    mockAccountsPage({
+      selectedSummary: {
+        status: "error",
+        displayStatus: "error_other",
+        healthStatus: "error_other",
+        workStatus: "rate_limited",
+        lastAction: "sync_hard_unavailable",
+        lastActionSource: "sync_maintenance",
+        lastActionReasonCode: "usage_snapshot_exhausted",
+        lastActionReasonMessage:
+          "latest usage snapshot already shows an exhausted upstream usage limit window",
+        lastActionHttpStatus: null,
+      },
+      detail: {
+        status: "error",
+        displayStatus: "error_other",
+        healthStatus: "error_other",
+        workStatus: "rate_limited",
+        lastAction: "sync_hard_unavailable",
+        lastActionSource: "sync_maintenance",
+        lastActionReasonCode: "usage_snapshot_exhausted",
+        lastActionReasonMessage:
+          "latest usage snapshot already shows an exhausted upstream usage limit window",
+        lastActionHttpStatus: null,
+        recentActions: [
+          {
+            id: 91,
+            occurredAt: "2026-03-25T00:12:00.000Z",
+            action: "sync_hard_unavailable",
+            source: "sync_maintenance",
+            reasonCode: "usage_snapshot_exhausted",
+            reasonMessage:
+              "latest usage snapshot already shows an exhausted upstream usage limit window",
+            httpStatus: null,
+            failureKind: "upstream_usage_snapshot_quota_exhausted",
+            invokeId: null,
+            stickyKey: null,
+            createdAt: "2026-03-25T00:12:00.000Z",
+          },
+        ],
+      },
+    });
+    render("/account-pool/upstream-accounts");
+
+    clickFirstRosterRow();
+    await flushAsync();
+    clickTab(/Health & events/i);
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Sync marked unavailable");
+    expect(document.body.textContent).toContain("Maintenance sync");
+    expect(document.body.textContent).toContain(
+      "Latest usage snapshot already shows an exhausted limit window",
+    );
+  });
+
+  it("shows compact support state and saves routing timeouts", async () => {
+    const saveRouting = vi.fn().mockResolvedValue(undefined);
+    const { compactSupport, routingTimeouts } = mockAccountsPage({
+      saveRouting,
+    });
+    render("/account-pool/upstream-accounts");
+
+    expect(document.body.textContent).toContain("Compact unsupported");
+
+    clickFirstRosterRow();
+    await flushAsync();
+    clickTab(/Health & events/i);
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Compact support");
+    expect(document.body.textContent).toContain("Unsupported");
+    expect(document.body.textContent).toContain(compactSupport.reason);
+
+    clickButton(/Edit routing settings/i);
+    const compactInput = document.body.querySelector(
+      'input[name="compactFirstByteTimeoutSecs"]',
+    );
+    expect(compactInput).toBeInstanceOf(HTMLInputElement);
+    expect((compactInput as HTMLInputElement).value).toBe("300");
+
+    setInputValue('input[name="compactFirstByteTimeoutSecs"]', "420");
+    clickButton(/Save settings/i);
+    await flushAsync();
+
+    expect(saveRouting).toHaveBeenCalledWith({
+      apiKey: undefined,
+      timeouts: {
+        ...routingTimeouts,
+        compactFirstByteTimeoutSecs: 420,
+      },
+    });
+  }, 10_000);
+
+  it("keeps the routing card summary-only while the dialog still exposes advanced fields", async () => {
+    mockAccountsPage({
+      routing: {
+        writesEnabled: true,
+        apiKeyConfigured: true,
+        maskedApiKey: "pool-live••••",
+        timeouts: {
+          responsesFirstByteTimeoutSecs: 120,
+          compactFirstByteTimeoutSecs: 300,
+          responsesStreamTimeoutSecs: 300,
+          compactStreamTimeoutSecs: 300,
+        },
+      },
+    });
+    render("/account-pool/upstream-accounts");
+
+    expect(document.body.textContent).toContain("Current pool API key");
+    expect(document.body.textContent).toContain("pool-live••••");
+    expect(document.body.textContent).not.toContain("Priority sync interval");
+    expect(document.body.textContent).not.toContain("Secondary sync interval");
+    expect(document.body.textContent).not.toContain(
+      "Priority available account cap",
+    );
+    expect(document.body.textContent).not.toContain(
+      "Standard response first byte timeout",
+    );
+    expect(document.body.textContent).not.toContain(
+      "Compact response first byte timeout",
+    );
+    expect(document.body.textContent).not.toContain(
+      "Standard stream completion timeout",
+    );
+    expect(document.body.textContent).not.toContain(
+      "Compact stream completion timeout",
+    );
+
+    clickButton(/Edit routing settings/i);
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Priority sync interval");
+    expect(document.body.textContent).toContain("Secondary sync interval");
+    expect(document.body.textContent).toContain(
+      "Priority available account cap",
+    );
+    expect(document.body.textContent).toContain(
+      "Standard response first byte timeout",
+    );
+    expect(document.body.textContent).toContain(
+      "Compact response first byte timeout",
+    );
+    expect(document.body.textContent).toContain(
+      "Standard stream completion timeout",
+    );
+    expect(document.body.textContent).toContain(
+      "Compact stream completion timeout",
+    );
+  });
+
+  it("rejects non-integer routing timeout edits before saving", async () => {
+    const saveRouting = vi.fn().mockResolvedValue(undefined);
+    mockAccountsPage({ saveRouting });
+    render("/account-pool/upstream-accounts");
+
+    clickButton(/Edit routing settings/i);
+    setInputValue('input[name="compactFirstByteTimeoutSecs"]', "1.5");
+    clickButton(/Save settings/i);
+    await flushAsync();
+
+    expect(saveRouting).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("must be a positive integer");
+  });
+
+  it("keeps routing save disabled until settings have loaded", async () => {
+    mockAccountsPage({ routing: null });
+    render("/account-pool/upstream-accounts");
+
+    const editButton = Array.from(
+      document.body.querySelectorAll("button"),
+    ).find((button) => /edit routing settings/i.test(button.textContent || ""));
+    expect(editButton).toBeInstanceOf(HTMLButtonElement);
+    expect((editButton as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("keeps routing settings inspectable in read-only mode", async () => {
+    mockAccountsPage({
+      routing: {
+        writesEnabled: false,
+        apiKeyConfigured: true,
+        maskedApiKey: "pool-live••••",
+        timeouts: {
+          responsesFirstByteTimeoutSecs: 120,
+          compactFirstByteTimeoutSecs: 300,
+          responsesStreamTimeoutSecs: 300,
+          compactStreamTimeoutSecs: 300,
+        },
+      },
+    });
+    render("/account-pool/upstream-accounts");
+
+    const editButton = clickButton(/Edit routing settings/i);
+    expect(editButton.disabled).toBe(false);
+    await flushAsync();
+    await flushTimers();
+
+    const compactInput = document.body.querySelector(
+      'input[name="compactFirstByteTimeoutSecs"]',
+    );
+    expect(compactInput).toBeInstanceOf(HTMLInputElement);
+    expect((compactInput as HTMLInputElement).disabled).toBe(true);
+
+    const apiKeyInput = document.body.querySelector(
+      'input[name="poolRoutingSecret"]',
+    );
+    expect(apiKeyInput).toBeInstanceOf(HTMLInputElement);
+    expect((apiKeyInput as HTMLInputElement).disabled).toBe(true);
+
+    const generateButton = findButton(/Generate/i);
+    if (!(generateButton instanceof HTMLButtonElement)) {
+      throw new Error("missing generate button");
+    }
+    expect(generateButton.disabled).toBe(true);
+
+    const saveButton = findButton(/Save settings/i);
+    if (!(saveButton instanceof HTMLButtonElement)) {
+      throw new Error("missing save button");
+    }
+    expect(saveButton.disabled).toBe(true);
+  });
+
+  it("preserves unsaved routing edits while the dialog is open during refresh", async () => {
+    mockAccountsPage();
+    render("/account-pool/upstream-accounts");
+
+    clickButton(/Edit routing settings/i);
+    setInputValue('input[name="compactFirstByteTimeoutSecs"]', "420");
+
+    mockAccountsPage();
+    rerender("/account-pool/upstream-accounts");
+    await flushAsync();
+
+    const compactInput = document.body.querySelector(
+      'input[name="compactFirstByteTimeoutSecs"]',
+    );
+    expect(compactInput).toBeInstanceOf(HTMLInputElement);
+    expect((compactInput as HTMLInputElement).value).toBe("420");
+  });
+
+  it("disables routing saves when the dialog becomes read-only during refresh", async () => {
+    mockAccountsPage();
+    render("/account-pool/upstream-accounts");
+
+    clickButton(/Edit routing settings/i);
+    setInputValue('input[name="compactFirstByteTimeoutSecs"]', "420");
+
+    mockAccountsPage({
+      routing: {
+        writesEnabled: false,
+        apiKeyConfigured: false,
+        maskedApiKey: null,
+        timeouts: {
+          responsesFirstByteTimeoutSecs: 120,
+          compactFirstByteTimeoutSecs: 300,
+          responsesStreamTimeoutSecs: 300,
+          compactStreamTimeoutSecs: 300,
+        },
+      },
+    });
+    rerender("/account-pool/upstream-accounts");
+    await flushAsync();
+    await flushTimers();
+
+    const compactInput = document.body.querySelector(
+      'input[name="compactFirstByteTimeoutSecs"]',
+    );
+    expect(compactInput).toBeInstanceOf(HTMLInputElement);
+    expect((compactInput as HTMLInputElement).value).toBe("300");
+    expect((compactInput as HTMLInputElement).disabled).toBe(true);
+
+    const saveButton = findButton(/Save settings/i);
+    if (!(saveButton instanceof HTMLButtonElement)) {
+      throw new Error("missing save button");
+    }
+    expect(saveButton.disabled).toBe(true);
+  });
+
+  it("resyncs inspect-only routing drafts before writes are re-enabled", async () => {
+    mockAccountsPage({
+      routing: {
+        writesEnabled: false,
+        apiKeyConfigured: true,
+        maskedApiKey: "pool-live••••",
+        timeouts: {
+          responsesFirstByteTimeoutSecs: 120,
+          compactFirstByteTimeoutSecs: 300,
+          responsesStreamTimeoutSecs: 300,
+          compactStreamTimeoutSecs: 300,
+        },
+      },
+    });
+    render("/account-pool/upstream-accounts");
+
+    clickButton(/Edit routing settings/i);
+    await flushAsync();
+    await flushTimers();
+
+    mockAccountsPage({
+      routing: {
+        writesEnabled: true,
+        apiKeyConfigured: true,
+        maskedApiKey: "pool-next••••",
+        timeouts: {
+          responsesFirstByteTimeoutSecs: 150,
+          compactFirstByteTimeoutSecs: 360,
+          responsesStreamTimeoutSecs: 330,
+          compactStreamTimeoutSecs: 360,
+        },
+      },
+    });
+    rerender("/account-pool/upstream-accounts");
+    await flushAsync();
+    await flushTimers();
+
+    const compactInput = document.body.querySelector(
+      'input[name="compactFirstByteTimeoutSecs"]',
+    );
+    expect(compactInput).toBeInstanceOf(HTMLInputElement);
+    expect((compactInput as HTMLInputElement).value).toBe("360");
+    expect((compactInput as HTMLInputElement).disabled).toBe(false);
+
+    const saveButton = findButton(/Save settings/i);
+    if (!(saveButton instanceof HTMLButtonElement)) {
+      throw new Error("missing save button");
+    }
+    expect(saveButton.disabled).toBe(true);
+  });
+
+  it("closes the routing dialog when routing settings disappear during refresh", async () => {
+    mockAccountsPage();
+    render("/account-pool/upstream-accounts");
+
+    clickButton(/Edit routing settings/i);
+    await flushAsync();
+    await flushTimers();
+
+    expect(
+      document.body.querySelector('input[name="compactFirstByteTimeoutSecs"]'),
+    ).toBeInstanceOf(HTMLInputElement);
+
+    mockAccountsPage({ routing: null });
+    rerender("/account-pool/upstream-accounts");
+    await flushAsync();
+    await flushTimers();
+
+    expect(
+      document.body.querySelector('input[name="compactFirstByteTimeoutSecs"]'),
+    ).toBeNull();
+  });
+
+  it("passes all-match tag filters to the roster hook", () => {
+    mockAccountsPage();
+    render("/account-pool/upstream-accounts");
+
+    clickCombobox(/filter accounts by tags/i);
+    clickCommandItem(/^vip$/i);
+    clickCommandItem(/^burst-safe$/i);
+
+    expect(hookMocks.useUpstreamAccounts).toHaveBeenLastCalledWith({
+      groupSearch: undefined,
+      groupUngrouped: undefined,
+      workStatus: undefined,
+      enableStatus: undefined,
+      healthStatus: undefined,
+      page: 1,
+      pageSize: 20,
+      tagIds: [1, 2],
+    });
+  });
+
+  it("passes ungrouped and tag filters to the roster hook together", () => {
+    mockAccountsPage();
+    render("/account-pool/upstream-accounts");
+
+    clickCombobox(/account groups/i);
+    clickCommandItem(/^ungrouped$/i);
+    clickCombobox(/filter accounts by tags/i);
+    clickCommandItem(/^vip$/i);
+    clickCommandItem(/^burst-safe$/i);
+
+    expect(hookMocks.useUpstreamAccounts).toHaveBeenLastCalledWith({
+      groupSearch: undefined,
+      groupUngrouped: true,
+      workStatus: undefined,
+      enableStatus: undefined,
+      healthStatus: undefined,
+      page: 1,
+      pageSize: 20,
+      tagIds: [1, 2],
+    });
+  });
+
+  it("passes split status filters to the roster hook", () => {
+    mockAccountsPage();
+    render("/account-pool/upstream-accounts");
+
+    clickCombobox(/work status/i);
+    clickCommandItem(/^degraded$/i);
+    clickCommandItem(/^unavailable$/i);
+    clickCommandItem(/^rate limited$/i);
+    clickCommandItem(/^working$/i);
+    clickCombobox(/enable status/i);
+    clickCommandItem(/^enabled$/i);
+    clickCombobox(/account health/i);
+    clickCommandItem(/^needs re-auth$/i);
+    clickCommandItem(/^normal$/i);
+
+    expect(hookMocks.useUpstreamAccounts).toHaveBeenLastCalledWith({
+      groupSearch: undefined,
+      groupUngrouped: undefined,
+      workStatus: ["degraded", "unavailable", "rate_limited", "working"],
+      enableStatus: ["enabled"],
+      healthStatus: ["needs_reauth", "normal"],
+      page: 1,
+      pageSize: 20,
+      tagIds: undefined,
+    });
+  }, 15_000);
+
+  it("restores persisted roster filters on initial render", () => {
+    mockAccountsPage();
+    writeStoredUpstreamFilters({
+      workStatus: ["unavailable", "working"],
+      enableStatus: ["enabled"],
+      healthStatus: ["needs_reauth", "normal"],
+      tagIds: [1, 2],
+      groupFilter: {
+        mode: "search",
+        query: "prod",
+      },
+    });
+
+    render("/account-pool/upstream-accounts");
+
+    expectRosterHookQuery({
+      groupSearch: "prod",
+      groupUngrouped: undefined,
+      workStatus: ["unavailable", "working"],
+      enableStatus: ["enabled"],
+      healthStatus: ["needs_reauth", "normal"],
+      page: 1,
+      pageSize: 20,
+      tagIds: [1, 2],
+    });
+  });
+
+  it("persists roster filters after user updates them", () => {
+    mockAccountsPage();
+    render("/account-pool/upstream-accounts");
+
+    clickCombobox(/work status/i);
+    clickCommandItem(/^degraded$/i);
+    clickCommandItem(/^unavailable$/i);
+    clickCombobox(/group/i);
+    clickCommandItem(/^ungrouped$/i);
+    clickCombobox(/filter accounts by tags/i);
+    clickCommandItem(/^vip$/i);
+
+    expect(window.localStorage.setItem).toHaveBeenCalledWith(
+      UPSTREAM_ACCOUNTS_FILTER_STORAGE_KEY,
+      expect.any(String),
+    );
+    expect(readStoredUpstreamFilters()).toEqual({
+      workStatus: ["degraded", "unavailable"],
+      enableStatus: [],
+      healthStatus: [],
+      tagIds: [1],
+      groupFilter: {
+        mode: "ungrouped",
+        query: "",
+      },
+    });
+  });
+
+  it("renders degraded work status for temporary route failures without reusing rate-limited labels", () => {
+    mockAccountsPage({
+      selectedSummary: {
+        status: "active",
+        displayStatus: "active",
+        healthStatus: "normal",
+        workStatus: "degraded",
+        lastAction: "route_retryable_failure",
+        lastActionSource: "call",
+        lastActionReasonCode: "upstream_http_429_rate_limit",
+        lastActionReasonMessage:
+          "pool upstream responded with 429: too many requests",
+        lastActionHttpStatus: 429,
+      },
+      detail: {
+        status: "active",
+        displayStatus: "active",
+        healthStatus: "normal",
+        workStatus: "degraded",
+        lastAction: "route_retryable_failure",
+        lastActionSource: "call",
+        lastActionReasonCode: "upstream_http_429_rate_limit",
+        lastActionReasonMessage:
+          "pool upstream responded with 429: too many requests",
+        lastActionHttpStatus: 429,
+      },
+    });
+
+    render("/account-pool/upstream-accounts");
+
+    expect(document.body.textContent).toContain("Degraded");
+  });
+
+  it("falls back to safe defaults when persisted filters are malformed", () => {
+    mockAccountsPage();
+    writeStoredUpstreamFilters("{bad-json");
+
+    render("/account-pool/upstream-accounts");
+
+    expectRosterHookQuery({
+      groupSearch: undefined,
+      groupUngrouped: undefined,
+      workStatus: undefined,
+      enableStatus: undefined,
+      healthStatus: undefined,
+      page: 1,
+      pageSize: 20,
+      tagIds: undefined,
+    });
+  });
+
+  it("restores the ungrouped group filter across locale changes", () => {
+    mockAccountsPage();
+    writeStoredUpstreamFilters({
+      workStatus: [],
+      enableStatus: [],
+      healthStatus: [],
+      tagIds: [],
+      groupFilter: {
+        mode: "ungrouped",
+      },
+    });
+    storage.set(LOCALE_STORAGE_KEY, "zh");
+
+    render("/account-pool/upstream-accounts");
+
+    expect(document.body.textContent).toContain("未分组");
+    expectRosterHookQuery({
+      groupSearch: undefined,
+      groupUngrouped: true,
+      workStatus: undefined,
+      enableStatus: undefined,
+      healthStatus: undefined,
+      page: 1,
+      pageSize: 20,
+      tagIds: undefined,
+    });
+
+    storage.set(LOCALE_STORAGE_KEY, "en");
+    remount("/account-pool/upstream-accounts");
+
+    expect(document.body.textContent).toContain("Ungrouped");
+    expectRosterHookQuery({
+      groupSearch: undefined,
+      groupUngrouped: true,
+      workStatus: undefined,
+      enableStatus: undefined,
+      healthStatus: undefined,
+      page: 1,
+      pageSize: 20,
+      tagIds: undefined,
+    });
+  });
+
+  it("defers the roster query until the tag catalog can sanitize persisted tag ids", () => {
+    type PoolTagsHookResult = {
+      items: TagSummary[];
+      writesEnabled: boolean;
+      isLoading: boolean;
+      error: string | null;
+      query: Record<string, never>;
+      refresh: ReturnType<typeof vi.fn>;
+      updateQuery: ReturnType<typeof vi.fn>;
+      createTag: ReturnType<typeof vi.fn>;
+      updateTag: ReturnType<typeof vi.fn>;
+      deleteTag: ReturnType<typeof vi.fn>;
+    };
+    const loadedPoolTagsState: PoolTagsHookResult = {
+      items: defaultPoolTags,
+      writesEnabled: true,
+      isLoading: false,
+      error: null,
+      query: {},
+      refresh: vi.fn(),
+      updateQuery: vi.fn(),
+      createTag: vi.fn(),
+      updateTag: vi.fn(),
+      deleteTag: vi.fn(),
+    };
+    let poolTagsState: PoolTagsHookResult = {
+      ...loadedPoolTagsState,
+      items: [],
+      isLoading: true,
+    };
+    hookMocks.usePoolTags.mockImplementation(() => poolTagsState);
+    mockAccountsPage();
+    writeStoredUpstreamFilters({
+      workStatus: [],
+      enableStatus: [],
+      healthStatus: [],
+      tagIds: [1, 999],
+      groupFilter: {
+        mode: "all",
+      },
+    });
+
+    render("/account-pool/upstream-accounts");
+
+    expectRosterHookQuery(null);
+    expect(readStoredUpstreamFilters()).toEqual({
+      workStatus: [],
+      enableStatus: [],
+      healthStatus: [],
+      tagIds: [1, 999],
+      groupFilter: {
+        mode: "all",
+        query: "",
+      },
+    });
+
+    poolTagsState = loadedPoolTagsState;
+    rerender("/account-pool/upstream-accounts");
+
+    expectRosterHookQuery({
+      groupSearch: undefined,
+      groupUngrouped: undefined,
+      workStatus: undefined,
+      enableStatus: undefined,
+      healthStatus: undefined,
+      page: 1,
+      pageSize: 20,
+      tagIds: [1],
+    });
+    expect(readStoredUpstreamFilters()).toEqual({
+      workStatus: [],
+      enableStatus: [],
+      healthStatus: [],
+      tagIds: [1],
+      groupFilter: {
+        mode: "all",
+        query: "",
+      },
+    });
+  });
+
+  it("drops invisible persisted tag ids from the query when the tag catalog request fails", () => {
+    hookMocks.usePoolTags.mockReturnValue({
+      items: [],
+      writesEnabled: true,
+      isLoading: false,
+      error: "tags unavailable",
+      query: {},
+      refresh: vi.fn(),
+      updateQuery: vi.fn(),
+      createTag: vi.fn(),
+      updateTag: vi.fn(),
+      deleteTag: vi.fn(),
+    });
+    mockAccountsPage();
+    writeStoredUpstreamFilters({
+      workStatus: [],
+      enableStatus: [],
+      healthStatus: [],
+      tagIds: [1],
+      groupFilter: {
+        mode: "all",
+      },
+    });
+
+    render("/account-pool/upstream-accounts");
+
+    expectRosterHookQuery({
+      groupSearch: undefined,
+      groupUngrouped: undefined,
+      workStatus: undefined,
+      enableStatus: undefined,
+      healthStatus: undefined,
+      page: 1,
+      pageSize: 20,
+      tagIds: undefined,
+    });
+    expect(document.body.textContent).toContain("All tags");
+    expect(readStoredUpstreamFilters()).toEqual({
+      workStatus: [],
+      enableStatus: [],
+      healthStatus: [],
+      tagIds: [1],
+      groupFilter: {
+        mode: "all",
+        query: "",
+      },
+    });
+  });
+
+  it("clips invalid persisted tag ids before querying and rewrites cleaned storage", () => {
+    mockAccountsPage();
+    writeStoredUpstreamFilters({
+      workStatus: [],
+      enableStatus: [],
+      healthStatus: [],
+      tagIds: [1, 999],
+      groupFilter: {
+        mode: "all",
+      },
+    });
+
+    render("/account-pool/upstream-accounts");
+
+    expectRosterHookQuery({
+      groupSearch: undefined,
+      groupUngrouped: undefined,
+      workStatus: undefined,
+      enableStatus: undefined,
+      healthStatus: undefined,
+      page: 1,
+      pageSize: 20,
+      tagIds: [1],
+    });
+    expect(readStoredUpstreamFilters()).toEqual({
+      workStatus: [],
+      enableStatus: [],
+      healthStatus: [],
+      tagIds: [1],
+      groupFilter: {
+        mode: "all",
+        query: "",
+      },
+    });
+  });
+
+  it("shows duplicate warnings in the roster and detail drawer", () => {
+    mockAccountsPage();
+    render("/account-pool/upstream-accounts");
+
+    expect(document.body.textContent).toContain("Duplicate");
+    clickFirstRosterRow();
+    expect(document.body.textContent).toContain(
+      "Matched reasons: shared ChatGPT account id. Related account ids: 9.",
+    );
+  });
+
+  it("does not show duplicate warnings when mixed-plan oauth peers coexist independently", async () => {
+    mockAccountsPage({
+      item: {
+        duplicateInfo: null,
+        planType: "team",
+      },
+      selectedSummary: {
+        duplicateInfo: null,
+        planType: "team",
+      },
+      detail: {
+        duplicateInfo: null,
+        planType: "team",
+      },
+    });
+    render("/account-pool/upstream-accounts");
+
+    expect(document.body.textContent).not.toContain("Duplicate");
+    clickFirstRosterRow();
+    await flushAsync();
+    expect(document.body.textContent).not.toContain("Matched reasons:");
+  });
+
+  it("clears the one-time duplicate warning after dismissing it", async () => {
+    mockAccountsPage();
+    render({
+      pathname: "/account-pool/upstream-accounts",
+      state: {
+        selectedAccountId: 5,
+        duplicateWarning: {
+          accountId: 5,
+          displayName: "Existing OAuth",
+          peerAccountIds: [9],
+          reasons: ["sharedChatgptAccountId"],
+        },
+      },
+    });
+    await flushAsync();
+
+    expect(document.body.textContent).toContain(
+      "was saved, but the upstream identity looks duplicated.",
+    );
+    clickButton(/Dismiss warning/i);
+    expect(document.body.textContent).not.toContain(
+      "was saved, but the upstream identity looks duplicated.",
+    );
+  });
+
+  it("prevents starting bulk sync twice while the create request is still pending", async () => {
+    const startBulkSyncRequest = deferred<never>();
+    const startBulkSyncJob = vi.fn(() => startBulkSyncRequest.promise);
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 5,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Existing OAuth",
+          groupName: "prod",
+          status: "active",
+          displayStatus: "active",
+          enabled: true,
+          isMother: true,
+          planType: "team",
+          primaryWindow: null,
+          secondaryWindow: null,
+          credits: null,
+          localLimits: null,
+          tags: [],
+          effectiveRoutingRule: defaultEffectiveRoutingRule,
+        },
+      ],
+      hasUngroupedAccounts: true,
+      writesEnabled: true,
+      total: 1,
+      page: 1,
+      pageSize: 20,
+      metrics: {
+        total: 1,
+        oauth: 1,
+        apiKey: 0,
+        attention: 0,
+      },
+      selectedId: 5,
+      selectedSummary: {
+        id: 5,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Existing OAuth",
+        groupName: "prod",
+        status: "active",
+        displayStatus: "active",
+        enabled: true,
+        isMother: true,
+        planType: "team",
+        primaryWindow: null,
+        secondaryWindow: null,
+        credits: null,
+        localLimits: null,
+        tags: [],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
+      detail: null,
+      isLoading: false,
+      isDetailLoading: false,
+      listError: null,
+      detailError: null,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      beginOauthMailboxSession: vi.fn(),
+      beginOauthMailboxSessionForAddress: vi.fn(),
+      getOauthMailboxStatuses: vi.fn(),
+      removeOauthMailboxSession: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting: vi.fn(),
+      saveGroupNote: vi.fn(),
+      runBulkAction: vi.fn(),
+      startBulkSyncJob,
+      getBulkSyncJob: vi.fn(),
+      stopBulkSyncJob: vi.fn(),
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      groups: [],
+      routing: { apiKeyConfigured: false, maskedApiKey: null },
+    });
+
+    render("/account-pool/upstream-accounts");
+
+    clickCheckboxByLabel(/select existing oauth/i);
+    const syncButton = clickButton(/sync selected/i);
+    await flushAsync();
+
+    expect(startBulkSyncJob).toHaveBeenCalledTimes(1);
+    expect(syncButton.disabled).toBe(true);
+
+    act(() => {
+      syncButton.click();
+    });
+    await flushAsync();
+
+    expect(startBulkSyncJob).toHaveBeenCalledTimes(1);
+
+    startBulkSyncRequest.reject(new Error("network interrupted"));
+    await flushAsync();
+  });
+
+  it("unlocks bulk actions after a completed event still carries a stale running snapshot status", async () => {
+    const eventSource = new MockBulkSyncEventSource();
+    apiMocks.createBulkUpstreamAccountSyncJobEventSource.mockReturnValue(
+      eventSource as unknown as EventSource,
+    );
+    const { refresh } = mockBulkSyncPage();
+
+    render("/account-pool/upstream-accounts");
+
+    clickCheckboxByLabel(/select existing oauth/i);
+    clickButton(/sync selected/i);
+    await flushAsync();
+
+    expect(findButton(/^Enable$/i)?.disabled).toBe(true);
+    expect(findButton(/^Sync selected$/i)?.disabled).toBe(true);
+
+    eventSource.emit(
+      "completed",
+      buildBulkSyncSnapshotEvent(
+        "job-1",
+        [{ accountId: 5, displayName: "Existing OAuth", status: "succeeded" }],
+        "running",
+      ),
+    );
+    await flushAsync();
+
+    expect(findButton(/^Enable$/i)?.disabled).toBe(false);
+    expect(findButton(/^Disable$/i)?.disabled).toBe(false);
+    expect(findButton(/^Sync selected$/i)?.disabled).toBe(false);
+    expect(document.body.textContent).not.toContain("Bulk sync progress");
+    expect(refresh).toHaveBeenCalledTimes(1);
+  });
+
+  it("auto-hides bulk sync progress after a fully successful terminal state", async () => {
+    const eventSource = new MockBulkSyncEventSource();
+    apiMocks.createBulkUpstreamAccountSyncJobEventSource.mockReturnValue(
+      eventSource as unknown as EventSource,
+    );
+    mockBulkSyncPage();
+
+    render("/account-pool/upstream-accounts");
+
+    clickCheckboxByLabel(/select existing oauth/i);
+    clickCheckboxByLabel(/select another oauth/i);
+    clickButton(/sync selected/i);
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Bulk sync progress");
+    expect(findFixedContainerByText(/bulk sync progress/i)).toBeDefined();
+
+    act(() => {
+      eventSource.emit(
+        "completed",
+        buildBulkSyncSnapshotEvent(
+          "job-1",
+          [
+            {
+              accountId: 5,
+              displayName: "Existing OAuth",
+              status: "succeeded",
+            },
+            { accountId: 9, displayName: "Another OAuth", status: "succeeded" },
+          ],
+          "completed",
+        ),
+      );
+    });
+    await flushAsync();
+
+    expect(document.body.textContent).not.toContain("Bulk sync progress");
+    expect(document.body.textContent).toContain(
+      "2 accounts selected across pages",
+    );
+  });
+
+  it("keeps partial-success bulk sync progress visible until dismissed", async () => {
+    const eventSource = new MockBulkSyncEventSource();
+    apiMocks.createBulkUpstreamAccountSyncJobEventSource.mockReturnValue(
+      eventSource as unknown as EventSource,
+    );
+    mockBulkSyncPage();
+
+    render("/account-pool/upstream-accounts");
+
+    clickCheckboxByLabel(/select existing oauth/i);
+    clickCheckboxByLabel(/select another oauth/i);
+    clickButton(/sync selected/i);
+    await flushAsync();
+
+    act(() => {
+      eventSource.emit(
+        "completed",
+        buildBulkSyncSnapshotEvent(
+          "job-1",
+          [
+            {
+              accountId: 5,
+              displayName: "Existing OAuth",
+              status: "failed",
+              detail: "refresh token already rotated",
+            },
+            {
+              accountId: 9,
+              displayName: "Another OAuth",
+              status: "succeeded",
+            },
+          ],
+          "completed",
+        ),
+      );
+    });
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Bulk sync progress");
+    expect(document.body.textContent).toContain(
+      "refresh token already rotated",
+    );
+    expect(findFixedContainerByText(/bulk sync progress/i)).toBeDefined();
+
+    clickButton(/dismiss/i);
+    await flushAsync();
+
+    expect(document.body.textContent).not.toContain("Bulk sync progress");
+    expect(document.body.textContent).toContain(
+      "2 accounts selected across pages",
+    );
+  });
+
+  it("prioritizes the selected accounts tag union when removing tags in bulk", () => {
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 5,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Existing OAuth",
+          groupName: "prod",
+          status: "active",
+          displayStatus: "active",
+          enabled: true,
+          isMother: true,
+          planType: "team",
+          primaryWindow: null,
+          secondaryWindow: null,
+          credits: null,
+          localLimits: null,
+          tags: [
+            { id: 1, name: "vip", routingRule: defaultEffectiveRoutingRule },
+          ],
+          effectiveRoutingRule: defaultEffectiveRoutingRule,
+        },
+        {
+          id: 9,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Another OAuth",
+          groupName: "prod",
+          status: "active",
+          displayStatus: "active",
+          enabled: true,
+          isMother: false,
+          planType: "pro",
+          primaryWindow: null,
+          secondaryWindow: null,
+          credits: null,
+          localLimits: null,
+          tags: [
+            {
+              id: 2,
+              name: "burst-safe",
+              routingRule: defaultEffectiveRoutingRule,
+            },
+          ],
+          effectiveRoutingRule: defaultEffectiveRoutingRule,
+        },
+      ],
+      hasUngroupedAccounts: true,
+      writesEnabled: true,
+      total: 2,
+      page: 1,
+      pageSize: 20,
+      metrics: {
+        total: 2,
+        oauth: 2,
+        apiKey: 0,
+        attention: 0,
+      },
+      selectedId: 5,
+      selectedSummary: {
+        id: 5,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Existing OAuth",
+        groupName: "prod",
+        status: "active",
+        displayStatus: "active",
+        enabled: true,
+        isMother: true,
+        planType: "team",
+        primaryWindow: null,
+        secondaryWindow: null,
+        credits: null,
+        localLimits: null,
+        tags: [
+          { id: 1, name: "vip", routingRule: defaultEffectiveRoutingRule },
+        ],
+        effectiveRoutingRule: defaultEffectiveRoutingRule,
+      },
+      detail: null,
+      isLoading: false,
+      isDetailLoading: false,
+      listError: null,
+      detailError: null,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      beginOauthMailboxSession: vi.fn(),
+      beginOauthMailboxSessionForAddress: vi.fn(),
+      getOauthMailboxStatuses: vi.fn(),
+      removeOauthMailboxSession: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting: vi.fn(),
+      saveGroupNote: vi.fn(),
+      runBulkAction: vi.fn(),
+      startBulkSyncJob: vi.fn(),
+      getBulkSyncJob: vi.fn(),
+      stopBulkSyncJob: vi.fn(),
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      groups: [],
+      routing: { apiKeyConfigured: false, maskedApiKey: null },
+    });
+
+    render("/account-pool/upstream-accounts");
+
+    clickCheckboxByLabel(/select existing oauth/i);
+    clickCheckboxByLabel(/select another oauth/i);
+    clickButton(/remove tags/i);
+
+    const dialog = document.body.querySelector('[role="dialog"]');
+    if (!(dialog instanceof HTMLElement)) {
+      throw new Error("missing bulk remove tags dialog");
+    }
+
+    const combobox = dialog.querySelector('button[role="combobox"]');
+    if (!(combobox instanceof HTMLButtonElement)) {
+      throw new Error("missing bulk tag combobox");
+    }
+    pressButton(combobox);
+
+    const options = Array.from(
+      document.body.querySelectorAll("[cmdk-item]"),
+    ) as HTMLElement[];
+    expect(options.map((option) => option.textContent?.trim())).toEqual([
+      "burst-safe",
+      "vip",
+      "prod-apac",
+      "sticky-pool",
+    ]);
+    expect(options[0]?.getAttribute("aria-disabled")).toBe("false");
+    expect(options[1]?.getAttribute("aria-disabled")).toBe("false");
+    expect(options[2]?.getAttribute("aria-disabled")).toBe("true");
+    expect(options[3]?.getAttribute("aria-disabled")).toBe("true");
+  });
+
+  it("blocks saving when the edited display name conflicts with another account", () => {
+    mockAccountsPage();
+    render("/account-pool/upstream-accounts");
+
+    clickFirstRosterRow();
+    clickTab(/Edit/i);
+    setInputValue('input[name="detailDisplayName"]', " another oauth ");
+
+    expect(document.body.textContent).toContain("Display name must be unique.");
+    const saveButton = Array.from(
+      document.body.querySelectorAll("button"),
+    ).find((candidate) => /Save changes/i.test(candidate.textContent || ""));
+    expect(saveButton).toBeInstanceOf(HTMLButtonElement);
+    expect((saveButton as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("keeps routing errors visible after an account action succeeds", async () => {
+    const runSync = vi.fn().mockResolvedValue(undefined);
+    const saveRouting = vi.fn().mockRejectedValue(new Error("Routing failed"));
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 5,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Existing OAuth",
+          groupName: "prod",
+          status: "active",
+          enabled: true,
+        },
+      ],
+      writesEnabled: true,
+      selectedId: 5,
+      selectedSummary: {
+        id: 5,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Existing OAuth",
+        groupName: "prod",
+        status: "active",
+        enabled: true,
+      },
+      detail: {
+        id: 5,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Existing OAuth",
+        groupName: "prod",
+        status: "active",
+        enabled: true,
+        email: "dup@example.com",
+        history: [],
+      },
+      isLoading: false,
+      isDetailLoading: false,
+      listError: null,
+      detailError: null,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting,
+      runSync,
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: true, maskedApiKey: "pool-live••••" },
+      groups: [],
+    });
+    hookMocks.useUpstreamStickyConversations.mockReturnValue({
+      stats: { conversations: [], rangeStart: "", rangeEnd: "" },
+      isLoading: false,
+      error: null,
+    });
+
+    render();
+
+    clickButton(/Edit routing settings/i);
+    setInputValue('input[name="secondarySyncIntervalSecs"]', "2400");
+    clickButton(/Save settings/i);
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Routing failed");
+
+    clickFirstRosterRow();
+    clickButton(/Sync now/i);
+    await flushAsync();
+
+    expect(runSync).toHaveBeenCalledWith(5);
+    expect(document.body.textContent).toContain("Routing failed");
+  });
+
+  it("renders list and detail errors independently", () => {
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 5,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Existing OAuth",
+          groupName: "prod",
+          status: "active",
+          enabled: true,
+        },
+      ],
+      writesEnabled: true,
+      selectedId: 5,
+      selectedSummary: {
+        id: 5,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Existing OAuth",
+        groupName: "prod",
+        status: "active",
+        enabled: true,
+      },
+      detail: {
+        id: 5,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Existing OAuth",
+        groupName: "prod",
+        status: "active",
+        enabled: true,
+        email: "dup@example.com",
+        history: [],
+      },
+      isLoading: false,
+      isDetailLoading: false,
+      listError: "List failed",
+      detailError: "Detail failed",
+      error: "Detail failed",
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting: vi.fn(),
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: true, maskedApiKey: "pool-live••••" },
+      groups: [],
+    });
+    hookMocks.useUpstreamStickyConversations.mockReturnValue({
+      stats: { conversations: [], rangeStart: "", rangeEnd: "" },
+      isLoading: false,
+      error: null,
+    });
+
+    render("/account-pool/upstream-accounts?upstreamAccountId=5");
+
+    expect(document.body.textContent).toContain("List failed");
+    expect(document.body.textContent).toContain("Detail failed");
+  });
+
+  it("shows routing and account errors at the same time", async () => {
+    const runSync = vi.fn().mockRejectedValue(new Error("Sync failed"));
+    const saveRouting = vi.fn().mockRejectedValue(new Error("Routing failed"));
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 5,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Existing OAuth",
+          groupName: "prod",
+          status: "active",
+          enabled: true,
+        },
+      ],
+      writesEnabled: true,
+      selectedId: 5,
+      selectedSummary: {
+        id: 5,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Existing OAuth",
+        groupName: "prod",
+        status: "active",
+        enabled: true,
+      },
+      detail: {
+        id: 5,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Existing OAuth",
+        groupName: "prod",
+        status: "active",
+        enabled: true,
+        email: "dup@example.com",
+        history: [],
+      },
+      isLoading: false,
+      isDetailLoading: false,
+      listError: null,
+      detailError: null,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting,
+      runSync,
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: true, maskedApiKey: "pool-live••••" },
+      groups: [],
+    });
+    hookMocks.useUpstreamStickyConversations.mockReturnValue({
+      stats: { conversations: [], rangeStart: "", rangeEnd: "" },
+      isLoading: false,
+      error: null,
+    });
+
+    render();
+
+    clickButton(/Edit routing settings/i);
+    setInputValue('input[name="secondarySyncIntervalSecs"]', "2400");
+    clickButton(/Save settings/i);
+    await flushAsync();
+    clickFirstRosterRow();
+    clickButton(/Sync now/i);
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Routing failed");
+    expect(document.body.textContent).toContain("Sync failed");
+  });
+
+  it("saves maintenance settings without requiring a new pool key", async () => {
+    const saveRouting = vi.fn().mockResolvedValue(undefined);
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [],
+      writesEnabled: false,
+      selectedId: null,
+      selectedSummary: null,
+      detail: null,
+      isLoading: false,
+      isDetailLoading: false,
+      listError: null,
+      detailError: null,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting,
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      routing: {
+        writesEnabled: true,
+        apiKeyConfigured: true,
+        maskedApiKey: "pool-live••••",
+        maintenance: {
+          primarySyncIntervalSecs: 300,
+          secondarySyncIntervalSecs: 1800,
+          priorityAvailableAccountCap: 100,
+        },
+      },
+      groups: [],
+    });
+    hookMocks.useUpstreamStickyConversations.mockReturnValue({
+      stats: { conversations: [], rangeStart: "", rangeEnd: "" },
+      isLoading: false,
+      error: null,
+    });
+
+    render();
+
+    clickButton(/Edit routing settings/i);
+    setInputValue('input[name="secondarySyncIntervalSecs"]', "2400");
+    clickButton(/Save settings/i);
+    await flushAsync();
+
+    expect(saveRouting).toHaveBeenCalledWith({
+      maintenance: {
+        primarySyncIntervalSecs: 300,
+        secondarySyncIntervalSecs: 2400,
+        priorityAvailableAccountCap: 100,
+      },
+    });
+  });
+
+  it("blocks invalid tiered maintenance values before saving", async () => {
+    const saveRouting = vi.fn().mockResolvedValue(undefined);
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [],
+      writesEnabled: true,
+      selectedId: null,
+      selectedSummary: null,
+      detail: null,
+      isLoading: false,
+      isDetailLoading: false,
+      listError: null,
+      detailError: null,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting,
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      routing: {
+        apiKeyConfigured: true,
+        maskedApiKey: "pool-live••••",
+        maintenance: {
+          primarySyncIntervalSecs: 300,
+          secondarySyncIntervalSecs: 1800,
+          priorityAvailableAccountCap: 100,
+        },
+      },
+      groups: [],
+    });
+    hookMocks.useUpstreamStickyConversations.mockReturnValue({
+      stats: { conversations: [], rangeStart: "", rangeEnd: "" },
+      isLoading: false,
+      error: null,
+    });
+
+    render();
+
+    clickButton(/Edit routing settings/i);
+    setInputValue('input[name="primarySyncIntervalSecs"]', "3600");
+    setInputValue('input[name="secondarySyncIntervalSecs"]', "300");
+
+    const saveButton = findButton(/Save settings/i);
+    expect(saveButton).toBeInstanceOf(HTMLButtonElement);
+    expect((saveButton as HTMLButtonElement).disabled).toBe(true);
+    expect(saveRouting).not.toHaveBeenCalled();
+  });
+});

@@ -1,0 +1,860 @@
+describe("UpstreamAccountsPage sync state isolation", () => {
+  it("keeps another account's sync button idle while the previous account sync is still pending", async () => {
+    const runSync = vi.fn().mockImplementation(() => new Promise(() => {}));
+    const selectAccount = vi.fn();
+    const effectiveRoutingRule = {
+      guardEnabled: false,
+      lookbackHours: null,
+      maxConversations: null,
+      allowCutOut: false,
+      allowCutIn: false,
+      sourceTagIds: [],
+      sourceTagNames: [],
+      guardRules: [],
+    };
+    const baseState = {
+      items: [
+        {
+          id: 5,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Existing OAuth",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          tags: [],
+          effectiveRoutingRule,
+        },
+        {
+          id: 9,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Another OAuth",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          tags: [],
+          effectiveRoutingRule,
+        },
+      ],
+      writesEnabled: true,
+      isLoading: false,
+      isDetailLoading: false,
+      error: null,
+      selectAccount,
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting: vi.fn(),
+      runSync,
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: false, maskedApiKey: null },
+      groups: [],
+    };
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      ...baseState,
+      selectedId: 5,
+      selectedSummary: baseState.items[0],
+      detail: {
+        ...baseState.items[0],
+        history: [],
+      },
+    });
+
+    render();
+    clickFirstRosterRow();
+    clickButton(/Sync now/i);
+    expect(runSync).toHaveBeenCalledWith(5);
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      ...baseState,
+      selectedId: 9,
+      selectedSummary: baseState.items[1],
+      detail: {
+        ...baseState.items[1],
+        history: [],
+      },
+    });
+    rerender();
+    await flushAsync();
+
+    const syncButton = document.body.querySelector(
+      '[data-testid="account-sync-button"]',
+    );
+    expect(syncButton?.querySelector(".animate-spin")).toBeNull();
+    expect(
+      syncButton?.querySelector('[data-icon-name="timer-refresh-outline"]'),
+    ).not.toBeNull();
+  });
+
+  it("keeps the detail drawer closable while sync is pending", async () => {
+    const syncDeferred = deferred<void>();
+    const runSync = vi.fn(() => syncDeferred.promise);
+    const effectiveRoutingRule = {
+      guardEnabled: false,
+      lookbackHours: null,
+      maxConversations: null,
+      allowCutOut: false,
+      allowCutIn: false,
+      sourceTagIds: [],
+      sourceTagNames: [],
+      guardRules: [],
+    };
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 5,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Existing OAuth",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          tags: [],
+          effectiveRoutingRule,
+        },
+      ],
+      writesEnabled: true,
+      selectedId: 5,
+      selectedSummary: {
+        id: 5,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Existing OAuth",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        tags: [],
+        effectiveRoutingRule,
+      },
+      detail: {
+        id: 5,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Existing OAuth",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        tags: [],
+        effectiveRoutingRule,
+        history: [],
+      },
+      isLoading: false,
+      isDetailLoading: false,
+      listError: null,
+      detailError: null,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting: vi.fn(),
+      runSync,
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: false, maskedApiKey: null },
+      groups: [],
+      saveGroupNote: vi.fn(),
+    });
+    hookMocks.useUpstreamStickyConversations.mockReturnValue({
+      stats: { conversations: [], rangeStart: "", rangeEnd: "" },
+      isLoading: false,
+      error: null,
+    });
+
+    render();
+
+    clickFirstRosterRow();
+    clickButton(/Sync now/i);
+    await flushAsync();
+
+    const closeButton = findButton(/Close details/i);
+
+    expect(closeButton).toBeInstanceOf(HTMLButtonElement);
+    expect((closeButton as HTMLButtonElement).disabled).toBe(false);
+
+    pressButton(closeButton as HTMLButtonElement);
+    await flushAsync();
+
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+
+    syncDeferred.resolve();
+    await flushAsync();
+  });
+
+  it("closes the detail drawer when clicking the backdrop or gutter", async () => {
+    mockAccountsPage();
+    render();
+
+    clickFirstRosterRow();
+    await flushAsync();
+    clickDrawerBackdrop();
+    await flushAsync();
+
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+
+    clickFirstRosterRow();
+    await flushAsync();
+    clickDrawerGutter();
+    await flushAsync();
+
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull();
+  });
+
+  it("resets the active detail tab after closing and reopening the drawer", async () => {
+    mockAccountsPage();
+    render();
+
+    clickFirstRosterRow();
+    await flushAsync();
+    clickTab(/Health & events/i);
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Latest account action");
+    clickDrawerBackdrop();
+    await flushAsync();
+
+    clickFirstRosterRow();
+    await flushAsync();
+
+    const overviewTab = Array.from(
+      document.body.querySelectorAll('[role="tab"]'),
+    ).find((candidate) => /Overview/i.test(candidate.textContent || ""));
+    expect(overviewTab?.getAttribute("aria-selected")).toBe("true");
+    expect(document.body.textContent).toContain("Last successful sync");
+    expect(document.body.textContent).toContain("5h window");
+    expect(document.body.textContent).not.toContain("Latest account action");
+  });
+
+  it("renders missing secondary windows as weak dash placeholders inside the detail drawer", async () => {
+    mockAccountsPage({
+      item: {
+        displayName: "Missing weekly limit key",
+        primaryWindow: {
+          usedPercent: 18,
+          usedText: "18 requests",
+          limitText: "120 requests",
+          resetsAt: "2026-03-16T06:55:00.000Z",
+          windowDurationMins: 300,
+        },
+        secondaryWindow: null,
+        localLimits: {
+          primaryLimit: 120,
+          secondaryLimit: null,
+          limitUnit: "requests",
+        },
+      },
+      selectedSummary: {
+        displayName: "Missing weekly limit key",
+        primaryWindow: {
+          usedPercent: 18,
+          usedText: "18 requests",
+          limitText: "120 requests",
+          resetsAt: "2026-03-16T06:55:00.000Z",
+          windowDurationMins: 300,
+        },
+        secondaryWindow: null,
+        localLimits: {
+          primaryLimit: 120,
+          secondaryLimit: null,
+          limitUnit: "requests",
+        },
+      },
+      detail: {
+        displayName: "Missing weekly limit key",
+        primaryWindow: {
+          usedPercent: 18,
+          usedText: "18 requests",
+          limitText: "120 requests",
+          resetsAt: "2026-03-16T06:55:00.000Z",
+          windowDurationMins: 300,
+        },
+        secondaryWindow: null,
+        localLimits: {
+          primaryLimit: 120,
+          secondaryLimit: null,
+          limitUnit: "requests",
+        },
+        history: [
+          {
+            capturedAt: "2026-03-16T02:00:00.000Z",
+            primaryUsedPercent: 18,
+            secondaryUsedPercent: null,
+            creditsBalance: null,
+          },
+        ],
+      },
+    });
+    render({
+      pathname: "/account-pool/upstream-accounts",
+      state: {
+        selectedAccountId: 5,
+        openDetail: true,
+      },
+    });
+    await flushAsync();
+
+    const dialog = document.body.querySelector('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    expect(document.body.textContent).toContain("18 requests");
+    expect(document.body.textContent).not.toContain("No quota history yet");
+    expect(
+      findExactTextElements("-", dialog ?? document.body).length,
+    ).toBeGreaterThanOrEqual(4);
+  });
+
+  it("keeps refresh enabled while an account action is pending", () => {
+    const runSync = vi.fn().mockImplementation(() => new Promise(() => {}));
+    const refresh = vi.fn();
+    const effectiveRoutingRule = {
+      guardEnabled: false,
+      lookbackHours: null,
+      maxConversations: null,
+      allowCutOut: false,
+      allowCutIn: false,
+      sourceTagIds: [],
+      sourceTagNames: [],
+      guardRules: [],
+    };
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 5,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Existing OAuth",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          tags: [],
+          effectiveRoutingRule,
+        },
+      ],
+      writesEnabled: true,
+      selectedId: 5,
+      selectedSummary: {
+        id: 5,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Existing OAuth",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        tags: [],
+        effectiveRoutingRule,
+      },
+      detail: {
+        id: 5,
+        kind: "oauth_codex",
+        provider: "codex",
+        displayName: "Existing OAuth",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        tags: [],
+        effectiveRoutingRule,
+        history: [],
+      },
+      isLoading: false,
+      isDetailLoading: false,
+      listError: null,
+      detailError: null,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh,
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting: vi.fn(),
+      runSync,
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: false, maskedApiKey: null },
+      groups: [],
+    });
+    hookMocks.useUpstreamStickyConversations.mockReturnValue({
+      stats: { conversations: [], rangeStart: "", rangeEnd: "" },
+      isLoading: false,
+      error: null,
+    });
+
+    render();
+    clickFirstRosterRow();
+    clickButton(/Sync now/i);
+
+    const refreshButton = findButton(/Refresh/i);
+    expect(refreshButton).toBeInstanceOf(HTMLButtonElement);
+    expect(refreshButton?.disabled).toBe(false);
+  });
+
+  it("preserves the original account sync spinner after another account starts syncing", async () => {
+    const runSync = vi.fn().mockImplementation(() => new Promise(() => {}));
+    const effectiveRoutingRule = {
+      guardEnabled: false,
+      lookbackHours: null,
+      maxConversations: null,
+      allowCutOut: false,
+      allowCutIn: false,
+      sourceTagIds: [],
+      sourceTagNames: [],
+      guardRules: [],
+    };
+    const baseState = {
+      items: [
+        {
+          id: 5,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Existing OAuth",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          tags: [],
+          effectiveRoutingRule,
+        },
+        {
+          id: 9,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Another OAuth",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          tags: [],
+          effectiveRoutingRule,
+        },
+      ],
+      writesEnabled: true,
+      isLoading: false,
+      isDetailLoading: false,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting: vi.fn(),
+      runSync,
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: false, maskedApiKey: null },
+      groups: [],
+    };
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      ...baseState,
+      selectedId: 5,
+      selectedSummary: baseState.items[0],
+      detail: {
+        ...baseState.items[0],
+        history: [],
+      },
+    });
+
+    render();
+    clickFirstRosterRow();
+    clickButton(/Sync now/i);
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      ...baseState,
+      selectedId: 9,
+      selectedSummary: baseState.items[1],
+      detail: {
+        ...baseState.items[1],
+        history: [],
+      },
+    });
+    rerender();
+    await flushAsync();
+    clickButton(/Sync now/i);
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      ...baseState,
+      selectedId: 5,
+      selectedSummary: baseState.items[0],
+      detail: {
+        ...baseState.items[0],
+        history: [],
+      },
+    });
+    rerender();
+    await flushAsync();
+
+    const syncButton = document.body.querySelector(
+      '[data-testid="account-sync-button"]',
+    ) as HTMLButtonElement | null;
+    expect(runSync).toHaveBeenNthCalledWith(1, 5);
+    expect(runSync).toHaveBeenNthCalledWith(2, 9);
+    expect(syncButton?.disabled).toBe(true);
+    expect(syncButton?.querySelector(".animate-spin")).not.toBeNull();
+  });
+
+  it("locks the whole account while one action is still pending", async () => {
+    const saveAccount = vi.fn().mockImplementation(() => new Promise(() => {}));
+    const effectiveRoutingRule = {
+      guardEnabled: false,
+      lookbackHours: null,
+      maxConversations: null,
+      allowCutOut: false,
+      allowCutIn: false,
+      sourceTagIds: [],
+      sourceTagNames: [],
+      guardRules: [],
+    };
+    const baseState = {
+      items: [
+        {
+          id: 5,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Existing OAuth",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          tags: [],
+          effectiveRoutingRule,
+        },
+      ],
+      writesEnabled: true,
+      isLoading: false,
+      isDetailLoading: false,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount,
+      saveRouting: vi.fn(),
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: false, maskedApiKey: null },
+      groups: [],
+    };
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      ...baseState,
+      selectedId: 5,
+      selectedSummary: baseState.items[0],
+      detail: {
+        ...baseState.items[0],
+        history: [],
+      },
+    });
+
+    render();
+    clickFirstRosterRow();
+    clickTab(/Edit/i);
+    clickButton(/Save changes/i);
+
+    const syncButton = document.body.querySelector(
+      '[data-testid="account-sync-button"]',
+    ) as HTMLButtonElement | null;
+    const deleteButton = findButton(/Delete/i);
+
+    expect(saveAccount).toHaveBeenCalledWith(5, expect.any(Object));
+    expect(syncButton?.disabled).toBe(true);
+    expect(deleteButton?.disabled).toBe(true);
+  });
+
+  it("does not show a stale sync error after switching to another account", async () => {
+    const syncAlpha = deferred<void>();
+    const runSync = vi.fn((accountId: number) =>
+      accountId === 5 ? syncAlpha.promise : Promise.resolve(),
+    );
+    const effectiveRoutingRule = {
+      guardEnabled: false,
+      lookbackHours: null,
+      maxConversations: null,
+      allowCutOut: false,
+      allowCutIn: false,
+      sourceTagIds: [],
+      sourceTagNames: [],
+      guardRules: [],
+    };
+    const baseState = {
+      items: [
+        {
+          id: 5,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Existing OAuth",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          tags: [],
+          effectiveRoutingRule,
+        },
+        {
+          id: 9,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Another OAuth",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          tags: [],
+          effectiveRoutingRule,
+        },
+      ],
+      writesEnabled: true,
+      isLoading: false,
+      isDetailLoading: false,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting: vi.fn(),
+      runSync,
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: false, maskedApiKey: null },
+      groups: [],
+    };
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      ...baseState,
+      selectedId: 5,
+      selectedSummary: baseState.items[0],
+      detail: {
+        ...baseState.items[0],
+        history: [],
+      },
+    });
+
+    render();
+    clickFirstRosterRow();
+    clickButton(/Sync now/i);
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      ...baseState,
+      selectedId: 9,
+      selectedSummary: baseState.items[1],
+      detail: {
+        ...baseState.items[1],
+        history: [],
+      },
+    });
+    rerender();
+    await flushAsync();
+
+    syncAlpha.reject(new Error("Alpha failed"));
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Another OAuth");
+    expect(document.body.textContent).not.toContain("Alpha failed");
+  });
+
+  it("preserves one account's action error after another account starts a new action", async () => {
+    const syncAlpha = deferred<void>();
+    const runSync = vi.fn((accountId: number) =>
+      accountId === 5 ? syncAlpha.promise : Promise.resolve(),
+    );
+    const effectiveRoutingRule = {
+      guardEnabled: false,
+      lookbackHours: null,
+      maxConversations: null,
+      allowCutOut: false,
+      allowCutIn: false,
+      sourceTagIds: [],
+      sourceTagNames: [],
+      guardRules: [],
+    };
+    const baseState = {
+      items: [
+        {
+          id: 5,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Existing OAuth",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          tags: [],
+          effectiveRoutingRule,
+        },
+        {
+          id: 9,
+          kind: "oauth_codex",
+          provider: "codex",
+          displayName: "Another OAuth",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          tags: [],
+          effectiveRoutingRule,
+        },
+      ],
+      writesEnabled: true,
+      isLoading: false,
+      isDetailLoading: false,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting: vi.fn(),
+      runSync,
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: false, maskedApiKey: null },
+      groups: [],
+    };
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      ...baseState,
+      selectedId: 5,
+      selectedSummary: baseState.items[0],
+      detail: {
+        ...baseState.items[0],
+        history: [],
+      },
+    });
+
+    render();
+    clickFirstRosterRow();
+    clickButton(/Sync now/i);
+    syncAlpha.reject(new Error("Alpha failed"));
+    await flushAsync();
+    expect(document.body.textContent).toContain("Alpha failed");
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      ...baseState,
+      selectedId: 9,
+      selectedSummary: baseState.items[1],
+      detail: {
+        ...baseState.items[1],
+        history: [],
+      },
+    });
+    rerender();
+    await flushAsync();
+    clickButton(/Sync now/i);
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      ...baseState,
+      selectedId: 5,
+      selectedSummary: baseState.items[0],
+      detail: {
+        ...baseState.items[0],
+        history: [],
+      },
+    });
+    rerender();
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Alpha failed");
+  });
+
+  it("does not render stale detail content when the selected summary changed", async () => {
+    const effectiveRoutingRule = {
+      guardEnabled: false,
+      lookbackHours: null,
+      maxConversations: null,
+      allowCutOut: false,
+      allowCutIn: false,
+      sourceTagIds: [],
+      sourceTagNames: [],
+      guardRules: [],
+    };
+    const staleDetail = {
+      id: 5,
+      kind: "oauth_codex",
+      provider: "codex",
+      displayName: "Existing OAuth",
+      groupName: "prod",
+      isMother: false,
+      status: "active",
+      enabled: true,
+      email: "stale@example.com",
+      tags: [],
+      effectiveRoutingRule,
+      history: [],
+    };
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        staleDetail,
+        { ...staleDetail, id: 9, displayName: "Another OAuth" },
+      ],
+      writesEnabled: true,
+      selectedId: 9,
+      selectedSummary: {
+        ...staleDetail,
+        id: 9,
+        displayName: "Another OAuth",
+        email: "fresh@example.com",
+      },
+      detail: staleDetail,
+      isLoading: false,
+      isDetailLoading: false,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount: vi.fn(),
+      saveRouting: vi.fn(),
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: false, maskedApiKey: null },
+      groups: [],
+    });
+
+    render();
+    clickFirstRosterRow();
+    await flushAsync();
+
+    expect(document.body.textContent).toContain("Another OAuth");
+    expect(document.body.textContent).not.toContain("stale@example.com");
+  });
+});

@@ -1,0 +1,629 @@
+describe("UpstreamAccountsPage api key details", () => {
+  it("does not clear another account's pending api key draft when an earlier save resolves", async () => {
+    const saveRequest = deferred();
+    const saveAccount = vi.fn().mockImplementation(() => saveRequest.promise);
+    const baseItems = [
+      {
+        id: 8,
+        kind: "api_key_codex" as const,
+        provider: "codex" as const,
+        displayName: "Gateway Key",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        maskedApiKey: "sk-gate••••",
+      },
+      {
+        id: 9,
+        kind: "api_key_codex" as const,
+        provider: "codex" as const,
+        displayName: "Backup Key",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        maskedApiKey: "sk-back••••",
+      },
+    ];
+    const detailFor = (
+      id: number,
+      displayName: string,
+      upstreamBaseUrl: string | null,
+    ) => ({
+      id,
+      kind: "api_key_codex" as const,
+      provider: "codex" as const,
+      displayName,
+      groupName: "prod",
+      isMother: false,
+      status: "active",
+      enabled: true,
+      history: [],
+      note: null,
+      upstreamBaseUrl,
+      localLimits: {
+        primaryLimit: 100,
+        secondaryLimit: 1000,
+        limitUnit: "requests",
+      },
+    });
+    let state = {
+      items: baseItems,
+      writesEnabled: true,
+      selectedId: 8,
+      selectedSummary: baseItems[0],
+      detail: detailFor(8, "Gateway Key", "https://proxy.example.com/gateway"),
+      isLoading: false,
+      isDetailLoading: false,
+      listError: null,
+      detailError: null,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount,
+      saveRouting: vi.fn(),
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: true, maskedApiKey: "pool-live••••" },
+      groups: [],
+      saveGroupNote: vi.fn(),
+    };
+    hookMocks.useUpstreamAccounts.mockImplementation(() => state);
+    hookMocks.useUpstreamStickyConversations.mockReturnValue({
+      stats: { conversations: [], rangeStart: "", rangeEnd: "" },
+      isLoading: false,
+      error: null,
+    });
+
+    render();
+
+    clickFirstRosterRow();
+    clickTab(/Edit/i);
+    clickButton(/Save changes/i);
+    await flushAsync();
+    expect(saveAccount).toHaveBeenCalledWith(8, expect.any(Object));
+
+    state = {
+      ...state,
+      selectedId: 9,
+      selectedSummary: baseItems[1],
+      detail: detailFor(9, "Backup Key", "https://proxy.example.com/backup"),
+    };
+    rerender();
+    await flushAsync();
+
+    clickTab(/Edit/i);
+    setInputValue('input[name="detailRotateApiKey"]', "sk-new-backup");
+    saveRequest.resolve(
+      detailFor(8, "Gateway Key", "https://proxy.example.com/gateway"),
+    );
+    await flushAsync();
+
+    const rotateInput = document.body.querySelector(
+      'input[name="detailRotateApiKey"]',
+    );
+    expect(rotateInput).toBeInstanceOf(HTMLInputElement);
+    expect((rotateInput as HTMLInputElement).value).toBe("sk-new-backup");
+  });
+
+  it("saves api key upstreamBaseUrl from the detail drawer", async () => {
+    const saveAccount = vi.fn().mockResolvedValue({
+      id: 8,
+      kind: "api_key_codex",
+      provider: "codex",
+      displayName: "Gateway Key",
+      groupName: "prod",
+      isMother: false,
+      status: "active",
+      enabled: true,
+      history: [],
+      note: null,
+      upstreamBaseUrl: "https://proxy.example.com/gateway",
+      localLimits: {
+        primaryLimit: 100,
+        secondaryLimit: 1000,
+        limitUnit: "requests",
+      },
+    });
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 8,
+          kind: "api_key_codex",
+          provider: "codex",
+          displayName: "Gateway Key",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          maskedApiKey: "sk-gate••••",
+        },
+      ],
+      writesEnabled: true,
+      selectedId: 8,
+      selectedSummary: {
+        id: 8,
+        kind: "api_key_codex",
+        provider: "codex",
+        displayName: "Gateway Key",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        maskedApiKey: "sk-gate••••",
+      },
+      detail: {
+        id: 8,
+        kind: "api_key_codex",
+        provider: "codex",
+        displayName: "Gateway Key",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        history: [],
+        note: null,
+        upstreamBaseUrl: "https://proxy.example.com/gateway",
+        localLimits: {
+          primaryLimit: 100,
+          secondaryLimit: 1000,
+          limitUnit: "requests",
+        },
+      },
+      isLoading: false,
+      isDetailLoading: false,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount,
+      saveRouting: vi.fn(),
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: true, maskedApiKey: "pool-live••••" },
+      groups: [],
+    });
+    hookMocks.useUpstreamStickyConversations.mockReturnValue({
+      stats: { conversations: [], rangeStart: "", rangeEnd: "" },
+      isLoading: false,
+      error: null,
+    });
+
+    render();
+
+    clickFirstRosterRow();
+    clickTab(/Edit/i);
+    setInputValue(
+      'input[name="detailUpstreamBaseUrl"]',
+      "https://proxy.example.com/gateway/v2",
+    );
+    clickButton(/Save changes/i);
+    await flushAsync();
+
+    expect(saveAccount).toHaveBeenCalledWith(
+      8,
+      expect.objectContaining({
+        upstreamBaseUrl: "https://proxy.example.com/gateway/v2",
+      }),
+    );
+  });
+
+  it("clears api key upstreamBaseUrl from the detail drawer with null payload", async () => {
+    const saveAccount = vi.fn().mockResolvedValue({
+      id: 8,
+      kind: "api_key_codex",
+      provider: "codex",
+      displayName: "Gateway Key",
+      groupName: "prod",
+      isMother: false,
+      status: "active",
+      enabled: true,
+      history: [],
+      note: null,
+      upstreamBaseUrl: null,
+      localLimits: {
+        primaryLimit: 100,
+        secondaryLimit: 1000,
+        limitUnit: "requests",
+      },
+    });
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 8,
+          kind: "api_key_codex",
+          provider: "codex",
+          displayName: "Gateway Key",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          maskedApiKey: "sk-gate••••",
+        },
+      ],
+      writesEnabled: true,
+      selectedId: 8,
+      selectedSummary: {
+        id: 8,
+        kind: "api_key_codex",
+        provider: "codex",
+        displayName: "Gateway Key",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        maskedApiKey: "sk-gate••••",
+      },
+      detail: {
+        id: 8,
+        kind: "api_key_codex",
+        provider: "codex",
+        displayName: "Gateway Key",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        history: [],
+        note: null,
+        upstreamBaseUrl: "https://proxy.example.com/gateway",
+        localLimits: {
+          primaryLimit: 100,
+          secondaryLimit: 1000,
+          limitUnit: "requests",
+        },
+      },
+      isLoading: false,
+      isDetailLoading: false,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount,
+      saveRouting: vi.fn(),
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: true, maskedApiKey: "pool-live••••" },
+      groups: [],
+    });
+    hookMocks.useUpstreamStickyConversations.mockReturnValue({
+      stats: { conversations: [], rangeStart: "", rangeEnd: "" },
+      isLoading: false,
+      error: null,
+    });
+
+    render();
+
+    clickFirstRosterRow();
+    clickTab(/Edit/i);
+    setInputValue('input[name="detailUpstreamBaseUrl"]', "");
+    clickButton(/Save changes/i);
+    await flushAsync();
+
+    expect(saveAccount).toHaveBeenCalledWith(
+      8,
+      expect.objectContaining({
+        upstreamBaseUrl: null,
+      }),
+    );
+  });
+
+  it("blocks saving api key detail when upstreamBaseUrl includes a query string", () => {
+    const saveAccount = vi.fn().mockResolvedValue({});
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 8,
+          kind: "api_key_codex",
+          provider: "codex",
+          displayName: "Gateway Key",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          maskedApiKey: "sk-gate••••",
+        },
+      ],
+      writesEnabled: true,
+      selectedId: 8,
+      selectedSummary: {
+        id: 8,
+        kind: "api_key_codex",
+        provider: "codex",
+        displayName: "Gateway Key",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        maskedApiKey: "sk-gate••••",
+      },
+      detail: {
+        id: 8,
+        kind: "api_key_codex",
+        provider: "codex",
+        displayName: "Gateway Key",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        history: [],
+        note: null,
+        upstreamBaseUrl: "https://proxy.example.com/gateway",
+        localLimits: {
+          primaryLimit: 100,
+          secondaryLimit: 1000,
+          limitUnit: "requests",
+        },
+      },
+      isLoading: false,
+      isDetailLoading: false,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount,
+      saveRouting: vi.fn(),
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: true, maskedApiKey: "pool-live••••" },
+      groups: [],
+    });
+    hookMocks.useUpstreamStickyConversations.mockReturnValue({
+      stats: { conversations: [], rangeStart: "", rangeEnd: "" },
+      isLoading: false,
+      error: null,
+    });
+
+    render();
+
+    clickFirstRosterRow();
+    clickTab(/Edit/i);
+    setInputValue(
+      'input[name="detailUpstreamBaseUrl"]',
+      "https://proxy.example.com/gateway?team=prod",
+    );
+
+    expect(document.body.textContent).toContain(
+      "cannot include a query string or fragment",
+    );
+    expect(findButton(/Save changes/i)?.disabled).toBe(true);
+    expect(saveAccount).not.toHaveBeenCalled();
+  });
+
+  it("persists draft group settings after saving an account into a new group", async () => {
+    const saveAccount = vi.fn().mockResolvedValue({
+      id: 8,
+      kind: "api_key_codex",
+      provider: "codex",
+      displayName: "Gateway Key",
+      groupName: "latam",
+      isMother: false,
+      status: "active",
+      enabled: true,
+      history: [],
+      note: null,
+      upstreamBaseUrl: null,
+      localLimits: {
+        primaryLimit: 100,
+        secondaryLimit: 1000,
+        limitUnit: "requests",
+      },
+    });
+    const saveGroupNote = vi.fn().mockResolvedValue({
+      groupName: "latam",
+      note: "LATAM draft note",
+      boundProxyKeys: ["jp-edge-01"],
+      upstream429RetryEnabled: false,
+      upstream429MaxRetries: 0,
+    });
+
+    hookMocks.useUpstreamAccounts.mockReturnValue({
+      items: [
+        {
+          id: 8,
+          kind: "api_key_codex",
+          provider: "codex",
+          displayName: "Gateway Key",
+          groupName: "prod",
+          isMother: false,
+          status: "active",
+          enabled: true,
+          maskedApiKey: "sk-gate••••",
+        },
+      ],
+      writesEnabled: true,
+      selectedId: 8,
+      selectedSummary: {
+        id: 8,
+        kind: "api_key_codex",
+        provider: "codex",
+        displayName: "Gateway Key",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        maskedApiKey: "sk-gate••••",
+      },
+      detail: {
+        id: 8,
+        kind: "api_key_codex",
+        provider: "codex",
+        displayName: "Gateway Key",
+        groupName: "prod",
+        isMother: false,
+        status: "active",
+        enabled: true,
+        history: [],
+        note: null,
+        upstreamBaseUrl: null,
+        localLimits: {
+          primaryLimit: 100,
+          secondaryLimit: 1000,
+          limitUnit: "requests",
+        },
+      },
+      isLoading: false,
+      isDetailLoading: false,
+      error: null,
+      selectAccount: vi.fn(),
+      refresh: vi.fn(),
+      loadDetail: vi.fn(),
+      beginOauthLogin: vi.fn(),
+      beginRelogin: vi.fn(),
+      getLoginSession: vi.fn(),
+      completeOauthLogin: vi.fn(),
+      createApiKeyAccount: vi.fn(),
+      saveAccount,
+      saveRouting: vi.fn(),
+      runSync: vi.fn(),
+      removeAccount: vi.fn(),
+      routing: { apiKeyConfigured: true, maskedApiKey: "pool-live••••" },
+      groups: [],
+      forwardProxyNodes: [
+        {
+          key: "__direct__",
+          displayName: "Direct",
+          protocolLabel: "DIRECT",
+          source: "direct",
+          penalized: false,
+          selectable: true,
+          last24h: [],
+        },
+        {
+          key: "jp-edge-01",
+          displayName: "JP Edge 01",
+          protocolLabel: "HTTP",
+          source: "inventory",
+          penalized: false,
+          selectable: true,
+          last24h: [],
+        },
+        {
+          key: "vless://11111111-2222-3333-4444-555555555555@fixture-vless-edge.example.invalid:443?encryption=none&security=tls&type=ws&host=cdn.example.invalid&path=%2Ffixture&fp=chrome&pbk=fixture-public-key&sid=fixture-subscription-node#Ivan-hinet-vless-vision-01KF874741GBN6MQYD6TNMYDVS",
+          displayName: "Ivan-hinet-vless-vision-01KF874741GBN6MQYD6TNMYDVS",
+          protocolLabel: "VLESS",
+          source: "subscription",
+          penalized: false,
+          selectable: true,
+          last24h: [],
+        },
+      ],
+      saveGroupNote,
+    });
+    hookMocks.useUpstreamStickyConversations.mockReturnValue({
+      stats: { conversations: [], rangeStart: "", rangeEnd: "" },
+      isLoading: false,
+      error: null,
+    });
+
+    render();
+
+    clickFirstRosterRow();
+    clickTab(/Edit/i);
+    setComboboxValue('input[name="detailGroupName"]', "latam");
+    await flushAsync();
+
+    clickButton(/Edit group settings|Edit group note/i);
+    await flushAsync();
+
+    const dialogStack = Array.from(
+      document.body.querySelectorAll('[role="dialog"]'),
+    );
+    const groupSettingsDialog = dialogStack[dialogStack.length - 1];
+    if (!(groupSettingsDialog instanceof HTMLElement)) {
+      throw new Error("missing group settings dialog");
+    }
+    expect(groupSettingsDialog.textContent || "").toContain(
+      "Bound proxy nodes",
+    );
+    expect(groupSettingsDialog.textContent || "").toContain(
+      "Upstream 429 retry",
+    );
+    expect(groupSettingsDialog.textContent || "").toContain("Direct");
+    expect(groupSettingsDialog.textContent || "").toContain("DIRECT");
+    expect(groupSettingsDialog.textContent || "").toContain("VLESS");
+    expect(groupSettingsDialog.textContent || "").not.toContain("vless://");
+
+    const groupNoteField = groupSettingsDialog.querySelector("textarea");
+    if (!(groupNoteField instanceof HTMLTextAreaElement)) {
+      throw new Error("missing group note textarea");
+    }
+    setFieldValue(groupNoteField, "LATAM draft note");
+
+    const proxyOption = Array.from(
+      groupSettingsDialog.querySelectorAll("button"),
+    ).find((candidate) => /JP Edge 01/i.test(candidate.textContent || ""));
+    if (!(proxyOption instanceof HTMLButtonElement)) {
+      throw new Error("missing proxy binding option");
+    }
+    pressButton(proxyOption);
+
+    const saveDialogButton = Array.from(
+      groupSettingsDialog.querySelectorAll("button"),
+    ).find((candidate) => /Save changes/i.test(candidate.textContent || ""));
+    if (!(saveDialogButton instanceof HTMLButtonElement)) {
+      throw new Error("missing group settings save button");
+    }
+    pressButton(saveDialogButton);
+    await flushAsync();
+
+    expect(saveGroupNote).not.toHaveBeenCalled();
+
+    const remainingDialogs = Array.from(
+      document.body.querySelectorAll('[role="dialog"]'),
+    );
+    const detailDialog = remainingDialogs[remainingDialogs.length - 1];
+    if (!(detailDialog instanceof HTMLElement)) {
+      throw new Error("missing detail drawer dialog");
+    }
+
+    const saveDetailButton = Array.from(
+      detailDialog.querySelectorAll("button"),
+    ).find((candidate) => /Save changes/i.test(candidate.textContent || ""));
+    if (!(saveDetailButton instanceof HTMLButtonElement)) {
+      throw new Error("missing detail save button");
+    }
+    pressButton(saveDetailButton);
+    await flushAsync();
+
+    expect(saveAccount).toHaveBeenCalledWith(
+      8,
+      expect.objectContaining({
+        groupName: "latam",
+        groupNote: "LATAM draft note",
+      }),
+    );
+    expect(saveGroupNote).toHaveBeenCalledWith("latam", {
+      note: "LATAM draft note",
+      boundProxyKeys: ["jp-edge-01"],
+      concurrencyLimit: 0,
+      nodeShuntEnabled: false,
+      upstream429RetryEnabled: false,
+      upstream429MaxRetries: 0,
+    });
+  });
+});
