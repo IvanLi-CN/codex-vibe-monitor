@@ -3582,6 +3582,8 @@ async fn send_pool_request_with_failover(
                 }
             };
 
+            disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
+
             if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
                 && let Err(err) = advance_pool_upstream_request_attempt_phase(
                     state.as_ref(),
@@ -3624,7 +3626,6 @@ async fn send_pool_request_with_failover(
                 )
                 .await;
             }
-            disarm_pool_early_phase_cleanup_guard(&mut early_phase_cleanup_guard);
             reservation_guard.disarm();
             return Ok(PoolUpstreamResponse {
                 account: account.clone(),
