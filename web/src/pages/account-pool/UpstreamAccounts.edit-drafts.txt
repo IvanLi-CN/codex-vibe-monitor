@@ -561,16 +561,18 @@ describe("SharedUpstreamAccountDetailDrawer edit drafts", () => {
   it("invalidates the reopened draft session before passive effects flush", async () => {
     const saveRequest = deferred<any>()
     const saveAccount = vi.fn().mockImplementation(() => saveRequest.promise)
-    hookMocks.useUpstreamAccounts.mockReturnValue(
-      createApiKeyHookState({
-        items: [createApiKeyItem(8, "Gateway Key")],
-        selectedId: 8,
-        detail: createApiKeyDetail(createApiKeyItem(8, "Gateway Key"), {
-          note: "Original note",
-        }),
-        saveAccount,
+    const savedDetail = createApiKeyDetail(createApiKeyItem(8, "Saved Gateway Key"), {
+      note: "Saved note",
+    })
+    let state = createApiKeyHookState({
+      items: [createApiKeyItem(8, "Gateway Key")],
+      selectedId: 8,
+      detail: createApiKeyDetail(createApiKeyItem(8, "Gateway Key"), {
+        note: "Original note",
       }),
-    )
+      saveAccount,
+    })
+    hookMocks.useUpstreamAccounts.mockImplementation(() => state)
 
     const drawerState = {
       accountId: 8,
@@ -629,11 +631,12 @@ describe("SharedUpstreamAccountDetailDrawer edit drafts", () => {
       drawerState.open = true
       renderWithRouter()
       await router.navigate("/?step=reopened")
-      saveRequest.resolve(
-        createApiKeyDetail(createApiKeyItem(8, "Saved Gateway Key"), {
-          note: "Saved note",
-        }),
-      )
+      state = {
+        ...state,
+        detail: savedDetail,
+      }
+      renderWithRouter()
+      saveRequest.resolve(savedDetail)
       await Promise.resolve()
     })
 
