@@ -1295,12 +1295,21 @@ async fn proxy_openai_v1_capture_target(
             response_info.usage_missing_reason = Some("upstream_stream_error".to_string());
         }
 
-        let invocation_failure_kind = if stream_error.is_some() {
+        let had_stream_error = stream_error.is_some();
+        let had_logical_stream_failure = response_info.stream_terminal_event.is_some();
+        let pure_downstream_closed = proxy_capture_is_pure_downstream_close(
+            upstream_status,
+            had_stream_error,
+            had_logical_stream_failure,
+            downstream_closed,
+        );
+
+        let invocation_failure_kind = if had_stream_error {
             Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR)
-        } else if downstream_closed {
-            Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED)
-        } else if response_info.stream_terminal_event.is_some() {
+        } else if had_logical_stream_failure {
             Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
+        } else if pure_downstream_closed {
+            Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED)
         } else if upstream_status == StatusCode::TOO_MANY_REQUESTS {
             Some(FORWARD_PROXY_FAILURE_UPSTREAM_HTTP_429)
         } else if upstream_status.is_server_error() {
@@ -1308,8 +1317,6 @@ async fn proxy_openai_v1_capture_target(
         } else {
             None
         };
-        let had_stream_error = stream_error.is_some();
-        let had_logical_stream_failure = response_info.stream_terminal_event.is_some();
 
         let error_message = if let Some(err) = stream_error {
             Some(format!("[{}] {err}", PROXY_FAILURE_UPSTREAM_STREAM_ERROR))
@@ -1331,16 +1338,19 @@ async fn proxy_openai_v1_capture_target(
         } else {
             None
         };
-        let status =
-            proxy_capture_invocation_status(upstream_status, error_message.is_some(), downstream_closed);
+        let status = proxy_capture_invocation_status(
+            upstream_status,
+            error_message.is_some(),
+            pure_downstream_closed,
+        );
         let pending_pool_attempt_terminal_reason = if pool_account_for_task.is_none() {
             None
         } else if had_stream_error {
             Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR.to_string())
-        } else if downstream_closed {
-            Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED.to_string())
-        } else if response_info.stream_terminal_event.is_some() {
+        } else if had_logical_stream_failure {
             Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED.to_string())
+        } else if pure_downstream_closed {
+            Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED.to_string())
         } else if !upstream_status.is_success() {
             Some(
                 invocation_failure_kind
@@ -1385,7 +1395,7 @@ async fn proxy_openai_v1_capture_target(
                     had_stream_error,
                     had_logical_stream_failure,
                 );
-                let route_result = if pool_route_success || downstream_closed {
+                let route_result = if pool_route_success || pure_downstream_closed {
                     consume_pool_routing_reservation(
                         state_for_task.as_ref(),
                         &reservation_key_for_task,
@@ -1455,7 +1465,7 @@ async fn proxy_openai_v1_capture_target(
         };
         if let Some(pending_attempt_record) = pending_pool_attempt_record_for_task.as_ref() {
             let finished_at = shanghai_now_string();
-            let attempt_status = if downstream_closed {
+            let attempt_status = if pure_downstream_closed {
                 POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
             } else if had_stream_error {
                 POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
@@ -1464,7 +1474,7 @@ async fn proxy_openai_v1_capture_target(
             } else {
                 POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
             };
-            let attempt_failure_kind = if downstream_closed {
+            let attempt_failure_kind = if pure_downstream_closed {
                 None
             } else {
                 invocation_failure_kind

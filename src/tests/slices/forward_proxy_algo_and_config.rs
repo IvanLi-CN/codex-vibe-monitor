@@ -641,6 +641,34 @@ fn proxy_capture_invocation_status_marks_downstream_closed_as_failed() {
     );
 }
 
+#[test]
+fn proxy_capture_is_pure_downstream_close_requires_a_clean_upstream_success() {
+    assert!(proxy_capture_is_pure_downstream_close(
+        StatusCode::OK,
+        false,
+        false,
+        true,
+    ));
+    assert!(!proxy_capture_is_pure_downstream_close(
+        StatusCode::BAD_GATEWAY,
+        false,
+        false,
+        true,
+    ));
+    assert!(!proxy_capture_is_pure_downstream_close(
+        StatusCode::OK,
+        true,
+        false,
+        true,
+    ));
+    assert!(!proxy_capture_is_pure_downstream_close(
+        StatusCode::OK,
+        false,
+        true,
+        true,
+    ));
+}
+
 #[tokio::test]
 async fn insert_pool_upstream_terminal_attempt_preserves_downstream_wrapper_status_for_transport_failures()
 {

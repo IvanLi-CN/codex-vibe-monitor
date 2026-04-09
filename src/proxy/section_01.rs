@@ -891,6 +891,18 @@ fn proxy_capture_response_status_is_success(
     !logical_stream_failure && proxy_forward_response_status_is_success(status, stream_error)
 }
 
+fn proxy_capture_is_pure_downstream_close(
+    upstream_status: StatusCode,
+    stream_error: bool,
+    logical_stream_failure: bool,
+    downstream_closed: bool,
+) -> bool {
+    downstream_closed
+        && upstream_status.is_success()
+        && !stream_error
+        && !logical_stream_failure
+}
+
 fn proxy_capture_invocation_status(
     upstream_status: StatusCode,
     has_error_message: bool,
