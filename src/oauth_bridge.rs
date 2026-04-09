@@ -446,6 +446,12 @@ async fn oauth_responses(
         "forwarding oauth responses request"
     );
     let request_started = Instant::now();
+    info!(
+        account_id,
+        path = "/v1/responses",
+        timeout_ms = response_timeout.as_millis() as u64,
+        "oauth responses request send started"
+    );
     let upstream = match timeout(response_timeout, request.send()).await {
         Ok(Ok(response)) => {
             info!(
