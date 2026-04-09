@@ -428,6 +428,18 @@ function authoritativePreviewLacksLiveExtras(
   if (!hasString(authoritative.errorMessage) && hasString(live.errorMessage)) {
     return true;
   }
+  if (
+    !hasNumber(authoritative.downstreamStatusCode) &&
+    hasNumber(live.downstreamStatusCode)
+  ) {
+    return true;
+  }
+  if (
+    !hasString(authoritative.downstreamErrorMessage) &&
+    hasString(live.downstreamErrorMessage)
+  ) {
+    return true;
+  }
   if (!hasString(authoritative.failureKind) && hasString(live.failureKind)) {
     return true;
   }

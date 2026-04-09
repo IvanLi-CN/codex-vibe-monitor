@@ -901,4 +901,40 @@ describe("reconcilePromptCacheLiveRecordMap", () => {
 
     expect(reconciled).toEqual({});
   });
+
+  it("keeps live records until authoritative previews include downstream diagnostics", () => {
+    const liveRecord = createLiveRecord({
+      id: 2301,
+      invokeId: "invoke-preview-downstream-gap",
+      occurredAt: "2026-03-10T02:30:00Z",
+      promptCacheKey: "pck-preview-downstream-gap",
+      status: "failed",
+      errorMessage: "failed to contact oauth codex upstream",
+      failureKind: "failed_contact_upstream",
+      downstreamStatusCode: 502,
+      downstreamErrorMessage:
+        "pool upstream responded with 502: failed to contact oauth codex upstream",
+    });
+
+    const reconciled = reconcilePromptCacheLiveRecordMap(
+      { "pck-preview-downstream-gap": [liveRecord] },
+      createResponse([
+        createConversation("pck-preview-downstream-gap", {
+          recentInvocations: [
+            createPreview({
+              id: 2301,
+              invokeId: "invoke-preview-downstream-gap",
+              occurredAt: "2026-03-10T02:30:00Z",
+              status: "failed",
+              failureClass: "service_failure",
+            }),
+          ],
+        }),
+      ]),
+    );
+
+    expect(reconciled).toEqual({
+      "pck-preview-downstream-gap": [liveRecord],
+    });
+  });
 });
