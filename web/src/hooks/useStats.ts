@@ -51,7 +51,7 @@ export function getSummaryRemountCacheKey(window: string, limit?: number) {
 }
 
 export function shouldEnableSummaryRemountCache(window: string) {
-  return window !== 'current'
+  return window !== 'current' && !isCalendarSummaryWindow(window)
 }
 
 export function readSummaryRemountCache(

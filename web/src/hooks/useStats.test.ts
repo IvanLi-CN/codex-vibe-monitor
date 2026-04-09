@@ -157,17 +157,18 @@ describe('useSummary unsupported window fallback', () => {
       totalTokens: 120,
     }
 
-    writeSummaryRemountCache('today', undefined, summary, 1_000)
+    writeSummaryRemountCache('7d', undefined, summary, 1_000)
 
-    expect(getSummaryRemountCacheKey('today')).toBe('today::default')
-    expect(readSummaryRemountCache('today', undefined, 1_001)).toEqual({
+    expect(getSummaryRemountCacheKey('7d')).toBe('7d::default')
+    expect(readSummaryRemountCache('7d', undefined, 1_001)).toEqual({
       stats: summary,
       cachedAt: 1_000,
     })
   })
 
-  it('disables remount caching for the current summary window', () => {
+  it('disables remount caching for current and calendar summary windows', () => {
     expect(shouldEnableSummaryRemountCache('current')).toBe(false)
+    expect(shouldEnableSummaryRemountCache('today')).toBe(false)
     writeSummaryRemountCache(
       'current',
       undefined,
@@ -181,6 +182,14 @@ describe('useSummary unsupported window fallback', () => {
       1_000,
     )
     expect(readSummaryRemountCache('current', undefined, 1_001)).toBeNull()
+    writeSummaryRemountCache('today', undefined, {
+      totalCount: 2,
+      successCount: 2,
+      failureCount: 0,
+      totalCost: 0,
+      totalTokens: 2,
+    }, 1_000)
+    expect(readSummaryRemountCache('today', undefined, 1_001)).toBeNull()
   })
 
   it('treats remount cache as reusable only inside the ttl window', () => {
@@ -196,8 +205,8 @@ describe('useSummary unsupported window fallback', () => {
       totalCost: 0.5,
       totalTokens: 120,
     }
-    writeSummaryRemountCache('today', undefined, summary, 1_000)
+    writeSummaryRemountCache('7d', undefined, summary, 1_000)
 
-    expect(readSummaryRemountCache('today', undefined, 1_000 + SUMMARY_REMOUNT_CACHE_TTL_MS)).toBeNull()
+    expect(readSummaryRemountCache('7d', undefined, 1_000 + SUMMARY_REMOUNT_CACHE_TTL_MS)).toBeNull()
   })
 })

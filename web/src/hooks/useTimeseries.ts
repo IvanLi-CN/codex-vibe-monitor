@@ -108,7 +108,7 @@ export function getTimeseriesRemountCacheKey(range: string, options?: UseTimeser
 }
 
 export function shouldEnableTimeseriesRemountCache(range: string) {
-  return range !== 'current'
+  return range !== 'current' && range !== 'today'
 }
 
 export function readTimeseriesRemountCache(

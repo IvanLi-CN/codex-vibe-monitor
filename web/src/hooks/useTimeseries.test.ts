@@ -264,19 +264,20 @@ describe('useTimeseries refresh coordination helpers', () => {
       points: [],
     }
 
-    writeTimeseriesRemountCache('today', { bucket: '1m' }, response, 12_345)
+    writeTimeseriesRemountCache('1d', { bucket: '1m' }, response, 12_345)
 
-    expect(getTimeseriesRemountCacheKey('today', { bucket: '1m' })).toBe(
-      JSON.stringify(['today', '1m', null, false]),
+    expect(getTimeseriesRemountCacheKey('1d', { bucket: '1m' })).toBe(
+      JSON.stringify(['1d', '1m', null, false]),
     )
-    expect(readTimeseriesRemountCache('today', { bucket: '1m' }, 12_346)).toEqual({
+    expect(readTimeseriesRemountCache('1d', { bucket: '1m' }, 12_346)).toEqual({
       data: response,
       cachedAt: 12_345,
     })
   })
 
-  it('disables remount caching for current timeseries', () => {
+  it('disables remount caching for current and today timeseries', () => {
     expect(shouldEnableTimeseriesRemountCache('current')).toBe(false)
+    expect(shouldEnableTimeseriesRemountCache('today')).toBe(false)
     writeTimeseriesRemountCache(
       'current',
       undefined,
@@ -289,6 +290,18 @@ describe('useTimeseries refresh coordination helpers', () => {
       1_000,
     )
     expect(readTimeseriesRemountCache('current', undefined, 1_001)).toBeNull()
+    writeTimeseriesRemountCache(
+      'today',
+      { bucket: '1m' },
+      {
+        rangeStart: '2026-04-08T00:00:00Z',
+        rangeEnd: '2026-04-08T00:01:00Z',
+        bucketSeconds: 60,
+        points: [],
+      },
+      1_000,
+    )
+    expect(readTimeseriesRemountCache('today', { bucket: '1m' }, 1_001)).toBeNull()
   })
 
   it('reuses remount cache only inside the ttl window', () => {
@@ -303,8 +316,8 @@ describe('useTimeseries refresh coordination helpers', () => {
       bucketSeconds: 60,
       points: [],
     }
-    writeTimeseriesRemountCache('today', { bucket: '1m' }, response, 2_000)
+    writeTimeseriesRemountCache('1d', { bucket: '1m' }, response, 2_000)
 
-    expect(readTimeseriesRemountCache('today', { bucket: '1m' }, 2_000 + TIMESERIES_REMOUNT_CACHE_TTL_MS)).toBeNull()
+    expect(readTimeseriesRemountCache('1d', { bucket: '1m' }, 2_000 + TIMESERIES_REMOUNT_CACHE_TTL_MS)).toBeNull()
   })
 })
