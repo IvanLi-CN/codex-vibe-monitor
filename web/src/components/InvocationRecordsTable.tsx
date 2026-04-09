@@ -15,7 +15,6 @@ import {
   formatOptionalText,
   renderEndpointSummary,
   renderFastIndicator,
-  resolveInvocationCollapsedErrorSummary,
   useInvocationPoolAttempts,
 } from "./invocation-details-shared";
 import {
@@ -514,7 +513,6 @@ export function InvocationRecordsTable({
           statusLabel: statusMeta.labelKey
             ? t(statusMeta.labelKey)
             : (statusMeta.label ?? t("table.status.unknown")),
-          collapsedErrorSummary: resolveInvocationCollapsedErrorSummary(record),
           ...detailView,
         };
       }),

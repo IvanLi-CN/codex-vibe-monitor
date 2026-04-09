@@ -28,7 +28,6 @@ import {
   renderEndpointSummary,
   renderFastIndicator,
   renderReasoningEffortBadge,
-  resolveInvocationCollapsedErrorSummary,
   useInvocationPoolAttempts,
 } from "./invocation-details-shared";
 
@@ -317,7 +316,6 @@ export function InvocationTable({
           isInFlight,
           occurredTime,
           occurredDate,
-          collapsedErrorSummary: resolveInvocationCollapsedErrorSummary(record),
           ...detailView,
         };
       }),

@@ -54,6 +54,7 @@ export interface InvocationDetailViewModel {
   endpointValue: string
   endpointDisplay: InvocationEndpointDisplay
   errorMessage: string
+  collapsedErrorSummary: string
   totalLatencyValue: string
   firstResponseByteTotalValue: string
   firstByteLatencyValue: string
@@ -396,6 +397,7 @@ export function buildInvocationDetailViewModel({
   const endpointDisplay = resolveInvocationEndpointDisplay(record.endpoint)
   const endpointValue = endpointDisplay.endpointValue
   const errorMessage = record.errorMessage?.trim() ?? ''
+  const collapsedErrorSummary = resolveInvocationCollapsedErrorSummary(record)
 
   const proxyWeightDeltaView = formatProxyWeightDelta(record.proxyWeightDelta)
   const proxyWeightDeltaValue =
@@ -552,6 +554,7 @@ export function buildInvocationDetailViewModel({
     endpointValue,
     endpointDisplay,
     errorMessage,
+    collapsedErrorSummary,
     totalLatencyValue,
     firstResponseByteTotalValue,
     firstByteLatencyValue,
