@@ -601,6 +601,8 @@ async fn send_pool_request_live_first_attempt(
                 oauth_bridge::OauthUpstreamRequestBody::Stream {
                     body,
                     debug_body_prefix: None,
+                    request_is_stream: None,
+                    snapshot_kind: None,
                 },
                 attempt_send_timeout,
                 attempt_pre_first_byte_timeout,
