@@ -5,7 +5,9 @@ import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { AdaptiveMetricValue } from './AdaptiveMetricValue'
 
 vi.mock('./AnimatedDigits', () => ({
-  AnimatedDigits: ({ value }: { value: number | string }) => <>{String(value)}</>,
+  AnimatedDigits: ({ value }: { value: number | string }) => (
+    <span data-testid="animated-digits">{String(value)}</span>
+  ),
 }))
 
 let host: HTMLDivElement | null = null
@@ -144,6 +146,7 @@ describe('AdaptiveMetricValue', () => {
     expect(getMetric().dataset.compact).toBe('true')
     expect(getMetric().textContent).toContain('1.31B')
     expect(getMetric().getAttribute('title')).toBe('1,314,275,579')
+    expect(host?.querySelector('[data-testid="animated-digits"]')).toBeNull()
   })
 
   it('re-evaluates overflow on window resize even when ResizeObserver is available', () => {
@@ -179,5 +182,26 @@ describe('AdaptiveMetricValue', () => {
 
     expect(getMetric().dataset.compact).toBe('true')
     expect(getMetric().textContent).toContain('1.31B')
+  })
+
+  it('keeps AnimatedDigits only for non-compact number rendering', () => {
+    render(
+      <AdaptiveMetricValue
+        value={12345}
+        localeTag="en-US"
+        data-testid="adaptive-metric"
+      />,
+    )
+
+    expect(host?.querySelector('[data-testid="animated-digits"]')?.textContent).toBe('12,345')
+
+    metricContainerWidth = 80
+    metricMeasureWidth = 240
+    act(() => {
+      MockResizeObserver.notify(getMeasure())
+    })
+
+    expect(getMetric().dataset.compact).toBe('true')
+    expect(host?.querySelector('[data-testid="animated-digits"]')).toBeNull()
   })
 })

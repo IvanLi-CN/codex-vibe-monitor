@@ -116,7 +116,7 @@ export function AdaptiveMetricValue({
   }, [evaluateOverflow])
 
   const visibleValue = useCompactValue ? compactValue : fullValue
-  const shouldAnimateDigits = kind === 'number'
+  const shouldAnimateDigits = kind === 'number' && !useCompactValue
 
   return (
     <span
