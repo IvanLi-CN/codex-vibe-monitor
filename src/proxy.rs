@@ -7046,7 +7046,7 @@ async fn proxy_openai_v1_capture_target(
             if !downstream_closed && tx.send(Ok(chunk)).await.is_err() {
                 downstream_closed = true;
             }
-            response_raw_writer.append(chunk_for_raw.as_ref()).await;
+            response_raw_writer.append(chunk_for_raw).await;
         }
 
         loop {
@@ -7190,7 +7190,7 @@ async fn proxy_openai_v1_capture_target(
                     if !downstream_closed && tx.send(Ok(chunk)).await.is_err() {
                         downstream_closed = true;
                     }
-                    response_raw_writer.append(chunk_for_raw.as_ref()).await;
+                    response_raw_writer.append(chunk_for_raw).await;
                 }
                 Err(err) => {
                     let msg = format!("upstream stream error: {err}");
@@ -11236,7 +11236,7 @@ impl AsyncStreamingRawPayloadWriter {
         self.tx = None;
     }
 
-    async fn append(&mut self, bytes: &[u8]) {
+    async fn append(&mut self, bytes: Bytes) {
         if bytes.is_empty() {
             return;
         }
@@ -11244,7 +11244,7 @@ impl AsyncStreamingRawPayloadWriter {
         let Some(tx) = self.tx.as_ref() else {
             return;
         };
-        match tx.try_send(Bytes::copy_from_slice(bytes)) {
+        match tx.try_send(bytes) {
             Ok(()) => {}
             Err(mpsc::error::TrySendError::Full(_)) => self.mark_async_backpressure_dropped(),
             Err(mpsc::error::TrySendError::Closed(_)) => {
@@ -11292,24 +11292,7 @@ async fn write_streaming_raw_payload_to_file(
         ));
         return meta;
     };
-    if let Err(err) = tokio::fs::create_dir_all(parent).await {
-        meta.truncated = true;
-        meta.truncated_reason = Some(format!("write_failed:{err}"));
-        return meta;
-    }
-
-    let mut file = match tokio::fs::File::create(&path).await {
-        Ok(file) => {
-            meta.path = Some(path.to_string_lossy().to_string());
-            file
-        }
-        Err(err) => {
-            meta.truncated = true;
-            meta.truncated_reason = Some(format!("write_failed:{err}"));
-            return meta;
-        }
-    };
-
+    let mut file: Option<tokio::fs::File> = None;
     let mut written_bytes = 0usize;
     while let Some(bytes) = rx.recv().await {
         if bytes.is_empty() {
@@ -11340,7 +11323,31 @@ async fn write_streaming_raw_payload_to_file(
             continue;
         }
 
-        if let Err(err) = file.write_all(&bytes[..write_len]).await {
+        if file.is_none() {
+            if let Err(err) = tokio::fs::create_dir_all(parent).await {
+                meta.truncated = true;
+                meta.truncated_reason = Some(format!("write_failed:{err}"));
+                return meta;
+            }
+            match tokio::fs::File::create(&path).await {
+                Ok(created) => {
+                    meta.path = Some(path.to_string_lossy().to_string());
+                    file = Some(created);
+                }
+                Err(err) => {
+                    meta.truncated = true;
+                    meta.truncated_reason = Some(format!("write_failed:{err}"));
+                    return meta;
+                }
+            }
+        }
+
+        if let Err(err) = file
+            .as_mut()
+            .expect("raw payload file should be opened before writing")
+            .write_all(&bytes[..write_len])
+            .await
+        {
             meta.truncated = true;
             meta.truncated_reason = Some(format!("write_failed:{err}"));
             let _ = tokio::fs::remove_file(&path).await;
@@ -11350,7 +11357,9 @@ async fn write_streaming_raw_payload_to_file(
         written_bytes = written_bytes.saturating_add(write_len);
     }
 
-    if let Err(err) = file.flush().await {
+    if let Some(file) = file.as_mut()
+        && let Err(err) = file.flush().await
+    {
         meta.truncated = true;
         meta.truncated_reason = Some(format!("write_failed:{err}"));
         let _ = tokio::fs::remove_file(&path).await;

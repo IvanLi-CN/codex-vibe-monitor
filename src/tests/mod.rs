@@ -3725,7 +3725,7 @@ async fn async_streaming_raw_payload_writer_drops_when_async_writer_pool_is_satu
         .expect("saturate async raw writer permits");
 
     let mut writer = AsyncStreamingRawPayloadWriter::new(state.as_ref(), "proxy-test", "response");
-    writer.append(br#"{"chunk":1}"#).await;
+    writer.append(Bytes::from_static(br#"{"chunk":1}"#)).await;
     let meta = writer.finish().await;
 
     assert!(
@@ -3746,6 +3746,35 @@ async fn async_streaming_raw_payload_writer_drops_when_async_writer_pool_is_satu
 }
 
 #[tokio::test]
+async fn async_streaming_raw_payload_writer_does_not_create_empty_file_without_chunks() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let expected = state
+        .config
+        .resolved_proxy_raw_dir()
+        .join("proxy-test-empty-response-response.bin");
+
+    let writer = AsyncStreamingRawPayloadWriter::new(
+        state.as_ref(),
+        "proxy-test-empty-response",
+        "response",
+    );
+    let meta = writer.finish().await;
+
+    assert!(
+        meta.path.is_none(),
+        "empty response raw should not create a file"
+    );
+    assert_eq!(meta.size_bytes, 0);
+    assert!(
+        !expected.exists(),
+        "empty response raw should not leave an empty raw payload file behind"
+    );
+}
+
+#[tokio::test]
 async fn async_streaming_raw_payload_writer_stops_after_single_queue_overflow() {
     let (tx, mut rx) = mpsc::channel::<Bytes>(1);
     tx.try_send(Bytes::from_static(br#"{"queued":0}"#))
@@ -3759,7 +3788,7 @@ async fn async_streaming_raw_payload_writer_stops_after_single_queue_overflow() 
         local_truncated: false,
     };
 
-    writer.append(br#"{"chunk":1}"#).await;
+    writer.append(Bytes::from_static(br#"{"chunk":1}"#)).await;
     assert!(
         writer.tx.is_none(),
         "writer should stop accepting new chunks after one full queue event"
@@ -3776,7 +3805,7 @@ async fn async_streaming_raw_payload_writer_stops_after_single_queue_overflow() 
     let first = rx.recv().await.expect("receive seeded chunk");
     assert_eq!(first, Bytes::from_static(br#"{"queued":0}"#));
 
-    writer.append(br#"{"chunk":2}"#).await;
+    writer.append(Bytes::from_static(br#"{"chunk":2}"#)).await;
     let second = tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv())
         .await
         .expect("writer channel should close after overflow");
