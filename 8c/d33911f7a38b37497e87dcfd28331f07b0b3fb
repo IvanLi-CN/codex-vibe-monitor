@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.45.7",
+  "base_stable_version": "1.45.6",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-09T17:38:37Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.45.7",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "225de9fc1ff4935415e99a6fc8bdd7f8c3bfdd38",
+  "pr_number": 316,
+  "pr_title": "fix: remove local proxy admission gate",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.45.7",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.45.7",
+  "target_sha": "8cd33911f7a38b37497e87dcfd28331f07b0b3fb",
+  "type_label": "type:patch"
+}
