@@ -2,10 +2,10 @@
 
 ## 状态
 
-- Status: 已实现，待 PR / CI / review-proof 收敛
+- Status: 已完成
 - Created: 2026-04-09
 - Last: 2026-04-09
-- Note: OAuth `/v1/responses` file-backed body 已改为 large-body passthrough；small-body rewrite 保持原语义，distinct-account 预算记账已延后到真实 dispatch，local cargo fmt/check + targeted tests + review-loop clear。
+- Note: PR #317：OAuth `/v1/responses` file-backed body 已改为 large-body passthrough；small-body rewrite 保持原语义，distinct-account 预算记账已延后到真实 dispatch，local cargo fmt/check + targeted tests + review-loop clear。
 
 ## 背景 / 问题陈述
 
