@@ -1000,6 +1000,896 @@ fn parse_retry_after_delay_rejects_invalid_or_past_values() {
     assert_eq!(parse_retry_after_delay(&past_header), None);
 }
 
+#[tokio::test]
+async fn acquire_proxy_request_concurrency_permit_times_out_when_limit_is_reached() {
+    let mut config = test_config();
+    config.proxy_request_concurrency_limit = 1;
+    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(50);
+    let state = test_state_from_config(config, true).await;
+    let uri = "/v1/responses".parse::<Uri>().expect("valid proxy uri");
+
+    let permit =
+        acquire_proxy_request_concurrency_permit(state.as_ref(), 1001, &Method::POST, &uri)
+            .await
+            .expect("first request should acquire concurrency slot");
+    assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 1);
+
+    let err = acquire_proxy_request_concurrency_permit(state.as_ref(), 1002, &Method::POST, &uri)
+        .await
+        .expect_err("second request should time out while waiting for concurrency slot");
+
+    assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(err.message, PROXY_CONCURRENCY_LIMIT_MESSAGE);
+    assert!(err.queue_wait_ms.is_some_and(|value| value > 0.0));
+    assert_eq!(state.proxy_request_queue_total.load(Ordering::Acquire), 1);
+    assert_eq!(
+        state.proxy_request_rejected_total.load(Ordering::Acquire),
+        1
+    );
+
+    drop(permit);
+    assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 0);
+}
+
+#[test]
+fn retry_after_secs_for_proxy_error_uses_configured_concurrency_timeout() {
+    assert_eq!(
+        retry_after_secs_for_proxy_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            PROXY_CONCURRENCY_LIMIT_MESSAGE,
+            Some(Duration::from_millis(2_500)),
+        ),
+        Some(3)
+    );
+    assert_eq!(
+        retry_after_secs_for_proxy_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            POOL_NO_AVAILABLE_ACCOUNT_MESSAGE,
+            Some(Duration::from_millis(2_500)),
+        ),
+        Some(DEFAULT_POOL_NO_AVAILABLE_ACCOUNT_RETRY_AFTER_SECS)
+    );
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_does_not_persist_concurrency_limit_rejections_for_capture_targets() {
+    let mut config = test_config();
+    config.proxy_request_concurrency_limit = 1;
+    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(50);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-limit-key").await;
+    let mut rx = state.broadcaster.subscribe();
+    let uri = "/v1/responses".parse::<Uri>().expect("valid proxy uri");
+
+    let held_permit =
+        acquire_proxy_request_concurrency_permit(state.as_ref(), 1003, &Method::POST, &uri)
+            .await
+            .expect("first request should acquire concurrency slot");
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(uri),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-limit-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hello"}"#)),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let retry_after = response
+        .headers()
+        .get(http_header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .expect("retry-after header should be present");
+    assert_eq!(retry_after, "1");
+    assert!(
+        response.headers().get(CVM_INVOKE_ID_HEADER).is_none(),
+        "pre-admission overload rejections should not expose unresolved invocation ids"
+    );
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read concurrency-limit response body");
+    let response_payload: Value =
+        serde_json::from_slice(&body).expect("decode concurrency-limit response body");
+    assert!(response_payload.get("cvmId").is_none());
+    assert_eq!(
+        response_payload["error"].as_str(),
+        Some(PROXY_CONCURRENCY_LIMIT_MESSAGE)
+    );
+
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let persisted_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM codex_invocations")
+        .fetch_one(&state.pool)
+        .await
+        .expect("load codex invocation count after overload rejection");
+    assert_eq!(
+        persisted_count, 0,
+        "overload rejection should shed load instead of persisting proxy capture rows"
+    );
+
+    let broadcast = tokio::time::timeout(Duration::from_millis(200), rx.recv()).await;
+    assert!(
+        broadcast.is_err(),
+        "overload rejection should not enqueue follow-up broadcasts"
+    );
+
+    drop(held_permit);
+    assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 0);
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_concurrency_rejections_fail_fast_before_persist_finishes() {
+    let mut config = test_config();
+    config.proxy_request_concurrency_limit = 1;
+    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(50);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-limit-key").await;
+    let uri = "/v1/responses".parse::<Uri>().expect("valid proxy uri");
+
+    let held_permit =
+        acquire_proxy_request_concurrency_permit(state.as_ref(), 1006, &Method::POST, &uri)
+            .await
+            .expect("first request should acquire concurrency slot");
+
+    let mut lock_conn = state
+        .pool
+        .acquire()
+        .await
+        .expect("acquire sqlite lock connection");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *lock_conn)
+        .await
+        .expect("acquire sqlite write lock");
+
+    let response = tokio::time::timeout(
+        Duration::from_millis(200),
+        proxy_openai_v1(
+            State(state.clone()),
+            OriginalUri(uri),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-limit-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hello"}"#)),
+        ),
+    )
+    .await
+    .expect("concurrency rejection should return before persistence lock clears");
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+
+    sqlx::query("ROLLBACK")
+        .execute(&mut *lock_conn)
+        .await
+        .expect("rollback sqlite write lock");
+    drop(lock_conn);
+    drop(held_permit);
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_unauthorized_capture_targets_do_not_consume_proxy_concurrency_slots() {
+    let mut config = test_config();
+    config.proxy_request_concurrency_limit = 1;
+    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(50);
+    let state = test_state_from_config(config, true).await;
+    let uri = "/v1/responses".parse::<Uri>().expect("valid proxy uri");
+
+    let held_permit =
+        acquire_proxy_request_concurrency_permit(state.as_ref(), 1004, &Method::POST, &uri)
+            .await
+            .expect("first request should acquire concurrency slot");
+    assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 1);
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(uri),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )]),
+        Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hello"}"#)),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read unauthorized capture-target body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode unauthorized payload");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some(PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE)
+    );
+    assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 1);
+    assert_eq!(
+        state.proxy_request_rejected_total.load(Ordering::Acquire),
+        0
+    );
+    assert!(payload.get("cvmId").is_none());
+
+    drop(held_permit);
+    assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 0);
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_invalid_pool_keys_wait_for_proxy_concurrency_admission() {
+    let mut config = test_config();
+    config.proxy_request_concurrency_limit = 1;
+    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(50);
+    let state = test_state_from_config(config, true).await;
+    let uri = "/v1/responses".parse::<Uri>().expect("valid proxy uri");
+
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let held_permit =
+        acquire_proxy_request_concurrency_permit(state.as_ref(), 1006, &Method::POST, &uri)
+            .await
+            .expect("first request should acquire concurrency slot");
+    assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 1);
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(uri),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer invalid-pool-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hello"}"#)),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read concurrency-limited invalid-key body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode concurrency-limited body");
+    assert!(
+        payload["error"]
+            .as_str()
+            .is_some_and(|message| message.contains(PROXY_CONCURRENCY_LIMIT_MESSAGE))
+    );
+    assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 1);
+    assert_eq!(
+        state.proxy_request_rejected_total.load(Ordering::Acquire),
+        1
+    );
+
+    drop(held_permit);
+    assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 0);
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_revalidates_pool_key_after_queue_wait() {
+    let mut config = test_config();
+    config.proxy_request_concurrency_limit = 1;
+    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(250);
+    let state = test_state_from_config(config, true).await;
+    let uri = "/v1/responses".parse::<Uri>().expect("valid proxy uri");
+
+    seed_pool_routing_api_key(&state, "pool-queued-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let held_permit =
+        acquire_proxy_request_concurrency_permit(state.as_ref(), 1007, &Method::POST, &uri)
+            .await
+            .expect("first request should acquire concurrency slot");
+
+    let state_for_request = state.clone();
+    let queued = tokio::spawn(async move {
+        proxy_openai_v1(
+            State(state_for_request),
+            OriginalUri(uri),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-queued-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hello"}"#)),
+        )
+        .await
+    });
+
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    seed_pool_routing_api_key(&state, "pool-rotated-key").await;
+    drop(held_permit);
+
+    let response = queued.await.expect("join queued proxy request");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read revalidated invalid-key body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode revalidated invalid-key");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some(PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE)
+    );
+    assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 0);
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_capture_targets_require_pool_route_key() {
+    let (upstream_base, _captured_requests, upstream_handle) =
+        spawn_capture_target_body_upstream().await;
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    let state = test_state_from_config(config, true).await;
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/responses".parse::<Uri>().expect("valid proxy uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )]),
+        Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hello"}"#)),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read unauthorized capture-target body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode unauthorized payload");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some(PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE)
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_bearer_capture_targets_fail_closed_when_pool_route_lookup_fails() {
+    let (upstream_base, captured_requests, upstream_handle) =
+        spawn_capture_target_body_upstream().await;
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    let state = test_state_from_config(config, true).await;
+    sqlx::query("DROP TABLE pool_routing_settings")
+        .execute(&state.pool)
+        .await
+        .expect("drop pool routing settings to force lookup failure");
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/responses".parse::<Uri>().expect("valid proxy uri")),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer upstream-direct-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hello"}"#)),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read route lookup failure body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode route lookup failure body");
+    assert!(
+        payload["error"]
+            .as_str()
+            .is_some_and(|message| message.contains("failed to resolve pool routing settings"))
+    );
+    assert!(
+        captured_requests.lock().await.is_empty(),
+        "route lookup failures should not leak bearer credentials upstream"
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_models_require_pool_route_key() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/models".parse::<Uri>().expect("valid proxy uri")),
+        Method::GET,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer invalid-pool-key"),
+        )]),
+        Body::empty(),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read unauthorized models response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode unauthorized models body");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some(PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE)
+    );
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_non_capture_routes_require_pool_route_key() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let response = proxy_openai_v1(
+        State(state),
+        OriginalUri("/v1/echo".parse::<Uri>().expect("valid proxy uri")),
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer invalid-pool-key"),
+        )]),
+        Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hello"}"#)),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read unauthorized non-capture response body");
+    let payload: Value =
+        serde_json::from_slice(&body).expect("decode unauthorized non-capture body");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some(PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE)
+    );
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_route_lookup_failures_respect_proxy_concurrency_slots() {
+    let mut config = test_config();
+    config.proxy_request_concurrency_limit = 1;
+    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(50);
+    let state = test_state_from_config(config, true).await;
+    let uri = "/v1/responses".parse::<Uri>().expect("valid proxy uri");
+
+    let held_permit =
+        acquire_proxy_request_concurrency_permit(state.as_ref(), 1005, &Method::POST, &uri)
+            .await
+            .expect("first request should acquire concurrency slot");
+    sqlx::query("DROP TABLE pool_routing_settings")
+        .execute(&state.pool)
+        .await
+        .expect("drop pool routing settings to force lookup failure");
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri(uri),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer upstream-direct-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hello"}"#)),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read route lookup failure body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode concurrency rejection body");
+    assert!(
+        payload["error"]
+            .as_str()
+            .is_some_and(|message| message.contains(PROXY_CONCURRENCY_LIMIT_MESSAGE))
+    );
+    assert_eq!(
+        state.proxy_request_rejected_total.load(Ordering::Acquire),
+        1
+    );
+
+    drop(held_permit);
+    assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 0);
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_via_pool_acquires_concurrency_slot_before_reading_request_body() {
+    let mut config = test_config();
+    config.proxy_request_concurrency_limit = 1;
+    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(50);
+    let state = test_state_from_config(config, true).await;
+    let uri = "/v1/chat/completions"
+        .parse::<Uri>()
+        .expect("valid proxy uri");
+    let held_permit =
+        acquire_proxy_request_concurrency_permit(state.as_ref(), 1003, &Method::POST, &uri)
+            .await
+            .expect("first request should acquire concurrency slot");
+    let body_poll_count = Arc::new(AtomicUsize::new(0));
+    let body_poll_count_for_stream = body_poll_count.clone();
+    let body = Body::from_stream(stream::poll_fn(move |_cx| {
+        let poll_index = body_poll_count_for_stream.fetch_add(1, Ordering::AcqRel);
+        if poll_index == 0 {
+            std::task::Poll::Ready(Some(Ok::<Bytes, io::Error>(Bytes::from_static(
+                br#"{"model":"gpt-5","messages":[]}"#,
+            ))))
+        } else {
+            std::task::Poll::Ready(None)
+        }
+    }));
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let (status, message) = proxy_openai_v1_via_pool(
+        state.clone(),
+        1004,
+        &uri,
+        Method::POST,
+        HeaderMap::from_iter([(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )]),
+        body,
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect_err("second request should time out before reading request body");
+
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(message, PROXY_CONCURRENCY_LIMIT_MESSAGE);
+    assert_eq!(
+        body_poll_count.load(Ordering::Acquire),
+        0,
+        "body stream should not be polled before admission control succeeds"
+    );
+
+    drop(held_permit);
+    assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 0);
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_via_pool_holds_concurrency_slot_until_downstream_stream_finishes() {
+    let app = Router::new().route(
+        "/v1/responses",
+        post(|| async move {
+            let stream = stream::once(async {
+                Ok::<Bytes, Infallible>(Bytes::from_static(br#"{"phase":"streaming""#))
+            })
+            .chain(stream::once(async move {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                Ok::<Bytes, Infallible>(Bytes::from_static(br#","done":true}"#))
+            }));
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(http_header::CONTENT_TYPE, "application/json")
+                .body(Body::from_stream(stream))
+                .expect("build streaming response")
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind streaming upstream");
+    let addr = listener.local_addr().expect("streaming upstream addr");
+    let upstream_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("streaming upstream should run");
+    });
+
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse(&format!("http://{addr}")).expect("valid streaming upstream base url");
+    config.proxy_request_concurrency_limit = 1;
+    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(50);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-stream-slot-key").await;
+    insert_test_pool_api_key_account(&state, "Streaming Slot", "route-stream-slot").await;
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        1003,
+        &"/v1/responses".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-stream-slot-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hi"}"#)),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("streaming via-pool request should succeed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        state.proxy_request_in_flight.load(Ordering::Acquire),
+        1,
+        "proxy concurrency slot should remain held until downstream streaming finishes"
+    );
+
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read streaming via-pool response");
+    assert_eq!(
+        body,
+        Bytes::from_static(br#"{"phase":"streaming","done":true}"#)
+    );
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    assert_eq!(
+        state.proxy_request_in_flight.load(Ordering::Acquire),
+        0,
+        "proxy concurrency slot should release after downstream streaming completes"
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_capture_target_releases_concurrency_slot_before_persist_follow_up() {
+    let app = Router::new().route(
+        "/v1/responses",
+        post(|| async move {
+            let stream = stream::once(async {
+                Ok::<Bytes, Infallible>(Bytes::from_static(br#"{"phase":"streaming""#))
+            })
+            .chain(stream::once(async move {
+                tokio::time::sleep(Duration::from_millis(120)).await;
+                Ok::<Bytes, Infallible>(Bytes::from_static(br#","done":true}"#))
+            }));
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(http_header::CONTENT_TYPE, "application/json")
+                .body(Body::from_stream(stream))
+                .expect("build streaming response")
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind streaming upstream");
+    let addr = listener.local_addr().expect("streaming upstream addr");
+    let upstream_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("streaming upstream should run");
+    });
+
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse(&format!("http://{addr}")).expect("valid streaming upstream base url");
+    config.proxy_request_concurrency_limit = 1;
+    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(50);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-stream-slot-key").await;
+    insert_test_pool_api_key_account(&state, "Streaming Slot", "route-stream-slot").await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid proxy uri")),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-stream-slot-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hi"}"#)),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        state.proxy_request_in_flight.load(Ordering::Acquire),
+        1,
+        "proxy concurrency slot should remain held while downstream body is still open"
+    );
+
+    let mut lock_conn = state
+        .pool
+        .acquire()
+        .await
+        .expect("acquire sqlite lock connection");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *lock_conn)
+        .await
+        .expect("acquire sqlite write lock");
+
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read capture-target response body");
+    assert_eq!(
+        body,
+        Bytes::from_static(br#"{"phase":"streaming","done":true}"#)
+    );
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if state.proxy_request_in_flight.load(Ordering::Acquire) == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("proxy concurrency slot should release before persist follow-up completes");
+
+    sqlx::query("ROLLBACK")
+        .execute(&mut *lock_conn)
+        .await
+        .expect("rollback sqlite write lock");
+    drop(lock_conn);
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_capture_target_keeps_concurrency_slot_while_draining_cancelled_stream() {
+    let app = Router::new().route(
+        "/v1/responses",
+        post(|| async move {
+            let stream = stream::once(async {
+                Ok::<Bytes, Infallible>(Bytes::from_static(br#"{"phase":"streaming""#))
+            })
+            .chain(stream::once(async move {
+                tokio::time::sleep(Duration::from_millis(60)).await;
+                Ok::<Bytes, Infallible>(Bytes::from_static(br#","mid":true"#))
+            }))
+            .chain(stream::once(async move {
+                tokio::time::sleep(Duration::from_millis(200)).await;
+                Ok::<Bytes, Infallible>(Bytes::from_static(br#","done":true}"#))
+            }));
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(http_header::CONTENT_TYPE, "application/json")
+                .body(Body::from_stream(stream))
+                .expect("build streaming response")
+        }),
+    );
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind streaming upstream");
+    let addr = listener.local_addr().expect("streaming upstream addr");
+    let upstream_handle = tokio::spawn(async move {
+        axum::serve(listener, app)
+            .await
+            .expect("streaming upstream should run");
+    });
+
+    let mut config = test_config();
+    config.openai_upstream_base_url =
+        Url::parse(&format!("http://{addr}")).expect("valid streaming upstream base url");
+    config.proxy_request_concurrency_limit = 1;
+    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(50);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-stream-slot-key").await;
+    insert_test_pool_api_key_account(&state, "Streaming Slot", "route-stream-slot").await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid proxy uri")),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-stream-slot-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hi"}"#)),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(
+        state.proxy_request_in_flight.load(Ordering::Acquire),
+        1,
+        "proxy concurrency slot should remain held while downstream body is still open"
+    );
+
+    let mut lock_conn = state
+        .pool
+        .acquire()
+        .await
+        .expect("acquire sqlite lock connection");
+    sqlx::query("BEGIN IMMEDIATE")
+        .execute(&mut *lock_conn)
+        .await
+        .expect("acquire sqlite write lock");
+
+    drop(response);
+
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    assert_eq!(
+        state.proxy_request_in_flight.load(Ordering::Acquire),
+        1,
+        "proxy concurrency slot should remain held while cancelled capture keeps draining upstream"
+    );
+
+    tokio::time::timeout(Duration::from_secs(1), async {
+        loop {
+            if state.proxy_request_in_flight.load(Ordering::Acquire) == 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("proxy concurrency slot should release after cancelled capture finishes draining");
+
+    sqlx::query("ROLLBACK")
+        .execute(&mut *lock_conn)
+        .await
+        .expect("rollback sqlite write lock");
+    drop(lock_conn);
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+
+    upstream_handle.abort();
+}
+
 #[test]
 fn validation_probe_reachable_status_accepts_success_auth_and_not_found() {
     for status in [
@@ -2682,6 +3572,10 @@ fn test_config() -> AppConfig {
             DEFAULT_OPENAI_PROXY_REQUEST_READ_TIMEOUT_SECS,
         ),
         openai_proxy_max_request_body_bytes: DEFAULT_OPENAI_PROXY_MAX_REQUEST_BODY_BYTES,
+        proxy_request_concurrency_limit: DEFAULT_PROXY_REQUEST_CONCURRENCY_LIMIT,
+        proxy_request_concurrency_wait_timeout: Duration::from_millis(
+            DEFAULT_PROXY_REQUEST_CONCURRENCY_WAIT_TIMEOUT_MS,
+        ),
         proxy_enforce_stream_include_usage: DEFAULT_PROXY_ENFORCE_STREAM_INCLUDE_USAGE,
         proxy_usage_backfill_on_startup: DEFAULT_PROXY_USAGE_BACKFILL_ON_STARTUP,
         proxy_raw_max_bytes: DEFAULT_PROXY_RAW_MAX_BYTES,
@@ -2804,7 +3698,14 @@ fn store_raw_payload_file_anchors_relative_dir_to_database_parent() {
     config.database_path = db_root.join("codex_vibe_monitor.db");
     config.proxy_raw_dir = PathBuf::from("proxy_raw_payloads");
 
-    let meta = store_raw_payload_file(&config, "proxy-test", "request", b"{\"ok\":true}");
+    let meta = tokio::runtime::Runtime::new()
+        .expect("create tokio runtime for raw payload store test")
+        .block_on(store_raw_payload_file_async(
+            &config,
+            "proxy-test",
+            "request",
+            Bytes::from_static(b"{\"ok\":true}"),
+        ));
     let expected = db_root.join("proxy_raw_payloads/proxy-test-request.bin");
 
     assert_eq!(
@@ -2822,6 +3723,151 @@ fn store_raw_payload_file_anchors_relative_dir_to_database_parent() {
     );
 
     cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn spawn_raw_payload_file_write_drops_when_async_writer_pool_is_saturated() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let available_permits = state.proxy_raw_async_semaphore.available_permits();
+    let permit = state
+        .proxy_raw_async_semaphore
+        .clone()
+        .acquire_many_owned(available_permits as u32)
+        .await
+        .expect("saturate async raw writer permits");
+
+    let meta = spawn_raw_payload_file_write(
+        state.as_ref(),
+        "proxy-test",
+        "request",
+        Bytes::from_static(br#"{"ok":true}"#),
+    )
+    .finish()
+    .await;
+
+    assert!(
+        meta.path.is_none(),
+        "dropped raw payload should not have a file"
+    );
+    assert_eq!(meta.size_bytes, br#"{"ok":true}"#.len() as i64);
+    assert!(
+        meta.truncated,
+        "dropped raw payload should be marked truncated"
+    );
+    assert_eq!(
+        meta.truncated_reason.as_deref(),
+        Some(RAW_PAYLOAD_TRUNCATED_REASON_ASYNC_BACKPRESSURE_DROPPED)
+    );
+
+    drop(permit);
+}
+
+#[tokio::test]
+async fn async_streaming_raw_payload_writer_drops_when_async_writer_pool_is_saturated() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let available_permits = state.proxy_raw_async_semaphore.available_permits();
+    let permit = state
+        .proxy_raw_async_semaphore
+        .clone()
+        .acquire_many_owned(available_permits as u32)
+        .await
+        .expect("saturate async raw writer permits");
+
+    let mut writer = AsyncStreamingRawPayloadWriter::new(state.as_ref(), "proxy-test", "response");
+    writer.append(Bytes::from_static(br#"{"chunk":1}"#)).await;
+    let meta = writer.finish().await;
+
+    assert!(
+        meta.path.is_none(),
+        "dropped raw payload should not have a file"
+    );
+    assert_eq!(meta.size_bytes, br#"{"chunk":1}"#.len() as i64);
+    assert!(
+        meta.truncated,
+        "dropped raw payload should be marked truncated"
+    );
+    assert_eq!(
+        meta.truncated_reason.as_deref(),
+        Some(RAW_PAYLOAD_TRUNCATED_REASON_ASYNC_BACKPRESSURE_DROPPED)
+    );
+
+    drop(permit);
+}
+
+#[tokio::test]
+async fn async_streaming_raw_payload_writer_does_not_create_empty_file_without_chunks() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let expected = state
+        .config
+        .resolved_proxy_raw_dir()
+        .join("proxy-test-empty-response-response.bin");
+
+    let writer = AsyncStreamingRawPayloadWriter::new(
+        state.as_ref(),
+        "proxy-test-empty-response",
+        "response",
+    );
+    let meta = writer.finish().await;
+
+    assert!(
+        meta.path.is_none(),
+        "empty response raw should not create a file"
+    );
+    assert_eq!(meta.size_bytes, 0);
+    assert!(
+        !expected.exists(),
+        "empty response raw should not leave an empty raw payload file behind"
+    );
+}
+
+#[tokio::test]
+async fn async_streaming_raw_payload_writer_stops_after_single_queue_overflow() {
+    let (tx, mut rx) = mpsc::channel::<Bytes>(1);
+    tx.try_send(Bytes::from_static(br#"{"queued":0}"#))
+        .expect("seed full queue");
+
+    let mut writer = AsyncStreamingRawPayloadWriter {
+        tx: Some(tx),
+        meta_rx: None,
+        observed_size_bytes: 0,
+        local_truncated_reason: None,
+        local_truncated: false,
+    };
+
+    writer.append(Bytes::from_static(br#"{"chunk":1}"#)).await;
+    assert!(
+        writer.tx.is_none(),
+        "writer should stop accepting new chunks after one full queue event"
+    );
+    assert!(
+        writer.local_truncated,
+        "overflow should still mark the capture truncated"
+    );
+    assert_eq!(
+        writer.local_truncated_reason.as_deref(),
+        Some(RAW_PAYLOAD_TRUNCATED_REASON_ASYNC_BACKPRESSURE_DROPPED)
+    );
+
+    let first = rx.recv().await.expect("receive seeded chunk");
+    assert_eq!(first, Bytes::from_static(br#"{"queued":0}"#));
+
+    writer.append(Bytes::from_static(br#"{"chunk":2}"#)).await;
+    let second = tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv())
+        .await
+        .expect("writer channel should close after overflow");
+    assert!(
+        second.is_none(),
+        "writer should not enqueue later chunks after overflow"
+    );
 }
 
 #[test]
@@ -4135,6 +5181,7 @@ async fn test_state_from_config_with_pool_no_available_wait(
 
     let http_clients = HttpClients::build(&config).expect("http clients");
     let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
+    let _proxy_request_semaphore = Arc::new(Semaphore::new(config.proxy_request_concurrency_limit));
     let (broadcaster, _rx) = broadcast::channel(16);
     let pricing_catalog = load_pricing_catalog(&pool)
         .await
@@ -4152,6 +5199,13 @@ async fn test_state_from_config_with_pool_no_available_wait(
         startup_ready: Arc::new(AtomicBool::new(startup_ready)),
         shutdown: CancellationToken::new(),
         semaphore,
+        proxy_request_semaphore: Arc::new(Semaphore::new(config.proxy_request_concurrency_limit)),
+        proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
+        proxy_request_queue_total: Arc::new(AtomicU64::new(0)),
+        proxy_request_rejected_total: Arc::new(AtomicU64::new(0)),
+        proxy_raw_async_semaphore: Arc::new(Semaphore::new(
+            DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS,
+        )),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
@@ -4195,6 +5249,11 @@ fn clone_state_with_upstream_accounts(
         startup_ready: state.startup_ready.clone(),
         shutdown: state.shutdown.clone(),
         semaphore: state.semaphore.clone(),
+        proxy_request_semaphore: state.proxy_request_semaphore.clone(),
+        proxy_request_in_flight: state.proxy_request_in_flight.clone(),
+        proxy_request_queue_total: state.proxy_request_queue_total.clone(),
+        proxy_request_rejected_total: state.proxy_request_rejected_total.clone(),
+        proxy_raw_async_semaphore: state.proxy_raw_async_semaphore.clone(),
         proxy_model_settings: state.proxy_model_settings.clone(),
         proxy_model_settings_update_lock: state.proxy_model_settings_update_lock.clone(),
         forward_proxy: state.forward_proxy.clone(),
@@ -4231,6 +5290,11 @@ fn clone_state_with_pool_group_429_retry_delay_override(
         startup_ready: state.startup_ready.clone(),
         shutdown: state.shutdown.clone(),
         semaphore: state.semaphore.clone(),
+        proxy_request_semaphore: state.proxy_request_semaphore.clone(),
+        proxy_request_in_flight: state.proxy_request_in_flight.clone(),
+        proxy_request_queue_total: state.proxy_request_queue_total.clone(),
+        proxy_request_rejected_total: state.proxy_request_rejected_total.clone(),
+        proxy_raw_async_semaphore: state.proxy_raw_async_semaphore.clone(),
         proxy_model_settings: state.proxy_model_settings.clone(),
         proxy_model_settings_update_lock: state.proxy_model_settings_update_lock.clone(),
         forward_proxy: state.forward_proxy.clone(),
@@ -4261,6 +5325,7 @@ async fn test_state_from_existing_pool(
 
     let http_clients = HttpClients::build(&config).expect("http clients");
     let semaphore = Arc::new(Semaphore::new(config.max_parallel_polls));
+    let _proxy_request_semaphore = Arc::new(Semaphore::new(config.proxy_request_concurrency_limit));
     let (broadcaster, _rx) = broadcast::channel(16);
     let pricing_catalog = load_pricing_catalog(&pool)
         .await
@@ -4278,6 +5343,13 @@ async fn test_state_from_existing_pool(
         startup_ready: Arc::new(AtomicBool::new(startup_ready)),
         shutdown: CancellationToken::new(),
         semaphore,
+        proxy_request_semaphore: Arc::new(Semaphore::new(config.proxy_request_concurrency_limit)),
+        proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
+        proxy_request_queue_total: Arc::new(AtomicU64::new(0)),
+        proxy_request_rejected_total: Arc::new(AtomicU64::new(0)),
+        proxy_raw_async_semaphore: Arc::new(Semaphore::new(
+            DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS,
+        )),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
@@ -11844,6 +12916,13 @@ async fn proxy_openai_v1_models_falls_back_when_merge_body_decode_times_out() {
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
+        proxy_request_semaphore: Arc::new(Semaphore::new(config.proxy_request_concurrency_limit)),
+        proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
+        proxy_request_queue_total: Arc::new(AtomicU64::new(0)),
+        proxy_request_rejected_total: Arc::new(AtomicU64::new(0)),
+        proxy_raw_async_semaphore: Arc::new(Semaphore::new(
+            DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS,
+        )),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings {
             hijack_enabled: true,
             merge_upstream_enabled: true,
@@ -13563,6 +14642,13 @@ async fn proxy_openai_v1_allows_slow_upload_with_short_timeout() {
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
+        proxy_request_semaphore: Arc::new(Semaphore::new(config.proxy_request_concurrency_limit)),
+        proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
+        proxy_request_queue_total: Arc::new(AtomicU64::new(0)),
+        proxy_request_rejected_total: Arc::new(AtomicU64::new(0)),
+        proxy_raw_async_semaphore: Arc::new(Semaphore::new(
+            DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS,
+        )),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
@@ -23055,6 +24141,7 @@ async fn pool_route_oauth_passthrough_replays_large_file_backed_body() {
         Some(PoolReplayBodySnapshot::File {
             temp_file: temp_file.clone(),
             size: body.len(),
+            sticky_key: None,
         }),
         Duration::from_secs(5),
         None,
@@ -23412,6 +24499,7 @@ async fn proxy_openai_v1_via_pool_waits_for_initial_account_resolution_before_se
             ]),
             Body::from(r#"{"model":"gpt-5","messages":[]}"#.as_bytes().to_vec()),
             runtime_timeouts,
+            None,
         )
         .await
     });
@@ -23492,6 +24580,7 @@ async fn proxy_openai_v1_body_only_sticky_stream_waits_only_once_before_503() {
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
@@ -23507,6 +24596,732 @@ async fn proxy_openai_v1_body_only_sticky_stream_waits_only_once_before_503() {
         "unexpected via-pool failure: {message}"
     );
     assert_eq!(count_pool_upstream_request_attempts(&state.pool).await, 0);
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_via_pool_retries_after_live_body_replay_completes() {
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_retry_upstream(&[("Bearer upstream-live", 1)]).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    insert_test_pool_api_key_account(&state, "Live Replay", "upstream-live").await;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    tokio::spawn(async move {
+        let _ = tx
+            .send(Ok(Bytes::from_static(
+                br#"{"model":"gpt-5","messages":[{"role":"user","#,
+            )))
+            .await;
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let _ = tx
+            .send(Ok(Bytes::from_static(br#""content":"hello"}]}"#)))
+            .await;
+    });
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6242,
+        &"/v1/chat/completions".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("via-pool request should succeed after replay retry");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read via-pool response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode via-pool response");
+    assert_eq!(payload["authorization"], "Bearer upstream-live");
+    assert_eq!(payload["attempt"], 2);
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert_eq!(attempts.get("Bearer upstream-live").copied(), Some(2));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_via_pool_live_retry_uses_request_start_for_total_timeout() {
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_retry_upstream(&[("Bearer upstream-live-timeout", 1)]).await;
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.pool_upstream_responses_total_timeout = Duration::from_millis(40);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-live-timeout-key").await;
+    insert_test_pool_api_key_account(&state, "Live Timeout", "upstream-live-timeout").await;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    tokio::spawn(async move {
+        let _ = tx
+            .send(Ok(Bytes::from_static(
+                br#"{"model":"gpt-5","input":[{"role":"user","content":"hello"}],"#,
+            )))
+            .await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        let _ = tx
+            .send(Ok(Bytes::from_static(br#""temperature":0}"#)))
+            .await;
+    });
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let (status, message) = proxy_openai_v1_via_pool(
+        state.clone(),
+        6244,
+        &"/v1/responses".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-timeout-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect_err("live retry should exhaust total timeout from request start");
+
+    assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
+    assert_eq!(
+        message,
+        pool_total_timeout_exhausted_message(Duration::from_millis(40))
+    );
+
+    let attempts = attempts.lock().expect("lock attempts");
+    assert!(
+        attempts
+            .get("Bearer upstream-live-timeout")
+            .copied()
+            .unwrap_or_default()
+            <= 1,
+        "live timeout path should not complete a successful retry"
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_via_pool_live_first_attempt_preserves_body_sticky_route() {
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-sticky-live-key").await;
+    let default_id =
+        insert_test_pool_api_key_account(&state, "Default Live Route", "route-default").await;
+    let sticky_id =
+        insert_test_pool_api_key_account(&state, "Sticky Live Route", "route-sticky").await;
+
+    let resolved_without_sticky =
+        match resolve_pool_account_for_request(state.as_ref(), None, &[], &HashSet::new())
+            .await
+            .expect("resolve default live route")
+        {
+            PoolAccountResolution::Resolved(account) => account.account_id,
+            other => panic!("expected resolved default route, got {other:?}"),
+        };
+    let preferred_sticky_account_id = if resolved_without_sticky == default_id {
+        sticky_id
+    } else {
+        default_id
+    };
+    let expected_authorization = if preferred_sticky_account_id == default_id {
+        "Bearer route-default"
+    } else {
+        "Bearer route-sticky"
+    };
+    upsert_test_sticky_route_at(
+        &state.pool,
+        "sticky-live-body-route",
+        preferred_sticky_account_id,
+        &format_test_recent_active_timestamp(Utc::now()),
+    )
+    .await;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    tokio::spawn(async move {
+        let _ = tx
+            .send(Ok(Bytes::from_static(
+                br#"{"model":"gpt-5","messages":[{"role":"user","content":"hello"}],"stickyKey":"sticky-live-body-route","#,
+            )))
+            .await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let _ = tx
+            .send(Ok(Bytes::from_static(br#""temperature":0}"#)))
+            .await;
+    });
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6243,
+        &"/v1/chat/completions".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-sticky-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("live first attempt should honor body sticky route");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read sticky live response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode sticky live response");
+    assert_eq!(payload["authorization"], expected_authorization);
+    assert_eq!(payload["attempt"], 1);
+
+    let attempts = attempts.lock().expect("lock live sticky attempts");
+    assert_eq!(attempts.get(expected_authorization).copied(), Some(1));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_via_pool_live_first_attempt_does_not_wait_for_eof_after_sticky_probe_prefix_is_exhausted()
+ {
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-no-sticky-live-key").await;
+    insert_test_pool_api_key_account(&state, "No Sticky Live Route", "route-no-sticky").await;
+
+    let first_chunk = format!(
+        r#"{{"model":"gpt-5","input":"{}","#,
+        "x".repeat(HEADER_STICKY_EARLY_STICKY_SCAN_BYTES + 32)
+    );
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    tokio::spawn(async move {
+        let _ = tx.send(Ok(Bytes::from(first_chunk))).await;
+        tokio::time::sleep(Duration::from_millis(180)).await;
+        let _ = tx
+            .send(Ok(Bytes::from_static(br#""temperature":0}"#)))
+            .await;
+    });
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = tokio::time::timeout(
+        Duration::from_millis(120),
+        proxy_openai_v1_via_pool(
+            state.clone(),
+            6246,
+            &"/v1/responses".parse().expect("valid uri"),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-no-sticky-live-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+            runtime_timeouts,
+            None,
+        ),
+    )
+    .await
+    .expect("live first attempt should not wait for body EOF after the sticky probe prefix is exhausted")
+    .expect("live first attempt should succeed");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read no-sticky live response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode no-sticky live response");
+    assert_eq!(payload["authorization"], "Bearer route-no-sticky");
+    assert_eq!(payload["attempt"], 1);
+
+    let attempts = attempts.lock().expect("lock no-sticky live attempts");
+    assert_eq!(attempts.get("Bearer route-no-sticky").copied(), Some(1));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_via_pool_live_first_attempt_preserves_body_sticky_route_after_slow_prefix()
+{
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.openai_proxy_request_read_timeout = Duration::from_millis(200);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-sticky-live-key").await;
+    let default_id =
+        insert_test_pool_api_key_account(&state, "Default Slow Live Route", "route-default").await;
+    let sticky_id =
+        insert_test_pool_api_key_account(&state, "Sticky Slow Live Route", "route-sticky").await;
+
+    let resolved_without_sticky =
+        match resolve_pool_account_for_request(state.as_ref(), None, &[], &HashSet::new())
+            .await
+            .expect("resolve default slow live route")
+        {
+            PoolAccountResolution::Resolved(account) => account.account_id,
+            other => panic!("expected resolved default route, got {other:?}"),
+        };
+    let preferred_sticky_account_id = if resolved_without_sticky == default_id {
+        sticky_id
+    } else {
+        default_id
+    };
+    let expected_authorization = if preferred_sticky_account_id == default_id {
+        "Bearer route-default"
+    } else {
+        "Bearer route-sticky"
+    };
+    upsert_test_sticky_route_at(
+        &state.pool,
+        "sticky-live-slow-body-route",
+        preferred_sticky_account_id,
+        &format_test_recent_active_timestamp(Utc::now()),
+    )
+    .await;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    tokio::spawn(async move {
+        let _ = tx
+            .send(Ok(Bytes::from_static(
+                br#"{"model":"gpt-5","messages":[{"role":"user","content":"hello"}],"#,
+            )))
+            .await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        let _ = tx
+            .send(Ok(Bytes::from_static(
+                br#""stickyKey":"sticky-live-slow-body-route","temperature":0}"#,
+            )))
+            .await;
+    });
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6248,
+        &"/v1/chat/completions".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-sticky-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("slow live first attempt should still honor body sticky route");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read slow sticky live response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode slow sticky live response");
+    assert_eq!(payload["authorization"], expected_authorization);
+    assert_eq!(payload["attempt"], 1);
+
+    let attempts = attempts.lock().expect("lock slow live sticky attempts");
+    assert_eq!(attempts.get(expected_authorization).copied(), Some(1));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_via_pool_large_prebuffered_body_does_not_reread_for_late_sticky_route() {
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-large-sticky-key").await;
+    let default_id =
+        insert_test_pool_api_key_account(&state, "Default Large Route", "route-large-default")
+            .await;
+    let sticky_id =
+        insert_test_pool_api_key_account(&state, "Sticky Large Route", "route-large-sticky").await;
+
+    let resolved_without_sticky =
+        match resolve_pool_account_for_request(state.as_ref(), None, &[], &HashSet::new())
+            .await
+            .expect("resolve default route")
+        {
+            PoolAccountResolution::Resolved(account) => account.account_id,
+            other => panic!("expected resolved default route, got {other:?}"),
+        };
+    let preferred_sticky_account_id = if resolved_without_sticky == default_id {
+        sticky_id
+    } else {
+        default_id
+    };
+    let expected_default_authorization = if resolved_without_sticky == default_id {
+        "Bearer route-large-default"
+    } else {
+        "Bearer route-large-sticky"
+    };
+    let unexpected_late_sticky_authorization = if preferred_sticky_account_id == default_id {
+        "Bearer route-large-default"
+    } else {
+        "Bearer route-large-sticky"
+    };
+    upsert_test_sticky_route_at(
+        &state.pool,
+        "sticky-large-late-route",
+        preferred_sticky_account_id,
+        &format_test_recent_active_timestamp(Utc::now()),
+    )
+    .await;
+
+    let request_body = format!(
+        r#"{{"model":"gpt-5","input":"{}","stickyKey":"sticky-large-late-route"}}"#,
+        "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 128)
+    );
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6245,
+        &"/v1/responses".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-large-sticky-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(request_body.into_bytes()),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("large prebuffered request should fall back without rereading the full file");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read large sticky response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode large sticky response");
+    assert_eq!(
+        payload["authorization"].as_str(),
+        Some(expected_default_authorization)
+    );
+    assert_ne!(
+        payload["authorization"].as_str(),
+        Some(unexpected_late_sticky_authorization)
+    );
+    assert!(
+        payload["attempt"]
+            .as_i64()
+            .is_some_and(|attempt| attempt >= 1),
+        "expected at least one upstream attempt"
+    );
+
+    let attempts = attempts.lock().expect("lock large sticky attempts");
+    assert!(
+        attempts
+            .get(expected_default_authorization)
+            .copied()
+            .is_some_and(|count| count >= 1),
+        "default route should receive at least one attempt"
+    );
+    assert_eq!(
+        attempts
+            .get(unexpected_late_sticky_authorization)
+            .copied()
+            .unwrap_or_default(),
+        0
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_via_pool_live_retry_ignores_late_file_backed_sticky_route() {
+    let request_body = format!(
+        r#"{{"model":"gpt-5","input":"{}","stickyKey":"sticky-large-late-route"}}"#,
+        "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 128)
+    );
+    let first_chunk_end = request_body
+        .find(r#"","stickyKey":"#)
+        .expect("large request should contain late sticky key marker");
+    let first_chunk = request_body[..first_chunk_end].as_bytes().to_vec();
+    let second_chunk = request_body[first_chunk_end..].as_bytes().to_vec();
+
+    let probe_state =
+        test_state_with_openai_base(Url::parse("http://127.0.0.1:1").expect("valid dummy url"))
+            .await;
+    seed_pool_routing_api_key(&probe_state, "pool-large-live-retry-key").await;
+    let probe_default_id = insert_test_pool_api_key_account(
+        &probe_state,
+        "Default Large Retry Route",
+        "route-large-retry-default",
+    )
+    .await;
+    let probe_sticky_id = insert_test_pool_api_key_account(
+        &probe_state,
+        "Sticky Large Retry Route",
+        "route-large-retry-sticky",
+    )
+    .await;
+
+    let resolved_without_sticky =
+        match resolve_pool_account_for_request(probe_state.as_ref(), None, &[], &HashSet::new())
+            .await
+            .expect("resolve default retry route")
+        {
+            PoolAccountResolution::Resolved(account) => account.account_id,
+            other => panic!("expected resolved default retry route, got {other:?}"),
+        };
+    let expected_default_authorization = if resolved_without_sticky == probe_default_id {
+        "Bearer route-large-retry-default"
+    } else {
+        "Bearer route-large-retry-sticky"
+    };
+    let _ = probe_sticky_id;
+    drop(probe_state);
+
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_retry_upstream(&[(expected_default_authorization, 1)]).await;
+
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-large-live-retry-key").await;
+    let default_id = insert_test_pool_api_key_account(
+        &state,
+        "Default Large Retry Route",
+        "route-large-retry-default",
+    )
+    .await;
+    let sticky_id = insert_test_pool_api_key_account(
+        &state,
+        "Sticky Large Retry Route",
+        "route-large-retry-sticky",
+    )
+    .await;
+
+    let resolved_without_sticky =
+        match resolve_pool_account_for_request(state.as_ref(), None, &[], &HashSet::new())
+            .await
+            .expect("resolve default retry route")
+        {
+            PoolAccountResolution::Resolved(account) => account.account_id,
+            other => panic!("expected resolved default retry route, got {other:?}"),
+        };
+    let preferred_sticky_account_id = if resolved_without_sticky == default_id {
+        sticky_id
+    } else {
+        default_id
+    };
+    let expected_default_authorization = if resolved_without_sticky == default_id {
+        "Bearer route-large-retry-default"
+    } else {
+        "Bearer route-large-retry-sticky"
+    };
+    let unexpected_late_sticky_authorization = if preferred_sticky_account_id == default_id {
+        "Bearer route-large-retry-default"
+    } else {
+        "Bearer route-large-retry-sticky"
+    };
+    upsert_test_sticky_route_at(
+        &state.pool,
+        "sticky-large-late-route",
+        preferred_sticky_account_id,
+        &format_test_recent_active_timestamp(Utc::now()),
+    )
+    .await;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    tokio::spawn(async move {
+        let _ = tx.send(Ok(Bytes::from(first_chunk))).await;
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let _ = tx.send(Ok(Bytes::from(second_chunk))).await;
+    });
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6247,
+        &"/v1/responses".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-large-live-retry-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("live retry should ignore late sticky key from file-backed replay");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read large live retry response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode large live retry response");
+    assert_eq!(
+        payload["authorization"].as_str(),
+        Some(expected_default_authorization)
+    );
+    assert_ne!(
+        payload["authorization"].as_str(),
+        Some(unexpected_late_sticky_authorization)
+    );
+    assert!(
+        payload["attempt"]
+            .as_i64()
+            .is_some_and(|attempt| attempt >= 2),
+        "expected the default route to be retried after the first live attempt failed"
+    );
+
+    let attempts = attempts.lock().expect("lock large live retry attempts");
+    assert!(
+        attempts
+            .get(expected_default_authorization)
+            .copied()
+            .is_some_and(|count| count >= 2),
+        "default route should receive the retry attempts"
+    );
+    assert_eq!(
+        attempts
+            .get(unexpected_late_sticky_authorization)
+            .copied()
+            .unwrap_or_default(),
+        0
+    );
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn continue_or_retry_pool_live_request_respects_total_timeout_while_waiting_for_replay() {
+    let mut config = test_config();
+    config.pool_upstream_responses_total_timeout = Duration::from_millis(40);
+    let state = test_state_from_config(config, true).await;
+    let original_uri = "/v1/responses".parse::<Uri>().expect("valid responses uri");
+    let account = PoolResolvedAccount {
+        account_id: 91,
+        display_name: "Live Retry Timeout".to_string(),
+        kind: "api_key_codex".to_string(),
+        auth: PoolResolvedAuth::ApiKey {
+            authorization: "Bearer live-retry-timeout".to_string(),
+        },
+        upstream_base_url: Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+        routing_source: PoolRoutingSelectionSource::FreshAssignment,
+        group_name: Some(test_required_group_name().to_string()),
+        bound_proxy_keys: test_required_group_bound_proxy_keys(),
+        forward_proxy_scope: ForwardProxyRouteScope::from_group_binding(
+            Some(test_required_group_name()),
+            test_required_group_bound_proxy_keys(),
+        ),
+        group_upstream_429_retry_enabled: false,
+        group_upstream_429_max_retries: 0,
+        fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+    };
+    let (_status_tx, status_rx) = tokio::sync::watch::channel(PoolReplayBodyStatus::Reading);
+    let err = continue_or_retry_pool_live_request(
+        state,
+        7001,
+        Method::POST,
+        &original_uri,
+        &HeaderMap::new(),
+        Duration::from_millis(20),
+        account,
+        None,
+        Some(Instant::now() - Duration::from_millis(50)),
+        None,
+        &status_rx,
+        &CancellationToken::new(),
+        Duration::from_millis(40),
+        PoolUpstreamError {
+            account: None,
+            status: StatusCode::BAD_GATEWAY,
+            message: "upstream stream error before first chunk".to_string(),
+            failure_kind: PROXY_FAILURE_UPSTREAM_STREAM_ERROR,
+            connect_latency_ms: 0.0,
+            upstream_error_code: None,
+            upstream_error_message: None,
+            upstream_request_id: None,
+            oauth_responses_debug: None,
+            attempt_summary: pool_attempt_summary(1, 1, None),
+            requested_service_tier: None,
+            request_body_for_capture: None,
+        },
+    )
+    .await
+    .expect_err("waiting for replay past total timeout should fail");
+
+    assert_eq!(err.status, StatusCode::GATEWAY_TIMEOUT);
+    assert_eq!(
+        err.message,
+        "pool upstream total timeout exhausted after 40ms"
+    );
+    assert_eq!(err.failure_kind, PROXY_FAILURE_POOL_TOTAL_TIMEOUT_EXHAUSTED);
 }
 
 #[tokio::test]
@@ -23563,6 +25378,7 @@ async fn proxy_openai_v1_header_sticky_stream_prefers_body_timeout_before_pool_w
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
@@ -23643,6 +25459,7 @@ async fn proxy_openai_v1_header_sticky_stream_preserves_body_timeout_over_rate_l
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
@@ -23757,6 +25574,7 @@ async fn proxy_openai_v1_header_sticky_stream_waits_for_blocked_policy_header_er
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
@@ -23877,6 +25695,7 @@ async fn proxy_openai_v1_header_sticky_stream_same_value_short_circuits_blocked_
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
@@ -23962,6 +25781,7 @@ async fn proxy_openai_v1_header_sticky_stream_waits_for_body_sticky_override_bef
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await
     .expect("via-pool request should succeed");
@@ -24044,6 +25864,7 @@ async fn proxy_openai_v1_header_sticky_responses_wait_timeout_respects_total_tim
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
@@ -24123,6 +25944,7 @@ async fn proxy_openai_v1_header_sticky_responses_total_timeout_short_circuits_bo
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
@@ -24191,6 +26013,7 @@ async fn proxy_openai_v1_responses_prebuffer_body_counts_total_timeout_from_requ
         ]),
         Body::from_stream(slow_body),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
@@ -24269,6 +26092,7 @@ async fn proxy_openai_v1_responses_prebuffer_body_wait_counts_total_timeout_from
         ]),
         Body::from_stream(slow_body),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
@@ -24335,6 +26159,7 @@ async fn proxy_openai_v1_responses_streamed_body_counts_total_timeout_from_reque
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
@@ -24342,12 +26167,12 @@ async fn proxy_openai_v1_responses_streamed_body_counts_total_timeout_from_reque
     let (status, message) = response.expect_err("via-pool request should fail");
     assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
     assert!(
-        elapsed >= Duration::from_millis(160),
-        "request should wait for streamed body buffering before timing out, elapsed={elapsed:?}"
+        elapsed >= Duration::from_millis(60),
+        "request should still spend the configured total-timeout budget before failing, elapsed={elapsed:?}"
     );
     assert!(
-        elapsed < Duration::from_millis(280),
-        "responses total timeout should include streamed body buffering, elapsed={elapsed:?}"
+        elapsed < Duration::from_millis(160),
+        "responses total timeout should short-circuit before streamed body buffering completes, elapsed={elapsed:?}"
     );
     assert_eq!(
         message,
@@ -24492,6 +26317,7 @@ async fn proxy_openai_v1_header_sticky_stream_preserves_pre_resolved_account_aft
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await
     .expect("via-pool request should succeed");
@@ -24584,6 +26410,7 @@ async fn proxy_openai_v1_header_sticky_stream_body_override_beats_rate_limited_h
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await
     .expect("via-pool request should succeed");
@@ -24712,6 +26539,7 @@ async fn proxy_openai_v1_header_sticky_stream_body_override_beats_blocked_policy
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await
     .expect("via-pool request should succeed");
@@ -24788,6 +26616,7 @@ async fn proxy_openai_v1_header_sticky_stream_prefers_body_too_large_before_pool
         ]),
         body,
         runtime_timeouts,
+        None,
     )
     .await;
 
@@ -24863,6 +26692,7 @@ async fn proxy_openai_v1_header_sticky_stream_waits_after_body_reroute_needs_acc
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await
     .expect("via-pool request should succeed");
@@ -24948,6 +26778,7 @@ async fn proxy_openai_v1_header_sticky_stream_reroute_preserves_original_wait_wi
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         runtime_timeouts,
+        None,
     )
     .await;
     let elapsed = started.elapsed();
@@ -25062,6 +26893,7 @@ async fn pool_route_oauth_passthrough_streams_without_eager_prebuffering() {
         ]),
         Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
         pool_routing_timeouts_from_config(&state.config),
+        None,
     )
     .await
     .expect("oauth pool passthrough response");
@@ -25747,6 +27579,7 @@ async fn pool_route_large_oauth_responses_falls_back_to_api_key_account() {
         Some(PoolReplayBodySnapshot::File {
             temp_file,
             size: body.len(),
+            sticky_key: None,
         }),
         Duration::from_secs(5),
         None,
@@ -25918,6 +27751,7 @@ async fn pool_route_oauth_responses_rejects_large_file_backed_rewrite_body() {
         Some(PoolReplayBodySnapshot::File {
             temp_file,
             size: body.len(),
+            sticky_key: None,
         }),
         Duration::from_secs(5),
         None,
@@ -25944,13 +27778,14 @@ async fn pool_route_oauth_responses_rejects_large_file_backed_rewrite_body() {
 
 #[tokio::test]
 async fn extract_sticky_key_from_large_file_backed_replay_snapshot() {
+    let temp_dir = make_temp_test_dir("sticky-large-replay");
     let sticky_body = serde_json::to_vec(&json!({
         "stickyKey": "sticky-large-file",
         "input": "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 128),
     }))
     .expect("serialize sticky replay body");
     let temp_file = Arc::new(PoolReplayTempFile {
-        path: build_pool_replay_temp_path(737373),
+        path: temp_dir.join("sticky-large-file.bin"),
     });
     tokio::fs::write(&temp_file.path, &sticky_body)
         .await
@@ -25958,6 +27793,7 @@ async fn extract_sticky_key_from_large_file_backed_replay_snapshot() {
     let snapshot = PoolReplayBodySnapshot::File {
         temp_file,
         size: sticky_body.len(),
+        sticky_key: Some("sticky-large-file".to_string()),
     };
 
     assert_eq!(
@@ -25966,6 +27802,38 @@ async fn extract_sticky_key_from_large_file_backed_replay_snapshot() {
             .as_deref(),
         Some("sticky-large-file")
     );
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn extract_sticky_key_from_large_file_backed_replay_snapshot_prefix() {
+    let temp_dir = make_temp_test_dir("sticky-prefix-large-replay");
+    let sticky_body = format!(
+        r#"{{"stickyKey":"sticky-large-prefix","input":"{}"}}"#,
+        "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 128)
+    )
+    .into_bytes();
+    let temp_file = Arc::new(PoolReplayTempFile {
+        path: temp_dir.join("sticky-large-prefix.bin"),
+    });
+    tokio::fs::write(&temp_file.path, &sticky_body)
+        .await
+        .expect("write sticky replay temp file");
+    let snapshot = PoolReplayBodySnapshot::File {
+        temp_file,
+        size: sticky_body.len(),
+        sticky_key: None,
+    };
+
+    assert_eq!(
+        extract_sticky_key_from_replay_snapshot_prefix(&snapshot)
+            .await
+            .as_deref(),
+        Some("sticky-large-prefix")
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
 }
 
 #[test]
@@ -26434,6 +28302,13 @@ async fn proxy_openai_v1_e2e_stream_survives_short_request_timeout() {
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
+        proxy_request_semaphore: Arc::new(Semaphore::new(config.proxy_request_concurrency_limit)),
+        proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
+        proxy_request_queue_total: Arc::new(AtomicU64::new(0)),
+        proxy_request_rejected_total: Arc::new(AtomicU64::new(0)),
+        proxy_raw_async_semaphore: Arc::new(Semaphore::new(
+            DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS,
+        )),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
@@ -27635,6 +29510,13 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout() {
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
+        proxy_request_semaphore: Arc::new(Semaphore::new(config.proxy_request_concurrency_limit)),
+        proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
+        proxy_request_queue_total: Arc::new(AtomicU64::new(0)),
+        proxy_request_rejected_total: Arc::new(AtomicU64::new(0)),
+        proxy_raw_async_semaphore: Arc::new(Semaphore::new(
+            DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS,
+        )),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
@@ -27713,6 +29595,13 @@ async fn proxy_openai_v1_returns_bad_gateway_on_upstream_handshake_timeout_with_
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
+        proxy_request_semaphore: Arc::new(Semaphore::new(config.proxy_request_concurrency_limit)),
+        proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
+        proxy_request_queue_total: Arc::new(AtomicU64::new(0)),
+        proxy_request_rejected_total: Arc::new(AtomicU64::new(0)),
+        proxy_raw_async_semaphore: Arc::new(Semaphore::new(
+            DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS,
+        )),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(
@@ -27909,12 +29798,24 @@ fn rewrite_request_service_tier_for_fast_mode_force_remove_deletes_both_aliases(
 }
 
 #[test]
-fn pool_request_snapshot_preserves_content_length_only_for_file_backed_replays() {
+fn pool_request_snapshot_preserves_content_length_only_for_matching_file_backed_replays() {
     assert!(!pool_request_snapshot_preserves_content_length(
-        &PoolReplayBodySnapshot::Empty
+        &PoolReplayBodySnapshot::Empty,
+        Some(0)
     ));
     assert!(!pool_request_snapshot_preserves_content_length(
-        &PoolReplayBodySnapshot::Memory(Bytes::from_static(b"{}"))
+        &PoolReplayBodySnapshot::Memory(Bytes::from_static(b"{}")),
+        Some(2)
+    ));
+    assert!(!pool_request_snapshot_preserves_content_length(
+        &PoolReplayBodySnapshot::File {
+            temp_file: Arc::new(PoolReplayTempFile {
+                path: PathBuf::from("/tmp/cvm-pool-replay-test.bin"),
+            }),
+            size: 3,
+            sticky_key: None,
+        },
+        Some(2)
     ));
     assert!(pool_request_snapshot_preserves_content_length(
         &PoolReplayBodySnapshot::File {
@@ -27922,7 +29823,9 @@ fn pool_request_snapshot_preserves_content_length_only_for_file_backed_replays()
                 path: PathBuf::from("/tmp/cvm-pool-replay-test.bin"),
             }),
             size: 2,
-        }
+            sticky_key: None,
+        },
+        Some(2)
     ));
 }
 
@@ -27944,6 +29847,7 @@ async fn prepare_pool_request_body_for_account_skips_fast_mode_rewrite_for_compa
         &"/v1/responses/compact".parse().expect("valid compact uri"),
         &Method::POST,
         TagFastModeRewriteMode::ForceAdd,
+        1001,
     )
     .await
     .expect("prepare compact pool request body");
@@ -27955,6 +29859,124 @@ async fn prepare_pool_request_body_for_account_skips_fast_mode_rewrite_for_compa
     let payload: Value = serde_json::from_slice(&request_body).expect("decode body");
     assert_eq!(payload, expected);
     assert!(payload.get("service_tier").is_none());
+}
+
+#[tokio::test]
+async fn prepare_pool_request_body_for_account_preserves_fast_mode_rewrite_for_large_file_snapshot()
+{
+    let temp_dir = make_temp_test_dir("pool-request-large-rewrite-preserve");
+    let temp_file = Arc::new(PoolReplayTempFile {
+        path: temp_dir.join("request-body.bin"),
+    });
+    let original_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.3-codex",
+        "serviceTier": "flex",
+        "stickyKey": "sticky-large-body",
+        "input": "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 128),
+    }))
+    .expect("serialize large request body");
+    tokio::fs::write(&temp_file.path, &original_body)
+        .await
+        .expect("write large request body");
+
+    let prepared = prepare_pool_request_body_for_account(
+        Some(&PoolReplayBodySnapshot::File {
+            temp_file: temp_file.clone(),
+            size: original_body.len(),
+            sticky_key: Some("sticky-large-body".to_string()),
+        }),
+        &"/v1/responses".parse().expect("valid responses uri"),
+        &Method::POST,
+        TagFastModeRewriteMode::ForceAdd,
+        1002,
+    )
+    .await
+    .expect("prepare large pool request body");
+
+    assert!(
+        matches!(&prepared.snapshot, PoolReplayBodySnapshot::File { .. }),
+        "rewritten large body should stay file-backed"
+    );
+    assert_eq!(prepared.requested_service_tier.as_deref(), Some("priority"));
+    let rewritten_bytes = prepared
+        .request_body_for_capture
+        .expect("rewritten large file-backed body should keep capture bytes");
+    let rewritten_payload: Value =
+        serde_json::from_slice(&rewritten_bytes).expect("decode rewritten large request body");
+    assert_eq!(rewritten_payload["service_tier"], "priority");
+    assert!(rewritten_payload.get("serviceTier").is_none());
+    assert_eq!(rewritten_payload["stickyKey"], "sticky-large-body");
+
+    let snapshot_bytes = prepared
+        .snapshot
+        .to_bytes()
+        .await
+        .expect("read rewritten snapshot bytes");
+    assert_eq!(snapshot_bytes, rewritten_bytes);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn prepare_pool_request_body_for_account_uses_unique_temp_paths_per_proxy_request() {
+    let temp_dir = make_temp_test_dir("pool-request-large-rewrite-unique-paths");
+    let temp_file = Arc::new(PoolReplayTempFile {
+        path: temp_dir.join("request-body.bin"),
+    });
+    let original_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.3-codex",
+        "serviceTier": "flex",
+        "stickyKey": "sticky-large-body",
+        "input": "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 128),
+    }))
+    .expect("serialize large request body");
+    tokio::fs::write(&temp_file.path, &original_body)
+        .await
+        .expect("write large request body");
+
+    let first = prepare_pool_request_body_for_account(
+        Some(&PoolReplayBodySnapshot::File {
+            temp_file: temp_file.clone(),
+            size: original_body.len(),
+            sticky_key: Some("sticky-large-body".to_string()),
+        }),
+        &"/v1/responses".parse().expect("valid responses uri"),
+        &Method::POST,
+        TagFastModeRewriteMode::ForceAdd,
+        2001,
+    )
+    .await
+    .expect("prepare first large rewritten request body");
+
+    let second = prepare_pool_request_body_for_account(
+        Some(&PoolReplayBodySnapshot::File {
+            temp_file,
+            size: original_body.len(),
+            sticky_key: Some("sticky-large-body".to_string()),
+        }),
+        &"/v1/responses".parse().expect("valid responses uri"),
+        &Method::POST,
+        TagFastModeRewriteMode::ForceAdd,
+        2002,
+    )
+    .await
+    .expect("prepare second large rewritten request body");
+
+    let first_path = match &first.snapshot {
+        PoolReplayBodySnapshot::File { temp_file, .. } => temp_file.path.clone(),
+        other => panic!("expected first rewritten snapshot to stay file-backed, got {other:?}"),
+    };
+    let second_path = match &second.snapshot {
+        PoolReplayBodySnapshot::File { temp_file, .. } => temp_file.path.clone(),
+        other => panic!("expected second rewritten snapshot to stay file-backed, got {other:?}"),
+    };
+
+    assert_ne!(
+        first_path, second_path,
+        "large rewritten replay snapshots should use distinct temp files per proxy request"
+    );
+
+    cleanup_temp_test_dir(&temp_dir);
 }
 
 #[test]
@@ -36866,6 +38888,13 @@ async fn quota_latest_returns_degraded_when_empty() {
         startup_ready: Arc::new(AtomicBool::new(true)),
         shutdown: CancellationToken::new(),
         semaphore,
+        proxy_request_semaphore: Arc::new(Semaphore::new(config.proxy_request_concurrency_limit)),
+        proxy_request_in_flight: Arc::new(AtomicUsize::new(0)),
+        proxy_request_queue_total: Arc::new(AtomicU64::new(0)),
+        proxy_request_rejected_total: Arc::new(AtomicU64::new(0)),
+        proxy_raw_async_semaphore: Arc::new(Semaphore::new(
+            DEFAULT_PROXY_RAW_ASYNC_MAX_CONCURRENT_WRITERS,
+        )),
         proxy_model_settings: Arc::new(RwLock::new(ProxyModelSettings::default())),
         proxy_model_settings_update_lock: Arc::new(Mutex::new(())),
         forward_proxy: Arc::new(Mutex::new(ForwardProxyManager::new(

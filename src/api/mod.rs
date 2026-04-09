@@ -1141,13 +1141,50 @@ pub(crate) async fn list_invocations(
         source_scope,
         Some(SnapshotConstraint::UpTo(snapshot_id)),
     );
+    let mut tx = state.pool.begin().await?;
     let total = count_query
         .build_query_as::<CountRow>()
-        .fetch_one(&state.pool)
+        .fetch_one(&mut *tx)
         .await?
         .total;
 
     let offset = (request.page - 1).saturating_mul(request.page_size);
+    #[derive(Debug, FromRow)]
+    struct PageIdRow {
+        id: i64,
+    }
+
+    let mut page_id_query = QueryBuilder::new("SELECT id FROM codex_invocations WHERE 1 = 1");
+    apply_invocation_records_filters(
+        &mut page_id_query,
+        &request.filters,
+        source_scope,
+        Some(SnapshotConstraint::UpTo(snapshot_id)),
+    );
+    append_invocation_order_clause(&mut page_id_query, request.sort_by, request.sort_order);
+    page_id_query
+        .push(" LIMIT ")
+        .push_bind(request.page_size)
+        .push(" OFFSET ")
+        .push_bind(offset);
+    let page_ids = page_id_query
+        .build_query_as::<PageIdRow>()
+        .fetch_all(&mut *tx)
+        .await?
+        .into_iter()
+        .map(|row| row.id)
+        .collect::<Vec<_>>();
+
+    if page_ids.is_empty() {
+        return Ok(Json(ListResponse {
+            snapshot_id,
+            total,
+            page: request.page,
+            page_size: request.page_size,
+            records: Vec::new(),
+        }));
+    }
+
     let mut query = build_invocation_select_query();
     apply_invocation_records_filters(
         &mut query,
@@ -1155,17 +1192,30 @@ pub(crate) async fn list_invocations(
         source_scope,
         Some(SnapshotConstraint::UpTo(snapshot_id)),
     );
-    append_invocation_order_clause(&mut query, request.sort_by, request.sort_order);
-    query
-        .push(" LIMIT ")
-        .push_bind(request.page_size)
-        .push(" OFFSET ")
-        .push_bind(offset);
+    query.push(" AND id IN (");
+    {
+        let mut separated = query.separated(", ");
+        for &id in &page_ids {
+            separated.push_bind(id);
+        }
+    }
+    query.push(")");
 
-    let records = query
+    let mut records = query
         .build_query_as::<ApiInvocation>()
-        .fetch_all(&state.pool)
+        .fetch_all(&mut *tx)
         .await?;
+    let page_positions = page_ids
+        .into_iter()
+        .enumerate()
+        .map(|(index, id)| (id, index))
+        .collect::<HashMap<_, _>>();
+    records.sort_by_key(|record| {
+        page_positions
+            .get(&record.id)
+            .copied()
+            .unwrap_or(usize::MAX)
+    });
 
     Ok(Json(ListResponse {
         snapshot_id,
@@ -4273,6 +4323,7 @@ pub(crate) fn classify_invocation_failure(
     {
         FailureClass::ClientFailure
     } else if failure_kind_lower == PROXY_FAILURE_FAILED_CONTACT_UPSTREAM
+        || failure_kind_lower == PROXY_FAILURE_PROXY_CONCURRENCY_LIMIT
         || failure_kind_lower == PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED
         || failure_kind_lower == PROXY_FAILURE_UPSTREAM_STREAM_ERROR
         || failure_kind_lower == PROXY_FAILURE_REQUEST_BODY_READ_TIMEOUT
