@@ -184,13 +184,18 @@ function clickTab(label: string) {
 }
 
 describe('DashboardActivityOverview', () => {
-  it('defaults to the today range and keeps per-range metric memory across all four tabs', () => {
+  it('loads only the active range and keeps per-range metric memory across all four tabs', () => {
     installSummaryMocks()
 
     render(<DashboardActivityOverview />)
 
     expect(host?.textContent).toContain('Activity Overview')
+    expect(hookMocks.useSummary.mock.calls.every(([window]) => window === 'today')).toBe(true)
+    expect(hookMocks.useTimeseries.mock.calls.every(([window]) => window === 'today')).toBe(true)
     expect(host?.querySelector('[data-testid="dashboard-activity-range-today"]')?.getAttribute('data-active')).toBe('true')
+    expect(host?.querySelector('[data-testid="dashboard-activity-range-1d"]')).toBeNull()
+    expect(host?.querySelector('[data-testid="dashboard-activity-range-7d"]')).toBeNull()
+    expect(host?.querySelector('[data-testid="dashboard-activity-range-usage"]')).toBeNull()
     expect(host?.querySelector('[data-testid="today-stats-overview-mock"]')?.textContent).toBe(
       'surface:false;header:false;badge:false',
     )
@@ -205,6 +210,8 @@ describe('DashboardActivityOverview', () => {
     )
 
     clickTab('History')
+    expect(hookMocks.useSummary.mock.calls.every(([window]) => window === 'today')).toBe(true)
+    expect(hookMocks.useTimeseries.mock.calls.every(([window]) => window === 'today')).toBe(true)
     expect(host?.querySelector('[data-testid="usage-calendar"]')?.textContent).toBe(
       'metric:totalCount;surface:false;toggle:false;meta:false',
     )
@@ -214,18 +221,21 @@ describe('DashboardActivityOverview', () => {
     )
 
     clickTab('7 Days')
+    expect(hookMocks.useSummary).toHaveBeenLastCalledWith('7d')
     expect(host?.querySelector('[data-testid="stats-cards"]')?.textContent).toBe('total:700')
     expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe('metric:totalCount')
     clickTab('Cost')
     expect(host?.querySelector('[data-testid="heatmap-7d"]')?.textContent).toBe('metric:totalCost')
 
     clickTab('24 Hours')
+    expect(hookMocks.useSummary).toHaveBeenLastCalledWith('1d')
     expect(host?.querySelector('[data-testid="stats-cards"]')?.textContent).toBe('total:100')
     expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toBe('metric:totalCount')
     clickTab('Tokens')
     expect(host?.querySelector('[data-testid="heatmap-24h"]')?.textContent).toBe('metric:totalTokens')
 
     clickTab('Today')
+    expect(hookMocks.useSummary).toHaveBeenLastCalledWith('today')
     expect(host?.querySelector('[data-testid="dashboard-today-activity-chart-mock"]')?.textContent).toBe(
       'metric:totalCost',
     )
@@ -247,6 +257,8 @@ describe('DashboardActivityOverview', () => {
 
     expect(host?.querySelector('[data-testid="dashboard-activity-range-usage"]')?.getAttribute('data-active')).toBe('true')
     expect(host?.querySelector('[data-testid="usage-calendar"]')).not.toBeNull()
+    expect(hookMocks.useSummary).not.toHaveBeenCalled()
+    expect(hookMocks.useTimeseries).not.toHaveBeenCalled()
 
     act(() => {
       root?.unmount()
@@ -258,5 +270,22 @@ describe('DashboardActivityOverview', () => {
     window.localStorage.setItem(DASHBOARD_ACTIVITY_RANGE_STORAGE_KEY, 'bogus')
     render(<DashboardActivityOverview />)
     expect(document.body.querySelector('[data-testid="dashboard-activity-range-today"]')?.getAttribute('data-active')).toBe('true')
+    expect(hookMocks.useSummary).toHaveBeenCalledWith('today')
+  })
+
+  it('loads each summary only after its range is selected', () => {
+    installSummaryMocks()
+
+    render(<DashboardActivityOverview />)
+    expect(hookMocks.useSummary.mock.calls.map(([window]) => window)).toEqual(['today'])
+
+    clickTab('7 Days')
+    expect(hookMocks.useSummary.mock.calls.map(([window]) => window)).toEqual(['today', '7d'])
+
+    clickTab('24 Hours')
+    expect(hookMocks.useSummary.mock.calls.map(([window]) => window)).toEqual(['today', '7d', '1d'])
+
+    clickTab('History')
+    expect(hookMocks.useSummary.mock.calls.map(([window]) => window)).toEqual(['today', '7d', '1d'])
   })
 })

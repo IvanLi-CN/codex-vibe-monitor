@@ -572,27 +572,43 @@ function buildOptimisticConversation(
 export function mergePromptCacheConversationHistory(
   current: PromptCacheConversationHistoryByKey,
   stats: PromptCacheConversationsResponse | null,
+  pinnedPromptCacheKeys: Iterable<string> = [],
 ) {
   if (!stats) return current;
 
-  let changed = false;
-  const next = { ...current };
+  const next: PromptCacheConversationHistoryByKey = {};
   for (const conversation of stats.conversations) {
-    const existing = current[conversation.promptCacheKey];
-    if (
-      existing?.createdAt === conversation.createdAt &&
-      existing?.lastActivityAt === conversation.lastActivityAt
-    ) {
-      continue;
-    }
     next[conversation.promptCacheKey] = {
       createdAt: conversation.createdAt,
       lastActivityAt: conversation.lastActivityAt,
     };
-    changed = true;
   }
 
-  return changed ? next : current;
+  for (const promptCacheKey of pinnedPromptCacheKeys) {
+    if (promptCacheKey in next) continue;
+    const existing = current[promptCacheKey];
+    if (!existing) continue;
+    next[promptCacheKey] = existing;
+  }
+
+  const currentKeys = Object.keys(current);
+  const nextKeys = Object.keys(next);
+  if (currentKeys.length !== nextKeys.length) {
+    return next;
+  }
+
+  for (const promptCacheKey of nextKeys) {
+    const previous = current[promptCacheKey];
+    const value = next[promptCacheKey];
+    if (
+      previous?.createdAt !== value.createdAt ||
+      previous?.lastActivityAt !== value.lastActivityAt
+    ) {
+      return next;
+    }
+  }
+
+  return current;
 }
 
 export function mergePromptCacheLiveRecordMap(

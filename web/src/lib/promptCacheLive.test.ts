@@ -7,7 +7,9 @@ import type {
 } from "./api";
 import {
   buildPromptCachePreviewFromInvocation,
+  mergePromptCacheConversationHistory,
   mergePromptCacheConversationsResponse,
+  type PromptCacheConversationHistoryByKey,
   reconcilePromptCacheLiveRecordMap,
 } from "./promptCacheLive";
 
@@ -586,6 +588,65 @@ describe("mergePromptCacheConversationsResponse", () => {
     expect(merged?.conversations.map((item) => item.promptCacheKey)).not.toContain(
       "pck-tie-older",
     );
+  });
+});
+
+describe("mergePromptCacheConversationHistory", () => {
+  it("drops history entries that are neither authoritative nor pinned to live keys", () => {
+    const merged = mergePromptCacheConversationHistory(
+      {
+        "pck-old-a": {
+          createdAt: "2026-03-10T00:00:00Z",
+          lastActivityAt: "2026-03-10T00:01:00Z",
+        },
+        "pck-live": {
+          createdAt: "2026-03-10T00:02:00Z",
+          lastActivityAt: "2026-03-10T00:03:00Z",
+        },
+      },
+      createResponse([
+        createConversation("pck-authoritative", {
+          createdAt: "2026-03-10T01:00:00Z",
+          lastActivityAt: "2026-03-10T01:05:00Z",
+        }),
+      ]),
+      ["pck-live"],
+    );
+
+    expect(merged).toEqual({
+      "pck-authoritative": {
+        createdAt: "2026-03-10T01:00:00Z",
+        lastActivityAt: "2026-03-10T01:05:00Z",
+      },
+      "pck-live": {
+        createdAt: "2026-03-10T00:02:00Z",
+        lastActivityAt: "2026-03-10T00:03:00Z",
+      },
+    });
+  });
+
+  it("stays bounded under high churn by keeping only the current authoritative key and pinned live keys", () => {
+    let current: PromptCacheConversationHistoryByKey = {
+      "pck-live": {
+        createdAt: "2026-03-10T00:02:00Z",
+        lastActivityAt: "2026-03-10T00:03:00Z",
+      },
+    };
+
+    for (let index = 0; index < 128; index += 1) {
+      current = mergePromptCacheConversationHistory(
+        current,
+        createResponse([
+          createConversation(`pck-${index}`, {
+            createdAt: `2026-03-10T01:${String(index % 60).padStart(2, "0")}:00Z`,
+            lastActivityAt: `2026-03-10T01:${String(index % 60).padStart(2, "0")}:59Z`,
+          }),
+        ]),
+        ["pck-live"],
+      );
+    }
+
+    expect(Object.keys(current)).toEqual(["pck-127", "pck-live"]);
   });
 });
 

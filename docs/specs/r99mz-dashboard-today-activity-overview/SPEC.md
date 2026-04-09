@@ -20,6 +20,8 @@
 - `活动总览` 范围切换升级为 `今日 / 24 小时 / 7 日 / 历史` 四段，并新增 localStorage 记忆最近一次访问的范围。
 - `今日` 范围顶部嵌入 5 个 KPI；下方图表随统一 metric toggle 切换：`次数` 显示成功正柱 / 失败负柱，`金额 / Tokens` 显示本地自然日累计面积图。
 - `24 小时 / 7 日 / 历史` 维持现有热力图 / 日历形态，仅共享头部 metric toggle，并保持按视图记忆 metric 行为不回退。
+- `活动总览` 的非激活范围改为按需挂载与按需请求：默认进入 Dashboard 只加载当前页签，未访问的 `24 小时 / 7 日 / 历史` 不再首屏预取，也不再常驻隐藏面板。
+- Dashboard 工作中对话的 prompt-cache 会话工作集必须有界：authoritative 刷新后只保留“当前响应中的 key + 仍有 live record 的 key”，selection 切换或卸载后释放旧工作集。
 - 补齐 Storybook、Vitest、spec 与视觉证据，并按 fast-track 路径收敛到 merge-ready。
 
 ### Non-goals
@@ -54,6 +56,8 @@
 - Given `今日` 视图切到 `次数`，When 查看图表，Then 成功柱位于 0 轴上方、失败柱位于 0 轴下方，tooltip 同时给出成功 / 失败 / 总数。
 - Given `今日` 视图切到 `金额` 或 `Tokens`，When 查看图表，Then 图表切换为本地自然日累计面积图；未来分钟不渲染，缺失分钟补 0 以保持曲线连续。
 - Given 在四个范围间切换 `次数 / 金额 / Tokens`，When 来回切换范围，Then 每个范围仍保留各自上次选中的 metric。
+- Given 默认进入 `/dashboard`，When 页面首次完成 hydration，Then 仅当前 active range 对应的数据请求会首屏触发，未访问的隐藏范围不会提前发起 summary / timeseries 请求。
+- Given 已切到其他 prompt-cache selection 或离开页面，When 旧 selection 的 authoritative / live 数据不再属于当前工作集，Then 旧 key 会被释放，不再随着历史唯一 `promptCacheKey` 数量单调增长。
 - Given 运行前端验证命令，When 执行 `cd web && bun run test && bun run build && bun run build-storybook`，Then 命令通过。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
@@ -76,6 +80,7 @@
 - `cd /Users/ivan/.codex/worktrees/r99mz/codex-vibe-monitor/web && bun run test`
 - `cd /Users/ivan/.codex/worktrees/r99mz/codex-vibe-monitor/web && bun run build`
 - `cd /Users/ivan/.codex/worktrees/r99mz/codex-vibe-monitor/web && bun run build-storybook`
+- `cd /Users/ivan/.codex/worktrees/afc2/codex-vibe-monitor/web && bun -e 'import { mergePromptCacheConversationHistory } from "./src/lib/promptCacheLive.ts"; /* high-churn boundedness smoke */'`
 
 ## 文档更新（Docs to Update）
 
@@ -103,6 +108,8 @@
 - `TodayStatsOverview` 通过 `showSurface / showHeader / showDayBadge` 拆成可复用内容层，使它既能作为独立卡，也能作为总览内嵌 KPI 区块。
 - `DashboardTodayActivityChart` 负责将分钟序列补齐到“本地自然日 00:00 -> 当前分钟”，`次数` 模式用正负柱对齐成功 / 失败语义，`金额 / Tokens` 模式将每分钟增量累积为面积图。
 - `DashboardActivityOverview` 继续保留按范围记忆 metric 的行为，并新增最近访问范围的 localStorage 恢复；非法或不可用值统一回退到 `today`。
+- `DashboardActivityOverview` 的各范围面板改成只在 active range 时挂载，并把对应 summary / timeseries 请求下沉到面板内部，避免隐藏页签常驻 hook / timer / 请求。
+- `usePromptCacheConversations` 通过 bounded history + live-record pinning 维护当前工作集；authoritative 刷新、selection 切换与卸载都会主动裁剪旧 key，防止长时间停留时因历史 churn 导致内存累积。
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
@@ -119,6 +126,7 @@
 - 2026-04-08: 完成全量前端验证与 Storybook 视觉证据归档，并修正今日 `次数` 图中失败柱错误堆叠到正半轴的问题，确保失败柱始终以 0 轴为基线向下绘制。
 - 2026-04-08: 为 PR 收口修复跨平台午夜时间格式差异，强制分钟轴午夜显示为 `00:00`，并将今日图表数据构建逻辑拆出组件文件以满足 `react-refresh/only-export-components` lint 约束。
 - 2026-04-08: 根据 review-proof 修复 `today + 1m` 长驻会话跨午夜不自动刷新旧日数据的问题；今日视图现在会在本地下一次自然日边界强制静默重拉，并把本地补丁窗口约束回当前自然日。
+- 2026-04-09: 为 Dashboard 长时间放置崩溃问题补充前端性能硬化：`DashboardActivityOverview` 改为按需挂载 / 按需请求非激活范围，`usePromptCacheConversations` 与 prompt-cache history 改成仅保留当前工作集，并补齐高 churn / selection 切换回归测试。
 
 ## Visual Evidence
 
@@ -140,3 +148,11 @@
 ### 4. Dashboard 页面默认态
 
 ![Dashboard 页面默认态](./assets/dashboard-page-default.png)
+
+### 5. 活动总览：按需加载后的今日默认态
+
+![活动总览：按需加载后的今日默认态](./assets/dashboard-activity-overview-lazy-today.png)
+
+### 6. 活动总览：按需加载后的 7 日态
+
+![活动总览：按需加载后的 7 日态](./assets/dashboard-activity-overview-lazy-7d.png)

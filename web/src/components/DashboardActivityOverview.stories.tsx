@@ -10,6 +10,9 @@ import {
 type SummaryKey = 'today' | '1d' | '7d'
 type TimeseriesKey = 'today:1m' | '1d:1m' | '7d:1h' | '6mo:1d'
 type PersistedRange = 'today' | '1d' | '7d' | 'usage' | null
+type WindowWithDashboardFetchLog = Window & {
+  __dashboardOverviewFetchLog__?: string[]
+}
 
 function StorySurface({ children }: { children: ReactNode }) {
   return (
@@ -164,12 +167,15 @@ function DashboardOverviewMockApi({ children }: { children: ReactNode }) {
   const originalEventSourceRef = useRef<typeof window.EventSource | null>(null)
 
   useLayoutEffect(() => {
+    const windowWithFetchLog = window as WindowWithDashboardFetchLog
     originalFetchRef.current = window.fetch.bind(window)
     originalEventSourceRef.current = window.EventSource
+    windowWithFetchLog.__dashboardOverviewFetchLog__ = []
 
     window.fetch = async (input, init) => {
       const inputUrl = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url
       const url = new URL(inputUrl, window.location.origin)
+      windowWithFetchLog.__dashboardOverviewFetchLog__?.push(`${url.pathname}${url.search}`)
 
       if (url.pathname === '/api/stats/summary') {
         const windowKey = url.searchParams.get('window') as SummaryKey | null
@@ -205,6 +211,7 @@ function DashboardOverviewMockApi({ children }: { children: ReactNode }) {
         writable: true,
         value: originalEventSourceRef.current,
       })
+      delete windowWithFetchLog.__dashboardOverviewFetchLog__
     }
   }, [])
 
@@ -311,6 +318,34 @@ export const MetricMemoryFlow: Story = {
     await userEvent.click(canvas.getByRole('tab', { name: /今日|today/i }))
     await waitFor(() => {
       expect(canvas.getByRole('tab', { name: /金额|cost/i })).toHaveAttribute('aria-selected', 'true')
+    })
+  },
+}
+
+export const LoadsRangesOnDemand: Story = {
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    const windowWithFetchLog = window as WindowWithDashboardFetchLog
+
+    await waitFor(() => {
+      const fetchLog = windowWithFetchLog.__dashboardOverviewFetchLog__ ?? []
+      expect(fetchLog).toContain('/api/stats/summary?window=today')
+      expect(fetchLog).toContain('/api/stats/timeseries?range=today&bucket=1m')
+      expect(fetchLog.some((entry) => entry.includes('window=1d'))).toBe(false)
+      expect(fetchLog.some((entry) => entry.includes('window=7d'))).toBe(false)
+    })
+
+    await userEvent.click(canvas.getByRole('tab', { name: /7 日|7 days/i }))
+    await waitFor(() => {
+      const fetchLog = windowWithFetchLog.__dashboardOverviewFetchLog__ ?? []
+      expect(fetchLog).toContain('/api/stats/summary?window=7d')
+      expect(fetchLog.some((entry) => entry.includes('window=1d'))).toBe(false)
+    })
+
+    await userEvent.click(canvas.getByRole('tab', { name: /24 小时|24 hours/i }))
+    await waitFor(() => {
+      const fetchLog = windowWithFetchLog.__dashboardOverviewFetchLog__ ?? []
+      expect(fetchLog).toContain('/api/stats/summary?window=1d')
     })
   },
 }

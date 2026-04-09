@@ -85,6 +85,14 @@ function rerender(ui: React.ReactNode) {
   });
 }
 
+async function rerenderAsync(ui: React.ReactNode) {
+  await act(async () => {
+    root?.render(ui);
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
+
 async function flushAsync() {
   await act(async () => {
     await Promise.resolve();
@@ -468,5 +476,72 @@ describe("usePromptCacheConversations", () => {
     await flushAsync();
 
     expect(text("conversation-keys")).toBe("pck-live-hidden,pck-newest");
+  });
+
+  it("clears the prior working set when the selection changes", async () => {
+    const now = Date.now();
+    const countOccurredAt = new Date(now - 20 * 60_000).toISOString();
+    const hiddenOccurredAt = new Date(now - 10 * 60_000).toISOString();
+    const windowOccurredAt = new Date(now - 5 * 60_000).toISOString();
+
+    apiMocks.fetchPromptCacheConversations
+      .mockResolvedValueOnce(
+        createResponseWithConversations([
+          createConversation("pck-count", {
+            createdAt: countOccurredAt,
+            lastActivityAt: countOccurredAt,
+          }),
+        ]),
+      )
+      .mockResolvedValueOnce(
+        createResponseWithConversations([
+          createConversation("pck-count", {
+            createdAt: countOccurredAt,
+            lastActivityAt: countOccurredAt,
+          }),
+        ]),
+      )
+      .mockResolvedValueOnce(
+        createResponseWithConversations([
+          createConversation("pck-window", {
+            createdAt: windowOccurredAt,
+            lastActivityAt: windowOccurredAt,
+          }),
+        ]),
+      );
+
+    render(<Probe selection={{ mode: "count", limit: 50 }} />);
+    await flushAsync();
+
+    act(() => {
+      sseMocks.listeners.forEach((listener) => {
+        listener({
+          type: "records",
+          records: [
+            {
+              id: 904,
+              invokeId: "invoke-selection-hidden",
+              occurredAt: hiddenOccurredAt,
+              createdAt: hiddenOccurredAt,
+              status: "running",
+              promptCacheKey: "pck-selection-hidden",
+              totalTokens: 200,
+              cost: 0.02,
+            },
+          ],
+        });
+      });
+    });
+
+    expect(text("conversation-keys")).toBe("pck-selection-hidden,pck-count");
+
+    await rerenderAsync(
+      <Probe selection={{ mode: "activityWindow", activityHours: 3 }} />,
+    );
+    await flushAsync();
+
+    expect(text("conversation-keys")).toBe("pck-window");
+    expect(text("conversation-keys")).not.toContain("pck-selection-hidden");
+    expect(text("conversation-keys")).not.toContain("pck-count");
   });
 });

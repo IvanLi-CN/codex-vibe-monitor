@@ -82,6 +82,7 @@ export function usePromptCacheConversations(
   const authoritativeStatsRef = useRef<PromptCacheConversationsResponse | null>(null);
   const knownConversationHistoryRef =
     useRef<PromptCacheConversationHistoryByKey>({});
+  const liveRecordsByKeyRef = useRef<Record<string, ApiInvocation[]>>({});
   const inFlightRef = useRef(false);
   const pendingLoadRef = useRef<LoadOptions | null>(null);
   const pendingOpenResyncRef = useRef(false);
@@ -110,6 +111,10 @@ export function usePromptCacheConversations(
     knownConversationHistoryRef.current = knownConversationHistoryByKey;
   }, [knownConversationHistoryByKey]);
 
+  useEffect(() => {
+    liveRecordsByKeyRef.current = liveRecordsByKey;
+  }, [liveRecordsByKey]);
+
   const invalidateCurrentRequest = useCallback(() => {
     requestSeqRef.current += 1;
     abortControllerRef.current?.abort();
@@ -137,25 +142,33 @@ export function usePromptCacheConversations(
       );
       if (requestSeq !== requestSeqRef.current) return;
       if (!isSameSelection(selectionRef.current, requestedSelection)) return;
-      setAuthoritativeStats(response);
-      setKnownConversationHistoryByKey((current) =>
-        mergePromptCacheConversationHistory(current, response),
-      );
-      setLiveRecordsByKey((current) => {
-        const next = reconcilePromptCacheLiveRecordMap(current, response, {
+      const nextLiveRecordsByKey = reconcilePromptCacheLiveRecordMap(
+        liveRecordsByKeyRef.current,
+        response,
+        {
           requestStartedAtMs,
           liveRecordObservedAtByKey: liveRecordObservedAtByKeyRef.current,
-        });
-        const nextObservedAtByKey: Record<string, number> = {};
-        for (const promptCacheKey of Object.keys(next)) {
-          const observedAt = liveRecordObservedAtByKeyRef.current[promptCacheKey];
-          if (typeof observedAt === "number" && Number.isFinite(observedAt)) {
-            nextObservedAtByKey[promptCacheKey] = observedAt;
-          }
+        },
+      );
+      const nextObservedAtByKey: Record<string, number> = {};
+      for (const promptCacheKey of Object.keys(nextLiveRecordsByKey)) {
+        const observedAt = liveRecordObservedAtByKeyRef.current[promptCacheKey];
+        if (typeof observedAt === "number" && Number.isFinite(observedAt)) {
+          nextObservedAtByKey[promptCacheKey] = observedAt;
         }
-        liveRecordObservedAtByKeyRef.current = nextObservedAtByKey;
-        return next;
-      });
+      }
+      const nextKnownConversationHistory = mergePromptCacheConversationHistory(
+        knownConversationHistoryRef.current,
+        response,
+        Object.keys(nextLiveRecordsByKey),
+      );
+      authoritativeStatsRef.current = response;
+      knownConversationHistoryRef.current = nextKnownConversationHistory;
+      liveRecordsByKeyRef.current = nextLiveRecordsByKey;
+      liveRecordObservedAtByKeyRef.current = nextObservedAtByKey;
+      setAuthoritativeStats(response);
+      setKnownConversationHistoryByKey(nextKnownConversationHistory);
+      setLiveRecordsByKey(nextLiveRecordsByKey);
       hasHydratedRef.current = true;
       setError(null);
       if (pendingOpenResyncRef.current) {
@@ -239,6 +252,15 @@ export function usePromptCacheConversations(
 
   useEffect(() => {
     invalidateCurrentRequest();
+    authoritativeStatsRef.current = null;
+    knownConversationHistoryRef.current = {};
+    liveRecordsByKeyRef.current = {};
+    liveRecordObservedAtByKeyRef.current = {};
+    hasHydratedRef.current = false;
+    setAuthoritativeStats(null);
+    setKnownConversationHistoryByKey({});
+    setLiveRecordsByKey({});
+    setError(null);
     void load();
   }, [invalidateCurrentRequest, load, selection]);
 
@@ -273,9 +295,12 @@ export function usePromptCacheConversations(
           liveRecordObservedAtByKeyRef.current[promptCacheKey] = observedAt;
         }
       }
-      setLiveRecordsByKey((current) =>
-        mergePromptCacheLiveRecordMap(current, payload.records),
+      const nextLiveRecordsByKey = mergePromptCacheLiveRecordMap(
+        liveRecordsByKeyRef.current,
+        payload.records,
       );
+      liveRecordsByKeyRef.current = nextLiveRecordsByKey;
+      setLiveRecordsByKey(nextLiveRecordsByKey);
       triggerSseRefresh(shouldForceResync);
     });
     return unsubscribe;
@@ -301,6 +326,10 @@ export function usePromptCacheConversations(
       clearPendingRefreshTimer();
       pendingLoadRef.current = null;
       pendingOpenResyncRef.current = false;
+      authoritativeStatsRef.current = null;
+      knownConversationHistoryRef.current = {};
+      liveRecordsByKeyRef.current = {};
+      liveRecordObservedAtByKeyRef.current = {};
     },
     [clearPendingRefreshTimer],
   );

@@ -53,32 +53,20 @@ function persistRange(range: RangeKey) {
   }
 }
 
-function createVisitedRanges(activeRange: RangeKey): Record<RangeKey, boolean> {
-  return {
-    today: activeRange === 'today',
-    '1d': activeRange === '1d',
-    '7d': activeRange === '7d',
-    usage: activeRange === 'usage',
-  }
-}
-
-interface DashboardTodayRangePanelProps {
-  metric: MetricKey
-  summary: ReturnType<typeof useSummary>['summary']
-  summaryLoading: boolean
-  summaryError: string | null
-}
-
-function DashboardTodayRangePanel({
-  metric,
-  summary,
-  summaryLoading,
-  summaryError,
-}: DashboardTodayRangePanelProps) {
+function DashboardTodayRangePanel({ metric }: { metric: MetricKey }) {
+  const {
+    summary,
+    isLoading: summaryLoading,
+    error: summaryError,
+  } = useSummary('today')
   const { data, isLoading, error } = useTimeseries('today', { bucket: '1m' })
 
   return (
-    <div className="flex flex-col gap-5">
+    <div
+      className="flex flex-col gap-5"
+      data-testid="dashboard-activity-range-today"
+      data-active="true"
+    >
       <TodayStatsOverview
         stats={summary}
         loading={summaryLoading}
@@ -97,32 +85,67 @@ function DashboardTodayRangePanel({
   )
 }
 
+function Dashboard24HourRangePanel({ metric }: { metric: MetricKey }) {
+  const { summary, isLoading, error } = useSummary('1d')
+
+  return (
+    <div
+      className="flex flex-col gap-5"
+      data-testid="dashboard-activity-range-1d"
+      data-active="true"
+    >
+      <StatsCards stats={summary} loading={isLoading} error={error} />
+      <Last24hTenMinuteHeatmap
+        metric={metric}
+        showHeader={false}
+      />
+    </div>
+  )
+}
+
+function Dashboard7DayRangePanel({ metric }: { metric: MetricKey }) {
+  const { summary, isLoading, error } = useSummary('7d')
+
+  return (
+    <div
+      className="flex flex-col gap-5"
+      data-testid="dashboard-activity-range-7d"
+      data-active="true"
+    >
+      <StatsCards stats={summary} loading={isLoading} error={error} />
+      <WeeklyHourlyHeatmap
+        metric={metric}
+        showHeader={false}
+        showSurface={false}
+      />
+    </div>
+  )
+}
+
+function DashboardUsageRangePanel({ metric }: { metric: MetricKey }) {
+  return (
+    <div
+      data-testid="dashboard-activity-range-usage"
+      data-active="true"
+    >
+      <UsageCalendar
+        metric={metric}
+        showSurface={false}
+        showMetricToggle={false}
+        showMeta={false}
+      />
+    </div>
+  )
+}
+
 export function DashboardActivityOverview() {
   const { t } = useTranslation()
   const { themeMode } = useTheme()
   const [activeRange, setActiveRange] = useState<RangeKey>(() => readPersistedRange())
-  const [visitedRanges, setVisitedRanges] = useState<Record<RangeKey, boolean>>(() =>
-    createVisitedRanges(readPersistedRange()),
-  )
   const [metricToday, setMetricToday] = useState<MetricKey>('totalCount')
   const [metric24h, setMetric24h] = useState<MetricKey>('totalCount')
   const [metric7d, setMetric7d] = useState<MetricKey>('totalCount')
   const [metricUsage, setMetricUsage] = useState<MetricKey>('totalCount')
-  const {
-    summary: summaryToday,
-    isLoading: summaryTodayLoading,
-    error: summaryTodayError,
-  } = useSummary('today')
-  const {
-    summary: summary24h,
-    isLoading: summary24hLoading,
-    error: summary24hError,
-  } = useSummary('1d')
-  const {
-    summary: summary7d,
-    isLoading: summary7dLoading,
-    error: summary7dError,
-  } = useSummary('7d')
 
   const rangeOptions = useMemo(
     () => RANGE_OPTIONS.map((option) => ({ ...option, label: t(option.labelKey) })),
@@ -141,22 +164,9 @@ export function DashboardActivityOverview() {
         : activeRange === '7d'
           ? metric7d
           : metricUsage
-  const activeSummary = activeRange === '1d' ? summary24h : activeRange === '7d' ? summary7d : null
-  const activeSummaryLoading =
-    activeRange === '1d' ? summary24hLoading : activeRange === '7d' ? summary7dLoading : false
-  const activeSummaryError =
-    activeRange === '1d' ? summary24hError : activeRange === '7d' ? summary7dError : null
 
   useEffect(() => {
     persistRange(activeRange)
-    setVisitedRanges((current) =>
-      current[activeRange]
-        ? current
-        : {
-            ...current,
-            [activeRange]: true,
-          },
-    )
   }, [activeRange])
 
   const setActiveMetric = (metric: MetricKey) => {
@@ -218,74 +228,10 @@ export function DashboardActivityOverview() {
             })}
           </SegmentedControl>
         </div>
-
-        {activeRange === 'today' || activeRange === 'usage' ? null : (
-          <StatsCards stats={activeSummary} loading={activeSummaryLoading} error={activeSummaryError} />
-        )}
-
-        {visitedRanges.today ? (
-          <div
-            data-testid="dashboard-activity-range-today"
-            data-active={activeRange === 'today'}
-            hidden={activeRange !== 'today'}
-            aria-hidden={activeRange !== 'today'}
-          >
-            <DashboardTodayRangePanel
-              metric={metricToday}
-              summary={summaryToday}
-              summaryLoading={summaryTodayLoading}
-              summaryError={summaryTodayError}
-            />
-          </div>
-        ) : null}
-
-        {visitedRanges['1d'] ? (
-          <div
-            data-testid="dashboard-activity-range-1d"
-            data-active={activeRange === '1d'}
-            hidden={activeRange !== '1d'}
-            aria-hidden={activeRange !== '1d'}
-          >
-            <Last24hTenMinuteHeatmap
-              metric={metric24h}
-              onChangeMetric={setMetric24h}
-              showHeader={false}
-            />
-          </div>
-        ) : null}
-
-        {visitedRanges['7d'] ? (
-          <div
-            data-testid="dashboard-activity-range-7d"
-            data-active={activeRange === '7d'}
-            hidden={activeRange !== '7d'}
-            aria-hidden={activeRange !== '7d'}
-          >
-            <WeeklyHourlyHeatmap
-              metric={metric7d}
-              onChangeMetric={setMetric7d}
-              showHeader={false}
-              showSurface={false}
-            />
-          </div>
-        ) : null}
-
-        {visitedRanges.usage ? (
-          <div
-            data-testid="dashboard-activity-range-usage"
-            data-active={activeRange === 'usage'}
-            hidden={activeRange !== 'usage'}
-            aria-hidden={activeRange !== 'usage'}
-          >
-            <UsageCalendar
-              metric={metricUsage}
-              onChangeMetric={setMetricUsage}
-              showSurface={false}
-              showMetricToggle={false}
-              showMeta={false}
-            />
-          </div>
-        ) : null}
+        {activeRange === 'today' ? <DashboardTodayRangePanel metric={metricToday} /> : null}
+        {activeRange === '1d' ? <Dashboard24HourRangePanel metric={metric24h} /> : null}
+        {activeRange === '7d' ? <Dashboard7DayRangePanel metric={metric7d} /> : null}
+        {activeRange === 'usage' ? <DashboardUsageRangePanel metric={metricUsage} /> : null}
       </div>
     </section>
   )
