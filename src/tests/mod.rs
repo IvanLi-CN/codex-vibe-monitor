@@ -1230,7 +1230,7 @@ async fn proxy_openai_v1_unauthorized_capture_targets_do_not_consume_proxy_concu
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_invalid_pool_keys_do_not_consume_proxy_concurrency_slots() {
+async fn proxy_openai_v1_invalid_pool_keys_wait_for_proxy_concurrency_admission() {
     let mut config = test_config();
     config.proxy_request_concurrency_limit = 1;
     config.proxy_request_concurrency_wait_timeout = Duration::from_millis(50);
@@ -1263,22 +1263,77 @@ async fn proxy_openai_v1_invalid_pool_keys_do_not_consume_proxy_concurrency_slot
     )
     .await;
 
-    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
-        .expect("read unauthorized invalid-key body");
-    let payload: Value = serde_json::from_slice(&body).expect("decode unauthorized payload");
-    assert_eq!(
-        payload["error"].as_str(),
-        Some(PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE)
+        .expect("read concurrency-limited invalid-key body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode concurrency-limited body");
+    assert!(
+        payload["error"]
+            .as_str()
+            .is_some_and(|message| message.contains(PROXY_CONCURRENCY_LIMIT_MESSAGE))
     );
     assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 1);
     assert_eq!(
         state.proxy_request_rejected_total.load(Ordering::Acquire),
-        0
+        1
     );
 
     drop(held_permit);
+    assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 0);
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_revalidates_pool_key_after_queue_wait() {
+    let mut config = test_config();
+    config.proxy_request_concurrency_limit = 1;
+    config.proxy_request_concurrency_wait_timeout = Duration::from_millis(250);
+    let state = test_state_from_config(config, true).await;
+    let uri = "/v1/responses".parse::<Uri>().expect("valid proxy uri");
+
+    seed_pool_routing_api_key(&state, "pool-queued-key").await;
+    insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+
+    let held_permit =
+        acquire_proxy_request_concurrency_permit(state.as_ref(), 1007, &Method::POST, &uri)
+            .await
+            .expect("first request should acquire concurrency slot");
+
+    let state_for_request = state.clone();
+    let queued = tokio::spawn(async move {
+        proxy_openai_v1(
+            State(state_for_request),
+            OriginalUri(uri),
+            Method::POST,
+            HeaderMap::from_iter([
+                (
+                    http_header::AUTHORIZATION,
+                    HeaderValue::from_static("Bearer pool-queued-key"),
+                ),
+                (
+                    http_header::CONTENT_TYPE,
+                    HeaderValue::from_static("application/json"),
+                ),
+            ]),
+            Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hello"}"#)),
+        )
+        .await
+    });
+
+    tokio::time::sleep(Duration::from_millis(25)).await;
+    seed_pool_routing_api_key(&state, "pool-rotated-key").await;
+    drop(held_permit);
+
+    let response = queued.await.expect("join queued proxy request");
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read revalidated invalid-key body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode revalidated invalid-key");
+    assert_eq!(
+        payload["error"].as_str(),
+        Some(PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE)
+    );
     assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 0);
 }
 
