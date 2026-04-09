@@ -2,13 +2,16 @@ import { describe, expect, it } from "vitest";
 import type {
   ApiInvocation,
   PromptCacheConversation,
+  PromptCacheConversationInvocationPreview,
   PromptCacheConversationsResponse,
   PromptCacheConversationRequestPoint,
 } from "./api";
 import {
   buildPromptCachePreviewFromInvocation,
   buildInvocationFromPromptCachePreview,
+  mergePromptCacheConversationHistory,
   mergePromptCacheConversationsResponse,
+  type PromptCacheConversationHistoryByKey,
   reconcilePromptCacheLiveRecordMap,
 } from "./promptCacheLive";
 
@@ -88,6 +91,32 @@ function createLiveRecord(
     totalTokens: totalTokens ?? 100,
     cost: cost ?? 0.01,
     ...rest,
+  };
+}
+
+function createPreview(
+  overrides: Partial<PromptCacheConversationInvocationPreview> & {
+    id: number;
+    invokeId: string;
+    occurredAt: string;
+    status: string;
+  },
+): PromptCacheConversationInvocationPreview {
+  return {
+    id: overrides.id,
+    invokeId: overrides.invokeId,
+    occurredAt: overrides.occurredAt,
+    status: overrides.status,
+    failureClass: overrides.failureClass ?? "none",
+    routeMode: overrides.routeMode ?? "pool",
+    model: overrides.model ?? "gpt-5.4",
+    totalTokens: overrides.totalTokens ?? 0,
+    cost: overrides.cost ?? 0,
+    proxyDisplayName: overrides.proxyDisplayName ?? null,
+    upstreamAccountId: overrides.upstreamAccountId ?? null,
+    upstreamAccountName: overrides.upstreamAccountName ?? null,
+    endpoint: overrides.endpoint ?? "/v1/responses",
+    requestedServiceTier: overrides.requestedServiceTier,
   };
 }
 
@@ -218,6 +247,63 @@ describe("mergePromptCacheConversationsResponse", () => {
       "pck-older",
       "pck-live-old",
     ]);
+  });
+
+  it("keeps a reactivated known key visible when the activity-window working set is full", () => {
+    const now = Date.parse("2026-03-10T03:00:00Z");
+    const base = createResponse(
+      Array.from({ length: 50 }, (_, index) =>
+        createConversation(`pck-visible-${index}`, {
+          createdAt: new Date(
+            Date.parse("2026-03-10T00:00:00Z") + index * 60_000,
+          ).toISOString(),
+          lastActivityAt: new Date(
+            Date.parse("2026-03-10T02:05:00Z") + index * 20_000,
+          ).toISOString(),
+          recentInvocations: [
+            createPreview({
+              id: 4000 + index,
+              invokeId: `invoke-visible-${index}`,
+              occurredAt: new Date(
+                Date.parse("2026-03-10T02:05:00Z") + index * 20_000,
+              ).toISOString(),
+              status: "completed",
+            }),
+          ],
+        }),
+      ),
+    );
+
+    const merged = mergePromptCacheConversationsResponse(
+      base,
+      {
+        "pck-reactivated": [
+          createLiveRecord({
+            id: 905,
+            invokeId: "invoke-reactivated",
+            occurredAt: "2026-03-10T02:59:30Z",
+            promptCacheKey: "pck-reactivated",
+            status: "running",
+          }),
+        ],
+      },
+      { mode: "activityWindow", activityMinutes: 30 },
+      now,
+      {
+        "pck-reactivated": {
+          createdAt: "2026-03-10T00:10:00Z",
+          lastActivityAt: "2026-03-10T01:40:00Z",
+        },
+      },
+    );
+
+    expect(merged?.conversations).toHaveLength(50);
+    expect(merged?.conversations.map((item) => item.promptCacheKey)).toContain(
+      "pck-reactivated",
+    );
+    expect(merged?.conversations.map((item) => item.promptCacheKey)).not.toContain(
+      "pck-visible-0",
+    );
   });
 
   it("dedupes last24h request points when the same invocation is already present after resync", () => {
@@ -610,6 +696,85 @@ describe("mergePromptCacheConversationsResponse", () => {
     expect(merged?.conversations.map((item) => item.promptCacheKey)).not.toContain(
       "pck-tie-older",
     );
+  });
+});
+
+describe("mergePromptCacheConversationHistory", () => {
+  it("retains only the most recent inactive history entries within the configured bound", () => {
+    const merged = mergePromptCacheConversationHistory(
+      {
+        "pck-old-a": {
+          createdAt: "2026-03-10T00:00:00Z",
+          lastActivityAt: "2026-03-10T00:01:00Z",
+        },
+        "pck-old-b": {
+          createdAt: "2026-03-10T00:04:00Z",
+          lastActivityAt: "2026-03-10T00:05:00Z",
+        },
+        "pck-live": {
+          createdAt: "2026-03-10T00:02:00Z",
+          lastActivityAt: "2026-03-10T00:03:00Z",
+        },
+      },
+      createResponse([
+        createConversation("pck-authoritative", {
+          createdAt: "2026-03-10T01:00:00Z",
+          lastActivityAt: "2026-03-10T01:05:00Z",
+        }),
+      ]),
+      ["pck-live"],
+      1,
+    );
+
+    expect(merged).toEqual({
+      "pck-authoritative": {
+        createdAt: "2026-03-10T01:00:00Z",
+        lastActivityAt: "2026-03-10T01:05:00Z",
+      },
+      "pck-live": {
+        createdAt: "2026-03-10T00:02:00Z",
+        lastActivityAt: "2026-03-10T00:03:00Z",
+      },
+      "pck-old-b": {
+        createdAt: "2026-03-10T00:04:00Z",
+        lastActivityAt: "2026-03-10T00:05:00Z",
+      },
+    });
+  });
+
+  it("stays bounded under high churn while keeping recent inactive history for reactivation", () => {
+    let current: PromptCacheConversationHistoryByKey = {
+      "pck-live": {
+        createdAt: "2026-03-10T00:02:00Z",
+        lastActivityAt: "2026-03-10T00:03:00Z",
+      },
+    };
+
+    for (let index = 0; index < 128; index += 1) {
+      const createdAt = new Date(
+        Date.parse("2026-03-10T00:00:00Z") + index * 60_000,
+      ).toISOString();
+      const lastActivityAt = new Date(
+        Date.parse("2026-03-10T00:00:30Z") + index * 60_000,
+      ).toISOString();
+      current = mergePromptCacheConversationHistory(
+        current,
+        createResponse([
+          createConversation(`pck-${index}`, {
+            createdAt,
+            lastActivityAt,
+          }),
+        ]),
+        ["pck-live"],
+        50,
+      );
+    }
+
+    expect(Object.keys(current)).toHaveLength(52);
+    expect(Object.keys(current)).toContain("pck-127");
+    expect(Object.keys(current)).toContain("pck-live");
+    expect(Object.keys(current)).toContain("pck-126");
+    expect(Object.keys(current)).not.toContain("pck-0");
   });
 });
 

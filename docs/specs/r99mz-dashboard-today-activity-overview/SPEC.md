@@ -4,7 +4,7 @@
 
 - Status: 已实现，待 PR / CI / review-proof 收敛
 - Created: 2026-04-08
-- Last: 2026-04-08
+- Last: 2026-04-09
 
 ## 背景 / 问题陈述
 
@@ -18,8 +18,11 @@
 
 - Dashboard 页面删除独立的顶部 `TodayStatsOverview` 卡，只保留合并后的 `DashboardActivityOverview`。
 - `活动总览` 范围切换升级为 `今日 / 24 小时 / 7 日 / 历史` 四段，并新增 localStorage 记忆最近一次访问的范围。
-- `今日` 范围顶部嵌入 5 个 KPI；下方图表随统一 metric toggle 切换：`次数` 显示成功正柱 / 失败负柱，`金额 / Tokens` 显示本地自然日累计面积图。
+- `今日` 范围顶部嵌入 5 个 KPI；下方图表随统一 metric toggle 切换：`次数` 显示成功正柱 / 失败负柱，`金额 / Tokens` 显示“今日整天 24 小时横轴”的累计面积图。
 - `24 小时 / 7 日 / 历史` 维持现有热力图 / 日历形态，仅共享头部 metric toggle，并保持按视图记忆 metric 行为不回退。
+- `活动总览` 的非激活范围改为按需挂载与按需请求：默认进入 Dashboard 只加载当前页签，未访问的 `24 小时 / 7 日 / 历史` 不再首屏预取，也不再常驻隐藏面板。
+- Dashboard 工作中对话的 prompt-cache 会话工作集必须有界：authoritative 刷新后只保留“当前响应中的 key + 仍有 live record 的 key”，selection 切换或卸载后释放旧工作集。
+- Dashboard KPI 必须能识别卡片宽度不足导致的数值溢出，并自动切换到紧凑记数法（例如 `1.31B`）以保持布局稳定。
 - 补齐 Storybook、Vitest、spec 与视觉证据，并按 fast-track 路径收敛到 merge-ready。
 
 ### Non-goals
@@ -52,8 +55,11 @@
 - Given 查看 `活动总览` 范围切换，When 进入页面，Then 显示 `今日 / 24 小时 / 7 日 / 历史` 四段；首次进入默认 `今日`，之后优先恢复最近一次访问的范围；localStorage 值非法时回退到 `今日`。
 - Given 处于 `今日` 视图，When 查看总览内容，Then 顶部显示 5 个 KPI、下方显示一张分钟级图表；`24 小时 / 7 日` 仍显示既有 KPI + 热力图；`历史` 仍只显示半年日历。
 - Given `今日` 视图切到 `次数`，When 查看图表，Then 成功柱位于 0 轴上方、失败柱位于 0 轴下方，tooltip 同时给出成功 / 失败 / 总数。
-- Given `今日` 视图切到 `金额` 或 `Tokens`，When 查看图表，Then 图表切换为本地自然日累计面积图；未来分钟不渲染，缺失分钟补 0 以保持曲线连续。
+- Given `今日` 视图切到 `金额` 或 `Tokens`，When 查看图表，Then 图表切换为“今日整天 24 小时横轴”的累计面积图；未来分钟不渲染，缺失分钟补 0 以保持曲线连续。
 - Given 在四个范围间切换 `次数 / 金额 / Tokens`，When 来回切换范围，Then 每个范围仍保留各自上次选中的 metric。
+- Given 默认进入 `/dashboard`，When 页面首次完成 hydration，Then 仅当前 active range 对应的数据请求会首屏触发，未访问的隐藏范围不会提前发起 summary / timeseries 请求。
+- Given 已切到其他 prompt-cache selection 或离开页面，When 旧 selection 的 authoritative / live 数据不再属于当前工作集，Then 旧 key 会被释放，不再随着历史唯一 `promptCacheKey` 数量单调增长。
+- Given KPI 卡片的完整数字在当前宽度下会溢出，When 组件完成布局测量，Then 卡片数值会自动切换为紧凑写法（如 `1.31B`），并通过 tooltip 保留完整值。
 - Given 运行前端验证命令，When 执行 `cd web && bun run test && bun run build && bun run build-storybook`，Then 命令通过。
 
 ## 非功能性验收 / 质量门槛（Quality Gates）
@@ -62,6 +68,7 @@
 
 - `今日` KPI 必须嵌入在总览内部，不新增重复 panel 层级，也不重新引入顶部独立今日卡。
 - `次数` 柱状图要清晰区分成功 / 失败语义，失败必须保留错误色；`金额 / Tokens` 面积图需要保持累计阅读语义。
+- KPI 数值在桌面单行布局下不得撑破卡片；超长数字应优先收敛为紧凑记数法而不是溢出裁切。
 - `历史` 继续沿用 `#7s4kw` 的半年日历外观，不重新引入重复标题 / 时区说明或月份标签重叠。
 
 ### Testing
@@ -76,6 +83,7 @@
 - `cd /Users/ivan/.codex/worktrees/r99mz/codex-vibe-monitor/web && bun run test`
 - `cd /Users/ivan/.codex/worktrees/r99mz/codex-vibe-monitor/web && bun run build`
 - `cd /Users/ivan/.codex/worktrees/r99mz/codex-vibe-monitor/web && bun run build-storybook`
+- `cd /Users/ivan/.codex/worktrees/afc2/codex-vibe-monitor/web && bun -e 'import { mergePromptCacheConversationHistory } from "./src/lib/promptCacheLive.ts"; /* high-churn boundedness smoke */'`
 
 ## 文档更新（Docs to Update）
 
@@ -99,17 +107,19 @@
 
 ## 方案概述（Approach, high-level）
 
-- 复用现有 `useSummary('today')` 与 `useTimeseries('today', { bucket: '1m' })`，不动后端 API，仅在前端把“今日”作为总览的第四个内嵌视图。
+- 复用现有 `useSummary('today')` 与 `useTimeseries('today', { bucket: '1m' })`，不动后端 API，仅在前端把“今日”作为总览的第四个内嵌视图；今日 KPI 与图表都保持“今日”语义，但图表横轴扩展为整天 24 小时。
 - `TodayStatsOverview` 通过 `showSurface / showHeader / showDayBadge` 拆成可复用内容层，使它既能作为独立卡，也能作为总览内嵌 KPI 区块。
-- `DashboardTodayActivityChart` 负责将分钟序列补齐到“本地自然日 00:00 -> 当前分钟”，`次数` 模式用正负柱对齐成功 / 失败语义，`金额 / Tokens` 模式将每分钟增量累积为面积图。
+- `DashboardTodayActivityChart` 负责将分钟序列补齐到“本地自然日 00:00 -> 23:59”的完整横轴，`次数` 模式用正负柱对齐成功 / 失败语义，`金额 / Tokens` 模式将每分钟增量累积为面积图；当前时刻之后的未来分钟只保留横轴空间，不渲染柱 / 面积。
 - `DashboardActivityOverview` 继续保留按范围记忆 metric 的行为，并新增最近访问范围的 localStorage 恢复；非法或不可用值统一回退到 `today`。
+- `DashboardActivityOverview` 的各范围面板改成只在 active range 时挂载，并把对应 summary / timeseries 请求下沉到面板内部，避免隐藏页签常驻 hook / timer / 请求。
+- `usePromptCacheConversations` 通过 bounded history + live-record pinning 维护当前工作集；authoritative 刷新、selection 切换与卸载都会主动裁剪旧 key，防止长时间停留时因历史 churn 导致内存累积。
 
 ## 风险 / 开放问题 / 假设（Risks, Open Questions, Assumptions）
 
 - 风险：分钟级图表点数明显多于现有热力图，若 Storybook / build 使用不稳定的时间源，会导致快照或视觉证据难以复现；因此必须使用固定 mock 时间轴。
 - 风险：`今日` 视图现在默认显示 KPI + 图表，如果 `TodayStatsOverview` 嵌入模式仍保留独立标题，会与总览标题重复；本轮通过隐藏内层 header 避免重复语义。
 - 风险：localStorage 恢复若未做白名单校验，会把历史无效值带入初始渲染；本轮必须在 helper 层做硬回退。
-- 假设：`今日` 的时间轴按浏览器本地时区自然日处理，而不是固定 UTC 日切。
+- 假设：`今日` 页签中的 KPI 与图表都按浏览器本地时区自然日处理；图表需要铺满当天 24 小时横轴，而不是只渲染到当前时间。
 - 假设：视觉证据继续采用 Storybook 稳定 mock，不截真实线上数据页面。
 
 ## 变更记录（Change log）
@@ -119,11 +129,15 @@
 - 2026-04-08: 完成全量前端验证与 Storybook 视觉证据归档，并修正今日 `次数` 图中失败柱错误堆叠到正半轴的问题，确保失败柱始终以 0 轴为基线向下绘制。
 - 2026-04-08: 为 PR 收口修复跨平台午夜时间格式差异，强制分钟轴午夜显示为 `00:00`，并将今日图表数据构建逻辑拆出组件文件以满足 `react-refresh/only-export-components` lint 约束。
 - 2026-04-08: 根据 review-proof 修复 `today + 1m` 长驻会话跨午夜不自动刷新旧日数据的问题；今日视图现在会在本地下一次自然日边界强制静默重拉，并把本地补丁窗口约束回当前自然日。
+- 2026-04-09: 为 Dashboard 长时间放置崩溃问题补充前端性能硬化：`DashboardActivityOverview` 改为按需挂载 / 按需请求非激活范围，`usePromptCacheConversations` 与 prompt-cache history 改成仅保留当前工作集，并补齐高 churn / selection 切换回归测试。
+- 2026-04-09: 修复 Dashboard KPI 数值溢出；当卡片宽度不足以容纳完整值时，前端会自动切换到紧凑记数法（如 `1.31B`），并保留完整值 tooltip。
+- 2026-04-09: 修正 `今日` 页签分钟图的时间语义：保留“今日”自然日范围，但将横轴扩展为当天完整 24 小时；当前时刻之后的未来分钟不渲染，从而避免图表只占用 `00:00 -> 当前时间` 的前半段宽度。
+- 2026-04-09: 刷新 Storybook 证据夹具与截图，确保 `今日 / 金额` 图的累计终值与 KPI 总成本一致，不再出现 `US$539.42` KPI 对应 `US$58` 曲线终点的错图。
 
 ## Visual Evidence
 
 - Source: Storybook canvas（mock-only）
-- Validation: `cd /Users/ivan/.codex/worktrees/r99mz/codex-vibe-monitor/web && bun run test`、`bun run build`、`bun run build-storybook`
+- Validation: `cd /Users/ivan/.codex/worktrees/afc2/codex-vibe-monitor/web && bun run test`、`bun run build`、`bun run build-storybook`
 
 ### 1. 活动总览：今日 / 次数（成功正柱，失败负柱）
 
@@ -133,10 +147,22 @@
 
 ![活动总览：今日 / 金额累计](./assets/dashboard-activity-overview-today-cost.png)
 
-### 3. 活动总览：历史
+### 3. KPI 溢出紧凑记数法
+
+![KPI 溢出紧凑记数法](./assets/today-stats-overflow.png)
+
+### 4. 活动总览：历史
 
 ![活动总览：历史](./assets/dashboard-activity-overview-history.png)
 
-### 4. Dashboard 页面默认态
+### 5. Dashboard 页面默认态
 
 ![Dashboard 页面默认态](./assets/dashboard-page-default.png)
+
+### 6. 活动总览：按需加载后的今日默认态
+
+![活动总览：按需加载后的今日默认态](./assets/dashboard-activity-overview-lazy-today.png)
+
+### 7. 活动总览：按需加载后的 7 日态
+
+![活动总览：按需加载后的 7 日态](./assets/dashboard-activity-overview-lazy-7d.png)

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { Meta, StoryObj } from '@storybook/react-vite'
+import { expect, waitFor, within } from 'storybook/test'
 import { I18nProvider } from '../i18n'
 import type { StatsResponse } from '../lib/api'
 import { TodayStatsOverview } from './TodayStatsOverview'
@@ -70,6 +71,36 @@ export const EmbeddedTodayTab: Story = {
     viewport: {
       defaultViewport: 'desktop1440',
     },
+  },
+}
+
+export const OverflowFallback: Story = {
+  args: {
+    stats: {
+      totalCount: 12474,
+      successCount: 9949,
+      failureCount: 2525,
+      totalCost: 539.42,
+      totalTokens: 1314275579,
+    },
+    loading: false,
+    error: null,
+    showSurface: false,
+    showHeader: false,
+    showDayBadge: false,
+  },
+  parameters: {
+    viewport: {
+      defaultViewport: 'desktop1440',
+    },
+  },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement)
+    await waitFor(() => {
+      const totalTokensValue = canvas.getByTestId('today-stats-value-total-tokens')
+      expect(totalTokensValue).toHaveAttribute('data-compact', 'true')
+      expect(totalTokensValue.textContent ?? '').toContain('1.31B')
+    })
   },
 }
 

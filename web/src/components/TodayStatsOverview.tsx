@@ -1,9 +1,8 @@
-import { useMemo } from 'react'
 import type { StatsResponse } from '../lib/api'
 import { useTranslation } from '../i18n'
 import { cn } from '../lib/utils'
 import { getBrowserTimeZone } from '../lib/timeZone'
-import { AnimatedDigits } from './AnimatedDigits'
+import { AdaptiveMetricValue, type AdaptiveMetricValueKind } from './AdaptiveMetricValue'
 import { Alert } from './ui/alert'
 import { Badge } from './ui/badge'
 
@@ -18,16 +17,27 @@ export interface TodayStatsOverviewProps {
 
 interface MetricTileProps {
   label: string
-  value: string
+  value: number
+  localeTag: string
   loading: boolean
+  kind?: AdaptiveMetricValueKind
   toneClass?: string
+  valueTestId?: string
 }
 
-function MetricTile({ label, value, loading, toneClass }: MetricTileProps) {
+function MetricTile({
+  label,
+  value,
+  localeTag,
+  loading,
+  kind = 'number',
+  toneClass,
+  valueTestId,
+}: MetricTileProps) {
   return (
     <div
       data-testid="today-stats-metric-tile"
-      className="rounded-xl border border-base-300/75 bg-base-200/60 p-4"
+      className="min-w-0 rounded-xl border border-base-300/75 bg-base-200/60 p-4"
     >
       <div className="text-xs font-semibold uppercase tracking-[0.14em] text-base-content/65">{label}</div>
       {loading ? (
@@ -35,11 +45,16 @@ function MetricTile({ label, value, loading, toneClass }: MetricTileProps) {
       ) : (
         <div
           className={cn(
-            'mt-2 text-2xl font-semibold leading-tight text-base-content lg:text-[1.85rem]',
+            'mt-2 min-w-0 overflow-hidden text-2xl font-semibold leading-tight text-base-content lg:text-[1.85rem]',
             toneClass,
           )}
         >
-          <AnimatedDigits value={value} />
+          <AdaptiveMetricValue
+            value={value}
+            localeTag={localeTag}
+            kind={kind}
+            data-testid={valueTestId}
+          />
         </div>
       )}
     </div>
@@ -56,10 +71,6 @@ export function TodayStatsOverview({
 }: TodayStatsOverviewProps) {
   const { t, locale } = useTranslation()
   const localeTag = locale === 'zh' ? 'zh-CN' : 'en-US'
-  const numberFormatter = useMemo(
-    () => new Intl.NumberFormat(localeTag, { maximumFractionDigits: 2 }),
-    [localeTag],
-  )
   const timeZone = getBrowserTimeZone()
 
   const totalCount = stats?.totalCount ?? 0
@@ -67,12 +78,6 @@ export function TodayStatsOverview({
   const failureCount = stats?.failureCount ?? 0
   const totalCost = stats?.totalCost ?? 0
   const totalTokens = stats?.totalTokens ?? 0
-
-  const countValue = numberFormatter.format(totalCount)
-  const successValue = numberFormatter.format(successCount)
-  const failureValue = numberFormatter.format(failureCount)
-  const costValue = `$${numberFormatter.format(totalCost)}`
-  const tokenValue = numberFormatter.format(totalTokens)
 
   const content = (
     <>
@@ -99,31 +104,42 @@ export function TodayStatsOverview({
         >
           <MetricTile
             label={t('stats.cards.totalCalls')}
-            value={countValue}
+            value={totalCount}
+            localeTag={localeTag}
             loading={loading}
             toneClass="text-primary"
+            valueTestId="today-stats-value-total-calls"
           />
           <MetricTile
             label={t('stats.cards.success')}
-            value={successValue}
+            value={successCount}
+            localeTag={localeTag}
             loading={loading}
             toneClass="text-success"
+            valueTestId="today-stats-value-success"
           />
           <MetricTile
             label={t('stats.cards.failures')}
-            value={failureValue}
+            value={failureCount}
+            localeTag={localeTag}
             loading={loading}
             toneClass="text-error"
+            valueTestId="today-stats-value-failures"
           />
           <MetricTile
             label={t('stats.cards.totalCost')}
-            value={costValue}
+            value={totalCost}
+            localeTag={localeTag}
             loading={loading}
+            kind="currency"
+            valueTestId="today-stats-value-total-cost"
           />
           <MetricTile
             label={t('stats.cards.totalTokens')}
-            value={tokenValue}
+            value={totalTokens}
+            localeTag={localeTag}
             loading={loading}
+            valueTestId="today-stats-value-total-tokens"
           />
         </div>
       )}

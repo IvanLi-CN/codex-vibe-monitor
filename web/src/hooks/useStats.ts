@@ -16,6 +16,7 @@ export const CURRENT_SUMMARY_OPEN_RESYNC_COOLDOWN_MS = 3_000
 export const CURRENT_SUMMARY_REQUEST_TIMEOUT_MS = 10_000
 export const CURRENT_SUMMARY_RETRY_DELAY_MS = 2_000
 export const CURRENT_SUMMARY_MAX_RETRY_ATTEMPTS = 3
+export const SUMMARY_REMOUNT_CACHE_TTL_MS = 30_000
 
 interface LoadOptions {
   silent?: boolean
@@ -34,8 +35,60 @@ export interface UnsupportedRefreshGate {
   lastTriggerAt: number
 }
 
+interface SummaryRemountCacheEntry {
+  stats: StatsResponse
+  cachedAt: number
+}
+
+const summaryRemountCache = new Map<string, SummaryRemountCacheEntry>()
+
 export function createUnsupportedRefreshGate(): UnsupportedRefreshGate {
   return { inFlight: false, lastTriggerAt: 0 }
+}
+
+export function getSummaryRemountCacheKey(window: string, limit?: number) {
+  return `${window}::${limit ?? 'default'}`
+}
+
+export function shouldEnableSummaryRemountCache(window: string) {
+  return window !== 'current' && !isCalendarSummaryWindow(window)
+}
+
+export function readSummaryRemountCache(
+  window: string,
+  limit?: number,
+  now = Date.now(),
+  ttlMs = SUMMARY_REMOUNT_CACHE_TTL_MS,
+) {
+  if (!shouldEnableSummaryRemountCache(window)) return null
+  const cached = summaryRemountCache.get(getSummaryRemountCacheKey(window, limit))
+  if (!cached) return null
+  return shouldReuseSummaryRemountCache(cached.cachedAt, now, ttlMs) ? cached : null
+}
+
+export function writeSummaryRemountCache(
+  window: string,
+  limit: number | undefined,
+  stats: StatsResponse,
+  cachedAt = Date.now(),
+) {
+  if (!shouldEnableSummaryRemountCache(window)) return
+  summaryRemountCache.set(getSummaryRemountCacheKey(window, limit), {
+    stats,
+    cachedAt,
+  })
+}
+
+export function clearSummaryRemountCache() {
+  summaryRemountCache.clear()
+}
+
+export function shouldReuseSummaryRemountCache(
+  cachedAt: number,
+  now: number,
+  ttlMs = SUMMARY_REMOUNT_CACHE_TTL_MS,
+) {
+  return now - cachedAt < ttlMs
 }
 
 export function isCalendarSummaryWindow(window: string) {
@@ -116,8 +169,11 @@ export async function runCalendarSummaryRefresh(
 }
 
 export function useSummary(window: string, options?: UseSummaryOptions) {
-  const [stats, setStats] = useState<StatsResponse | null>(null)
-  const [isLoading, setIsLoading] = useState(true)
+  const initialCachedSummary = readSummaryRemountCache(window, options?.limit)
+  const [stats, setStats] = useState<StatsResponse | null>(
+    () => initialCachedSummary?.stats ?? null,
+  )
+  const [isLoading, setIsLoading] = useState(() => initialCachedSummary == null)
   const [error, setError] = useState<string | null>(null)
   const unsupportedRefreshRef = useRef<UnsupportedRefreshGate>(createUnsupportedRefreshGate())
   const calendarRefreshRef = useRef<UnsupportedRefreshGate>(createUnsupportedRefreshGate())
@@ -125,7 +181,7 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
     window,
     limit: options?.limit,
   })
-  const hasHydratedRef = useRef(false)
+  const hasHydratedRef = useRef(initialCachedSummary != null)
   const activeLoadCountRef = useRef(0)
   const pendingLoadRef = useRef<PendingLoad | null>(null)
   const pendingOpenResyncRef = useRef(false)
@@ -170,6 +226,11 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
       })
       if (requestSeq !== requestSeqRef.current) return
       setStats(response)
+      writeSummaryRemountCache(
+        summaryContextRef.current.window,
+        summaryContextRef.current.limit,
+        response,
+      )
       hasHydratedRef.current = true
       currentRetryAttemptRef.current = 0
       setError(null)
@@ -280,8 +341,12 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
 
   useEffect(() => {
     // Invalidate prior async loads when summary query context changes.
+    const cachedSummary = readSummaryRemountCache(window, options?.limit)
     requestSeqRef.current += 1
-    hasHydratedRef.current = false
+    setStats(cachedSummary?.stats ?? null)
+    setError(null)
+    setIsLoading(cachedSummary == null)
+    hasHydratedRef.current = cachedSummary != null
     pendingOpenResyncRef.current = false
     lastCurrentRecordsRefreshAtRef.current = 0
     lastOpenResyncAtRef.current = 0
@@ -290,7 +355,11 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
     calendarRefreshRef.current = createUnsupportedRefreshGate()
     clearPendingLoad()
     clearPendingRefreshTimer()
-    void load({ force: true })
+    if (!cachedSummary) {
+      void load({ force: true })
+      return
+    }
+    void load({ silent: true, force: true })
   }, [clearPendingLoad, clearPendingRefreshTimer, load, options?.limit, window])
 
   useEffect(() => {
@@ -329,6 +398,7 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
       if (payload.type === 'summary') {
         if (payload.window === window) {
           setStats(payload.summary)
+          writeSummaryRemountCache(window, options?.limit, payload.summary)
           hasHydratedRef.current = true
           setError(null)
           setIsLoading(false)
@@ -346,7 +416,7 @@ export function useSummary(window: string, options?: UseSummaryOptions) {
       }
     })
     return unsubscribe
-  }, [isCalendarWindow, load, supportsSse, triggerCurrentWindowRefresh, window])
+  }, [isCalendarWindow, load, options?.limit, supportsSse, triggerCurrentWindowRefresh, window])
 
   useEffect(() => {
     const unsubscribe = subscribeToSseOpen(() => {
