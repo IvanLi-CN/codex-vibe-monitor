@@ -1239,7 +1239,7 @@ async fn proxy_openai_v1_concurrency_rejections_fail_fast_before_persist_finishe
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_non_pool_requests_still_use_proxy_concurrency_slots() {
+async fn proxy_openai_v1_unauthorized_capture_targets_do_not_consume_proxy_concurrency_slots() {
     let mut config = test_config();
     config.proxy_request_concurrency_limit = 1;
     config.proxy_request_concurrency_wait_timeout = Duration::from_millis(50);
@@ -1256,43 +1256,36 @@ async fn proxy_openai_v1_non_pool_requests_still_use_proxy_concurrency_slots() {
         State(state.clone()),
         OriginalUri(uri),
         Method::POST,
-        HeaderMap::from_iter([
-            (
-                http_header::AUTHORIZATION,
-                HeaderValue::from_static("Bearer upstream-direct-key"),
-            ),
-            (
-                http_header::CONTENT_TYPE,
-                HeaderValue::from_static("application/json"),
-            ),
-        ]),
+        HeaderMap::from_iter([(
+            http_header::CONTENT_TYPE,
+            HeaderValue::from_static("application/json"),
+        )]),
         Body::from(Bytes::from_static(br#"{"model":"gpt-5","input":"hello"}"#)),
     )
     .await;
 
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
-        .expect("read concurrency rejection body");
-    let payload: Value =
-        serde_json::from_slice(&body).expect("decode concurrency rejection payload");
+        .expect("read unauthorized capture-target body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode unauthorized payload");
     assert_eq!(
         payload["error"].as_str(),
-        Some(PROXY_CONCURRENCY_LIMIT_MESSAGE)
+        Some(PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE)
     );
     assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 1);
     assert_eq!(
         state.proxy_request_rejected_total.load(Ordering::Acquire),
-        1
+        0
     );
-    assert!(payload.get("cvmId").is_some());
+    assert!(payload.get("cvmId").is_none());
 
     drop(held_permit);
     assert_eq!(state.proxy_request_in_flight.load(Ordering::Acquire), 0);
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_non_pool_capture_targets_preserve_forward_proxy_routing() {
+async fn proxy_openai_v1_capture_targets_require_pool_route_key() {
     let (upstream_base, _captured_requests, upstream_handle) =
         spawn_capture_target_body_upstream().await;
     let mut config = test_config();
@@ -1311,17 +1304,14 @@ async fn proxy_openai_v1_non_pool_capture_targets_preserve_forward_proxy_routing
     )
     .await;
 
-    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
-        .expect("read non-pool capture-target response body");
-    let payload: Value =
-        serde_json::from_slice(&body).expect("decode non-pool capture-target response body");
-    assert_eq!(payload["id"].as_str(), Some("resp_test"));
+        .expect("read unauthorized capture-target body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode unauthorized payload");
     assert_eq!(
-        payload["received"]["input"].as_str(),
-        Some("hello"),
-        "non-pool capture target should still dispatch through the direct upstream path"
+        payload["error"].as_str(),
+        Some(PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE)
     );
 
     upstream_handle.abort();
@@ -1439,7 +1429,7 @@ async fn proxy_openai_v1_non_capture_routes_require_pool_route_key() {
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_rejects_before_pool_route_lookup_when_concurrency_is_exhausted() {
+async fn proxy_openai_v1_route_lookup_failures_do_not_consume_proxy_concurrency_slots() {
     let mut config = test_config();
     config.proxy_request_concurrency_limit = 1;
     config.proxy_request_concurrency_wait_timeout = Duration::from_millis(50);
@@ -1473,20 +1463,19 @@ async fn proxy_openai_v1_rejects_before_pool_route_lookup_when_concurrency_is_ex
     )
     .await;
 
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     let body = to_bytes(response.into_body(), usize::MAX)
         .await
-        .expect("read concurrency-limit response body");
-    let payload: Value =
-        serde_json::from_slice(&body).expect("decode concurrency-limit response body");
-    assert_eq!(
-        payload["error"].as_str(),
-        Some(PROXY_CONCURRENCY_LIMIT_MESSAGE)
-    );
+        .expect("read route lookup failure body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode route lookup failure body");
     assert!(
         payload["error"]
             .as_str()
-            .is_some_and(|message| !message.contains("failed to resolve pool routing settings"))
+            .is_some_and(|message| message.contains("failed to resolve pool routing settings"))
+    );
+    assert_eq!(
+        state.proxy_request_rejected_total.load(Ordering::Acquire),
+        0
     );
 
     drop(held_permit);
@@ -25117,6 +25106,7 @@ async fn continue_or_retry_pool_live_request_respects_total_timeout_while_waitin
         account,
         None,
         Some(Instant::now() - Duration::from_millis(50)),
+        None,
         &status_rx,
         &CancellationToken::new(),
         Duration::from_millis(40),

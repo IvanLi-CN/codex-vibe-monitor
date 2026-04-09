@@ -64,44 +64,6 @@ async fn proxy_openai_v1_common(
         "openai proxy request started"
     );
 
-    let proxy_request_permit = match acquire_proxy_request_concurrency_permit(
-        state.as_ref(),
-        proxy_request_id,
-        &method_for_log,
-        &uri_for_log,
-    )
-    .await
-    {
-        Ok(permit) => Some(permit),
-        Err(mut err) => {
-            if capture_target_for_request(uri_for_log.path(), &method_for_log).is_some() {
-                err.cvm_id = Some(invoke_id.clone());
-            }
-            warn!(
-                proxy_request_id,
-                method = %method_for_log,
-                uri = %uri_for_log,
-                status = %err.status,
-                error = %err.message,
-                elapsed_ms = started_at.elapsed().as_millis(),
-                in_flight = state.proxy_request_in_flight.load(Ordering::Acquire),
-                queued_total = state.proxy_request_queue_total.load(Ordering::Acquire),
-                rejected_total = state.proxy_request_rejected_total.load(Ordering::Acquire),
-                "openai proxy request rejected before upstream dispatch"
-            );
-            spawn_persist_proxy_request_rejection_if_observable(
-                state.clone(),
-                started_at,
-                invoke_id.clone(),
-                uri_for_log.clone(),
-                method_for_log.clone(),
-                headers.clone(),
-                peer_ip,
-                err.clone(),
-            );
-            return build_proxy_error_response(err, &invoke_id);
-        }
-    };
     let (pool_route_active, runtime_timeouts) = match resolve_proxy_route_context_after_admission(
         state.as_ref(),
         proxy_request_id,
@@ -112,10 +74,7 @@ async fn proxy_openai_v1_common(
     .await
     {
         Ok(route_context) => route_context,
-        Err(mut err) => {
-            if capture_target_for_request(uri_for_log.path(), &method_for_log).is_some() {
-                err.cvm_id = Some(invoke_id.clone());
-            }
+        Err(err) => {
             warn!(
                 proxy_request_id,
                 method = %method_for_log,
@@ -128,6 +87,8 @@ async fn proxy_openai_v1_common(
             return build_proxy_error_response(err, &invoke_id);
         }
     };
+    let state_for_rejection = state.clone();
+    let headers_for_rejection = headers.clone();
 
     match proxy_openai_v1_inner(
         state,
@@ -140,7 +101,7 @@ async fn proxy_openai_v1_common(
         peer_ip,
         pool_route_active,
         runtime_timeouts,
-        proxy_request_permit,
+        None,
     )
     .await
     {
@@ -157,6 +118,20 @@ async fn proxy_openai_v1_common(
             response
         }
         Err(err) => {
+            if err.message == PROXY_CONCURRENCY_LIMIT_MESSAGE
+                && capture_target_for_request(uri_for_log.path(), &method_for_log).is_some()
+            {
+                spawn_persist_proxy_request_rejection_if_observable(
+                    state_for_rejection.clone(),
+                    started_at,
+                    invoke_id.clone(),
+                    uri_for_log.clone(),
+                    method_for_log.clone(),
+                    headers_for_rejection.clone(),
+                    peer_ip,
+                    err.clone(),
+                );
+            }
             warn!(
                 proxy_request_id,
                 method = %method_for_log,
@@ -4281,6 +4256,7 @@ async fn continue_or_retry_pool_live_request(
     initial_account: PoolResolvedAccount,
     sticky_key: Option<String>,
     responses_total_timeout_started_at: Option<Instant>,
+    no_available_wait_deadline: Option<Instant>,
     replay_status_rx: &watch::Receiver<PoolReplayBodyStatus>,
     replay_cancel: &CancellationToken,
     replay_wait_timeout: Duration,
@@ -4436,7 +4412,7 @@ async fn continue_or_retry_pool_live_request(
                             overload_required_upstream_route_key: None,
                             timeout_route_failover_pending: true,
                             responses_total_timeout_started_at,
-                            no_available_wait_deadline: None,
+                            no_available_wait_deadline,
                         },
                         POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
                     )
@@ -4449,6 +4425,7 @@ async fn continue_or_retry_pool_live_request(
                             last_error: Some(first_error),
                             preserve_sticky_owner_terminal_error,
                             responses_total_timeout_started_at,
+                            no_available_wait_deadline,
                             ..PoolFailoverProgress::default()
                         },
                         POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS,
@@ -4459,6 +4436,7 @@ async fn continue_or_retry_pool_live_request(
                         PoolFailoverProgress {
                             attempt_count: 1,
                             responses_total_timeout_started_at,
+                            no_available_wait_deadline,
                             ..PoolFailoverProgress::default()
                         },
                         POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS.saturating_sub(1),
@@ -5807,6 +5785,7 @@ async fn proxy_openai_v1_via_pool(
                             initial_account,
                             live_body_sticky_key.clone(),
                             live_responses_total_timeout_started_at,
+                            no_available_wait_deadline,
                             &replay_status_rx,
                             &replay_cancel,
                             runtime_timeouts.request_read_timeout,
@@ -6121,6 +6100,14 @@ async fn proxy_openai_v1_inner(
         if !pool_route_active {
             return Err(pool_route_missing_error());
         }
+        let proxy_request_permit = take_or_acquire_proxy_request_concurrency_permit(
+            &mut proxy_request_permit,
+            state.as_ref(),
+            proxy_request_id,
+            &method,
+            &original_uri,
+        )
+        .await?;
         return proxy_openai_v1_via_pool(
             state,
             proxy_request_id,
@@ -6129,7 +6116,7 @@ async fn proxy_openai_v1_inner(
             headers,
             body,
             runtime_timeouts,
-            proxy_request_permit.take(),
+            Some(proxy_request_permit),
         )
         .await
         .map_err(|(status, message)| ProxyErrorResponse {
@@ -6146,7 +6133,22 @@ async fn proxy_openai_v1_inner(
     }
 
     if let Some(target) = capture_target_for_request(original_uri.path(), &method) {
+        if !pool_route_active {
+            return Err(pool_route_missing_error());
+        }
         let tracked_invoke_id = invoke_id.clone();
+        let proxy_request_permit = take_or_acquire_proxy_request_concurrency_permit(
+            &mut proxy_request_permit,
+            state.as_ref(),
+            proxy_request_id,
+            &method,
+            &original_uri,
+        )
+        .await
+        .map_err(|mut err| {
+            err.cvm_id = Some(tracked_invoke_id.clone());
+            err
+        })?;
         return proxy_openai_v1_capture_target(
             state,
             proxy_request_id,
@@ -6159,7 +6161,7 @@ async fn proxy_openai_v1_inner(
             peer_ip,
             pool_route_active,
             runtime_timeouts,
-            proxy_request_permit.take(),
+            Some(proxy_request_permit),
         )
         .await
         .map_err(|(status, message)| ProxyErrorResponse {
@@ -6179,6 +6181,15 @@ async fn proxy_openai_v1_inner(
         return Err(pool_route_missing_error());
     }
 
+    let proxy_request_permit = take_or_acquire_proxy_request_concurrency_permit(
+        &mut proxy_request_permit,
+        state.as_ref(),
+        proxy_request_id,
+        &method,
+        &original_uri,
+    )
+    .await?;
+
     return proxy_openai_v1_via_pool(
         state,
         proxy_request_id,
@@ -6187,7 +6198,7 @@ async fn proxy_openai_v1_inner(
         headers,
         body,
         runtime_timeouts,
-        proxy_request_permit.take(),
+        Some(proxy_request_permit),
     )
     .await
     .map_err(|(status, message)| ProxyErrorResponse {
