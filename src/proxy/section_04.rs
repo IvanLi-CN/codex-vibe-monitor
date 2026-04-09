@@ -336,11 +336,9 @@ async fn proxy_openai_v1_capture_target(
         0.0,
         0.0,
     );
-    if let Err(err) = persist_and_broadcast_proxy_capture_runtime_snapshot(
-        state.as_ref(),
-        initial_running_record,
-    )
-    .await
+    if let Err(err) =
+        persist_and_broadcast_proxy_capture_runtime_snapshot(state.as_ref(), initial_running_record)
+            .await
     {
         warn!(
             ?err,
@@ -456,7 +454,7 @@ async fn proxy_openai_v1_capture_target(
                     .canonical_error_message
                     .as_deref()
                     .unwrap_or(err.message.as_str());
-                let error_message = format!("[{}] {}", err.failure_kind, canonical_error_message);
+                let error_message = canonical_error_message.to_string();
                 let pool_proxy_display_name = resolve_invocation_proxy_display_name(None);
                 let record = ProxyCaptureRecord {
                     invoke_id,
@@ -1032,8 +1030,11 @@ async fn proxy_openai_v1_capture_target(
         let mut t_upstream_ttfb_ms = prefetched_ttfb_ms_for_task;
         let mut stream_started_at: Option<Instant> = None;
         let mut response_preview = RawResponsePreviewBuffer::default();
-        let mut response_raw_writer =
-            AsyncStreamingRawPayloadWriter::new(state_for_task.as_ref(), &invoke_id_for_task, "response");
+        let mut response_raw_writer = AsyncStreamingRawPayloadWriter::new(
+            state_for_task.as_ref(),
+            &invoke_id_for_task,
+            "response",
+        );
         let mut stream_response_parser = StreamResponsePayloadChunkParser::default();
         let mut nonstream_parse_buffer = (!response_is_event_stream_for_task).then(|| {
             BoundedResponseParseBuffer::new(BOUNDED_NON_STREAM_RESPONSE_PARSE_LIMIT_BYTES)
@@ -1157,12 +1158,8 @@ async fn proxy_openai_v1_capture_target(
                             pool_account_for_task
                                 .as_ref()
                                 .map(|account| account.display_name.as_str()),
-                            payload_summary_upstream_account_kind(
-                                pool_account_for_task.as_ref(),
-                            ),
-                            payload_summary_upstream_base_url_host(
-                                pool_account_for_task.as_ref(),
-                            ),
+                            payload_summary_upstream_account_kind(pool_account_for_task.as_ref()),
+                            payload_summary_upstream_base_url_host(pool_account_for_task.as_ref()),
                             selected_proxy_display_name_for_task.as_deref(),
                             pool_account_for_task
                                 .as_ref()
@@ -1485,7 +1482,11 @@ async fn proxy_openai_v1_capture_target(
                 finished_at.as_str(),
                 attempt_status,
                 Some(upstream_status),
-                if downstream_closed { Some(upstream_status) } else { None },
+                if downstream_closed {
+                    Some(upstream_status)
+                } else {
+                    None
+                },
                 attempt_failure_kind,
                 error_message.as_deref(),
                 downstream_error_message.as_deref(),
