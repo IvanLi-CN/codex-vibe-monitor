@@ -4180,6 +4180,17 @@ async fn extract_sticky_key_from_replay_snapshot_prefix(
         .and_then(|bytes| best_effort_extract_sticky_key_from_request_body_prefix(bytes.as_ref()))
 }
 
+async fn extract_routing_sticky_key_from_replay_snapshot(
+    snapshot: &PoolReplayBodySnapshot,
+) -> Option<String> {
+    match snapshot {
+        PoolReplayBodySnapshot::File { sticky_key, .. } => sticky_key.clone(),
+        PoolReplayBodySnapshot::Empty | PoolReplayBodySnapshot::Memory(_) => {
+            extract_sticky_key_from_replay_snapshot(snapshot).await
+        }
+    }
+}
+
 async fn continue_or_retry_pool_live_request(
     state: Arc<AppState>,
     proxy_request_id: u64,
@@ -4323,8 +4334,9 @@ async fn continue_or_retry_pool_live_request(
                     distinct_account_count,
                 ));
             }
-            let replay_sticky_key =
-                extract_sticky_key_from_replay_snapshot(&snapshot).await.or(sticky_key);
+            let replay_sticky_key = extract_routing_sticky_key_from_replay_snapshot(&snapshot)
+                .await
+                .or(sticky_key);
             let uses_timeout_route_failover =
                 pool_uses_responses_timeout_failover_policy(original_uri, &method);
             let first_error_is_timeout_shaped = uses_timeout_route_failover
