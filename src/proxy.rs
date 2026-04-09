@@ -241,7 +241,6 @@ const PROXY_POOL_ROUTE_KEY_MISSING_OR_INVALID_MESSAGE: &str = "pool route key mi
 const RAW_PAYLOAD_TRUNCATED_REASON_ASYNC_BACKPRESSURE_DROPPED: &str =
     "async_backpressure_dropped";
 const ASYNC_STREAMING_RAW_WRITER_QUEUE_CAPACITY: usize = 8;
-const LIVE_BODY_STICKY_KEY_PROBE_WAIT_TIMEOUT_MS: u64 = 30;
 
 fn build_proxy_error_response(err: ProxyErrorResponse, invoke_id: &str) -> Response {
     match err.cvm_id {
@@ -1501,14 +1500,6 @@ async fn prepare_pool_request_body_for_account(
         });
     }
 
-    if matches!(snapshot, PoolReplayBodySnapshot::File { .. }) {
-        return Ok(PreparedPoolRequestBody {
-            snapshot,
-            request_body_for_capture: None,
-            requested_service_tier: None,
-        });
-    }
-
     let original_bytes = snapshot
         .to_bytes()
         .await
@@ -1548,10 +1539,39 @@ async fn prepare_pool_request_body_for_account(
     let rewritten_bytes = serde_json::to_vec(&value)
         .map(Bytes::from)
         .map_err(|err| format!("failed to serialize rewritten pool request body: {err}"))?;
+    let rewritten_snapshot = pool_request_snapshot_from_bytes(
+        rewritten_bytes.clone(),
+        match snapshot {
+            PoolReplayBodySnapshot::File { sticky_key, .. } => sticky_key,
+            _ => None,
+        },
+    )
+    .await?;
     Ok(PreparedPoolRequestBody {
-        snapshot: PoolReplayBodySnapshot::Memory(rewritten_bytes.clone()),
+        snapshot: rewritten_snapshot,
         request_body_for_capture: Some(rewritten_bytes.clone()),
         requested_service_tier,
+    })
+}
+
+async fn pool_request_snapshot_from_bytes(
+    bytes: Bytes,
+    sticky_key: Option<String>,
+) -> Result<PoolReplayBodySnapshot, String> {
+    if bytes.len() <= POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES {
+        return Ok(PoolReplayBodySnapshot::Memory(bytes));
+    }
+
+    let temp_file = Arc::new(PoolReplayTempFile {
+        path: build_pool_replay_temp_path(0),
+    });
+    tokio::fs::write(&temp_file.path, &bytes)
+        .await
+        .map_err(|err| format!("failed to persist rewritten pool request body: {err}"))?;
+    Ok(PoolReplayBodySnapshot::File {
+        temp_file,
+        size: bytes.len(),
+        sticky_key,
     })
 }
 
@@ -1789,12 +1809,9 @@ fn live_body_sticky_key_probe_wait_timeout(
     request_read_timeout: Duration,
     pre_attempt_total_timeout_deadline: Option<Instant>,
 ) -> Duration {
-    let capped_wait = request_read_timeout.min(Duration::from_millis(
-        LIVE_BODY_STICKY_KEY_PROBE_WAIT_TIMEOUT_MS,
-    ));
     match pre_attempt_total_timeout_deadline {
-        Some(deadline) => capped_wait.min(deadline.saturating_duration_since(Instant::now())),
-        None => capped_wait,
+        Some(deadline) => request_read_timeout.min(deadline.saturating_duration_since(Instant::now())),
+        None => request_read_timeout,
     }
 }
 

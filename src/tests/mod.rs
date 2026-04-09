@@ -24737,7 +24737,7 @@ async fn proxy_openai_v1_via_pool_live_first_attempt_preserves_body_sticky_route
 }
 
 #[tokio::test]
-async fn proxy_openai_v1_via_pool_live_first_attempt_does_not_wait_for_eof_without_early_body_sticky()
+async fn proxy_openai_v1_via_pool_live_first_attempt_does_not_wait_for_eof_after_sticky_probe_prefix_is_exhausted()
  {
     let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
     let state =
@@ -24746,13 +24746,14 @@ async fn proxy_openai_v1_via_pool_live_first_attempt_does_not_wait_for_eof_witho
     seed_pool_routing_api_key(&state, "pool-no-sticky-live-key").await;
     insert_test_pool_api_key_account(&state, "No Sticky Live Route", "route-no-sticky").await;
 
+    let first_chunk = format!(
+        r#"{{"model":"gpt-5","input":"{}","#,
+        "x".repeat(HEADER_STICKY_EARLY_STICKY_SCAN_BYTES + 32)
+    );
+
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
     tokio::spawn(async move {
-        let _ = tx
-            .send(Ok(Bytes::from_static(
-                br#"{"model":"gpt-5","input":[{"role":"user","content":"hello"}],"#,
-            )))
-            .await;
+        let _ = tx.send(Ok(Bytes::from(first_chunk))).await;
         tokio::time::sleep(Duration::from_millis(180)).await;
         let _ = tx
             .send(Ok(Bytes::from_static(br#""temperature":0}"#)))
@@ -24785,7 +24786,7 @@ async fn proxy_openai_v1_via_pool_live_first_attempt_does_not_wait_for_eof_witho
         ),
     )
     .await
-    .expect("live first attempt should not wait for body EOF without early sticky key")
+    .expect("live first attempt should not wait for body EOF after the sticky probe prefix is exhausted")
     .expect("live first attempt should succeed");
 
     assert_eq!(response.status(), StatusCode::OK);
@@ -24798,6 +24799,100 @@ async fn proxy_openai_v1_via_pool_live_first_attempt_does_not_wait_for_eof_witho
 
     let attempts = attempts.lock().expect("lock no-sticky live attempts");
     assert_eq!(attempts.get("Bearer route-no-sticky").copied(), Some(1));
+
+    upstream_handle.abort();
+}
+
+#[tokio::test]
+async fn proxy_openai_v1_via_pool_live_first_attempt_preserves_body_sticky_route_after_slow_prefix()
+{
+    let (upstream_base, attempts, upstream_handle) = spawn_pool_retry_upstream(&[]).await;
+    let mut config = test_config();
+    config.openai_upstream_base_url = Url::parse(&upstream_base).expect("valid upstream base url");
+    config.openai_proxy_request_read_timeout = Duration::from_millis(200);
+    let state = test_state_from_config(config, true).await;
+    seed_pool_routing_api_key(&state, "pool-sticky-live-key").await;
+    let default_id =
+        insert_test_pool_api_key_account(&state, "Default Slow Live Route", "route-default").await;
+    let sticky_id =
+        insert_test_pool_api_key_account(&state, "Sticky Slow Live Route", "route-sticky").await;
+
+    let resolved_without_sticky =
+        match resolve_pool_account_for_request(state.as_ref(), None, &[], &HashSet::new())
+            .await
+            .expect("resolve default slow live route")
+        {
+            PoolAccountResolution::Resolved(account) => account.account_id,
+            other => panic!("expected resolved default route, got {other:?}"),
+        };
+    let preferred_sticky_account_id = if resolved_without_sticky == default_id {
+        sticky_id
+    } else {
+        default_id
+    };
+    let expected_authorization = if preferred_sticky_account_id == default_id {
+        "Bearer route-default"
+    } else {
+        "Bearer route-sticky"
+    };
+    upsert_test_sticky_route_at(
+        &state.pool,
+        "sticky-live-slow-body-route",
+        preferred_sticky_account_id,
+        &format_test_recent_active_timestamp(Utc::now()),
+    )
+    .await;
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, io::Error>>(16);
+    tokio::spawn(async move {
+        let _ = tx
+            .send(Ok(Bytes::from_static(
+                br#"{"model":"gpt-5","messages":[{"role":"user","content":"hello"}],"#,
+            )))
+            .await;
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        let _ = tx
+            .send(Ok(Bytes::from_static(
+                br#""stickyKey":"sticky-live-slow-body-route","temperature":0}"#,
+            )))
+            .await;
+    });
+
+    let runtime_timeouts = resolve_proxy_request_timeouts(state.as_ref(), true)
+        .await
+        .expect("resolve pool runtime timeouts");
+    let response = proxy_openai_v1_via_pool(
+        state.clone(),
+        6248,
+        &"/v1/chat/completions".parse().expect("valid uri"),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-sticky-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)),
+        runtime_timeouts,
+        None,
+    )
+    .await
+    .expect("slow live first attempt should still honor body sticky route");
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("read slow sticky live response body");
+    let payload: Value = serde_json::from_slice(&body).expect("decode slow sticky live response");
+    assert_eq!(payload["authorization"], expected_authorization);
+    assert_eq!(payload["attempt"], 1);
+
+    let attempts = attempts.lock().expect("lock slow live sticky attempts");
+    assert_eq!(attempts.get(expected_authorization).copied(), Some(1));
 
     upstream_handle.abort();
 }
@@ -29665,8 +29760,9 @@ async fn prepare_pool_request_body_for_account_skips_fast_mode_rewrite_for_compa
 }
 
 #[tokio::test]
-async fn prepare_pool_request_body_for_account_skips_fast_mode_rewrite_for_large_file_snapshot() {
-    let temp_dir = make_temp_test_dir("pool-request-large-rewrite-skip");
+async fn prepare_pool_request_body_for_account_preserves_fast_mode_rewrite_for_large_file_snapshot()
+{
+    let temp_dir = make_temp_test_dir("pool-request-large-rewrite-preserve");
     let temp_file = Arc::new(PoolReplayTempFile {
         path: temp_dir.join("request-body.bin"),
     });
@@ -29694,26 +29790,26 @@ async fn prepare_pool_request_body_for_account_skips_fast_mode_rewrite_for_large
     .await
     .expect("prepare large pool request body");
 
-    match prepared.snapshot {
-        PoolReplayBodySnapshot::File {
-            temp_file: actual,
-            size,
-            sticky_key,
-        } => {
-            assert_eq!(actual.path, temp_file.path);
-            assert_eq!(size, original_body.len());
-            assert_eq!(sticky_key.as_deref(), Some("sticky-large-body"));
-        }
-        other => panic!("expected file-backed snapshot, got {other:?}"),
-    }
     assert!(
-        prepared.request_body_for_capture.is_none(),
-        "large file-backed body should skip capture materialization during rewrite"
+        matches!(&prepared.snapshot, PoolReplayBodySnapshot::File { .. }),
+        "rewritten large body should stay file-backed"
     );
-    assert!(
-        prepared.requested_service_tier.is_none(),
-        "large file-backed rewrite skip should avoid JSON materialization"
-    );
+    assert_eq!(prepared.requested_service_tier.as_deref(), Some("priority"));
+    let rewritten_bytes = prepared
+        .request_body_for_capture
+        .expect("rewritten large file-backed body should keep capture bytes");
+    let rewritten_payload: Value =
+        serde_json::from_slice(&rewritten_bytes).expect("decode rewritten large request body");
+    assert_eq!(rewritten_payload["service_tier"], "priority");
+    assert!(rewritten_payload.get("serviceTier").is_none());
+    assert_eq!(rewritten_payload["stickyKey"], "sticky-large-body");
+
+    let snapshot_bytes = prepared
+        .snapshot
+        .to_bytes()
+        .await
+        .expect("read rewritten snapshot bytes");
+    assert_eq!(snapshot_bytes, rewritten_bytes);
 
     cleanup_temp_test_dir(&temp_dir);
 }
