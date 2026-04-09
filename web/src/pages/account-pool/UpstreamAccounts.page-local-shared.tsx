@@ -300,6 +300,21 @@ type SharedUpstreamAccountDetailDrawerProps = {
   onClose: (options?: SharedUpstreamAccountDetailDrawerCloseOptions) => void;
 };
 
+type PendingSaveSession = {
+  accountId: number;
+  sessionKey: string | null;
+  fallbackDraft: AccountDraft;
+};
+
+type RecentSaveResponseGuard = {
+  accountId: number;
+  sessionKey: string | null;
+  draft: AccountDraft;
+  fallbackDraft: AccountDraft;
+  retainedDraft: AccountDraft;
+  timeoutId: ReturnType<typeof setTimeout>;
+};
+
 const DEFAULT_GROUP_FILTER_STATE: GroupFilterState = {
   mode: "all",
   query: "",
@@ -1279,18 +1294,12 @@ export function SharedUpstreamAccountDetailDrawer({
   const activeDraftSessionKeyRef = useRef<string | null>(null);
   const draftBaselineRef = useRef<AccountDraft>(buildDraft(null));
   const latestServerDraftRef = useRef<AccountDraft>(buildDraft(null));
-  const pendingSaveSessionRef = useRef<{
-    accountId: number;
-    sessionKey: string | null;
-    fallbackDraft: AccountDraft;
-  } | null>(null);
-  const recentSaveResponseGuardRef = useRef<{
-    accountId: number;
-    sessionKey: string | null;
-    draft: AccountDraft;
-    fallbackDraft: AccountDraft;
-    timeoutId: ReturnType<typeof setTimeout>;
-  } | null>(null);
+  const pendingSaveSessionsRef = useRef<Map<number, PendingSaveSession>>(
+    new Map(),
+  );
+  const recentSaveResponseGuardsRef = useRef<
+    Map<number, RecentSaveResponseGuard>
+  >(new Map());
   const draftSessionSnapshotRef = useRef({
     open,
     accountId,
@@ -1340,10 +1349,10 @@ export function SharedUpstreamAccountDetailDrawer({
 
   useEffect(
     () => () => {
-      const recentSaveResponseGuard = recentSaveResponseGuardRef.current;
-      if (recentSaveResponseGuard != null) {
+      for (const recentSaveResponseGuard of recentSaveResponseGuardsRef.current.values()) {
         clearTimeout(recentSaveResponseGuard.timeoutId);
       }
+      recentSaveResponseGuardsRef.current.clear();
     },
     [],
   );
@@ -1369,7 +1378,8 @@ export function SharedUpstreamAccountDetailDrawer({
       draftSessionKeyRef.current !== activeDraftSessionKey;
     draftSessionKeyRef.current = activeDraftSessionKey;
 
-    const pendingSaveSession = pendingSaveSessionRef.current;
+    const pendingSaveSession =
+      pendingSaveSessionsRef.current.get(accountId) ?? null;
     const hasPendingLateSaveSessionMismatch =
       pendingSaveSession != null &&
       pendingSaveSession.accountId === accountId &&
@@ -1377,11 +1387,14 @@ export function SharedUpstreamAccountDetailDrawer({
       pendingSaveSession.sessionKey !== activeDraftSessionKey &&
       areAccountDraftsEqual(nextBaseline, pendingSaveSession.fallbackDraft);
 
-    const recentSaveResponseGuard = recentSaveResponseGuardRef.current;
+    const recentSaveResponseGuard =
+      recentSaveResponseGuardsRef.current.get(accountId) ?? null;
+    const retainedServerDraft =
+      recentSaveResponseGuard?.retainedDraft ?? previousLatestServerDraft;
     const hasAcceptedFresherServerDraft =
       recentSaveResponseGuard != null &&
       !areAccountDraftsEqual(
-        previousLatestServerDraft,
+        retainedServerDraft,
         recentSaveResponseGuard.fallbackDraft,
       );
     const shouldIgnoreRecentSaveResponse =
@@ -1392,11 +1405,11 @@ export function SharedUpstreamAccountDetailDrawer({
       areAccountDraftsEqual(nextBaseline, recentSaveResponseGuard.draft);
     if (shouldIgnoreRecentSaveResponse) {
       clearTimeout(recentSaveResponseGuard.timeoutId);
-      recentSaveResponseGuardRef.current = null;
-      draftBaselineRef.current = previousLatestServerDraft;
-      latestServerDraftRef.current = previousLatestServerDraft;
+      recentSaveResponseGuardsRef.current.delete(accountId);
+      draftBaselineRef.current = retainedServerDraft;
+      latestServerDraftRef.current = retainedServerDraft;
       if (shouldSeedDraft) {
-        setDraft(previousLatestServerDraft);
+        setDraft(retainedServerDraft);
       }
       return;
     }
@@ -1495,21 +1508,23 @@ export function SharedUpstreamAccountDetailDrawer({
 
   useEffect(() => {
     const validTagIds = new Set(tagItems.map((tag) => tag.id));
-    const pendingSaveSession = pendingSaveSessionRef.current;
-    if (pendingSaveSession != null) {
+    for (const pendingSaveSession of pendingSaveSessionsRef.current.values()) {
       pendingSaveSession.fallbackDraft = filterAccountDraftTagIds(
         pendingSaveSession.fallbackDraft,
         validTagIds,
       );
     }
-    const recentSaveResponseGuard = recentSaveResponseGuardRef.current;
-    if (recentSaveResponseGuard != null) {
+    for (const recentSaveResponseGuard of recentSaveResponseGuardsRef.current.values()) {
       recentSaveResponseGuard.draft = filterAccountDraftTagIds(
         recentSaveResponseGuard.draft,
         validTagIds,
       );
       recentSaveResponseGuard.fallbackDraft = filterAccountDraftTagIds(
         recentSaveResponseGuard.fallbackDraft,
+        validTagIds,
+      );
+      recentSaveResponseGuard.retainedDraft = filterAccountDraftTagIds(
+        recentSaveResponseGuard.retainedDraft,
         validTagIds,
       );
     }
@@ -2310,7 +2325,7 @@ export function SharedUpstreamAccountDetailDrawer({
         sessionKey: saveDraftSessionKey,
         fallbackDraft: draftBaselineRef.current,
       };
-      pendingSaveSessionRef.current = pendingSaveSession;
+      pendingSaveSessionsRef.current.set(source.id, pendingSaveSession);
       setActionError((current) => {
         const nextMessages = { ...current.accountMessages };
         delete nextMessages[source.id];
@@ -2374,7 +2389,7 @@ export function SharedUpstreamAccountDetailDrawer({
           activeDraftSessionKeyRef.current != null
         ) {
           const previousRecentSaveResponseGuard =
-            recentSaveResponseGuardRef.current;
+            recentSaveResponseGuardsRef.current.get(source.id) ?? null;
           if (previousRecentSaveResponseGuard != null) {
             clearTimeout(previousRecentSaveResponseGuard.timeoutId);
           }
@@ -2383,16 +2398,20 @@ export function SharedUpstreamAccountDetailDrawer({
             sessionKey: saveDraftSessionKey,
             draft: responseDraft,
             fallbackDraft: pendingSaveSession.fallbackDraft,
+            retainedDraft: latestServerDraftRef.current,
             timeoutId: setTimeout(() => {
               if (
-                recentSaveResponseGuardRef.current ===
+                recentSaveResponseGuardsRef.current.get(source.id) ===
                 recentSaveResponseGuard
               ) {
-                recentSaveResponseGuardRef.current = null;
+                recentSaveResponseGuardsRef.current.delete(source.id);
               }
             }, 0),
           };
-          recentSaveResponseGuardRef.current = recentSaveResponseGuard;
+          recentSaveResponseGuardsRef.current.set(
+            source.id,
+            recentSaveResponseGuard,
+          );
         }
         if (
           selectedIdRef.current === source.id &&
@@ -2428,8 +2447,10 @@ export function SharedUpstreamAccountDetailDrawer({
           },
         }));
       } finally {
-        if (pendingSaveSessionRef.current === pendingSaveSession) {
-          pendingSaveSessionRef.current = null;
+        if (
+          pendingSaveSessionsRef.current.get(source.id) === pendingSaveSession
+        ) {
+          pendingSaveSessionsRef.current.delete(source.id);
         }
         setBusyAction((current) => {
           const nextActions = new Set(current.accountActions);

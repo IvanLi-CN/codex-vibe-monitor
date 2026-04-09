@@ -911,6 +911,137 @@ describe("SharedUpstreamAccountDetailDrawer edit drafts", () => {
     expect((noteInput as HTMLTextAreaElement).value).toBe("Refreshed note")
   })
 
+  it("keeps per-account late-save guards isolated when another account save overlaps", async () => {
+    const saveRequests = new Map([
+      [8, deferred<any>()],
+      [9, deferred<any>()],
+    ])
+    const items = [
+      createApiKeyItem(8, "Gateway Key"),
+      createApiKeyItem(9, "Backup Key"),
+    ]
+    const saveAccount = vi.fn().mockImplementation((accountId: number) => {
+      const request = saveRequests.get(accountId)
+      if (!request) {
+        throw new Error(`unexpected save request: ${accountId}`)
+      }
+      return request.promise
+    })
+    const refreshedGatewayDetail = createApiKeyDetail(items[0], {
+      displayName: "Refreshed Gateway Key",
+      note: "Refreshed note",
+    })
+    const savedGatewayDetail = createApiKeyDetail(
+      createApiKeyItem(8, "Saved Gateway Key"),
+      {
+        note: "Saved note",
+      },
+    )
+    const savedBackupDetail = createApiKeyDetail(
+      createApiKeyItem(9, "Saved Backup Key"),
+      {
+        note: "Backup saved note",
+      },
+    )
+    let state = createApiKeyHookState({
+      items,
+      selectedId: 8,
+      detail: createApiKeyDetail(items[0], {
+        note: "Original note",
+      }),
+      saveAccount,
+    })
+    hookMocks.useUpstreamAccounts.mockImplementation(() => state)
+
+    renderDetailDrawer(8)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+    setInputValue('input[name="detailDisplayName"]', "Pending save draft")
+    clickButton(/Save changes/i)
+    await flushAsync()
+
+    rerenderDetailDrawer(8, { open: false })
+    await flushAsync()
+    rerenderDetailDrawer(8)
+    await flushAsync()
+
+    state = {
+      ...state,
+      detail: refreshedGatewayDetail,
+    }
+    rerenderDetailDrawer(8)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+
+    state = {
+      ...state,
+      selectedId: 9,
+      selectedSummary: items[1],
+      detail: createApiKeyDetail(items[1], {
+        note: "Backup note",
+      }),
+    }
+    rerenderDetailDrawer(9)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+    clickButton(/Save changes/i)
+    await flushAsync()
+
+    state = {
+      ...state,
+      selectedId: 8,
+      selectedSummary: items[0],
+      detail: refreshedGatewayDetail,
+    }
+    rerenderDetailDrawer(8)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+
+    await act(async () => {
+      saveRequests.get(8)?.resolve(savedGatewayDetail)
+      await Promise.resolve()
+
+      state = {
+        ...state,
+        selectedId: 9,
+        selectedSummary: items[1],
+        detail: createApiKeyDetail(items[1], {
+          note: "Backup note",
+        }),
+      }
+      rerenderDetailDrawer(9)
+
+      saveRequests.get(9)?.resolve(savedBackupDetail)
+      await Promise.resolve()
+
+      state = {
+        ...state,
+        selectedId: 8,
+        selectedSummary: items[0],
+        detail: savedGatewayDetail,
+      }
+      rerenderDetailDrawer(8)
+      await Promise.resolve()
+    })
+
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+
+    const displayNameInput = document.body.querySelector(
+      'input[name="detailDisplayName"]',
+    )
+    const noteInput = document.body.querySelector('textarea[name="detailNote"]')
+    expect((displayNameInput as HTMLInputElement).value).toBe(
+      "Refreshed Gateway Key",
+    )
+    expect((noteInput as HTMLTextAreaElement).value).toBe("Refreshed note")
+  })
+
   it("ignores an older save response after switching away and back to the same account", async () => {
     const saveRequest = deferred<any>()
     const saveAccount = vi.fn().mockImplementation(() => saveRequest.promise)
