@@ -1,0 +1,23 @@
+{
+  "app_effective_version": "1.45.8",
+  "base_stable_version": "1.45.7",
+  "channel_label": "channel:stable",
+  "created_at": "2026-04-09T18:05:01Z",
+  "image_name_lower": "ivanli-cn/codex-vibe-monitor",
+  "next_stable_version": "1.45.8",
+  "notes_ref": "refs/notes/release-snapshots",
+  "pr_head_sha": "5b96ca2645d7b34f0ec947aff1729beccd47dba7",
+  "pr_number": 317,
+  "pr_title": "fix: remove oauth /v1/responses large-body rewrite gate",
+  "registry": "ghcr.io",
+  "release_bump": "patch",
+  "release_channel": "stable",
+  "release_enabled": true,
+  "release_prerelease": false,
+  "release_tag": "v1.45.8",
+  "schema_version": 1,
+  "snapshot_source": "ci-main",
+  "tags_csv": "ghcr.io/ivanli-cn/codex-vibe-monitor:v1.45.8",
+  "target_sha": "1c03e6f6a763142a4d464c97ff28b15808c44d3a",
+  "type_label": "type:patch"
+}
