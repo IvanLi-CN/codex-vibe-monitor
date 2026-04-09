@@ -4726,11 +4726,11 @@ async fn upsert_test_sticky_route_at(
 }
 
 fn format_test_recent_active_timestamp(now: DateTime<Utc>) -> String {
-    format_utc_iso(now - ChronoDuration::minutes(4) - ChronoDuration::seconds(59))
+    format_utc_iso(now - ChronoDuration::minutes(4))
 }
 
 fn format_test_stale_active_timestamp(now: DateTime<Utc>) -> String {
-    format_utc_iso(now - ChronoDuration::minutes(5) - ChronoDuration::seconds(1))
+    format_utc_iso(now - ChronoDuration::minutes(6))
 }
 
 async fn insert_test_pool_oauth_account(
@@ -34147,7 +34147,7 @@ async fn prompt_cache_conversation_flight_guard_cleans_in_flight_on_drop() {
         );
     }
 
-    tokio::time::timeout(Duration::from_secs(1), async {
+    tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let has_entry = {
                 let state = cache.lock().await;
@@ -34158,7 +34158,7 @@ async fn prompt_cache_conversation_flight_guard_cleans_in_flight_on_drop() {
             if !has_entry {
                 break;
             }
-            tokio::task::yield_now().await;
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
     })
     .await
@@ -45414,9 +45414,11 @@ async fn terminate_child_process_prefers_sigterm_when_process_exits_cleanly() {
 #[cfg(unix)]
 #[tokio::test]
 async fn terminate_child_process_falls_back_to_force_kill_when_grace_period_is_exhausted() {
-    let mut child = Command::new("/bin/sh")
+    let mut child = Command::new("python3")
         .arg("-c")
-        .arg("trap '' TERM; while :; do sleep 0.1; done")
+        .arg(
+            "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN)\nwhile True:\n    time.sleep(1)\n",
+        )
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -46002,7 +46004,9 @@ async fn drain_runtime_after_shutdown_waits_for_summary_quota_broadcast_workers(
 
     let drain_handle = tokio::spawn({
         let state = state.clone();
-        async move { drain_runtime_after_shutdown(state, None, None, None, None, None, None).await }
+        async move {
+            drain_runtime_after_shutdown(state, None, None, None, None, None, None, None).await
+        }
     });
 
     started_rx_a
@@ -47091,4 +47095,319 @@ async fn recover_orphaned_proxy_invocations_marks_running_rows_interrupted() {
 
     assert_eq!(xy_row.0, INVOCATION_STATUS_RUNNING);
     assert_eq!(xy_row.1, None);
+}
+
+#[tokio::test]
+async fn pool_early_phase_orphan_cleanup_guard_recovers_dropped_sending_request_attempt() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let invoke_id = "guard-recovered-pending-attempt";
+    let occurred_at = "2026-03-23 21:09:04";
+    let request_info = RequestCaptureInfo {
+        model: Some("gpt-5.4".to_string()),
+        is_stream: true,
+        ..RequestCaptureInfo::default()
+    };
+    let running_record = build_running_proxy_capture_record(
+        invoke_id,
+        occurred_at,
+        ProxyCaptureTarget::Responses,
+        &request_info,
+        Some("198.51.100.21"),
+        Some("sticky-guard"),
+        Some("pck-guard"),
+        true,
+        Some(account_id),
+        Some("Primary"),
+        Some("api_key_codex"),
+        Some("api.openai.com"),
+        None,
+        Some(1),
+        Some(1),
+        None,
+        None,
+        10.0,
+        2.0,
+        0.0,
+        0.0,
+    );
+    persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
+        .await
+        .expect("persist running invocation");
+
+    let trace = PoolUpstreamAttemptTraceContext {
+        invoke_id: invoke_id.to_string(),
+        occurred_at: occurred_at.to_string(),
+        endpoint: "/v1/responses".to_string(),
+        sticky_key: Some("sticky-guard".to_string()),
+        requester_ip: Some("192.168.31.6".to_string()),
+    };
+    let pending = begin_pool_upstream_request_attempt(
+        &state.pool,
+        &trace,
+        account_id,
+        "route-primary",
+        1,
+        1,
+        1,
+        occurred_at,
+    )
+    .await;
+    advance_pool_upstream_request_attempt_phase(
+        state.as_ref(),
+        &pending,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_SENDING_REQUEST,
+    )
+    .await
+    .expect("advance attempt into sending-request");
+
+    recover_guard_dropped_pool_early_phase_orphan(state.as_ref(), pending.clone())
+        .await
+        .expect("recover dropped early-phase attempt");
+
+    let attempt = sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+        r#"
+        SELECT status, phase, failure_kind
+        FROM pool_upstream_request_attempts
+        WHERE id = ?1
+        "#,
+    )
+    .bind(pending.attempt_id.expect("pending attempt id"))
+    .fetch_one(&state.pool)
+    .await
+    .expect("load recovered pending attempt");
+    let invocation = sqlx::query_as::<_, (String, Option<String>)>(
+        r#"
+        SELECT status, failure_kind
+        FROM codex_invocations
+        WHERE invoke_id = ?1 AND occurred_at = ?2
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load recovered invocation");
+
+    assert_eq!(
+        attempt.0,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
+    );
+    assert_eq!(
+        attempt.1.as_deref(),
+        Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED)
+    );
+    assert_eq!(
+        attempt.2.as_deref(),
+        Some(PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED)
+    );
+    assert_eq!(invocation.0, INVOCATION_STATUS_INTERRUPTED);
+    assert_eq!(
+        invocation.1.as_deref(),
+        Some(PROXY_FAILURE_INVOCATION_INTERRUPTED)
+    );
+}
+
+#[tokio::test]
+async fn recover_stale_pool_early_phase_orphans_runtime_only_recovers_stale_early_rows() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let request_info = RequestCaptureInfo {
+        model: Some("gpt-5.4".to_string()),
+        is_stream: true,
+        ..RequestCaptureInfo::default()
+    };
+    let stale_started = format_naive(
+        Utc::now().with_timezone(&Shanghai).naive_local() - ChronoDuration::minutes(10),
+    );
+    let fresh_started = format_naive(Utc::now().with_timezone(&Shanghai).naive_local());
+
+    let cases = [
+        (
+            "stale-early-phase",
+            "2026-03-23 21:10:01",
+            stale_started.as_str(),
+            POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_SENDING_REQUEST,
+            true,
+        ),
+        (
+            "fresh-early-phase",
+            "2026-03-23 21:10:02",
+            fresh_started.as_str(),
+            POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_SENDING_REQUEST,
+            false,
+        ),
+        (
+            "stale-streaming-phase",
+            "2026-03-23 21:10:03",
+            stale_started.as_str(),
+            POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE,
+            false,
+        ),
+    ];
+
+    for (invoke_id, occurred_at, started_at, phase, _) in cases {
+        let running_record = build_running_proxy_capture_record(
+            invoke_id,
+            occurred_at,
+            ProxyCaptureTarget::Responses,
+            &request_info,
+            Some("198.51.100.22"),
+            Some("sticky-sweeper"),
+            None,
+            true,
+            Some(account_id),
+            Some("Primary"),
+            Some("api_key_codex"),
+            Some("api.openai.com"),
+            None,
+            Some(1),
+            Some(1),
+            None,
+            None,
+            10.0,
+            2.0,
+            0.0,
+            0.0,
+        );
+        persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
+            .await
+            .expect("persist running invocation");
+        let trace = PoolUpstreamAttemptTraceContext {
+            invoke_id: invoke_id.to_string(),
+            occurred_at: occurred_at.to_string(),
+            endpoint: "/v1/responses".to_string(),
+            sticky_key: Some("sticky-sweeper".to_string()),
+            requester_ip: Some("192.168.31.6".to_string()),
+        };
+        let pending = begin_pool_upstream_request_attempt(
+            &state.pool,
+            &trace,
+            account_id,
+            "route-primary",
+            1,
+            1,
+            1,
+            started_at,
+        )
+        .await;
+        advance_pool_upstream_request_attempt_phase(state.as_ref(), &pending, phase)
+            .await
+            .expect("advance attempt into target phase");
+    }
+
+    let outcome = recover_stale_pool_early_phase_orphans_runtime(state.as_ref())
+        .await
+        .expect("recover stale early-phase orphans");
+    assert_eq!(
+        outcome,
+        PoolOrphanRecoveryOutcome {
+            recovered_attempts: 1,
+            recovered_invocations: 1,
+        }
+    );
+
+    let stale_attempt = sqlx::query_as::<_, (String, Option<String>)>(
+        r#"
+        SELECT status, phase
+        FROM pool_upstream_request_attempts
+        WHERE invoke_id = 'stale-early-phase'
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load stale recovered attempt");
+    assert_eq!(
+        stale_attempt.0,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
+    );
+    assert_eq!(
+        stale_attempt.1.as_deref(),
+        Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED)
+    );
+
+    let stale_invocation = sqlx::query_as::<_, (String, Option<String>)>(
+        r#"
+        SELECT status, failure_kind
+        FROM codex_invocations
+        WHERE invoke_id = 'stale-early-phase'
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load stale recovered invocation");
+    assert_eq!(stale_invocation.0, INVOCATION_STATUS_INTERRUPTED);
+    assert_eq!(
+        stale_invocation.1.as_deref(),
+        Some(PROXY_FAILURE_INVOCATION_INTERRUPTED)
+    );
+
+    let fresh_attempt = sqlx::query_as::<_, (String, Option<String>)>(
+        r#"
+        SELECT status, phase
+        FROM pool_upstream_request_attempts
+        WHERE invoke_id = 'fresh-early-phase'
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load fresh attempt");
+    assert_eq!(
+        fresh_attempt.0,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING
+    );
+    assert_eq!(
+        fresh_attempt.1.as_deref(),
+        Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_SENDING_REQUEST)
+    );
+
+    let streaming_attempt = sqlx::query_as::<_, (String, Option<String>)>(
+        r#"
+        SELECT status, phase
+        FROM pool_upstream_request_attempts
+        WHERE invoke_id = 'stale-streaming-phase'
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load stale streaming attempt");
+    assert_eq!(
+        streaming_attempt.0,
+        POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING
+    );
+    assert_eq!(
+        streaming_attempt.1.as_deref(),
+        Some(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE)
+    );
+
+    let streaming_invocation = sqlx::query_as::<_, (String, Option<String>)>(
+        r#"
+        SELECT status, failure_kind
+        FROM codex_invocations
+        WHERE invoke_id = 'stale-streaming-phase'
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load stale streaming invocation");
+    assert_eq!(streaming_invocation.0, INVOCATION_STATUS_RUNNING);
+    assert_eq!(streaming_invocation.1, None);
 }

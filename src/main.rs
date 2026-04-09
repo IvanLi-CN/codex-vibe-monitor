@@ -3,7 +3,7 @@ use std::sync::atomic::AtomicUsize;
 use std::{
     borrow::Cow,
     collections::hash_map::DefaultHasher,
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     convert::Infallible,
     env, fmt,
     future::Future,

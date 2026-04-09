@@ -609,6 +609,48 @@ struct PoolAttemptRuntimeSnapshotContext {
     t_req_parse_ms: f64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct InvocationRecoverySelector {
+    invoke_id: String,
+    occurred_at: String,
+}
+
+impl InvocationRecoverySelector {
+    fn new(invoke_id: impl Into<String>, occurred_at: impl Into<String>) -> Self {
+        Self {
+            invoke_id: invoke_id.into(),
+            occurred_at: occurred_at.into(),
+        }
+    }
+}
+
+impl From<&PendingPoolAttemptRecord> for InvocationRecoverySelector {
+    fn from(value: &PendingPoolAttemptRecord) -> Self {
+        Self::new(value.invoke_id.clone(), value.occurred_at.clone())
+    }
+}
+
+#[derive(Debug, Clone, FromRow)]
+#[allow(dead_code)]
+struct RecoveredPoolAttemptRow {
+    id: i64,
+    invoke_id: String,
+    occurred_at: String,
+}
+
+#[derive(Debug, Clone, FromRow)]
+struct RecoveredInvocationRow {
+    id: i64,
+    invoke_id: String,
+    occurred_at: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct PoolOrphanRecoveryOutcome {
+    pub(crate) recovered_attempts: usize,
+    pub(crate) recovered_invocations: usize,
+}
+
 const POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING: &str = "pending";
 struct CompactSupportObservation {
     status: &'static str,
@@ -624,6 +666,46 @@ const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_WAITING_FIRST_BYTE: &str = "waiting_fi
 const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE: &str = "streaming_response";
 const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_COMPLETED: &str = "completed";
 const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED: &str = "failed";
+const POOL_EARLY_PHASE_ORPHAN_RECOVERY_GRACE: Duration = Duration::from_secs(30);
+
+struct PoolEarlyPhaseOrphanCleanupGuard {
+    state: Arc<AppState>,
+    pending_attempt_record: PendingPoolAttemptRecord,
+    armed: bool,
+}
+
+impl PoolEarlyPhaseOrphanCleanupGuard {
+    fn new(state: Arc<AppState>, pending_attempt_record: PendingPoolAttemptRecord) -> Self {
+        Self {
+            state,
+            pending_attempt_record,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PoolEarlyPhaseOrphanCleanupGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+
+        let state = self.state.clone();
+        let pending_attempt_record = self.pending_attempt_record.clone();
+        tokio::spawn(async move {
+            if let Err(err) =
+                recover_guard_dropped_pool_early_phase_orphan(state.as_ref(), pending_attempt_record)
+                    .await
+            {
+                warn!(error = %err, "failed to recover dropped pool early-phase orphan");
+            }
+        });
+    }
+}
 const POOL_UPSTREAM_MAX_DISTINCT_ACCOUNTS: usize = 3;
 const POOL_UPSTREAM_RESPONSES_MAX_TIMEOUT_ROUTE_KEYS: usize = 3;
 
@@ -2159,6 +2241,7 @@ async fn send_pool_request_with_failover(
             let attempt_started_at: String;
             let attempt_index: i64;
             let pending_attempt_record: Option<PendingPoolAttemptRecord>;
+            let mut early_phase_cleanup_guard: Option<PoolEarlyPhaseOrphanCleanupGuard>;
             let prepared_request_body = match prepare_pool_request_body_for_account(
                 body.as_ref(),
                 original_uri,
@@ -2316,6 +2399,9 @@ async fn send_pool_request_with_failover(
                         )
                         .await;
                     }
+                    early_phase_cleanup_guard = pending_attempt_record
+                        .as_ref()
+                        .map(|pending| PoolEarlyPhaseOrphanCleanupGuard::new(state.clone(), pending.clone()));
                     if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
                         && let Err(err) = advance_pool_upstream_request_attempt_phase(
                             state.as_ref(),
@@ -2827,6 +2913,9 @@ async fn send_pool_request_with_failover(
                         )
                         .await;
                     }
+                    early_phase_cleanup_guard = pending_attempt_record
+                        .as_ref()
+                        .map(|pending| PoolEarlyPhaseOrphanCleanupGuard::new(state.clone(), pending.clone()));
                     if let Some(pending_attempt_record) = pending_attempt_record.as_ref()
                         && let Err(err) = advance_pool_upstream_request_attempt_phase(
                             state.as_ref(),
@@ -3505,6 +3594,9 @@ async fn send_pool_request_with_failover(
                     ForwardProxyRouteResultKind::CompletedRequest,
                 )
                 .await;
+            }
+            if let Some(guard) = early_phase_cleanup_guard.as_mut() {
+                guard.disarm();
             }
             reservation_guard.disarm();
             return Ok(PoolUpstreamResponse {
@@ -8464,75 +8556,238 @@ async fn advance_pool_upstream_request_attempt_phase(
     broadcast_pool_upstream_attempts_snapshot(state, &pending.invoke_id).await
 }
 
-async fn recover_orphaned_pool_upstream_request_attempts(pool: &Pool<Sqlite>) -> Result<u64> {
-    let finished_at = shanghai_now_string();
-    let result = sqlx::query(
-        r#"
-        UPDATE pool_upstream_request_attempts
-        SET
-            finished_at = COALESCE(finished_at, ?1),
-            status = ?2,
-            phase = ?3,
-            failure_kind = COALESCE(failure_kind, ?4),
-            error_message = COALESCE(error_message, ?5)
-        WHERE status = ?6
-          AND finished_at IS NULL
-        "#,
-    )
-    .bind(finished_at)
-    .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE)
-    .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED)
-    .bind(PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED)
-    .bind(POOL_ATTEMPT_INTERRUPTED_MESSAGE)
-    .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING)
-    .execute(pool)
-    .await?;
-
-    Ok(result.rows_affected())
+enum PoolAttemptRecoveryScope<'a> {
+    AllPending,
+    SpecificEarlyPhase { attempt_id: i64 },
+    StaleEarlyPhase {
+        responses_started_before: &'a str,
+        compact_started_before: &'a str,
+        default_started_before: &'a str,
+    },
 }
 
-async fn recover_orphaned_proxy_invocations(pool: &Pool<Sqlite>) -> Result<u64> {
+async fn recover_pool_upstream_request_attempts_with_scope(
+    pool: &Pool<Sqlite>,
+    scope: PoolAttemptRecoveryScope<'_>,
+) -> Result<Vec<RecoveredPoolAttemptRow>> {
+    let finished_at = shanghai_now_string();
+    let recovered = match scope {
+        PoolAttemptRecoveryScope::AllPending => {
+            sqlx::query_as::<_, RecoveredPoolAttemptRow>(
+                r#"
+                UPDATE pool_upstream_request_attempts
+                SET
+                    finished_at = COALESCE(finished_at, ?1),
+                    status = ?2,
+                    phase = ?3,
+                    failure_kind = COALESCE(failure_kind, ?4),
+                    error_message = COALESCE(error_message, ?5)
+                WHERE status = ?6
+                  AND finished_at IS NULL
+                RETURNING id, invoke_id, occurred_at
+                "#,
+            )
+            .bind(finished_at)
+            .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE)
+            .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED)
+            .bind(PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED)
+            .bind(POOL_ATTEMPT_INTERRUPTED_MESSAGE)
+            .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING)
+            .fetch_all(pool)
+            .await?
+        }
+        PoolAttemptRecoveryScope::SpecificEarlyPhase { attempt_id } => {
+            sqlx::query_as::<_, RecoveredPoolAttemptRow>(
+                r#"
+                UPDATE pool_upstream_request_attempts
+                SET
+                    finished_at = COALESCE(finished_at, ?1),
+                    status = ?2,
+                    phase = ?3,
+                    failure_kind = COALESCE(failure_kind, ?4),
+                    error_message = COALESCE(error_message, ?5)
+                WHERE id = ?6
+                  AND status = ?7
+                  AND finished_at IS NULL
+                  AND LOWER(TRIM(COALESCE(phase, ''))) IN ('connecting', 'sending_request', 'waiting_first_byte')
+                RETURNING id, invoke_id, occurred_at
+                "#,
+            )
+            .bind(finished_at)
+            .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE)
+            .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED)
+            .bind(PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED)
+            .bind(POOL_ATTEMPT_INTERRUPTED_MESSAGE)
+            .bind(attempt_id)
+            .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING)
+            .fetch_all(pool)
+            .await?
+        }
+        PoolAttemptRecoveryScope::StaleEarlyPhase {
+            responses_started_before,
+            compact_started_before,
+            default_started_before,
+        } => {
+            sqlx::query_as::<_, RecoveredPoolAttemptRow>(
+                r#"
+                UPDATE pool_upstream_request_attempts
+                SET
+                    finished_at = COALESCE(finished_at, ?1),
+                    status = ?2,
+                    phase = ?3,
+                    failure_kind = COALESCE(failure_kind, ?4),
+                    error_message = COALESCE(error_message, ?5)
+                WHERE status = ?6
+                  AND finished_at IS NULL
+                  AND LOWER(TRIM(COALESCE(phase, ''))) IN ('connecting', 'sending_request', 'waiting_first_byte')
+                  AND (
+                        started_at IS NULL
+                        OR (
+                            endpoint = '/v1/responses'
+                            AND started_at <= ?7
+                        )
+                        OR (
+                            endpoint = '/v1/responses/compact'
+                            AND started_at <= ?8
+                        )
+                        OR (
+                            COALESCE(endpoint, '') NOT IN ('/v1/responses', '/v1/responses/compact')
+                            AND started_at <= ?9
+                        )
+                  )
+                RETURNING id, invoke_id, occurred_at
+                "#,
+            )
+            .bind(finished_at)
+            .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE)
+            .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED)
+            .bind(PROXY_FAILURE_POOL_ATTEMPT_INTERRUPTED)
+            .bind(POOL_ATTEMPT_INTERRUPTED_MESSAGE)
+            .bind(POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_PENDING)
+            .bind(responses_started_before)
+            .bind(compact_started_before)
+            .bind(default_started_before)
+            .fetch_all(pool)
+            .await?
+        }
+    };
+
+    Ok(recovered)
+}
+
+async fn recover_orphaned_pool_upstream_request_attempts(pool: &Pool<Sqlite>) -> Result<u64> {
+    Ok(
+        recover_pool_upstream_request_attempts_with_scope(pool, PoolAttemptRecoveryScope::AllPending)
+            .await?
+            .len() as u64,
+    )
+}
+
+enum ProxyInvocationRecoveryScope<'a> {
+    AllInFlight,
+    Selectors(&'a [InvocationRecoverySelector]),
+}
+
+async fn recover_proxy_invocations_with_scope(
+    pool: &Pool<Sqlite>,
+    scope: ProxyInvocationRecoveryScope<'_>,
+) -> Result<Vec<RecoveredInvocationRow>> {
     let mut tx = pool.begin().await?;
-    let rows = sqlx::query_as::<_, PersistedInvocationIdentityRow>(
-        r#"
-        SELECT id, status
-        FROM codex_invocations
-        WHERE source = ?1
-          AND LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
-        ORDER BY id ASC
-        "#,
-    )
-    .bind(SOURCE_PROXY)
-    .fetch_all(tx.as_mut())
-    .await?;
+    let rows = match scope {
+        ProxyInvocationRecoveryScope::AllInFlight => {
+            sqlx::query_as::<_, RecoveredInvocationRow>(
+                r#"
+                UPDATE codex_invocations
+                SET status = ?1,
+                    error_message = ?2,
+                    failure_kind = ?3,
+                    failure_class = ?4,
+                    is_actionable = 1
+                WHERE source = ?5
+                  AND LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
+                RETURNING id, invoke_id, occurred_at
+                "#,
+            )
+            .bind(INVOCATION_STATUS_INTERRUPTED)
+            .bind(INVOCATION_INTERRUPTED_MESSAGE)
+            .bind(PROXY_FAILURE_INVOCATION_INTERRUPTED)
+            .bind(FAILURE_CLASS_SERVICE)
+            .bind(SOURCE_PROXY)
+            .fetch_all(tx.as_mut())
+            .await?
+        }
+        ProxyInvocationRecoveryScope::Selectors(selectors) => {
+            let selectors: Vec<_> = selectors
+                .iter()
+                .cloned()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect();
+            if selectors.is_empty() {
+                tx.commit().await?;
+                return Ok(Vec::new());
+            }
 
-    if rows.is_empty() {
-        tx.commit().await?;
-        return Ok(0);
-    }
+            let mut query = QueryBuilder::<Sqlite>::new(
+                r#"
+                UPDATE codex_invocations
+                SET status = "#,
+            );
+            query.push_bind(INVOCATION_STATUS_INTERRUPTED);
+            query.push(
+                r#",
+                    error_message = "#,
+            );
+            query.push_bind(INVOCATION_INTERRUPTED_MESSAGE);
+            query.push(
+                r#",
+                    failure_kind = "#,
+            );
+            query.push_bind(PROXY_FAILURE_INVOCATION_INTERRUPTED);
+            query.push(
+                r#",
+                    failure_class = "#,
+            );
+            query.push_bind(FAILURE_CLASS_SERVICE);
+            query.push(
+                r#",
+                    is_actionable = 1
+                WHERE source = "#,
+            );
+            query.push_bind(SOURCE_PROXY);
+            query.push(
+                r#"
+                  AND LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
+                  AND (
+                "#,
+            );
+            let mut first = true;
+            for selector in selectors {
+                if !first {
+                    query.push(" OR ");
+                }
+                first = false;
+                query.push("(");
+                query.push("invoke_id = ");
+                query.push_bind(selector.invoke_id);
+                query.push(" AND occurred_at = ");
+                query.push_bind(selector.occurred_at);
+                query.push(")");
+            }
+            query.push(
+                r#"
+                  )
+                RETURNING id, invoke_id, occurred_at
+                "#,
+            );
+            query
+                .build_query_as::<RecoveredInvocationRow>()
+                .fetch_all(tx.as_mut())
+                .await?
+        }
+    };
 
-    let affected = sqlx::query(
-        r#"
-        UPDATE codex_invocations
-        SET status = ?1,
-            error_message = ?2,
-            failure_kind = ?3,
-            failure_class = ?4,
-            is_actionable = 1
-        WHERE source = ?5
-          AND LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
-        "#,
-    )
-    .bind(INVOCATION_STATUS_INTERRUPTED)
-    .bind(INVOCATION_INTERRUPTED_MESSAGE)
-    .bind(PROXY_FAILURE_INVOCATION_INTERRUPTED)
-    .bind(FAILURE_CLASS_SERVICE)
-    .bind(SOURCE_PROXY)
-    .execute(tx.as_mut())
-    .await?
-    .rows_affected();
-
-    if affected > 0 {
+    if !rows.is_empty() {
         let updated_ids: Vec<i64> = rows.iter().map(|row| row.id).collect();
         recompute_invocation_hourly_rollups_for_ids_tx(tx.as_mut(), &updated_ids).await?;
         if let Some(max_id) = updated_ids.iter().copied().max() {
@@ -8546,7 +8801,230 @@ async fn recover_orphaned_proxy_invocations(pool: &Pool<Sqlite>) -> Result<u64> 
     }
 
     tx.commit().await?;
-    Ok(affected)
+    Ok(rows)
+}
+
+async fn recover_orphaned_proxy_invocations(pool: &Pool<Sqlite>) -> Result<u64> {
+    Ok(
+        recover_proxy_invocations_with_scope(pool, ProxyInvocationRecoveryScope::AllInFlight)
+            .await?
+            .len() as u64,
+    )
+}
+
+fn stale_started_before_string(timeout: Duration, grace: Duration) -> String {
+    let cutoff = Utc::now().with_timezone(&Shanghai).naive_local()
+        - ChronoDuration::from_std(timeout + grace)
+            .expect("pool orphan recovery cutoff should fit chrono duration");
+    format_naive(cutoff)
+}
+
+async fn load_persisted_api_invocation(
+    pool: &Pool<Sqlite>,
+    invoke_id: &str,
+    occurred_at: &str,
+) -> Result<ApiInvocation> {
+    let mut tx = pool.begin().await?;
+    let invocation = load_persisted_api_invocation_tx(tx.as_mut(), invoke_id, occurred_at).await?;
+    tx.commit().await?;
+    Ok(invocation)
+}
+
+async fn broadcast_recovered_proxy_invocations(
+    state: &AppState,
+    recovered: &[RecoveredInvocationRow],
+) -> Result<()> {
+    if recovered.is_empty() {
+        return Ok(());
+    }
+
+    let selectors: Vec<_> = recovered
+        .iter()
+        .map(|row| InvocationRecoverySelector::new(row.invoke_id.clone(), row.occurred_at.clone()))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let mut records = Vec::new();
+    for selector in selectors {
+        match load_persisted_api_invocation(&state.pool, &selector.invoke_id, &selector.occurred_at)
+            .await
+        {
+            Ok(record) => records.push(record),
+            Err(err) => {
+                warn!(
+                    invoke_id = %selector.invoke_id,
+                    occurred_at = %selector.occurred_at,
+                    error = %err,
+                    "failed to load recovered proxy invocation for runtime broadcast"
+                );
+            }
+        }
+    }
+
+    if records.is_empty() {
+        return Ok(());
+    }
+
+    if records.iter().any(|record| {
+        record
+            .prompt_cache_key
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+    }) {
+        invalidate_prompt_cache_conversations_cache(&state.prompt_cache_conversation_cache).await;
+    }
+
+    if state.broadcaster.receiver_count() == 0 {
+        return Ok(());
+    }
+
+    let summary_invoke_id = records[0].invoke_id.clone();
+    state
+        .broadcaster
+        .send(BroadcastPayload::Records { records })
+        .map_err(|err| anyhow!("failed to broadcast recovered proxy invocation records: {err}"))?;
+    broadcast_proxy_capture_follow_up(
+        &state.pool,
+        &state.broadcaster,
+        state.broadcast_state_cache.as_ref(),
+        state.config.crs_stats.as_ref(),
+        state.config.invocation_max_days,
+        &summary_invoke_id,
+    )
+    .await;
+
+    Ok(())
+}
+
+async fn recover_guard_dropped_pool_early_phase_orphan(
+    state: &AppState,
+    pending_attempt_record: PendingPoolAttemptRecord,
+) -> Result<()> {
+    let recovered_attempts = match pending_attempt_record.attempt_id {
+        Some(attempt_id) => {
+            recover_pool_upstream_request_attempts_with_scope(
+                &state.pool,
+                PoolAttemptRecoveryScope::SpecificEarlyPhase { attempt_id },
+            )
+            .await?
+        }
+        None => Vec::new(),
+    };
+
+    let recovered_invocations = if pending_attempt_record.attempt_id.is_none() {
+        let selector = InvocationRecoverySelector::from(&pending_attempt_record);
+        recover_proxy_invocations_with_scope(
+            &state.pool,
+            ProxyInvocationRecoveryScope::Selectors(std::slice::from_ref(&selector)),
+        )
+        .await?
+    } else if recovered_attempts.is_empty() {
+        Vec::new()
+    } else {
+        let selectors: Vec<_> = recovered_attempts
+            .iter()
+            .map(|row| InvocationRecoverySelector::new(row.invoke_id.clone(), row.occurred_at.clone()))
+            .collect();
+        recover_proxy_invocations_with_scope(
+            &state.pool,
+            ProxyInvocationRecoveryScope::Selectors(&selectors),
+        )
+        .await?
+    };
+
+    if recovered_attempts.is_empty() && recovered_invocations.is_empty() {
+        return Ok(());
+    }
+
+    if !recovered_attempts.is_empty()
+        && let Err(err) = broadcast_pool_upstream_attempts_snapshot(state, &pending_attempt_record.invoke_id).await
+    {
+        warn!(
+            invoke_id = %pending_attempt_record.invoke_id,
+            error = %err,
+            "failed to broadcast guard-recovered pool attempt snapshot"
+        );
+    }
+    broadcast_recovered_proxy_invocations(state, &recovered_invocations).await?;
+
+    info!(
+        invoke_id = %pending_attempt_record.invoke_id,
+        attempt_id = pending_attempt_record.attempt_id,
+        recovered_attempts = recovered_attempts.len(),
+        recovered_invocations = recovered_invocations.len(),
+        recovery_trigger = "drop_guard",
+        "recovered pool early-phase orphan after request future dropped"
+    );
+
+    Ok(())
+}
+
+pub(crate) async fn recover_stale_pool_early_phase_orphans_runtime(
+    state: &AppState,
+) -> Result<PoolOrphanRecoveryOutcome> {
+    let timeouts = resolve_pool_routing_timeouts(&state.pool, &state.config).await?;
+    let responses_started_before = stale_started_before_string(
+        timeouts.responses_first_byte_timeout,
+        POOL_EARLY_PHASE_ORPHAN_RECOVERY_GRACE,
+    );
+    let compact_started_before = stale_started_before_string(
+        timeouts.compact_first_byte_timeout,
+        POOL_EARLY_PHASE_ORPHAN_RECOVERY_GRACE,
+    );
+    let default_started_before = stale_started_before_string(
+        timeouts.default_first_byte_timeout,
+        POOL_EARLY_PHASE_ORPHAN_RECOVERY_GRACE,
+    );
+    let recovered_attempts = recover_pool_upstream_request_attempts_with_scope(
+        &state.pool,
+        PoolAttemptRecoveryScope::StaleEarlyPhase {
+            responses_started_before: &responses_started_before,
+            compact_started_before: &compact_started_before,
+            default_started_before: &default_started_before,
+        },
+    )
+    .await?;
+    if recovered_attempts.is_empty() {
+        return Ok(PoolOrphanRecoveryOutcome::default());
+    }
+
+    let selectors: Vec<_> = recovered_attempts
+        .iter()
+        .map(|row| InvocationRecoverySelector::new(row.invoke_id.clone(), row.occurred_at.clone()))
+        .collect();
+    let recovered_invocations = recover_proxy_invocations_with_scope(
+        &state.pool,
+        ProxyInvocationRecoveryScope::Selectors(&selectors),
+    )
+    .await?;
+
+    for invoke_id in recovered_attempts
+        .iter()
+        .map(|row| row.invoke_id.as_str())
+        .collect::<BTreeSet<_>>()
+    {
+        if let Err(err) = broadcast_pool_upstream_attempts_snapshot(state, invoke_id).await {
+            warn!(
+                invoke_id,
+                error = %err,
+                "failed to broadcast stale pool orphan recovery snapshot"
+            );
+        }
+    }
+    broadcast_recovered_proxy_invocations(state, &recovered_invocations).await?;
+
+    let outcome = PoolOrphanRecoveryOutcome {
+        recovered_attempts: recovered_attempts.len(),
+        recovered_invocations: recovered_invocations.len(),
+    };
+    info!(
+        recovered_attempts = outcome.recovered_attempts,
+        recovered_invocations = outcome.recovered_invocations,
+        recovery_trigger = "runtime_sweeper",
+        "recovered stale pool early-phase orphans at runtime"
+    );
+
+    Ok(outcome)
 }
 
 async fn broadcast_pool_upstream_attempts_snapshot(
