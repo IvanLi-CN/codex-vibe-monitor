@@ -333,6 +333,29 @@ describe('InvocationTable', () => {
     expect(html).not.toContain('>失败<')
   })
 
+  it('falls back to downstream-facing diagnostics in collapsed summaries when canonical upstream text is empty', () => {
+    const html = renderTable([
+      {
+        id: 26,
+        invokeId: 'invocation-downstream-summary',
+        occurredAt: '2026-03-07T03:13:48Z',
+        createdAt: '2026-03-07T03:13:48Z',
+        source: 'proxy',
+        proxyDisplayName: 'legacy-edge',
+        endpoint: '/v1/responses',
+        model: 'gpt-5.4',
+        status: 'failed',
+        failureClass: 'client_abort',
+        failureKind: 'downstream_closed',
+        downstreamStatusCode: 200,
+        downstreamErrorMessage:
+          '[downstream_closed] downstream closed while streaming upstream response',
+      },
+    ])
+
+    expect(html).toContain('[downstream_closed] downstream closed while streaming upstream response')
+  })
+
   it('renders reasoning effort and reasoning-token output breakdown in the summary rows', () => {
     const records: ApiInvocation[] = [
       {

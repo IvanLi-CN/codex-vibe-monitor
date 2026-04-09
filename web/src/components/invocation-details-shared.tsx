@@ -114,6 +114,14 @@ export function formatMilliseconds(value: number | null | undefined) {
   return `${value.toFixed(1)} ms`
 }
 
+export function resolveInvocationCollapsedErrorSummary(
+  record: Pick<ApiInvocation, 'errorMessage' | 'downstreamErrorMessage'>,
+) {
+  const canonicalUpstreamError = record.errorMessage?.trim()
+  if (canonicalUpstreamError) return canonicalUpstreamError
+  return record.downstreamErrorMessage?.trim() ?? ''
+}
+
 export function formatSecondsFromMilliseconds(value: number | null | undefined, localeTag: string) {
   if (typeof value !== 'number' || !Number.isFinite(value)) return FALLBACK_CELL
 

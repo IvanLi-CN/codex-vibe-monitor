@@ -508,35 +508,39 @@ fn push_keyword_filter(query: &mut QueryBuilder<Sqlite>, keyword: &str) {
     query
         .push("LOWER(invoke_id) LIKE ")
         .push_bind(like_pattern.clone())
-        .push(" ESCAPE '\\\\'");
+        .push(" ESCAPE '\\'");
     query
         .push(" OR LOWER(COALESCE(model, '')) LIKE ")
         .push_bind(like_pattern.clone())
-        .push(" ESCAPE '\\\\'");
+        .push(" ESCAPE '\\'");
     query.push(" OR LOWER(TRIM(COALESCE(");
     query.push(INVOCATION_PROXY_DISPLAY_SQL);
     query.push(", ''))) LIKE ");
-    query.push_bind(like_pattern.clone()).push(" ESCAPE '\\\\'");
+    query.push_bind(like_pattern.clone()).push(" ESCAPE '\\'");
     query.push(" OR LOWER(TRIM(COALESCE(");
     query.push(INVOCATION_ENDPOINT_SQL);
     query.push(", ''))) LIKE ");
-    query.push_bind(like_pattern.clone()).push(" ESCAPE '\\\\'");
+    query.push_bind(like_pattern.clone()).push(" ESCAPE '\\'");
     query.push(" OR LOWER(TRIM(COALESCE(");
     query.push(INVOCATION_FAILURE_KIND_SQL);
     query.push(", ''))) LIKE ");
-    query.push_bind(like_pattern.clone()).push(" ESCAPE '\\\\'");
+    query.push_bind(like_pattern.clone()).push(" ESCAPE '\\'");
     query
         .push(" OR LOWER(COALESCE(error_message, '')) LIKE ")
         .push_bind(like_pattern.clone())
-        .push(" ESCAPE '\\\\'");
+        .push(" ESCAPE '\\'");
+    query.push(" OR LOWER(TRIM(COALESCE(");
+    query.push(INVOCATION_DOWNSTREAM_ERROR_MESSAGE_SQL);
+    query.push(", ''))) LIKE ");
+    query.push_bind(like_pattern.clone()).push(" ESCAPE '\\'");
     query.push(" OR LOWER(TRIM(COALESCE(");
     query.push(INVOCATION_PROMPT_CACHE_KEY_SQL);
     query.push(", ''))) LIKE ");
-    query.push_bind(like_pattern.clone()).push(" ESCAPE '\\\\'");
+    query.push_bind(like_pattern.clone()).push(" ESCAPE '\\'");
     query.push(" OR LOWER(TRIM(COALESCE(");
     query.push(INVOCATION_REQUESTER_IP_SQL);
     query.push(", ''))) LIKE ");
-    query.push_bind(like_pattern).push(" ESCAPE '\\\\'");
+    query.push_bind(like_pattern).push(" ESCAPE '\\'");
     query.push(")");
 }
 

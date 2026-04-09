@@ -28,6 +28,7 @@ import {
   renderEndpointSummary,
   renderFastIndicator,
   renderReasoningEffortBadge,
+  resolveInvocationCollapsedErrorSummary,
   useInvocationPoolAttempts,
 } from "./invocation-details-shared";
 
@@ -113,6 +114,7 @@ interface InvocationRowViewModel {
   endpointValue: string;
   endpointDisplay: InvocationEndpointDisplay;
   errorMessage: string;
+  collapsedErrorSummary: string;
   totalLatencyValue: string;
   firstResponseByteTotalValue: string;
   responseContentEncodingValue: string;
@@ -315,6 +317,7 @@ export function InvocationTable({
           isInFlight,
           occurredTime,
           occurredDate,
+          collapsedErrorSummary: resolveInvocationCollapsedErrorSummary(record),
           ...detailView,
         };
       }),
@@ -524,9 +527,9 @@ export function InvocationTable({
                 {renderEndpointSummary(row.endpointDisplay, t, "text-xs")}
                 <div
                   className="truncate text-xs"
-                  title={row.errorMessage || undefined}
+                  title={row.collapsedErrorSummary || undefined}
                 >
-                  {row.errorMessage || FALLBACK_CELL}
+                  {row.collapsedErrorSummary || FALLBACK_CELL}
                 </div>
               </div>
 
@@ -747,9 +750,9 @@ export function InvocationTable({
                           {renderEndpointSummary(row.endpointDisplay, t)}
                           <span
                             className="block truncate whitespace-nowrap"
-                            title={row.errorMessage || undefined}
+                            title={row.collapsedErrorSummary || undefined}
                           >
-                            {row.errorMessage || FALLBACK_CELL}
+                            {row.collapsedErrorSummary || FALLBACK_CELL}
                           </span>
                         </div>
                       </td>

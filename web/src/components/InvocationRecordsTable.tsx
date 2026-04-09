@@ -15,6 +15,7 @@ import {
   formatOptionalText,
   renderEndpointSummary,
   renderFastIndicator,
+  resolveInvocationCollapsedErrorSummary,
   useInvocationPoolAttempts,
 } from "./invocation-details-shared";
 import {
@@ -77,6 +78,7 @@ interface InvocationRecordsRowViewModel {
     typeof buildInvocationDetailViewModel
   >["endpointDisplay"];
   errorMessage: string;
+  collapsedErrorSummary: string;
   totalLatencyValue: string;
   firstResponseByteTotalValue: string;
   firstByteLatencyValue: string;
@@ -256,7 +258,7 @@ function renderFocusSummary(
             {t("records.table.exception.error")}
           </dt>
           <dd className="truncate text-right font-mono">
-            {formatOptionalText(row.record.errorMessage)}
+            {row.collapsedErrorSummary || FALLBACK_CELL}
           </dd>
         </dl>
       );
@@ -512,6 +514,7 @@ export function InvocationRecordsTable({
           statusLabel: statusMeta.labelKey
             ? t(statusMeta.labelKey)
             : (statusMeta.label ?? t("table.status.unknown")),
+          collapsedErrorSummary: resolveInvocationCollapsedErrorSummary(record),
           ...detailView,
         };
       }),
@@ -764,9 +767,9 @@ export function InvocationRecordsTable({
             </td>
             <td
               className="max-w-[18rem] truncate px-3 py-3 align-middle text-left text-xs"
-              title={row.errorMessage || undefined}
+              title={row.collapsedErrorSummary || undefined}
             >
-              {row.errorMessage || FALLBACK_CELL}
+              {row.collapsedErrorSummary || FALLBACK_CELL}
             </td>
           </>
         );
@@ -850,7 +853,7 @@ export function InvocationRecordsTable({
             <div className="flex items-center justify-between gap-3">
               <dt>{t("records.table.exception.error")}</dt>
               <dd className="truncate font-mono">
-                {row.errorMessage || FALLBACK_CELL}
+                {row.collapsedErrorSummary || FALLBACK_CELL}
               </dd>
             </div>
           </>

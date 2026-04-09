@@ -504,6 +504,32 @@ describe("InvocationRecordsTable", () => {
     expect(host?.textContent ?? "").toContain("pool upstream responded with 502");
   });
 
+  it("uses downstream-facing diagnostics as the collapsed exception summary when upstream is empty", () => {
+    render(
+      <InvocationRecordsTable
+        focus="exception"
+        isLoading={false}
+        records={[
+          createRecord({
+            id: 33,
+            invokeId: "invoke-downstream-summary",
+            status: "failed",
+            failureClass: "client_abort",
+            failureKind: "downstream_closed",
+            errorMessage: undefined,
+            downstreamStatusCode: 200,
+            downstreamErrorMessage:
+              "[downstream_closed] downstream closed while streaming upstream response",
+          }),
+        ]}
+      />,
+    );
+
+    expect(host?.textContent ?? "").toContain(
+      "[downstream_closed] downstream closed while streaming upstream response",
+    );
+  });
+
   it("refetches pool attempts when in-flight detail fields change without counter changes", async () => {
     apiMocks.fetchInvocationPoolAttempts.mockResolvedValue([]);
 
