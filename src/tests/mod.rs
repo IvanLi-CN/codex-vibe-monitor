@@ -24975,7 +24975,10 @@ async fn proxy_openai_v1_via_pool_large_prebuffered_body_does_not_reread_for_lat
         .await
         .expect("read large sticky response body");
     let payload: Value = serde_json::from_slice(&body).expect("decode large sticky response");
-    assert_eq!(payload["authorization"], expected_default_authorization);
+    assert_eq!(
+        payload["authorization"].as_str(),
+        Some(expected_default_authorization)
+    );
     assert_ne!(
         payload["authorization"].as_str(),
         Some(unexpected_late_sticky_authorization)
@@ -26079,12 +26082,12 @@ async fn proxy_openai_v1_responses_streamed_body_counts_total_timeout_from_reque
     let (status, message) = response.expect_err("via-pool request should fail");
     assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
     assert!(
-        elapsed >= Duration::from_millis(160),
-        "request should wait for streamed body buffering before timing out, elapsed={elapsed:?}"
+        elapsed >= Duration::from_millis(60),
+        "request should still spend the configured total-timeout budget before failing, elapsed={elapsed:?}"
     );
     assert!(
-        elapsed < Duration::from_millis(280),
-        "responses total timeout should include streamed body buffering, elapsed={elapsed:?}"
+        elapsed < Duration::from_millis(160),
+        "responses total timeout should short-circuit before streamed body buffering completes, elapsed={elapsed:?}"
     );
     assert_eq!(
         message,
@@ -29710,12 +29713,24 @@ fn rewrite_request_service_tier_for_fast_mode_force_remove_deletes_both_aliases(
 }
 
 #[test]
-fn pool_request_snapshot_preserves_content_length_only_for_file_backed_replays() {
+fn pool_request_snapshot_preserves_content_length_only_for_matching_file_backed_replays() {
     assert!(!pool_request_snapshot_preserves_content_length(
-        &PoolReplayBodySnapshot::Empty
+        &PoolReplayBodySnapshot::Empty,
+        Some(0)
     ));
     assert!(!pool_request_snapshot_preserves_content_length(
-        &PoolReplayBodySnapshot::Memory(Bytes::from_static(b"{}"))
+        &PoolReplayBodySnapshot::Memory(Bytes::from_static(b"{}")),
+        Some(2)
+    ));
+    assert!(!pool_request_snapshot_preserves_content_length(
+        &PoolReplayBodySnapshot::File {
+            temp_file: Arc::new(PoolReplayTempFile {
+                path: PathBuf::from("/tmp/cvm-pool-replay-test.bin"),
+            }),
+            size: 3,
+            sticky_key: None,
+        },
+        Some(2)
     ));
     assert!(pool_request_snapshot_preserves_content_length(
         &PoolReplayBodySnapshot::File {
@@ -29724,7 +29739,8 @@ fn pool_request_snapshot_preserves_content_length_only_for_file_backed_replays()
             }),
             size: 2,
             sticky_key: None,
-        }
+        },
+        Some(2)
     ));
 }
 

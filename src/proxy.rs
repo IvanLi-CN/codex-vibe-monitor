@@ -1444,8 +1444,14 @@ struct PreparedPoolRequestBody {
     requested_service_tier: Option<String>,
 }
 
-fn pool_request_snapshot_preserves_content_length(snapshot: &PoolReplayBodySnapshot) -> bool {
-    matches!(snapshot, PoolReplayBodySnapshot::File { .. })
+fn pool_request_snapshot_preserves_content_length(
+    snapshot: &PoolReplayBodySnapshot,
+    forwarded_content_length: Option<usize>,
+) -> bool {
+    matches!(
+        snapshot,
+        PoolReplayBodySnapshot::File { size, .. } if forwarded_content_length == Some(*size)
+    )
 }
 
 fn pool_request_snapshot_kind(snapshot: &PoolReplayBodySnapshot) -> &'static str {
@@ -2807,17 +2813,21 @@ async fn send_pool_request_with_failover(
                             .clone()
                             .expect("api key pool route should always have an upstream url"),
                     );
-                    let preserve_content_length = pool_request_snapshot_preserves_content_length(
-                        &prepared_request_body.snapshot,
-                    );
                     let forwarded_content_length = headers
                         .get(header::CONTENT_LENGTH)
                         .and_then(|value| value.to_str().ok())
                         .map(str::to_string);
+                    let forwarded_content_length_bytes = forwarded_content_length
+                        .as_deref()
+                        .and_then(|value| value.parse::<usize>().ok());
                     let outbound_snapshot_kind =
                         pool_request_snapshot_kind(&prepared_request_body.snapshot);
                     let outbound_body_bytes =
                         pool_request_snapshot_body_bytes(&prepared_request_body.snapshot);
+                    let preserve_content_length = pool_request_snapshot_preserves_content_length(
+                        &prepared_request_body.snapshot,
+                        forwarded_content_length_bytes,
+                    );
                     for (name, value) in headers {
                         if *name == header::AUTHORIZATION {
                             continue;
