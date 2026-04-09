@@ -3695,7 +3695,7 @@ async fn async_streaming_raw_payload_writer_drops_when_async_writer_pool_is_satu
 }
 
 #[tokio::test]
-async fn async_streaming_raw_payload_writer_keeps_accepting_chunks_after_single_queue_overflow() {
+async fn async_streaming_raw_payload_writer_stops_after_single_queue_overflow() {
     let (tx, mut rx) = mpsc::channel::<Bytes>(1);
     tx.try_send(Bytes::from_static(br#"{"queued":0}"#))
         .expect("seed full queue");
@@ -3710,8 +3710,8 @@ async fn async_streaming_raw_payload_writer_keeps_accepting_chunks_after_single_
 
     writer.append(br#"{"chunk":1}"#).await;
     assert!(
-        writer.tx.is_some(),
-        "writer should stay open after one full queue event"
+        writer.tx.is_none(),
+        "writer should stop accepting new chunks after one full queue event"
     );
     assert!(
         writer.local_truncated,
@@ -3726,8 +3726,13 @@ async fn async_streaming_raw_payload_writer_keeps_accepting_chunks_after_single_
     assert_eq!(first, Bytes::from_static(br#"{"queued":0}"#));
 
     writer.append(br#"{"chunk":2}"#).await;
-    let second = rx.recv().await.expect("receive chunk after queue drains");
-    assert_eq!(second, Bytes::from_static(br#"{"chunk":2}"#));
+    let second = tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv())
+        .await
+        .expect("writer channel should close after overflow");
+    assert!(
+        second.is_none(),
+        "writer should not enqueue later chunks after overflow"
+    );
 }
 
 #[test]

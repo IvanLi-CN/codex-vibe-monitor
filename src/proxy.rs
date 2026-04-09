@@ -11167,6 +11167,7 @@ impl AsyncStreamingRawPayloadWriter {
         self.local_truncated = true;
         self.local_truncated_reason
             .get_or_insert_with(|| RAW_PAYLOAD_TRUNCATED_REASON_ASYNC_BACKPRESSURE_DROPPED.to_string());
+        self.tx = None;
     }
 
     fn mark_writer_closed(&mut self, message: String) {
