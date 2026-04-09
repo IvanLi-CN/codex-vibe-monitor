@@ -1267,7 +1267,6 @@ enum PoolAccountResolutionWithWait {
 }
 
 const POOL_UPSTREAM_SAME_ACCOUNT_MAX_ATTEMPTS: u8 = 3;
-const OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES: usize = 8 * 1024 * 1024;
 
 impl PoolReplayBodyBuffer {
     fn new(proxy_request_id: u64) -> Self {
@@ -1398,6 +1397,46 @@ impl PoolReplayBodySnapshot {
                 let read_len = file.read(&mut buf).await?;
                 buf.truncate(read_len);
                 Ok(Bytes::from(buf))
+            }
+        }
+    }
+
+    async fn extract_request_stream_flag(&self, content_encoding: Option<&str>) -> Option<bool> {
+        #[derive(serde::Deserialize)]
+        struct StreamFlagProjection {
+            #[serde(default)]
+            stream: Option<bool>,
+        }
+
+        fn parse_stream_flag_from_bytes(bytes: &[u8]) -> Option<bool> {
+            serde_json::from_slice::<StreamFlagProjection>(bytes)
+                .ok()
+                .and_then(|projection| projection.stream)
+        }
+
+        fn parse_stream_flag_from_reader<R: std::io::Read>(reader: R) -> Option<bool> {
+            serde_json::from_reader::<R, StreamFlagProjection>(reader)
+                .ok()
+                .and_then(|projection| projection.stream)
+        }
+
+        match self {
+            Self::Empty => None,
+            Self::Memory(bytes) => {
+                let (decoded, _) = decode_response_payload(bytes.as_ref(), content_encoding, true);
+                parse_stream_flag_from_bytes(decoded.as_ref())
+            }
+            Self::File { temp_file, .. } => {
+                let path = temp_file.path.clone();
+                let content_encoding = content_encoding.map(str::to_string);
+                tokio::task::spawn_blocking(move || {
+                    let reader = open_decoded_response_reader(&path, content_encoding.as_deref())
+                        .ok()?;
+                    parse_stream_flag_from_reader(std::io::BufReader::new(reader))
+                })
+                .await
+                .ok()
+                .flatten()
             }
         }
     }
@@ -1884,4 +1923,3 @@ async fn wait_for_replay_body_snapshot(
         )),
     }
 }
-

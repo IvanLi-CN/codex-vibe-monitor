@@ -251,6 +251,8 @@ async fn proxy_openai_v1_capture_target(
                     oauth_prompt_cache_header_forwarded: None,
                     oauth_request_body_prefix_fingerprint: None,
                     oauth_request_body_prefix_bytes: None,
+                    oauth_request_body_snapshot_kind: None,
+                    oauth_responses_body_mode: None,
                     oauth_responses_rewrite: None,
                     service_tier: None,
                     stream_terminal_event: None,
@@ -532,6 +534,14 @@ async fn proxy_openai_v1_capture_target(
                             .oauth_responses_debug
                             .as_ref()
                             .and_then(|debug| debug.request_body_prefix_bytes),
+                        oauth_request_body_snapshot_kind: err
+                            .oauth_responses_debug
+                            .as_ref()
+                            .and_then(|debug| debug.request_body_snapshot_kind),
+                        oauth_responses_body_mode: err
+                            .oauth_responses_debug
+                            .as_ref()
+                            .and_then(|debug| debug.responses_body_mode),
                         oauth_responses_rewrite: err
                             .oauth_responses_debug
                             .as_ref()
@@ -688,6 +698,8 @@ async fn proxy_openai_v1_capture_target(
                         oauth_prompt_cache_header_forwarded: None,
                         oauth_request_body_prefix_fingerprint: None,
                         oauth_request_body_prefix_bytes: None,
+                        oauth_request_body_snapshot_kind: None,
+                        oauth_responses_body_mode: None,
                         oauth_responses_rewrite: None,
                         service_tier: None,
                         stream_terminal_event: None,
@@ -845,6 +857,8 @@ async fn proxy_openai_v1_capture_target(
                     oauth_prompt_cache_header_forwarded: None,
                     oauth_request_body_prefix_fingerprint: None,
                     oauth_request_body_prefix_bytes: None,
+                    oauth_request_body_snapshot_kind: None,
+                    oauth_responses_body_mode: None,
                     oauth_responses_rewrite: None,
                     service_tier: None,
                     stream_terminal_event: None,
@@ -1553,6 +1567,12 @@ async fn proxy_openai_v1_capture_target(
             oauth_request_body_prefix_bytes: oauth_responses_debug_for_task
                 .as_ref()
                 .and_then(|debug| debug.request_body_prefix_bytes),
+            oauth_request_body_snapshot_kind: oauth_responses_debug_for_task
+                .as_ref()
+                .and_then(|debug| debug.request_body_snapshot_kind),
+            oauth_responses_body_mode: oauth_responses_debug_for_task
+                .as_ref()
+                .and_then(|debug| debug.responses_body_mode),
             oauth_responses_rewrite: oauth_responses_debug_for_task
                 .as_ref()
                 .map(|debug| &debug.rewrite),
@@ -1808,4 +1828,3 @@ async fn read_request_body_snapshot_with_limit(
             })?;
     }
 }
-

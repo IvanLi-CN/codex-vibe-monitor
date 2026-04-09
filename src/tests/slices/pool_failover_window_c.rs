@@ -11,6 +11,8 @@ async fn oauth_streaming_passthrough_backfills_body_prefix_from_replay_status() 
         prompt_cache_header_forwarded: false,
         request_body_prefix_fingerprint: None,
         request_body_prefix_bytes: None,
+        request_body_snapshot_kind: None,
+        responses_body_mode: None,
         rewrite: oauth_bridge::OauthResponsesRewriteSummary::default(),
     });
     let (status_tx, status_rx) = watch::channel(PoolReplayBodyStatus::Reading);
@@ -405,6 +407,8 @@ async fn pool_route_oauth_observability_omits_fingerprints_without_crypto_key() 
     assert!(request_debug.forwarded_header_fingerprints.is_none());
     assert!(request_debug.request_body_prefix_fingerprint.is_none());
     assert!(request_debug.request_body_prefix_bytes.is_none());
+    assert_eq!(request_debug.request_body_snapshot_kind, Some("memory"));
+    assert_eq!(request_debug.responses_body_mode, Some("small_body_rewrite"));
     let serialized_debug = serde_json::to_string(&request_debug).expect("serialize request debug");
     assert!(
         !serialized_debug.contains("session-no-crypto"),
@@ -582,29 +586,64 @@ async fn pool_route_oauth_responses_timeout_switches_to_alternate_route() {
 }
 
 #[tokio::test]
-async fn pool_route_large_oauth_responses_falls_back_to_api_key_account() {
-    let (upstream_base, upstream_handle) = spawn_test_upstream().await;
-    let state =
-        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
-            .await;
-    let oauth_id =
-        insert_test_pool_oauth_account(&state, "Oversized Responses OAuth", "oauth-oversized")
-            .await;
-    let api_key_id =
-        insert_test_pool_api_key_account(&state, "Fallback API Key", "upstream-fallback").await;
+async fn pool_route_large_oauth_responses_file_backed_body_passthroughs_non_stream_sse() {
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
+
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_responses_capture_upstream().await;
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
+    )
+    .await;
+
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_oauth_account(&state, "Large Responses OAuth", "oauth-large").await;
     let temp_file = Arc::new(PoolReplayTempFile {
         path: build_pool_replay_temp_path(626262),
     });
-    let body = vec![b'x'; OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES + 1];
+    let body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "stream": false,
+        "max_output_tokens": 256,
+        "input": "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 4096),
+    }))
+    .expect("serialize large oauth responses body");
     tokio::fs::write(&temp_file.path, &body)
         .await
-        .expect("write oversized oauth responses body");
+        .expect("write large oauth responses body");
+
+    let account = PoolResolvedAccount {
+        account_id,
+        display_name: "Large Responses OAuth".to_string(),
+        kind: "oauth_codex".to_string(),
+        auth: PoolResolvedAuth::Oauth {
+            access_token: "oauth-large".to_string(),
+            chatgpt_account_id: Some("org_test".to_string()),
+        },
+        upstream_base_url: oauth_bridge::oauth_codex_upstream_base_url()
+            .expect("oauth upstream base url"),
+        routing_source: PoolRoutingSelectionSource::FreshAssignment,
+        group_name: Some(test_required_group_name().to_string()),
+        bound_proxy_keys: test_required_group_bound_proxy_keys(),
+        forward_proxy_scope: ForwardProxyRouteScope::from_group_binding(
+            Some(test_required_group_name()),
+            test_required_group_bound_proxy_keys(),
+        ),
+        group_upstream_429_retry_enabled: false,
+        group_upstream_429_max_retries: 0,
+        fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+    };
 
     let upstream = send_pool_request_with_failover(
         state.clone(),
         626262,
         Method::POST,
-        &"/v1/responses?mode=delay".parse().expect("valid uri"),
+        &"/v1/responses".parse().expect("valid uri"),
         &HeaderMap::from_iter([(
             http_header::CONTENT_TYPE,
             HeaderValue::from_static("application/json"),
@@ -618,32 +657,45 @@ async fn pool_route_large_oauth_responses_falls_back_to_api_key_account() {
         None,
         None,
         None,
-        None,
+        Some(account),
         PoolFailoverProgress::default(),
         1,
     )
     .await
-    .expect("api key account should handle oversized oauth responses body");
+    .expect("large oauth responses body should stay on oauth route");
 
-    assert_eq!(upstream.account.account_id, api_key_id);
-    let selected_at: Vec<(i64, Option<String>)> = sqlx::query_as(
-        r#"
-        SELECT id, last_selected_at
-        FROM pool_upstream_accounts
-        WHERE id IN (?1, ?2)
-        ORDER BY id
-        "#,
-    )
-    .bind(oauth_id)
-    .bind(api_key_id)
-    .fetch_all(&state.pool)
-    .await
-    .expect("load selected timestamps");
-    assert_eq!(selected_at.len(), 2);
-    assert_eq!(selected_at[0], (oauth_id, None));
-    assert!(selected_at[1].1.is_some());
+    assert_eq!(upstream.account.account_id, account_id);
+    assert_eq!(upstream.response.status(), StatusCode::OK);
+    let mut response_body = upstream.first_chunk.clone().unwrap_or_default().to_vec();
+    response_body.extend_from_slice(
+        &upstream
+            .response
+            .into_bytes()
+            .await
+            .expect("read oauth passthrough response"),
+    );
+    let payload: Value =
+        serde_json::from_slice(&response_body).expect("decode oauth passthrough response");
+    assert_eq!(
+        payload["received"]["stream"].as_bool(),
+        Some(false),
+        "non-stream requests should preserve the original stream flag on large file-backed bodies",
+    );
+    assert_eq!(payload["received"]["max_output_tokens"].as_i64(), Some(256));
+    assert!(payload["received"].get("instructions").is_none());
+    assert!(payload["received"].get("store").is_none());
+    let request_debug = upstream
+        .oauth_responses_debug
+        .expect("oauth responses debug should be present");
+    assert_eq!(request_debug.responses_body_mode, Some("large_body_passthrough"));
+    assert_eq!(request_debug.request_body_snapshot_kind, Some("file"));
+    assert_eq!(
+        request_debug.rewrite,
+        oauth_bridge::OauthResponsesRewriteSummary::default()
+    );
 
     upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
 }
 
 #[tokio::test]
@@ -725,12 +777,12 @@ async fn pool_route_oauth_compact_stream_timeout_does_not_cap_send_phase_before_
 }
 
 #[tokio::test]
-async fn pool_route_oauth_responses_rejects_large_file_backed_rewrite_body() {
+async fn pool_route_large_oauth_responses_file_backed_body_passthroughs_non_stream_json() {
     let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
         .lock()
         .await;
 
-    let (upstream_base, upstream_handle) = spawn_oauth_codex_capture_upstream().await;
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_responses_capture_upstream().await;
     oauth_bridge::set_test_oauth_codex_upstream_base_url(
         Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
     )
@@ -745,10 +797,15 @@ async fn pool_route_oauth_responses_rejects_large_file_backed_rewrite_body() {
     let temp_file = Arc::new(PoolReplayTempFile {
         path: build_pool_replay_temp_path(515151),
     });
-    let body = vec![b'x'; OAUTH_RESPONSES_MAX_REWRITE_BODY_BYTES + 1];
+    let body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "stream": false,
+        "input": "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 8192),
+    }))
+    .expect("serialize large oauth responses body");
     tokio::fs::write(&temp_file.path, &body)
         .await
-        .expect("write oversized oauth responses body");
+        .expect("write large oauth responses body");
 
     let account = PoolResolvedAccount {
         account_id,
@@ -772,9 +829,116 @@ async fn pool_route_oauth_responses_rejects_large_file_backed_rewrite_body() {
         fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
     };
 
-    let err = send_pool_request_with_failover(
+    let upstream = send_pool_request_with_failover(
         state,
         515151,
+        Method::POST,
+        &"/v1/responses".parse().expect("valid uri"),
+        &HeaderMap::from_iter([
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+            (
+                HeaderName::from_static("x-test-response-mode"),
+                HeaderValue::from_static("json"),
+            ),
+        ]),
+        Some(PoolReplayBodySnapshot::File {
+            temp_file,
+            size: body.len(),
+            sticky_key: None,
+        }),
+        Duration::from_secs(5),
+        None,
+        None,
+        None,
+        Some(account),
+        PoolFailoverProgress::default(),
+        1,
+    )
+    .await
+    .expect("large oauth responses body should allow direct json success");
+
+    assert_eq!(upstream.response.status(), StatusCode::OK);
+    let mut response_body = upstream.first_chunk.clone().unwrap_or_default().to_vec();
+    response_body.extend_from_slice(
+        &upstream
+            .response
+            .into_bytes()
+            .await
+            .expect("read oauth json response"),
+    );
+    let payload: Value =
+        serde_json::from_slice(&response_body).expect("decode oauth json response");
+    assert_eq!(payload["status"].as_str(), Some("completed"));
+    assert_eq!(payload["received"]["stream"].as_bool(), Some(false));
+    let request_debug = upstream
+        .oauth_responses_debug
+        .expect("oauth responses debug should be present");
+    assert_eq!(request_debug.responses_body_mode, Some("large_body_passthrough"));
+    assert_eq!(request_debug.request_body_snapshot_kind, Some("file"));
+
+    upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+}
+
+#[tokio::test]
+async fn pool_route_large_oauth_responses_file_backed_body_passthroughs_stream_sse() {
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
+
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_responses_capture_upstream().await;
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
+    )
+    .await;
+
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_oauth_account(&state, "Responses OAuth Stream", "oauth-stream").await;
+    let temp_file = Arc::new(PoolReplayTempFile {
+        path: build_pool_replay_temp_path(525252),
+    });
+    let body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "stream": true,
+        "input": "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 2048),
+    }))
+    .expect("serialize large oauth stream body");
+    tokio::fs::write(&temp_file.path, &body)
+        .await
+        .expect("write large oauth stream body");
+
+    let account = PoolResolvedAccount {
+        account_id,
+        display_name: "Responses OAuth Stream".to_string(),
+        kind: "oauth_codex".to_string(),
+        auth: PoolResolvedAuth::Oauth {
+            access_token: "oauth-stream".to_string(),
+            chatgpt_account_id: Some("org_test".to_string()),
+        },
+        upstream_base_url: oauth_bridge::oauth_codex_upstream_base_url()
+            .expect("oauth upstream base url"),
+        routing_source: PoolRoutingSelectionSource::FreshAssignment,
+        group_name: Some(test_required_group_name().to_string()),
+        bound_proxy_keys: test_required_group_bound_proxy_keys(),
+        forward_proxy_scope: ForwardProxyRouteScope::from_group_binding(
+            Some(test_required_group_name()),
+            test_required_group_bound_proxy_keys(),
+        ),
+        group_upstream_429_retry_enabled: false,
+        group_upstream_429_max_retries: 0,
+        fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+    };
+
+    let upstream = send_pool_request_with_failover(
+        state,
+        525252,
         Method::POST,
         &"/v1/responses".parse().expect("valid uri"),
         &HeaderMap::from_iter([(
@@ -795,18 +959,262 @@ async fn pool_route_oauth_responses_rejects_large_file_backed_rewrite_body() {
         1,
     )
     .await
-    .expect_err("oversized oauth responses body should be rejected");
+    .expect("large oauth stream body should pass through SSE");
 
-    assert_eq!(err.status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(upstream.response.status(), StatusCode::OK);
     assert!(
-        err.message
-            .contains("oauth /v1/responses request body exceeds"),
-        "unexpected oversized oauth responses error: {}",
-        err.message
+        upstream
+            .response
+            .headers()
+            .get(http_header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.contains("text/event-stream"))
     );
+    let mut response_body = upstream.first_chunk.clone().unwrap_or_default().to_vec();
+    response_body.extend_from_slice(
+        &upstream
+            .response
+            .into_bytes()
+            .await
+            .expect("read oauth stream response"),
+    );
+    let body_text = String::from_utf8(response_body).expect("decode oauth stream response");
+    assert!(body_text.contains("response.completed"));
+    assert!(body_text.contains("\"stream\":true"));
 
     upstream_handle.abort();
     oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+}
+
+#[tokio::test]
+async fn pool_route_large_oauth_responses_file_backed_gzip_body_preserves_stream_mode() {
+    use std::io::Write as _;
+
+    let _upstream_lock = oauth_bridge::TEST_OAUTH_CODEX_UPSTREAM_BASE_URL_LOCK
+        .lock()
+        .await;
+
+    let (upstream_base, upstream_handle) = spawn_oauth_codex_responses_capture_upstream().await;
+    oauth_bridge::set_test_oauth_codex_upstream_base_url(
+        Url::parse(&format!("{upstream_base}/backend-api/codex")).expect("valid oauth base url"),
+    )
+    .await;
+
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id =
+        insert_test_pool_oauth_account(&state, "Responses OAuth Gzip Stream", "oauth-gzip").await;
+    let temp_file = Arc::new(PoolReplayTempFile {
+        path: build_pool_replay_temp_path(535353),
+    });
+    let raw_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.4",
+        "stream": true,
+        "input": "compressed stream body",
+    }))
+    .expect("serialize gzip oauth stream body");
+    let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    encoder
+        .write_all(&raw_body)
+        .expect("write gzip oauth stream body");
+    let body = encoder.finish().expect("finish gzip oauth stream body");
+    tokio::fs::write(&temp_file.path, &body)
+        .await
+        .expect("write gzip oauth stream body");
+
+    let account = PoolResolvedAccount {
+        account_id,
+        display_name: "Responses OAuth Gzip Stream".to_string(),
+        kind: "oauth_codex".to_string(),
+        auth: PoolResolvedAuth::Oauth {
+            access_token: "oauth-gzip".to_string(),
+            chatgpt_account_id: Some("org_test".to_string()),
+        },
+        upstream_base_url: oauth_bridge::oauth_codex_upstream_base_url()
+            .expect("oauth upstream base url"),
+        routing_source: PoolRoutingSelectionSource::FreshAssignment,
+        group_name: Some(test_required_group_name().to_string()),
+        bound_proxy_keys: test_required_group_bound_proxy_keys(),
+        forward_proxy_scope: ForwardProxyRouteScope::from_group_binding(
+            Some(test_required_group_name()),
+            test_required_group_bound_proxy_keys(),
+        ),
+        group_upstream_429_retry_enabled: false,
+        group_upstream_429_max_retries: 0,
+        fast_mode_rewrite_mode: TagFastModeRewriteMode::KeepOriginal,
+    };
+
+    let upstream = send_pool_request_with_failover(
+        state,
+        535353,
+        Method::POST,
+        &"/v1/responses".parse().expect("valid uri"),
+        &HeaderMap::from_iter([
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+            (
+                http_header::CONTENT_ENCODING,
+                HeaderValue::from_static("gzip"),
+            ),
+        ]),
+        Some(PoolReplayBodySnapshot::File {
+            temp_file,
+            size: body.len(),
+            sticky_key: None,
+        }),
+        Duration::from_secs(5),
+        None,
+        None,
+        None,
+        Some(account),
+        PoolFailoverProgress::default(),
+        1,
+    )
+    .await
+    .expect("gzip oauth stream body should preserve SSE mode");
+
+    assert_eq!(upstream.response.status(), StatusCode::OK);
+    assert!(
+        upstream
+            .response
+            .headers()
+            .get(http_header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_some_and(|value| value.contains("text/event-stream"))
+    );
+    let mut response_body = upstream.first_chunk.clone().unwrap_or_default().to_vec();
+    response_body.extend_from_slice(
+        &upstream
+            .response
+            .into_bytes()
+            .await
+            .expect("read gzip oauth stream response"),
+    );
+    let body_text = String::from_utf8(response_body).expect("decode gzip oauth stream response");
+    assert!(body_text.contains("response.completed"));
+    assert!(body_text.contains("\"stream\":true"));
+
+    upstream_handle.abort();
+    oauth_bridge::reset_test_oauth_codex_upstream_base_url().await;
+}
+
+#[tokio::test]
+async fn pool_route_responses_preflight_failures_do_not_consume_distinct_account_budget() {
+    #[derive(Debug, sqlx::FromRow)]
+    struct PersistedPayloadRow {
+        payload: Option<String>,
+    }
+
+    let (upstream_base, attempts, upstream_handle) =
+        spawn_pool_retry_upstream(&[("Bearer route-budget-ok", 1)]).await;
+    let state =
+        test_state_with_openai_base(Url::parse(&upstream_base).expect("valid upstream base url"))
+            .await;
+    seed_pool_routing_api_key(&state, "pool-live-key").await;
+    let broken_preflight_id = insert_test_pool_api_key_account_with_options(
+        &state,
+        "Broken Preflight",
+        "route-budget-broken",
+        None,
+        None,
+        Some(&upstream_base),
+    )
+    .await;
+    sqlx::query("UPDATE pool_upstream_accounts SET group_name = ?2 WHERE id = ?1")
+        .bind(broken_preflight_id)
+        .bind("broken-preflight-group")
+        .execute(&state.pool)
+        .await
+        .expect("mark broken preflight account");
+    insert_test_pool_api_key_account_with_options(
+        &state,
+        "Retry Budget OK",
+        "route-budget-ok",
+        None,
+        None,
+        Some(&upstream_base),
+    )
+    .await;
+    upsert_test_sticky_route_at(
+        &state.pool,
+        "sticky-preflight-budget",
+        broken_preflight_id,
+        &format_utc_iso(Utc::now()),
+    )
+    .await;
+
+    let response = proxy_openai_v1(
+        State(state.clone()),
+        OriginalUri("/v1/responses".parse().expect("valid uri")),
+        Method::POST,
+        HeaderMap::from_iter([
+            (
+                http_header::AUTHORIZATION,
+                HeaderValue::from_static("Bearer pool-live-key"),
+            ),
+            (
+                http_header::CONTENT_TYPE,
+                HeaderValue::from_static("application/json"),
+            ),
+        ]),
+        Body::from(
+            serde_json::to_vec(&json!({
+                "model": "gpt-5.4",
+                "input": "hello",
+                "stickyKey": "sticky-preflight-budget",
+            }))
+            .expect("serialize retry budget request"),
+        ),
+    )
+    .await;
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let payload: Value = serde_json::from_slice(
+        &to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("read retry budget response"),
+    )
+    .expect("decode retry budget response");
+    assert_eq!(payload["authorization"].as_str(), Some("Bearer route-budget-ok"));
+    assert_eq!(
+        payload["attempt"].as_i64(),
+        Some(2),
+        "the second account should still retain its same-account retry budget after a local preflight failure",
+    );
+
+    wait_for_codex_invocations(&state.pool, 1).await;
+    let row = sqlx::query_as::<_, PersistedPayloadRow>(
+        r#"
+        SELECT payload
+        FROM codex_invocations
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .fetch_one(&state.pool)
+    .await
+    .expect("load retry budget payload");
+    let persisted_payload: Value = serde_json::from_str(
+        row.payload
+            .as_deref()
+            .expect("retry budget payload should be present"),
+    )
+    .expect("decode retry budget payload");
+    assert_eq!(persisted_payload["poolAttemptCount"].as_i64(), Some(2));
+    assert_eq!(
+        persisted_payload["poolDistinctAccountCount"].as_i64(),
+        Some(1),
+        "preflight-only failures must not inflate distinct-account accounting",
+    );
+
+    let attempts = attempts.lock().expect("lock retry budget attempts");
+    assert_eq!(attempts.get("Bearer route-budget-ok").copied(), Some(2));
+
+    upstream_handle.abort();
 }
 
 #[tokio::test]

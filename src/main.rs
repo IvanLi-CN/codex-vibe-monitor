@@ -1,3 +1,5 @@
+#![recursion_limit = "256"]
+
 use std::{
     borrow::Cow,
     collections::hash_map::DefaultHasher,
