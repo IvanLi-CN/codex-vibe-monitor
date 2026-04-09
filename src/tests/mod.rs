@@ -29847,6 +29847,7 @@ async fn prepare_pool_request_body_for_account_skips_fast_mode_rewrite_for_compa
         &"/v1/responses/compact".parse().expect("valid compact uri"),
         &Method::POST,
         TagFastModeRewriteMode::ForceAdd,
+        1001,
     )
     .await
     .expect("prepare compact pool request body");
@@ -29887,6 +29888,7 @@ async fn prepare_pool_request_body_for_account_preserves_fast_mode_rewrite_for_l
         &"/v1/responses".parse().expect("valid responses uri"),
         &Method::POST,
         TagFastModeRewriteMode::ForceAdd,
+        1002,
     )
     .await
     .expect("prepare large pool request body");
@@ -29911,6 +29913,68 @@ async fn prepare_pool_request_body_for_account_preserves_fast_mode_rewrite_for_l
         .await
         .expect("read rewritten snapshot bytes");
     assert_eq!(snapshot_bytes, rewritten_bytes);
+
+    cleanup_temp_test_dir(&temp_dir);
+}
+
+#[tokio::test]
+async fn prepare_pool_request_body_for_account_uses_unique_temp_paths_per_proxy_request() {
+    let temp_dir = make_temp_test_dir("pool-request-large-rewrite-unique-paths");
+    let temp_file = Arc::new(PoolReplayTempFile {
+        path: temp_dir.join("request-body.bin"),
+    });
+    let original_body = serde_json::to_vec(&json!({
+        "model": "gpt-5.3-codex",
+        "serviceTier": "flex",
+        "stickyKey": "sticky-large-body",
+        "input": "x".repeat(POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES + 128),
+    }))
+    .expect("serialize large request body");
+    tokio::fs::write(&temp_file.path, &original_body)
+        .await
+        .expect("write large request body");
+
+    let first = prepare_pool_request_body_for_account(
+        Some(&PoolReplayBodySnapshot::File {
+            temp_file: temp_file.clone(),
+            size: original_body.len(),
+            sticky_key: Some("sticky-large-body".to_string()),
+        }),
+        &"/v1/responses".parse().expect("valid responses uri"),
+        &Method::POST,
+        TagFastModeRewriteMode::ForceAdd,
+        2001,
+    )
+    .await
+    .expect("prepare first large rewritten request body");
+
+    let second = prepare_pool_request_body_for_account(
+        Some(&PoolReplayBodySnapshot::File {
+            temp_file,
+            size: original_body.len(),
+            sticky_key: Some("sticky-large-body".to_string()),
+        }),
+        &"/v1/responses".parse().expect("valid responses uri"),
+        &Method::POST,
+        TagFastModeRewriteMode::ForceAdd,
+        2002,
+    )
+    .await
+    .expect("prepare second large rewritten request body");
+
+    let first_path = match &first.snapshot {
+        PoolReplayBodySnapshot::File { temp_file, .. } => temp_file.path.clone(),
+        other => panic!("expected first rewritten snapshot to stay file-backed, got {other:?}"),
+    };
+    let second_path = match &second.snapshot {
+        PoolReplayBodySnapshot::File { temp_file, .. } => temp_file.path.clone(),
+        other => panic!("expected second rewritten snapshot to stay file-backed, got {other:?}"),
+    };
+
+    assert_ne!(
+        first_path, second_path,
+        "large rewritten replay snapshots should use distinct temp files per proxy request"
+    );
 
     cleanup_temp_test_dir(&temp_dir);
 }

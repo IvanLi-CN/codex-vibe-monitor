@@ -1441,6 +1441,7 @@ async fn prepare_pool_request_body_for_account(
     original_uri: &Uri,
     method: &Method,
     fast_mode_rewrite_mode: TagFastModeRewriteMode,
+    proxy_request_id: u64,
 ) -> Result<PreparedPoolRequestBody, String> {
     let capture_target = capture_target_for_request(original_uri.path(), method);
     let rewrite_required = capture_target.is_some_and(|target| target.allows_fast_mode_rewrite())
@@ -1517,6 +1518,7 @@ async fn prepare_pool_request_body_for_account(
             PoolReplayBodySnapshot::File { sticky_key, .. } => sticky_key,
             _ => None,
         },
+        proxy_request_id,
     )
     .await?;
     Ok(PreparedPoolRequestBody {
@@ -1529,13 +1531,14 @@ async fn prepare_pool_request_body_for_account(
 async fn pool_request_snapshot_from_bytes(
     bytes: Bytes,
     sticky_key: Option<String>,
+    proxy_request_id: u64,
 ) -> Result<PoolReplayBodySnapshot, String> {
     if bytes.len() <= POOL_REQUEST_REPLAY_MEMORY_THRESHOLD_BYTES {
         return Ok(PoolReplayBodySnapshot::Memory(bytes));
     }
 
     let temp_file = Arc::new(PoolReplayTempFile {
-        path: build_pool_replay_temp_path(0),
+        path: build_pool_replay_temp_path(proxy_request_id),
     });
     tokio::fs::write(&temp_file.path, &bytes)
         .await
@@ -2696,6 +2699,7 @@ async fn send_pool_request_with_failover(
                 original_uri,
                 &method,
                 account.fast_mode_rewrite_mode,
+                proxy_request_id,
             )
             .await
             {
