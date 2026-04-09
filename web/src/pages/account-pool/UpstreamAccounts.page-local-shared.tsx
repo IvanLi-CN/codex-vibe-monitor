@@ -101,6 +101,11 @@ import {
   apiConcurrencyLimitToSliderValue,
   sliderConcurrencyLimitToApiValue,
 } from "../../lib/concurrencyLimit";
+import {
+  areAccountDraftsEqual,
+  mergeDraftAfterAccountSave,
+  type AccountDraft,
+} from "../../lib/upstreamAccountDrafts";
 import { resolvePersistedGroupNodeShuntEnabled } from "../../lib/upstreamAccountGroupDrafts";
 import { validateUpstreamBaseUrl } from "../../lib/upstreamBaseUrl";
 import { generatePoolRoutingKey } from "../../lib/poolRouting";
@@ -109,61 +114,6 @@ import { upstreamPlanBadgeRecipe } from "../../lib/upstreamAccountBadges";
 import { isUpstreamAccountNotFoundError } from "../../lib/upstreamAccountErrors";
 import { cn } from "../../lib/utils";
 import { useTranslation, type TranslationValues } from "../../i18n";
-
-type AccountDraft = {
-  displayName: string;
-  groupName: string;
-  isMother: boolean;
-  note: string;
-  upstreamBaseUrl: string;
-  tagIds: number[];
-  localPrimaryLimit: string;
-  localSecondaryLimit: string;
-  localLimitUnit: string;
-  apiKey: string;
-};
-
-function areAccountDraftTagIdsEqual(left: number[], right: number[]): boolean {
-  if (left.length !== right.length) return false;
-  const leftSorted = [...left].sort((a, b) => a - b);
-  const rightSorted = [...right].sort((a, b) => a - b);
-  return leftSorted.every((tagId, index) => tagId === rightSorted[index]);
-}
-
-function areAccountDraftsEqual(
-  left: AccountDraft,
-  right: AccountDraft,
-): boolean {
-  return (
-    left.displayName === right.displayName &&
-    left.groupName === right.groupName &&
-    left.isMother === right.isMother &&
-    left.note === right.note &&
-    left.upstreamBaseUrl === right.upstreamBaseUrl &&
-    left.localPrimaryLimit === right.localPrimaryLimit &&
-    left.localSecondaryLimit === right.localSecondaryLimit &&
-    left.localLimitUnit === right.localLimitUnit &&
-    left.apiKey === right.apiKey &&
-    areAccountDraftTagIdsEqual(left.tagIds, right.tagIds)
-  );
-}
-
-function mergeDraftAfterAccountSave(
-  current: AccountDraft,
-  saveStartedDraft: AccountDraft,
-  responseDraft: AccountDraft,
-): AccountDraft {
-  if (areAccountDraftsEqual(current, saveStartedDraft)) {
-    return responseDraft;
-  }
-  if (saveStartedDraft.apiKey && current.apiKey === saveStartedDraft.apiKey) {
-    return {
-      ...current,
-      apiKey: responseDraft.apiKey,
-    };
-  }
-  return current;
-}
 
 type RoutingDraft = {
   apiKey: string;

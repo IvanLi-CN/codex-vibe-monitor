@@ -41,17 +41,45 @@ export function mergeDraftAfterAccountSave(
   saveStartedDraft: AccountDraft,
   responseDraft: AccountDraft,
 ): AccountDraft {
-  if (areAccountDraftsEqual(current, saveStartedDraft)) {
-    return responseDraft;
-  }
-  if (
-    saveStartedDraft.apiKey &&
-    current.apiKey === saveStartedDraft.apiKey
-  ) {
-    return {
-      ...current,
-      apiKey: responseDraft.apiKey,
-    };
-  }
-  return current;
+  return {
+    displayName:
+      current.displayName === saveStartedDraft.displayName
+        ? responseDraft.displayName
+        : current.displayName,
+    groupName:
+      current.groupName === saveStartedDraft.groupName
+        ? responseDraft.groupName
+        : current.groupName,
+    isMother:
+      current.isMother === saveStartedDraft.isMother
+        ? responseDraft.isMother
+        : current.isMother,
+    note:
+      current.note === saveStartedDraft.note
+        ? responseDraft.note
+        : current.note,
+    upstreamBaseUrl:
+      current.upstreamBaseUrl === saveStartedDraft.upstreamBaseUrl
+        ? responseDraft.upstreamBaseUrl
+        : current.upstreamBaseUrl,
+    tagIds: areAccountDraftTagIdsEqual(current.tagIds, saveStartedDraft.tagIds)
+      ? responseDraft.tagIds
+      : current.tagIds,
+    localPrimaryLimit:
+      current.localPrimaryLimit === saveStartedDraft.localPrimaryLimit
+        ? responseDraft.localPrimaryLimit
+        : current.localPrimaryLimit,
+    localSecondaryLimit:
+      current.localSecondaryLimit === saveStartedDraft.localSecondaryLimit
+        ? responseDraft.localSecondaryLimit
+        : current.localSecondaryLimit,
+    localLimitUnit:
+      current.localLimitUnit === saveStartedDraft.localLimitUnit
+        ? responseDraft.localLimitUnit
+        : current.localLimitUnit,
+    apiKey:
+      current.apiKey === saveStartedDraft.apiKey
+        ? responseDraft.apiKey
+        : current.apiKey,
+  };
 }
