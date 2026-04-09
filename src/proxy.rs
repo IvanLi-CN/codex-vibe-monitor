@@ -667,6 +667,7 @@ const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_STREAMING_RESPONSE: &str = "streaming_
 const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_COMPLETED: &str = "completed";
 const POOL_UPSTREAM_REQUEST_ATTEMPT_PHASE_FAILED: &str = "failed";
 const POOL_EARLY_PHASE_ORPHAN_RECOVERY_GRACE: Duration = Duration::from_secs(30);
+const PROXY_INVOCATION_RECOVERY_SELECTOR_BATCH_SIZE: usize = 400;
 
 struct PoolEarlyPhaseOrphanCleanupGuard {
     state: Arc<AppState>,
@@ -8728,62 +8729,68 @@ async fn recover_proxy_invocations_with_scope(
                 return Ok(Vec::new());
             }
 
-            let mut query = QueryBuilder::<Sqlite>::new(
-                r#"
-                UPDATE codex_invocations
-                SET status = "#,
-            );
-            query.push_bind(INVOCATION_STATUS_INTERRUPTED);
-            query.push(
-                r#",
-                    error_message = "#,
-            );
-            query.push_bind(INVOCATION_INTERRUPTED_MESSAGE);
-            query.push(
-                r#",
-                    failure_kind = "#,
-            );
-            query.push_bind(PROXY_FAILURE_INVOCATION_INTERRUPTED);
-            query.push(
-                r#",
-                    failure_class = "#,
-            );
-            query.push_bind(FAILURE_CLASS_SERVICE);
-            query.push(
-                r#",
-                    is_actionable = 1
-                WHERE source = "#,
-            );
-            query.push_bind(SOURCE_PROXY);
-            query.push(
-                r#"
-                  AND LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
-                  AND (
-                "#,
-            );
-            let mut first = true;
-            for selector in selectors {
-                if !first {
-                    query.push(" OR ");
+            let mut recovered = Vec::new();
+            for chunk in selectors.chunks(PROXY_INVOCATION_RECOVERY_SELECTOR_BATCH_SIZE) {
+                let mut query = QueryBuilder::<Sqlite>::new(
+                    r#"
+                    UPDATE codex_invocations
+                    SET status = "#,
+                );
+                query.push_bind(INVOCATION_STATUS_INTERRUPTED);
+                query.push(
+                    r#",
+                        error_message = "#,
+                );
+                query.push_bind(INVOCATION_INTERRUPTED_MESSAGE);
+                query.push(
+                    r#",
+                        failure_kind = "#,
+                );
+                query.push_bind(PROXY_FAILURE_INVOCATION_INTERRUPTED);
+                query.push(
+                    r#",
+                        failure_class = "#,
+                );
+                query.push_bind(FAILURE_CLASS_SERVICE);
+                query.push(
+                    r#",
+                        is_actionable = 1
+                    WHERE source = "#,
+                );
+                query.push_bind(SOURCE_PROXY);
+                query.push(
+                    r#"
+                      AND LOWER(TRIM(COALESCE(status, ''))) IN ('running', 'pending')
+                      AND (
+                    "#,
+                );
+                let mut first = true;
+                for selector in chunk {
+                    if !first {
+                        query.push(" OR ");
+                    }
+                    first = false;
+                    query.push("(");
+                    query.push("invoke_id = ");
+                    query.push_bind(&selector.invoke_id);
+                    query.push(" AND occurred_at = ");
+                    query.push_bind(&selector.occurred_at);
+                    query.push(")");
                 }
-                first = false;
-                query.push("(");
-                query.push("invoke_id = ");
-                query.push_bind(selector.invoke_id);
-                query.push(" AND occurred_at = ");
-                query.push_bind(selector.occurred_at);
-                query.push(")");
+                query.push(
+                    r#"
+                      )
+                    RETURNING id, invoke_id, occurred_at
+                    "#,
+                );
+                recovered.extend(
+                    query
+                        .build_query_as::<RecoveredInvocationRow>()
+                        .fetch_all(tx.as_mut())
+                        .await?,
+                );
             }
-            query.push(
-                r#"
-                  )
-                RETURNING id, invoke_id, occurred_at
-                "#,
-            );
-            query
-                .build_query_as::<RecoveredInvocationRow>()
-                .fetch_all(tx.as_mut())
-                .await?
+            recovered
         }
     };
 
@@ -8912,12 +8919,13 @@ async fn recover_guard_dropped_pool_early_phase_orphan(
     };
 
     let recovered_invocations = if pending_attempt_record.attempt_id.is_none() {
-        let selector = InvocationRecoverySelector::from(&pending_attempt_record);
-        recover_proxy_invocations_with_scope(
-            &state.pool,
-            ProxyInvocationRecoveryScope::Selectors(std::slice::from_ref(&selector)),
-        )
-        .await?
+        warn!(
+            invoke_id = %pending_attempt_record.invoke_id,
+            occurred_at = %pending_attempt_record.occurred_at,
+            recovery_trigger = "drop_guard",
+            "skipping guard-based invocation recovery because no pending pool attempt row was persisted"
+        );
+        Vec::new()
     } else if recovered_attempts.is_empty() {
         Vec::new()
     } else {

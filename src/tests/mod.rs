@@ -47214,6 +47214,155 @@ async fn pool_early_phase_orphan_cleanup_guard_recovers_dropped_sending_request_
 }
 
 #[tokio::test]
+async fn pool_early_phase_orphan_cleanup_guard_without_persisted_attempt_row_keeps_invocation_running()
+ {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let account_id = insert_test_pool_api_key_account(&state, "Primary", "upstream-primary").await;
+    let invoke_id = "guard-skip-without-attempt-row";
+    let occurred_at = "2026-03-23 21:09:05";
+    let request_info = RequestCaptureInfo {
+        model: Some("gpt-5.4".to_string()),
+        is_stream: true,
+        ..RequestCaptureInfo::default()
+    };
+    let running_record = build_running_proxy_capture_record(
+        invoke_id,
+        occurred_at,
+        ProxyCaptureTarget::Responses,
+        &request_info,
+        Some("198.51.100.23"),
+        Some("sticky-guard-skip"),
+        Some("pck-guard-skip"),
+        true,
+        Some(account_id),
+        Some("Primary"),
+        Some("api_key_codex"),
+        Some("api.openai.com"),
+        None,
+        Some(1),
+        Some(1),
+        None,
+        None,
+        10.0,
+        2.0,
+        0.0,
+        0.0,
+    );
+    persist_and_broadcast_proxy_capture_runtime_snapshot(&state, running_record)
+        .await
+        .expect("persist running invocation");
+
+    let pending = PendingPoolAttemptRecord {
+        attempt_id: None,
+        invoke_id: invoke_id.to_string(),
+        occurred_at: occurred_at.to_string(),
+        endpoint: "/v1/responses".to_string(),
+        sticky_key: Some("sticky-guard-skip".to_string()),
+        requester_ip: Some("192.168.31.6".to_string()),
+        upstream_account_id: account_id,
+        upstream_route_key: "route-primary".to_string(),
+        attempt_index: 1,
+        distinct_account_index: 1,
+        same_account_retry_index: 1,
+        started_at: occurred_at.to_string(),
+        connect_latency_ms: 0.0,
+        first_byte_latency_ms: 0.0,
+        compact_support_status: None,
+        compact_support_reason: None,
+    };
+
+    recover_guard_dropped_pool_early_phase_orphan(state.as_ref(), pending)
+        .await
+        .expect("skip guard recovery without persisted attempt row");
+
+    let invocation = sqlx::query_as::<_, (String, Option<String>)>(
+        r#"
+        SELECT status, failure_kind
+        FROM codex_invocations
+        WHERE invoke_id = ?1 AND occurred_at = ?2
+        ORDER BY id DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(invoke_id)
+    .bind(occurred_at)
+    .fetch_one(&state.pool)
+    .await
+    .expect("load invocation after skipped guard recovery");
+
+    assert_eq!(invocation.0, INVOCATION_STATUS_RUNNING);
+    assert_eq!(invocation.1, None);
+}
+
+#[tokio::test]
+async fn recover_proxy_invocations_with_selector_batches_handles_large_selector_sets() {
+    let state = test_state_with_openai_base(
+        Url::parse("https://api.openai.com/").expect("valid upstream base url"),
+    )
+    .await;
+    let selector_count = PROXY_INVOCATION_RECOVERY_SELECTOR_BATCH_SIZE + 125;
+    let mut selectors = Vec::with_capacity(selector_count);
+
+    for index in 0..selector_count {
+        let invoke_id = format!("selector-batch-invocation-{index}");
+        let occurred_at = format!("2026-03-23 21:{:02}:{:02}", (index / 60) % 60, index % 60);
+        sqlx::query(
+            r#"
+            INSERT INTO codex_invocations (
+                invoke_id,
+                occurred_at,
+                source,
+                status,
+                error_message,
+                raw_response,
+                payload
+            )
+            VALUES (?1, ?2, ?3, ?4, NULL, ?5, ?6)
+            "#,
+        )
+        .bind(&invoke_id)
+        .bind(&occurred_at)
+        .bind(SOURCE_PROXY)
+        .bind(INVOCATION_STATUS_RUNNING)
+        .bind("{}")
+        .bind("{\"endpoint\":\"/v1/responses\"}")
+        .execute(&state.pool)
+        .await
+        .expect("insert running proxy invocation");
+        selectors.push(InvocationRecoverySelector::new(invoke_id, occurred_at));
+    }
+
+    let recovered = recover_proxy_invocations_with_scope(
+        &state.pool,
+        ProxyInvocationRecoveryScope::Selectors(&selectors),
+    )
+    .await
+    .expect("recover large selector batch");
+
+    assert_eq!(recovered.len(), selector_count);
+
+    let interrupted_count = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT COUNT(*)
+        FROM codex_invocations
+        WHERE invoke_id LIKE 'selector-batch-invocation-%'
+          AND status = ?1
+          AND failure_kind = ?2
+        "#,
+    )
+    .bind(INVOCATION_STATUS_INTERRUPTED)
+    .bind(PROXY_FAILURE_INVOCATION_INTERRUPTED)
+    .fetch_one(&state.pool)
+    .await
+    .expect("count interrupted selector rows");
+
+    assert_eq!(interrupted_count as usize, selector_count);
+}
+
+#[tokio::test]
 async fn recover_stale_pool_early_phase_orphans_runtime_only_recovers_stale_early_rows() {
     let state = test_state_with_openai_base(
         Url::parse("https://api.openai.com/").expect("valid upstream base url"),
