@@ -312,7 +312,6 @@ type RecentSaveResponseGuard = {
   draft: AccountDraft;
   fallbackDraft: AccountDraft;
   retainedDraft: AccountDraft;
-  timeoutId: ReturnType<typeof setTimeout>;
 };
 
 const DEFAULT_GROUP_FILTER_STATE: GroupFilterState = {
@@ -1355,9 +1354,6 @@ export function SharedUpstreamAccountDetailDrawer({
 
   useEffect(
     () => () => {
-      for (const recentSaveResponseGuard of recentSaveResponseGuardsRef.current.values()) {
-        clearTimeout(recentSaveResponseGuard.timeoutId);
-      }
       recentSaveResponseGuardsRef.current.clear();
     },
     [],
@@ -1413,7 +1409,6 @@ export function SharedUpstreamAccountDetailDrawer({
       (hasAcceptedFresherServerDraft || !shouldSeedDraft) &&
       areAccountDraftsEqual(nextBaseline, recentSaveResponseGuard.draft);
     if (shouldIgnoreRecentSaveResponse) {
-      clearTimeout(recentSaveResponseGuard.timeoutId);
       recentSaveResponseGuardsRef.current.delete(accountId);
       draftBaselineRef.current = retainedServerDraft;
       latestServerDraftRef.current = retainedServerDraft;
@@ -2406,23 +2401,12 @@ export function SharedUpstreamAccountDetailDrawer({
         ) {
           const previousRecentSaveResponseGuard =
             recentSaveResponseGuardsRef.current.get(source.id) ?? null;
-          if (previousRecentSaveResponseGuard != null) {
-            clearTimeout(previousRecentSaveResponseGuard.timeoutId);
-          }
           const recentSaveResponseGuard = {
             accountId: source.id,
             sessionKey: saveDraftSessionKey,
             draft: responseDraft,
             fallbackDraft: responseFallbackDraft,
             retainedDraft: retainedServerDraft,
-            timeoutId: setTimeout(() => {
-              if (
-                recentSaveResponseGuardsRef.current.get(source.id) ===
-                recentSaveResponseGuard
-              ) {
-                recentSaveResponseGuardsRef.current.delete(source.id);
-              }
-            }, 0),
           };
           recentSaveResponseGuardsRef.current.set(
             source.id,

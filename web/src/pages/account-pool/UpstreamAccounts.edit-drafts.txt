@@ -609,6 +609,74 @@ describe("SharedUpstreamAccountDetailDrawer edit drafts", () => {
     expect((noteInput as HTMLTextAreaElement).value).toBe("Original note")
   })
 
+  it("ignores a delayed late-save detail refresh after the guard survives later macrotasks", async () => {
+    const saveRequest = deferred<any>()
+    const saveAccount = vi.fn().mockImplementation(() => saveRequest.promise)
+    const refreshedDetail = createApiKeyDetail(
+      createApiKeyItem(8, "Refreshed Gateway Key"),
+      {
+        note: "Refreshed note",
+      },
+    )
+    const savedDetail = createApiKeyDetail(
+      createApiKeyItem(8, "Saved Gateway Key"),
+      {
+        note: "Saved note",
+      },
+    )
+    let state = createApiKeyHookState({
+      items: [createApiKeyItem(8, "Gateway Key")],
+      selectedId: 8,
+      detail: createApiKeyDetail(createApiKeyItem(8, "Gateway Key"), {
+        note: "Original note",
+      }),
+      saveAccount,
+    })
+    hookMocks.useUpstreamAccounts.mockImplementation(() => state)
+
+    renderDetailDrawer(8)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+    setInputValue('input[name="detailDisplayName"]', "Pending save draft")
+    clickButton(/Save changes/i)
+    await flushAsync()
+
+    rerenderDetailDrawer(8, { open: false })
+    await flushAsync()
+    rerenderDetailDrawer(8)
+    await flushAsync()
+
+    state = {
+      ...state,
+      detail: refreshedDetail,
+    }
+    rerenderDetailDrawer(8)
+    await flushAsync()
+    clickTab(/Edit/i)
+    await flushAsync()
+
+    saveRequest.resolve(savedDetail)
+    await flushAsync()
+    await flushTimers()
+
+    state = {
+      ...state,
+      detail: savedDetail,
+    }
+    rerenderDetailDrawer(8)
+    await flushAsync()
+
+    const displayNameInput = document.body.querySelector(
+      'input[name="detailDisplayName"]',
+    )
+    const noteInput = document.body.querySelector('textarea[name="detailNote"]')
+    expect((displayNameInput as HTMLInputElement).value).toBe(
+      "Refreshed Gateway Key",
+    )
+    expect((noteInput as HTMLTextAreaElement).value).toBe("Refreshed note")
+  })
+
   it("invalidates the reopened draft session before passive effects flush", async () => {
     const saveRequest = deferred<any>()
     const saveAccount = vi.fn().mockImplementation(() => saveRequest.promise)
