@@ -30,9 +30,13 @@ pub(crate) struct ApiPoolUpstreamRequestAttempt {
     #[sqlx(default)]
     pub(crate) http_status: Option<i64>,
     #[sqlx(default)]
+    pub(crate) downstream_http_status: Option<i64>,
+    #[sqlx(default)]
     pub(crate) failure_kind: Option<String>,
     #[sqlx(default)]
     pub(crate) error_message: Option<String>,
+    #[sqlx(default)]
+    pub(crate) downstream_error_message: Option<String>,
     #[sqlx(default)]
     pub(crate) connect_latency_ms: Option<f64>,
     #[sqlx(default)]

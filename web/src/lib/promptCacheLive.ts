@@ -34,6 +34,8 @@ type PromptCacheConversationPreviewExtras = Partial<
     | "reasoningTokens"
     | "reasoningEffort"
     | "errorMessage"
+    | "downstreamStatusCode"
+    | "downstreamErrorMessage"
     | "failureKind"
     | "isActionable"
     | "responseContentEncoding"
@@ -258,6 +260,8 @@ export function buildInvocationFromPromptCachePreview(
     totalTokens: preview.totalTokens,
     cost: preview.cost ?? undefined,
     errorMessage: extras.errorMessage,
+    downstreamStatusCode: extras.downstreamStatusCode,
+    downstreamErrorMessage: extras.downstreamErrorMessage,
     endpoint: preview.endpoint ?? undefined,
     upstreamAccountId: preview.upstreamAccountId,
     upstreamAccountName: preview.upstreamAccountName ?? undefined,
@@ -311,6 +315,8 @@ export function buildPromptCachePreviewFromInvocation(
     reasoningTokens: record.reasoningTokens,
     reasoningEffort: record.reasoningEffort,
     errorMessage: record.errorMessage,
+    downstreamStatusCode: record.downstreamStatusCode,
+    downstreamErrorMessage: record.downstreamErrorMessage,
     failureKind: record.failureKind,
     isActionable: record.isActionable,
     responseContentEncoding: record.responseContentEncoding,

@@ -7,6 +7,7 @@ import type {
 } from "./api";
 import {
   buildPromptCachePreviewFromInvocation,
+  buildInvocationFromPromptCachePreview,
   mergePromptCacheConversationsResponse,
   reconcilePromptCacheLiveRecordMap,
 } from "./promptCacheLive";
@@ -91,6 +92,29 @@ function createLiveRecord(
 }
 
 describe("mergePromptCacheConversationsResponse", () => {
+  it("preserves downstream-facing error metadata across prompt-cache preview adapters", () => {
+    const record = createLiveRecord({
+      id: 250,
+      invokeId: "invoke-downstream-preview",
+      occurredAt: "2026-03-10T02:10:00Z",
+      promptCacheKey: "pck-downstream-preview",
+      status: "failed",
+      failureClass: "client_abort",
+      failureKind: "downstream_closed",
+      downstreamStatusCode: 200,
+      downstreamErrorMessage:
+        "[downstream_closed] downstream closed while streaming upstream response",
+    });
+
+    const preview = buildPromptCachePreviewFromInvocation(record);
+    const rebuilt = buildInvocationFromPromptCachePreview(preview);
+
+    expect(preview.downstreamStatusCode).toBe(200);
+    expect(preview.downstreamErrorMessage).toContain("downstream closed");
+    expect(rebuilt.downstreamStatusCode).toBe(200);
+    expect(rebuilt.downstreamErrorMessage).toContain("downstream closed");
+  });
+
   it("lets unseen live conversations displace older rows in count-capped mode", () => {
     const base = createResponse([
       createConversation("pck-newest", {

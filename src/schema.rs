@@ -1137,8 +1137,10 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
             status TEXT NOT NULL,
             phase TEXT,
             http_status INTEGER,
+            downstream_http_status INTEGER,
             failure_kind TEXT,
             error_message TEXT,
+            downstream_error_message TEXT,
             connect_latency_ms REAL,
             first_byte_latency_ms REAL,
             stream_latency_ms REAL,
@@ -1158,6 +1160,8 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
     for (column, ty) in [
         ("upstream_route_key", "TEXT"),
         ("phase", "TEXT"),
+        ("downstream_http_status", "INTEGER"),
+        ("downstream_error_message", "TEXT"),
         ("compact_support_status", "TEXT"),
         ("compact_support_reason", "TEXT"),
     ] {
@@ -1333,4 +1337,3 @@ async fn ensure_schema(pool: &Pool<Sqlite>) -> Result<()> {
 
     Ok(())
 }
-

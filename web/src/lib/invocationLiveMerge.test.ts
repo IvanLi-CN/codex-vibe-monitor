@@ -139,4 +139,32 @@ describe("invocationLiveMerge", () => {
     expect(merged[0]?.upstreamErrorMessage).toBe("quota exhausted");
     expect(merged[0]?.isActionable).toBe(true);
   });
+
+  it("backfills downstream-facing error metadata during live merges", () => {
+    const runtimeFailure = createRecord({
+      id: 5,
+      invokeId: "invoke-5",
+      occurredAt: "2026-03-10T02:34:00Z",
+      status: "failed",
+      failureClass: "client_abort",
+      failureKind: "downstream_closed",
+      downstreamStatusCode: 200,
+      downstreamErrorMessage:
+        "[downstream_closed] downstream closed while streaming upstream response",
+    });
+    const finalFailure = createRecord({
+      id: 5,
+      invokeId: "invoke-5",
+      occurredAt: "2026-03-10T02:34:00Z",
+      status: "failed",
+      failureClass: "client_abort",
+      failureKind: "downstream_closed",
+    });
+
+    const merged = mergeInvocationRecordCollections([finalFailure], [runtimeFailure]);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]?.downstreamStatusCode).toBe(200);
+    expect(merged[0]?.downstreamErrorMessage).toContain("downstream closed");
+  });
 });

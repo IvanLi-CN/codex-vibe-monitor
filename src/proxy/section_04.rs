@@ -253,6 +253,8 @@ async fn proxy_openai_v1_capture_target(
                     stream_terminal_event: None,
                     upstream_error_code: None,
                     upstream_error_message: None,
+                    downstream_status_code: None,
+                    downstream_error_message: None,
                     upstream_request_id: None,
                     response_content_encoding: None,
                     proxy_display_name: None,
@@ -450,7 +452,11 @@ async fn proxy_openai_v1_capture_target(
                         pricing_mode,
                     )
                     .await;
-                let error_message = format!("[{}] {}", err.failure_kind, err.message);
+                let canonical_error_message = err
+                    .canonical_error_message
+                    .as_deref()
+                    .unwrap_or(err.message.as_str());
+                let error_message = format!("[{}] {}", err.failure_kind, canonical_error_message);
                 let pool_proxy_display_name = resolve_invocation_proxy_display_name(None);
                 let record = ProxyCaptureRecord {
                     invoke_id,
@@ -545,6 +551,11 @@ async fn proxy_openai_v1_capture_target(
                         stream_terminal_event: None,
                         upstream_error_code: err.upstream_error_code.as_deref(),
                         upstream_error_message: err.upstream_error_message.as_deref(),
+                        downstream_status_code: err
+                            .downstream_error_message
+                            .as_ref()
+                            .map(|_| err.status),
+                        downstream_error_message: err.downstream_error_message.as_deref(),
                         upstream_request_id: err.upstream_request_id.as_deref(),
                         response_content_encoding: None,
                         proxy_display_name: pool_proxy_display_name.as_deref(),
@@ -700,6 +711,8 @@ async fn proxy_openai_v1_capture_target(
                         stream_terminal_event: None,
                         upstream_error_code: None,
                         upstream_error_message: None,
+                        downstream_status_code: None,
+                        downstream_error_message: None,
                         upstream_request_id: None,
                         response_content_encoding: None,
                         proxy_display_name: Some(err.selected_proxy.display_name.as_str()),
@@ -859,6 +872,8 @@ async fn proxy_openai_v1_capture_target(
                     stream_terminal_event: None,
                     upstream_error_code: None,
                     upstream_error_message: None,
+                    downstream_status_code: None,
+                    downstream_error_message: None,
                     upstream_request_id: None,
                     response_content_encoding: Some(
                         summarize_response_content_encoding(
@@ -1280,7 +1295,7 @@ async fn proxy_openai_v1_capture_target(
             response_info.usage_missing_reason = Some("upstream_stream_error".to_string());
         }
 
-        let failure_kind = if stream_error.is_some() {
+        let invocation_failure_kind = if stream_error.is_some() {
             Some(PROXY_FAILURE_UPSTREAM_STREAM_ERROR)
         } else if downstream_closed {
             Some(PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED)
@@ -1298,11 +1313,6 @@ async fn proxy_openai_v1_capture_target(
 
         let error_message = if let Some(err) = stream_error {
             Some(format!("[{}] {err}", PROXY_FAILURE_UPSTREAM_STREAM_ERROR))
-        } else if downstream_closed {
-            Some(format!(
-                "[{}] downstream closed while streaming upstream response",
-                PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED
-            ))
         } else if response_info.stream_terminal_event.is_some() {
             Some(format_upstream_response_failed_message(&response_info))
         } else if !upstream_status.is_success() {
@@ -1313,11 +1323,16 @@ async fn proxy_openai_v1_capture_target(
         } else {
             None
         };
-        let status = if upstream_status.is_success() && error_message.is_none() {
-            "success".to_string()
+        let downstream_error_message = if downstream_closed {
+            Some(format!(
+                "[{}] downstream closed while streaming upstream response",
+                PROXY_STREAM_TERMINAL_DOWNSTREAM_CLOSED
+            ))
         } else {
-            format!("http_{}", upstream_status.as_u16())
+            None
         };
+        let status =
+            proxy_capture_invocation_status(upstream_status, error_message.is_some(), downstream_closed);
         let pending_pool_attempt_terminal_reason = if pool_account_for_task.is_none() {
             None
         } else if had_stream_error {
@@ -1328,7 +1343,7 @@ async fn proxy_openai_v1_capture_target(
             Some(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED.to_string())
         } else if !upstream_status.is_success() {
             Some(
-                failure_kind
+                invocation_failure_kind
                     .unwrap_or(PROXY_FAILURE_UPSTREAM_RESPONSE_FAILED)
                     .to_string(),
             )
@@ -1370,7 +1385,7 @@ async fn proxy_openai_v1_capture_target(
                     had_stream_error,
                     had_logical_stream_failure,
                 );
-                let route_result = if pool_route_success {
+                let route_result = if pool_route_success || downstream_closed {
                     consume_pool_routing_reservation(
                         state_for_task.as_ref(),
                         &reservation_key_for_task,
@@ -1440,12 +1455,19 @@ async fn proxy_openai_v1_capture_target(
         };
         if let Some(pending_attempt_record) = pending_pool_attempt_record_for_task.as_ref() {
             let finished_at = shanghai_now_string();
-            let attempt_status = if had_stream_error || downstream_closed {
+            let attempt_status = if downstream_closed {
+                POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
+            } else if had_stream_error {
                 POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_TRANSPORT_FAILURE
             } else if !upstream_status.is_success() || had_logical_stream_failure {
                 POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_HTTP_FAILURE
             } else {
                 POOL_UPSTREAM_REQUEST_ATTEMPT_STATUS_SUCCESS
+            };
+            let attempt_failure_kind = if downstream_closed {
+                None
+            } else {
+                invocation_failure_kind
             };
             if let Err(err) = finalize_pool_upstream_request_attempt(
                 &state_for_task.pool,
@@ -1453,8 +1475,10 @@ async fn proxy_openai_v1_capture_target(
                 finished_at.as_str(),
                 attempt_status,
                 Some(upstream_status),
-                failure_kind,
+                if downstream_closed { Some(upstream_status) } else { None },
+                attempt_failure_kind,
                 error_message.as_deref(),
+                downstream_error_message.as_deref(),
                 Some(t_upstream_connect_ms),
                 Some(t_upstream_ttfb_ms),
                 Some(t_upstream_stream_ms),
@@ -1509,7 +1533,7 @@ async fn proxy_openai_v1_capture_target(
             response_model: response_info.model.as_deref(),
             usage_missing_reason: response_info.usage_missing_reason.as_deref(),
             request_parse_error: request_info_for_task.parse_error.as_deref(),
-            failure_kind,
+            failure_kind: invocation_failure_kind,
             requester_ip: requester_ip_for_task.as_deref(),
             upstream_scope: if pool_account_for_task.is_some() {
                 INVOCATION_UPSTREAM_SCOPE_INTERNAL
@@ -1575,6 +1599,12 @@ async fn proxy_openai_v1_capture_target(
             stream_terminal_event: response_info.stream_terminal_event.as_deref(),
             upstream_error_code: response_info.upstream_error_code.as_deref(),
             upstream_error_message: response_info.upstream_error_message.as_deref(),
+            downstream_status_code: if downstream_closed {
+                Some(upstream_status)
+            } else {
+                None
+            },
+            downstream_error_message: downstream_error_message.as_deref(),
             upstream_request_id: response_info.upstream_request_id.as_deref(),
             response_content_encoding: Some(response_content_encoding.as_str()),
             proxy_display_name: selected_proxy_display_name.as_deref(),
@@ -1604,7 +1634,7 @@ async fn proxy_openai_v1_capture_target(
             price_version,
             status,
             error_message,
-            failure_kind: failure_kind.map(|kind| kind.to_string()),
+            failure_kind: invocation_failure_kind.map(|kind| kind.to_string()),
             payload: Some(payload),
             raw_response: raw_response_preview,
             req_raw,

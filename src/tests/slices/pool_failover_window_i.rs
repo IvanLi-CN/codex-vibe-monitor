@@ -1329,6 +1329,14 @@ async fn retention_archives_into_legacy_pool_attempt_archive_batch_without_route
         archive_columns.contains("upstream_route_key"),
         "legacy pool attempt archive batches should be upgraded with upstream_route_key"
     );
+    assert!(
+        archive_columns.contains("downstream_http_status"),
+        "legacy pool attempt archive batches should be upgraded with downstream_http_status"
+    );
+    assert!(
+        archive_columns.contains("downstream_error_message"),
+        "legacy pool attempt archive batches should be upgraded with downstream_error_message"
+    );
     archived_pool.close().await;
 
     cleanup_temp_test_dir(&temp_dir);
@@ -2402,4 +2410,3 @@ async fn retention_archives_duplicate_upstream_activity_across_chunks() {
 
     cleanup_temp_test_dir(&temp_dir);
 }
-

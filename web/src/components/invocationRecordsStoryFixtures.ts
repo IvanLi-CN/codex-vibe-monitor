@@ -140,8 +140,9 @@ export const STORYBOOK_INVOCATION_RECORDS: ApiInvocation[] = [
     cacheInputTokens: 620,
     totalTokens: 2180,
     cost: 0.0122,
-    errorMessage: 'client connection closed before upstream stream completed',
-    failureKind: 'client_disconnect',
+    downstreamStatusCode: 200,
+    downstreamErrorMessage: '[downstream_closed] downstream closed while streaming upstream response',
+    failureKind: 'downstream_closed',
     failureClass: 'client_abort',
     isActionable: false,
     requesterIp: '203.0.113.88',
@@ -223,6 +224,85 @@ export const STORYBOOK_INVOCATION_RECORDS: ApiInvocation[] = [
     tTotalMs: 19460,
   },
   {
+    id: 6108,
+    invokeId: 'inv_story_6108',
+    occurredAt: '2026-03-10T07:42:12.000Z',
+    createdAt: '2026-03-10T07:42:12.000Z',
+    source: 'pool',
+    proxyDisplayName: 'sfo-edge-08',
+    routeMode: 'pool',
+    upstreamAccountId: 91,
+    upstreamAccountName: 'Pool Theta 91',
+    poolAttemptCount: 2,
+    poolDistinctAccountCount: 2,
+    poolAttemptTerminalReason: 'failed_contact_upstream',
+    endpoint: '/v1/responses',
+    model: 'gpt-5.4',
+    status: 'failed',
+    inputTokens: 2408,
+    outputTokens: 0,
+    cacheInputTokens: 0,
+    totalTokens: 2408,
+    cost: 0.0164,
+    errorMessage:
+      'failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)',
+    downstreamStatusCode: 502,
+    downstreamErrorMessage:
+      'pool upstream responded with 502: failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)',
+    failureKind: 'failed_contact_upstream',
+    failureClass: 'service_failure',
+    isActionable: true,
+    upstreamErrorMessage:
+      'failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)',
+    requesterIp: '203.0.113.166',
+    promptCacheKey: 'pck_story_transport_split',
+    requestedServiceTier: 'priority',
+    serviceTier: 'priority',
+    billingServiceTier: 'priority',
+    responseContentEncoding: 'identity',
+    tUpstreamConnectMs: 188,
+    tTotalMs: 512,
+  },
+  {
+    id: 6109,
+    invokeId: 'inv_story_6109',
+    occurredAt: '2026-03-10T07:40:48.000Z',
+    createdAt: '2026-03-10T07:40:48.000Z',
+    source: 'pool',
+    proxyDisplayName: 'sfo-edge-09',
+    routeMode: 'pool',
+    upstreamAccountId: 92,
+    upstreamAccountName: 'Pool Iota 92',
+    poolAttemptCount: 1,
+    poolDistinctAccountCount: 1,
+    poolAttemptTerminalReason: 'upstream_response_failed',
+    endpoint: '/v1/responses',
+    model: 'gpt-5.4',
+    status: 'failed',
+    inputTokens: 1980,
+    outputTokens: 0,
+    cacheInputTokens: 0,
+    totalTokens: 1980,
+    cost: 0.0129,
+    errorMessage:
+      '[upstream_response_failed] server_error: upstream returned 502 while creating the response',
+    failureKind: 'upstream_response_failed',
+    failureClass: 'service_failure',
+    isActionable: true,
+    upstreamErrorCode: 'server_error',
+    upstreamErrorMessage: 'server_error: upstream returned 502 while creating the response',
+    upstreamRequestId: 'req_story_true_502',
+    requesterIp: '203.0.113.167',
+    promptCacheKey: 'pck_story_true_502',
+    requestedServiceTier: 'priority',
+    serviceTier: 'priority',
+    billingServiceTier: 'priority',
+    responseContentEncoding: 'gzip',
+    tUpstreamConnectMs: 120,
+    tUpstreamTtfbMs: 310,
+    tTotalMs: 804,
+  },
+  {
     id: 6106,
     invokeId: 'inv_story_6106',
     occurredAt: '2026-03-10T07:46:55.000Z',
@@ -289,6 +369,48 @@ export function createStoryPoolAttemptsByInvokeId(records: ApiInvocation[]) {
       const startedAtMs = Date.parse(record.occurredAt) - (attemptTotal - attemptIndex) * 900
       const finishedAtMs = startedAtMs + 240 + attemptIndex * 90
 
+      const syntheticOauthBridgeAttempt =
+        record.invokeId === 'inv_story_6108' && isLastAttempt
+          ? {
+              status: 'transport_failure' as const,
+              httpStatus: null,
+              downstreamHttpStatus: 502,
+              failureKind: 'failed_contact_upstream',
+              errorMessage:
+                'failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)',
+              downstreamErrorMessage:
+                'pool upstream responded with 502: failed to contact oauth codex upstream: error sending request for url (https://chatgpt.com/backend-api/codex/responses)',
+              upstreamRequestId: null,
+            }
+          : null
+      const trueUpstreamHttpAttempt =
+        record.invokeId === 'inv_story_6109' && isLastAttempt
+          ? {
+              status: 'http_failure' as const,
+              httpStatus: 502,
+              downstreamHttpStatus: null,
+              failureKind: 'upstream_response_failed',
+              errorMessage:
+                '[upstream_response_failed] server_error: upstream returned 502 while creating the response',
+              downstreamErrorMessage: null,
+              upstreamRequestId: 'req_story_true_502',
+            }
+          : null
+      const downstreamClosedAttempt =
+        record.invokeId === 'inv_story_6104' && isLastAttempt
+          ? {
+              status: 'success' as const,
+              httpStatus: 200,
+              downstreamHttpStatus: 200,
+              failureKind: null,
+              errorMessage: null,
+              downstreamErrorMessage:
+                '[downstream_closed] downstream closed while streaming upstream response',
+              upstreamRequestId: `${record.invokeId}-attempt-${attemptIndex + 1}`,
+            }
+          : null
+      const forcedAttempt = syntheticOauthBridgeAttempt ?? trueUpstreamHttpAttempt ?? downstreamClosedAttempt
+
       return {
         id: record.id * 100 + attemptIndex + 1,
         invokeId: record.invokeId,
@@ -297,33 +419,48 @@ export function createStoryPoolAttemptsByInvokeId(records: ApiInvocation[]) {
         attemptIndex: attemptIndex + 1,
         distinctAccountIndex,
         sameAccountRetryIndex,
-        status,
+        status: forcedAttempt?.status ?? status,
         httpStatus:
-          status === 'success' ? 200 : status === 'http_failure' ? (isLastAttempt ? 400 : 429) : null,
+          forcedAttempt?.httpStatus ??
+          (status === 'success' ? 200 : status === 'http_failure' ? (isLastAttempt ? 400 : 429) : null),
+        downstreamHttpStatus: forcedAttempt?.downstreamHttpStatus ?? null,
         failureKind:
-          status === 'success'
+          forcedAttempt?.failureKind ??
+          (status === 'success'
             ? null
             : status === 'http_failure'
               ? isLastAttempt
                 ? record.failureKind ?? 'invalid_request'
                 : 'rate_limit'
-              : 'connect_timeout',
+              : 'connect_timeout'),
         errorMessage:
-          status === 'success'
+          forcedAttempt?.errorMessage ??
+          (status === 'success'
             ? null
             : status === 'http_failure'
               ? isLastAttempt
                 ? record.errorMessage ?? 'upstream rejected request'
                 : 'upstream returned 429'
-              : 'forward proxy connect timeout',
+              : 'forward proxy connect timeout'),
+        downstreamErrorMessage: forcedAttempt?.downstreamErrorMessage ?? null,
         connectLatencyMs: status === 'transport_failure' ? 160 + attemptIndex * 20 : 55 + attemptIndex * 12,
         firstByteLatencyMs:
-          status === 'success' ? (record.tUpstreamTtfbMs ?? 180) : status === 'http_failure' ? 210 + attemptIndex * 18 : null,
+          forcedAttempt?.status === 'success'
+            ? record.tUpstreamTtfbMs ?? 180
+            : forcedAttempt?.status === 'http_failure'
+              ? 210 + attemptIndex * 18
+              : status === 'success'
+                ? record.tUpstreamTtfbMs ?? 180
+                : status === 'http_failure'
+                  ? 210 + attemptIndex * 18
+                  : null,
         streamLatencyMs:
-          status === 'success' && typeof record.tTotalMs === 'number' && Number.isFinite(record.tTotalMs)
+          (forcedAttempt?.status ?? status) === 'success' &&
+          typeof record.tTotalMs === 'number' &&
+          Number.isFinite(record.tTotalMs)
             ? Math.max(80, record.tTotalMs - (record.tUpstreamTtfbMs ?? 180))
             : null,
-        upstreamRequestId: `${record.invokeId}-attempt-${attemptIndex + 1}`,
+        upstreamRequestId: forcedAttempt?.upstreamRequestId ?? `${record.invokeId}-attempt-${attemptIndex + 1}`,
         startedAt: new Date(startedAtMs).toISOString(),
         finishedAt: new Date(finishedAtMs).toISOString(),
         createdAt: new Date(finishedAtMs).toISOString(),
@@ -335,6 +472,10 @@ export function createStoryPoolAttemptsByInvokeId(records: ApiInvocation[]) {
 
   return attemptsByInvokeId
 }
+
+export const STORYBOOK_PROXY_ERROR_CONTRACT_RECORDS = STORYBOOK_INVOCATION_RECORDS.filter((record) =>
+  ['inv_story_6108', 'inv_story_6109', 'inv_story_6104'].includes(record.invokeId),
+)
 
 export function createStoryInvocationRecordDetailsById(records: ApiInvocation[]) {
   const detailsById: Record<number, ApiInvocationRecordDetailResponse> = {}

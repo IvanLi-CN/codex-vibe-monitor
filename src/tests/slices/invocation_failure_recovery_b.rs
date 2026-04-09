@@ -2512,4 +2512,3 @@ async fn capture_target_pool_route_timeout_ignores_broken_same_route_groups() {
 
     shared_upstream_handle.abort();
 }
-

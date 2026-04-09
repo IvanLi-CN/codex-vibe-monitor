@@ -1639,6 +1639,8 @@ async fn ensure_pool_upstream_request_attempts_archive_schema(
     for (column, ty) in [
         ("upstream_route_key", "TEXT"),
         ("phase", "TEXT"),
+        ("downstream_http_status", "INTEGER"),
+        ("downstream_error_message", "TEXT"),
         ("compact_support_status", "TEXT"),
         ("compact_support_reason", "TEXT"),
     ] {
